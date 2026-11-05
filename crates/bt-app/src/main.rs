@@ -8,6 +8,7 @@ mod keys;
 mod menu;
 mod mouse;
 mod shellint;
+mod split;
 mod tabbar;
 
 use bt_term::SpawnOptions;

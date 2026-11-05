@@ -4,12 +4,14 @@
 
 ## [아직 릴리스하지 않음]
 
+- 화면 분할: 탭 안을 칸으로 나눕니다(Cmd-D 오른쪽, Cmd-Shift-D 아래). 칸 옮기기(Cmd-[ / Cmd-], Cmd-Opt-방향키, 누르기), 경계 밀기(Cmd-Ctrl-방향키), 크기 고르게(Cmd-Ctrl-=), 크게 보기(Cmd-Shift-Enter), 칸 닫기(Cmd-W). 고르지 않은 칸은 흐리게, 커서는 속 빈 네모로 보입니다. Ghostty와 같은 동작 이름과 기본 키이고, `unfocused-split-opacity`·`unfocused-split-fill`·`split-divider-color`를 읽습니다. `btctl new --split 방향`으로 칸을 나눠 엽니다. **Cmd-[ / Cmd-]는 이제 칸 옮기기입니다**(Ghostty 기본과 같게). 탭 옮기기는 Cmd-Shift-[ / Cmd-Shift-]입니다.
+
 - macOS 앱 묶음: `scripts/bundle-macos.sh [--install]`이 `b-terminal.app`(아이콘, btctl 포함, 임시 서명)을 만듭니다. 메뉴 막대(앱·셸·편집·보기·윈도우)와 "설정…"(예시 설정 파일을 만들어 엶). 아이콘은 `scripts/make-icon.swift`로 그립니다.
 
 - 셸 통합: zsh·bash에 자동으로 실어 명령의 시작·끝·종료 코드를 압니다(OSC 133·633). Cmd-↑/↓로 프롬프트 사이 이동, 창을 보지 않을 때 오래 걸린 명령이 끝나면 알림, `btctl run`(다른 탭에서 명령을 돌리고 출력·종료 코드를 받음)과 `btctl last`. `shell-integration`, `notify-command-seconds`.
 
 - 진행 표시(OSC 9;4): 탭 줄의 그 탭 아래(탭이 하나면 창 맨 위)에 막대를 그립니다. 보통·오류·끝 모름·멈춤을 색으로 가르고, 15초 소식이 없으면 지웁니다.
-- 클립보드 쓰기(OSC 52)를 기본으로 허용합니다(AI CLI의 `/copy`). 보고 있는 창의 보고 있는 탭에서 온 것만 받고, 받으면 창 안 알림 띠로 보입니다. 읽기는 기본 금지. `clipboard-write`·`clipboard-read`.
+- 클립보드 쓰기(OSC 52)를 기본으로 허용합니다(AI CLI의 `/copy`). 보고 있는 창의 고른 칸에서 온 것만 받고, 받으면 창 안 알림 띠로 보입니다. 읽기는 기본 금지. `clipboard-write`·`clipboard-read`.
 
 - kitty 키보드 프로토콜(1단계 모호한 키 구분, 8단계 모든 키를 이스케이프로): Claude Code에서 Shift+Enter가 줄바꿈이 됩니다. 프로그램의 `CSI ? u` 질의에 답합니다.
 

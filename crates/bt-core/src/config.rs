@@ -100,6 +100,12 @@ pub struct Config {
     pub clipboard_write: bool,
     /// OSC 52로 프로그램이 클립보드를 읽는 것을 허용(기본 금지. Ghostty 기본은 ask)
     pub clipboard_read: bool,
+    /// 분할에서 고르지 않은 칸의 불투명도(0.15~1). 낮을수록 흐리게 덮는다(Ghostty 기본 0.7)
+    pub unfocused_split_opacity: f32,
+    /// 고르지 않은 칸을 덮는 색. 없으면 바탕색
+    pub unfocused_split_fill: Option<Rgb>,
+    /// 칸 사이 경계선 색. 없으면 바탕색과 글자색 사이
+    pub split_divider_color: Option<Rgb>,
     pub warnings: Vec<String>,
     /// 실제로 읽은 파일
     pub sources: Vec<PathBuf>,
@@ -135,6 +141,9 @@ impl Default for Config {
             clipboard_read: false,
             shell_integration: "detect".into(),
             notify_command_seconds: 10,
+            unfocused_split_opacity: 0.7,
+            unfocused_split_fill: None,
+            split_divider_color: None,
             warnings: Vec::new(),
             sources: Vec::new(),
         }
@@ -534,6 +543,31 @@ impl Config {
                 _ => bad(warnings),
             },
             "mouse-reset-on-shell" => self.mouse_reset_on_shell = parse_bool(v).unwrap_or(true),
+            "unfocused-split-opacity" => match v.parse::<f32>() {
+                // Ghostty와 같이 0.15~1로 묶는다
+                Ok(o) if o.is_finite() => self.unfocused_split_opacity = o.clamp(0.15, 1.0),
+                _ => bad(warnings),
+            },
+            "unfocused-split-fill" => {
+                self.unfocused_split_fill = if v.is_empty() {
+                    None
+                } else {
+                    Rgb::parse_hex(v).or_else(|| named_color(v)).or_else(|| {
+                        bad(warnings);
+                        None
+                    })
+                }
+            }
+            "split-divider-color" => {
+                self.split_divider_color = if v.is_empty() {
+                    None
+                } else {
+                    Rgb::parse_hex(v).or_else(|| named_color(v)).or_else(|| {
+                        bad(warnings);
+                        None
+                    })
+                }
+            }
             other => {
                 // Ghostty에만 있는 키는 조용히 넘기지 않고 알린다
                 if !KNOWN_IGNORED.contains(&other) {
@@ -625,7 +659,6 @@ const KNOWN_IGNORED: &[&str] = &[
     "shell-integration-features",
     "auto-update",
     "auto-update-channel",
-    "unfocused-split-opacity",
     "minimum-contrast",
     "link-url",
     "clipboard-paste-protection",
@@ -801,6 +834,22 @@ mod tests {
         assert_eq!(c.font_size, 13.0);
         assert_eq!(c.cursor_style, CursorStyle::Block);
         assert_eq!(c.warnings.len(), 3);
+    }
+
+    #[test]
+    fn split_appearance_keys() {
+        let c = Config::default();
+        assert_eq!(c.unfocused_split_opacity, 0.7, "Ghostty 기본");
+        let c = Config::from_text(
+            "unfocused-split-opacity = 0.05\nunfocused-split-fill = #102030\nsplit-divider-color = white\n",
+            true,
+        );
+        assert_eq!(c.unfocused_split_opacity, 0.15, "0.15 아래는 0.15로");
+        assert_eq!(c.unfocused_split_fill, Some(Rgb::new(0x10, 0x20, 0x30)));
+        assert_eq!(c.split_divider_color, Some(Rgb::new(255, 255, 255)));
+        assert!(c.warnings.is_empty(), "{:?}", c.warnings);
+        let c = Config::from_text("unfocused-split-opacity = dim\nsplit-divider-color = nope\n", true);
+        assert_eq!(c.warnings.len(), 2);
     }
 
     #[test]
