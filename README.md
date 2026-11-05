@@ -1,5 +1,7 @@
 # b-terminal
 
+<img src="docs/images/icon.png" width="96" alt="b-terminal 아이콘: 어두운 둥근 사각형 위 초록 프롬프트 기호와 밑줄 커서, 왼쪽 위 파란 b">
+
 > AI 에이전트 시대를 위한 나만의 Rust 터미널. Claude Code·Codex 같은 AI CLI가 쓰는 신호(Shift+Enter, 알림, 진행 표시, 클립보드, 셸 통합)를 빠짐없이 받고, 에이전트가 터미널을 조종할 수 있습니다. Ghostty를 본보기로 삼았지만 Ghostty 없이 혼자 섭니다.
 
 아직 만드는 중입니다. 계획과 진행은 [ROADMAP.md](ROADMAP.md)에 있습니다.
@@ -9,13 +11,16 @@
 - 터미널이 할 일에 집중합니다: PTY, VT 해석, 렌더링, 탭, 한글 IME, 복사·붙여넣기, 설정, 그리고 AI CLI가 쓰는 표준 신호([조사 기록](docs/research/2026-11-06-agentic-terminal.md)).
 - AI 에이전트를 다루는 화면(에이전트 목록·상태·사용량)은 [b-studio](https://github.com/dj258255/b-studio)의 일입니다. b-studio는 b-terminal 안에서 도는 프로그램 중 하나입니다(herdr가 Ghostty 안에서 돌듯이). 경계는 [ADR-005](docs/decisions.md#adr-005-b-terminal은-순수-터미널이고-ai-작업-화면은-b-studio가-맡는다)에 적었습니다.
 
-## 띄우기
+## 설치와 띄우기
+
+macOS 앱으로 묶어 씁니다(Rust 1.85 이상, Xcode 명령줄 도구).
 
 ```bash
-cargo run --release -p bt-app                 # 로그인 셸
-cargo run --release -p bt-app -- -e htop      # 처음 탭에서 다른 프로그램
-cargo run --release -p bt-app -- --cwd ~/dev  # 시작 폴더
+scripts/bundle-macos.sh --install   # ~/Applications/b-terminal.app (btctl도 앱 안에)
+open ~/Applications/b-terminal.app
 ```
+
+개발 중에는 `cargo run --release -p bt-app`(인자: `-e <프로그램>`, `--cwd <폴더>`, `--config-file`, `--show-config`, `--list-themes`)로 띄웁니다. 메뉴 막대의 "설정…"이 `~/.config/b-terminal/config`를 예시와 함께 만들어 엽니다.
 
 | 키(macOS 기본) | 하는 일 |
 |---|---|
@@ -53,7 +58,7 @@ window-padding-x = 12
 kitty·WezTerm의 원격 조종처럼, 스크립트가 터미널의 탭을 열고 글을 넣고 화면을 읽을 수 있습니다. 탭 안의 셸에는 `BT_SOCKET`(제어 소켓)과 `BT_TAB_ID`(그 탭 번호)가 들어 있습니다.
 
 ```bash
-cargo install --path crates/bt-ctl      # btctl 설치
+# 앱 안의 btctl: ~/Applications/b-terminal.app/Contents/MacOS/btctl (또는 cargo install --path crates/bt-ctl)
 btctl list                               # 탭 목록
 btctl new --cwd ~/dev -- htop            # 새 탭에서 htop
 btctl send --tab 2 --enter "make test"   # 2번 탭에 글과 Enter

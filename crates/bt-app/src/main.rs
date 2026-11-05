@@ -5,6 +5,7 @@ mod control;
 mod desktop;
 mod keymap;
 mod keys;
+mod menu;
 mod mouse;
 mod shellint;
 mod tabbar;
