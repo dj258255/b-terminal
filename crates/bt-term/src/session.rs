@@ -20,7 +20,7 @@ use parking_lot::Mutex;
 use portable_pty::{CommandBuilder, MasterPty, PtySize, native_pty_system};
 
 use crate::color;
-use crate::notify::{Notification, Scanner};
+use crate::notify::{Notification, Scanner, Signal};
 use crate::screen::{Cell, CellFlags, Cursor, CursorShape, Modes, Screen};
 
 /// 격자 크기와 셀 픽셀 크기(TIOCSWINSZ와 CSI 14/16/18 t 응답에 쓴다)
@@ -95,6 +95,13 @@ pub enum SessionEvent {
     Title(String),
     Bell,
     Notification(Notification),
+    /// 셸이 알린 작업 폴더(OSC 7)
+    Cwd(PathBuf),
+    /// 진행 표시(OSC 9;4). 상태 0은 지움
+    Progress {
+        state: u8,
+        percent: u8,
+    },
     /// 프로세스가 끝났다. 종료 코드를 모르면 없다
     Exited(Option<u32>),
 }
@@ -250,8 +257,8 @@ impl Session {
                             let Inner { term, parser } = &mut *g;
                             parser.advance(term, bytes);
                         }
-                        for note in notes {
-                            sink(SessionEvent::Notification(note));
+                        for sig in notes {
+                            sink(signal_event(sig));
                         }
                         sink(SessionEvent::Output);
                     }
@@ -416,6 +423,14 @@ impl Session {
     }
 }
 
+fn signal_event(sig: Signal) -> SessionEvent {
+    match sig {
+        Signal::Notify(n) => SessionEvent::Notification(n),
+        Signal::Cwd(p) => SessionEvent::Cwd(p),
+        Signal::Progress { state, percent } => SessionEvent::Progress { state, percent },
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SelectKind {
     Simple,
@@ -573,8 +588,8 @@ impl Emulator {
         }
     }
 
-    /// 바이트를 먹이고 그 안의 알림을 돌려준다
-    pub fn feed(&mut self, bytes: &[u8]) -> Vec<Notification> {
+    /// 바이트를 먹이고 그 안의 신호(알림·폴더·진행)를 돌려준다
+    pub fn feed(&mut self, bytes: &[u8]) -> Vec<Signal> {
         let notes = self.scanner.feed(bytes);
         self.parser.advance(&mut self.term, bytes);
         notes

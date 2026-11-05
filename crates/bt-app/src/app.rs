@@ -65,6 +65,12 @@ pub struct Tab {
     pub activity: Option<String>,
     /// 보지 않은 알림이 있다
     pub unread: bool,
+    /// 마지막 알림 한 줄
+    pub last_note: Option<String>,
+    /// 셸이 OSC 7로 알린 작업 폴더
+    pub cwd: Option<std::path::PathBuf>,
+    /// 훅(btctl)이 상태를 알려 온 적이 있다. 있으면 OSC로 상태를 추측하지 않는다
+    pub hooked: bool,
 }
 
 impl Tab {
@@ -79,6 +85,11 @@ impl Tab {
     }
 
     fn sidebar_detail(&self) -> String {
+        if self.unread {
+            if let Some(n) = &self.last_note {
+                return n.clone();
+            }
+        }
         if self.agent.is_some() || self.state != AgentState::Idle {
             return match &self.activity {
                 Some(a) if self.state == AgentState::Working => a.clone(),
@@ -117,6 +128,7 @@ pub struct App {
     clipboard: Option<arboard::Clipboard>,
     scroll_accum: f64,
     first: Option<SpawnOptions>,
+    focused: bool,
     sidebar_visible: bool,
     next_poll: Instant,
 }
@@ -143,6 +155,7 @@ impl App {
             clipboard: arboard::Clipboard::new().ok(),
             scroll_accum: 0.0,
             first: Some(first),
+            focused: true,
             sidebar_visible: true,
             next_poll: Instant::now(),
         }
@@ -237,6 +250,32 @@ impl App {
         changed
     }
 
+    /// 탭이 알림을 보냈다. 보고 있는 탭이 아니면 안 읽음으로 두고, 창을 보고 있지 않으면 데스크톱 알림을 띄운다
+    fn on_notification(&mut self, idx: usize, note: bt_term::Notification) {
+        let watching = self.focused && idx == self.active;
+        let line = match (note.title.is_empty(), note.body.is_empty()) {
+            (false, false) => format!("{}: {}", note.title, note.body),
+            (true, _) => note.body.clone(),
+            (false, true) => note.title.clone(),
+        };
+        let t = &mut self.tabs[idx];
+        t.last_note = Some(line);
+        // 훅이 없는 에이전트 탭의 알림은 "사람을 기다린다"는 뜻으로 본다(Claude Code·Codex가 끝나거나 물을 때 보낸다)
+        if !t.hooked && t.agent.is_some() {
+            t.state = AgentState::Waiting(bt_core::WaitReason::Input);
+        }
+        if !watching {
+            t.unread = true;
+            let title = if note.title.is_empty() {
+                t.sidebar_title()
+            } else {
+                note.title.clone()
+            };
+            crate::desktop::notify(&title, &note.body);
+        }
+        self.request_redraw();
+    }
+
     fn grid_size(&self) -> GridSize {
         let Some(f) = &self.fonts else {
             return GridSize::new(80, 24);
@@ -288,6 +327,9 @@ impl App {
                     state: AgentState::Idle,
                     activity: None,
                     unread: false,
+                    last_note: None,
+                    cwd: None,
+                    hooked: false,
                 });
                 self.active = self.tabs.len() - 1;
             }
@@ -375,7 +417,10 @@ impl App {
             Shortcut::FontSmaller => self.set_font_size(self.font_size - 1.0),
             Shortcut::FontReset => self.set_font_size(self.config.font.size),
             Shortcut::NewTab => {
-                let cwd = None;
+                // 새 탭은 지금 탭의 폴더에서 연다(OSC 7로 알려진 것, 없으면 프로세스에게 묻는다)
+                let cwd = self
+                    .active_tab()
+                    .and_then(|t| t.cwd.clone().or_else(|| t.session.cwd()));
                 self.open_tab(SpawnOptions {
                     cwd,
                     ..Default::default()
@@ -603,13 +648,22 @@ impl ApplicationHandler<UserEvent> for App {
                 };
                 match e {
                     SessionEvent::Title(t) => self.tabs[idx].title = t,
+                    SessionEvent::Cwd(p) => self.tabs[idx].cwd = Some(p),
+                    SessionEvent::Notification(note) => self.on_notification(idx, note),
+                    SessionEvent::Progress { state, .. } => {
+                        // 진행 표시는 훅이 없는 에이전트 탭에서만 작업 중의 근거로 쓴다
+                        let t = &mut self.tabs[idx];
+                        if !t.hooked && t.agent.is_some() && matches!(state, 1 | 3) {
+                            t.state = AgentState::Working;
+                        }
+                    }
                     SessionEvent::Exited(code) => {
                         self.tabs[idx].exited = Some(code);
                         // 셸이 끝나면 탭을 닫는다(Ghostty 기본과 같다)
                         self.close_tab(idx, event_loop);
                         return;
                     }
-                    SessionEvent::Bell | SessionEvent::Notification(_) | SessionEvent::Output => {}
+                    SessionEvent::Bell | SessionEvent::Output => {}
                 }
                 self.request_redraw();
             }
@@ -632,6 +686,14 @@ impl ApplicationHandler<UserEvent> for App {
             WindowEvent::RedrawRequested => self.redraw(),
             WindowEvent::ModifiersChanged(m) => self.mods = m.state(),
             WindowEvent::Focused(focused) => {
+                self.focused = focused;
+                if focused {
+                    // 창으로 돌아오면 보고 있던 탭의 안 읽음을 지운다
+                    if let Some(t) = self.tabs.get_mut(self.active) {
+                        t.unread = false;
+                    }
+                    self.request_redraw();
+                }
                 if let Some(t) = self.active_tab() {
                     if t.session.modes().focus_events {
                         t.session.write(if focused { b"\x1b[I" } else { b"\x1b[O" });
