@@ -7,6 +7,7 @@
 - [ADR-001 VT 엔진은 alacritty_terminal로 시작하고, bt-term 밖으로 엔진 타입을 내보내지 않는다](#adr-001-vt-엔진은-alacritty_terminal로-시작하고-bt-term-밖으로-엔진-타입을-내보내지-않는다)
 - [ADR-002 렌더러는 CPU(softbuffer + fontdue)로 시작한다](#adr-002-렌더러는-cpusoftbuffer--fontdue로-시작한다)
 - [ADR-003 크레이트를 여섯으로 나누고 창 라이브러리는 bt-app만 쓴다](#adr-003-크레이트를-여섯으로-나누고-창-라이브러리는-bt-app만-쓴다)
+- [ADR-004 한글 IME를 위해 winit을 vendor로 고쳐 쓴다](#adr-004-한글-ime를-위해-winit을-vendor로-고쳐-쓴다)
 
 ## ADR-001 VT 엔진은 alacritty_terminal로 시작하고, bt-term 밖으로 엔진 타입을 내보내지 않는다
 
@@ -78,3 +79,31 @@
 
 - 창 라이브러리는 winit 0.30(0.31은 베타)을 쓴다. IME 조합(`Ime::Preedit`·`Ime::Commit`)을 이벤트로 준다.
 - Linux CI는 bt-app까지 빌드하지만 실제 창 확인은 macOS에서 사람이 한다.
+
+## ADR-004 한글 IME를 위해 winit을 vendor로 고쳐 쓴다
+
+상태: 채택
+관련: [#6](https://github.com/dj258255/b-terminal/issues/6), [vendor/README.md](../vendor/README.md)
+
+### 맥락
+- macOS 한글 IME는 조합 중 스페이스·Enter를 누르면 한 keyDown 안에서 확정(`insertText`)과 그 키의 동작(두 번째 `insertText` 또는 `doCommandBySelector`)을 차례로 부른다.
+- winit 0.30.13은 확정 직후의 두 번째 호출을 버리고 그 키의 `KeyboardInput`도 보내지 않는다. 코드 주석이 "한국어 IME에서 두 번 보내는 것"과 "IME 확정에 쓴 Enter"를 피하려는 의도라고 적었는데, 터미널에서는 스페이스가 사라지고 Enter를 두 번 눌러야 하는 결과가 된다. winit main(0.31 베타)에도 같은 코드가 있다.
+- Copad는 SwiftTerm에서 한글 조합이 깨져 엔진을 바꿨다. 한글 입력은 범수 님이 매일 쓰는 길이라 미룰 수 없다.
+
+### 검토한 선택지
+| 방식 | 판단 |
+|---|---|
+| **winit 0.30.13을 vendor로 넣고 두 군데만 고친다** | 채택. 고친 줄이 적고(`b-terminal 패치`로 찾음), 되돌릴 조건이 분명하다 |
+| winit에 PR을 내고 기다린다 | 병행할 수 있지만 그동안 쓸 수 없다 |
+| AppKit 창을 직접 쓴다(objc2) | 창·입력 전체를 다시 짜야 한다. Linux를 잃는다 |
+| 앱에서 추측해 보정(Commit 뒤 일정 시간 안의 키를 스페이스로 본다) | 키가 아예 오지 않으므로 추측할 근거가 없다 |
+
+### 결정
+1. `vendor/winit`(예제·문서·테스트 제외)을 루트 `[patch.crates-io]`로 연결한다.
+2. 확정 직후 같은 keyDown 안의 `insertText`는 `Ime::Commit`으로 넘긴다. 확정 직후의 `doCommandBySelector`는 키를 앱에 넘긴다.
+3. winit이 고친 판을 내면 패치를 지운다. 그 전에 한글 2벌식으로 "안녕 하세요⏎"가 한 번에 들어가는지 확인한다.
+
+### 감수한 트레이드오프
+- winit 판을 올릴 때 패치를 다시 대야 한다.
+- 일본어·중국어 IME에서 확정 직후 명령이 오는 경우가 있다면 그 키가 앱에 간다. 확인하지 않았다.
+- 이 패치는 한글을 실제로 쳐서 확인해야 하는데, 밤사이 사람 없이 IME 입력을 만들 수 없어 확인하지 못했다(#6 PR에 적음).

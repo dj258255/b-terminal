@@ -98,7 +98,8 @@ pub struct CellMetrics {
 pub struct Fonts {
     /// 0: 기본 글꼴의 네 꼴(없는 꼴은 Regular로), 그 뒤: 대체 글꼴
     regular: [Rc<Font>; 4],
-    fallbacks: Vec<Rc<Font>>,
+    /// 대체 글꼴과 넓은 글자를 그릴 때의 크기 배율
+    fallbacks: Vec<(Rc<Font>, f32)>,
     px: f32,
     metrics: CellMetrics,
     cache: HashMap<(char, FontStyle), Option<Rc<Glyph>>>,
@@ -161,14 +162,18 @@ impl Fonts {
         let bold = pick(Weight::BOLD, Style::Normal);
         let italic = pick(Weight::NORMAL, Style::Italic);
         let bold_italic = pick(Weight::BOLD, Style::Italic);
+        let px = (config.size * config.scale).max(4.0);
+        let metrics = cell_metrics(&regular, px);
         let fallbacks = config
             .fallbacks
             .iter()
             .filter(|n| !n.eq_ignore_ascii_case(&family))
-            .filter_map(|n| load(db, n, Weight::NORMAL, Style::Normal).map(Rc::new))
+            .filter_map(|n| load(db, n, Weight::NORMAL, Style::Normal))
+            .map(|f| {
+                let k = wide_scale(&f, px, metrics);
+                (Rc::new(f), k)
+            })
             .collect();
-        let px = (config.size * config.scale).max(4.0);
-        let metrics = cell_metrics(&regular, px);
         Ok(Self {
             regular: [regular, bold, italic, bold_italic],
             fallbacks,
@@ -196,14 +201,16 @@ impl Fonts {
     fn rasterize(&self, ch: char, style: FontStyle) -> Option<Glyph> {
         let idx = style as usize;
         let primary = &self.regular[idx];
-        let font = if primary.lookup_glyph_index(ch) != 0 {
-            primary.clone()
+        let (font, px) = if primary.lookup_glyph_index(ch) != 0 {
+            (primary.clone(), self.px)
         } else if self.regular[0].lookup_glyph_index(ch) != 0 {
-            self.regular[0].clone()
+            (self.regular[0].clone(), self.px)
         } else {
-            self.fallbacks.iter().find(|f| f.lookup_glyph_index(ch) != 0)?.clone()
+            let (f, k) = self.fallbacks.iter().find(|(f, _)| f.lookup_glyph_index(ch) != 0)?;
+            let wide = crate::text::char_cells(ch) == 2;
+            (f.clone(), if wide { self.px * k } else { self.px })
         };
-        let (m, bitmap) = font.rasterize(ch, self.px);
+        let (m, bitmap) = font.rasterize(ch, px);
         Some(Glyph {
             width: m.width,
             height: m.height,
@@ -212,6 +219,19 @@ impl Fonts {
             bitmap,
         })
     }
+}
+
+/// 대체 글꼴의 넓은 글자(한글)를 두 칸에 맞추는 배율. 기본 글꼴의 두 칸보다 좁으면 벌어져 보인다.
+/// 셀 높이를 넘지 않게 1.0~1.12로 묶는다(Ghostty의 대체 글꼴 크기 맞춤과 같은 생각)
+fn wide_scale(font: &Font, px: f32, m: CellMetrics) -> f32 {
+    if font.lookup_glyph_index('가') == 0 {
+        return 1.0;
+    }
+    let adv = font.metrics('가', px).advance_width;
+    if adv <= 0.0 {
+        return 1.0;
+    }
+    ((m.width as f32 * 2.0 * 0.92) / adv).clamp(1.0, 1.12)
 }
 
 fn cell_metrics(font: &Font, px: f32) -> CellMetrics {
