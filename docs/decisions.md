@@ -9,6 +9,7 @@
 - [ADR-003 크레이트를 여섯으로 나누고 창 라이브러리는 bt-app만 쓴다](#adr-003-크레이트를-여섯으로-나누고-창-라이브러리는-bt-app만-쓴다)
 - [ADR-004 한글 IME를 위해 winit을 vendor로 고쳐 쓴다](#adr-004-한글-ime를-위해-winit을-vendor로-고쳐-쓴다)
 - [ADR-005 b-terminal은 순수 터미널이고, AI 작업 화면은 b-studio가 맡는다](#adr-005-b-terminal은-순수-터미널이고-ai-작업-화면은-b-studio가-맡는다)
+- [ADR-006 Ghostty는 본보기일 뿐 기대지 않는다: AI CLI가 가장 잘 도는 우리 터미널](#adr-006-ghostty는-본보기일-뿐-기대지-않는다-ai-cli가-가장-잘-도는-우리-터미널)
 
 ## ADR-001 VT 엔진은 alacritty_terminal로 시작하고, bt-term 밖으로 엔진 타입을 내보내지 않는다
 
@@ -136,3 +137,21 @@
 ### 감수한 트레이드오프
 - 만든 기능(테스트 포함)을 버린다. b-studio 연결 코드는 로컬 브랜치 `feature/studio-connection`에만 남겼다.
 - "탭마다 에이전트가 무엇을 기다리는지" 같은 정보는 b-terminal 혼자서는 보이지 않는다. b-studio를 b-terminal 안에서 띄워야 보인다.
+
+## ADR-006 Ghostty는 본보기일 뿐 기대지 않는다: AI CLI가 가장 잘 도는 우리 터미널
+
+상태: 채택(ADR-005를 보탠다)
+관련: [#32](https://github.com/dj258255/b-terminal/issues/32), [#33](https://github.com/dj258255/b-terminal/issues/33), [조사 기록](research/2026-11-06-agentic-terminal.md)
+
+### 맥락
+- 0.1은 "Ghostty 설정 호환"을 앞세웠다. 테마는 `/Applications/Ghostty.app` 안의 파일을, 설정은 Ghostty 설정 파일을 먼저 읽었다. Ghostty를 깔지 않은 컴퓨터에서는 `theme = Dracula`가 동작하지 않았다.
+- 범수 님(2026-11-06): "Ghostty 설정호환이라기보단 Ghostty같은 터미널 근데 Ghostty를 안써도 되는 우리 터미널", "AI 에이전틱한 요즘 시대에 제일 걸맞는 터미널, 나만의 터미널".
+
+### 결정
+1. b-terminal은 혼자 선다. Ghostty가 없어도 같은 설정이 같은 화면을 낸다. 테마 905개(iTerm2-Color-Schemes, MIT)를 실행 파일에 넣는다.
+2. Ghostty 설정 읽기는 옮겨 오는 사람을 위한 선택으로 둔다(`import-ghostty = true`, 기본 끔). 설정 문법은 Ghostty와 같게 유지한다(배우기 쉽고 옮기기 쉽다).
+3. "AI 에이전트 시대에 걸맞음"은 ADR-005의 경계 안에서 정한다: 에이전트 대시보드는 넣지 않고, AI CLI가 쓰는 표준 신호(kitty 키보드, 알림, 진행 표시, OSC 52, 셸 통합)를 빠짐없이 받고, 에이전트가 터미널을 도구로 쓰는 API(btctl)를 키운다.
+
+### 감수한 트레이드오프
+- 실행 파일이 테마만큼(약 0.4MB) 커진다.
+- Ghostty 설정을 그대로 쓰던 사람은 `import-ghostty = true`를 한 줄 써야 한다.

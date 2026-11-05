@@ -4,6 +4,8 @@
 
 ## [아직 릴리스하지 않음]
 
+- Ghostty 없이 혼자 섭니다: 테마 905개(iTerm2-Color-Schemes)를 앱에 넣었고, 테마 이름은 띄어쓰기·대소문자를 무시합니다. Ghostty 설정 읽기는 기본으로 끕니다(`import-ghostty = true`로 켬). `--list-themes`(ADR-006).
+
 ## [0.1.0] - 2026-11-06
 
 첫 판. Ghostty 같은 Rust 터미널 에뮬레이터입니다(macOS 1순위).

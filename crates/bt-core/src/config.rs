@@ -1,8 +1,8 @@
 //! 설정 파일. Ghostty와 같은 문법(`키 = 값`, `#` 주석, 같은 키 여러 번)을 쓴다.
 //!
 //! 읽는 순서(뒤가 앞을 덮는다):
-//! 1. 기본값(Ghostty 1.3 기본과 같게: JetBrains Mono 13, 바탕 #282c34, 글자 #ffffff, Tomorrow Night 팔레트)
-//! 2. Ghostty 설정 파일(있으면). `import-ghostty = false`면 건너뛴다
+//! 1. 기본값(JetBrains Mono 13, 바탕 #282c34, 글자 #ffffff, Tomorrow Night 팔레트)
+//! 2. Ghostty 설정 파일 — `import-ghostty = true`일 때만(옮겨 오는 사람을 위한 선택, 기본 끔, ADR-006)
 //! 3. b-terminal 설정 파일 `~/.config/b-terminal/config`
 //!
 //! 모르는 키는 버리고 경고로 모은다(`b-terminal --show-config`가 보여 준다)
@@ -253,19 +253,19 @@ pub fn bterminal_config_path() -> PathBuf {
     xdg.join("b-terminal/config")
 }
 
-/// 테마 파일을 찾는 폴더: b-terminal, Ghostty 사용자, Ghostty 앱 안(macOS), 리눅스 공용
+include!(concat!(env!("OUT_DIR"), "/themes.rs"));
+
+/// 사용자 테마 폴더. 넣어 둔 테마보다 먼저 본다(같은 이름이면 사용자 것이 이긴다)
 pub fn theme_dirs() -> Vec<PathBuf> {
-    let h = home();
     let xdg = std::env::var_os("XDG_CONFIG_HOME")
         .map(PathBuf::from)
-        .unwrap_or_else(|| h.join(".config"));
-    vec![
-        xdg.join("b-terminal/themes"),
-        xdg.join("ghostty/themes"),
-        PathBuf::from("/Applications/Ghostty.app/Contents/Resources/ghostty/themes"),
-        h.join("Applications/Ghostty.app/Contents/Resources/ghostty/themes"),
-        PathBuf::from("/usr/share/ghostty/themes"),
-    ]
+        .unwrap_or_else(|| home().join(".config"));
+    vec![xdg.join("b-terminal/themes")]
+}
+
+/// 넣어 둔 테마 이름 목록(`b-terminal --list-themes`)
+pub fn bundled_theme_names() -> impl Iterator<Item = &'static str> {
+    BUNDLED_THEMES.iter().map(|(n, _)| *n)
 }
 
 impl Config {
@@ -279,7 +279,8 @@ impl Config {
             .map(|p| read_entries(p, 0, &mut warnings, &mut sources))
             .unwrap_or_default();
         let import = own.iter().chain(&extra_entries).rfind(|e| e.key == "import-ghostty");
-        let import = import.map(|e| parse_bool(&e.value) != Some(false)).unwrap_or(true);
+        // Ghostty 설정은 옮겨 오는 사람만 켠다(기본 끔, ADR-006)
+        let import = import.map(|e| parse_bool(&e.value) == Some(true)).unwrap_or(false);
         let mut entries = Vec::new();
         if import {
             if let Some(g) = ghostty_config_paths().into_iter().next() {
@@ -337,9 +338,13 @@ impl Config {
                         }
                     }
                     None => warnings.push(format!(
-                        "{}:{}: 테마 '{name}'을 찾지 못했습니다",
+                        "{}:{}: 테마 '{name}'을 찾지 못했습니다{}",
                         theme.file.display(),
-                        theme.line
+                        theme.line,
+                        match similar_themes(&name) {
+                            v if v.is_empty() => String::new(),
+                            v => format!(" (비슷한 이름: {})", v.join(", ")),
+                        }
                     )),
                 }
             }
@@ -641,10 +646,62 @@ fn load_theme(name: &str) -> Option<Vec<Entry>> {
             return None;
         }
         theme_dirs().into_iter().map(|d| d.join(name)).find(|p| p.is_file())
-    }?;
-    let mut w = Vec::new();
-    let mut s = Vec::new();
-    Some(read_entries(&path, 0, &mut w, &mut s))
+    };
+    if let Some(path) = path {
+        let mut w = Vec::new();
+        let mut s = Vec::new();
+        return Some(read_entries(&path, 0, &mut w, &mut s));
+    }
+    // 넣어 둔 테마: 이름이 같은 것, 없으면 띄어쓰기·대소문자·-·_를 무시하고(`Tokyo Night` = `TokyoNight`)
+    let key = theme_key(name);
+    let text = BUNDLED_THEMES
+        .iter()
+        .find(|(n, _)| *n == name)
+        .or_else(|| BUNDLED_THEMES.iter().find(|(n, _)| theme_key(n) == key))
+        .map(|(_, t)| *t)?;
+    Some(parse_text(text, Path::new(name)))
+}
+
+fn theme_key(n: &str) -> String {
+    n.chars()
+        .filter(|c| c.is_alphanumeric())
+        .flat_map(|c| c.to_lowercase())
+        .collect()
+}
+
+/// 못 찾은 테마 이름과 비슷한 넣어 둔 테마(경고에 보인다)
+pub fn similar_themes(name: &str) -> Vec<&'static str> {
+    let key = theme_key(name);
+    if key.len() < 3 {
+        return Vec::new();
+    }
+    let head: String = key.chars().take(5).collect();
+    BUNDLED_THEMES
+        .iter()
+        .map(|(n, _)| *n)
+        .filter(|n| theme_key(n).contains(&head))
+        .take(5)
+        .collect()
+}
+
+/// 글로 된 설정을 줄로 나눈다(넣어 둔 테마처럼 파일이 아닌 것)
+fn parse_text(text: &str, origin: &Path) -> Vec<Entry> {
+    text.lines()
+        .enumerate()
+        .filter_map(|(i, l)| {
+            let l = l.trim();
+            if l.is_empty() || l.starts_with('#') {
+                return None;
+            }
+            let (k, v) = l.split_once('=')?;
+            Some(Entry {
+                key: k.trim().into(),
+                value: unquote(v.trim()).into(),
+                file: origin.to_path_buf(),
+                line: i + 1,
+            })
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -770,12 +827,16 @@ mod tests {
     }
 
     #[test]
-    fn real_ghostty_theme_loads_when_installed() {
-        if !Path::new("/Applications/Ghostty.app/Contents/Resources/ghostty/themes/Dracula").exists() {
-            return;
-        }
+    fn bundled_themes_work_without_ghostty() {
+        assert!(BUNDLED_THEMES.len() > 800, "넣어 둔 테마 {}개", BUNDLED_THEMES.len());
         let c = Config::from_text("theme = Dracula\n", true);
         assert_eq!(c.theme.background, Rgb::new(0x28, 0x2a, 0x36));
         assert_eq!(c.theme.selection_foreground, Some(Rgb::new(255, 255, 255)));
+        let c = Config::from_text("theme = catppuccin mocha\n", true);
+        assert_eq!(
+            c.theme.background,
+            Rgb::new(0x1e, 0x1e, 0x2e),
+            "대소문자를 무시하고 찾는다"
+        );
     }
 }

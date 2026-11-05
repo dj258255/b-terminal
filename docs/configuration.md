@@ -1,13 +1,13 @@
 # 설정
 
-b-terminal은 Ghostty와 같은 문법으로 설정합니다. Ghostty에 맞춰 둔 설정을 그대로 가져오고, 그 위에 b-terminal 설정을 덮습니다.
+b-terminal은 Ghostty와 같은 문법으로 설정합니다. Ghostty를 깔지 않아도 됩니다. 글꼴과 테마를 앱에 넣어 두었고, Ghostty 설정은 원할 때만 가져옵니다(ADR-006).
 
 ## 파일과 읽는 순서
 
 뒤에 읽은 것이 앞을 덮습니다.
 
-1. 기본값: Ghostty 1.3 기본과 같습니다(JetBrains Mono 13, 바탕 `#282c34`, 글자 `#ffffff`, Tomorrow Night 팔레트, Nerd Font 기호). 두 글꼴은 앱에 넣어 두었습니다([assets/fonts](../assets/fonts/README.md)).
-2. Ghostty 설정 파일(처음 찾은 하나): `$XDG_CONFIG_HOME/ghostty/config`(`config.ghostty`), macOS는 `~/Library/Application Support/com.mitchellh.ghostty/config`(`config.ghostty`). b-terminal 설정에 `import-ghostty = false`를 쓰면 읽지 않습니다.
+1. 기본값: JetBrains Mono 13, 바탕 `#282c34`, 글자 `#ffffff`, Tomorrow Night 팔레트, Nerd Font 기호(Ghostty 1.3 기본과 같은 값). 두 글꼴은 앱에 넣어 두었습니다([assets/fonts](../assets/fonts/README.md)).
+2. Ghostty 설정 파일 — b-terminal 설정에 `import-ghostty = true`를 쓴 경우만(기본 끔): `$XDG_CONFIG_HOME/ghostty/config`(`config.ghostty`), macOS는 `~/Library/Application Support/com.mitchellh.ghostty/config`(`config.ghostty`) 중 처음 찾은 하나.
 3. b-terminal 설정: `~/.config/b-terminal/config`(`$XDG_CONFIG_HOME` 따름)
 4. 명령줄 `--config-file <파일>`
 
@@ -37,7 +37,7 @@ config-file = ?~/.config/b-terminal/local   # ?가 붙으면 없어도 된다
 | `font-family-bold` / `-italic` / `-bold-italic` | 글꼴 이름 | 기본 글꼴의 그 꼴 | |
 | `font-size` | 포인트 | `13` | Cmd-= / Cmd-- / Cmd-0 |
 | `adjust-cell-height` / `adjust-cell-width` | `10%` 또는 포인트(`2`, `-1`) | 없음 | 높이를 바꾸면 글자를 가운데에 둡니다 |
-| `theme` | 테마 이름, 절대 경로, `light:…,dark:…` | 없음 | 찾는 곳: `~/.config/b-terminal/themes`, `~/.config/ghostty/themes`, `/Applications/Ghostty.app/Contents/Resources/ghostty/themes`(Ghostty를 깔았으면 463개) |
+| `theme` | 테마 이름, 절대 경로, `light:…,dark:…` | 없음 | 찾는 곳: `~/.config/b-terminal/themes`, 그다음 앱에 넣어 둔 905개([assets/themes-README.md](../assets/themes-README.md), `b-terminal --list-themes`). 이름은 띄어쓰기·대소문자를 무시합니다(`Tokyo Night` = `TokyoNight`) |
 | `background` / `foreground` | `#rrggbb` | Ghostty 기본 | 테마 위에 덮습니다 |
 | `palette` | `N=#rrggbb`(0~15) | Ghostty 기본 | 16~255번은 xterm 표 |
 | `cursor-color` / `cursor-text` | `#rrggbb` | 글자색 / 바탕색 | |
@@ -57,7 +57,7 @@ config-file = ?~/.config/b-terminal/local   # ?가 붙으면 없어도 된다
 | `title` | 글 | 셸이 보낸 제목 | 창 제목을 고정 |
 | `keybind` | `트리거=동작` | 아래 표 | 아래 "키 묶음" |
 | `config-file` | 경로(`?` 붙이면 선택) | | 그 자리에서 읽어 넣음. 8단계까지 |
-| `import-ghostty` | `true` / `false` | `true` | b-terminal 키 |
+| `import-ghostty` | `true` / `false` | `false` | b-terminal 키. Ghostty 설정을 옮겨 올 때 |
 | `mouse-reset-on-shell` | `true` / `false` | `true` | b-terminal 키. 프로그램이 마우스 모드를 켠 채 끝나 셸로 돌아오면 끈다([문제 해결 1](troubleshooting.md#1-셸에-3515353583235가-쏟아지고-command-not-found가-줄줄이-뜬다)) |
 
 ### 받기만 하고 쓰지 않는 Ghostty 키

@@ -11,9 +11,10 @@ mod tabbar;
 use bt_term::SpawnOptions;
 use winit::event_loop::EventLoop;
 
-const USAGE: &str = "사용: b-terminal [--config-file <파일>] [--show-config] [--cwd <폴더>] [-e <프로그램> [인자...]]
+const USAGE: &str =
+    "사용: b-terminal [--config-file <파일>] [--show-config] [--list-themes] [--cwd <폴더>] [-e <프로그램> [인자...]]
 
-설정: ~/.config/b-terminal/config (Ghostty 문법). Ghostty 설정 파일이 있으면 먼저 읽고 그 위에 덮습니다.";
+설정: ~/.config/b-terminal/config (Ghostty와 같은 문법). 테마 905개를 넣어 두었습니다(--list-themes).";
 
 /// 명령줄에서 읽은 것
 #[derive(Debug, Default)]
@@ -39,6 +40,9 @@ fn parse_args(args: impl Iterator<Item = String>) -> Result<Cli, String> {
                 cli.config_file = Some(args.next().ok_or("--config-file 뒤에 파일이 필요합니다")?.into())
             }
             "--show-config" => cli.show_config = true,
+            "--list-themes" => {
+                return Err(bt_core::config::bundled_theme_names().collect::<Vec<_>>().join("\n"));
+            }
             "-h" | "--help" => return Err(USAGE.into()),
             "--version" => return Err(format!("b-terminal {}", env!("CARGO_PKG_VERSION"))),
             other => return Err(format!("모르는 인자: {other}\n{USAGE}")),
