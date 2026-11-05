@@ -11,6 +11,15 @@ name = "b-terminal"
 path = "src/main.rs"
 
 [dependencies]
+anyhow.workspace = true
+arboard = "3"
+bt-core = { version = "0.1.0", path = "../bt-core" }
+bt-render = { version = "0.1.0", path = "../bt-render" }
+bt-term = { version = "0.1.0", path = "../bt-term" }
+env_logger.workspace = true
+log.workspace = true
+softbuffer = "0.4"
+winit = "0.30"
 
 [lints]
 workspace = true
