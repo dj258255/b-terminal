@@ -1,7 +1,9 @@
 //! 제어 소켓 서버. 줄 단위 JSON 요청을 받아 창 스레드에 넘기고 응답을 돌려준다(bt_core::proto)
 
 use std::io::{BufRead, BufReader, Read, Write};
-use std::os::unix::fs::{DirBuilderExt, FileTypeExt, MetadataExt, PermissionsExt};
+#[cfg(test)]
+use std::os::unix::fs::MetadataExt;
+use std::os::unix::fs::{DirBuilderExt, FileTypeExt, PermissionsExt};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{SyncSender, sync_channel};
@@ -34,24 +36,7 @@ pub fn uid() -> u32 {
 /// 남이 먼저 만든 폴더(예: /tmp)에 소켓을 두면 그 사람이 소켓을 바꿔치기할 수 있다
 pub fn prepare_dir(dir: &Path, uid: u32) -> std::io::Result<()> {
     match std::fs::symlink_metadata(dir) {
-        Ok(meta) => {
-            let bad = |why: &str| {
-                std::io::Error::new(
-                    std::io::ErrorKind::PermissionDenied,
-                    format!("{}: {why}", dir.display()),
-                )
-            };
-            if !meta.file_type().is_dir() {
-                return Err(bad("폴더가 아니다(링크일 수 있다)"));
-            }
-            if meta.uid() != uid {
-                return Err(bad("다른 사용자의 폴더다"));
-            }
-            if meta.mode() & 0o077 != 0 {
-                return Err(bad("다른 사용자에게 권한이 열려 있다"));
-            }
-            Ok(())
-        }
+        Ok(_) => bt_core::proto::check_private_dir(dir, uid),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => std::fs::DirBuilder::new().mode(0o700).create(dir),
         Err(e) => Err(e),
     }

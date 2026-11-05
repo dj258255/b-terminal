@@ -5,7 +5,9 @@ use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use bt_core::proto::{Call, ENV_SOCKET, ENV_TAB, MAX_LINE, Request, Response, socket_dir};
+use bt_core::proto::{
+    Call, ENV_SOCKET, ENV_TAB, MAX_LINE, Request, Response, check_own_socket, check_private_dir, socket_dir,
+};
 
 #[derive(Debug)]
 pub enum ClientError {
@@ -25,17 +27,29 @@ impl std::fmt::Display for ClientError {
     }
 }
 
-/// 붙을 소켓을 찾는다: `BT_SOCKET` → 소켓 폴더에서 붙어지는 것이 하나뿐이면 그것
+/// 붙을 소켓을 찾는다: `BT_SOCKET` → 소켓 폴더에서 붙어지는 것이 하나뿐이면 그것.
+/// 어느 쪽이든 폴더가 이 사용자 전용이고 소켓 주인이 이 사용자일 때만 붙는다(남이 만든 가짜 소켓에 상태·글을 보내지 않게)
 pub fn find_socket() -> Result<PathBuf, ClientError> {
+    let uid = rustix::process::getuid().as_raw();
+    let verify = |p: &std::path::Path| -> Result<(), ClientError> {
+        let dir = p
+            .parent()
+            .ok_or_else(|| ClientError::NoTerminal(format!("{}: 폴더가 없습니다", p.display())))?;
+        check_private_dir(dir, uid).map_err(|e| ClientError::NoTerminal(e.to_string()))?;
+        check_own_socket(p, uid).map_err(|e| ClientError::NoTerminal(e.to_string()))
+    };
     if let Some(p) = std::env::var_os(ENV_SOCKET).map(PathBuf::from) {
+        verify(&p)?;
         return Ok(p);
     }
-    let dir = socket_dir(rustix::process::getuid().as_raw());
+    let dir = socket_dir(uid);
+    check_private_dir(&dir, uid).map_err(|e| ClientError::NoTerminal(e.to_string()))?;
     let entries =
         std::fs::read_dir(&dir).map_err(|_| ClientError::NoTerminal(format!("{}가 없습니다", dir.display())))?;
     let live: Vec<PathBuf> = entries
         .filter_map(|e| e.ok().map(|e| e.path()))
         .filter(|p| p.extension().is_some_and(|x| x == "sock"))
+        .filter(|p| check_own_socket(p, uid).is_ok())
         .filter(|p| UnixStream::connect(p).is_ok())
         .collect();
     match live.len() {

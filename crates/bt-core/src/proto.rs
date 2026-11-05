@@ -146,6 +146,49 @@ pub fn socket_dir(uid: u32) -> PathBuf {
     base.join(format!("b-terminal-{uid}"))
 }
 
+/// 소켓 폴더가 이 사용자 전용인지 본다: 링크가 아닌 폴더, 주인이 `uid`, 그룹·남 권한 없음.
+/// 서버(만들 때)와 btctl(붙기 전) 모두 이 검사를 지나야 쓴다. 남이 먼저 만든 폴더의 가짜 소켓에 붙지 않게
+#[cfg(unix)]
+pub fn check_private_dir(dir: &Path, uid: u32) -> std::io::Result<()> {
+    use std::os::unix::fs::MetadataExt;
+    let meta = std::fs::symlink_metadata(dir)?;
+    let bad = |why: &str| {
+        std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            format!("{}: {why}", dir.display()),
+        )
+    };
+    if !meta.file_type().is_dir() {
+        return Err(bad("폴더가 아니다(링크일 수 있다)"));
+    }
+    if meta.uid() != uid {
+        return Err(bad("다른 사용자의 폴더다"));
+    }
+    if meta.mode() & 0o077 != 0 {
+        return Err(bad("다른 사용자에게 권한이 열려 있다"));
+    }
+    Ok(())
+}
+
+/// 소켓 파일 하나가 이 사용자의 소켓인지 본다(링크를 따라가지 않는다)
+#[cfg(unix)]
+pub fn check_own_socket(path: &Path, uid: u32) -> std::io::Result<()> {
+    use std::os::unix::fs::{FileTypeExt, MetadataExt};
+    let meta = std::fs::symlink_metadata(path)?;
+    if !meta.file_type().is_socket() || meta.uid() != uid {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            format!("{}: 이 사용자의 소켓이 아니다", path.display()),
+        ));
+    }
+    Ok(())
+}
+
+/// 터미널에 찍을 글에서 제어 문자(C0·C1·DEL)를 지운다. 탭 제목·알림처럼 터미널 출력에서 온 글을 다른 터미널에 다시 찍을 때 쓴다
+pub fn printable(s: &str) -> String {
+    s.chars().map(|c| if c.is_control() { ' ' } else { c }).collect()
+}
+
 /// 앱 프로세스 하나의 소켓 경로
 pub fn socket_path(dir: &Path, pid: u32) -> PathBuf {
     dir.join(format!("{pid}.sock"))
@@ -180,6 +223,12 @@ mod tests {
                 text: "ls\r".into()
             }
         );
+    }
+
+    #[test]
+    fn printable_strips_c0_c1_and_del() {
+        assert_eq!(printable("a\x1b[2Jb\u{9b}31mc\x7fd"), "a [2Jb 31mc d");
+        assert_eq!(printable("한글 ok"), "한글 ok");
     }
 
     #[test]

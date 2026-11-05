@@ -2,7 +2,7 @@
 
 mod client;
 
-use bt_core::proto::{Call, TabInfo};
+use bt_core::proto::{Call, TabInfo, printable};
 use bt_core::{AgentState, WaitReason};
 
 use client::{ClientError, call, find_socket, own_tab};
@@ -127,12 +127,14 @@ fn run(args: &[String]) -> Result<String, Error> {
                 .map(|t| {
                     let mark = if t.active { "*" } else { " " };
                     let unread = if t.unread { " ●" } else { "" };
-                    let what = t.activity.clone().unwrap_or_default();
+                    // 제목·하는 일은 터미널 출력에서 온 글이다. 이 터미널을 조작하지 못하게 제어 문자를 지운다
+                    let what = printable(&t.activity.clone().unwrap_or_default());
+                    let title = printable(&t.title);
                     format!(
                         "{mark}{:>3}  {:<12} {:<10} {}{}",
                         t.id,
                         t.state.label(),
-                        t.title,
+                        title,
                         what,
                         unread
                     )
@@ -181,6 +183,7 @@ fn run(args: &[String]) -> Result<String, Error> {
         "read" => {
             let (tab, _) = take_tab(rest)?;
             let v = call(&socket, Call::Read { tab })?;
+            // 화면 글은 그대로 돌려준다(스크립트가 읽는 값). 다만 엔진이 지운 이스케이프는 이미 없다
             Ok(v["text"].as_str().unwrap_or_default().to_string())
         }
         "notify" => {

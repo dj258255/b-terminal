@@ -485,9 +485,9 @@ impl App {
         let attention = state.urgency() >= 3 && t.state != state;
         t.state = state;
         if state == AgentState::Working {
-            t.activity = activity.map(|a| a.chars().take(200).collect());
+            t.activity = activity.map(|a| bt_core::proto::printable(&a).chars().take(200).collect());
         } else if let Some(a) = activity {
-            t.last_note = Some(a.chars().take(200).collect());
+            t.last_note = Some(bt_core::proto::printable(&a).chars().take(200).collect());
         }
         if attention && !watching {
             t.unread = true;
@@ -828,7 +828,9 @@ impl ApplicationHandler<UserEvent> for App {
                     return;
                 };
                 match e {
-                    SessionEvent::Title(t) => self.tabs[idx].title = t,
+                    SessionEvent::Title(t) => {
+                        self.tabs[idx].title = bt_core::proto::printable(&t).chars().take(200).collect()
+                    }
                     SessionEvent::Cwd { host, path } => {
                         if osc7_is_local(&host, &path) {
                             self.tabs[idx].cwd = Some(path);
