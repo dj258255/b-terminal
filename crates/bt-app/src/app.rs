@@ -478,6 +478,31 @@ impl App {
         }
     }
 
+    /// 사이드바 아래에 그릴 사용량. 리셋 시각이 지난 창은 버린다(Claude Code도 그 창을 지운다)
+    fn usage_rows(&self) -> Vec<sidebar::UsageRow> {
+        let Some((_, windows)) = &self.usage else {
+            return Vec::new();
+        };
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
+        windows
+            .iter()
+            .filter(|w| w.resets_at.is_none_or(|r| r > now))
+            .map(|w| sidebar::UsageRow {
+                label: match w.kind.as_str() {
+                    "five_hour" => "5시간".into(),
+                    "seven_day" => "주간".into(),
+                    "spend_limit" => "지출".into(),
+                    other => other.into(),
+                },
+                percent: w.used_percent,
+                resets_in: w.resets_at.map(|r| sidebar::short_duration(r - now)),
+            })
+            .collect()
+    }
+
     /// 훅이 알린 상태. 보고 있지 않은 탭이 기다림·끝남·오류가 되면 안 읽음으로 둔다
     fn set_status(&mut self, idx: usize, state: AgentState, activity: Option<String>, agent: Option<String>) {
         let watching = self.focused && idx == self.active;
@@ -667,6 +692,7 @@ impl App {
         let (gx, gy, _, _) = self.grid_rect();
         let screen = self.active_tab().map(|t| t.session.snapshot());
         let pad = self.pad();
+        let usage_rows = self.usage_rows();
         let sidebar_items: Option<Vec<sidebar::Item>> = self.sidebar_visible.then(|| {
             self.tabs
                 .iter()
@@ -702,7 +728,7 @@ impl App {
             let bg = screen.as_ref().map(|s| s.background).unwrap_or(theme.background);
             canvas.clear(bg);
             if let Some(items) = &sidebar_items {
-                sidebar::draw(&mut canvas, fonts, &theme, items, pad, &[]);
+                sidebar::draw(&mut canvas, fonts, &theme, items, pad, &usage_rows);
             }
             if let Some(screen) = &screen {
                 let cells = to_draw_cells(screen);

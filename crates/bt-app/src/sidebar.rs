@@ -13,6 +13,36 @@ pub struct Item {
     pub active: bool,
 }
 
+/// 아래쪽 사용량 한 줄
+#[derive(Debug, Clone, PartialEq)]
+pub struct UsageRow {
+    pub label: String,
+    pub percent: f64,
+    /// 다시 차기까지(짧은 말: "2시간")
+    pub resets_in: Option<String>,
+}
+
+/// 남은 초를 짧은 말로
+pub fn short_duration(secs: i64) -> String {
+    match secs {
+        s if s < 60 => "1분".into(),
+        s if s < 3600 => format!("{}분", s / 60),
+        s if s < 86_400 => format!("{}시간", s / 3600),
+        s => format!("{}일", s / 86_400),
+    }
+}
+
+/// 사용량 막대 색: 60% 아래 초록, 85% 아래 노랑, 그 위 빨강
+pub fn usage_color(percent: f64, t: &Theme) -> Rgb {
+    if percent < 60.0 {
+        t.palette[2]
+    } else if percent < 85.0 {
+        t.palette[3]
+    } else {
+        t.palette[1]
+    }
+}
+
 /// 사이드바 폭(셀 수)
 pub const WIDTH_CELLS: u32 = 28;
 /// 한 항목이 차지하는 줄 수(이름, 설명, 틈)
@@ -56,7 +86,7 @@ pub fn width_px(fonts: &Fonts, pad: i32) -> u32 {
 }
 
 /// 사이드바를 그린다. `height`는 창 높이
-pub fn draw(canvas: &mut Canvas, fonts: &mut Fonts, theme: &Theme, items: &[Item], pad: i32, footer: &[String]) {
+pub fn draw(canvas: &mut Canvas, fonts: &mut Fonts, theme: &Theme, items: &[Item], pad: i32, usage: &[UsageRow]) {
     let m = fonts.metrics();
     let w = width_px(fonts, pad);
     let p = Palette::from_theme(theme);
@@ -115,18 +145,39 @@ pub fn draw(canvas: &mut Canvas, fonts: &mut Fonts, theme: &Theme, items: &[Item
         draw_text(canvas, fonts, text_x, y + lh, &detail, detail_color, false);
     }
 
-    // 아래쪽(사용량 등)
-    let base = canvas.height as i32 - pad - lh * footer.len() as i32;
-    for (i, line) in footer.iter().enumerate() {
-        draw_text(
-            canvas,
-            fonts,
-            pad,
-            base + i as i32 * lh,
-            &truncate(line, WIDTH_CELLS as usize),
-            p.dim,
-            false,
-        );
+    // 아래쪽: 구독 한도 사용량(Claude 상태줄이 보낸 것)
+    if !usage.is_empty() {
+        let lines = usage.len() as i32 + 1;
+        let top = canvas.height as i32 - pad - lh * lines;
+        canvas.fill_rect(pad, top - lh / 2, w - pad as u32 * 2, 1, p.border);
+        draw_text(canvas, fonts, pad, top, "Claude 사용량", p.dim, false);
+        let label_cells = 6;
+        let bar_cells = 11;
+        for (i, row) in usage.iter().enumerate() {
+            let y = top + lh * (i as i32 + 1);
+            draw_text(
+                canvas,
+                fonts,
+                pad,
+                y,
+                &truncate(&row.label, label_cells),
+                p.text.mix(p.bg, 0.2),
+                false,
+            );
+            let bx = pad + cw * label_cells as i32;
+            let bw = (cw * bar_cells) as u32;
+            let bh = (lh / 3).max(3) as u32;
+            let by = y + (lh - bh as i32) / 2;
+            canvas.fill_rect(bx, by, bw, bh, p.active_bg);
+            let fill = ((bw as f64) * row.percent.clamp(0.0, 100.0) / 100.0).round() as u32;
+            canvas.fill_rect(bx, by, fill, bh, usage_color(row.percent, theme));
+            let pct = format!("{:>3.0}%", row.percent);
+            let px = bx + bw as i32 + cw;
+            let used = draw_text(canvas, fonts, px, y, &pct, p.text, false);
+            if let Some(r) = &row.resets_in {
+                draw_text(canvas, fonts, px + used + cw, y, &truncate(r, 5), p.dim, false);
+            }
+        }
     }
 }
 
@@ -154,5 +205,22 @@ fn draw_dot(canvas: &mut Canvas, cx: i32, cy: i32, r: i32, color: Rgb) {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn durations_and_colors() {
+        assert_eq!(short_duration(30), "1분");
+        assert_eq!(short_duration(125), "2분");
+        assert_eq!(short_duration(7200), "2시간");
+        assert_eq!(short_duration(3 * 86_400 + 5), "3일");
+        let t = Theme::default();
+        assert_eq!(usage_color(10.0, &t), t.palette[2]);
+        assert_eq!(usage_color(70.0, &t), t.palette[3]);
+        assert_eq!(usage_color(95.0, &t), t.palette[1]);
     }
 }

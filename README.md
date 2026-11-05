@@ -49,6 +49,10 @@ Claude Code·Codex 훅을 걸면 작업 중인 도구, 권한·질문 기다림,
 
 <img src="docs/images/sidebar-hooks.png" width="760" alt="훅으로 상태를 받은 사이드바. Claude 탭 셋이 각각 권한 기다림('Bash: cargo test --workspace', 노란 점), 작업 중('Edit: src/sidebar.rs', 파란 점), 끝남('사용량 막대를 넣었고 테…', 초록 점)">
 
+`btctl setup claude-statusline --write`로 Claude Code 상태줄을 감싸면 구독 한도(5시간·주간)가 사이드바 아래 막대로 보입니다. 기존 상태줄은 그대로 보입니다.
+
+<img src="docs/images/sidebar-usage.png" width="760" alt="사이드바 아래 'Claude 사용량'에 5시간 24%(초록 막대, 2시간 뒤 리셋)와 주간 71%(노란 막대, 3일 뒤 리셋)">
+
 제어 소켓은 같은 사용자만 닿는 폴더(0700)의 소켓(0600)입니다. 자세한 경계는 [SECURITY.md](SECURITY.md)에 있습니다.
 
 ## 기여
