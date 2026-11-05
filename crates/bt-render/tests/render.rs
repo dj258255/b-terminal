@@ -67,6 +67,7 @@ fn render(fonts: &mut Fonts, bytes: &[u8], cols: u16, rows: u16, cursor: bool) -
             text_color: t.cursor_text,
         }),
         selection_bg: t.selection_background,
+        selection_fg: t.selection_foreground,
         preedit: None,
     };
     let mut canvas = Canvas::new(&mut buf, w, h);
@@ -189,4 +190,36 @@ fn frame_time_full_redraw_200x60_retina() {
         times[10],
         times[19]
     );
+}
+
+#[test]
+fn embedded_jetbrains_mono_is_the_default_like_ghostty() {
+    let f = Fonts::new(&FontConfig::default()).expect("넣어 둔 글꼴은 늘 있다");
+    assert_eq!(f.family_name, "JetBrains Mono");
+}
+
+#[test]
+fn nerd_font_icons_come_from_the_symbols_font() {
+    let mut f = Fonts::new(&FontConfig::default()).unwrap();
+    // U+E0A0: powerline 브랜치 아이콘, U+F07C: 폴더 열림
+    for c in ['\u{e0a0}', '\u{f07c}'] {
+        let g = f
+            .glyph(c, bt_render::FontStyle::Regular)
+            .unwrap_or_else(|| panic!("{:X} 아이콘이 없다", c as u32));
+        assert!(g.width > 0 && g.height > 0);
+    }
+}
+
+#[test]
+fn adjust_cell_height_grows_the_cell() {
+    let base = Fonts::new(&FontConfig::default()).unwrap().metrics();
+    let taller = Fonts::new(&FontConfig {
+        adjust_cell_height: Some(bt_render::font::Adjust::Percent(20.0)),
+        ..FontConfig::default()
+    })
+    .unwrap()
+    .metrics();
+    assert!(taller.height > base.height, "{} > {}", taller.height, base.height);
+    assert!(taller.baseline > base.baseline, "늘어난 만큼 글자를 가운데로 내린다");
+    assert_eq!(taller.width, base.width);
 }

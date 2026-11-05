@@ -45,6 +45,8 @@ pub struct GridView<'a> {
     pub cells: &'a [DrawCell],
     pub cursor: Option<DrawCursor>,
     pub selection_bg: Rgb,
+    /// 고른 칸의 글자색. 없으면 칸의 글자색
+    pub selection_fg: Option<Rgb>,
     /// IME 조합 중인 글(커서 자리에 덮어 그린다, PTY에는 보내지 않는다)
     pub preedit: Option<&'a str>,
 }
@@ -76,7 +78,11 @@ pub fn draw_grid(canvas: &mut Canvas, fonts: &mut Fonts, x: i32, y: i32, view: &
             }
             let px = x + col as i32 * cw;
             let span = if cell.wide { 2 } else { 1 };
-            draw_cell_text(canvas, fonts, m, px, py, span, cell.ch, cell.fg, cell.bold, cell.italic);
+            let fg = match (cell.selected, view.selection_fg) {
+                (true, Some(c)) => c,
+                _ => cell.fg,
+            };
+            draw_cell_text(canvas, fonts, m, px, py, span, cell.ch, fg, cell.bold, cell.italic);
             if cell.underline {
                 canvas.fill_rect(px, py + m.underline_offset as i32, m.width * span, m.stroke, cell.fg);
             }

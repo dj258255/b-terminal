@@ -26,6 +26,22 @@ cargo run --release -p bt-app -- --cwd ~/dev  # 시작 폴더
 | Shift-PageUp / PageDown, Cmd-↑ / ↓ | 스크롤백 |
 | 마우스 끌기, 두 번·세 번 누르기 | 글자·단어·줄 고르기(앱이 마우스를 쓰면 Shift를 누른 채로) |
 
+## 설정(Ghostty 문법)
+
+Ghostty 설정 파일이 있으면 그대로 읽고, `~/.config/b-terminal/config`가 그 위를 덮습니다. 설정이 없으면 Ghostty 기본과 같게 보입니다(JetBrains Mono 13, Nerd Font 기호를 앱에 넣어 둠).
+
+```
+theme = Dracula
+font-family = D2Coding
+font-size = 15
+cursor-style = bar
+window-padding-x = 12
+```
+
+<img src="docs/images/config-dracula-d2coding.png" width="760" alt="Dracula 테마와 D2Coding 글꼴, 막대 커서, 넓은 여백으로 띄운 b-terminal. 한글이 고정폭으로 고르게 놓였다">
+
+지원하는 키와 읽는 순서는 [docs/configuration.md](docs/configuration.md)에 있습니다. `b-terminal --show-config`가 지금 적용된 값을 보입니다.
+
 ## 원격 조종(btctl)
 
 kitty·WezTerm의 원격 조종처럼, 스크립트가 터미널의 탭을 열고 글을 넣고 화면을 읽을 수 있습니다. 탭 안의 셸에는 `BT_SOCKET`(제어 소켓)과 `BT_TAB_ID`(그 탭 번호)가 들어 있습니다.

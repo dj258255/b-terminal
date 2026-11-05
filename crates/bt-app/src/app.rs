@@ -6,7 +6,6 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
-use bt_core::Theme;
 use bt_render::{Canvas, CursorStyle, DrawCell, DrawCursor, FontConfig, Fonts, GridView, draw_grid};
 use bt_term::{CellFlags, CursorShape, GridSize, Screen, SelectKind, Session, SessionEvent, SpawnOptions};
 use winit::application::ApplicationHandler;
@@ -33,26 +32,25 @@ pub enum UserEvent {
     ),
 }
 
-/// 앱 설정. 설정 파일 읽기는 #13
-#[derive(Debug, Clone)]
-pub struct AppConfig {
-    pub font: FontConfig,
-    pub theme: Theme,
-    /// macOS Option 키를 Alt(ESC 접두)로 쓴다
-    pub option_as_alt: bool,
-    pub padding: f32,
-    pub scrollback: usize,
-}
+/// 앱 설정: 설정 파일(bt_core::Config, Ghostty 문법)을 그대로 쓴다(#13)
+pub type AppConfig = bt_core::Config;
 
-impl Default for AppConfig {
-    fn default() -> Self {
-        Self {
-            font: FontConfig::default(),
-            theme: Theme::default(),
-            option_as_alt: true,
-            padding: 8.0,
-            scrollback: 10_000,
-        }
+/// 설정의 글꼴 키를 렌더러 설정으로
+fn font_config(c: &AppConfig, size: f32, scale: f32) -> FontConfig {
+    let defaults = FontConfig::default();
+    // font-family를 여러 번 쓰면 첫째가 기본 글꼴, 나머지는 기본 대체 글꼴보다 앞에 둔다(Ghostty와 같다)
+    let mut fallbacks: Vec<String> = c.font_family.iter().skip(1).cloned().collect();
+    fallbacks.extend(defaults.fallbacks);
+    FontConfig {
+        family: c.font_family.first().cloned(),
+        family_bold: c.font_family_bold.clone(),
+        family_italic: c.font_family_italic.clone(),
+        family_bold_italic: c.font_family_bold_italic.clone(),
+        adjust_cell_height: c.adjust_cell_height,
+        adjust_cell_width: c.adjust_cell_width,
+        size,
+        scale,
+        fallbacks,
     }
 }
 
@@ -114,7 +112,7 @@ pub struct App {
 
 impl App {
     pub fn new(config: AppConfig, proxy: EventLoopProxy<UserEvent>, first: SpawnOptions) -> Self {
-        let font_size = config.font.size;
+        let font_size = config.font_size;
         Self {
             config,
             proxy,
@@ -141,11 +139,7 @@ impl App {
     }
 
     fn load_fonts(&mut self) {
-        let cfg = FontConfig {
-            size: self.font_size,
-            scale: self.scale as f32,
-            ..self.config.font.clone()
-        };
+        let cfg = font_config(&self.config, self.font_size, self.scale as f32);
         match Fonts::new(&cfg) {
             Ok(f) => {
                 log::info!("글꼴: {} {}pt × {}", f.family_name, self.font_size, self.scale);
@@ -162,16 +156,14 @@ impl App {
     fn grid_rect(&self) -> (i32, i32, u32, u32) {
         let Some(g) = &self.gfx else { return (0, 0, 0, 0) };
         let size = g.window.inner_size();
-        let pad = self.pad();
-        let x = pad;
-        let y = self.tabbar_height() as i32 + pad;
-        let w = (size.width as i32 - x - pad).max(0) as u32;
-        let h = (size.height as i32 - y - pad).max(0) as u32;
+        let px = |pt: f32| (pt as f64 * self.scale).round() as i32;
+        let (left, right) = (px(self.config.padding_x.0), px(self.config.padding_x.1));
+        let (top, bottom) = (px(self.config.padding_y.0), px(self.config.padding_y.1));
+        let x = left;
+        let y = self.tabbar_height() as i32 + top;
+        let w = (size.width as i32 - x - right).max(0) as u32;
+        let h = (size.height as i32 - y - bottom).max(0) as u32;
         (x, y, w, h)
-    }
-
-    fn pad(&self) -> i32 {
-        (self.config.padding as f64 * self.scale).round() as i32
     }
 
     /// 탭 줄 높이. 탭이 하나면 없다(Ghostty처럼)
@@ -263,7 +255,14 @@ impl App {
         self.next_id += 1;
         let size = self.grid_size();
         let mut options = SpawnOptions {
-            scrollback: self.config.scrollback,
+            scrollback: self.config.scrollback_lines,
+            cursor_shape: Some(match self.config.cursor_style {
+                bt_core::config::CursorStyle::Block => CursorShape::Block,
+                bt_core::config::CursorStyle::Bar => CursorShape::Beam,
+                bt_core::config::CursorStyle::Underline => CursorShape::Underline,
+                bt_core::config::CursorStyle::BlockHollow => CursorShape::HollowBlock,
+            }),
+            cursor_blink: self.config.cursor_blink.unwrap_or(false),
             ..options
         };
         // 탭 안의 btctl·훅이 이 터미널과 이 탭을 찾게 한다
@@ -296,6 +295,25 @@ impl App {
                 None
             }
         }
+    }
+
+    /// 설정의 command·working-directory로 새 탭 띄우기 값을 만든다
+    fn default_spawn(&self) -> SpawnOptions {
+        let mut o = SpawnOptions::default();
+        if let Some(cmd) = &self.config.command {
+            // Ghostty처럼 셸을 거쳐 띄운다
+            o.program = Some("/bin/sh".into());
+            o.args = vec!["-c".into(), format!("exec {cmd}")];
+        }
+        o.cwd = match &self.config.working_directory {
+            bt_core::config::WorkingDirectory::Home => std::env::var_os("HOME").map(std::path::PathBuf::from),
+            bt_core::config::WorkingDirectory::Path(p) => Some(p.clone()).filter(|p| p.is_dir()),
+            // Finder에서 띄우면 지금 폴더가 /라 집 폴더로 둔다
+            bt_core::config::WorkingDirectory::Inherit => {
+                std::env::current_dir().ok().filter(|p| p != std::path::Path::new("/"))
+            }
+        };
+        o
     }
 
     /// 제어 소켓 요청 하나를 처리한다
@@ -453,16 +471,17 @@ impl App {
             }
             Shortcut::FontBigger => self.set_font_size(self.font_size + 1.0),
             Shortcut::FontSmaller => self.set_font_size(self.font_size - 1.0),
-            Shortcut::FontReset => self.set_font_size(self.config.font.size),
+            Shortcut::FontReset => self.set_font_size(self.config.font_size),
             Shortcut::NewTab => {
                 // 새 탭은 지금 탭의 폴더에서 연다(OSC 7로 알려진 것, 없으면 프로세스에게 묻는다)
                 let cwd = self
                     .active_tab()
                     .and_then(|t| t.cwd.clone().or_else(|| t.session.cwd()));
-                self.open_tab(SpawnOptions {
-                    cwd,
-                    ..Default::default()
-                });
+                let mut opts = self.default_spawn();
+                if cwd.is_some() && self.config.working_directory == bt_core::config::WorkingDirectory::Inherit {
+                    opts.cwd = cwd;
+                }
+                self.open_tab(opts);
             }
             Shortcut::CloseTab => self.close_tab(self.active, event_loop),
             Shortcut::NextTab if !self.tabs.is_empty() => self.activate((self.active + 1) % self.tabs.len()),
@@ -546,6 +565,7 @@ impl App {
             .active_tab()
             .map(|t| t.display_title())
             .unwrap_or_else(|| "b-terminal".into());
+        let title = self.config.title.clone().unwrap_or(title);
         let Some(gfx) = self.gfx.as_mut() else { return };
         let Some(fonts) = self.fonts.as_mut() else { return };
         let size = gfx.window.inner_size();
@@ -586,6 +606,7 @@ impl App {
                     cells: &cells,
                     cursor,
                     selection_bg: theme.selection_background,
+                    selection_fg: theme.selection_foreground,
                     preedit: (!self.preedit.is_empty()).then_some(self.preedit.as_str()),
                 };
                 draw_grid(&mut canvas, fonts, gx, gy, &view);
@@ -643,10 +664,11 @@ impl ApplicationHandler<UserEvent> for App {
         #[cfg(target_os = "macos")]
         let attrs = {
             use winit::platform::macos::{OptionAsAlt, WindowAttributesExtMacOS};
-            attrs.with_option_as_alt(if self.config.option_as_alt {
-                OptionAsAlt::Both
-            } else {
-                OptionAsAlt::None
+            attrs.with_option_as_alt(match self.config.option_as_alt {
+                bt_core::config::OptionAsAlt::Both => OptionAsAlt::Both,
+                bt_core::config::OptionAsAlt::Left => OptionAsAlt::OnlyLeft,
+                bt_core::config::OptionAsAlt::Right => OptionAsAlt::OnlyRight,
+                bt_core::config::OptionAsAlt::None => OptionAsAlt::None,
             })
         };
         let window = match event_loop.create_window(attrs) {
@@ -667,6 +689,15 @@ impl ApplicationHandler<UserEvent> for App {
             _context: context,
         });
         self.load_fonts();
+        if let (Some(f), Some(g)) = (&self.fonts, &self.gfx) {
+            if let (Some(cols), Some(rows)) = (self.config.window_width, self.config.window_height) {
+                let m = f.metrics();
+                let px = |pt: f32| (pt as f64 * self.scale).round() as u32;
+                let w = m.width * cols as u32 + px(self.config.padding_x.0) + px(self.config.padding_x.1);
+                let h = m.height * rows as u32 + px(self.config.padding_y.0) + px(self.config.padding_y.1);
+                let _ = g.window.request_inner_size(PhysicalSize::new(w, h));
+            }
+        }
         if self.fonts.is_none() {
             event_loop.exit();
             return;
@@ -681,7 +712,15 @@ impl ApplicationHandler<UserEvent> for App {
             }
         }
         if self.tabs.is_empty() {
-            let first = self.first.take().unwrap_or_default();
+            let mut first = self.first.take().unwrap_or_default();
+            if first.program.is_none() {
+                let d = self.default_spawn();
+                first.program = d.program;
+                first.args = d.args;
+            }
+            if first.cwd.is_none() {
+                first.cwd = self.default_spawn().cwd;
+            }
             self.open_tab(first);
         }
     }
@@ -774,13 +813,24 @@ impl ApplicationHandler<UserEvent> for App {
                     return;
                 }
                 let app_cursor = self.active_tab().map(|t| t.session.modes().app_cursor).unwrap_or(false);
-                let bytes = keys::encode(&event, self.mods, app_cursor, self.config.option_as_alt);
+                let meta = self.config.option_as_alt != bt_core::config::OptionAsAlt::None;
+                let bytes = keys::encode(&event, self.mods, app_cursor, meta);
+                if self.config.mouse_hide_while_typing {
+                    if let Some(g) = &self.gfx {
+                        g.window.set_cursor_visible(false);
+                    }
+                }
                 if !bytes.is_empty() {
                     self.write_active(&bytes);
                 }
             }
             WindowEvent::CursorMoved { position, .. } => {
                 self.cursor_pos = position;
+                if self.config.mouse_hide_while_typing {
+                    if let Some(g) = &self.gfx {
+                        g.window.set_cursor_visible(true);
+                    }
+                }
                 if self.selecting {
                     if let (Some((c, r)), Some(t)) = (self.cell_at(position), self.active_tab()) {
                         t.session.select_update(c, r);
@@ -855,7 +905,17 @@ impl ApplicationHandler<UserEvent> for App {
                         self.selecting = true;
                         self.request_redraw();
                     }
-                    ElementState::Released => self.selecting = false,
+                    ElementState::Released => {
+                        self.selecting = false;
+                        // copy-on-select(Ghostty 기본 켬): 고르기를 마치면 바로 클립보드로
+                        if self.config.copy_on_select {
+                            if let Some(text) = self.active_tab().and_then(|t| t.session.selection_text()) {
+                                if let Some(cb) = self.clipboard.as_mut() {
+                                    let _ = cb.set_text(text);
+                                }
+                            }
+                        }
+                    }
                 }
             }
             WindowEvent::MouseWheel { delta, .. } => {
