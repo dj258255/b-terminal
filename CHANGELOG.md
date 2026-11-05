@@ -4,6 +4,8 @@
 
 ## [아직 릴리스하지 않음]
 
+- macOS 앱 묶음: `scripts/bundle-macos.sh [--install]`이 `b-terminal.app`(아이콘, btctl 포함, 임시 서명)을 만듭니다. 메뉴 막대(앱·셸·편집·보기·윈도우)와 "설정…"(예시 설정 파일을 만들어 엶). 아이콘은 `scripts/make-icon.swift`로 그립니다.
+
 - 셸 통합: zsh·bash에 자동으로 실어 명령의 시작·끝·종료 코드를 압니다(OSC 133·633). Cmd-↑/↓로 프롬프트 사이 이동, 창을 보지 않을 때 오래 걸린 명령이 끝나면 알림, `btctl run`(다른 탭에서 명령을 돌리고 출력·종료 코드를 받음)과 `btctl last`. `shell-integration`, `notify-command-seconds`.
 
 - 진행 표시(OSC 9;4): 탭 줄의 그 탭 아래(탭이 하나면 창 맨 위)에 막대를 그립니다. 보통·오류·끝 모름·멈춤을 색으로 가르고, 15초 소식이 없으면 지웁니다.

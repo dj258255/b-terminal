@@ -45,6 +45,8 @@ pub enum UserEvent {
     /// 어떤 탭의 화면이 바뀌었다(여러 번 와도 한 번 그린다)
     Redraw,
     Session(u64, SessionEvent),
+    /// 메뉴 막대 항목을 눌렀다(항목 id)
+    Menu(String),
     /// 제어 소켓 요청. 답은 함께 온 통로로 보낸다
     Control(
         bt_core::proto::Request,
@@ -143,6 +145,9 @@ pub struct App {
     shell_integration_dir: Option<std::path::PathBuf>,
     /// btctl run이 기다리는 탭: 탭 id → (요청 id, 답할 통로, 기한)
     run_waiters: std::collections::HashMap<u64, (u64, std::sync::mpsc::SyncSender<bt_core::proto::Response>, Instant)>,
+    /// 메뉴 막대(살려 두어야 메뉴가 남는다)
+    #[cfg(target_os = "macos")]
+    menu: Option<muda::Menu>,
     /// 창 안 알림 띠(글, 띄운 때). 2.5초 보인다
     toast: Option<(String, Instant)>,
     control: Option<crate::control::ControlServer>,
@@ -187,6 +192,8 @@ impl App {
             focused: true,
             next_poll: Instant::now(),
             toast: None,
+            #[cfg(target_os = "macos")]
+            menu: None,
             shell_integration_dir: None,
             run_waiters: std::collections::HashMap::new(),
             control: None,
@@ -913,6 +920,16 @@ impl ApplicationHandler<UserEvent> for App {
             }
         };
         window.set_ime_allowed(true);
+        #[cfg(target_os = "macos")]
+        if self.menu.is_none() {
+            let menu = crate::menu::build();
+            menu.init_for_nsapp();
+            let proxy = self.proxy.clone();
+            muda::MenuEvent::set_event_handler(Some(move |e: muda::MenuEvent| {
+                let _ = proxy.send_event(UserEvent::Menu(e.id.0.clone()));
+            }));
+            self.menu = Some(menu);
+        }
         self.scale = window.scale_factor();
         let context = softbuffer::Context::new(window.clone()).expect("softbuffer context");
         let surface = softbuffer::Surface::new(&context, window.clone()).expect("softbuffer surface");
@@ -967,6 +984,18 @@ impl ApplicationHandler<UserEvent> for App {
     fn user_event(&mut self, event_loop: &ActiveEventLoop, event: UserEvent) {
         match event {
             UserEvent::Redraw => self.request_redraw(),
+            UserEvent::Menu(id) => match crate::menu::action_for(&id) {
+                Some(crate::menu::MenuCommand::Action(a)) => self.handle_action(a, event_loop),
+                Some(crate::menu::MenuCommand::OpenSettings) => match crate::menu::ensure_config_file() {
+                    // 기본 글 편집기로 연다
+                    Ok(path) => {
+                        let _ = std::process::Command::new("open").arg("-t").arg(&path).spawn();
+                        self.toast("설정을 고친 뒤 Cmd-Shift-, 로 다시 읽습니다".into());
+                    }
+                    Err(e) => log::warn!("설정 파일을 만들지 못했습니다: {e}"),
+                },
+                None => {}
+            },
             UserEvent::Control(req, reply) => {
                 let req_id = req.id;
                 let timeout = match &req.call {
