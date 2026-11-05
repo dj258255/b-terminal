@@ -10,6 +10,30 @@ pub struct TabLabel {
     pub active: bool,
     /// 보지 않은 알림(OSC 9·99·777, 벨)이 있다
     pub unread: bool,
+    /// 진행 표시(OSC 9;4): (상태 1 보통·2 오류·3 끝 모름·4 멈춤, 퍼센트)
+    pub progress: Option<(u8, u8)>,
+}
+
+/// 진행 막대를 (x, y)에서 폭 w로 그린다. 끝을 모르면(3) 가운데 3분의 1을 칠한다
+pub fn draw_progress(canvas: &mut Canvas, theme: &Theme, x: i32, y: i32, w: u32, p: (u8, u8), h: u32) {
+    let (state, percent) = p;
+    let color = match state {
+        2 => theme.palette[1],
+        4 => theme.palette[3],
+        _ => theme.palette[4],
+    };
+    let h = h.max(2);
+    canvas.fill_rect(x, y, w, h, theme.background.mix(theme.foreground, 0.12));
+    match state {
+        3 => canvas.fill_rect(x + w as i32 / 3, y, w / 3, h, color),
+        _ => canvas.fill_rect(
+            x,
+            y,
+            (w as f32 * percent.min(100) as f32 / 100.0).round() as u32,
+            h,
+            color,
+        ),
+    }
 }
 
 /// 탭 하나의 최대 폭(셀 수)
@@ -61,6 +85,17 @@ pub fn draw(canvas: &mut Canvas, fonts: &mut Fonts, theme: &Theme, tabs: &[TabLa
             if tab.active { text } else { dim },
             false,
         );
+        if let Some(p) = tab.progress {
+            draw_progress(
+                canvas,
+                theme,
+                x,
+                h as i32 - (m.stroke * 3) as i32 - 1,
+                w,
+                p,
+                m.stroke * 3,
+            );
+        }
         if tab.unread {
             dot(canvas, x + cw, h as i32 / 2, (cw / 3).max(2), theme.palette[3]);
         }

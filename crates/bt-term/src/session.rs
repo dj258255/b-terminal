@@ -93,6 +93,9 @@ pub struct SpawnOptions {
     /// 프로그램이 DECSCUSR로 바꾸기 전의 커서 모양(설정 cursor-style)
     pub cursor_shape: Option<CursorShape>,
     pub cursor_blink: bool,
+    /// OSC 52 쓰기·읽기 허용(설정 clipboard-write·clipboard-read)
+    pub clipboard_write: bool,
+    pub clipboard_read: bool,
 }
 
 /// 세션이 앱에 알리는 일. 읽기 스레드에서 불린다
@@ -113,11 +116,39 @@ pub enum SessionEvent {
         state: u8,
         percent: u8,
     },
+    /// 프로그램이 OSC 52로 클립보드에 쓰려 한다
+    ClipboardStore(String),
+    /// 프로그램이 OSC 52로 클립보드를 읽으려 한다. 앱이 `reply`로 답을 만들어 PTY에 쓴다
+    ClipboardLoad(ClipboardReply),
     /// 프로세스가 끝났다. 종료 코드를 모르면 없다
     Exited(Option<u32>),
 }
 
 pub type EventSink = Arc<dyn Fn(SessionEvent) + Send + Sync>;
+
+/// OSC 52 읽기에 답을 만드는 함수(엔진이 준다). 클립보드 글을 넣으면 PTY에 쓸 이스케이프가 나온다
+#[derive(Clone)]
+pub struct ClipboardReply(Arc<dyn Fn(&str) -> String + Send + Sync>);
+
+impl ClipboardReply {
+    pub fn format(&self, text: &str) -> String {
+        (self.0)(text)
+    }
+}
+
+impl std::fmt::Debug for ClipboardReply {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("ClipboardReply")
+    }
+}
+
+impl PartialEq for ClipboardReply {
+    fn eq(&self, _: &Self) -> bool {
+        false
+    }
+}
+
+impl Eq for ClipboardReply {}
 
 type Writer = Arc<Mutex<Box<dyn Write + Send>>>;
 
@@ -162,7 +193,10 @@ impl EventListener for Listener {
                 let mut w = self.writer.lock();
                 let _ = w.write_all(reply.as_bytes());
             }
-            // OSC 52는 끈다(SECURITY.md). 나머지는 앱이 쓰지 않는다
+            // OSC 52 쓰기: 앱이 클립보드에 넣는다(설정 clipboard-write, SECURITY.md)
+            VtEvent::ClipboardStore(_, text) => (self.sink)(SessionEvent::ClipboardStore(text)),
+            // OSC 52 읽기: 설정 clipboard-read = allow일 때만 엔진이 이 사건을 낸다. 앱이 클립보드를 읽어 답한다
+            VtEvent::ClipboardLoad(_, format) => (self.sink)(SessionEvent::ClipboardLoad(ClipboardReply(format))),
             _ => {}
         }
     }
@@ -242,7 +276,12 @@ impl Session {
             } else {
                 options.scrollback
             },
-            osc52: Osc52::Disabled,
+            osc52: match (options.clipboard_write, options.clipboard_read) {
+                (true, true) => Osc52::CopyPaste,
+                (true, false) => Osc52::OnlyCopy,
+                (false, true) => Osc52::OnlyPaste,
+                (false, false) => Osc52::Disabled,
+            },
             // Claude Code 등이 Shift+Enter를 받으려고 켠다(#41)
             kitty_keyboard: true,
             default_cursor_style: VtCursorStyle {
