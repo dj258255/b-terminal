@@ -125,6 +125,26 @@ struct TabGroup {
     zoomed: bool,
 }
 
+/// 찾기 막대(#39): 찾는 칸, 친 글, 결과
+struct SearchBar {
+    pane: u64,
+    query: String,
+    status: Option<bt_term::search::SearchStatus>,
+}
+
+/// 찾기 막대 오른쪽에 보일 결과 글
+fn search_status_text(query: &str, status: Option<bt_term::search::SearchStatus>) -> String {
+    let Some(st) = status.filter(|_| !query.is_empty()) else {
+        return String::new();
+    };
+    let plus = if st.capped { "+" } else { "" };
+    match st.index {
+        _ if st.total == 0 => "없음".into(),
+        Some(i) => format!("{i}/{}{plus}", st.total),
+        None => format!("{}{plus}개", st.total),
+    }
+}
+
 /// 그릴 칸 하나(다시 그릴 때 잠깐 쓴다)
 struct PaneView {
     id: u64,
@@ -178,6 +198,8 @@ pub struct App {
     hover: Option<(u64, bt_term::links::LinkHit)>,
     /// Cmd-클릭으로 링크를 열었다: 뒤따르는 놓기를 프로그램에 보내지 않는다
     link_click: bool,
+    /// 열린 찾기 막대(칸 하나에 붙는다)
+    search: Option<SearchBar>,
     control: Option<crate::control::ControlServer>,
     keymap: Keymap,
     /// --config-file(설정을 다시 읽을 때 같은 파일을 읽는다)
@@ -223,6 +245,7 @@ impl App {
             toast: None,
             hover: None,
             link_click: false,
+            search: None,
             #[cfg(target_os = "macos")]
             menu: None,
             shell_integration_dir: None,
@@ -361,6 +384,10 @@ impl App {
     /// 고른 칸이 바뀌었다: 포커스 보고(DEC 1004)를 켠 프로그램에 나가고 들어옴을 알린다
     fn focus_changed(&mut self, before: Option<u64>) {
         let after = self.focused_id();
+        // 찾기 막대는 그 칸에 붙어 있다. 다른 칸으로 옮기면 닫는다
+        if self.search.as_ref().is_some_and(|s| Some(s.pane) != after) {
+            self.end_search();
+        }
         self.selecting = false;
         if before == after || !self.focused {
             return;
@@ -960,6 +987,84 @@ impl App {
         }
     }
 
+    /// 고른 칸에 찾기 막대를 연다. 이미 열려 있으면 그대로
+    fn start_search(&mut self) {
+        let Some(id) = self.focused_id() else { return };
+        if self.search.as_ref().is_some_and(|s| s.pane == id) {
+            return;
+        }
+        self.end_search();
+        self.search = Some(SearchBar {
+            pane: id,
+            query: String::new(),
+            status: None,
+        });
+        self.request_redraw();
+    }
+
+    /// 찾기 막대를 닫고 강조를 지운다. 화면 자리는 그대로 둔다
+    fn end_search(&mut self) {
+        if let Some(s) = self.search.take() {
+            if let Some(i) = self.pane_index(s.pane) {
+                self.panes[i].session.search_clear();
+            }
+            self.request_redraw();
+        }
+    }
+
+    /// 친 글이 바뀌었다: 처음부터(맨 아래에서 위로) 다시 찾는다
+    fn search_query_changed(&mut self) {
+        let Some(s) = self.search.as_mut() else { return };
+        if let Some(p) = self.panes.iter().find(|p| p.id == s.pane) {
+            s.status = p.session.search(&s.query);
+        }
+        self.request_redraw();
+    }
+
+    fn search_step(&mut self, older: bool) {
+        let Some(s) = self.search.as_mut() else { return };
+        if let Some(p) = self.panes.iter().find(|p| p.id == s.pane) {
+            s.status = p.session.search_step(older).or(s.status);
+        }
+        self.request_redraw();
+    }
+
+    /// 찾기 막대에 글을 더한다(친 글, IME 확정, 붙여넣기의 첫 줄)
+    fn search_push(&mut self, text: &str) {
+        let Some(s) = self.search.as_mut() else { return };
+        let text: String = text.chars().filter(|c| !c.is_control()).collect();
+        if s.query.chars().count() + text.chars().count() > 256 {
+            return;
+        }
+        s.query.push_str(&text);
+        self.search_query_changed();
+    }
+
+    /// 찾기 막대가 열려 있으면 키를 받는다(Cmd·Ctrl 조합은 키 묶음에 맡긴다). 받았으면 참
+    fn search_key(&mut self, event: &winit::event::KeyEvent) -> bool {
+        use winit::keyboard::{Key, NamedKey};
+        if self.search.is_none() || self.mods.super_key() || self.mods.control_key() {
+            return false;
+        }
+        match &event.logical_key {
+            Key::Named(NamedKey::Escape) => self.end_search(),
+            // Enter는 위(오래된 쪽)로, Shift-Enter는 아래로
+            Key::Named(NamedKey::Enter) => self.search_step(!self.mods.shift_key()),
+            Key::Named(NamedKey::Backspace) => {
+                if let Some(s) = self.search.as_mut() {
+                    s.query.pop();
+                }
+                self.search_query_changed();
+            }
+            _ => {
+                if let Some(text) = event.text.clone() {
+                    self.search_push(&text);
+                }
+            }
+        }
+        true
+    }
+
     /// 고른 칸의 자리
     fn active_index(&self) -> Option<usize> {
         self.focused_id().and_then(|id| self.pane_index(id))
@@ -974,6 +1079,16 @@ impl App {
                     }
                 }
             }
+            // 찾기 막대가 열려 있으면 첫 줄을 찾을 글에 붙인다
+            Action::Paste if self.search.is_some() => {
+                let text = self.clipboard.as_mut().and_then(|cb| cb.get_text().ok());
+                if let Some(line) = text.as_deref().and_then(|t| t.lines().next()) {
+                    self.search_push(line);
+                }
+            }
+            Action::StartSearch => self.start_search(),
+            Action::EndSearch => self.end_search(),
+            Action::NavigateSearch(older) => self.search_step(older),
             Action::Paste => {
                 let text = self.clipboard.as_mut().and_then(|cb| cb.get_text().ok());
                 if let (Some(text), Some(t)) = (text, self.active_pane()) {
@@ -1221,6 +1336,14 @@ impl App {
         let title = self.config.title.clone().unwrap_or(title);
         let preedit = self.preedit.clone();
         let hover = self.hover.clone();
+        let search = self.search.as_ref().map(|s| {
+            (
+                s.pane,
+                s.query.clone(),
+                search_status_text(&s.query, s.status),
+                s.status.is_some_and(|st| st.total == 0),
+            )
+        });
         let Some(gfx) = self.gfx.as_mut() else { return };
         let Some(fonts) = self.fonts.as_mut() else { return };
         let size = gfx.window.inner_size();
@@ -1255,7 +1378,7 @@ impl App {
             } in &views
             {
                 canvas.fill_rect(outer.x, outer.y, outer.w, outer.h, screen.background);
-                let mut cells = to_draw_cells(screen);
+                let mut cells = to_draw_cells(screen, &theme);
                 // Cmd를 누른 채 올라간 링크에 밑줄
                 if let Some((_, hit)) = hover.as_ref().filter(|(h, _)| h == id) {
                     for sp in &hit.spans {
@@ -1288,8 +1411,8 @@ impl App {
                     cursor,
                     selection_bg: theme.selection_background,
                     selection_fg: theme.selection_foreground,
-                    // IME 조합 글은 고른 칸에만 그린다
-                    preedit: (*focused && !preedit.is_empty()).then_some(preedit.as_str()),
+                    // IME 조합 글은 고른 칸에만 그린다(찾기 막대가 열려 있으면 막대에)
+                    preedit: (*focused && search.is_none() && !preedit.is_empty()).then_some(preedit.as_str()),
                 };
                 draw_grid(&mut canvas, fonts, inner.x, inner.y, &view);
                 if *focused {
@@ -1300,6 +1423,17 @@ impl App {
                         .set_ime_cursor_area(PhysicalPosition::new(px, py), PhysicalSize::new(m.width, m.height));
                 } else if split && dim_alpha > 0 {
                     canvas.blend_rect(outer.x, outer.y, outer.w, outer.h, dim_fill, dim_alpha);
+                }
+                if let Some((_, query, status, missing)) = search.as_ref().filter(|s| s.0 == *id) {
+                    tabbar::draw_search_bar(
+                        &mut canvas,
+                        fonts,
+                        &theme,
+                        *outer,
+                        &format!("{query}{preedit}"),
+                        status,
+                        *missing,
+                    );
                 }
                 // 탭이 하나면 진행 막대를 칸 맨 위에 얇게(Ghostty와 같은 자리). 탭이 여럿이면 탭 줄에 보인다
                 if let (true, Some(p)) = (single_tab, progress) {
@@ -1336,13 +1470,25 @@ pub fn is_local_host(host: &str) -> bool {
     host.is_empty() || host == "localhost" || host == local || host.split('.').next() == Some(short.as_str())
 }
 
-pub fn to_draw_cells(s: &Screen) -> Vec<DrawCell> {
+/// 화면 값을 렌더러 셀로. 찾기에 맞은 칸은 여기서 색을 바꾼다(지금 것은 노랑 바탕, 나머지는 옅은 노랑)
+pub fn to_draw_cells(s: &Screen, theme: &bt_core::Theme) -> Vec<DrawCell> {
+    let yellow = theme.palette[3];
     s.cells
         .iter()
         .map(|c| DrawCell {
             ch: c.ch,
-            fg: c.fg,
-            bg: c.bg,
+            fg: if c.flags.contains(CellFlags::MATCH_CURRENT) {
+                theme.background
+            } else {
+                c.fg
+            },
+            bg: if c.flags.contains(CellFlags::MATCH_CURRENT) {
+                yellow
+            } else if c.flags.contains(CellFlags::MATCH) {
+                c.bg.mix(yellow, 0.4)
+            } else {
+                c.bg
+            },
             bold: c.flags.contains(CellFlags::BOLD),
             italic: c.flags.contains(CellFlags::ITALIC),
             underline: c.flags.contains(CellFlags::UNDERLINE) || c.flags.contains(CellFlags::UNDERCURL),
@@ -1584,7 +1730,12 @@ impl ApplicationHandler<UserEvent> for App {
                 }
                 Ime::Commit(text) => {
                     self.preedit.clear();
-                    self.write_active(text.as_bytes());
+                    // 찾기 막대가 열려 있으면 확정 글은 찾을 글로
+                    if self.search.is_some() {
+                        self.search_push(&text);
+                    } else {
+                        self.write_active(text.as_bytes());
+                    }
                 }
                 Ime::Enabled | Ime::Disabled => {
                     self.preedit.clear();
@@ -1593,6 +1744,9 @@ impl ApplicationHandler<UserEvent> for App {
             },
             WindowEvent::KeyboardInput { event, .. } => {
                 if event.state != ElementState::Pressed {
+                    return;
+                }
+                if self.search_key(&event) {
                     return;
                 }
                 let action = keys::trigger(&event, self.mods).and_then(|t| self.keymap.lookup(&t).cloned());
@@ -1840,5 +1994,25 @@ impl ApplicationHandler<UserEvent> for App {
             Some(d) => event_loop.set_control_flow(ControlFlow::WaitUntil(d)),
             None => event_loop.set_control_flow(ControlFlow::Wait),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bt_term::search::SearchStatus;
+
+    #[test]
+    fn search_status_text_shows_position_count_and_missing() {
+        let st = |index, total, capped| Some(SearchStatus { index, total, capped });
+        assert_eq!(search_status_text("err", st(Some(2), 5, false)), "2/5");
+        assert_eq!(search_status_text("e", st(Some(1), 1000, true)), "1/1000+");
+        assert_eq!(search_status_text("zz", st(None, 0, false)), "없음");
+        assert_eq!(
+            search_status_text("", st(None, 0, false)),
+            "",
+            "빈 글은 아무것도 보이지 않는다"
+        );
+        assert_eq!(search_status_text("x", None), "");
     }
 }

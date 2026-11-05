@@ -101,6 +101,8 @@ keybind = clear                       # 기본 묶음을 모두 지우기
 | `scroll_page_up` / `scroll_page_down` | 스크롤백 한 쪽 | `shift+page_up` `super+page_up` / 아래도 같음 |
 | `jump_to_prompt:-1` / `jump_to_prompt:1` | 앞·뒤 프롬프트로(셸 통합) | `super+arrow_up` / `super+arrow_down` |
 | `scroll_to_top` / `scroll_to_bottom` | 맨 위 / 맨 아래 | `shift+home` `super+home` / `shift+end` `super+end` |
+| `start_search` / `end_search` | 찾기 막대 열기 / 닫기. 막대에서 글을 치면 바로 찾고, Enter는 위로·Shift-Enter는 아래로, Esc로 닫습니다 | `super+f` / (Esc) |
+| `navigate_search:next` / `navigate_search:previous` | 위(오래된 쪽) / 아래 맞은 곳으로 | `super+g` / `super+shift+g` |
 | `clear_screen` | 화면 지우기(셸에 Ctrl-L) | `super+k` |
 | `select_all` | 보이는 화면 모두 고르기 | `super+a` |
 | `reload_config` | 설정 다시 읽기 | `super+shift+comma` |

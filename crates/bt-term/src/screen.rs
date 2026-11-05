@@ -21,6 +21,10 @@ impl CellFlags {
     pub const UNDERCURL: Self = Self(1 << 8);
     /// 줄의 마지막 칸: 글이 길어 다음 줄로 접혔다(soft wrap). 링크 찾기가 줄을 잇는다
     pub const WRAPLINE: Self = Self(1 << 9);
+    /// 찾기에 맞은 칸(#39)
+    pub const MATCH: Self = Self(1 << 10);
+    /// 지금 고른 맞은 곳(Enter로 옮겨 다니는 것)
+    pub const MATCH_CURRENT: Self = Self(1 << 11);
 
     pub const fn empty() -> Self {
         Self(0)

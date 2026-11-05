@@ -162,3 +162,66 @@ pub fn draw_link_hint(canvas: &mut Canvas, fonts: &mut Fonts, theme: &Theme, url
         false,
     );
 }
+
+/// 찾기 막대를 칸(`pane`)의 오른쪽 위에 띄운다(#39). 결과가 없으면 붉게 보인다
+pub fn draw_search_bar(
+    canvas: &mut Canvas,
+    fonts: &mut Fonts,
+    theme: &Theme,
+    pane: crate::split::Rect,
+    query: &str,
+    status: &str,
+    missing: bool,
+) {
+    let m = fonts.metrics();
+    let cw = m.width as i32;
+    let label = "찾기 ";
+    // 칸 폭의 절반 남짓까지. 글이 길면 앞을 줄여 끝(지금 치는 자리)을 보인다
+    let max_cells = ((pane.w as i32 / cw) - 4).clamp(12, 60) as usize;
+    let status_cells = text_cells(status);
+    let room = max_cells.saturating_sub(text_cells(label) + status_cells + 3).max(4);
+    let q: String = if text_cells(query) > room {
+        let tail: String = query
+            .chars()
+            .rev()
+            .take(room - 1)
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect();
+        format!("…{tail}")
+    } else {
+        query.to_string()
+    };
+    let body_cells = text_cells(label) + text_cells(&q).max(room.min(16)) + status_cells + 3;
+    let (w, h) = (body_cells as u32 * m.width, m.height + m.height / 2);
+    let x = pane.x + pane.w as i32 - w as i32 - cw;
+    let y = pane.y + m.height as i32 / 4;
+    let bg = theme.background.mix(theme.foreground, 0.1);
+    let border = if missing {
+        theme.palette[1]
+    } else {
+        theme.background.mix(theme.foreground, 0.35)
+    };
+    canvas.fill_rect(x, y, w, h, bg);
+    canvas.stroke_rect(x, y, w, h, 1, border);
+    let ty = y + (h as i32 - m.height as i32) / 2;
+    let dim = theme.foreground.mix(theme.background, 0.45);
+    let mut tx = x + cw;
+    draw_text(canvas, fonts, tx, ty, label, dim, false);
+    tx += cw * text_cells(label) as i32;
+    draw_text(canvas, fonts, tx, ty, &q, theme.foreground, false);
+    tx += cw * text_cells(&q) as i32;
+    // 치는 자리
+    canvas.fill_rect(tx, ty, (m.stroke * 2).max(2), m.height, theme.cursor);
+    let sx = x + w as i32 - cw * (status_cells as i32 + 1);
+    draw_text(
+        canvas,
+        fonts,
+        sx,
+        ty,
+        status,
+        if missing { theme.palette[1] } else { dim },
+        false,
+    );
+}
