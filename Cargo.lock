@@ -267,6 +267,8 @@ dependencies = [
  "env_logger",
  "gethostname",
  "log",
+ "rustix 1.1.6",
+ "serde_json",
  "softbuffer",
  "winit",
 ]
@@ -282,6 +284,11 @@ dependencies = [
 [[package]]
 name = "bt-ctl"
 version = "0.1.0"
+dependencies = [
+ "bt-core",
+ "rustix 1.1.6",
+ "serde_json",
+]
 
 [[package]]
 name = "bt-render"

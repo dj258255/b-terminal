@@ -29,6 +29,24 @@ cargo run --release -p bt-app -- --cwd ~/dev  # 시작 폴더
 | Shift-PageUp / PageDown, Cmd-↑ / ↓ | 스크롤백 |
 | 마우스 끌기, 두 번·세 번 누르기 | 글자·단어·줄 고르기(앱이 마우스를 쓰면 Shift를 누른 채로) |
 
+## 에이전트와 스크립트에서 쓰기(btctl)
+
+탭 안의 셸에는 `BT_SOCKET`(제어 소켓)과 `BT_TAB_ID`(그 탭 번호)가 들어 있습니다. `btctl`은 이것으로 자기 탭을 찾습니다.
+
+```bash
+cargo install --path crates/bt-ctl      # btctl 설치
+btctl status waiting-permission --agent claude --activity "Bash: cargo test"
+btctl notify "cargo build" "끝났습니다"
+btctl new --cwd ~/dev -- claude          # 새 탭에서 claude
+btctl list                               # 탭 목록과 상태
+btctl read --tab 2                       # 2번 탭 화면을 글로
+btctl send --tab 2 --enter "y"           # 2번 탭에 y와 Enter
+```
+
+<img src="docs/images/sidebar-agents.png" width="760" alt="사이드바에 탭 다섯 개. Claude는 노란 점과 'Bash: cargo test'(권한 기다림), Codex는 파란 점과 'Edit crates/bt-app/src/app.rs'(작업 중), bash 탭은 'cargo build: 끝났습니다' 알림과 안 읽음 점, 끝난 Claude 탭은 초록 점과 'PR #21 리뷰 끝'">
+
+제어 소켓은 같은 사용자만 닿는 폴더(0700)의 소켓(0600)입니다. 자세한 경계는 [SECURITY.md](SECURITY.md)에 있습니다.
+
 ## 기여
 
 [CONTRIBUTING.md](CONTRIBUTING.md)와 코딩 에이전트용 [AGENTS.md](AGENTS.md)를 봅니다.

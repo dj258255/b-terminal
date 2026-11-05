@@ -1,6 +1,7 @@
 //! b-terminal 창 앱
 
 mod app;
+mod control;
 mod desktop;
 mod keys;
 mod mouse;
