@@ -102,3 +102,23 @@ fn foreground_process_follows_the_running_child() {
     }
     assert!(s.cwd().is_some());
 }
+
+#[test]
+fn notifications_from_the_pty_reach_the_sink() {
+    let (_s, rx) = sh(
+        "printf '\\033]777;notify;빌드;끝났습니다\\007'; printf '\\033]7;file://h/tmp\\007'; sleep 1",
+        GridSize::new(40, 5),
+    );
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let (mut note, mut cwd) = (None, None);
+    while Instant::now() < deadline && (note.is_none() || cwd.is_none()) {
+        match rx.recv_timeout(Duration::from_millis(100)) {
+            Ok(SessionEvent::Notification(n)) => note = Some(n),
+            Ok(SessionEvent::Cwd { path, .. }) => cwd = Some(path),
+            _ => {}
+        }
+    }
+    let note = note.expect("알림이 오지 않았다");
+    assert_eq!((note.title.as_str(), note.body.as_str()), ("빌드", "끝났습니다"));
+    assert_eq!(cwd.as_deref(), Some(std::path::Path::new("/tmp")));
+}

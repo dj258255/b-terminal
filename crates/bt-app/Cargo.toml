@@ -17,6 +17,7 @@ bt-core = { version = "0.1.0", path = "../bt-core" }
 bt-render = { version = "0.1.0", path = "../bt-render" }
 bt-term = { version = "0.1.0", path = "../bt-term" }
 env_logger.workspace = true
+gethostname = "1.1.0"
 log.workspace = true
 softbuffer = "0.4"
 winit = "0.30"

@@ -8,7 +8,7 @@ pub mod screen;
 mod session;
 
 pub use input::{Mods, NamedKey, encode_named, encode_paste, encode_text};
-pub use notify::Notification;
+pub use notify::{Notification, Signal};
 pub use process::Foreground;
 pub use screen::{Cell, CellFlags, Cursor, CursorShape, Modes, Screen};
 pub use session::{Emulator, EventSink, GridSize, SelectKind, Session, SessionEvent, SpawnOptions};
