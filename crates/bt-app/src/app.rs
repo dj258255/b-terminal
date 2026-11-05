@@ -6,7 +6,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
-use bt_core::Theme;
+use bt_core::{AgentKind, AgentState, Theme};
 use bt_render::{Canvas, CursorStyle, DrawCell, DrawCursor, FontConfig, Fonts, GridView, draw_grid};
 use bt_term::{CellFlags, CursorShape, GridSize, Screen, SelectKind, Session, SessionEvent, SpawnOptions};
 use winit::application::ApplicationHandler;
@@ -18,6 +18,7 @@ use winit::window::{Window, WindowId};
 
 use crate::keys::{self, Shortcut};
 use crate::mouse;
+use crate::sidebar;
 
 /// 다른 스레드(PTY 읽기)가 창 스레드를 깨우는 사건
 #[derive(Debug, Clone)]
@@ -55,6 +56,40 @@ pub struct Tab {
     pub session: Session,
     pub title: String,
     pub exited: Option<Option<u32>>,
+    /// 전경 프로세스 이름(1초마다 갱신). pid가 같으면 다시 묻지 않는다(node 스크립트는 ps를 부른다)
+    pub fg_name: Option<String>,
+    fg_pid: Option<i32>,
+    pub agent: Option<AgentKind>,
+    pub state: AgentState,
+    /// 지금 하는 일 한 줄(훅이 알려 준 도구·대상)
+    pub activity: Option<String>,
+    /// 보지 않은 알림이 있다
+    pub unread: bool,
+}
+
+impl Tab {
+    fn sidebar_title(&self) -> String {
+        if let Some(agent) = self.agent {
+            return agent.name().to_string();
+        }
+        if !self.title.is_empty() {
+            return self.title.clone();
+        }
+        self.fg_name.clone().unwrap_or_else(|| "셸".into())
+    }
+
+    fn sidebar_detail(&self) -> String {
+        if self.agent.is_some() || self.state != AgentState::Idle {
+            return match &self.activity {
+                Some(a) if self.state == AgentState::Working => a.clone(),
+                _ => self.state.label().to_string(),
+            };
+        }
+        if self.agent.is_none() && !self.title.is_empty() {
+            return self.fg_name.clone().unwrap_or_default();
+        }
+        String::new()
+    }
 }
 
 struct Gfx {
@@ -82,6 +117,8 @@ pub struct App {
     clipboard: Option<arboard::Clipboard>,
     scroll_accum: f64,
     first: Option<SpawnOptions>,
+    sidebar_visible: bool,
+    next_poll: Instant,
 }
 
 impl App {
@@ -106,6 +143,8 @@ impl App {
             clipboard: arboard::Clipboard::new().ok(),
             scroll_accum: 0.0,
             first: Some(first),
+            sidebar_visible: true,
+            next_poll: Instant::now(),
         }
     }
 
@@ -131,12 +170,71 @@ impl App {
     fn grid_rect(&self) -> (i32, i32, u32, u32) {
         let Some(g) = &self.gfx else { return (0, 0, 0, 0) };
         let size = g.window.inner_size();
-        let pad = (self.config.padding as f64 * self.scale).round() as i32;
-        let x = pad;
+        let pad = self.pad();
+        let x = self.sidebar_width() as i32 + pad;
         let y = pad;
         let w = (size.width as i32 - x - pad).max(0) as u32;
         let h = (size.height as i32 - y - pad).max(0) as u32;
         (x, y, w, h)
+    }
+
+    fn pad(&self) -> i32 {
+        (self.config.padding as f64 * self.scale).round() as i32
+    }
+
+    fn sidebar_width(&self) -> u32 {
+        match (&self.fonts, self.sidebar_visible) {
+            (Some(f), true) => sidebar::width_px(f, self.pad()),
+            _ => 0,
+        }
+    }
+
+    /// 다음으로 볼 탭: 지금 탭이 아닌 것 중 가장 급한 것(같으면 오래 기다린 순서를 모르니 앞 탭)
+    fn next_attention(&self) -> Option<usize> {
+        self.tabs
+            .iter()
+            .enumerate()
+            .filter(|(i, t)| *i != self.active && (t.unread || t.state.urgency() >= 3))
+            .max_by_key(|(i, t)| (t.state.urgency(), t.unread, std::cmp::Reverse(*i)))
+            .map(|(i, _)| i)
+    }
+
+    fn activate(&mut self, index: usize) {
+        if index < self.tabs.len() {
+            self.active = index;
+            let t = &mut self.tabs[index];
+            t.unread = false;
+            // 끝남은 본 순간 쉼으로 돌린다. 기다림은 사람이 답할 때까지 둔다
+            if t.state == AgentState::Done {
+                t.state = AgentState::Idle;
+            }
+            self.request_redraw();
+        }
+    }
+
+    /// 전경 프로세스로 에이전트를 알아본다(훅이 없어도 이름만은 보이게). 바뀐 것이 있으면 참
+    fn poll_foreground(&mut self) -> bool {
+        let mut changed = false;
+        for t in &mut self.tabs {
+            let Some(pid) = t.session.foreground_pid() else {
+                continue;
+            };
+            if t.fg_pid == Some(pid) {
+                continue;
+            }
+            t.fg_pid = Some(pid);
+            let name = bt_term::process::process_name(pid);
+            let agent = name.as_deref().and_then(AgentKind::from_process);
+            if agent.is_none() && t.agent.is_some() {
+                // 에이전트가 끝나 셸로 돌아왔다
+                t.state = AgentState::Idle;
+                t.activity = None;
+            }
+            t.agent = agent;
+            t.fg_name = name;
+            changed = true;
+        }
+        changed
     }
 
     fn grid_size(&self) -> GridSize {
@@ -184,6 +282,12 @@ impl App {
                     session,
                     title: String::new(),
                     exited: None,
+                    fg_name: None,
+                    fg_pid: None,
+                    agent: None,
+                    state: AgentState::Idle,
+                    activity: None,
+                    unread: false,
                 });
                 self.active = self.tabs.len() - 1;
             }
@@ -278,11 +382,11 @@ impl App {
                 });
             }
             Shortcut::CloseTab => self.close_tab(self.active, event_loop),
-            Shortcut::NextTab if !self.tabs.is_empty() => self.active = (self.active + 1) % self.tabs.len(),
+            Shortcut::NextTab if !self.tabs.is_empty() => self.activate((self.active + 1) % self.tabs.len()),
             Shortcut::PrevTab if !self.tabs.is_empty() => {
-                self.active = (self.active + self.tabs.len() - 1) % self.tabs.len()
+                self.activate((self.active + self.tabs.len() - 1) % self.tabs.len())
             }
-            Shortcut::GotoTab(i) if i < self.tabs.len() => self.active = i,
+            Shortcut::GotoTab(i) if i < self.tabs.len() => self.activate(i),
             Shortcut::ClearScrollback => self.write_active(b"\x0c"),
             Shortcut::ScrollPageUp | Shortcut::ScrollPageDown => {
                 let rows = self.grid_size().rows as i32;
@@ -302,6 +406,15 @@ impl App {
             Shortcut::ScrollBottom => {
                 if let Some(t) = self.active_tab() {
                     t.session.scroll_to_bottom();
+                }
+            }
+            Shortcut::ToggleSidebar => {
+                self.sidebar_visible = !self.sidebar_visible;
+                self.resize_all();
+            }
+            Shortcut::NextAttention => {
+                if let Some(i) = self.next_attention() {
+                    self.activate(i);
                 }
             }
             _ => {}
@@ -342,6 +455,20 @@ impl App {
         let theme = self.config.theme.clone();
         let (gx, gy, _, _) = self.grid_rect();
         let screen = self.active_tab().map(|t| t.session.snapshot());
+        let pad = self.pad();
+        let sidebar_items: Option<Vec<sidebar::Item>> = self.sidebar_visible.then(|| {
+            self.tabs
+                .iter()
+                .enumerate()
+                .map(|(i, t)| sidebar::Item {
+                    title: t.sidebar_title(),
+                    detail: t.sidebar_detail(),
+                    state: t.state,
+                    unread: t.unread,
+                    active: i == self.active,
+                })
+                .collect()
+        });
         let title = self
             .active_tab()
             .map(|t| t.title.clone())
@@ -363,6 +490,9 @@ impl App {
             let mut canvas = Canvas::new(&mut buffer, size.width, size.height);
             let bg = screen.as_ref().map(|s| s.background).unwrap_or(theme.background);
             canvas.clear(bg);
+            if let Some(items) = &sidebar_items {
+                sidebar::draw(&mut canvas, fonts, &theme, items, pad, &[]);
+            }
             if let Some(screen) = &screen {
                 let cells = to_draw_cells(screen);
                 let cursor = screen.cursor.visible.then_some(DrawCursor {
@@ -550,6 +680,19 @@ impl ApplicationHandler<UserEvent> for App {
                 }
             }
             WindowEvent::MouseInput { state, button, .. } => {
+                // 사이드바를 누르면 그 탭으로
+                if (self.cursor_pos.x as u32) < self.sidebar_width() {
+                    if state == ElementState::Pressed && button == MouseButton::Left {
+                        let hit = self
+                            .fonts
+                            .as_ref()
+                            .and_then(|f| sidebar::hit(f, self.pad(), self.cursor_pos.y, self.tabs.len()));
+                        if let Some(i) = hit {
+                            self.activate(i);
+                        }
+                    }
+                    return;
+                }
                 let mb = match button {
                     MouseButton::Left => mouse::Button::Left,
                     MouseButton::Middle => mouse::Button::Middle,
@@ -649,8 +792,21 @@ impl ApplicationHandler<UserEvent> for App {
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        // 1초마다 전경 프로세스를 본다(사이드바 이름, 에이전트 알아보기)
+        let now = Instant::now();
+        if now >= self.next_poll {
+            if self.poll_foreground() && self.sidebar_visible {
+                self.request_redraw();
+            }
+            self.next_poll = now + Duration::from_secs(1);
+        }
         // 동기화 출력(DEC 2026)이 끝나지 않은 탭이 있으면 기한에 깨어 반영한다
-        let deadline = self.tabs.iter().filter_map(|t| t.session.sync_deadline()).min();
+        let deadline = self
+            .tabs
+            .iter()
+            .filter_map(|t| t.session.sync_deadline())
+            .chain([self.next_poll])
+            .min();
         match deadline {
             Some(d) if d <= Instant::now() => {
                 for t in &self.tabs {

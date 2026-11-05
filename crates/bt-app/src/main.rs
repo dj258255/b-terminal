@@ -3,6 +3,7 @@
 mod app;
 mod keys;
 mod mouse;
+mod sidebar;
 
 use bt_term::SpawnOptions;
 use winit::event_loop::EventLoop;
