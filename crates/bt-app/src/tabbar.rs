@@ -145,7 +145,8 @@ pub fn draw_link_hint(canvas: &mut Canvas, fonts: &mut Fonts, theme: &Theme, url
     let m = fonts.metrics();
     // 창 폭의 대부분까지 쓴다
     let max_cells = ((canvas.width / m.width.max(1)) as usize).saturating_sub(6).max(8);
-    let text = truncate(url, max_cells);
+    // 호스트는 늘 다 보이고 가운데를 줄인다(끝만 자르면 `github.com@다른곳`처럼 속일 수 있다, #54)
+    let text = bt_term::links::hint_text(url, max_cells);
     let tw = m.width * text_cells(&text) as u32;
     let (w, h) = (tw + m.width * 2, m.height + m.height / 2);
     let x = m.width as i32 / 2;
