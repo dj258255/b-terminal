@@ -92,6 +92,10 @@ pub struct Config {
     pub keybinds: Vec<String>,
     /// 셸이 마우스 모드를 켠 채 끝났을 때 셸로 돌아오면 끈다(#24)
     pub mouse_reset_on_shell: bool,
+    /// 셸 통합: detect(기본)·none·zsh·bash
+    pub shell_integration: String,
+    /// 셸 통합으로 안 명령이 이만큼(초) 넘게 걸려 끝나면, 창을 보고 있지 않을 때 알린다. 0이면 끔
+    pub notify_command_seconds: u64,
     /// OSC 52로 프로그램이 클립보드에 쓰는 것을 허용(Ghostty 기본 allow)
     pub clipboard_write: bool,
     /// OSC 52로 프로그램이 클립보드를 읽는 것을 허용(기본 금지. Ghostty 기본은 ask)
@@ -129,6 +133,8 @@ impl Default for Config {
             mouse_reset_on_shell: true,
             clipboard_write: true,
             clipboard_read: false,
+            shell_integration: "detect".into(),
+            notify_command_seconds: 10,
             warnings: Vec::new(),
             sources: Vec::new(),
         }
@@ -503,6 +509,19 @@ impl Config {
             }
             "title" => self.title = Some(v.to_string()).filter(|s| !s.is_empty()),
             "keybind" => self.keybinds.push(v.to_string()),
+            "shell-integration" => match v {
+                "detect" | "none" | "zsh" | "bash" => self.shell_integration = v.to_string(),
+                // fish·elvish는 아직 스크립트가 없다
+                "fish" | "elvish" => {
+                    self.shell_integration = "none".into();
+                    warnings.push(format!("{}:{}: {v} 셸 통합은 아직 없습니다", e.file.display(), e.line));
+                }
+                _ => bad(warnings),
+            },
+            "notify-command-seconds" => match v.parse::<u64>() {
+                Ok(n) => self.notify_command_seconds = n,
+                Err(_) => bad(warnings),
+            },
             "clipboard-write" => match v {
                 "allow" | "true" => self.clipboard_write = true,
                 "deny" | "false" => self.clipboard_write = false,
@@ -603,7 +622,6 @@ const KNOWN_IGNORED: &[&str] = &[
     "macos-window-shadow",
     "confirm-close-surface",
     "quit-after-last-window-closed",
-    "shell-integration",
     "shell-integration-features",
     "auto-update",
     "auto-update-channel",

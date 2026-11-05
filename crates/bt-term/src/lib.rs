@@ -3,6 +3,7 @@
 mod color;
 pub mod input;
 pub mod notify;
+pub mod plain;
 pub mod process;
 pub mod screen;
 mod session;
@@ -10,7 +11,9 @@ mod session;
 pub use input::{
     KittyFlags, Mods, NamedKey, encode_char_kitty, encode_named, encode_named_kitty, encode_paste, encode_text,
 };
-pub use notify::{Notification, Signal};
+pub use notify::{Notification, PromptMark, Signal};
 pub use process::Foreground;
 pub use screen::{Cell, CellFlags, Cursor, CursorShape, Modes, Screen};
-pub use session::{ClipboardReply, Emulator, EventSink, GridSize, SelectKind, Session, SessionEvent, SpawnOptions};
+pub use session::{
+    ClipboardReply, CommandRecord, Emulator, EventSink, GridSize, SelectKind, Session, SessionEvent, SpawnOptions,
+};

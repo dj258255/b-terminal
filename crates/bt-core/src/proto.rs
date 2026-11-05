@@ -49,6 +49,20 @@ pub enum Call {
         #[serde(default)]
         tab: Option<u64>,
     },
+    /// 탭에 명령을 넣고, 셸 통합이 그 명령의 끝(OSC 133;D)을 알릴 때까지 기다려 출력과 종료 코드를 돌려준다.
+    /// 에이전트가 다른 탭을 도구로 쓰는 길이다
+    Run {
+        #[serde(default)]
+        tab: Option<u64>,
+        command: String,
+        #[serde(default = "default_run_timeout")]
+        timeout_ms: u64,
+    },
+    /// 탭에서 마지막으로 끝난 명령(셸 통합)
+    LastCommand {
+        #[serde(default)]
+        tab: Option<u64>,
+    },
     /// 설정 파일을 다시 읽는다(키 묶음 reload_config와 같다)
     ReloadConfig,
     /// 탭에 알림을 단다(OSC 알림과 같게 다룬다)
@@ -60,6 +74,31 @@ pub enum Call {
         #[serde(default)]
         body: String,
     },
+}
+
+fn default_run_timeout() -> u64 {
+    60_000
+}
+
+impl Call {
+    /// 창 스레드의 답을 기다리는 상한. run은 명령이 끝날 때까지
+    pub fn reply_timeout(&self) -> std::time::Duration {
+        match self {
+            Call::Run { timeout_ms, .. } => std::time::Duration::from_millis(timeout_ms.saturating_add(3000)),
+            _ => std::time::Duration::from_secs(5),
+        }
+    }
+}
+
+/// `run`·`last_command`의 결과
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CommandResult {
+    #[serde(default)]
+    pub command: Option<String>,
+    pub output: String,
+    #[serde(default)]
+    pub exit_code: Option<i32>,
+    pub duration_ms: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

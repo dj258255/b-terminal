@@ -94,11 +94,12 @@ fn serve(stream: UnixStream, proxy: EventLoopProxy<UserEvent>) {
 
 fn dispatch(req: Request, proxy: &EventLoopProxy<UserEvent>) -> Response {
     let id = req.id;
+    let wait = req.call.reply_timeout();
     let (tx, rx): (SyncSender<Response>, _) = sync_channel(1);
     if proxy.send_event(UserEvent::Control(req, tx)).is_err() {
         return Response::err(id, "터미널이 끝나는 중입니다");
     }
-    rx.recv_timeout(REPLY_TIMEOUT)
+    rx.recv_timeout(wait.max(REPLY_TIMEOUT))
         .unwrap_or_else(|_| Response::err(id, "터미널이 답하지 않습니다"))
 }
 

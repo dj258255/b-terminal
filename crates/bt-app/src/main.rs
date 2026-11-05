@@ -6,6 +6,7 @@ mod desktop;
 mod keymap;
 mod keys;
 mod mouse;
+mod shellint;
 mod tabbar;
 
 use bt_term::SpawnOptions;

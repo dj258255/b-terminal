@@ -23,7 +23,8 @@ cargo run --release -p bt-app -- --cwd ~/dev  # 시작 폴더
 | Cmd-= / Cmd-- / Cmd-0 | 글자 크기 |
 | Cmd-T / Cmd-W | 새 탭 / 탭 닫기 |
 | Cmd-1~8, Cmd-9, Cmd-[ / Cmd-] | 탭 옮기기(탭 줄을 눌러도 됩니다) |
-| Shift-PageUp / PageDown, Cmd-↑ / ↓ | 스크롤백 |
+| Shift-PageUp / PageDown | 스크롤백 |
+| Cmd-↑ / Cmd-↓ | 앞·뒤 프롬프트로(셸 통합) |
 | Shift-Enter | Claude Code 등에서 줄바꿈(kitty 키보드 프로토콜. 프로그램이 켰을 때) |
 | Cmd-K | 화면 지우기 |
 | Cmd-Shift-, | 설정 다시 읽기 |
@@ -59,6 +60,8 @@ btctl send --tab 2 --enter "make test"   # 2번 탭에 글과 Enter
 btctl read --tab 2                       # 2번 탭 화면을 글로
 btctl notify "빌드" "끝났습니다"           # 이 탭에 알림
 btctl reload-config                      # 설정 다시 읽기
+btctl run --tab 2 -- cargo test          # 2번 탭에서 돌리고 끝날 때까지 기다려 출력·종료 코드(셸 통합)
+btctl last --tab 2 --json                # 2번 탭에서 마지막으로 끝난 명령
 ```
 
 제어 소켓은 같은 사용자만 닿는 폴더(0700)의 소켓(0600)입니다. 자세한 경계는 [SECURITY.md](SECURITY.md)에 있습니다.
