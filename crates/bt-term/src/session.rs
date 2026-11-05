@@ -689,6 +689,7 @@ fn snapshot_of<T: EventListener>(term: &Term<T>, theme: &Theme) -> Screen {
     let mut cells = vec![Cell::blank(foreground, background); cols * rows];
     let offset = content.display_offset as i32;
     let selection = content.selection;
+    let mut links: Vec<String> = Vec::new();
 
     for indexed in content.display_iter {
         let row = indexed.point.line.0 + offset;
@@ -731,6 +732,20 @@ fn snapshot_of<T: EventListener>(term: &Term<T>, theme: &Theme) -> Screen {
         if selection.is_some_and(|s| s.contains(indexed.point)) {
             flags.insert(CellFlags::SELECTED);
         }
+        if f.contains(Flags::WRAPLINE) {
+            flags.insert(CellFlags::WRAPLINE);
+        }
+        // OSC 8 링크: 같은 주소는 한 번만 담는다
+        let link = src.hyperlink().map(|h| {
+            let uri = h.uri();
+            match links.iter().position(|l| l == uri) {
+                Some(i) => i as u32,
+                None => {
+                    links.push(uri.to_string());
+                    (links.len() - 1) as u32
+                }
+            }
+        });
         let combining = src.zerowidth().map(|z| z.to_vec()).unwrap_or_default();
         cells[row as usize * cols + col] = Cell {
             ch: src.c,
@@ -738,6 +753,7 @@ fn snapshot_of<T: EventListener>(term: &Term<T>, theme: &Theme) -> Screen {
             fg,
             bg,
             flags,
+            link,
         };
     }
 
@@ -771,6 +787,7 @@ fn snapshot_of<T: EventListener>(term: &Term<T>, theme: &Theme) -> Screen {
         display_offset: content.display_offset,
         history: term.grid().history_size(),
         background,
+        links,
     }
 }
 

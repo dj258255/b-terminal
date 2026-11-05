@@ -139,3 +139,26 @@ pub fn draw_toast(canvas: &mut Canvas, fonts: &mut Fonts, theme: &Theme, text: &
         false,
     );
 }
+
+/// 링크 주소를 창 왼쪽 아래에 띄운다(Cmd를 누른 채 링크 위에 있을 때)
+pub fn draw_link_hint(canvas: &mut Canvas, fonts: &mut Fonts, theme: &Theme, url: &str) {
+    let m = fonts.metrics();
+    // 창 폭의 대부분까지 쓴다
+    let max_cells = ((canvas.width / m.width.max(1)) as usize).saturating_sub(6).max(8);
+    let text = truncate(url, max_cells);
+    let tw = m.width * text_cells(&text) as u32;
+    let (w, h) = (tw + m.width * 2, m.height + m.height / 2);
+    let x = m.width as i32 / 2;
+    let y = canvas.height as i32 - h as i32 - m.height as i32 / 2;
+    canvas.fill_rect(x, y, w, h, theme.background.mix(theme.foreground, 0.12));
+    canvas.stroke_rect(x, y, w, h, 1, theme.background.mix(theme.foreground, 0.3));
+    draw_text(
+        canvas,
+        fonts,
+        x + m.width as i32,
+        y + (h as i32 - m.height as i32) / 2,
+        &text,
+        theme.foreground,
+        false,
+    );
+}

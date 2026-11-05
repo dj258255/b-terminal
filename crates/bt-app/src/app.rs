@@ -13,7 +13,7 @@ use winit::dpi::{LogicalSize, PhysicalPosition, PhysicalSize};
 use winit::event::{ElementState, Ime, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoopProxy};
 use winit::keyboard::ModifiersState;
-use winit::window::{Window, WindowId};
+use winit::window::{CursorIcon, Window, WindowId};
 
 use crate::keymap::{Action, Keymap, SplitTarget};
 use crate::keys;
@@ -127,6 +127,7 @@ struct TabGroup {
 
 /// 그릴 칸 하나(다시 그릴 때 잠깐 쓴다)
 struct PaneView {
+    id: u64,
     outer: Rect,
     inner: Rect,
     screen: Screen,
@@ -173,6 +174,10 @@ pub struct App {
     menu: Option<muda::Menu>,
     /// 창 안 알림 띠(글, 띄운 때). 2.5초 보인다
     toast: Option<(String, Instant)>,
+    /// Cmd를 누른 채 마우스가 올라간 링크(칸 id, 링크)
+    hover: Option<(u64, bt_term::links::LinkHit)>,
+    /// Cmd-클릭으로 링크를 열었다: 뒤따르는 놓기를 프로그램에 보내지 않는다
+    link_click: bool,
     control: Option<crate::control::ControlServer>,
     keymap: Keymap,
     /// --config-file(설정을 다시 읽을 때 같은 파일을 읽는다)
@@ -216,6 +221,8 @@ impl App {
             focused: true,
             next_poll: Instant::now(),
             toast: None,
+            hover: None,
+            link_click: false,
             #[cfg(target_os = "macos")]
             menu: None,
             shell_integration_dir: None,
@@ -901,6 +908,58 @@ impl App {
         ))
     }
 
+    /// 링크를 짚는 수식 키: macOS는 Cmd, 그 밖에는 Ctrl(Ghostty와 같다)
+    fn link_mod(&self) -> bool {
+        if cfg!(target_os = "macos") {
+            self.mods.super_key()
+        } else {
+            self.mods.control_key()
+        }
+    }
+
+    /// 창 좌표 아래의 링크(칸의 격자 안에서만)
+    fn link_under(&self, pos: PhysicalPosition<f64>) -> Option<(u64, bt_term::links::LinkHit)> {
+        let id = self.pane_at(pos)?;
+        let i = self.pane_index(id)?;
+        if !self.inner_rect(self.pane_rect(id)?).contains(pos.x, pos.y) {
+            return None;
+        }
+        let (c, r) = self.cell_in(i, pos)?;
+        bt_term::links::link_at(&self.panes[i].session.snapshot(), c, r).map(|h| (id, h))
+    }
+
+    /// Cmd를 누른 동안 마우스 아래 링크를 다시 본다. 바뀌면 밑줄과 마우스 모양을 바꾼다
+    fn update_hover(&mut self) {
+        let next = if self.link_mod() {
+            self.link_under(self.cursor_pos)
+        } else {
+            None
+        };
+        if next == self.hover {
+            return;
+        }
+        if let Some(g) = &self.gfx {
+            g.window.set_cursor(if next.is_some() {
+                CursorIcon::Pointer
+            } else {
+                CursorIcon::Default
+            });
+        }
+        self.hover = next;
+        self.request_redraw();
+    }
+
+    /// 링크를 연다: 열어도 되는 것(http·https, 이 컴퓨터의 파일)만
+    fn open_link(&mut self, url: &str) {
+        match bt_term::links::classify(url, &is_local_host) {
+            Some(target) => crate::desktop::open_link(&target),
+            None => {
+                let shown: String = bt_core::proto::printable(url).chars().take(60).collect();
+                self.toast(format!("열 수 없는 링크입니다: {shown}"));
+            }
+        }
+    }
+
     /// 고른 칸의 자리
     fn active_index(&self) -> Option<usize> {
         self.focused_id().and_then(|id| self.pane_index(id))
@@ -1107,6 +1166,7 @@ impl App {
             .filter_map(|(id, outer)| {
                 let p = &self.panes[self.pane_index(*id)?];
                 Some(PaneView {
+                    id: *id,
                     outer: *outer,
                     inner: self.inner_rect(*outer),
                     screen: p.session.snapshot(),
@@ -1160,6 +1220,7 @@ impl App {
             .unwrap_or_else(|| "b-terminal".into());
         let title = self.config.title.clone().unwrap_or(title);
         let preedit = self.preedit.clone();
+        let hover = self.hover.clone();
         let Some(gfx) = self.gfx.as_mut() else { return };
         let Some(fonts) = self.fonts.as_mut() else { return };
         let size = gfx.window.inner_size();
@@ -1185,6 +1246,7 @@ impl App {
             }
             let m = fonts.metrics();
             for PaneView {
+                id,
                 outer,
                 inner,
                 screen,
@@ -1193,7 +1255,17 @@ impl App {
             } in &views
             {
                 canvas.fill_rect(outer.x, outer.y, outer.w, outer.h, screen.background);
-                let cells = to_draw_cells(screen);
+                let mut cells = to_draw_cells(screen);
+                // Cmd를 누른 채 올라간 링크에 밑줄
+                if let Some((_, hit)) = hover.as_ref().filter(|(h, _)| h == id) {
+                    for sp in &hit.spans {
+                        for c in sp.start..sp.end.min(screen.cols) {
+                            if let Some(cell) = cells.get_mut(sp.row * screen.cols + c) {
+                                cell.underline = true;
+                            }
+                        }
+                    }
+                }
                 let cursor = screen.cursor.visible.then_some(DrawCursor {
                     col: screen.cursor.col,
                     row: screen.cursor.row,
@@ -1237,6 +1309,10 @@ impl App {
             for d in &dividers {
                 canvas.fill_rect(d.x, d.y, d.w, d.h, divider_color);
             }
+            // 실제 주소를 창 왼쪽 아래에 보인다(OSC 8 링크는 보이는 글과 주소가 다를 수 있다)
+            if let Some((_, hit)) = &hover {
+                tabbar::draw_link_hint(&mut canvas, fonts, &theme, &bt_core::proto::printable(&hit.url));
+            }
             if let Some((text, _)) = &toast {
                 crate::tabbar::draw_toast(&mut canvas, fonts, &theme, text);
             }
@@ -1249,12 +1325,15 @@ impl App {
 /// OSC 7 폴더를 새 탭의 시작 폴더로 써도 되는가: 호스트가 이 컴퓨터(빈 값·localhost·호스트 이름)이고 실제 폴더일 때만.
 /// ssh 안의 셸이 보낸 원격 경로나 터미널에 찍힌 글이 고른 경로로 새 셸을 열지 않는다
 pub fn osc7_is_local(host: &str, path: &std::path::Path) -> bool {
+    is_local_host(host) && path.is_absolute() && path.is_dir()
+}
+
+/// 호스트 이름이 이 컴퓨터인가(빈 값·localhost·호스트 이름·그 짧은 이름). OSC 7 폴더와 file 링크가 쓴다
+pub fn is_local_host(host: &str) -> bool {
     let local = gethostname::gethostname().to_string_lossy().to_ascii_lowercase();
     let host = host.to_ascii_lowercase();
     let short = local.split('.').next().unwrap_or(&local).to_string();
-    let host_ok =
-        host.is_empty() || host == "localhost" || host == local || host.split('.').next() == Some(short.as_str());
-    host_ok && path.is_absolute() && path.is_dir()
+    host.is_empty() || host == "localhost" || host == local || host.split('.').next() == Some(short.as_str())
 }
 
 pub fn to_draw_cells(s: &Screen) -> Vec<DrawCell> {
@@ -1366,7 +1445,13 @@ impl ApplicationHandler<UserEvent> for App {
 
     fn user_event(&mut self, event_loop: &ActiveEventLoop, event: UserEvent) {
         match event {
-            UserEvent::Redraw => self.request_redraw(),
+            UserEvent::Redraw => {
+                // 화면이 바뀌면 짚고 있던 링크도 바뀔 수 있다
+                if self.hover.is_some() {
+                    self.update_hover();
+                }
+                self.request_redraw()
+            }
             UserEvent::Menu(id) => match crate::menu::action_for(&id) {
                 Some(crate::menu::MenuCommand::Action(a)) => self.handle_action(a, event_loop),
                 Some(crate::menu::MenuCommand::OpenSettings) => match crate::menu::ensure_config_file() {
@@ -1475,7 +1560,10 @@ impl ApplicationHandler<UserEvent> for App {
                 self.resize_all();
             }
             WindowEvent::RedrawRequested => self.redraw(),
-            WindowEvent::ModifiersChanged(m) => self.mods = m.state(),
+            WindowEvent::ModifiersChanged(m) => {
+                self.mods = m.state();
+                self.update_hover();
+            }
             WindowEvent::Focused(focused) => {
                 self.focused = focused;
                 if focused {
@@ -1531,6 +1619,7 @@ impl ApplicationHandler<UserEvent> for App {
                         g.window.set_cursor_visible(true);
                     }
                 }
+                self.update_hover();
                 let Some(idx) = self.active_index() else { return };
                 if self.selecting {
                     if let Some((c, r)) = self.cell_in(idx, position) {
@@ -1558,6 +1647,20 @@ impl ApplicationHandler<UserEvent> for App {
                         }
                     }
                     return;
+                }
+                // Cmd-클릭: 링크를 연다. 누름과 놓기 모두 프로그램(마우스 보고)·고르기에 보내지 않는다
+                if button == MouseButton::Left {
+                    if state == ElementState::Released && self.link_click {
+                        self.link_click = false;
+                        return;
+                    }
+                    if state == ElementState::Pressed && self.link_mod() {
+                        if let Some((_, hit)) = self.link_under(self.cursor_pos) {
+                            self.link_click = true;
+                            self.open_link(&hit.url);
+                            return;
+                        }
+                    }
                 }
                 // 다른 칸을 누르면 그 칸을 고른다. 누름은 고른 칸이 그대로 받는다
                 if state == ElementState::Pressed {
