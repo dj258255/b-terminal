@@ -49,6 +49,8 @@ pub enum Call {
         #[serde(default)]
         tab: Option<u64>,
     },
+    /// 설정 파일을 다시 읽는다(키 묶음 reload_config와 같다)
+    ReloadConfig,
     /// 탭에 알림을 단다(OSC 알림과 같게 다룬다)
     Notify {
         #[serde(default)]

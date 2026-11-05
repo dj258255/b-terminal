@@ -55,10 +55,42 @@ config-file = ?~/.config/b-terminal/local   # ?가 붙으면 없어도 된다
 | `command` | 명령 | 로그인 셸 | `/bin/sh -c "exec <명령>"`으로 띄웁니다 |
 | `working-directory` | `home` `inherit` 경로 | `inherit` | 새 탭은 `inherit`일 때 지금 탭의 폴더 |
 | `title` | 글 | 셸이 보낸 제목 | 창 제목을 고정 |
-| `keybind` | `트리거=동작` | Ghostty 기본 일부 | [#27](https://github.com/dj258255/b-terminal/issues/27)에서 해석 |
+| `keybind` | `트리거=동작` | 아래 표 | 아래 "키 묶음" |
 | `config-file` | 경로(`?` 붙이면 선택) | | 그 자리에서 읽어 넣음. 8단계까지 |
 | `import-ghostty` | `true` / `false` | `true` | b-terminal 키 |
 
 ### 받기만 하고 쓰지 않는 Ghostty 키
 
 경고 없이 넘깁니다: `font-feature`, `font-thicken`, `background-opacity`, `background-blur`, `window-decoration`, `window-theme`, `window-save-state`, `macos-titlebar-style`, `macos-icon`, `confirm-close-surface`, `shell-integration`, `auto-update`, `minimum-contrast`, `clipboard-read`·`clipboard-write`, `unfocused-split-opacity` 등. 그 밖의 키는 경고합니다.
+
+## 키 묶음
+
+Ghostty와 같은 문법입니다. 기본 묶음 위에 차례로 얹고, 같은 트리거는 나중 것이 이깁니다.
+
+```
+keybind = super+shift+n=new_tab
+keybind = super+t=unbind              # 기본 묶음 지우기
+keybind = ctrl+alt+g=text:git status\r # 글 보내기(\n \r \t \e \xHH)
+keybind = clear                       # 기본 묶음을 모두 지우기
+```
+
+- 수식 키: `super`(cmd) `ctrl` `alt`(opt) `shift`. 키 이름은 Ghostty 이름: `a`~`z`, `digit_1`(또는 `1`), `equal`, `minus`, `comma`, `bracket_left`, `bracket_right`, `arrow_up`, `page_up`, `home`, `enter`, `f1` …
+- 키 순서(`ctrl+a>n`)와 분할 동작은 아직 받지 않습니다(경고).
+- macOS가 아니면 기본 묶음의 `super`는 `ctrl+shift`로 바뀝니다.
+
+| 동작 | 하는 일 | macOS 기본 |
+|---|---|---|
+| `copy_to_clipboard` / `paste_from_clipboard` | 복사 / 붙여넣기 | `super+c` / `super+v` |
+| `new_tab` / `close_surface` | 새 탭 / 탭 닫기 | `super+t` / `super+w` |
+| `goto_tab:N` / `last_tab` | N번째 / 마지막 탭 | `super+1`~`8` / `super+9` |
+| `next_tab` / `previous_tab` | 다음 / 앞 탭 | `super+]` `super+shift+]` / `super+[` `super+shift+[` |
+| `increase_font_size:N` / `decrease_font_size:N` / `reset_font_size` | 글자 크기 | `super+=` / `super+-` / `super+0` |
+| `scroll_page_up` / `scroll_page_down` | 스크롤백 한 쪽 | `shift+page_up` `super+page_up` `super+arrow_up` / 아래도 같음 |
+| `scroll_to_top` / `scroll_to_bottom` | 맨 위 / 맨 아래 | `shift+home` `super+home` / `shift+end` `super+end` |
+| `clear_screen` | 화면 지우기(셸에 Ctrl-L) | `super+k` |
+| `select_all` | 보이는 화면 모두 고르기 | `super+a` |
+| `reload_config` | 설정 다시 읽기 | `super+shift+comma` |
+| `text:글` / `csi:…` / `esc:…` | 글·이스케이프 보내기 | |
+| `unbind` | 그 트리거 지우기 | |
+
+설정 다시 읽기는 글꼴·색(이미 열린 탭 포함)·키 묶음·여백·Option 키를 바꿉니다. 바깥에서 부르려면 `btctl reload-config`.

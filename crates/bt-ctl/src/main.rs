@@ -15,6 +15,7 @@ const USAGE: &str = "사용: btctl <명령> [인자]
   send [--tab N] [--enter] <글...>  탭에 글 넣기(--enter면 끝에 Enter)
   read [--tab N]                    탭 화면을 글로
   notify [--tab N] <제목> [본문]    알림 달기(OSC 알림과 같게 다룸)
+  reload-config                     설정 파일을 다시 읽기
 
 탭을 주지 않으면 btctl을 부른 탭(BT_TAB_ID), 탭 밖이면 지금 보는 탭입니다.";
 
@@ -168,6 +169,22 @@ fn run(args: &[String]) -> Result<String, Error> {
             let body = rest.get(1..).map(|r| r.join(" ")).unwrap_or_default();
             call(&socket, Call::Notify { tab, title, body })?;
             Ok(String::new())
+        }
+        "reload-config" => {
+            let v = call(&socket, Call::ReloadConfig)?;
+            let warnings: Vec<String> = v["warnings"]
+                .as_array()
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|w| w.as_str().map(|s| format!("경고: {}", printable(s))))
+                        .collect()
+                })
+                .unwrap_or_default();
+            Ok(if warnings.is_empty() {
+                "설정을 다시 읽었습니다".into()
+            } else {
+                warnings.join("\n")
+            })
         }
         other => Err(usage(format!("모르는 명령: {other}"))),
     }

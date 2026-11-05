@@ -1,74 +1,66 @@
 //! winit 키 이벤트를 PTY 바이트로 바꾼다. 앱 단축키(Cmd-…)는 여기서 거른다
 
-use bt_term::{Mods, NamedKey, encode_named, encode_text};
+use bt_term::{Mods as TermMods, NamedKey, encode_named, encode_text};
+
+use crate::keymap::{Mods, Trigger, normalize_key};
 use winit::event::KeyEvent;
 use winit::keyboard::{Key, ModifiersState, NamedKey as WKey};
 
-/// 앱이 처리하는 단축키
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Shortcut {
-    Copy,
-    Paste,
-    FontBigger,
-    FontSmaller,
-    FontReset,
-    NewTab,
-    CloseTab,
-    NextTab,
-    PrevTab,
-    /// Cmd-1 … Cmd-9
-    GotoTab(usize),
-    ClearScrollback,
-    ScrollPageUp,
-    ScrollPageDown,
-    ScrollTop,
-    ScrollBottom,
-}
-
-/// 키 이벤트가 단축키인가. macOS는 Cmd(Super), 다른 OS는 Ctrl+Shift
-pub fn shortcut(event: &KeyEvent, mods: ModifiersState) -> Option<Shortcut> {
-    let primary = if cfg!(target_os = "macos") {
-        mods.super_key()
-    } else {
-        mods.control_key() && mods.shift_key()
-    };
-    if mods.shift_key() && !primary {
-        return match &event.logical_key {
-            Key::Named(WKey::PageUp) => Some(Shortcut::ScrollPageUp),
-            Key::Named(WKey::PageDown) => Some(Shortcut::ScrollPageDown),
-            Key::Named(WKey::Home) => Some(Shortcut::ScrollTop),
-            Key::Named(WKey::End) => Some(Shortcut::ScrollBottom),
-            _ => None,
-        };
-    }
-    if !primary {
-        return None;
-    }
-    let key = match &event.logical_key {
-        Key::Character(s) => s.to_lowercase(),
-        Key::Named(WKey::ArrowUp) => return Some(Shortcut::ScrollPageUp),
-        Key::Named(WKey::ArrowDown) => return Some(Shortcut::ScrollPageDown),
+/// 키 이벤트를 키 묶음 트리거로(Ghostty 키 이름). 수식 키를 뺀 글자를 쓴다(Shift+]도 bracket_right)
+pub fn trigger(event: &KeyEvent, mods: ModifiersState) -> Option<Trigger> {
+    use winit::platform::modifier_supplement::KeyEventExtModifierSupplement;
+    let key = match event.key_without_modifiers() {
+        Key::Character(s) => normalize_key(&s),
+        Key::Named(n) => named_key_name(n)?.to_string(),
         _ => return None,
     };
-    Some(match key.as_str() {
-        "c" => Shortcut::Copy,
-        "v" => Shortcut::Paste,
-        "=" | "+" => Shortcut::FontBigger,
-        "-" => Shortcut::FontSmaller,
-        "0" => Shortcut::FontReset,
-        "t" => Shortcut::NewTab,
-        "w" => Shortcut::CloseTab,
-        "]" | "}" => Shortcut::NextTab,
-        "[" | "{" => Shortcut::PrevTab,
-        "k" => Shortcut::ClearScrollback,
-        d if d.len() == 1 && ("1"..="9").contains(&d) => Shortcut::GotoTab(d.parse::<usize>().unwrap_or(1) - 1),
+    Some(Trigger {
+        mods: Mods {
+            shift: mods.shift_key(),
+            ctrl: mods.control_key(),
+            alt: mods.alt_key(),
+            sup: mods.super_key(),
+        },
+        key,
+    })
+}
+
+fn named_key_name(n: WKey) -> Option<&'static str> {
+    Some(match n {
+        WKey::Enter => "enter",
+        WKey::Tab => "tab",
+        WKey::Escape => "escape",
+        WKey::Backspace => "backspace",
+        WKey::Delete => "delete",
+        WKey::Insert => "insert",
+        WKey::Space => "space",
+        WKey::ArrowUp => "arrow_up",
+        WKey::ArrowDown => "arrow_down",
+        WKey::ArrowLeft => "arrow_left",
+        WKey::ArrowRight => "arrow_right",
+        WKey::Home => "home",
+        WKey::End => "end",
+        WKey::PageUp => "page_up",
+        WKey::PageDown => "page_down",
+        WKey::F1 => "f1",
+        WKey::F2 => "f2",
+        WKey::F3 => "f3",
+        WKey::F4 => "f4",
+        WKey::F5 => "f5",
+        WKey::F6 => "f6",
+        WKey::F7 => "f7",
+        WKey::F8 => "f8",
+        WKey::F9 => "f9",
+        WKey::F10 => "f10",
+        WKey::F11 => "f11",
+        WKey::F12 => "f12",
         _ => return None,
     })
 }
 
 /// 키 이벤트를 PTY 바이트로. 보낼 것이 없으면 빈 벡터
 pub fn encode(event: &KeyEvent, mods: ModifiersState, app_cursor: bool, option_as_alt: bool) -> Vec<u8> {
-    let m = Mods {
+    let m = TermMods {
         shift: mods.shift_key(),
         ctrl: mods.control_key(),
         alt: mods.alt_key() && option_as_alt,
@@ -113,7 +105,7 @@ pub fn encode(event: &KeyEvent, mods: ModifiersState, app_cursor: bool, option_a
         }
     }
     match &event.text {
-        Some(t) if !t.is_empty() => encode_text(t, Mods::default()),
+        Some(t) if !t.is_empty() => encode_text(t, TermMods::default()),
         _ => Vec::new(),
     }
 }

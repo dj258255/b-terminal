@@ -3,6 +3,7 @@
 mod app;
 mod control;
 mod desktop;
+mod keymap;
 mod keys;
 mod mouse;
 mod tabbar;
@@ -47,7 +48,7 @@ fn parse_args(args: impl Iterator<Item = String>) -> Result<Cli, String> {
 }
 
 /// macOS가 어두운 모드인가(`theme = light:…,dark:…`에서 고를 쪽). 모르면 어두운 쪽
-fn system_is_dark() -> bool {
+pub fn system_is_dark() -> bool {
     #[cfg(target_os = "macos")]
     {
         // 밝은 모드에서는 이 키가 없어 명령이 실패한다
@@ -87,7 +88,7 @@ fn main() -> anyhow::Result<()> {
         log::warn!("설정: {w}");
     }
     let event_loop = EventLoop::<app::UserEvent>::with_user_event().build()?;
-    let mut app = app::App::new(config, event_loop.create_proxy(), cli.first);
+    let mut app = app::App::new(config, cli.config_file.clone(), event_loop.create_proxy(), cli.first);
     event_loop.run_app(&mut app)?;
     Ok(())
 }
