@@ -1,12 +1,12 @@
 # b-terminal
 
-> Ghostty 같은 터미널 에뮬레이터를 Rust로 만듭니다. 한글 입력이 깨지지 않고, Ghostty 설정 문법으로 꾸밀 수 있는 그냥 터미널입니다.
+> AI 에이전트 시대를 위한 나만의 Rust 터미널. Claude Code·Codex 같은 AI CLI가 쓰는 신호(Shift+Enter, 알림, 진행 표시, 클립보드, 셸 통합)를 빠짐없이 받고, 에이전트가 터미널을 조종할 수 있습니다. Ghostty를 본보기로 삼았지만 Ghostty 없이 혼자 섭니다.
 
 아직 만드는 중입니다. 계획과 진행은 [ROADMAP.md](ROADMAP.md)에 있습니다.
 
 <img src="docs/images/window-demo.png" width="760" alt="b-terminal 창. 위쪽 가로 탭 줄에 탭 셋, 그 아래 굵은 글자, 한글 문장, 16색·256색·24비트 색, 기울임·밑줄·반전·취소선 글자, 둥근 상자 선, 반칸 블록과 8단계 막대">
 
-- 터미널이 할 일만 합니다: PTY, VT 해석, 렌더링, 탭, 한글 IME, 복사·붙여넣기, 설정.
+- 터미널이 할 일에 집중합니다: PTY, VT 해석, 렌더링, 탭, 한글 IME, 복사·붙여넣기, 설정, 그리고 AI CLI가 쓰는 표준 신호([조사 기록](docs/research/2026-11-06-agentic-terminal.md)).
 - AI 에이전트를 다루는 화면(에이전트 목록·상태·사용량)은 [b-studio](https://github.com/dj258255/b-studio)의 일입니다. b-studio는 b-terminal 안에서 도는 프로그램 중 하나입니다(herdr가 Ghostty 안에서 돌듯이). 경계는 [ADR-005](docs/decisions.md#adr-005-b-terminal은-순수-터미널이고-ai-작업-화면은-b-studio가-맡는다)에 적었습니다.
 
 ## 띄우기
@@ -30,9 +30,9 @@ cargo run --release -p bt-app -- --cwd ~/dev  # 시작 폴더
 
 모든 키는 설정의 `keybind`로 바꿀 수 있습니다([docs/configuration.md](docs/configuration.md#키-묶음)).
 
-## 설정(Ghostty 문법)
+## 설정
 
-Ghostty 설정 파일이 있으면 그대로 읽고, `~/.config/b-terminal/config`가 그 위를 덮습니다. 설정이 없으면 Ghostty 기본과 같게 보입니다(JetBrains Mono 13, Nerd Font 기호를 앱에 넣어 둠).
+`~/.config/b-terminal/config`에 Ghostty와 같은 문법으로 씁니다. 글꼴(JetBrains Mono, Nerd Font 기호)과 테마 905개를 앱에 넣어 두어 Ghostty를 깔지 않아도 됩니다(`b-terminal --list-themes`). Ghostty 설정을 옮겨 오려면 `import-ghostty = true`.
 
 ```
 theme = Dracula
