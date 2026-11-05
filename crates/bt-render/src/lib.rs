@@ -8,5 +8,5 @@ pub mod text;
 
 pub use canvas::Canvas;
 pub use font::{CellMetrics, FontConfig, FontError, FontStyle, Fonts};
-pub use grid::{CursorStyle, DrawCell, DrawCursor, GridView, draw_grid};
+pub use grid::{CursorStyle, DrawCell, DrawCursor, GridView, draw_grid, draw_grid_rows};
 pub use text::{char_cells, draw_text, text_cells, truncate};

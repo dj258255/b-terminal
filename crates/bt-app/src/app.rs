@@ -6,7 +6,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
-use bt_render::{Canvas, CursorStyle, DrawCell, DrawCursor, FontConfig, Fonts, GridView, draw_grid};
+use bt_render::{Canvas, CursorStyle, DrawCell, DrawCursor, FontConfig, Fonts, GridView, draw_grid, draw_grid_rows};
 use bt_term::{CellFlags, CursorShape, GridSize, Screen, SelectKind, Session, SessionEvent, SpawnOptions};
 use winit::application::ApplicationHandler;
 use winit::dpi::{LogicalSize, PhysicalPosition, PhysicalSize};
@@ -200,6 +200,13 @@ pub struct App {
     link_click: bool,
     /// 열린 찾기 막대(칸 하나에 붙는다)
     search: Option<SearchBar>,
+    /// 들고 있는 프레임과 그 내용(바뀐 줄만 다시 그리려고, #40)
+    frame: Vec<u32>,
+    last_frame: Option<FrameMemo>,
+    /// 커서 깜빡임: 지금 보이는가, 다음에 바꿀 때, 깜빡일 커서가 있는가
+    blink_on: bool,
+    blink_next: Instant,
+    blink_wanted: bool,
     control: Option<crate::control::ControlServer>,
     keymap: Keymap,
     /// --config-file(설정을 다시 읽을 때 같은 파일을 읽는다)
@@ -246,6 +253,11 @@ impl App {
             hover: None,
             link_click: false,
             search: None,
+            frame: Vec::new(),
+            last_frame: None,
+            blink_on: true,
+            blink_next: Instant::now(),
+            blink_wanted: false,
             #[cfg(target_os = "macos")]
             menu: None,
             shell_integration_dir: None,
@@ -1344,43 +1356,16 @@ impl App {
                 s.status.is_some_and(|st| st.total == 0),
             )
         });
-        let Some(gfx) = self.gfx.as_mut() else { return };
-        let Some(fonts) = self.fonts.as_mut() else { return };
-        let size = gfx.window.inner_size();
-        let (Some(w), Some(h)) = (NonZeroU32::new(size.width), NonZeroU32::new(size.height)) else {
-            return;
-        };
-        if gfx.surface.resize(w, h).is_err() {
-            return;
-        }
-        let Ok(mut buffer) = gfx.surface.buffer_mut() else {
-            return;
-        };
-        {
-            let mut canvas = Canvas::new(&mut buffer, size.width, size.height);
-            let bg = views
-                .iter()
-                .find(|v| v.focused)
-                .map(|v| v.screen.background)
-                .unwrap_or(theme.background);
-            canvas.clear(bg);
-            if !labels.is_empty() {
-                tabbar::draw(&mut canvas, fonts, &theme, &labels);
-            }
-            let m = fonts.metrics();
-            for PaneView {
-                id,
-                outer,
-                inner,
-                screen,
-                focused,
-                progress,
-            } in &views
-            {
-                canvas.fill_rect(outer.x, outer.y, outer.w, outer.h, screen.background);
+        // 칸마다 렌더러 셀과 커서를 미리 만든다(앞 프레임과 견주려고)
+        let blink_hidden = self.blink_wanted_for(&views) && !self.blink_on;
+        self.blink_wanted = self.blink_wanted_for(&views);
+        let drawn: Vec<(Vec<DrawCell>, Option<DrawCursor>, Option<String>)> = views
+            .iter()
+            .map(|v| {
+                let screen = &v.screen;
                 let mut cells = to_draw_cells(screen, &theme);
                 // Cmd를 누른 채 올라간 링크에 밑줄
-                if let Some((_, hit)) = hover.as_ref().filter(|(h, _)| h == id) {
+                if let Some((_, hit)) = hover.as_ref().filter(|(h, _)| *h == v.id) {
                     for sp in &hit.spans {
                         for c in sp.start..sp.end.min(screen.cols) {
                             if let Some(cell) = cells.get_mut(sp.row * screen.cols + c) {
@@ -1389,11 +1374,12 @@ impl App {
                         }
                     }
                 }
-                let cursor = screen.cursor.visible.then_some(DrawCursor {
+                let hide = v.focused && blink_hidden;
+                let cursor = (screen.cursor.visible && !hide).then_some(DrawCursor {
                     col: screen.cursor.col,
                     row: screen.cursor.row,
                     // 고르지 않은 칸의 커서는 속이 빈 네모(Ghostty와 같다)
-                    style: match (focused, screen.cursor.shape) {
+                    style: match (v.focused, screen.cursor.shape) {
                         (false, _) => CursorStyle::Hollow,
                         (true, CursorShape::Block) => CursorStyle::Block,
                         (true, CursorShape::Beam) => CursorStyle::Beam,
@@ -1404,56 +1390,246 @@ impl App {
                     color: theme.cursor,
                     text_color: theme.cursor_text,
                 });
+                // IME 조합 글은 고른 칸에만 그린다(찾기 막대가 열려 있으면 막대에)
+                let pre = (v.focused && search.is_none() && !preedit.is_empty()).then(|| preedit.clone());
+                (cells, cursor, pre)
+            })
+            .collect();
+        let Some(gfx) = self.gfx.as_mut() else { return };
+        let Some(fonts) = self.fonts.as_mut() else { return };
+        let size = gfx.window.inner_size();
+        let m = fonts.metrics();
+        // 격자 밖에 그리는 모든 것. 하나라도 바뀌면 통째로 다시 그린다.
+        // 격자 위에 겹쳐 그리는 것(알림 띠, 주소 띠, 찾기 막대, 진행 막대)이 있으면 늘 통째로
+        let chrome = Chrome {
+            size: (size.width, size.height),
+            cell: (m.width, m.height),
+            panes: views
+                .iter()
+                .map(|v| {
+                    (
+                        v.id,
+                        v.outer,
+                        v.inner,
+                        v.focused,
+                        v.screen.background,
+                        v.screen.cols,
+                        v.screen.rows,
+                    )
+                })
+                .collect(),
+            labels: labels
+                .iter()
+                .map(|l| (l.title.clone(), l.active, l.unread, l.progress))
+                .collect(),
+            overlay: toast.is_some()
+                || hover.is_some()
+                || search.is_some()
+                || (single_tab && views.iter().any(|v| v.progress.is_some())),
+            theme: (theme.background, theme.foreground),
+            dim: (dim_alpha, dim_fill, divider_color),
+        };
+        let started = Instant::now();
+        let n = (size.width * size.height) as usize;
+        let full =
+            chrome.overlay || self.last_frame.as_ref().is_none_or(|f| f.chrome != chrome) || self.frame.len() != n;
+        if self.frame.len() != n {
+            self.frame = vec![0; n];
+        }
+        let mut repainted_rows = 0;
+        {
+            let mut canvas = Canvas::new(&mut self.frame, size.width, size.height);
+            if full {
+                let bg = views
+                    .iter()
+                    .find(|v| v.focused)
+                    .map(|v| v.screen.background)
+                    .unwrap_or(theme.background);
+                canvas.clear(bg);
+                if !labels.is_empty() {
+                    tabbar::draw(&mut canvas, fonts, &theme, &labels);
+                }
+            }
+            for (v, (cells, cursor, pre)) in views.iter().zip(&drawn) {
+                let screen = &v.screen;
                 let view = GridView {
                     cols: screen.cols,
                     rows: screen.rows,
-                    cells: &cells,
-                    cursor,
+                    cells,
+                    cursor: *cursor,
                     selection_bg: theme.selection_background,
                     selection_fg: theme.selection_foreground,
-                    // IME 조합 글은 고른 칸에만 그린다(찾기 막대가 열려 있으면 막대에)
-                    preedit: (*focused && search.is_none() && !preedit.is_empty()).then_some(preedit.as_str()),
+                    preedit: pre.as_deref(),
                 };
-                draw_grid(&mut canvas, fonts, inner.x, inner.y, &view);
-                if *focused {
+                if full {
+                    canvas.fill_rect(v.outer.x, v.outer.y, v.outer.w, v.outer.h, screen.background);
+                    draw_grid(&mut canvas, fonts, v.inner.x, v.inner.y, &view);
+                    if split && !v.focused && dim_alpha > 0 {
+                        canvas.blend_rect(v.outer.x, v.outer.y, v.outer.w, v.outer.h, dim_fill, dim_alpha);
+                    }
+                    repainted_rows += screen.rows;
+                } else {
+                    // 앞 프레임과 다른 줄만: 칸이 다르거나, 커서·조합 글이 있던·있는 줄
+                    let prev = self
+                        .last_frame
+                        .as_ref()
+                        .and_then(|f| f.panes.iter().find(|p| p.0 == v.id));
+                    let dirty = dirty_rows(screen.cols, screen.rows, cells, *cursor, pre, prev);
+                    if !dirty.iter().any(|d| *d) {
+                        continue;
+                    }
+                    repainted_rows += dirty.iter().filter(|d| **d).count();
+                    let spans = draw_grid_rows(&mut canvas, fonts, v.inner.x, v.inner.y, &view, &dirty);
+                    if split && !v.focused && dim_alpha > 0 {
+                        for (top, bottom) in spans {
+                            canvas.blend_rect(v.outer.x, top, v.outer.w, (bottom - top) as u32, dim_fill, dim_alpha);
+                        }
+                    }
+                }
+                if v.focused {
                     // IME 후보 창을 커서 옆에 띄운다
-                    let px = inner.x + (screen.cursor.col as u32 * m.width) as i32;
-                    let py = inner.y + (screen.cursor.row as u32 * m.height) as i32;
+                    let px = v.inner.x + (screen.cursor.col as u32 * m.width) as i32;
+                    let py = v.inner.y + (screen.cursor.row as u32 * m.height) as i32;
                     gfx.window
                         .set_ime_cursor_area(PhysicalPosition::new(px, py), PhysicalSize::new(m.width, m.height));
-                } else if split && dim_alpha > 0 {
-                    canvas.blend_rect(outer.x, outer.y, outer.w, outer.h, dim_fill, dim_alpha);
                 }
-                if let Some((_, query, status, missing)) = search.as_ref().filter(|s| s.0 == *id) {
+                if !full {
+                    continue;
+                }
+                if let Some((_, query, status, missing)) = search.as_ref().filter(|s| s.0 == v.id) {
                     tabbar::draw_search_bar(
                         &mut canvas,
                         fonts,
                         &theme,
-                        *outer,
+                        v.outer,
                         &format!("{query}{preedit}"),
                         status,
                         *missing,
                     );
                 }
                 // 탭이 하나면 진행 막대를 칸 맨 위에 얇게(Ghostty와 같은 자리). 탭이 여럿이면 탭 줄에 보인다
-                if let (true, Some(p)) = (single_tab, progress) {
-                    tabbar::draw_progress(&mut canvas, &theme, outer.x, outer.y, outer.w, *p, m.stroke * 3);
+                if let (true, Some(p)) = (single_tab, v.progress) {
+                    tabbar::draw_progress(&mut canvas, &theme, v.outer.x, v.outer.y, v.outer.w, p, m.stroke * 3);
                 }
             }
-            for d in &dividers {
-                canvas.fill_rect(d.x, d.y, d.w, d.h, divider_color);
-            }
-            // 실제 주소를 창 왼쪽 아래에 보인다(OSC 8 링크는 보이는 글과 주소가 다를 수 있다)
-            if let Some((_, hit)) = &hover {
-                tabbar::draw_link_hint(&mut canvas, fonts, &theme, &bt_core::proto::printable(&hit.url));
-            }
-            if let Some((text, _)) = &toast {
-                crate::tabbar::draw_toast(&mut canvas, fonts, &theme, text);
+            if full {
+                for d in &dividers {
+                    canvas.fill_rect(d.x, d.y, d.w, d.h, divider_color);
+                }
+                // 실제 주소를 창 왼쪽 아래에 보인다(OSC 8 링크는 보이는 글과 주소가 다를 수 있다)
+                if let Some((_, hit)) = &hover {
+                    tabbar::draw_link_hint(&mut canvas, fonts, &theme, &bt_core::proto::printable(&hit.url));
+                }
+                if let Some((text, _)) = &toast {
+                    crate::tabbar::draw_toast(&mut canvas, fonts, &theme, text);
+                }
             }
         }
-        let _ = buffer.present();
+        let draw_ms = started.elapsed().as_secs_f64() * 1000.0;
+        self.last_frame = Some(FrameMemo {
+            chrome,
+            panes: views
+                .iter()
+                .zip(drawn)
+                .map(|(v, (c, cur, pre))| (v.id, c, cur, pre))
+                .collect(),
+        });
         gfx.window.set_title(&title);
+        // 바뀐 것이 없으면 창에 올리지 않는다(올리기만 약 10ms, 실험 E2)
+        if !full && repainted_rows == 0 {
+            return;
+        }
+        let (Some(w), Some(h)) = (NonZeroU32::new(size.width), NonZeroU32::new(size.height)) else {
+            return;
+        };
+        if gfx.surface.resize(w, h).is_err() {
+            return;
+        }
+        let Ok(mut buffer) = gfx.surface.buffer_mut() else {
+            return;
+        };
+        // macOS의 softbuffer는 프레임마다 빈 버퍼를 준다(age 0). 들고 있는 프레임을 통째로 옮긴다
+        buffer.copy_from_slice(&self.frame);
+        let _ = buffer.present();
+        log::debug!(
+            "다시 그리기: {} {}줄 그리기 {:.2}ms, 올리기까지 {:.2}ms",
+            if full { "통째" } else { "바뀐 줄" },
+            repainted_rows,
+            draw_ms,
+            started.elapsed().as_secs_f64() * 1000.0
+        );
     }
+
+    /// 고른 칸의 커서가 깜빡여야 하는가(창을 보고 있고 찾기 막대가 닫혀 있을 때만)
+    fn blink_wanted_for(&self, views: &[PaneView]) -> bool {
+        self.focused
+            && self.search.is_none()
+            && views
+                .iter()
+                .any(|v| v.focused && v.screen.cursor.visible && v.screen.cursor.blinking)
+    }
+
+    /// 커서를 보이게 하고 깜빡임을 처음부터(키를 치는 동안은 깜빡이지 않는다)
+    fn reset_blink(&mut self) {
+        self.blink_next = Instant::now() + BLINK;
+        if !self.blink_on {
+            self.blink_on = true;
+            self.request_redraw();
+        }
+    }
+}
+
+/// 커서 깜빡임 간격
+const BLINK: Duration = Duration::from_millis(600);
+
+/// 칸 하나의 격자 밖 모양: id, 바깥·격자 자리, 고른 칸인가, 바탕색, 칸·줄 수
+type PaneKey = (u64, Rect, Rect, bool, bt_core::Rgb, usize, usize);
+/// 탭 줄 한 칸: 제목, 보고 있음, 안 읽음, 진행
+type LabelKey = (String, bool, bool, Option<(u8, u8)>);
+/// 앞 프레임의 칸 하나: id, 셀, 커서, 조합 글
+type PaneFrame = (u64, Vec<DrawCell>, Option<DrawCursor>, Option<String>);
+
+/// 격자 밖에 그린 것들. 앞 프레임과 같으면 격자의 바뀐 줄만 다시 그린다(#40)
+#[derive(PartialEq)]
+struct Chrome {
+    size: (u32, u32),
+    cell: (u32, u32),
+    panes: Vec<PaneKey>,
+    labels: Vec<LabelKey>,
+    overlay: bool,
+    theme: (bt_core::Rgb, bt_core::Rgb),
+    dim: (u8, bt_core::Rgb, bt_core::Rgb),
+}
+
+/// 앞 프레임: 격자 밖 것들과 칸마다 (id, 셀, 커서, 조합 글)
+struct FrameMemo {
+    chrome: Chrome,
+    panes: Vec<PaneFrame>,
+}
+
+/// 앞 프레임과 견줘 다시 그릴 줄. 앞 프레임이 없거나 크기가 다르면 모두
+fn dirty_rows(
+    cols: usize,
+    rows: usize,
+    cells: &[DrawCell],
+    cursor: Option<DrawCursor>,
+    preedit: &Option<String>,
+    prev: Option<&PaneFrame>,
+) -> Vec<bool> {
+    let Some((_, pcells, pcursor, ppre)) = prev.filter(|p| p.1.len() == cells.len()) else {
+        return vec![true; rows];
+    };
+    let mut dirty: Vec<bool> = (0..rows)
+        .map(|r| cells[r * cols..(r + 1) * cols] != pcells[r * cols..(r + 1) * cols])
+        .collect();
+    if cursor != *pcursor || preedit != ppre {
+        for c in [cursor, *pcursor].into_iter().flatten() {
+            if c.row < rows {
+                dirty[c.row] = true;
+            }
+        }
+    }
+    dirty
 }
 
 /// OSC 7 폴더를 새 탭의 시작 폴더로 써도 되는가: 호스트가 이 컴퓨터(빈 값·localhost·호스트 이름)이고 실제 폴더일 때만.
@@ -1730,6 +1906,7 @@ impl ApplicationHandler<UserEvent> for App {
                 }
                 Ime::Commit(text) => {
                     self.preedit.clear();
+                    self.reset_blink();
                     // 찾기 막대가 열려 있으면 확정 글은 찾을 글로
                     if self.search.is_some() {
                         self.search_push(&text);
@@ -1746,6 +1923,7 @@ impl ApplicationHandler<UserEvent> for App {
                 if event.state != ElementState::Pressed {
                     return;
                 }
+                self.reset_blink();
                 if self.search_key(&event) {
                     return;
                 }
@@ -1975,12 +2153,19 @@ impl ApplicationHandler<UserEvent> for App {
             }
             self.next_poll = now + Duration::from_secs(1);
         }
+        // 커서 깜빡임
+        if self.blink_wanted && now >= self.blink_next {
+            self.blink_on = !self.blink_on;
+            self.blink_next = now + BLINK;
+            self.request_redraw();
+        }
         // 동기화 출력(DEC 2026)이 끝나지 않은 탭이 있으면 기한에 깨어 반영한다
         let deadline = self
             .panes
             .iter()
             .filter_map(|t| t.session.sync_deadline())
             .chain([self.next_poll])
+            .chain(self.blink_wanted.then_some(self.blink_next))
             .min();
         match deadline {
             Some(d) if d <= Instant::now() => {
@@ -2001,6 +2186,59 @@ impl ApplicationHandler<UserEvent> for App {
 mod tests {
     use super::*;
     use bt_term::search::SearchStatus;
+
+    #[test]
+    fn dirty_rows_are_changed_rows_and_cursor_rows() {
+        let blank = DrawCell {
+            ch: ' ',
+            fg: bt_core::Rgb::new(255, 255, 255),
+            bg: bt_core::Rgb::new(0, 0, 0),
+            bold: false,
+            italic: false,
+            underline: false,
+            strike: false,
+            wide: false,
+            spacer: false,
+            selected: false,
+        };
+        let (cols, rows) = (4, 3);
+        let cells = vec![blank.clone(); cols * rows];
+        let cur = |row| {
+            Some(DrawCursor {
+                col: 0,
+                row,
+                style: CursorStyle::Block,
+                wide: false,
+                color: blank.fg,
+                text_color: blank.bg,
+            })
+        };
+        let prev: PaneFrame = (1, cells.clone(), cur(0), None);
+        assert_eq!(
+            dirty_rows(cols, rows, &cells, cur(0), &None, Some(&prev)),
+            vec![false; 3]
+        );
+        let mut changed = cells.clone();
+        changed[cols + 2].ch = 'x';
+        assert_eq!(
+            dirty_rows(cols, rows, &changed, cur(0), &None, Some(&prev)),
+            vec![false, true, false]
+        );
+        // 커서가 옮겨 가면(깜빡여 사라져도) 있던 줄과 간 줄
+        assert_eq!(
+            dirty_rows(cols, rows, &cells, cur(2), &None, Some(&prev)),
+            vec![true, false, true]
+        );
+        assert_eq!(
+            dirty_rows(cols, rows, &cells, None, &None, Some(&prev)),
+            vec![true, false, false]
+        );
+        assert_eq!(
+            dirty_rows(cols, rows, &cells, cur(0), &None, None),
+            vec![true; 3],
+            "앞 프레임이 없으면 모두"
+        );
+    }
 
     #[test]
     fn search_status_text_shows_position_count_and_missing() {

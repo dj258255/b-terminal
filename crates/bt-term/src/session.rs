@@ -828,6 +828,8 @@ fn snapshot_of<T: EventListener>(term: &Term<T>, theme: &Theme, search: Option<&
         shape: shape.unwrap_or(CursorShape::Block),
         wide,
         visible: show && shape.is_some() && in_view,
+        // 프로그램이 DECSCUSR로 정한 깜빡임, 없으면 설정(cursor-style-blink)
+        blinking: term.cursor_style().blinking,
     };
 
     Screen {

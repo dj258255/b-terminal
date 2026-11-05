@@ -51,16 +51,70 @@ pub struct GridView<'a> {
     pub preedit: Option<&'a str>,
 }
 
-/// 격자를 (x, y)에 그린다
+/// 격자를 (x, y)에 통째로 그린다
 pub fn draw_grid(canvas: &mut Canvas, fonts: &mut Fonts, x: i32, y: i32, view: &GridView) {
+    let all = vec![true; view.rows];
+    draw_grid_rows(canvas, fonts, x, y, view, &all);
+}
+
+/// `dirty`가 참인 줄만 다시 그린다(#40). 다시 칠한 세로 범위들 `[위, 아래)`를 돌려준다.
+///
+/// 글자는 칸 위아래로 조금 넘친다(대체 글꼴의 한글 등). 그래서 바뀐 줄과 그 위아래 한 줄의 바탕을 다시 칠하고,
+/// 그 범위 안에서만 한 줄 더 바깥의 글자까지 다시 그린다. 이웃 줄의 넘친 글자가 지워지거나 두 번 겹치지 않는다
+pub fn draw_grid_rows(
+    canvas: &mut Canvas,
+    fonts: &mut Fonts,
+    x: i32,
+    y: i32,
+    view: &GridView,
+    dirty: &[bool],
+) -> Vec<(i32, i32)> {
     let m = fonts.metrics();
-    let cw = m.width as i32;
     let ch = m.height as i32;
-    // 1) 배경을 모든 줄에 먼저 칠한다. 글자가 셀 위아래로 조금 넘쳐도(대체 글꼴의 한글) 다음 줄 배경에 잘리지 않게
-    let visible_rows = view
+    let rows = view
         .rows
         .min(((canvas.height as i32 - y).max(0) / ch.max(1)) as usize + 1);
-    for row in 0..visible_rows {
+    // 바탕을 다시 칠할 줄: 바뀐 줄 ± 1
+    let mut paint = vec![false; rows];
+    for (r, _) in dirty.iter().enumerate().take(rows).filter(|(_, d)| **d) {
+        paint[r.saturating_sub(1)..(r + 2).min(rows)].fill(true);
+    }
+    let mut spans = Vec::new();
+    let mut r = 0;
+    while r < rows {
+        if !paint[r] {
+            r += 1;
+            continue;
+        }
+        let a = r;
+        while r < rows && paint[r] {
+            r += 1;
+        }
+        let (top, bottom) = (y + a as i32 * ch, y + r as i32 * ch);
+        canvas.set_clip_y(top, bottom);
+        draw_rows(canvas, fonts, m, x, y, view, a, r);
+        canvas.reset_clip();
+        spans.push((top, bottom));
+    }
+    spans
+}
+
+/// `[a, b)` 줄의 바탕, 그리고 그 위아래 한 줄을 더한 범위의 글자·커서를 그린다(자르기는 부른 쪽이 정한다)
+#[allow(clippy::too_many_arguments)]
+fn draw_rows(
+    canvas: &mut Canvas,
+    fonts: &mut Fonts,
+    m: CellMetrics,
+    x: i32,
+    y: i32,
+    view: &GridView,
+    a: usize,
+    b: usize,
+) {
+    let cw = m.width as i32;
+    let ch = m.height as i32;
+    // 1) 바탕을 먼저 칠한다. 글자가 셀 위아래로 조금 넘쳐도 다음 줄 바탕에 잘리지 않게
+    for row in a..b {
         let py = y + row as i32 * ch;
         for col in 0..view.cols {
             let cell = &view.cells[row * view.cols + col];
@@ -68,8 +122,9 @@ pub fn draw_grid(canvas: &mut Canvas, fonts: &mut Fonts, x: i32, y: i32, view: &
             canvas.fill_rect(x + col as i32 * cw, py, m.width, m.height, bg);
         }
     }
-    // 2) 글자와 밑줄
-    for row in 0..visible_rows {
+    // 2) 글자와 밑줄. 이웃 줄에서 넘쳐 들어온 글자도 그린다
+    let text_rows = a.saturating_sub(1)..(b + 1).min(view.rows);
+    for row in text_rows.clone() {
         let py = y + row as i32 * ch;
         for col in 0..view.cols {
             let cell = &view.cells[row * view.cols + col];
@@ -94,7 +149,7 @@ pub fn draw_grid(canvas: &mut Canvas, fonts: &mut Fonts, x: i32, y: i32, view: &
 
     // 3) 커서와 조합 중 글
     if let Some(cur) = view.cursor {
-        if cur.row < view.rows && cur.col < view.cols {
+        if text_rows.contains(&cur.row) && cur.row < view.rows && cur.col < view.cols {
             let px = x + cur.col as i32 * cw;
             let py = y + cur.row as i32 * ch;
             if let Some(pre) = view.preedit.filter(|p| !p.is_empty()) {
