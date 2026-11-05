@@ -55,7 +55,9 @@ pub fn draw_grid(canvas: &mut Canvas, fonts: &mut Fonts, x: i32, y: i32, view: &
     let cw = m.width as i32;
     let ch = m.height as i32;
     // 1) 배경을 모든 줄에 먼저 칠한다. 글자가 셀 위아래로 조금 넘쳐도(대체 글꼴의 한글) 다음 줄 배경에 잘리지 않게
-    let visible_rows = view.rows.min(((canvas.height as i32 - y).max(0) / ch.max(1)) as usize + 1);
+    let visible_rows = view
+        .rows
+        .min(((canvas.height as i32 - y).max(0) / ch.max(1)) as usize + 1);
     for row in 0..visible_rows {
         let py = y + row as i32 * ch;
         for col in 0..view.cols {
