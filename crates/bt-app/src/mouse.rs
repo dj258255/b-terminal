@@ -1,4 +1,4 @@
-//! 마우스 보고(xterm 1000/1002/1003, SGR 1006). vim·htop·Claude Code가 마우스를 쓸 때 켠다
+//! 마우스 보고(xterm 1000/1002/1003, SGR 1006). vim·htop·less 같은 프로그램이 마우스를 쓸 때 켠다
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Button {

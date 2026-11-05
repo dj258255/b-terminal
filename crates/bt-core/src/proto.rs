@@ -6,8 +6,6 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use crate::agent::AgentState;
-
 /// 요청 한 줄의 상한(바이트). 읽기 전에 본다
 pub const MAX_LINE: usize = 1024 * 1024;
 
@@ -60,31 +58,6 @@ pub enum Call {
         #[serde(default)]
         body: String,
     },
-    /// 에이전트 상태를 알린다(훅이 쓴다)
-    Status {
-        #[serde(default)]
-        tab: Option<u64>,
-        state: AgentState,
-        #[serde(default)]
-        activity: Option<String>,
-        #[serde(default)]
-        agent: Option<String>,
-    },
-    /// 구독 한도 사용량을 알린다(Claude 상태줄이 쓴다, #11)
-    Usage {
-        source: String,
-        windows: Vec<UsageWindow>,
-    },
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct UsageWindow {
-    /// five_hour·seven_day 등
-    pub kind: String,
-    pub used_percent: f64,
-    /// 다시 차는 때(유닉스 초)
-    #[serde(default)]
-    pub resets_at: Option<i64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -124,11 +97,6 @@ pub struct TabInfo {
     pub id: u64,
     pub title: String,
     pub active: bool,
-    pub state: AgentState,
-    #[serde(default)]
-    pub agent: Option<String>,
-    #[serde(default)]
-    pub activity: Option<String>,
     pub unread: bool,
     #[serde(default)]
     pub cwd: Option<PathBuf>,
@@ -197,17 +165,15 @@ pub fn socket_path(dir: &Path, pid: u32) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent::WaitReason;
 
     #[test]
     fn requests_round_trip_as_one_line_json() {
         let req = Request {
             id: 7,
-            call: Call::Status {
+            call: Call::Notify {
                 tab: Some(2),
-                state: AgentState::Waiting(WaitReason::Permission),
-                activity: Some("Bash: cargo test".into()),
-                agent: Some("claude".into()),
+                title: "빌드".into(),
+                body: "끝났습니다".into(),
             },
         };
         let line = serde_json::to_string(&req).unwrap();

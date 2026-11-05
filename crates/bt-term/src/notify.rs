@@ -242,13 +242,10 @@ mod tests {
 
     #[test]
     fn osc9_777_and_99_become_notifications() {
+        assert_eq!(notes(b"\x1b]9;Build finished\x07"), vec![n("", "Build finished")]);
         assert_eq!(
-            notes(b"\x1b]9;Claude needs your permission\x07"),
-            vec![n("", "Claude needs your permission")]
-        );
-        assert_eq!(
-            notes("\x1b]777;notify;Codex;턴이 끝났습니다\x1b\\".as_bytes()),
-            vec![n("Codex", "턴이 끝났습니다")]
+            notes("\x1b]777;notify;make;빌드가 끝났습니다\x1b\\".as_bytes()),
+            vec![n("make", "빌드가 끝났습니다")]
         );
         assert_eq!(notes(b"\x1b]99;i=1:d=0;Build done\x1b\\"), vec![n("Build done", "")]);
         assert_eq!(notes(b"\x1b]99;i=1:p=body;all green\x07"), vec![n("", "all green")]);

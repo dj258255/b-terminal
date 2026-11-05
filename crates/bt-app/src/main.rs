@@ -5,7 +5,7 @@ mod control;
 mod desktop;
 mod keys;
 mod mouse;
-mod sidebar;
+mod tabbar;
 
 use bt_term::SpawnOptions;
 use winit::event_loop::EventLoop;

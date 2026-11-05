@@ -304,10 +304,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "bt-studio"
-version = "0.1.0"
-
-[[package]]
 name = "bt-term"
 version = "0.1.0"
 dependencies = [

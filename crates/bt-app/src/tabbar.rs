@@ -1,0 +1,85 @@
+//! 가로 탭 줄(Ghostty처럼). 탭이 둘 이상일 때만 창 위쪽에 그린다
+
+use bt_core::{Rgb, Theme};
+use bt_render::{Canvas, Fonts, draw_text, text_cells, truncate};
+
+/// 탭 줄 한 칸
+#[derive(Debug, Clone)]
+pub struct TabLabel {
+    pub title: String,
+    pub active: bool,
+    /// 보지 않은 알림(OSC 9·99·777, 벨)이 있다
+    pub unread: bool,
+}
+
+/// 탭 하나의 최대 폭(셀 수)
+const MAX_TAB_CELLS: u32 = 28;
+
+pub fn height_px(fonts: &Fonts) -> u32 {
+    let m = fonts.metrics();
+    m.height + m.height / 2
+}
+
+/// 탭마다 (x, 폭). 창 폭을 고르게 나누되 한 칸은 MAX_TAB_CELLS를 넘지 않는다
+fn slots(fonts: &Fonts, width: u32, count: usize) -> Vec<(i32, u32)> {
+    if count == 0 {
+        return Vec::new();
+    }
+    let cap = fonts.metrics().width * MAX_TAB_CELLS;
+    let w = (width / count as u32).min(cap).max(1);
+    (0..count).map(|i| (i as i32 * w as i32, w)).collect()
+}
+
+pub fn draw(canvas: &mut Canvas, fonts: &mut Fonts, theme: &Theme, tabs: &[TabLabel]) {
+    let m = fonts.metrics();
+    let h = height_px(fonts);
+    let bar = theme.background.mix(theme.foreground, 0.06);
+    let active_bg = theme.background;
+    let border = theme.background.mix(theme.foreground, 0.16);
+    let text = theme.foreground;
+    let dim = theme.foreground.mix(theme.background, 0.45);
+    canvas.fill_rect(0, 0, canvas.width, h, bar);
+    canvas.fill_rect(0, h as i32 - 1, canvas.width, 1, border);
+    let cw = m.width as i32;
+    for (tab, (x, w)) in tabs.iter().zip(slots(fonts, canvas.width, tabs.len())) {
+        if tab.active {
+            canvas.fill_rect(x, 0, w, h, active_bg);
+        }
+        canvas.fill_rect(x + w as i32 - 1, m.height as i32 / 4, 1, h - m.height / 2, border);
+        // 가운데 맞춘 제목. 안 읽음 점 자리를 남긴다
+        let max_cells = ((w as i32 / cw) - 4).max(1) as usize;
+        let title = truncate(&tab.title, max_cells);
+        let tw = cw * text_cells(&title) as i32;
+        let tx = x + (w as i32 - tw) / 2;
+        let ty = (h as i32 - m.height as i32) / 2;
+        draw_text(
+            canvas,
+            fonts,
+            tx,
+            ty,
+            &title,
+            if tab.active { text } else { dim },
+            false,
+        );
+        if tab.unread {
+            dot(canvas, x + cw, h as i32 / 2, (cw / 3).max(2), theme.palette[3]);
+        }
+    }
+}
+
+/// 창 좌표가 몇 번째 탭인가
+pub fn hit(fonts: &Fonts, width: u32, x: f64, count: usize) -> Option<usize> {
+    slots(fonts, width, count)
+        .iter()
+        .position(|&(sx, w)| x >= sx as f64 && x < (sx + w as i32) as f64)
+}
+
+fn dot(canvas: &mut Canvas, cx: i32, cy: i32, r: i32, color: Rgb) {
+    for dy in -r..=r {
+        for dx in -r..=r {
+            if dx * dx + dy * dy <= r * r {
+                canvas.fill_rect(cx + dx, cy + dy, 1, 1, color);
+            }
+        }
+    }
+}

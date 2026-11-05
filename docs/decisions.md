@@ -8,6 +8,7 @@
 - [ADR-002 렌더러는 CPU(softbuffer + fontdue)로 시작한다](#adr-002-렌더러는-cpusoftbuffer--fontdue로-시작한다)
 - [ADR-003 크레이트를 여섯으로 나누고 창 라이브러리는 bt-app만 쓴다](#adr-003-크레이트를-여섯으로-나누고-창-라이브러리는-bt-app만-쓴다)
 - [ADR-004 한글 IME를 위해 winit을 vendor로 고쳐 쓴다](#adr-004-한글-ime를-위해-winit을-vendor로-고쳐-쓴다)
+- [ADR-005 b-terminal은 순수 터미널이고, AI 작업 화면은 b-studio가 맡는다](#adr-005-b-terminal은-순수-터미널이고-ai-작업-화면은-b-studio가-맡는다)
 
 ## ADR-001 VT 엔진은 alacritty_terminal로 시작하고, bt-term 밖으로 엔진 타입을 내보내지 않는다
 
@@ -107,3 +108,31 @@
 - winit 판을 올릴 때 패치를 다시 대야 한다.
 - 일본어·중국어 IME에서 확정 직후 명령이 오는 경우가 있다면 그 키가 앱에 간다. 확인하지 않았다.
 - 이 패치는 한글을 실제로 쳐서 확인해야 하는데, 밤사이 사람 없이 IME 입력을 만들 수 없어 확인하지 못했다(#6 PR에 적음).
+
+## ADR-005 b-terminal은 순수 터미널이고, AI 작업 화면은 b-studio가 맡는다
+
+상태: 채택(ADR-003의 `bt-studio` 크레이트를 대체)
+관련: [#25](https://github.com/dj258255/b-terminal/issues/25), [#12](https://github.com/dj258255/b-terminal/issues/12)(닫음), b-studio [#1009](https://github.com/dj258255/b-studio/issues/1009)
+
+### 맥락
+- 처음 구상은 "AI 코딩 에이전트와 함께 일하는 터미널"이었다. 그래서 #7·#10·#11에서 에이전트 상태 사이드바(상태 점, 프로세스 이름으로 claude·codex 알아보기), 에이전트 훅(`btctl hook`·`setup claude`), 구독 사용량 막대(`btctl statusline`)를 넣었고, #12에서 b-studio 세션 목록과 터미널 다리를 만들고 있었다.
+- b-studio 세션이 "b-studio는 관문, 터미널은 b-terminal이 맡는다"고 했을 때 이것을 "desk(b-studio의 터미널 작업대) 역할까지 b-terminal로"라고 넓게 읽었다.
+- 2026-11-06 범수 님이 경계를 못 박았다: "b-terminal은 이제 그냥 터미널처럼 작동하는거임 ghostty나 그런것처럼. 이제 ai틱 스러운 herdr 같은건 b-studio고 이걸 구분을 해야해. 확실하게 해야함".
+
+### 검토한 선택지
+| 방식 | 판단 |
+|---|---|
+| **AI 기능을 걷어내고 b-terminal은 순수 터미널로** | 채택. 범수 님이 골랐다 |
+| 남기되 기본으로 끄기 | 경계가 흐리다 |
+| b-studio에 옮겨 달라고 이슈를 연다 | 범수 님이 고르지 않았다. b-studio가 필요하면 스스로 만든다 |
+
+### 결정
+1. b-terminal = Ghostty 같은 범용 터미널 에뮬레이터: PTY, VT 해석, 렌더링, 탭, 한글 IME, 복사·붙여넣기, 설정. b-studio가 꺼져 있거나 없어도 그대로 터미널이다.
+2. b-studio = herdr 같은 AI 작업 화면: 에이전트 목록·상태·훅·구독 사용량·세션. b-terminal 안에서 도는 프로그램 중 하나다.
+3. 기능을 넣을 때 "Ghostty에도 있을 기능인가"로 거른다. 남기는 것: OSC 9·99·777 데스크톱 알림과 안 읽음 점(Ghostty도 알림을 띄운다), 제어 소켓과 btctl의 탭 목록·새 탭·글 넣기·화면 읽기·알림(kitty·WezTerm의 원격 조종과 같은 성격), 전경 프로세스 이름을 탭 이름으로 쓰기.
+4. 걷어내는 것: `bt-core::agent`, 제어 프로토콜의 `status`·`usage`, `btctl hook|setup|status|statusline`, 사이드바(→ 가로 탭 줄), `bt-studio` 크레이트, `docs/agents.md`.
+5. b-studio가 b-terminal에 바라는 것은 표준 터미널 기능뿐이다(truecolor, 마우스 보고, 괄호 붙여넣기, 대체 화면, 크기 변경). 표준 밖이 필요하면 b-studio가 먼저 알린다(b-studio 세션과 2026-11-06에 맞춤).
+
+### 감수한 트레이드오프
+- 만든 기능(테스트 포함)을 버린다. b-studio 연결 코드는 로컬 브랜치 `feature/studio-connection`에만 남겼다.
+- "탭마다 에이전트가 무엇을 기다리는지" 같은 정보는 b-terminal 혼자서는 보이지 않는다. b-studio를 b-terminal 안에서 띄워야 보인다.
