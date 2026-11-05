@@ -209,9 +209,16 @@ impl App {
             if t.fg_pid == Some(pid) {
                 continue;
             }
+            let was_other = t.fg_pid.is_some();
             t.fg_pid = Some(pid);
             t.fg_name = bt_term::process::process_name(pid);
             changed = true;
+            // 다른 프로그램이 끝나 셸로 돌아왔는데 마우스 모드가 켜져 있으면 끈다(#24).
+            // 셸 자신(탭이 띄운 프로세스)이 전경일 때만: 셸이 일부러 켠 경우는 드물다
+            let back_to_shell = t.session.pid().map(|p| p as i32) == Some(pid);
+            if back_to_shell && was_other && self.config.mouse_reset_on_shell && t.session.reset_mouse_modes() {
+                log::info!("탭 {}: 셸로 돌아왔는데 마우스 모드가 켜져 있어 껐습니다", t.id);
+            }
         }
         changed
     }
