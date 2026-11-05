@@ -45,6 +45,10 @@ btctl send --tab 2 --enter "y"           # 2번 탭에 y와 Enter
 
 <img src="docs/images/sidebar-agents.png" width="760" alt="사이드바에 탭 다섯 개. Claude는 노란 점과 'Bash: cargo test'(권한 기다림), Codex는 파란 점과 'Edit crates/bt-app/src/app.rs'(작업 중), bash 탭은 'cargo build: 끝났습니다' 알림과 안 읽음 점, 끝난 Claude 탭은 초록 점과 'PR #21 리뷰 끝'">
 
+Claude Code·Codex 훅을 걸면 작업 중인 도구, 권한·질문 기다림, 마지막 답까지 보입니다. `btctl setup claude --write` 한 번이면 됩니다. 자세한 것은 [docs/agents.md](docs/agents.md)에 있습니다.
+
+<img src="docs/images/sidebar-hooks.png" width="760" alt="훅으로 상태를 받은 사이드바. Claude 탭 셋이 각각 권한 기다림('Bash: cargo test --workspace', 노란 점), 작업 중('Edit: src/sidebar.rs', 파란 점), 끝남('사용량 막대를 넣었고 테…', 초록 점)">
+
 제어 소켓은 같은 사용자만 닿는 폴더(0700)의 소켓(0600)입니다. 자세한 경계는 [SECURITY.md](SECURITY.md)에 있습니다.
 
 ## 기여

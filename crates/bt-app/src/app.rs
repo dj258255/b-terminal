@@ -407,7 +407,11 @@ impl App {
                         active: i == self.active,
                         state: t.state,
                         agent: t.agent.map(|a| a.name().to_string()),
-                        activity: t.activity.clone(),
+                        activity: if t.state == AgentState::Working {
+                            t.activity.clone()
+                        } else {
+                            t.last_note.clone()
+                        },
                         unread: t.unread,
                         cwd: t.cwd.clone(),
                         process: t.fg_name.clone(),
@@ -484,10 +488,15 @@ impl App {
         }
         let attention = state.urgency() >= 3 && t.state != state;
         t.state = state;
+        let clean = activity.map(|a| bt_core::proto::printable(&a).chars().take(200).collect::<String>());
         if state == AgentState::Working {
-            t.activity = activity.map(|a| bt_core::proto::printable(&a).chars().take(200).collect());
-        } else if let Some(a) = activity {
-            t.last_note = Some(bt_core::proto::printable(&a).chars().take(200).collect());
+            t.activity = clean;
+        } else {
+            // 작업이 끝났으면 지난 도구 줄은 지우고, 기다리는 까닭(권한을 묻는 명령)이나 마지막 답을 알림 줄로 둔다
+            t.activity = None;
+            if clean.is_some() {
+                t.last_note = clean;
+            }
         }
         if attention && !watching {
             t.unread = true;
