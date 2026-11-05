@@ -84,7 +84,8 @@ fn environment_identifies_the_terminal() {
 
 #[test]
 fn foreground_process_follows_the_running_child() {
-    let (s, _rx) = sh("sleep 5", GridSize::new(40, 5));
+    // Linux의 dash는 마지막 명령을 exec하지 않고 fork한다(작업 제어가 없어 전경 그룹 대표가 sh로 남는다). exec로 못 박는다
+    let (s, _rx) = sh("exec sleep 5", GridSize::new(40, 5));
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
         if let Some(fg) = s.foreground() {
