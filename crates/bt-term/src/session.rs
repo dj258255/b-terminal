@@ -211,6 +211,8 @@ struct Inner {
     parser: Processor,
     /// 셸 통합이 알린 프롬프트 시작(OSC 133;A) 줄. 스크롤백 맨 위를 0으로 센 절대 줄
     prompts: std::collections::VecDeque<i64>,
+    /// 찾기(#39). 찾는 중이 아니면 없다
+    search: Option<crate::search::Search>,
 }
 
 /// 프롬프트를 기억하는 상한(오래된 것부터 버린다)
@@ -361,6 +363,7 @@ impl Session {
             term,
             parser: Processor::new(),
             prompts: std::collections::VecDeque::new(),
+            search: None,
         }));
         let integrated = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let thread_integrated = integrated.clone();
@@ -539,6 +542,30 @@ impl Session {
         self.inner.lock().term.scroll_display(Scroll::Bottom);
     }
 
+    /// 찾기를 시작한다(#39): 맨 아래에서 위로 첫 맞은 곳으로 화면을 옮긴다. 빈 글이면 찾기를 끄고 없다
+    pub fn search(&self, query: &str) -> Option<crate::search::SearchStatus> {
+        let mut g = self.inner.lock();
+        let Inner { term, search, .. } = &mut *g;
+        *search = crate::search::Search::new(query);
+        let s = search.as_mut()?;
+        s.step(term, true);
+        Some(s.status(term))
+    }
+
+    /// 다음 맞은 곳으로(`older`면 위로). 찾는 중이 아니면 없다
+    pub fn search_step(&self, older: bool) -> Option<crate::search::SearchStatus> {
+        let mut g = self.inner.lock();
+        let Inner { term, search, .. } = &mut *g;
+        let s = search.as_mut()?;
+        s.step(term, older);
+        Some(s.status(term))
+    }
+
+    /// 찾기를 끝낸다(강조를 지운다). 화면 자리는 그대로 둔다
+    pub fn search_clear(&self) {
+        self.inner.lock().search = None;
+    }
+
     /// 마우스 보고 모드가 켜져 있으면 끈다. 껐으면 참.
     /// 마우스를 켠 프로그램이 끄지 못하고 죽으면 셸에 `ESC[<35;x;yM`이 글자로 쏟아진다(#24). PTY에는 쓰지 않고 화면 상태만 바꾼다
     pub fn reset_mouse_modes(&self) -> bool {
@@ -611,8 +638,9 @@ impl Session {
     /// 지금 화면을 꺼낸다
     pub fn snapshot(&self) -> Screen {
         let theme = self.theme.lock().clone();
-        let g = self.inner.lock();
-        snapshot_of(&g.term, &theme)
+        let mut g = self.inner.lock();
+        let Inner { term, search, .. } = &mut *g;
+        snapshot_of(term, &theme, search.as_mut())
     }
 
     /// 색 테마를 바꾼다(설정 다시 읽기). 다음 화면부터 새 색으로 푼다
@@ -683,7 +711,7 @@ fn modes_of(m: TermMode) -> Modes {
 const MAX_LINKS: usize = 4096;
 const MAX_LINK_URI: usize = 8192;
 
-fn snapshot_of<T: EventListener>(term: &Term<T>, theme: &Theme) -> Screen {
+fn snapshot_of<T: EventListener>(term: &Term<T>, theme: &Theme, search: Option<&mut crate::search::Search>) -> Screen {
     let cols = term.columns();
     let rows = term.screen_lines();
     let content = term.renderable_content();
@@ -693,6 +721,12 @@ fn snapshot_of<T: EventListener>(term: &Term<T>, theme: &Theme) -> Screen {
     let mut cells = vec![Cell::blank(foreground, background); cols * rows];
     let offset = content.display_offset as i32;
     let selection = content.selection;
+    // 찾기: 보이는 맞은 곳들과 지금 것. 칸을 위에서 아래로 훑으며 맞춘다
+    let (matches, current) = match search {
+        Some(s) => (s.visible(term), s.current.clone()),
+        None => (Vec::new(), None),
+    };
+    let mut match_cursor = 0;
     let mut links: Vec<String> = Vec::new();
     // 주소 → 자리. 칸마다 다른 링크를 찍어도 그릴 때마다 칸 수 × 링크 수를 비교하지 않게(#54)
     let mut link_ids: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
@@ -737,6 +771,12 @@ fn snapshot_of<T: EventListener>(term: &Term<T>, theme: &Theme) -> Screen {
         }
         if selection.is_some_and(|s| s.contains(indexed.point)) {
             flags.insert(CellFlags::SELECTED);
+        }
+        if !matches.is_empty() && crate::search::hit(&matches, &mut match_cursor, indexed.point) {
+            flags.insert(CellFlags::MATCH);
+            if current.as_ref().is_some_and(|m| m.contains(&indexed.point)) {
+                flags.insert(CellFlags::MATCH_CURRENT);
+            }
         }
         if f.contains(Flags::WRAPLINE) {
             flags.insert(CellFlags::WRAPLINE);
@@ -809,6 +849,7 @@ pub struct Emulator {
     parser: Processor,
     theme: Theme,
     scanner: Scanner,
+    search: Option<crate::search::Search>,
 }
 
 #[derive(Clone, Copy)]
@@ -827,6 +868,7 @@ impl Emulator {
             parser: Processor::new(),
             theme,
             scanner: Scanner::default(),
+            search: None,
         }
     }
 
@@ -849,7 +891,25 @@ impl Emulator {
         modes_of(*self.term.mode())
     }
 
-    pub fn snapshot(&self) -> Screen {
-        snapshot_of(&self.term, &self.theme)
+    pub fn snapshot(&mut self) -> Screen {
+        snapshot_of(&self.term, &self.theme, self.search.as_mut())
+    }
+
+    /// 찾기를 시작한다(맨 아래에서 위로 첫 맞은 곳). 빈 글이면 찾기를 끄고 없다
+    pub fn search(&mut self, query: &str) -> Option<crate::search::SearchStatus> {
+        self.search = crate::search::Search::new(query);
+        let s = self.search.as_mut()?;
+        s.step(&mut self.term, true);
+        Some(s.status(&self.term))
+    }
+
+    pub fn search_step(&mut self, older: bool) -> Option<crate::search::SearchStatus> {
+        let s = self.search.as_mut()?;
+        s.step(&mut self.term, older);
+        Some(s.status(&self.term))
+    }
+
+    pub fn search_clear(&mut self) {
+        self.search = None;
     }
 }

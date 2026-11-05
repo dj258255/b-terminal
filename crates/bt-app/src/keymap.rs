@@ -40,6 +40,11 @@ pub enum Action {
     ResizeSplit(Direction, u16),
     EqualizeSplits,
     ToggleSplitZoom,
+    /// 찾기 막대를 연다(#39)
+    StartSearch,
+    EndSearch,
+    /// 다음 맞은 곳: 참이면 위(오래된 쪽)로
+    NavigateSearch(bool),
     /// 1부터
     GotoTab(usize),
     NextTab,
@@ -200,6 +205,14 @@ pub fn parse_action(s: &str) -> Result<Option<Action>, String> {
         }
         "equalize_splits" => Action::EqualizeSplits,
         "toggle_split_zoom" => Action::ToggleSplitZoom,
+        "start_search" => Action::StartSearch,
+        "end_search" => Action::EndSearch,
+        // next는 위(오래된 출력)로: 터미널은 맨 아래에서 찾기 시작한다(iTerm2와 같다)
+        "navigate_search" => match arg.map(str::trim).unwrap_or("next") {
+            "next" => Action::NavigateSearch(true),
+            "previous" => Action::NavigateSearch(false),
+            _ => return Err("navigate_search:next·previous".into()),
+        },
         "goto_tab" => Action::GotoTab(
             arg.and_then(|a| a.trim().parse().ok())
                 .filter(|n| *n >= 1)
@@ -257,6 +270,10 @@ fn defaults() -> Vec<(&'static str, &'static str)> {
         ("super+ctrl+arrow_right", "resize_split:right,10"),
         ("super+ctrl+equal", "equalize_splits"),
         ("super+shift+enter", "toggle_split_zoom"),
+        // 찾기(Ghostty와 같은 동작 이름)
+        ("super+f", "start_search"),
+        ("super+g", "navigate_search:next"),
+        ("super+shift+g", "navigate_search:previous"),
         ("super+equal", "increase_font_size:1"),
         ("super+shift+equal", "increase_font_size:1"),
         ("super+minus", "decrease_font_size:1"),
@@ -400,6 +417,12 @@ mod tests {
             Some(Action::ResizeSplit(Direction::Left, 20))
         );
         assert_eq!(parse_action("close_surface").unwrap(), Some(Action::CloseSurface));
+        assert_eq!(parse_action("start_search").unwrap(), Some(Action::StartSearch));
+        assert_eq!(
+            parse_action("navigate_search:previous").unwrap(),
+            Some(Action::NavigateSearch(false))
+        );
+        assert!(parse_action("navigate_search:sideways").is_err());
         assert!(parse_action("resize_split:left").is_err());
         assert!(parse_action("new_split:diagonal").is_err());
         assert!(parse_action("toggle_fullscreen").is_err());

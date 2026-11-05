@@ -7,6 +7,7 @@ pub mod notify;
 pub mod plain;
 pub mod process;
 pub mod screen;
+pub mod search;
 mod session;
 
 pub use input::{
