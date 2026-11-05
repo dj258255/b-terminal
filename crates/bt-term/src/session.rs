@@ -77,6 +77,9 @@ impl Dimensions for Dims {
     }
 }
 
+/// 마우스 보고 모드를 모두 끄는 순서(1000·1002·1003 보고, 1005·1006·1015 꼴)
+const MOUSE_OFF: &[u8] = b"\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1005l\x1b[?1006l\x1b[?1015l";
+
 /// 띄울 프로그램
 #[derive(Debug, Clone, Default)]
 pub struct SpawnOptions {
@@ -378,6 +381,22 @@ impl Session {
 
     pub fn scroll_to_bottom(&self) {
         self.inner.lock().term.scroll_display(Scroll::Bottom);
+    }
+
+    /// 마우스 보고 모드가 켜져 있으면 끈다. 껐으면 참.
+    /// 마우스를 켠 프로그램이 끄지 못하고 죽으면 셸에 `ESC[<35;x;yM`이 글자로 쏟아진다(#24). PTY에는 쓰지 않고 화면 상태만 바꾼다
+    pub fn reset_mouse_modes(&self) -> bool {
+        let mut g = self.inner.lock();
+        if !g
+            .term
+            .mode()
+            .intersects(TermMode::MOUSE_MODE | TermMode::SGR_MOUSE | TermMode::UTF8_MOUSE)
+        {
+            return false;
+        }
+        let Inner { term, parser } = &mut *g;
+        parser.advance(term, MOUSE_OFF);
+        true
     }
 
     /// 동기화 출력(DEC 2026)이 끝나지 않고 기한이 지났으면 모아 둔 것을 반영한다. 반영했으면 참

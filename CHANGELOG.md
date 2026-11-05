@@ -14,4 +14,5 @@
 - 알림: PTY 출력에서 OSC 9·99·777 알림을 뽑아 보고 있지 않은 탭에 안 읽음 점과 알림 한 줄을 보이고, 창을 보고 있지 않으면 데스크톱 알림을 띄웁니다. OSC 9;4(진행 표시)는 알림으로 세지 않습니다. 셸이 OSC 7로 알린 폴더를 새 탭이 물려받습니다.
 - Ghostty 설정 호환: Ghostty 문법의 설정 파일(`~/.config/b-terminal/config`)을 읽고, Ghostty 설정이 있으면 먼저 읽습니다. 테마는 Ghostty 테마 폴더에서 이름으로 불러옵니다. 기본값을 Ghostty 1.3과 같게 바꿨습니다(JetBrains Mono 13, 바탕 #282c34, bold-is-bright 끔, Option은 Alt가 아님). JetBrains Mono와 Symbols Nerd Font Mono를 앱에 넣었고, 사설 영역 글자(프롬프트 아이콘)는 기호 글꼴에서만 찾습니다. `--show-config`, `--config-file`.
 - 키 묶음: Ghostty의 `keybind = 트리거=동작`(unbind·clear·text: 포함)으로 모든 단축키를 바꿉니다. `reload_config`(Cmd-Shift-,)와 `btctl reload-config`가 설정을 다시 읽어 이미 열린 탭의 색까지 바꿉니다.
+- 프로그램이 마우스 모드를 켠 채 끝나 셸로 돌아오면 마우스 모드를 끕니다. 셸에 `35;15;35M…`가 쏟아지는 것을 막습니다(`mouse-reset-on-shell`).
 - 제어 소켓과 btctl: 같은 사용자 전용 Unix 소켓(줄 단위 JSON)으로 탭 목록·새 탭·옮기기·글 넣기·화면 읽기·알림을 다룹니다(kitty·WezTerm의 원격 조종과 같은 성격). 탭 안의 셸에 `BT_SOCKET`·`BT_TAB_ID`를 넣습니다.

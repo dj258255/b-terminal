@@ -122,3 +122,15 @@ fn notifications_from_the_pty_reach_the_sink() {
     assert_eq!((note.title.as_str(), note.body.as_str()), ("빌드", "끝났습니다"));
     assert_eq!(cwd.as_deref(), Some(std::path::Path::new("/tmp")));
 }
+
+#[test]
+fn mouse_modes_left_on_by_a_dead_program_can_be_reset() {
+    let (s, rx) = sh("printf '\\033[?1003h\\033[?1006h'", GridSize::new(20, 5));
+    wait_exit(&rx);
+    let m = s.snapshot().modes;
+    assert!(m.mouse_motion && m.sgr_mouse, "켠 채로 끝났다");
+    assert!(s.reset_mouse_modes());
+    let m = s.snapshot().modes;
+    assert!(!m.mouse_motion && !m.sgr_mouse && !m.mouse_report);
+    assert!(!s.reset_mouse_modes(), "이미 꺼졌으면 거짓");
+}
