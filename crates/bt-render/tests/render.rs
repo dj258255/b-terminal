@@ -3,7 +3,7 @@
 use std::time::Instant;
 
 use bt_core::{Rgb, Theme};
-use bt_render::{Canvas, CursorStyle, DrawCell, DrawCursor, FontConfig, Fonts, GridView, draw_grid};
+use bt_render::{Canvas, CursorStyle, DrawCell, DrawCursor, FontConfig, Fonts, GridView, draw_grid, draw_grid_rows};
 use bt_term::{CellFlags, Emulator, GridSize, Screen};
 
 fn fonts(scale: f32) -> Option<Fonts> {
@@ -222,4 +222,155 @@ fn adjust_cell_height_grows_the_cell() {
     assert!(taller.height > base.height, "{} > {}", taller.height, base.height);
     assert!(taller.baseline > base.baseline, "늘어난 만큼 글자를 가운데로 내린다");
     assert_eq!(taller.width, base.width);
+}
+
+fn view_of<'a>(s: &Screen, dc: &'a [DrawCell], t: &Theme) -> GridView<'a> {
+    GridView {
+        cols: s.cols,
+        rows: s.rows,
+        cells: dc,
+        cursor: Some(DrawCursor {
+            col: s.cursor.col,
+            row: s.cursor.row,
+            style: CursorStyle::Block,
+            wide: s.cursor.wide,
+            color: t.cursor,
+            text_color: t.cursor_text,
+        }),
+        selection_bg: t.selection_background,
+        selection_fg: t.selection_foreground,
+        preedit: None,
+    }
+}
+
+/// #40: 바뀐 줄만 다시 그린 결과가 통째로 다시 그린 결과와 픽셀까지 같다.
+/// 바뀐 줄의 위아래에 칸 밖으로 넘치는 한글·상자 선을 두고, 커서도 옮긴다
+#[test]
+fn partial_redraw_matches_full_redraw_pixel_for_pixel() {
+    let Some(f) = fonts(2.0) else { return };
+    check_partial_redraw(f);
+    // 셀 높이를 줄여 글자가 위아래 줄로 넘치게 한 경우(adjust-cell-height = -30%)
+    let squeezed = Fonts::new(&FontConfig {
+        scale: 2.0,
+        adjust_cell_height: Some(bt_core::config::Adjust::Percent(-30.0)),
+        ..FontConfig::default()
+    })
+    .unwrap();
+    check_partial_redraw(squeezed);
+}
+
+fn check_partial_redraw(mut f: Fonts) {
+    let t = Theme::default();
+    let (cols, rows) = (24u16, 7u16);
+    let m = f.metrics();
+    let (w, h) = (m.width * cols as u32, m.height * rows as u32);
+    let mut e = Emulator::new(GridSize::new(cols, rows), t.clone());
+    for i in 0..rows - 1 {
+        e.feed(format!("\x1b[3{}m한글 줄 {i} │▀▄ gjpqy\x1b[0m\r\n", i % 8).as_bytes());
+    }
+    let before = e.snapshot();
+    // 3번 줄을 바꾸고 커서가 그 줄로 간다
+    e.feed("\x1b[4;3H바뀐 글 ÄÉ_".as_bytes());
+    let after = e.snapshot();
+
+    let full = |s: &Screen, f: &mut Fonts| {
+        let dc = cells(s);
+        let mut buf = vec![0u32; (w * h) as usize];
+        let mut c = Canvas::new(&mut buf, w, h);
+        c.clear(s.background);
+        draw_grid(&mut c, f, 0, 0, &view_of(s, &dc, &t));
+        buf
+    };
+    let want = full(&after, &mut f);
+    let mut buf = full(&before, &mut f);
+    // 바뀐 줄: 칸이 다르거나 커서가 있던·있는 줄
+    let (a, b) = (cells(&before), cells(&after));
+    let n = cols as usize;
+    let dirty: Vec<bool> = (0..rows as usize)
+        .map(|r| a[r * n..(r + 1) * n] != b[r * n..(r + 1) * n] || r == before.cursor.row || r == after.cursor.row)
+        .collect();
+    assert!(
+        dirty.iter().filter(|d| **d).count() < rows as usize,
+        "몇 줄만 바뀌어야 의미가 있다"
+    );
+    let dc = cells(&after);
+    let mut c = Canvas::new(&mut buf, w, h);
+    let spans = draw_grid_rows(&mut c, &mut f, 0, 0, &view_of(&after, &dc, &t), &dirty);
+    assert!(!spans.is_empty());
+    let diff = buf.iter().zip(&want).filter(|(x, y)| x != y).count();
+    assert_eq!(diff, 0, "통째 그리기와 다른 픽셀 {diff}개");
+}
+
+/// 실험 E2(#40): E1과 같은 화면에서 한 줄만 바뀐 프레임을 바뀐 줄만 다시 그리는 시간과 통째로 다시 그리는 시간.
+/// VT 해석은 빼고 그리기만 잰다. `cargo test -p bt-render --release --test render -- --ignored --nocapture e2`
+#[test]
+#[ignore]
+fn e2_partial_vs_full_redraw_200x60_retina() {
+    let Some(mut f) = fonts(2.0) else { return };
+    let t = Theme::default();
+    let (cols, rows) = (200u16, 60u16);
+    let mut e = Emulator::new(GridSize::new(cols, rows), t.clone());
+    for i in 0..rows - 1 {
+        e.feed(
+            format!(
+                "\x1b[3{}m{i:03} 가나다라 the quick brown fox jumps over the lazy dog │ ▀▄ {}\x1b[0m\r\n",
+                i % 8,
+                "x".repeat(120)
+            )
+            .as_bytes(),
+        );
+    }
+    let m = f.metrics();
+    let (w, h) = (m.width * cols as u32, m.height * rows as u32);
+    let mut buf = vec![0u32; (w * h) as usize];
+    let mut out = vec![0u32; (w * h) as usize];
+    let mut full_ms = Vec::new();
+    let mut part_ms = Vec::new();
+    let mut copy_ms = Vec::new();
+    for n in 0..21 {
+        // 마지막 줄(시계)만 바꾼다
+        e.feed(format!("\r시계 {n}  ").as_bytes());
+        let s = e.snapshot();
+        let dc = cells(&s);
+        let view = view_of(&s, &dc, &t);
+        let t0 = Instant::now();
+        {
+            let mut c = Canvas::new(&mut buf, w, h);
+            c.clear(s.background);
+            draw_grid(&mut c, &mut f, 0, 0, &view);
+        }
+        let full = t0.elapsed().as_secs_f64() * 1000.0;
+        let mut dirty = vec![false; rows as usize];
+        dirty[s.cursor.row] = true;
+        let t1 = Instant::now();
+        {
+            let mut c = Canvas::new(&mut buf, w, h);
+            draw_grid_rows(&mut c, &mut f, 0, 0, &view, &dirty);
+        }
+        let part = t1.elapsed().as_secs_f64() * 1000.0;
+        // 앱은 들고 있는 프레임을 창 버퍼로 통째로 옮긴다
+        let t2 = Instant::now();
+        out.copy_from_slice(&buf);
+        let copy = t2.elapsed().as_secs_f64() * 1000.0;
+        // 첫 회는 글리프 캐시를 채우므로 뺀다
+        if n > 0 {
+            full_ms.push(full);
+            part_ms.push(part);
+            copy_ms.push(copy);
+        }
+    }
+    let stat = |v: &mut Vec<f64>| {
+        v.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        format!(
+            "최소 {:.2}ms 중앙값 {:.2}ms 최대 {:.2}ms",
+            v[0],
+            v[v.len() / 2],
+            v[v.len() - 1]
+        )
+    };
+    println!("화면 {w}x{h}px, 20회");
+    println!("통째: {}", stat(&mut full_ms));
+    println!("바뀐 줄(1줄): {}", stat(&mut part_ms));
+    println!("프레임 옮기기: {}", stat(&mut copy_ms));
+    assert!(out[0] == buf[0]);
 }

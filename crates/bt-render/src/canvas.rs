@@ -9,12 +9,28 @@ pub struct Canvas<'a> {
     pub buf: &'a mut [u32],
     pub width: u32,
     pub height: u32,
+    /// 세로로 그릴 수 있는 범위 `[위, 아래)`. 바뀐 줄만 다시 그릴 때 이웃 줄을 건드리지 않게 좁힌다
+    clip: (i32, i32),
 }
 
 impl<'a> Canvas<'a> {
     pub fn new(buf: &'a mut [u32], width: u32, height: u32) -> Self {
         assert!(buf.len() >= (width * height) as usize, "버퍼가 화면보다 작다");
-        Self { buf, width, height }
+        Self {
+            buf,
+            width,
+            height,
+            clip: (0, height as i32),
+        }
+    }
+
+    /// 세로 그리기 범위를 `[top, bottom)`으로 좁힌다(화면 안으로 묶는다)
+    pub fn set_clip_y(&mut self, top: i32, bottom: i32) {
+        self.clip = (top.clamp(0, self.height as i32), bottom.clamp(0, self.height as i32));
+    }
+
+    pub fn reset_clip(&mut self) {
+        self.clip = (0, self.height as i32);
     }
 
     pub fn clear(&mut self, color: Rgb) {
@@ -25,9 +41,9 @@ impl<'a> Canvas<'a> {
     /// 사각형을 칠한다. 화면 밖은 자른다
     pub fn fill_rect(&mut self, x: i32, y: i32, w: u32, h: u32, color: Rgb) {
         let x0 = x.max(0) as u32;
-        let y0 = y.max(0) as u32;
+        let y0 = y.max(self.clip.0) as u32;
         let x1 = (x + w as i32).clamp(0, self.width as i32) as u32;
-        let y1 = (y + h as i32).clamp(0, self.height as i32) as u32;
+        let y1 = (y + h as i32).clamp(0, self.clip.1) as u32;
         if x0 >= x1 || y0 >= y1 {
             return;
         }
@@ -50,9 +66,9 @@ impl<'a> Canvas<'a> {
     /// 사각형 안을 반투명으로 덮는다(alpha 0~255)
     pub fn blend_rect(&mut self, x: i32, y: i32, w: u32, h: u32, color: Rgb, alpha: u8) {
         let x0 = x.max(0) as u32;
-        let y0 = y.max(0) as u32;
+        let y0 = y.max(self.clip.0) as u32;
         let x1 = (x + w as i32).clamp(0, self.width as i32) as u32;
-        let y1 = (y + h as i32).clamp(0, self.height as i32) as u32;
+        let y1 = (y + h as i32).clamp(0, self.clip.1) as u32;
         for row in y0..y1 {
             for col in x0..x1 {
                 let i = (row * self.width + col) as usize;
@@ -67,7 +83,7 @@ impl<'a> Canvas<'a> {
         let gy = baseline_y - glyph.top;
         for row in 0..glyph.height {
             let py = gy + row as i32;
-            if py < 0 || py >= self.height as i32 {
+            if py < self.clip.0 || py >= self.clip.1 {
                 continue;
             }
             for col in 0..glyph.width {

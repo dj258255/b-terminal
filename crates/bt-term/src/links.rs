@@ -394,6 +394,7 @@ mod tests {
                 shape: CursorShape::Block,
                 wide: false,
                 visible: false,
+                blinking: false,
             },
             modes: Modes::default(),
             display_offset: 0,

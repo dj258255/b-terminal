@@ -90,3 +90,18 @@ fn kitty_keyboard_mode_is_pushed_popped_and_reported() {
     e.feed(b"\x1b[<u");
     assert!(!e.modes().kitty.active(), "CSI < u로 되돌린다");
 }
+
+/// #40: 프로그램이 DECSCUSR로 깜빡이는 커서를 고르면 화면 값에 보인다(1 깜빡이는 네모, 2 멈춘 네모, 5 깜빡이는 막대)
+#[test]
+fn decscusr_blinking_reaches_the_screen() {
+    let mut e = bt_term::Emulator::new(bt_term::GridSize::new(10, 2), bt_core::Theme::default());
+    assert!(!e.snapshot().cursor.blinking, "설정 기본은 멈춤");
+    e.feed(b"\x1b[1 q");
+    assert!(e.snapshot().cursor.blinking);
+    e.feed(b"\x1b[2 q");
+    assert!(!e.snapshot().cursor.blinking);
+    e.feed(b"\x1b[5 q");
+    let s = e.snapshot();
+    assert!(s.cursor.blinking);
+    assert_eq!(s.cursor.shape, bt_term::CursorShape::Beam);
+}

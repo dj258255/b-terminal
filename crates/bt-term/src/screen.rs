@@ -88,6 +88,8 @@ pub struct Cursor {
     /// 커서 칸이 넓은 글자면 두 칸으로 그린다
     pub wide: bool,
     pub visible: bool,
+    /// 깜빡이는 커서(앱이 0.6초마다 숨겼다 보인다)
+    pub blinking: bool,
 }
 
 /// 앱이 입력을 바꿀 때 보는 터미널 모드
