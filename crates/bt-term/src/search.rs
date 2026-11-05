@@ -58,6 +58,15 @@ impl Search {
     /// 다음 맞은 곳으로. `older`면 위(오래된 쪽)로, 아니면 아래로. 끝에 닿으면 반대 끝에서 다시 찾는다.
     /// 찾으면 그 자리가 보이게 화면을 옮긴다
     pub fn step<T: EventListener>(&mut self, term: &mut Term<T>, older: bool) -> bool {
+        // 스크롤백을 지우거나 창을 줄이면 기억해 둔 자리가 격자 밖일 수 있다. 그러면 처음부터 찾는다.
+        // (엔진의 add·sub도 격자 안으로 묶지만 거기에 기대지 않는다)
+        if self
+            .current
+            .as_ref()
+            .is_some_and(|m| !in_grid(term, *m.start()) || !in_grid(term, *m.end()))
+        {
+            self.current = None;
+        }
         let found = if older {
             // 처음이면 화면 맨 아래 끝에서
             let origin = match &self.current {
@@ -114,6 +123,10 @@ impl Search {
             capped: false,
         }
     }
+}
+
+fn in_grid<T>(term: &Term<T>, p: Point) -> bool {
+    p.line >= term.topmost_line() && p.line <= term.bottommost_line() && p.column <= term.last_column()
 }
 
 /// 위에서 아래로 놓인 맞은 곳들에서 칸이 든 것을 찾는다. 칸도 위에서 아래로 묻는다고 보고 `cursor`를 앞으로만 옮긴다
@@ -185,6 +198,29 @@ mod tests {
             !e.snapshot().cell(0, 0).flags.contains(CellFlags::MATCH),
             "찾기를 끝내면 지운다"
         );
+    }
+
+    /// 보안 검토: 기억해 둔 맞은 곳이 스크롤백 지우기·창 줄이기 뒤에 격자 밖을 가리켜도 패닉하지 않는다
+    #[test]
+    fn stale_match_after_clear_or_resize_does_not_panic() {
+        let mut e = Emulator::new(GridSize::new(40, 5), bt_core::Theme::ghostty_default());
+        let mut text = String::new();
+        for i in 0..50 {
+            text.push_str(&format!("row {i:02} {} target x\r\n", ".".repeat(24)));
+        }
+        e.feed(text.as_bytes());
+        e.search("target").unwrap();
+        for _ in 0..30 {
+            e.search_step(true);
+        }
+        // 맞은 곳은 31번 칸쯤이다. 스크롤백과 화면을 지우고 창을 10칸으로 줄인다
+        e.feed(b"\x1b[2J\x1b[3J\x1b[H");
+        e.resize(GridSize::new(10, 3));
+        e.feed(b"target");
+        let st = e.search_step(true).unwrap();
+        assert_eq!(st.total, 1);
+        let st = e.search_step(false).unwrap();
+        assert_eq!(st.index, Some(1));
     }
 
     #[test]
