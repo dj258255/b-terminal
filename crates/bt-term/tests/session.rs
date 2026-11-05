@@ -134,3 +134,13 @@ fn mouse_modes_left_on_by_a_dead_program_can_be_reset() {
     assert!(!m.mouse_motion && !m.sgr_mouse && !m.mouse_report);
     assert!(!s.reset_mouse_modes(), "이미 꺼졌으면 거짓");
 }
+
+#[test]
+fn kitty_keyboard_query_gets_an_answer_like_claude_code_expects() {
+    // 프로그램이 CSI ? u로 묻고, 터미널이 CSI ? <플래그> u로 답하는지(Claude Code가 지원 여부를 이렇게 본다)
+    let script = "stty raw -echo; printf '\\033[>1u\\033[?u'; ans=$(dd bs=1 count=5 2>/dev/null | od -An -tx1 | tr -d ' \\n'); stty sane; printf 'ans=%s\\n' \"$ans\"";
+    let (s, rx) = sh(script, GridSize::new(60, 5));
+    wait_exit(&rx);
+    let text = s.snapshot().text();
+    assert!(text.contains("ans=1b5b3f3175"), "ESC [ ? 1 u 가 와야 한다: {text}");
+}

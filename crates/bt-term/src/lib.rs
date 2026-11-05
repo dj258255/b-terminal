@@ -7,7 +7,9 @@ pub mod process;
 pub mod screen;
 mod session;
 
-pub use input::{Mods, NamedKey, encode_named, encode_paste, encode_text};
+pub use input::{
+    KittyFlags, Mods, NamedKey, encode_char_kitty, encode_named, encode_named_kitty, encode_paste, encode_text,
+};
 pub use notify::{Notification, Signal};
 pub use process::Foreground;
 pub use screen::{Cell, CellFlags, Cursor, CursorShape, Modes, Screen};

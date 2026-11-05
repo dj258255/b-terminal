@@ -24,6 +24,7 @@ cargo run --release -p bt-app -- --cwd ~/dev  # 시작 폴더
 | Cmd-T / Cmd-W | 새 탭 / 탭 닫기 |
 | Cmd-1~8, Cmd-9, Cmd-[ / Cmd-] | 탭 옮기기(탭 줄을 눌러도 됩니다) |
 | Shift-PageUp / PageDown, Cmd-↑ / ↓ | 스크롤백 |
+| Shift-Enter | Claude Code 등에서 줄바꿈(kitty 키보드 프로토콜. 프로그램이 켰을 때) |
 | Cmd-K | 화면 지우기 |
 | Cmd-Shift-, | 설정 다시 읽기 |
 | 마우스 끌기, 두 번·세 번 누르기 | 글자·단어·줄 고르기(앱이 마우스를 쓰면 Shift를 누른 채로) |

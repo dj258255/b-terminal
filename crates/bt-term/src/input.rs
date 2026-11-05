@@ -26,6 +26,8 @@ pub struct Mods {
     pub shift: bool,
     pub ctrl: bool,
     pub alt: bool,
+    /// Cmd(macOS)·Super. kitty 키보드 프로토콜에서만 보낸다
+    pub sup: bool,
 }
 
 impl Mods {
@@ -112,6 +114,73 @@ pub fn encode_named(key: NamedKey, mods: Mods, app_cursor: bool) -> Vec<u8> {
     }
 }
 
+/// kitty 키보드 프로토콜 단계(프로그램이 `CSI > 플래그 u`로 켠다). <https://sw.kovidgoyal.net/kitty/keyboard-protocol/>
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct KittyFlags {
+    /// 1: 모호한 키 구분(Shift+Enter, Ctrl+글자, Esc …를 CSI u로)
+    pub disambiguate: bool,
+    /// 8: 모든 키를 이스케이프로(글자 키도 CSI u)
+    pub all_as_escapes: bool,
+}
+
+impl KittyFlags {
+    pub fn active(self) -> bool {
+        self.disambiguate || self.all_as_escapes
+    }
+}
+
+fn kitty_mods(m: Mods) -> u8 {
+    1 + m.shift as u8 + 2 * m.alt as u8 + 4 * m.ctrl as u8 + 8 * m.sup as u8
+}
+
+fn csi_u(code: u32, m: Mods) -> Vec<u8> {
+    let mods = kitty_mods(m);
+    if mods == 1 {
+        format!("\x1b[{code}u").into_bytes()
+    } else {
+        format!("\x1b[{code};{mods}u").into_bytes()
+    }
+}
+
+/// kitty 프로토콜로 이름 키를 보낸다. 이 프로토콜에서 바뀌지 않는 키(화살표 등은 xterm 꼴 그대로)면 없다
+pub fn encode_named_kitty(key: NamedKey, mods: Mods, flags: KittyFlags) -> Option<Vec<u8>> {
+    if !flags.active() {
+        return None;
+    }
+    let any_mod = mods.shift || mods.ctrl || mods.alt || mods.sup;
+    let code = match key {
+        NamedKey::Enter => 13,
+        NamedKey::Tab => 9,
+        NamedKey::Backspace => 127,
+        // Esc는 1단계부터 늘 CSI u(뒤따르는 글자와 헷갈리지 않게)
+        NamedKey::Escape => return Some(csi_u(27, mods)),
+        _ => return None,
+    };
+    // 1단계: 수식 키가 없으면 옛 꼴(\r, \t, DEL). 8단계: 늘 CSI u
+    if any_mod || flags.all_as_escapes {
+        Some(csi_u(code, mods))
+    } else {
+        None
+    }
+}
+
+/// kitty 프로토콜로 글자 키를 보낸다. `base`는 수식 키를 뺀 글자(Shift 전)다. 옛 꼴 그대로 보내면 되면 없다
+pub fn encode_char_kitty(base: char, mods: Mods, flags: KittyFlags) -> Option<Vec<u8>> {
+    if !flags.active() {
+        return None;
+    }
+    let code = base.to_lowercase().next().unwrap_or(base) as u32;
+    if flags.all_as_escapes {
+        return Some(csi_u(code, mods));
+    }
+    // 1단계: Ctrl·Alt·Super가 붙은 글자만 CSI u. Shift만 붙은 글자는 그 글자(대문자) 그대로
+    if mods.ctrl || mods.alt || mods.sup {
+        Some(csi_u(code, mods))
+    } else {
+        None
+    }
+}
+
 /// 글자 키를 바이트로 바꾼다. Ctrl은 제어 문자로, Alt는 ESC를 앞에 붙인다(macOS Option을 Alt로 쓸 때)
 pub fn encode_text(text: &str, mods: Mods) -> Vec<u8> {
     let mut out = Vec::new();
@@ -173,7 +242,70 @@ mod tests {
         shift: false,
         ctrl: false,
         alt: false,
+        sup: false,
     };
+    const K1: KittyFlags = KittyFlags {
+        disambiguate: true,
+        all_as_escapes: false,
+    };
+    const K8: KittyFlags = KittyFlags {
+        disambiguate: true,
+        all_as_escapes: true,
+    };
+
+    #[test]
+    fn kitty_shift_enter_is_distinct_from_enter() {
+        let shift = Mods { shift: true, ..NONE };
+        assert_eq!(
+            encode_named_kitty(NamedKey::Enter, shift, K1),
+            Some(b"\x1b[13;2u".to_vec())
+        );
+        assert_eq!(
+            encode_named_kitty(NamedKey::Enter, NONE, K1),
+            None,
+            "1단계의 맨 Enter는 CR 그대로"
+        );
+        assert_eq!(
+            encode_named_kitty(NamedKey::Enter, NONE, K8),
+            Some(b"\x1b[13u".to_vec())
+        );
+        assert_eq!(
+            encode_named_kitty(NamedKey::Escape, NONE, K1),
+            Some(b"\x1b[27u".to_vec())
+        );
+        assert_eq!(encode_named_kitty(NamedKey::Up, shift, K1), None, "화살표는 xterm 꼴");
+        assert_eq!(
+            encode_named_kitty(NamedKey::Enter, shift, KittyFlags::default()),
+            None,
+            "꺼져 있으면 옛 꼴"
+        );
+    }
+
+    #[test]
+    fn kitty_ctrl_and_alt_letters() {
+        let ctrl = Mods { ctrl: true, ..NONE };
+        assert_eq!(encode_char_kitty('c', ctrl, K1), Some(b"\x1b[99;5u".to_vec()));
+        let ctrl_shift = Mods {
+            ctrl: true,
+            shift: true,
+            ..NONE
+        };
+        assert_eq!(
+            encode_char_kitty('C', ctrl_shift, K1),
+            Some(b"\x1b[99;6u".to_vec()),
+            "글자는 소문자 코드"
+        );
+        assert_eq!(
+            encode_char_kitty('a', Mods { shift: true, ..NONE }, K1),
+            None,
+            "Shift만이면 글자 그대로"
+        );
+        assert_eq!(encode_char_kitty('a', NONE, K8), Some(b"\x1b[97u".to_vec()));
+        assert_eq!(
+            encode_char_kitty('a', Mods { alt: true, ..NONE }, K1),
+            Some(b"\x1b[97;3u".to_vec())
+        );
+    }
 
     #[test]
     fn arrows_follow_cursor_key_mode() {

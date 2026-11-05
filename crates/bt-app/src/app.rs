@@ -893,9 +893,9 @@ impl ApplicationHandler<UserEvent> for App {
                     self.handle_action(action, event_loop);
                     return;
                 }
-                let app_cursor = self.active_tab().map(|t| t.session.modes().app_cursor).unwrap_or(false);
+                let modes = self.active_tab().map(|t| t.session.modes()).unwrap_or_default();
                 let meta = self.config.option_as_alt != bt_core::config::OptionAsAlt::None;
-                let bytes = keys::encode(&event, self.mods, app_cursor, meta);
+                let bytes = keys::encode(&event, self.mods, modes, meta);
                 if self.config.mouse_hide_while_typing {
                     if let Some(g) = &self.gfx {
                         g.window.set_cursor_visible(false);
