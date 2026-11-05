@@ -857,11 +857,33 @@ impl ApplicationHandler<UserEvent> for App {
                         self.tabs[idx].progress = (state != 0).then(|| (state, percent, Instant::now()));
                     }
                     SessionEvent::ClipboardStore(text) => {
-                        // 프로그램이 OSC 52로 보낸 글(Claude Code의 /copy 등). 지나치게 큰 것은 받지 않는다
-                        if text.len() <= 1024 * 1024 {
+                        // 프로그램이 OSC 52로 보낸 글(Claude Code의 /copy 등).
+                        // 보고 있는 창의 보고 있는 탭에서 온 것만 받는다: 뒤쪽 탭에 흘러간 출력이 몰래 클립보드를 바꿔
+                        // 나중의 붙여넣기에 명령을 끼워 넣지 못하게(붙여넣기 하이재킹). 받으면 알림으로 보인다
+                        let watching = self.focused && idx == self.active;
+                        if watching && text.len() <= 1024 * 1024 {
                             if let Some(cb) = self.clipboard.as_mut() {
-                                let _ = cb.set_text(text);
+                                let _ = cb.set_text(text.clone());
                             }
+                            let shown: String = bt_core::proto::printable(&text).chars().take(40).collect();
+                            log::info!(
+                                "탭 {}: 프로그램이 클립보드에 {}글자를 썼습니다",
+                                self.tabs[idx].id,
+                                text.chars().count()
+                            );
+                            self.tabs[idx].last_desktop = None;
+                            self.on_notification(
+                                idx,
+                                bt_term::Notification {
+                                    title: "클립보드에 복사됨".into(),
+                                    body: shown,
+                                },
+                            );
+                        } else {
+                            log::warn!(
+                                "탭 {}: 보고 있지 않은 탭의 클립보드 쓰기(OSC 52)를 버렸습니다",
+                                self.tabs[idx].id
+                            );
                         }
                     }
                     SessionEvent::ClipboardLoad(reply) => {
