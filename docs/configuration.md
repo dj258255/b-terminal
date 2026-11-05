@@ -60,6 +60,8 @@ config-file = ?~/.config/b-terminal/local   # ?가 붙으면 없어도 된다
 | `import-ghostty` | `true` / `false` | `false` | b-terminal 키. Ghostty 설정을 옮겨 올 때 |
 | `clipboard-write` | `allow` / `deny` | `allow` | 프로그램이 OSC 52로 클립보드에 쓰기(AI CLI의 `/copy`). 보고 있는 창의 보고 있는 탭에서 온 것만 받습니다 |
 | `clipboard-read` | `allow` / `deny` / `ask` | `deny` | 프로그램이 OSC 52로 클립보드 읽기. `ask`는 아직 묻는 창이 없어 `deny`로 봅니다 |
+| `shell-integration` | `detect` `none` `zsh` `bash` | `detect` | 탭의 셸에 셸 통합을 싣습니다(아래 "셸 통합") |
+| `notify-command-seconds` | 초 | `10` | b-terminal 키. 셸 통합으로 안 명령이 이만큼 넘게 걸려 끝나면 창을 보지 않을 때 알림. `0`이면 끔 |
 | `mouse-reset-on-shell` | `true` / `false` | `true` | b-terminal 키. 프로그램이 마우스 모드를 켠 채 끝나 셸로 돌아오면 끈다([문제 해결 1](troubleshooting.md#1-셸에-3515353583235가-쏟아지고-command-not-found가-줄줄이-뜬다)) |
 
 ### 받기만 하고 쓰지 않는 Ghostty 키
@@ -88,7 +90,8 @@ keybind = clear                       # 기본 묶음을 모두 지우기
 | `goto_tab:N` / `last_tab` | N번째 / 마지막 탭 | `super+1`~`8` / `super+9` |
 | `next_tab` / `previous_tab` | 다음 / 앞 탭 | `super+]` `super+shift+]` / `super+[` `super+shift+[` |
 | `increase_font_size:N` / `decrease_font_size:N` / `reset_font_size` | 글자 크기 | `super+=` / `super+-` / `super+0` |
-| `scroll_page_up` / `scroll_page_down` | 스크롤백 한 쪽 | `shift+page_up` `super+page_up` `super+arrow_up` / 아래도 같음 |
+| `scroll_page_up` / `scroll_page_down` | 스크롤백 한 쪽 | `shift+page_up` `super+page_up` / 아래도 같음 |
+| `jump_to_prompt:-1` / `jump_to_prompt:1` | 앞·뒤 프롬프트로(셸 통합) | `super+arrow_up` / `super+arrow_down` |
 | `scroll_to_top` / `scroll_to_bottom` | 맨 위 / 맨 아래 | `shift+home` `super+home` / `shift+end` `super+end` |
 | `clear_screen` | 화면 지우기(셸에 Ctrl-L) | `super+k` |
 | `select_all` | 보이는 화면 모두 고르기 | `super+a` |
@@ -97,3 +100,13 @@ keybind = clear                       # 기본 묶음을 모두 지우기
 | `unbind` | 그 트리거 지우기 | |
 
 설정 다시 읽기는 글꼴·색(이미 열린 탭 포함)·키 묶음·여백·Option 키를 바꿉니다. 바깥에서 부르려면 `btctl reload-config`.
+
+## 셸 통합
+
+탭에서 띄우는 zsh·bash에 셸 통합을 자동으로 싣습니다(Ghostty와 같은 방식, 사용자 설정은 그대로 읽힘. [assets/shell-integration](../assets/shell-integration/README.md)). 셸이 명령의 시작·끝·종료 코드(OSC 133)와 명령 글(OSC 633;E)을 알려 주면 터미널이 이렇게 씁니다.
+
+- Cmd-↑ / Cmd-↓: 앞·뒤 프롬프트로 스크롤
+- 창을 보지 않을 때 10초(`notify-command-seconds`) 넘게 걸린 명령이 끝나면 데스크톱 알림. 실패하면 "명령이 실패했습니다"
+- `btctl run -- <명령>`: 그 탭에서 명령을 돌리고 끝날 때까지 기다려 출력을 찍고 그 종료 코드로 끝납니다. 에이전트가 다른 탭을 도구로 쓰는 길입니다. `btctl last`는 마지막으로 끝난 명령
+
+fish·elvish는 아직 스크립트가 없습니다. 끄려면 `shell-integration = none`.

@@ -57,6 +57,11 @@ pub fn plain_text(bytes: &[u8]) -> String {
     let mut parser: Parser = Parser::new();
     let mut c = Collect::default();
     parser.advance(&mut c, bytes);
+    // CR로 끝난 마지막 줄은 곧 덮인다(zsh가 프롬프트 앞에 쓰는 PROMPT_SP 공백 등). 버린다
+    if c.pending_cr {
+        let start = c.out.rfind('\n').map(|i| i + 1).unwrap_or(0);
+        c.out.truncate(start);
+    }
     c.out
 }
 
@@ -77,5 +82,7 @@ mod tests {
     fn carriage_return_progress_keeps_the_last_state() {
         assert_eq!(plain_text(b"10%\r50%\r100%\ndone\n"), "100%\ndone\n");
         assert_eq!(plain_text(b"abc\x08d\n"), "abd\n");
+        // zsh의 PROMPT_SP: 출력 뒤 공백들과 CR. 실제 zsh 탭에서 끝에 공백이 붙었다
+        assert_eq!(plain_text(b"hello\r\n \r"), "hello\n");
     }
 }

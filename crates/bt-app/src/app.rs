@@ -518,12 +518,12 @@ impl App {
                     let tab_id = t.id;
                     t.session.write(format!("{command}\r").as_bytes());
                     // 답은 명령이 끝날 때(on_command_finished) 보낸다. 여기서는 빈 답을 돌려주지 않게 표시만 남긴다
-                    return Response {
+                    Response {
                         id: u64::MAX,
                         ok: true,
                         result: json!({ "pending": tab_id, "deadline_ms": timeout_ms }),
                         error: None,
-                    };
+                    }
                 }
                 Err(r) => r,
             },
