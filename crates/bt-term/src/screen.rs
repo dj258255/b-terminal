@@ -1,0 +1,141 @@
+//! 렌더러와 앱이 읽는 화면 값. VT 엔진(alacritty_terminal)의 타입을 밖으로 내보내지 않는다(ADR-001)
+
+use bt_core::Rgb;
+
+/// 셀 한 칸의 꾸밈
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct CellFlags(u16);
+
+impl CellFlags {
+    pub const BOLD: Self = Self(1);
+    pub const ITALIC: Self = Self(1 << 1);
+    pub const UNDERLINE: Self = Self(1 << 2);
+    pub const STRIKE: Self = Self(1 << 3);
+    /// 두 칸을 차지하는 글자의 앞 칸
+    pub const WIDE: Self = Self(1 << 4);
+    /// 넓은 글자의 뒤 칸. 그리지 않는다
+    pub const SPACER: Self = Self(1 << 5);
+    pub const HIDDEN: Self = Self(1 << 6);
+    /// 마우스로 고른 칸
+    pub const SELECTED: Self = Self(1 << 7);
+    pub const UNDERCURL: Self = Self(1 << 8);
+
+    pub const fn empty() -> Self {
+        Self(0)
+    }
+
+    pub const fn contains(self, other: Self) -> bool {
+        self.0 & other.0 == other.0
+    }
+
+    pub fn insert(&mut self, other: Self) {
+        self.0 |= other.0;
+    }
+}
+
+impl std::ops::BitOr for CellFlags {
+    type Output = Self;
+    fn bitor(self, rhs: Self) -> Self {
+        Self(self.0 | rhs.0)
+    }
+}
+
+/// 화면 격자의 한 칸. 색은 이미 RGB로 풀었다(반전·흐림·굵은 글자의 밝은 색 반영)
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Cell {
+    pub ch: char,
+    /// 앞 글자에 붙는 결합 문자(한글 자모 조합 뒤 남은 것, 이모지 변형 선택자 등)
+    pub combining: Vec<char>,
+    pub fg: Rgb,
+    pub bg: Rgb,
+    pub flags: CellFlags,
+}
+
+impl Cell {
+    pub fn blank(fg: Rgb, bg: Rgb) -> Self {
+        Self {
+            ch: ' ',
+            combining: Vec::new(),
+            fg,
+            bg,
+            flags: CellFlags::empty(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CursorShape {
+    Block,
+    Beam,
+    Underline,
+    HollowBlock,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Cursor {
+    pub col: usize,
+    pub row: usize,
+    pub shape: CursorShape,
+    /// 커서 칸이 넓은 글자면 두 칸으로 그린다
+    pub wide: bool,
+    pub visible: bool,
+}
+
+/// 앱이 입력을 바꿀 때 보는 터미널 모드
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Modes {
+    pub app_cursor: bool,
+    pub app_keypad: bool,
+    pub bracketed_paste: bool,
+    pub alt_screen: bool,
+    pub mouse_report: bool,
+    pub mouse_drag: bool,
+    pub mouse_motion: bool,
+    pub sgr_mouse: bool,
+    pub focus_events: bool,
+    pub alternate_scroll: bool,
+}
+
+/// 한 순간의 화면. 줄 우선으로 `rows * cols`칸
+#[derive(Debug, Clone)]
+pub struct Screen {
+    pub cols: usize,
+    pub rows: usize,
+    pub cells: Vec<Cell>,
+    pub cursor: Cursor,
+    pub modes: Modes,
+    /// 스크롤백을 얼마나 올려 보고 있나(0이면 맨 아래)
+    pub display_offset: usize,
+    /// 스크롤백 줄 수
+    pub history: usize,
+    pub background: Rgb,
+}
+
+impl Screen {
+    pub fn cell(&self, col: usize, row: usize) -> &Cell {
+        &self.cells[row * self.cols + col]
+    }
+
+    /// 한 줄을 글로 꺼낸다(뒤 칸·끝 공백 제외). 테스트와 화면 읽기(btctl read)에 쓴다
+    pub fn row_text(&self, row: usize) -> String {
+        let mut s = String::new();
+        for col in 0..self.cols {
+            let cell = self.cell(col, row);
+            if cell.flags.contains(CellFlags::SPACER) {
+                continue;
+            }
+            s.push(cell.ch);
+            s.extend(cell.combining.iter());
+        }
+        s.trim_end().to_string()
+    }
+
+    /// 화면 전체를 글로 꺼낸다. 끝의 빈 줄은 뺀다
+    pub fn text(&self) -> String {
+        let mut lines: Vec<String> = (0..self.rows).map(|r| self.row_text(r)).collect();
+        while lines.last().is_some_and(|l| l.is_empty()) {
+            lines.pop();
+        }
+        lines.join("\n")
+    }
+}
