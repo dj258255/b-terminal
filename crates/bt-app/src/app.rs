@@ -69,9 +69,18 @@ pub struct Tab {
     pub cwd: Option<std::path::PathBuf>,
     /// 마지막으로 데스크톱 알림을 띄운 때(탭마다 묶는다)
     last_desktop: Option<Instant>,
+    /// 진행 표시(OSC 9;4): (상태, 퍼센트, 받은 때). 15초 동안 새 소식이 없으면 지운다(Ghostty와 같다)
+    pub progress: Option<(u8, u8, Instant)>,
 }
 
 impl Tab {
+    /// 아직 살아 있는 진행 표시(상태, 퍼센트)
+    fn live_progress(&self) -> Option<(u8, u8)> {
+        self.progress
+            .filter(|(_, _, at)| at.elapsed() < Duration::from_secs(15))
+            .map(|(s, p, _)| (s, p))
+    }
+
     /// 탭 줄·창 제목에 쓸 이름: 셸이 보낸 제목 → 전경 프로세스 이름
     fn display_title(&self) -> String {
         if !self.title.is_empty() {
@@ -287,6 +296,8 @@ impl App {
                 bt_core::config::CursorStyle::BlockHollow => CursorShape::HollowBlock,
             }),
             cursor_blink: self.config.cursor_blink.unwrap_or(false),
+            clipboard_write: self.config.clipboard_write,
+            clipboard_read: self.config.clipboard_read,
             ..options
         };
         // 탭 안의 btctl·훅이 이 터미널과 이 탭을 찾게 한다
@@ -308,6 +319,7 @@ impl App {
                     unread: false,
                     cwd: None,
                     last_desktop: None,
+                    progress: None,
                 });
                 self.active = self.tabs.len() - 1;
                 // 탭이 하나에서 둘이 되면 탭 줄이 생겨 격자가 줄어든다
@@ -628,6 +640,11 @@ impl App {
         let theme = self.config.theme.clone();
         let (gx, gy, _, _) = self.grid_rect();
         let screen = self.active_tab().map(|t| t.session.snapshot());
+        let single_progress = if self.tabs.len() == 1 {
+            self.tabs[0].live_progress()
+        } else {
+            None
+        };
         let labels: Vec<tabbar::TabLabel> = if self.tabs.len() > 1 {
             self.tabs
                 .iter()
@@ -636,6 +653,7 @@ impl App {
                     title: t.display_title(),
                     active: i == self.active,
                     unread: t.unread,
+                    progress: t.live_progress(),
                 })
                 .collect()
         } else {
@@ -664,6 +682,9 @@ impl App {
             canvas.clear(bg);
             if !labels.is_empty() {
                 tabbar::draw(&mut canvas, fonts, &theme, &labels);
+            } else if let Some(p) = single_progress {
+                // 탭이 하나면 창 맨 위에 얇게(Ghostty와 같은 자리)
+                tabbar::draw_progress(&mut canvas, &theme, 0, 0, size.width, p, fonts.metrics().stroke * 3);
             }
             if let Some(screen) = &screen {
                 let cells = to_draw_cells(screen);
@@ -832,8 +853,27 @@ impl ApplicationHandler<UserEvent> for App {
                         self.close_tab(idx, event_loop);
                         return;
                     }
-                    // 진행 표시(OSC 9;4)는 아직 그리지 않는다
-                    SessionEvent::Bell | SessionEvent::Output | SessionEvent::Progress { .. } => {}
+                    SessionEvent::Progress { state, percent } => {
+                        self.tabs[idx].progress = (state != 0).then(|| (state, percent, Instant::now()));
+                    }
+                    SessionEvent::ClipboardStore(text) => {
+                        // 프로그램이 OSC 52로 보낸 글(Claude Code의 /copy 등). 지나치게 큰 것은 받지 않는다
+                        if text.len() <= 1024 * 1024 {
+                            if let Some(cb) = self.clipboard.as_mut() {
+                                let _ = cb.set_text(text);
+                            }
+                        }
+                    }
+                    SessionEvent::ClipboardLoad(reply) => {
+                        // clipboard-read = allow일 때만 엔진이 이 사건을 낸다
+                        let text = self
+                            .clipboard
+                            .as_mut()
+                            .and_then(|cb| cb.get_text().ok())
+                            .unwrap_or_default();
+                        self.tabs[idx].session.write(reply.format(&text).as_bytes());
+                    }
+                    SessionEvent::Bell | SessionEvent::Output => {}
                 }
                 self.request_redraw();
             }
@@ -1050,7 +1090,17 @@ impl ApplicationHandler<UserEvent> for App {
         // 1초마다 전경 프로세스를 본다(사이드바 이름, 에이전트 알아보기)
         let now = Instant::now();
         if now >= self.next_poll {
-            if self.poll_foreground() {
+            // 15초 넘게 소식이 없는 진행 표시는 지운다
+            let mut expired = false;
+            for t in &mut self.tabs {
+                if t.progress
+                    .is_some_and(|(_, _, at)| at.elapsed() >= Duration::from_secs(15))
+                {
+                    t.progress = None;
+                    expired = true;
+                }
+            }
+            if self.poll_foreground() || expired {
                 self.request_redraw();
             }
             self.next_poll = now + Duration::from_secs(1);

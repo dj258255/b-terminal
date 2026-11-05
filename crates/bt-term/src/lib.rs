@@ -13,4 +13,4 @@ pub use input::{
 pub use notify::{Notification, Signal};
 pub use process::Foreground;
 pub use screen::{Cell, CellFlags, Cursor, CursorShape, Modes, Screen};
-pub use session::{Emulator, EventSink, GridSize, SelectKind, Session, SessionEvent, SpawnOptions};
+pub use session::{ClipboardReply, Emulator, EventSink, GridSize, SelectKind, Session, SessionEvent, SpawnOptions};

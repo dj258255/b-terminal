@@ -4,6 +4,9 @@
 
 ## [아직 릴리스하지 않음]
 
+- 진행 표시(OSC 9;4): 탭 줄의 그 탭 아래(탭이 하나면 창 맨 위)에 막대를 그립니다. 보통·오류·끝 모름·멈춤을 색으로 가르고, 15초 소식이 없으면 지웁니다.
+- 클립보드 쓰기(OSC 52)를 기본으로 허용합니다(AI CLI의 `/copy`). 읽기는 기본 금지. `clipboard-write`·`clipboard-read`.
+
 - kitty 키보드 프로토콜(1단계 모호한 키 구분, 8단계 모든 키를 이스케이프로): Claude Code에서 Shift+Enter가 줄바꿈이 됩니다. 프로그램의 `CSI ? u` 질의에 답합니다.
 
 - Ghostty 없이 혼자 섭니다: 테마 905개(iTerm2-Color-Schemes)를 앱에 넣었고, 테마 이름은 띄어쓰기·대소문자를 무시합니다. Ghostty 설정 읽기는 기본으로 끕니다(`import-ghostty = true`로 켬). `--list-themes`(ADR-006).

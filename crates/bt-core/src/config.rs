@@ -92,6 +92,10 @@ pub struct Config {
     pub keybinds: Vec<String>,
     /// 셸이 마우스 모드를 켠 채 끝났을 때 셸로 돌아오면 끈다(#24)
     pub mouse_reset_on_shell: bool,
+    /// OSC 52로 프로그램이 클립보드에 쓰는 것을 허용(Ghostty 기본 allow)
+    pub clipboard_write: bool,
+    /// OSC 52로 프로그램이 클립보드를 읽는 것을 허용(기본 금지. Ghostty 기본은 ask)
+    pub clipboard_read: bool,
     pub warnings: Vec<String>,
     /// 실제로 읽은 파일
     pub sources: Vec<PathBuf>,
@@ -123,6 +127,8 @@ impl Default for Config {
             title: None,
             keybinds: Vec::new(),
             mouse_reset_on_shell: true,
+            clipboard_write: true,
+            clipboard_read: false,
             warnings: Vec::new(),
             sources: Vec::new(),
         }
@@ -497,6 +503,17 @@ impl Config {
             }
             "title" => self.title = Some(v.to_string()).filter(|s| !s.is_empty()),
             "keybind" => self.keybinds.push(v.to_string()),
+            "clipboard-write" => match v {
+                "allow" | "true" => self.clipboard_write = true,
+                "deny" | "false" => self.clipboard_write = false,
+                _ => bad(warnings),
+            },
+            // ask는 아직 물을 창이 없어 금지로 본다
+            "clipboard-read" => match v {
+                "allow" | "true" => self.clipboard_read = true,
+                "deny" | "false" | "ask" => self.clipboard_read = false,
+                _ => bad(warnings),
+            },
             "mouse-reset-on-shell" => self.mouse_reset_on_shell = parse_bool(v).unwrap_or(true),
             other => {
                 // Ghostty에만 있는 키는 조용히 넘기지 않고 알린다
@@ -593,8 +610,6 @@ const KNOWN_IGNORED: &[&str] = &[
     "unfocused-split-opacity",
     "minimum-contrast",
     "link-url",
-    "clipboard-read",
-    "clipboard-write",
     "clipboard-paste-protection",
     "resize-overlay",
     "gtk-titlebar",

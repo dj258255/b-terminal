@@ -144,3 +144,34 @@ fn kitty_keyboard_query_gets_an_answer_like_claude_code_expects() {
     let text = s.snapshot().text();
     assert!(text.contains("ans=1b5b3f3175"), "ESC [ ? 1 u 가 와야 한다: {text}");
 }
+
+#[test]
+fn osc52_write_reaches_the_app_only_when_allowed() {
+    let run = |allow: bool| {
+        let (tx, rx) = channel();
+        let tx = std::sync::Mutex::new(tx);
+        let sink = Arc::new(move |e: SessionEvent| {
+            let _ = tx.lock().unwrap().send(e);
+        });
+        let opts = SpawnOptions {
+            program: Some("/bin/sh".into()),
+            // "복사됨"을 base64로
+            args: vec!["-c".into(), "printf '\\033]52;c;67O17IKs65CoCg==\\007'".into()],
+            clipboard_write: allow,
+            ..Default::default()
+        };
+        let _s = Session::spawn(opts, GridSize::new(20, 3), Theme::default(), sink).unwrap();
+        let mut got = None;
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while Instant::now() < deadline {
+            match rx.recv_timeout(Duration::from_millis(100)) {
+                Ok(SessionEvent::ClipboardStore(t)) => got = Some(t),
+                Ok(SessionEvent::Exited(_)) => break,
+                _ => {}
+            }
+        }
+        got
+    };
+    assert_eq!(run(true).as_deref(), Some("복사됨\n"));
+    assert_eq!(run(false), None, "꺼져 있으면 클립보드에 닿지 않는다");
+}
