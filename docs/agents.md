@@ -49,3 +49,18 @@ btctl status working --activity "마이그레이션 실행"
 btctl status waiting-question --activity "어느 DB로 할까요?"
 btctl status done
 ```
+
+## 사용량 막대(Claude 구독 한도)
+
+Claude Code는 상태줄 명령에 `rate_limits.five_hour`·`seven_day`(사용 %와 리셋 시각)를 넘깁니다(Pro·Max·Ultra 구독, 첫 응답 뒤부터). `btctl statusline`이 이 값을 터미널에 보내면 사이드바 아래에 막대가 보입니다. 60% 아래는 초록, 85% 아래는 노랑, 그 위는 빨강입니다.
+
+상태줄 명령은 하나만 둘 수 있으므로 이미 쓰는 상태줄이 있으면 감쌉니다. 입력은 그 명령에 그대로 넘어가고, 그 출력과 종료 코드도 그대로 돌아옵니다.
+
+```bash
+btctl setup claude-statusline          # 바꿀 설정 보기
+btctl setup claude-statusline --write  # 기존 statusLine을 `btctl statusline -- sh -c '<기존 명령>'`으로 감싸기
+```
+
+- 감쌀 상태줄이 없으면 `Opus · 문맥 34% · 5시간 24% · 주간 71%` 한 줄을 찍습니다.
+- 막대는 그 계정으로 작업 중일 때만 새로 들어옵니다. 쉬는 계정의 값은 b-studio가 떠 있으면 b-studio의 사용량(#12)으로 채웁니다.
+- 리셋 시각이 지난 창은 그리지 않습니다.

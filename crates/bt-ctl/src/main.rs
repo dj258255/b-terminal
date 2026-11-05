@@ -2,6 +2,7 @@
 
 mod client;
 mod hooks;
+mod statusline;
 
 use bt_core::proto::{Call, TabInfo, printable};
 use bt_core::{AgentState, WaitReason};
@@ -24,12 +25,17 @@ const USAGE: &str = "사용: btctl <명령> [인자]
   hook codex <JSON>                 Codex notify를 탭 상태로
   setup claude [--write [파일]]      Claude Code 훅 설정 보이기(--write면 설정 파일에 합침)
   setup codex                       Codex notify 설정 보이기
+  statusline [-- 기존 명령...]       Claude Code 상태줄: 사용량을 터미널에 보내고 기존 상태줄 출력을 그대로 돌려줌
+  setup claude-statusline [--write [파일]]  상태줄을 btctl statusline으로 감싸는 설정
 
 탭을 주지 않으면 btctl을 부른 탭(BT_TAB_ID), 탭 밖이면 지금 보는 탭입니다.
 hook은 터미널이 없거나 실패해도 에이전트를 막지 않도록 항상 0으로 끝납니다.";
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.first().map(String::as_str) == Some("statusline") {
+        std::process::exit(run_statusline(&args[1..]));
+    }
     if args.first().map(String::as_str) == Some("hook") {
         // 훅은 에이전트를 막지 않는다: 무엇이 잘못돼도 0으로 끝내고, BTCTL_DEBUG가 있을 때만 까닭을 찍는다
         if let Err(e) = run_hook(&args[1..]) {
@@ -157,6 +163,51 @@ fn run_hook(args: &[String]) -> Result<(), Error> {
     Ok(())
 }
 
+/// 상태줄: 입력을 읽어 사용량을 보내고(실패해도 조용히), 감쌀 명령이 있으면 그 출력과 종료 코드를 그대로 돌려준다
+fn run_statusline(args: &[String]) -> i32 {
+    use std::io::{Read, Write};
+    let mut buf = Vec::new();
+    let _ = std::io::stdin()
+        .take(bt_core::proto::MAX_LINE as u64)
+        .read_to_end(&mut buf);
+    let input: serde_json::Value = serde_json::from_slice(&buf).unwrap_or(serde_json::Value::Null);
+    let windows = statusline::windows(&input);
+    if !windows.is_empty() && std::env::var_os(bt_core::proto::ENV_SOCKET).is_some() {
+        if let Ok(socket) = find_socket() {
+            let _ = call(
+                &socket,
+                Call::Usage {
+                    source: "claude".into(),
+                    windows,
+                },
+            );
+        }
+    }
+    let wrapped: Vec<&String> = match args.first().map(String::as_str) {
+        Some("--") => args[1..].iter().collect(),
+        _ => Vec::new(),
+    };
+    let Some((prog, rest)) = wrapped.split_first() else {
+        println!("{}", statusline::default_line(&input));
+        return 0;
+    };
+    let child = std::process::Command::new(prog)
+        .args(rest.iter().map(|s| s.as_str()))
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::inherit())
+        .stderr(std::process::Stdio::inherit())
+        .spawn();
+    let Ok(mut child) = child else {
+        // 감쌀 명령이 없어졌어도 상태줄은 뭔가 보인다
+        println!("{}", statusline::default_line(&input));
+        return 0;
+    };
+    if let Some(mut stdin) = child.stdin.take() {
+        let _ = stdin.write_all(&buf);
+    }
+    child.wait().ok().and_then(|s| s.code()).unwrap_or(0)
+}
+
 /// 설정 파일 자리: CLAUDE_CONFIG_DIR가 있으면 그 안, 없으면 ~/.claude/settings.json
 fn claude_settings_path() -> std::path::PathBuf {
     std::env::var_os("CLAUDE_CONFIG_DIR")
@@ -205,6 +256,51 @@ fn setup(args: &[String]) -> Result<String, Error> {
             std::fs::write(&path, body).map_err(|e| Error::Client(ClientError::Io(e)))?;
             Ok(format!(
                 "{}에 훅 {added}개 이벤트를 더했습니다(원본은 .bt-backup)",
+                path.display()
+            ))
+        }
+        Some("claude-statusline") => {
+            let path = args
+                .get(2)
+                .map(std::path::PathBuf::from)
+                .unwrap_or_else(claude_settings_path);
+            let mut settings: serde_json::Value = match std::fs::read(&path) {
+                Ok(raw) => serde_json::from_slice(&raw)
+                    .map_err(|e| usage(format!("{}를 JSON으로 읽지 못했습니다: {e}", path.display())))?,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => serde_json::json!({}),
+                Err(e) => return Err(Error::Client(ClientError::Io(e))),
+            };
+            let existing = settings
+                .pointer("/statusLine/command")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string);
+            let command = statusline::wrap_command(&exe, existing.as_deref());
+            if args.get(1).map(String::as_str) != Some("--write") {
+                return Ok(format!(
+                    "# {} 의 statusLine을 아래로 바꾸세요(기존 상태줄은 그대로 보입니다. --write가 대신 바꿉니다)\n{}",
+                    path.display(),
+                    serde_json::to_string_pretty(
+                        &serde_json::json!({ "statusLine": { "type": "command", "command": command } })
+                    )
+                    .unwrap_or_default()
+                ));
+            }
+            if existing.as_deref() == Some(command.as_str()) {
+                return Ok(format!("{}의 상태줄은 이미 btctl로 감싸져 있습니다", path.display()));
+            }
+            if !settings.is_object() {
+                settings = serde_json::json!({});
+            }
+            settings["statusLine"]["type"] = "command".into();
+            settings["statusLine"]["command"] = command.into();
+            if path.exists() {
+                std::fs::copy(&path, path.with_extension("json.bt-backup"))
+                    .map_err(|e| Error::Client(ClientError::Io(e)))?;
+            }
+            let body = serde_json::to_string_pretty(&settings).unwrap_or_default() + "\n";
+            std::fs::write(&path, body).map_err(|e| Error::Client(ClientError::Io(e)))?;
+            Ok(format!(
+                "{}의 상태줄을 btctl로 감쌌습니다(원본은 .bt-backup)",
                 path.display()
             ))
         }
