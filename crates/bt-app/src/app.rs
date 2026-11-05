@@ -20,6 +20,9 @@ use crate::keys;
 use crate::mouse;
 use crate::tabbar;
 
+/// 알림 띠가 보이는 시간
+const TOAST_FOR: Duration = Duration::from_millis(2500);
+
 /// 다른 스레드(PTY 읽기)가 창 스레드를 깨우는 사건
 #[derive(Debug, Clone)]
 pub enum UserEvent {
@@ -117,6 +120,8 @@ pub struct App {
     first: Option<SpawnOptions>,
     focused: bool,
     next_poll: Instant,
+    /// 창 안 알림 띠(글, 띄운 때). 2.5초 보인다
+    toast: Option<(String, Instant)>,
     control: Option<crate::control::ControlServer>,
     keymap: Keymap,
     /// --config-file(설정을 다시 읽을 때 같은 파일을 읽는다)
@@ -158,6 +163,7 @@ impl App {
             first: Some(first),
             focused: true,
             next_poll: Instant::now(),
+            toast: None,
             control: None,
             keymap,
             config_extra,
@@ -250,6 +256,12 @@ impl App {
                 crate::desktop::notify(&title, &note.body);
             }
         }
+        self.request_redraw();
+    }
+
+    /// 창 오른쪽 아래에 잠깐 알림 띠를 띄운다
+    fn toast(&mut self, text: String) {
+        self.toast = Some((text, Instant::now()));
         self.request_redraw();
     }
 
@@ -605,6 +617,12 @@ impl App {
         self.load_fonts();
         self.resize_all();
         log::info!("설정을 다시 읽었습니다");
+        let warn = self.config.warnings.len();
+        self.toast(if warn == 0 {
+            "설정을 다시 읽었습니다".into()
+        } else {
+            format!("설정을 다시 읽었습니다(경고 {warn}개)")
+        });
     }
 
     fn mouse_reporting(&self) -> Option<bt_term::Modes> {
@@ -640,6 +658,7 @@ impl App {
         let theme = self.config.theme.clone();
         let (gx, gy, _, _) = self.grid_rect();
         let screen = self.active_tab().map(|t| t.session.snapshot());
+        let toast = self.toast.clone().filter(|(_, at)| at.elapsed() < TOAST_FOR);
         let single_progress = if self.tabs.len() == 1 {
             self.tabs[0].live_progress()
         } else {
@@ -717,6 +736,9 @@ impl App {
                 let py = gy + (screen.cursor.row as u32 * m.height) as i32;
                 gfx.window
                     .set_ime_cursor_area(PhysicalPosition::new(px, py), PhysicalSize::new(m.width, m.height));
+            }
+            if let Some((text, _)) = &toast {
+                crate::tabbar::draw_toast(&mut canvas, fonts, &theme, text);
             }
         }
         let _ = buffer.present();
@@ -871,14 +893,8 @@ impl ApplicationHandler<UserEvent> for App {
                                 self.tabs[idx].id,
                                 text.chars().count()
                             );
-                            self.tabs[idx].last_desktop = None;
-                            self.on_notification(
-                                idx,
-                                bt_term::Notification {
-                                    title: "클립보드에 복사됨".into(),
-                                    body: shown,
-                                },
-                            );
+                            // 보고 있는 탭이라 안 읽음·데스크톱 알림으로는 보이지 않는다. 창 안 알림 띠로 늘 보인다
+                            self.toast(format!("클립보드에 복사됨: {shown}"));
                         } else {
                             log::warn!(
                                 "탭 {}: 보고 있지 않은 탭의 클립보드 쓰기(OSC 52)를 버렸습니다",
@@ -1121,6 +1137,10 @@ impl ApplicationHandler<UserEvent> for App {
                     t.progress = None;
                     expired = true;
                 }
+            }
+            if self.toast.as_ref().is_some_and(|(_, at)| at.elapsed() >= TOAST_FOR) {
+                self.toast = None;
+                expired = true;
             }
             if self.poll_foreground() || expired {
                 self.request_redraw();

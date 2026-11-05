@@ -118,3 +118,24 @@ fn dot(canvas: &mut Canvas, cx: i32, cy: i32, r: i32, color: Rgb) {
         }
     }
 }
+
+/// 창 오른쪽 아래의 알림 띠(클립보드 복사 같은 일을 사람에게 보인다)
+pub fn draw_toast(canvas: &mut Canvas, fonts: &mut Fonts, theme: &Theme, text: &str) {
+    let m = fonts.metrics();
+    let text = truncate(text, 48);
+    let tw = m.width * text_cells(&text) as u32;
+    let (w, h) = (tw + m.width * 2, m.height + m.height / 2);
+    let x = canvas.width as i32 - w as i32 - m.width as i32;
+    let y = canvas.height as i32 - h as i32 - m.height as i32 / 2;
+    let bg = theme.background.mix(theme.foreground, 0.85);
+    canvas.fill_rect(x, y, w, h, bg);
+    draw_text(
+        canvas,
+        fonts,
+        x + m.width as i32,
+        y + (h as i32 - m.height as i32) / 2,
+        &text,
+        theme.background,
+        false,
+    );
+}
