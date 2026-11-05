@@ -7,6 +7,15 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+bt-core = { version = "0.1.0", path = "../bt-core" }
+fontdb = "0.24"
+fontdue = "0.9"
+log.workspace = true
+thiserror.workspace = true
+unicode-width = "0.2"
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+bt-term = { path = "../bt-term" }
