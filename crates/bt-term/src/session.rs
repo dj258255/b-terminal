@@ -22,7 +22,7 @@ use parking_lot::Mutex;
 use portable_pty::{CommandBuilder, MasterPty, PtySize, native_pty_system};
 
 use crate::color;
-use crate::notify::{Notification, Scanner, Signal};
+use crate::notify::{Notification, PromptMark, Scanner, Signal};
 use crate::screen::{Cell, CellFlags, Cursor, CursorShape, Modes, Screen};
 
 /// 격자 크기와 셀 픽셀 크기(TIOCSWINSZ와 CSI 14/16/18 t 응답에 쓴다)
@@ -120,6 +120,10 @@ pub enum SessionEvent {
     ClipboardStore(String),
     /// 프로그램이 OSC 52로 클립보드를 읽으려 한다. 앱이 `reply`로 답을 만들어 PTY에 쓴다
     ClipboardLoad(ClipboardReply),
+    /// 셸 통합: 명령이 실행되기 시작했다(OSC 133;C). 명령 글을 알면 함께
+    CommandStarted(Option<String>),
+    /// 셸 통합: 명령이 끝났다(OSC 133;D). 출력과 종료 코드
+    CommandFinished(CommandRecord),
     /// 프로세스가 끝났다. 종료 코드를 모르면 없다
     Exited(Option<u32>),
 }
@@ -205,6 +209,31 @@ impl EventListener for Listener {
 struct Inner {
     term: Term<Listener>,
     parser: Processor,
+    /// 셸 통합이 알린 프롬프트 시작(OSC 133;A) 줄. 스크롤백 맨 위를 0으로 센 절대 줄
+    prompts: std::collections::VecDeque<i64>,
+}
+
+/// 프롬프트를 기억하는 상한(오래된 것부터 버린다)
+const MAX_PROMPTS: usize = 2000;
+/// 명령 하나의 출력을 모으는 상한(넘으면 앞을 버리고 끝을 남긴다)
+const MAX_CAPTURE: usize = 4 * 1024 * 1024;
+
+/// 셸 통합으로 알게 된 명령 하나
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CommandRecord {
+    /// 셸이 알린 명령 글(OSC 633;E). 모르면 없다
+    pub command: Option<String>,
+    /// 명령 출력(이스케이프를 뺀 글). 상한을 넘으면 끝부분만
+    pub output: String,
+    pub exit_code: Option<i32>,
+    pub duration: std::time::Duration,
+}
+
+impl Inner {
+    /// 지금 커서 줄(절대)
+    fn cursor_abs(&self) -> i64 {
+        self.term.grid().history_size() as i64 + self.term.grid().cursor.point.line.0 as i64
+    }
 }
 
 /// PTY 하나와 그 화면 상태
@@ -216,9 +245,41 @@ pub struct Session {
     theme: Mutex<Arc<Theme>>,
     pid: Option<u32>,
     exited: Arc<Mutex<Option<Option<u32>>>>,
+    /// 셸 통합 표지(OSC 133;A)를 한 번이라도 받았다
+    integrated: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl Session {
+    /// 이 탭의 셸이 셸 통합 표지를 보내는가(btctl run·프롬프트 이동·끝난 명령 알림이 쓴다)
+    pub fn has_shell_integration(&self) -> bool {
+        self.integrated.load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    /// 앞(-1)·뒤(+1) 프롬프트로 스크롤한다. 옮겼으면 참
+    pub fn jump_to_prompt(&self, dir: i32) -> bool {
+        let mut g = self.inner.lock();
+        let history = g.term.grid().history_size() as i64;
+        let offset = g.term.grid().display_offset() as i64;
+        // 지금 화면 맨 위 줄(절대)
+        let top = history - offset;
+        let target = if dir < 0 {
+            g.prompts.iter().rev().find(|&&p| p < top).copied()
+        } else {
+            g.prompts.iter().find(|&&p| p > top).copied()
+        };
+        let Some(target) = target else {
+            if dir > 0 && offset > 0 {
+                g.term.scroll_display(Scroll::Bottom);
+                return true;
+            }
+            return false;
+        };
+        // 그 줄이 화면 맨 위에 오게(스크롤백 밖이면 맨 아래)
+        let new_offset = (history - target).clamp(0, history);
+        g.term.scroll_display(Scroll::Delta((new_offset - offset) as i32));
+        true
+    }
+
     /// 프로그램을 PTY로 띄운다. `sink`는 읽기 스레드에서 불린다
     pub fn spawn(options: SpawnOptions, size: GridSize, theme: Theme, sink: EventSink) -> anyhow::Result<Self> {
         let pty = native_pty_system();
@@ -299,7 +360,10 @@ impl Session {
         let inner = Arc::new(Mutex::new(Inner {
             term,
             parser: Processor::new(),
+            prompts: std::collections::VecDeque::new(),
         }));
+        let integrated = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let thread_integrated = integrated.clone();
         let exited = Arc::new(Mutex::new(None));
 
         let thread_inner = inner.clone();
@@ -307,19 +371,69 @@ impl Session {
         std::thread::Builder::new().name("bt-pty-read".into()).spawn(move || {
             let mut buf = vec![0u8; 64 * 1024];
             let mut scanner = Scanner::default();
+            // 셸 통합: C(실행)부터 D(끝)까지의 출력과 그 명령
+            let mut capture: Option<(Vec<u8>, Instant)> = None;
+            let mut pending_cmd: Option<String> = None;
             loop {
                 match reader.read(&mut buf) {
                     Ok(0) => break,
                     Ok(n) => {
                         let bytes = &buf[..n];
-                        let notes = scanner.feed(bytes);
+                        let signals = scanner.feed_at(bytes);
+                        let mut events = Vec::new();
                         {
                             let mut g = thread_inner.lock();
-                            let Inner { term, parser } = &mut *g;
-                            parser.advance(term, bytes);
+                            let mut pos = 0;
+                            // 신호가 끝난 자리까지 나눠 먹인다: 프롬프트 줄을 정확히 적고, 출력을 C와 D 사이에서 자른다
+                            for (end, sig) in signals {
+                                let seg = &bytes[pos..end.min(bytes.len())];
+                                {
+                                    let Inner { term, parser, .. } = &mut *g;
+                                    parser.advance(term, seg);
+                                }
+                                if let Some((cap, _)) = capture.as_mut() {
+                                    push_capped(cap, seg);
+                                }
+                                pos = end.min(bytes.len());
+                                match sig {
+                                    Signal::Prompt(PromptMark::PromptStart) => {
+                                        thread_integrated.store(true, std::sync::atomic::Ordering::Release);
+                                        let line = g.cursor_abs();
+                                        if g.prompts.back() != Some(&line) {
+                                            g.prompts.push_back(line);
+                                            if g.prompts.len() > MAX_PROMPTS {
+                                                g.prompts.pop_front();
+                                            }
+                                        }
+                                    }
+                                    Signal::Prompt(PromptMark::CommandExecuted) => {
+                                        capture = Some((Vec::new(), Instant::now()));
+                                        events.push(SessionEvent::CommandStarted(pending_cmd.clone()));
+                                    }
+                                    Signal::Prompt(PromptMark::CommandFinished(code)) => {
+                                        if let Some((cap, started)) = capture.take() {
+                                            events.push(SessionEvent::CommandFinished(CommandRecord {
+                                                command: pending_cmd.take(),
+                                                output: crate::plain::plain_text(&cap),
+                                                exit_code: code,
+                                                duration: started.elapsed(),
+                                            }));
+                                        }
+                                    }
+                                    Signal::Prompt(PromptMark::CommandStart) => {}
+                                    Signal::CommandLine(c) => pending_cmd = Some(c),
+                                    other => events.push(signal_event(other)),
+                                }
+                            }
+                            let rest = &bytes[pos..];
+                            let Inner { term, parser, .. } = &mut *g;
+                            parser.advance(term, rest);
+                            if let Some((cap, _)) = capture.as_mut() {
+                                push_capped(cap, rest);
+                            }
                         }
-                        for sig in notes {
-                            sink(signal_event(sig));
+                        for e in events {
+                            sink(e);
                         }
                         sink(SessionEvent::Output);
                     }
@@ -340,6 +454,7 @@ impl Session {
             theme: Mutex::new(theme),
             pid,
             exited,
+            integrated,
         })
     }
 
@@ -435,7 +550,7 @@ impl Session {
         {
             return false;
         }
-        let Inner { term, parser } = &mut *g;
+        let Inner { term, parser, .. } = &mut *g;
         parser.advance(term, MOUSE_OFF);
         true
     }
@@ -449,7 +564,7 @@ impl Session {
             .sync_timeout()
             .is_some_and(|t| t <= Instant::now());
         if expired {
-            let Inner { term, parser } = &mut *g;
+            let Inner { term, parser, .. } = &mut *g;
             parser.stop_sync(term);
         }
         expired
@@ -511,6 +626,16 @@ fn signal_event(sig: Signal) -> SessionEvent {
         Signal::Notify(n) => SessionEvent::Notification(n),
         Signal::Cwd { host, path } => SessionEvent::Cwd { host, path },
         Signal::Progress { state, percent } => SessionEvent::Progress { state, percent },
+        // 셸 통합 표지는 읽기 스레드가 따로 다룬다. 해석기(Emulator)에서는 무시
+        Signal::Prompt(_) | Signal::CommandLine(_) => SessionEvent::Output,
+    }
+}
+
+fn push_capped(cap: &mut Vec<u8>, seg: &[u8]) {
+    cap.extend_from_slice(seg);
+    if cap.len() > MAX_CAPTURE {
+        let cut = cap.len() - MAX_CAPTURE;
+        cap.drain(..cut);
     }
 }
 

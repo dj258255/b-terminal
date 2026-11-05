@@ -43,6 +43,8 @@ pub enum Action {
     ClearScreen,
     ReloadConfig,
     SelectAll,
+    /// 앞(-1)·뒤(+1) 프롬프트로(셸 통합)
+    JumpToPrompt(i32),
     /// `text:…`: 글을 그대로 PTY에 보낸다(`\n`, `\x1b` 같은 이스케이프를 푼다)
     Text(String),
 }
@@ -166,6 +168,7 @@ pub fn parse_action(s: &str) -> Result<Option<Action>, String> {
         "clear_screen" => Action::ClearScreen,
         "reload_config" => Action::ReloadConfig,
         "select_all" => Action::SelectAll,
+        "jump_to_prompt" => Action::JumpToPrompt(arg.and_then(|a| a.trim().parse().ok()).unwrap_or(-1)),
         "text" => Action::Text(unescape(arg.unwrap_or(""))),
         "csi" => Action::Text(format!("\x1b[{}", arg.unwrap_or(""))),
         "esc" => Action::Text(format!("\x1b{}", arg.unwrap_or(""))),
@@ -201,8 +204,8 @@ fn defaults() -> Vec<(&'static str, &'static str)> {
         ("super+end", "scroll_to_bottom"),
         ("super+page_up", "scroll_page_up"),
         ("super+page_down", "scroll_page_down"),
-        ("super+arrow_up", "scroll_page_up"),
-        ("super+arrow_down", "scroll_page_down"),
+        ("super+arrow_up", "jump_to_prompt:-1"),
+        ("super+arrow_down", "jump_to_prompt:1"),
         ("shift+page_up", "scroll_page_up"),
         ("shift+page_down", "scroll_page_down"),
         ("shift+home", "scroll_to_top"),

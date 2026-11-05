@@ -70,8 +70,10 @@ pub fn own_tab() -> Option<u64> {
 pub fn call(socket: &std::path::Path, call: Call) -> Result<serde_json::Value, ClientError> {
     let mut stream =
         UnixStream::connect(socket).map_err(|e| ClientError::NoTerminal(format!("{}: {e}", socket.display())))?;
+    // run은 명령이 끝날 때까지 기다린다
+    let wait = call.reply_timeout() + Duration::from_secs(2);
     stream
-        .set_read_timeout(Some(Duration::from_secs(10)))
+        .set_read_timeout(Some(wait.max(Duration::from_secs(10))))
         .map_err(ClientError::Io)?;
     let mut line = serde_json::to_vec(&Request { id: 1, call }).map_err(|e| ClientError::Remote(e.to_string()))?;
     line.push(b'\n');

@@ -21,11 +21,28 @@ pub enum Signal {
         host: String,
         path: PathBuf,
     },
+    /// 셸 통합 표지(OSC 133, 또는 VS Code의 OSC 633 A~D)
+    Prompt(PromptMark),
+    /// 셸이 알린, 지금 실행하는 명령 글(OSC 633;E)
+    CommandLine(String),
     /// 진행 표시(OSC 9;4;상태;값). 상태 0은 지움, 1 보통, 2 오류, 3 끝 모름, 4 멈춤
     Progress {
         state: u8,
         percent: u8,
     },
+}
+
+/// 셸 통합 표지. <https://gitlab.freedesktop.org/Per_Bothner/specifications/blob/master/proposals/semantic-prompts.md>
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PromptMark {
+    /// A: 프롬프트가 시작된다
+    PromptStart,
+    /// B: 사람이 명령을 치기 시작한다(프롬프트 끝)
+    CommandStart,
+    /// C: 명령이 실행된다(출력 시작)
+    CommandExecuted,
+    /// D: 명령이 끝났다(종료 코드)
+    CommandFinished(Option<i32>),
 }
 
 /// OSC 하나의 상한. 넘으면 버린다(상한은 모으기 전에 본다)
@@ -56,8 +73,14 @@ pub struct Scanner {
 impl Scanner {
     /// 바이트를 먹이고 끝난 OSC에서 뽑은 신호를 돌려준다
     pub fn feed(&mut self, bytes: &[u8]) -> Vec<Signal> {
+        self.feed_at(bytes).into_iter().map(|(_, s)| s).collect()
+    }
+
+    /// `feed`와 같고, 신호마다 그 OSC가 끝난 바로 뒤의 자리(이번 조각 안)를 함께 돌려준다.
+    /// 읽기 스레드가 그 자리까지 VT에 먹인 뒤 커서 줄을 적거나, 명령 출력을 C와 D 사이에서 잘라 낸다
+    pub fn feed_at(&mut self, bytes: &[u8]) -> Vec<(usize, Signal)> {
         let mut out = Vec::new();
-        for &b in bytes {
+        for (i, &b) in bytes.iter().enumerate() {
             self.st = match (self.st, b) {
                 (St::Ground, 0x1b) => St::Esc,
                 (St::Ground, 0x9d) => {
@@ -72,7 +95,7 @@ impl Scanner {
                 (St::Esc, 0x1b) => St::Esc,
                 (St::Esc, _) => St::Ground,
                 (St::Osc, 0x07) => {
-                    self.finish(&mut out);
+                    self.finish(&mut out, i + 1);
                     St::Ground
                 }
                 (St::Osc, 0x1b) => St::OscEsc,
@@ -86,7 +109,7 @@ impl Scanner {
                     }
                 }
                 (St::OscEsc, b'\\') => {
-                    self.finish(&mut out);
+                    self.finish(&mut out, i + 1);
                     St::Ground
                 }
                 // ESC 뒤가 \가 아니면 OSC가 끊긴 것이다. 새 이스케이프의 시작으로 본다
@@ -105,11 +128,11 @@ impl Scanner {
         out
     }
 
-    fn finish(&mut self, out: &mut Vec<Signal>) {
+    fn finish(&mut self, out: &mut Vec<(usize, Signal)>, at: usize) {
         let raw = std::mem::take(&mut self.buf);
         let text = String::from_utf8_lossy(&raw);
         if let Some(sig) = parse_osc(&text) {
-            out.push(sig);
+            out.push((at, sig));
         }
     }
 }
@@ -177,6 +200,30 @@ fn parse_osc(s: &str) -> Option<Signal> {
                     body: String::new(),
                 }
             }))
+        }
+        "133" | "633" => {
+            let mut parts = rest.split(';');
+            let kind = parts.next()?;
+            Some(match kind {
+                "A" => Signal::Prompt(PromptMark::PromptStart),
+                "B" => Signal::Prompt(PromptMark::CommandStart),
+                "C" => Signal::Prompt(PromptMark::CommandExecuted),
+                "D" => Signal::Prompt(PromptMark::CommandFinished(
+                    parts.next().and_then(|c| c.trim().parse().ok()),
+                )),
+                // VS Code: 633;E;명령(;는 \x3b, \는 \\로 적는다)
+                "E" if code == "633" => {
+                    let cmd = rest.split_once(';').map(|x| x.1).unwrap_or("");
+                    let cmd = cmd
+                        .split(';')
+                        .next()
+                        .unwrap_or("")
+                        .replace("\\x3b", ";")
+                        .replace("\\\\", "\\");
+                    Signal::CommandLine(clean(&cmd, MAX_BODY))
+                }
+                _ => return None,
+            })
         }
         "7" => {
             // 7;file://호스트/경로 (경로는 퍼센트 인코딩)
@@ -273,6 +320,21 @@ mod tests {
         assert!(
             notes(b"\x1b]9;9;\"C:\\\\\"\x07").is_empty(),
             "다른 ConEmu 명령은 버린다"
+        );
+    }
+
+    #[test]
+    fn shell_integration_marks_and_their_positions() {
+        let input = b"out\x1b]133;C\x07hello\n\x1b]133;D;2\x1b\\\x1b]133;A\x07$ \x1b]633;E;git commit -m a\\x3bb\x07";
+        let got = Scanner::default().feed_at(input);
+        assert_eq!(got[0], (11, Signal::Prompt(PromptMark::CommandExecuted)));
+        assert_eq!(&input[11..17], b"hello\n", "C가 끝난 자리부터 출력이다");
+        assert_eq!(got[1].1, Signal::Prompt(PromptMark::CommandFinished(Some(2))));
+        assert_eq!(got[2].1, Signal::Prompt(PromptMark::PromptStart));
+        assert_eq!(got[3].1, Signal::CommandLine("git commit -m a;b".into()));
+        assert_eq!(
+            Scanner::default().feed(b"\x1b]133;D\x07"),
+            vec![Signal::Prompt(PromptMark::CommandFinished(None))]
         );
     }
 

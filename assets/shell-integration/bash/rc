@@ -1,0 +1,13 @@
+# b-terminal 셸 통합(bash). b-terminal이 `bash --rcfile 이파일 -i`로 띄운다.
+# 로그인 셸처럼 사용자 설정을 읽고 통합을 싣는다
+if [ -n "$BT_BASH_LOGIN" ]; then
+  unset BT_BASH_LOGIN
+  [ -r /etc/profile ] && . /etc/profile
+  for _bt_f in "$HOME/.bash_profile" "$HOME/.bash_login" "$HOME/.profile"; do
+    if [ -r "$_bt_f" ]; then . "$_bt_f"; break; fi
+  done
+  unset _bt_f
+elif [ -r "$HOME/.bashrc" ]; then
+  . "$HOME/.bashrc"
+fi
+[ -n "$BT_SHELL_INTEGRATION_DIR" ] && . "$BT_SHELL_INTEGRATION_DIR/bash/b-terminal.bash"

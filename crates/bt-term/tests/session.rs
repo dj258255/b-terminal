@@ -175,3 +175,38 @@ fn osc52_write_reaches_the_app_only_when_allowed() {
     assert_eq!(run(true).as_deref(), Some("복사됨\n"));
     assert_eq!(run(false), None, "꺼져 있으면 클립보드에 닿지 않는다");
 }
+
+#[test]
+fn shell_integration_marks_become_a_command_record() {
+    let script = r#"for i in 1 2 3 4 5 6 7 8; do printf 'filler %s\n' $i; done
+printf '\033]133;A\007$ '
+printf '\033]633;E;make test\007\033]133;C\007'
+printf '\033[32mok\033[0m 12 passed\r\n'
+for i in 1 2 3 4 5 6; do printf 'line %s\r\n' $i; done
+printf '\033]133;D;3\007\033]133;A\007$ '
+sleep 1"#;
+    let (s, rx) = sh(script, GridSize::new(40, 4));
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut rec = None;
+    let mut started = None;
+    while Instant::now() < deadline && rec.is_none() {
+        match rx.recv_timeout(Duration::from_millis(100)) {
+            Ok(SessionEvent::CommandStarted(c)) => started = Some(c),
+            Ok(SessionEvent::CommandFinished(r)) => rec = Some(r),
+            _ => {}
+        }
+    }
+    let rec = rec.expect("명령 기록이 오지 않았다");
+    assert_eq!(started, Some(Some("make test".to_string())));
+    assert_eq!(rec.command.as_deref(), Some("make test"));
+    assert_eq!(rec.exit_code, Some(3));
+    assert_eq!(
+        rec.output,
+        "ok 12 passed\nline 1\nline 2\nline 3\nline 4\nline 5\nline 6\n"
+    );
+    assert!(s.has_shell_integration());
+    // 화면이 4줄이라 앞 프롬프트는 스크롤백에 있다. 앞 프롬프트로 가면 화면이 위로 간다
+    assert!(s.jump_to_prompt(-1));
+    assert!(s.snapshot().display_offset > 0);
+    assert!(s.jump_to_prompt(1));
+}

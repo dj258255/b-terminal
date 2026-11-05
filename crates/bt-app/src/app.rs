@@ -20,6 +20,22 @@ use crate::keys;
 use crate::mouse;
 use crate::tabbar;
 
+fn truncate_chars(s: &str, n: usize) -> String {
+    if s.chars().count() <= n {
+        return s.to_string();
+    }
+    s.chars().take(n.saturating_sub(1)).chain(['…']).collect()
+}
+
+fn command_result(rec: &bt_term::CommandRecord) -> bt_core::proto::CommandResult {
+    bt_core::proto::CommandResult {
+        command: rec.command.clone(),
+        output: rec.output.clone(),
+        exit_code: rec.exit_code,
+        duration_ms: rec.duration.as_millis() as u64,
+    }
+}
+
 /// 알림 띠가 보이는 시간
 const TOAST_FOR: Duration = Duration::from_millis(2500);
 
@@ -72,6 +88,9 @@ pub struct Tab {
     pub cwd: Option<std::path::PathBuf>,
     /// 마지막으로 데스크톱 알림을 띄운 때(탭마다 묶는다)
     last_desktop: Option<Instant>,
+    /// 셸 통합: 지금 도는 명령(글, 시작한 때)과 마지막으로 끝난 명령
+    pub running: Option<(Option<String>, Instant)>,
+    pub last_command: Option<bt_term::CommandRecord>,
     /// 진행 표시(OSC 9;4): (상태, 퍼센트, 받은 때). 15초 동안 새 소식이 없으면 지운다(Ghostty와 같다)
     pub progress: Option<(u8, u8, Instant)>,
 }
@@ -120,6 +139,10 @@ pub struct App {
     first: Option<SpawnOptions>,
     focused: bool,
     next_poll: Instant,
+    /// 셸 통합 스크립트를 풀어 둔 폴더(없으면 셸 통합을 싣지 않는다)
+    shell_integration_dir: Option<std::path::PathBuf>,
+    /// btctl run이 기다리는 탭: 탭 id → (요청 id, 답할 통로, 기한)
+    run_waiters: std::collections::HashMap<u64, (u64, std::sync::mpsc::SyncSender<bt_core::proto::Response>, Instant)>,
     /// 창 안 알림 띠(글, 띄운 때). 2.5초 보인다
     toast: Option<(String, Instant)>,
     control: Option<crate::control::ControlServer>,
@@ -164,6 +187,8 @@ impl App {
             focused: true,
             next_poll: Instant::now(),
             toast: None,
+            shell_integration_dir: None,
+            run_waiters: std::collections::HashMap::new(),
             control: None,
             keymap,
             config_extra,
@@ -259,6 +284,41 @@ impl App {
         self.request_redraw();
     }
 
+    /// 셸 통합이 알린 명령의 끝: btctl run에 답하고, 오래 걸린 명령이면(창을 보지 않을 때) 알린다
+    fn on_command_finished(&mut self, idx: usize, rec: bt_term::CommandRecord) {
+        let tab_id = self.tabs[idx].id;
+        self.tabs[idx].running = None;
+        if let Some((req_id, reply, _)) = self.run_waiters.remove(&tab_id) {
+            let _ = reply.send(bt_core::proto::Response::ok(
+                req_id,
+                serde_json::to_value(command_result(&rec)).unwrap_or_default(),
+            ));
+        }
+        let limit = self.config.notify_command_seconds;
+        let watching = self.focused && idx == self.active;
+        if limit > 0 && rec.duration.as_secs() >= limit && !watching {
+            let cmd = rec.command.clone().unwrap_or_else(|| "명령".into());
+            let code = rec
+                .exit_code
+                .map(|c| format!("종료 코드 {c}"))
+                .unwrap_or_else(|| "끝남".into());
+            let body = format!("{} — {code}, {}초", truncate_chars(&cmd, 60), rec.duration.as_secs());
+            let title = if rec.exit_code.is_some_and(|c| c != 0) {
+                "명령이 실패했습니다"
+            } else {
+                "명령이 끝났습니다"
+            };
+            self.on_notification(
+                idx,
+                bt_term::Notification {
+                    title: title.into(),
+                    body,
+                },
+            );
+        }
+        self.tabs[idx].last_command = Some(rec);
+    }
+
     /// 창 오른쪽 아래에 잠깐 알림 띠를 띄운다
     fn toast(&mut self, text: String) {
         self.toast = Some((text, Instant::now()));
@@ -319,6 +379,9 @@ impl App {
                 .push((bt_core::proto::ENV_SOCKET.into(), c.path.to_string_lossy().into_owned()));
         }
         options.env.push((bt_core::proto::ENV_TAB.into(), id.to_string()));
+        if let Some(dir) = &self.shell_integration_dir {
+            crate::shellint::apply(&mut options, dir, &self.config.shell_integration);
+        }
         match Session::spawn(options, size, self.config.theme.clone(), self.sink(id)) {
             Ok(session) => {
                 self.tabs.push(Tab {
@@ -332,6 +395,8 @@ impl App {
                     cwd: None,
                     last_desktop: None,
                     progress: None,
+                    running: None,
+                    last_command: None,
                 });
                 self.active = self.tabs.len() - 1;
                 // 탭이 하나에서 둘이 되면 탭 줄이 생겨 격자가 줄어든다
@@ -429,6 +494,44 @@ impl App {
             },
             Call::Read { tab } => match pick(self, tab) {
                 Ok(i) => Response::ok(id, json!({ "text": self.tabs[i].session.snapshot().text() })),
+                Err(r) => r,
+            },
+            Call::Run {
+                tab,
+                command,
+                timeout_ms,
+            } => match pick(self, tab) {
+                Ok(i) => {
+                    let t = &self.tabs[i];
+                    if !t.session.has_shell_integration() {
+                        return Response::err(
+                            id,
+                            "이 탭은 셸 통합이 없습니다(zsh·bash 탭에서 쓰세요. shell-integration 설정을 보세요)",
+                        );
+                    }
+                    if t.running.is_some() || self.run_waiters.contains_key(&t.id) {
+                        return Response::err(id, "이 탭은 다른 명령을 돌리는 중입니다");
+                    }
+                    if command.contains('\n') || command.contains('\r') {
+                        return Response::err(id, "명령은 한 줄이어야 합니다");
+                    }
+                    let tab_id = t.id;
+                    t.session.write(format!("{command}\r").as_bytes());
+                    // 답은 명령이 끝날 때(on_command_finished) 보낸다. 여기서는 빈 답을 돌려주지 않게 표시만 남긴다
+                    return Response {
+                        id: u64::MAX,
+                        ok: true,
+                        result: json!({ "pending": tab_id, "deadline_ms": timeout_ms }),
+                        error: None,
+                    };
+                }
+                Err(r) => r,
+            },
+            Call::LastCommand { tab } => match pick(self, tab) {
+                Ok(i) => match &self.tabs[i].last_command {
+                    Some(rec) => Response::ok(id, serde_json::to_value(command_result(rec)).unwrap_or_default()),
+                    None => Response::err(id, "이 탭에서 셸 통합으로 끝난 명령이 아직 없습니다"),
+                },
                 Err(r) => r,
             },
             Call::ReloadConfig => {
@@ -575,6 +678,13 @@ impl App {
                 }
             }
             Action::ReloadConfig => self.reload_config(),
+            Action::JumpToPrompt(dir) => {
+                if let Some(t) = self.active_tab() {
+                    if !t.session.jump_to_prompt(dir) && !t.session.has_shell_integration() {
+                        self.toast("셸 통합이 없는 탭이라 프롬프트를 모릅니다".into());
+                    }
+                }
+            }
             Action::Text(text) => {
                 if let Some(t) = self.active_tab() {
                     t.session.write(text.as_bytes());
@@ -825,6 +935,12 @@ impl ApplicationHandler<UserEvent> for App {
             event_loop.exit();
             return;
         }
+        if self.shell_integration_dir.is_none() && self.config.shell_integration != "none" {
+            match crate::shellint::install() {
+                Ok(dir) => self.shell_integration_dir = Some(dir),
+                Err(e) => log::warn!("셸 통합 스크립트를 풀지 못했습니다(셸 통합 없이 띄웁니다): {e}"),
+            }
+        }
         if self.control.is_none() {
             match crate::control::start(self.proxy.clone()) {
                 Ok(c) => {
@@ -852,8 +968,21 @@ impl ApplicationHandler<UserEvent> for App {
         match event {
             UserEvent::Redraw => self.request_redraw(),
             UserEvent::Control(req, reply) => {
+                let req_id = req.id;
+                let timeout = match &req.call {
+                    bt_core::proto::Call::Run { timeout_ms, .. } => Some(*timeout_ms),
+                    _ => None,
+                };
                 let resp = self.handle_call(req);
-                let _ = reply.send(resp);
+                // run: 명령을 넣었으면 끝날 때 답한다(기한이 지나면 about_to_wait가 오류로 답한다)
+                if resp.id == u64::MAX {
+                    if let Some(tab_id) = resp.result.get("pending").and_then(|v| v.as_u64()) {
+                        let deadline = Instant::now() + Duration::from_millis(timeout.unwrap_or(60_000));
+                        self.run_waiters.insert(tab_id, (req_id, reply, deadline));
+                    }
+                } else {
+                    let _ = reply.send(resp);
+                }
             }
             UserEvent::Session(id, e) => {
                 let Some(idx) = self.tabs.iter().position(|t| t.id == id) else {
@@ -911,6 +1040,8 @@ impl ApplicationHandler<UserEvent> for App {
                             .unwrap_or_default();
                         self.tabs[idx].session.write(reply.format(&text).as_bytes());
                     }
+                    SessionEvent::CommandStarted(cmd) => self.tabs[idx].running = Some((cmd, Instant::now())),
+                    SessionEvent::CommandFinished(rec) => self.on_command_finished(idx, rec),
                     SessionEvent::Bell | SessionEvent::Output => {}
                 }
                 self.request_redraw();
@@ -1141,6 +1272,20 @@ impl ApplicationHandler<UserEvent> for App {
             if self.toast.as_ref().is_some_and(|(_, at)| at.elapsed() >= TOAST_FOR) {
                 self.toast = None;
                 expired = true;
+            }
+            let late: Vec<u64> = self
+                .run_waiters
+                .iter()
+                .filter(|(_, (_, _, d))| *d <= now)
+                .map(|(k, _)| *k)
+                .collect();
+            for tab_id in late {
+                if let Some((req_id, reply, _)) = self.run_waiters.remove(&tab_id) {
+                    let _ = reply.send(bt_core::proto::Response::err(
+                        req_id,
+                        "기한 안에 명령이 끝나지 않았습니다(명령은 탭에서 계속 돕니다)",
+                    ));
+                }
             }
             if self.poll_foreground() || expired {
                 self.request_redraw();

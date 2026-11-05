@@ -16,6 +16,9 @@ const USAGE: &str = "사용: btctl <명령> [인자]
   read [--tab N]                    탭 화면을 글로
   notify [--tab N] <제목> [본문]    알림 달기(OSC 알림과 같게 다룸)
   reload-config                     설정 파일을 다시 읽기
+  run [--tab N] [--timeout 초] [--json] -- <명령...>
+                                    탭에서 명령을 돌리고 끝날 때까지 기다려 출력을 찍고 그 종료 코드로 끝남(셸 통합 필요)
+  last [--tab N] [--json]           탭에서 마지막으로 끝난 명령의 출력과 종료 코드
 
 탭을 주지 않으면 btctl을 부른 탭(BT_TAB_ID), 탭 밖이면 지금 보는 탭입니다.";
 
@@ -76,6 +79,19 @@ fn take_tab(args: &[String]) -> Result<(Option<u64>, Vec<String>), Error> {
         }
     }
     Ok((tab.or_else(own_tab), rest))
+}
+
+/// 명령 결과를 찍는다. 글로 찍을 때는 그 명령의 종료 코드로 btctl도 끝난다(스크립트·에이전트가 그대로 쓰게)
+fn finish_command(v: serde_json::Value, json: bool) -> Result<String, Error> {
+    if json {
+        return Ok(v.to_string());
+    }
+    let r: bt_core::proto::CommandResult =
+        serde_json::from_value(v).map_err(|e| Error::Client(ClientError::Remote(e.to_string())))?;
+    print!("{}", r.output);
+    use std::io::Write;
+    let _ = std::io::stdout().flush();
+    std::process::exit(r.exit_code.unwrap_or(0).clamp(0, 255));
 }
 
 fn run(args: &[String]) -> Result<String, Error> {
@@ -169,6 +185,44 @@ fn run(args: &[String]) -> Result<String, Error> {
             let body = rest.get(1..).map(|r| r.join(" ")).unwrap_or_default();
             call(&socket, Call::Notify { tab, title, body })?;
             Ok(String::new())
+        }
+        "run" => {
+            let (tab, rest) = take_tab(rest)?;
+            let mut timeout_ms = 60_000u64;
+            let mut json = false;
+            let mut words = Vec::new();
+            let mut it = rest.iter();
+            while let Some(a) = it.next() {
+                match a.as_str() {
+                    "--timeout" => {
+                        let v = it.next().ok_or_else(|| usage("--timeout 뒤에 초가 필요합니다"))?;
+                        timeout_ms = v
+                            .parse::<u64>()
+                            .map_err(|_| usage(format!("초가 아닙니다: {v}")))?
+                            .saturating_mul(1000);
+                    }
+                    "--json" => json = true,
+                    "--" => words.extend(it.by_ref().cloned()),
+                    other => words.push(other.to_string()),
+                }
+            }
+            if words.is_empty() {
+                return Err(usage("돌릴 명령이 필요합니다"));
+            }
+            let v = call(
+                &socket,
+                Call::Run {
+                    tab,
+                    command: words.join(" "),
+                    timeout_ms,
+                },
+            )?;
+            finish_command(v, json)
+        }
+        "last" => {
+            let (tab, rest) = take_tab(rest)?;
+            let v = call(&socket, Call::LastCommand { tab })?;
+            finish_command(v, rest.iter().any(|a| a == "--json"))
         }
         "reload-config" => {
             let v = call(&socket, Call::ReloadConfig)?;
