@@ -28,12 +28,17 @@ pub enum Call {
     Ping,
     /// 탭 목록
     List,
-    /// 새 탭. `command`가 비면 로그인 셸
+    /// 새 탭. `command`가 비면 로그인 셸.
+    /// `split`(right·down·left·up·auto)을 주면 새 탭 대신 칸 `tab`(없으면 지금 칸)을 나눠 그쪽에 연다
     New {
         #[serde(default)]
         cwd: Option<PathBuf>,
         #[serde(default)]
         command: Vec<String>,
+        #[serde(default)]
+        split: Option<String>,
+        #[serde(default)]
+        tab: Option<u64>,
     },
     Focus {
         tab: u64,

@@ -5,6 +5,8 @@
 
 use std::collections::HashMap;
 
+use crate::split::Direction;
+
 /// 수식 키 묶음
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub struct Mods {
@@ -27,7 +29,17 @@ pub enum Action {
     Copy,
     Paste,
     NewTab,
+    /// 지금 칸을 닫는다(칸이 하나면 탭이 닫힌다)
+    CloseSurface,
+    /// 탭을 칸째 닫는다
     CloseTab,
+    /// 지금 칸을 나눠 그쪽에 새 칸을 연다. `None`이면 긴 쪽으로 나눈다(Ghostty의 auto)
+    NewSplit(Option<Direction>),
+    GotoSplit(SplitTarget),
+    /// 경계를 그쪽으로 민다(포인트)
+    ResizeSplit(Direction, u16),
+    EqualizeSplits,
+    ToggleSplitZoom,
     /// 1부터
     GotoTab(usize),
     NextTab,
@@ -47,6 +59,25 @@ pub enum Action {
     JumpToPrompt(i32),
     /// `text:…`: 글을 그대로 PTY에 보낸다(`\n`, `\x1b` 같은 이스케이프를 푼다)
     Text(String),
+}
+
+/// goto_split의 대상
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SplitTarget {
+    Previous,
+    Next,
+    Toward(Direction),
+}
+
+/// Ghostty의 방향 이름(top·bottom도 받는다)
+fn parse_direction(s: &str) -> Option<Direction> {
+    Some(match s.trim() {
+        "left" => Direction::Left,
+        "right" => Direction::Right,
+        "up" | "top" => Direction::Up,
+        "down" | "bottom" => Direction::Down,
+        _ => return None,
+    })
 }
 
 /// 키 이름을 Ghostty 이름으로 맞춘다
@@ -149,7 +180,26 @@ pub fn parse_action(s: &str) -> Result<Option<Action>, String> {
         "copy_to_clipboard" => Action::Copy,
         "paste_from_clipboard" | "paste_from_selection" => Action::Paste,
         "new_tab" | "new_window" => Action::NewTab,
-        "close_surface" | "close_tab" => Action::CloseTab,
+        "close_surface" => Action::CloseSurface,
+        "close_tab" => Action::CloseTab,
+        "new_split" => match arg.map(str::trim).unwrap_or("auto") {
+            "auto" => Action::NewSplit(None),
+            d => Action::NewSplit(Some(parse_direction(d).ok_or("new_split:right·down·left·up·auto")?)),
+        },
+        "goto_split" => Action::GotoSplit(match arg.map(str::trim).unwrap_or("") {
+            "previous" => SplitTarget::Previous,
+            "next" => SplitTarget::Next,
+            d => SplitTarget::Toward(parse_direction(d).ok_or("goto_split:previous·next·left·right·up·down")?),
+        }),
+        "resize_split" => {
+            let (d, n) = arg.unwrap_or("").split_once(',').ok_or("resize_split:방향,크기")?;
+            Action::ResizeSplit(
+                parse_direction(d).ok_or("resize_split의 방향은 left·right·up·down")?,
+                n.trim().parse().map_err(|_| "resize_split의 크기는 정수")?,
+            )
+        }
+        "equalize_splits" => Action::EqualizeSplits,
+        "toggle_split_zoom" => Action::ToggleSplitZoom,
         "goto_tab" => Action::GotoTab(
             arg.and_then(|a| a.trim().parse().ok())
                 .filter(|n| *n >= 1)
@@ -189,10 +239,24 @@ fn defaults() -> Vec<(&'static str, &'static str)> {
         ("super+v", "paste_from_clipboard"),
         ("super+t", "new_tab"),
         ("super+w", "close_surface"),
+        ("super+alt+w", "close_tab"),
         ("super+shift+bracket_left", "previous_tab"),
         ("super+shift+bracket_right", "next_tab"),
-        ("super+bracket_left", "previous_tab"),
-        ("super+bracket_right", "next_tab"),
+        // 화면 분할(Ghostty macOS 기본과 같다)
+        ("super+d", "new_split:right"),
+        ("super+shift+d", "new_split:down"),
+        ("super+bracket_left", "goto_split:previous"),
+        ("super+bracket_right", "goto_split:next"),
+        ("super+alt+arrow_up", "goto_split:up"),
+        ("super+alt+arrow_down", "goto_split:down"),
+        ("super+alt+arrow_left", "goto_split:left"),
+        ("super+alt+arrow_right", "goto_split:right"),
+        ("super+ctrl+arrow_up", "resize_split:up,10"),
+        ("super+ctrl+arrow_down", "resize_split:down,10"),
+        ("super+ctrl+arrow_left", "resize_split:left,10"),
+        ("super+ctrl+arrow_right", "resize_split:right,10"),
+        ("super+ctrl+equal", "equalize_splits"),
+        ("super+shift+enter", "toggle_split_zoom"),
         ("super+equal", "increase_font_size:1"),
         ("super+shift+equal", "increase_font_size:1"),
         ("super+minus", "decrease_font_size:1"),
@@ -318,7 +382,27 @@ mod tests {
         assert_eq!(parse_action("text:hi\\n").unwrap(), Some(Action::Text("hi\n".into())));
         assert_eq!(parse_action("text:\\x1bb").unwrap(), Some(Action::Text("\x1bb".into())));
         assert_eq!(parse_action("unbind").unwrap(), None);
-        assert!(parse_action("toggle_split_zoom").is_err());
+        assert_eq!(
+            parse_action("toggle_split_zoom").unwrap(),
+            Some(Action::ToggleSplitZoom)
+        );
+        assert_eq!(
+            parse_action("new_split:down").unwrap(),
+            Some(Action::NewSplit(Some(Direction::Down)))
+        );
+        assert_eq!(parse_action("new_split").unwrap(), Some(Action::NewSplit(None)));
+        assert_eq!(
+            parse_action("goto_split:top").unwrap(),
+            Some(Action::GotoSplit(SplitTarget::Toward(Direction::Up)))
+        );
+        assert_eq!(
+            parse_action("resize_split:left,20").unwrap(),
+            Some(Action::ResizeSplit(Direction::Left, 20))
+        );
+        assert_eq!(parse_action("close_surface").unwrap(), Some(Action::CloseSurface));
+        assert!(parse_action("resize_split:left").is_err());
+        assert!(parse_action("new_split:diagonal").is_err());
+        assert!(parse_action("toggle_fullscreen").is_err());
         assert!(parse_action("goto_tab:0").is_err());
     }
 

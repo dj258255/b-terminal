@@ -1,7 +1,8 @@
 //! macOS 메뉴 막대(#34). 항목을 누르면 키 묶음과 같은 동작을 부른다.
 //! 우리 항목에는 단축키를 걸지 않는다: 메뉴가 키를 먼저 가져가면 설정의 keybind로 바꿀 수 없다
 
-use crate::keymap::Action;
+use crate::keymap::{Action, SplitTarget};
+use crate::split::Direction;
 
 /// 메뉴 항목 id → 동작. "settings"는 설정 파일 열기
 pub fn action_for(id: &str) -> Option<MenuCommand> {
@@ -9,7 +10,14 @@ pub fn action_for(id: &str) -> Option<MenuCommand> {
         "settings" => MenuCommand::OpenSettings,
         "reload_config" => MenuCommand::Action(Action::ReloadConfig),
         "new_tab" => MenuCommand::Action(Action::NewTab),
+        "close_surface" => MenuCommand::Action(Action::CloseSurface),
         "close_tab" => MenuCommand::Action(Action::CloseTab),
+        "split_right" => MenuCommand::Action(Action::NewSplit(Some(Direction::Right))),
+        "split_down" => MenuCommand::Action(Action::NewSplit(Some(Direction::Down))),
+        "split_prev" => MenuCommand::Action(Action::GotoSplit(SplitTarget::Previous)),
+        "split_next" => MenuCommand::Action(Action::GotoSplit(SplitTarget::Next)),
+        "split_zoom" => MenuCommand::Action(Action::ToggleSplitZoom),
+        "split_equalize" => MenuCommand::Action(Action::EqualizeSplits),
         "copy" => MenuCommand::Action(Action::Copy),
         "paste" => MenuCommand::Action(Action::Paste),
         "select_all" => MenuCommand::Action(Action::SelectAll),
@@ -60,7 +68,18 @@ pub fn build() -> muda::Menu {
             &PredefinedMenuItem::quit(Some("b-terminal 종료")),
         ],
     );
-    let shell = Submenu::with_items("셸", true, &[&item("new_tab", "새 탭"), &item("close_tab", "탭 닫기")]);
+    let shell = Submenu::with_items(
+        "셸",
+        true,
+        &[
+            &item("new_tab", "새 탭"),
+            &item("split_right", "오른쪽으로 나누기"),
+            &item("split_down", "아래로 나누기"),
+            &PredefinedMenuItem::separator(),
+            &item("close_surface", "닫기"),
+            &item("close_tab", "탭 닫기"),
+        ],
+    );
     let edit = Submenu::with_items(
         "편집",
         true,
@@ -94,6 +113,11 @@ pub fn build() -> muda::Menu {
             &PredefinedMenuItem::separator(),
             &item("next_tab", "다음 탭"),
             &item("prev_tab", "앞 탭"),
+            &PredefinedMenuItem::separator(),
+            &item("split_next", "다음 칸"),
+            &item("split_prev", "앞 칸"),
+            &item("split_zoom", "칸 크게 보기"),
+            &item("split_equalize", "칸 크기 고르게"),
         ],
     );
     for sub in [&app, &shell, &edit, &view, &window] {
@@ -125,7 +149,7 @@ const TEMPLATE: &str = "# b-terminal 설정(Ghostty와 같은 문법). 고친 �
 # window-padding-x = 4
 # window-padding-y = 4
 # macos-option-as-alt = true
-# keybind = super+d=new_tab
+# keybind = super+shift+n=new_tab
 ";
 
 #[cfg(test)]
@@ -136,6 +160,10 @@ mod tests {
     fn menu_ids_map_to_actions() {
         assert_eq!(action_for("new_tab"), Some(MenuCommand::Action(Action::NewTab)));
         assert_eq!(action_for("settings"), Some(MenuCommand::OpenSettings));
+        assert_eq!(
+            action_for("split_down"),
+            Some(MenuCommand::Action(Action::NewSplit(Some(Direction::Down))))
+        );
         assert_eq!(action_for("nope"), None);
     }
 }

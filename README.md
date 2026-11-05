@@ -26,8 +26,11 @@ open ~/Applications/b-terminal.app
 |---|---|
 | Cmd-C / Cmd-V | 복사 / 붙여넣기(괄호 붙여넣기 모드면 감싸서). 고르기만 해도 복사됩니다(copy-on-select) |
 | Cmd-= / Cmd-- / Cmd-0 | 글자 크기 |
-| Cmd-T / Cmd-W | 새 탭 / 탭 닫기 |
-| Cmd-1~8, Cmd-9, Cmd-[ / Cmd-] | 탭 옮기기(탭 줄을 눌러도 됩니다) |
+| Cmd-T / Cmd-W / Cmd-Opt-W | 새 탭 / 칸 닫기(칸이 하나면 탭) / 탭 닫기 |
+| Cmd-1~8, Cmd-9, Cmd-Shift-[ / Cmd-Shift-] | 탭 옮기기(탭 줄을 눌러도 됩니다) |
+| Cmd-D / Cmd-Shift-D | 화면을 오른쪽 / 아래로 나누기 |
+| Cmd-[ / Cmd-], Cmd-Opt-방향키 | 앞·다음 칸, 그쪽 칸으로(칸을 눌러도 됩니다) |
+| Cmd-Ctrl-방향키 / Cmd-Ctrl-= / Cmd-Shift-Enter | 경계 밀기 / 칸 크기 고르게 / 칸 크게 보기 |
 | Shift-PageUp / PageDown | 스크롤백 |
 | Cmd-↑ / Cmd-↓ | 앞·뒤 프롬프트로(셸 통합) |
 | Shift-Enter | Claude Code 등에서 줄바꿈(kitty 키보드 프로토콜. 프로그램이 켰을 때) |
@@ -55,12 +58,13 @@ window-padding-x = 12
 
 ## 원격 조종(btctl)
 
-kitty·WezTerm의 원격 조종처럼, 스크립트가 터미널의 탭을 열고 글을 넣고 화면을 읽을 수 있습니다. 탭 안의 셸에는 `BT_SOCKET`(제어 소켓)과 `BT_TAB_ID`(그 탭 번호)가 들어 있습니다.
+kitty·WezTerm의 원격 조종처럼, 스크립트가 터미널의 탭을 열고 글을 넣고 화면을 읽을 수 있습니다. 탭 안의 셸에는 `BT_SOCKET`(제어 소켓)과 `BT_TAB_ID`(그 탭 번호)가 들어 있습니다. 화면을 나누면 칸마다 번호가 따로 있습니다.
 
 ```bash
 # 앱 안의 btctl: ~/Applications/b-terminal.app/Contents/MacOS/btctl (또는 cargo install --path crates/bt-ctl)
 btctl list                               # 탭 목록
 btctl new --cwd ~/dev -- htop            # 새 탭에서 htop
+btctl new --split right -- tail -f log   # 이 칸을 나눠 오른쪽에서 tail
 btctl send --tab 2 --enter "make test"   # 2번 탭에 글과 Enter
 btctl read --tab 2                       # 2번 탭 화면을 글로
 btctl notify "빌드" "끝났습니다"           # 이 탭에 알림

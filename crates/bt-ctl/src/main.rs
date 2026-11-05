@@ -10,7 +10,8 @@ const USAGE: &str = "사용: btctl <명령> [인자]
 
   ping                              터미널이 떠 있는지
   list [--json]                     탭 목록
-  new [--cwd 폴더] [-- 명령 인자...]  새 탭
+  new [--cwd 폴더] [--split 방향] [-- 명령 인자...]
+                                    새 탭. --split right·down·left·up·auto면 탭(칸)을 나눠 연다
   focus <탭>                        그 탭으로
   send [--tab N] [--enter] <글...>  탭에 글 넣기(--enter면 끝에 Enter)
   read [--tab N]                    탭 화면을 글로
@@ -20,7 +21,8 @@ const USAGE: &str = "사용: btctl <명령> [인자]
                                     탭에서 명령을 돌리고 끝날 때까지 기다려 출력을 찍고 그 종료 코드로 끝남(셸 통합 필요)
   last [--tab N] [--json]           탭에서 마지막으로 끝난 명령의 출력과 종료 코드
 
-탭을 주지 않으면 btctl을 부른 탭(BT_TAB_ID), 탭 밖이면 지금 보는 탭입니다.";
+탭 번호는 칸마다 하나입니다(화면을 나누면 칸마다 따로).
+탭을 주지 않으면 btctl을 부른 칸(BT_TAB_ID), 탭 밖이면 지금 고른 칸입니다.";
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -138,17 +140,36 @@ fn run(args: &[String]) -> Result<String, Error> {
         "new" => {
             let mut cwd = None;
             let mut command = Vec::new();
+            let mut split = None;
+            let (tab, rest) = take_tab(rest)?;
             let mut it = rest.iter();
             while let Some(a) = it.next() {
                 match a.as_str() {
                     "--cwd" => cwd = Some(it.next().ok_or_else(|| usage("--cwd 뒤에 폴더가 필요합니다"))?.into()),
+                    "--split" => {
+                        let d = it.next().ok_or_else(|| usage("--split 뒤에 방향이 필요합니다"))?;
+                        if !["right", "down", "left", "up", "auto"].contains(&d.as_str()) {
+                            return Err(usage(format!("--split 방향은 right·down·left·up·auto입니다: {d}")));
+                        }
+                        split = Some(d.clone());
+                    }
                     "--" => {
                         command = it.by_ref().cloned().collect();
                     }
                     other => return Err(usage(format!("모르는 인자: {other}"))),
                 }
             }
-            let v = call(&socket, Call::New { cwd, command })?;
+            // 나눌 때만 칸을 쓴다(새 탭은 어느 칸에서 불러도 같다)
+            let tab = if split.is_some() { tab } else { None };
+            let v = call(
+                &socket,
+                Call::New {
+                    cwd,
+                    command,
+                    split,
+                    tab,
+                },
+            )?;
             Ok(v["tab"].to_string())
         }
         "focus" => {
