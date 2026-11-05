@@ -6,7 +6,7 @@
 
 - 찾기: Cmd-F로 칸 오른쪽 위에 찾기 막대를 열고, 치는 대로 스크롤백 전체에서 찾습니다(글자 그대로, 대문자가 없으면 대소문자 무시). 맞은 곳은 노랑으로 칠하고 지금 것은 진하게, "2/5"처럼 몇 번째인지 보입니다. Enter·Cmd-G는 위로, Shift-Enter·Cmd-Shift-G는 아래로, Esc로 닫습니다. `start_search`·`end_search`·`navigate_search`.
 
-- 링크 열기: Cmd를 누른 채 마우스를 올리면 화면의 URL(여러 줄로 접힌 긴 주소 포함)과 OSC 8 링크에 밑줄을 긋고 실제 주소를 창 왼쪽 아래에 보입니다. Cmd-클릭으로 엽니다. `http`·`https`와 이 컴퓨터의 파일만 열고, 실행되는 파일은 Finder에서 보이기만 합니다(ADR-007).
+- 링크 열기: Cmd를 누른 채 마우스를 올리면 화면의 URL(여러 줄로 접힌 긴 주소 포함)과 OSC 8 링크에 밑줄을 긋고 실제 주소를 창 왼쪽 아래에 보입니다. Cmd-클릭으로 엽니다. `http`·`https`와 이 컴퓨터의 파일만 엽니다. 웹 주소는 사용자 정보·보이지 않는 서식 문자·비ASCII 호스트가 있으면 열지 않고, 주소 띠는 호스트를 다 보입니다. 파일은 폴더와 알려진 문서만 열고 그 밖에는 Finder에서 보이기만 합니다(ADR-007).
 
 - 화면 분할: 탭 안을 칸으로 나눕니다(Cmd-D 오른쪽, Cmd-Shift-D 아래). 칸 옮기기(Cmd-[ / Cmd-], Cmd-Opt-방향키, 누르기), 경계 밀기(Cmd-Ctrl-방향키), 크기 고르게(Cmd-Ctrl-=), 크게 보기(Cmd-Shift-Enter), 칸 닫기(Cmd-W). 고르지 않은 칸은 흐리게, 커서는 속 빈 네모로 보입니다. Ghostty와 같은 동작 이름과 기본 키이고, `unfocused-split-opacity`·`unfocused-split-fill`·`split-divider-color`를 읽습니다. `btctl new --split 방향`으로 칸을 나눠 엽니다. **Cmd-[ / Cmd-]는 이제 칸 옮기기입니다**(Ghostty 기본과 같게). 탭 옮기기는 Cmd-Shift-[ / Cmd-Shift-]입니다.
 
