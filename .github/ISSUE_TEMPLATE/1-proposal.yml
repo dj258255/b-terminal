@@ -1,0 +1,108 @@
+name: 착수 명세
+description: 만들기 전에 문제·선택지·완료 조건·예상을 적습니다
+title: "[착수] "
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        구현 방법보다 **왜 이 문제를 풀고, 어떤 선택지를 버렸고, 언제 끝났다고 볼지**를 먼저 적습니다. 예상은 틀려도 됩니다. 틀리면 이 이슈에 갱신 댓글을 남깁니다.
+  - type: textarea
+    id: problem
+    attributes:
+      label: 문제
+      description: 지금 무엇이 안 되거나 비싼가, 어떻게 알게 됐나.
+      placeholder: 에이전트 탭이 권한을 묻고 멈춰도 다른 탭을 보고 있으면 알 수 없어, 한 시간 뒤에야 멈춘 것을 발견한다.
+    validations:
+      required: true
+  - type: textarea
+    id: why-now
+    attributes:
+      label: 왜 지금
+      description: 다른 작업보다 먼저 하는 이유.
+    validations:
+      required: true
+  - type: textarea
+    id: options
+    attributes:
+      label: 선택지와 트레이드오프
+      description: 최소 2개. 각 선택지가 얻는 것과 잃는 것을 적습니다.
+      placeholder: |-
+        | 선택지 | 얻는 것 | 잃는 것 |
+        |---|---|---|
+        | A | | |
+        | B | | |
+    validations:
+      required: true
+  - type: textarea
+    id: criteria
+    attributes:
+      label: 결정 기준
+      description: 선택지가 충돌할 때 무엇을 우선하나.
+      placeholder: 입력 지연이 늘지 않는 쪽을 먼저 보고, 같으면 코드가 적은 쪽
+    validations:
+      required: true
+  - type: textarea
+    id: non-goals
+    attributes:
+      label: 하지 않는 것
+      description: 이번에 의도적으로 다루지 않는 범위.
+    validations:
+      required: false
+  - type: textarea
+    id: tasks
+    attributes:
+      label: 작업 단위
+      description: 한 PR 안에서 검증 가능한 단위로 나눕니다. 체크박스 목록으로 적습니다.
+      placeholder: |-
+        - [ ] OSC 9/777 알림 받기 (1~2시간)
+        - [ ] 사이드바 안 읽음 표시 (1~2시간)
+    validations:
+      required: true
+  - type: textarea
+    id: done
+    attributes:
+      label: 완료 조건
+      description: 실행할 명령과 확인할 동작을 적습니다. "잘 동작한다"는 쓰지 않습니다.
+      placeholder: |-
+        cargo test -p bt-term 통과
+        printf '\e]9;끝\a' 를 친 탭에 안 읽음 점이 뜬다
+    validations:
+      required: true
+  - type: textarea
+    id: deliverables
+    attributes:
+      label: 산출물
+      description: 무엇이 남는가(코드·문서·ADR·실험 보고서).
+    validations:
+      required: true
+  - type: input
+    id: estimate
+    attributes:
+      label: 예상 시간
+      placeholder: 4~6시간 (범위로)
+    validations:
+      required: true
+  - type: textarea
+    id: uncertainty
+    attributes:
+      label: 주요 불확실성
+      description: 무엇을 모르고, 언제 더 정확히 알 수 있나.
+      placeholder: macOS가 백그라운드 앱의 알림을 막는지 아직 모른다. 첫 실제 실행 뒤 갱신한다.
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: 영역
+      multiple: true
+      options:
+        - core (설정·프로토콜·상태 모델)
+        - term (PTY·VT 해석)
+        - render (글꼴·그리기)
+        - app (창·입력·탭·사이드바)
+        - ctl (제어 소켓·btctl·훅)
+        - studio (b-studio 연결)
+        - docs·process
+    validations:
+      required: true
