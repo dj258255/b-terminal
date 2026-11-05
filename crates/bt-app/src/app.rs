@@ -6,7 +6,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
-use bt_core::{AgentKind, AgentState, Theme};
+use bt_core::Theme;
 use bt_render::{Canvas, CursorStyle, DrawCell, DrawCursor, FontConfig, Fonts, GridView, draw_grid};
 use bt_term::{CellFlags, CursorShape, GridSize, Screen, SelectKind, Session, SessionEvent, SpawnOptions};
 use winit::application::ApplicationHandler;
@@ -18,7 +18,7 @@ use winit::window::{Window, WindowId};
 
 use crate::keys::{self, Shortcut};
 use crate::mouse;
-use crate::sidebar;
+use crate::tabbar;
 
 /// 다른 스레드(PTY 읽기)가 창 스레드를 깨우는 사건
 #[derive(Debug, Clone)]
@@ -64,52 +64,21 @@ pub struct Tab {
     /// 전경 프로세스 이름(1초마다 갱신). pid가 같으면 다시 묻지 않는다(node 스크립트는 ps를 부른다)
     pub fg_name: Option<String>,
     fg_pid: Option<i32>,
-    /// 보이는 에이전트(프로세스 이름 또는 훅이 알려 준 것)
-    pub agent: Option<AgentKind>,
-    /// 전경 프로세스 이름으로 알아본 에이전트
-    proc_agent: Option<AgentKind>,
-    pub state: AgentState,
-    /// 지금 하는 일 한 줄(훅이 알려 준 도구·대상)
-    pub activity: Option<String>,
     /// 보지 않은 알림이 있다
     pub unread: bool,
-    /// 마지막 알림 한 줄
-    pub last_note: Option<String>,
     /// 셸이 OSC 7로 알린 작업 폴더
     pub cwd: Option<std::path::PathBuf>,
-    /// 훅(btctl)이 상태를 알려 온 적이 있다. 있으면 OSC로 상태를 추측하지 않는다
-    pub hooked: bool,
     /// 마지막으로 데스크톱 알림을 띄운 때(탭마다 묶는다)
     last_desktop: Option<Instant>,
 }
 
 impl Tab {
-    fn sidebar_title(&self) -> String {
-        if let Some(agent) = self.agent {
-            return agent.name().to_string();
-        }
+    /// 탭 줄·창 제목에 쓸 이름: 셸이 보낸 제목 → 전경 프로세스 이름
+    fn display_title(&self) -> String {
         if !self.title.is_empty() {
             return self.title.clone();
         }
         self.fg_name.clone().unwrap_or_else(|| "셸".into())
-    }
-
-    fn sidebar_detail(&self) -> String {
-        if self.unread {
-            if let Some(n) = &self.last_note {
-                return n.clone();
-            }
-        }
-        if self.agent.is_some() || self.state != AgentState::Idle {
-            return match &self.activity {
-                Some(a) if self.state == AgentState::Working => a.clone(),
-                _ => self.state.label().to_string(),
-            };
-        }
-        if self.agent.is_none() && !self.title.is_empty() {
-            return self.fg_name.clone().unwrap_or_default();
-        }
-        String::new()
     }
 }
 
@@ -139,11 +108,8 @@ pub struct App {
     scroll_accum: f64,
     first: Option<SpawnOptions>,
     focused: bool,
-    sidebar_visible: bool,
     next_poll: Instant,
     control: Option<crate::control::ControlServer>,
-    /// 마지막으로 받은 구독 한도 사용량(출처, 창들). #11에서 그린다
-    pub usage: Option<(String, Vec<bt_core::proto::UsageWindow>)>,
 }
 
 impl App {
@@ -169,10 +135,8 @@ impl App {
             scroll_accum: 0.0,
             first: Some(first),
             focused: true,
-            sidebar_visible: true,
             next_poll: Instant::now(),
             control: None,
-            usage: None,
         }
     }
 
@@ -199,8 +163,8 @@ impl App {
         let Some(g) = &self.gfx else { return (0, 0, 0, 0) };
         let size = g.window.inner_size();
         let pad = self.pad();
-        let x = self.sidebar_width() as i32 + pad;
-        let y = pad;
+        let x = pad;
+        let y = self.tabbar_height() as i32 + pad;
         let w = (size.width as i32 - x - pad).max(0) as u32;
         let h = (size.height as i32 - y - pad).max(0) as u32;
         (x, y, w, h)
@@ -210,37 +174,23 @@ impl App {
         (self.config.padding as f64 * self.scale).round() as i32
     }
 
-    fn sidebar_width(&self) -> u32 {
-        match (&self.fonts, self.sidebar_visible) {
-            (Some(f), true) => sidebar::width_px(f, self.pad()),
+    /// 탭 줄 높이. 탭이 하나면 없다(Ghostty처럼)
+    fn tabbar_height(&self) -> u32 {
+        match &self.fonts {
+            Some(f) if self.tabs.len() > 1 => tabbar::height_px(f),
             _ => 0,
         }
-    }
-
-    /// 다음으로 볼 탭: 지금 탭이 아닌 것 중 가장 급한 것(같으면 오래 기다린 순서를 모르니 앞 탭)
-    fn next_attention(&self) -> Option<usize> {
-        self.tabs
-            .iter()
-            .enumerate()
-            .filter(|(i, t)| *i != self.active && (t.unread || t.state.urgency() >= 3))
-            .max_by_key(|(i, t)| (t.state.urgency(), t.unread, std::cmp::Reverse(*i)))
-            .map(|(i, _)| i)
     }
 
     fn activate(&mut self, index: usize) {
         if index < self.tabs.len() {
             self.active = index;
-            let t = &mut self.tabs[index];
-            t.unread = false;
-            // 끝남은 본 순간 쉼으로 돌린다. 기다림은 사람이 답할 때까지 둔다
-            if t.state == AgentState::Done {
-                t.state = AgentState::Idle;
-            }
+            self.tabs[index].unread = false;
             self.request_redraw();
         }
     }
 
-    /// 전경 프로세스로 에이전트를 알아본다(훅이 없어도 이름만은 보이게). 바뀐 것이 있으면 참
+    /// 전경 프로세스 이름을 본다(셸이 제목을 보내지 않을 때 탭 이름으로 쓴다). 바뀐 것이 있으면 참
     fn poll_foreground(&mut self) -> bool {
         let mut changed = false;
         for t in &mut self.tabs {
@@ -251,21 +201,7 @@ impl App {
                 continue;
             }
             t.fg_pid = Some(pid);
-            let name = bt_term::process::process_name(pid);
-            let proc_agent = name.as_deref().and_then(AgentKind::from_process);
-            if proc_agent.is_none() && t.proc_agent.is_some() {
-                // 프로세스로 알아본 에이전트가 끝나 셸로 돌아왔다. 훅이 알려 준 상태도 함께 끝낸다
-                t.state = AgentState::Idle;
-                t.activity = None;
-                t.agent = None;
-                t.hooked = false;
-            }
-            if proc_agent.is_some() {
-                t.agent = proc_agent;
-            }
-            // 훅이 알려 준 에이전트(전경 이름이 node·셸 스크립트라 못 알아본 경우)는 지우지 않는다
-            t.proc_agent = proc_agent;
-            t.fg_name = name;
+            t.fg_name = bt_term::process::process_name(pid);
             changed = true;
         }
         changed
@@ -274,17 +210,7 @@ impl App {
     /// 탭이 알림을 보냈다. 보고 있는 탭이 아니면 안 읽음으로 두고, 창을 보고 있지 않으면 데스크톱 알림을 띄운다
     fn on_notification(&mut self, idx: usize, note: bt_term::Notification) {
         let watching = self.focused && idx == self.active;
-        let line = match (note.title.is_empty(), note.body.is_empty()) {
-            (false, false) => format!("{}: {}", note.title, note.body),
-            (true, _) => note.body.clone(),
-            (false, true) => note.title.clone(),
-        };
         let t = &mut self.tabs[idx];
-        t.last_note = Some(line);
-        // 훅이 없는 에이전트 탭의 알림은 "사람을 기다린다"는 뜻으로 본다(Claude Code·Codex가 끝나거나 물을 때 보낸다)
-        if !t.hooked && t.agent.is_some() {
-            t.state = AgentState::Waiting(bt_core::WaitReason::Input);
-        }
         if !watching {
             t.unread = true;
             // 같은 탭의 데스크톱 알림은 3초에 한 번(출력에 알림이 몰려도 화면을 덮지 않게)
@@ -292,7 +218,7 @@ impl App {
             if t.last_desktop.is_none_or(|at| now - at >= Duration::from_secs(3)) {
                 t.last_desktop = Some(now);
                 let title = if note.title.is_empty() {
-                    t.sidebar_title()
+                    t.display_title()
                 } else {
                     note.title.clone()
                 };
@@ -356,18 +282,13 @@ impl App {
                     exited: None,
                     fg_name: None,
                     fg_pid: None,
-                    agent: None,
-                    proc_agent: None,
-                    state: AgentState::Idle,
-                    activity: None,
                     unread: false,
-                    last_note: None,
                     cwd: None,
-                    hooked: false,
                     last_desktop: None,
                 });
                 self.active = self.tabs.len() - 1;
-                self.request_redraw();
+                // 탭이 하나에서 둘이 되면 탭 줄이 생겨 격자가 줄어든다
+                self.resize_all();
                 Some(id)
             }
             Err(e) => {
@@ -403,15 +324,8 @@ impl App {
                     .enumerate()
                     .map(|(i, t)| TabInfo {
                         id: t.id,
-                        title: t.sidebar_title(),
+                        title: t.display_title(),
                         active: i == self.active,
-                        state: t.state,
-                        agent: t.agent.map(|a| a.name().to_string()),
-                        activity: if t.state == AgentState::Working {
-                            t.activity.clone()
-                        } else {
-                            t.last_note.clone()
-                        },
                         unread: t.unread,
                         cwd: t.cwd.clone(),
                         process: t.fg_name.clone(),
@@ -458,75 +372,7 @@ impl App {
                 }
                 Err(r) => r,
             },
-            Call::Status {
-                tab,
-                state,
-                activity,
-                agent,
-            } => match pick(self, tab) {
-                Ok(i) => {
-                    self.set_status(i, state, activity, agent);
-                    Response::ok(id, json!({}))
-                }
-                Err(r) => r,
-            },
-            Call::Usage { source, windows } => {
-                self.usage = Some((source, windows));
-                self.request_redraw();
-                Response::ok(id, json!({}))
-            }
         }
-    }
-
-    /// 사이드바 아래에 그릴 사용량. 리셋 시각이 지난 창은 버린다(Claude Code도 그 창을 지운다)
-    fn usage_rows(&self) -> Vec<sidebar::UsageRow> {
-        let Some((_, windows)) = &self.usage else {
-            return Vec::new();
-        };
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs() as i64)
-            .unwrap_or(0);
-        windows
-            .iter()
-            .filter(|w| w.resets_at.is_none_or(|r| r > now))
-            .map(|w| sidebar::UsageRow {
-                label: match w.kind.as_str() {
-                    "five_hour" => "5시간".into(),
-                    "seven_day" => "주간".into(),
-                    "spend_limit" => "지출".into(),
-                    other => other.into(),
-                },
-                percent: w.used_percent,
-                resets_in: w.resets_at.map(|r| sidebar::short_duration(r - now)),
-            })
-            .collect()
-    }
-
-    /// 훅이 알린 상태. 보고 있지 않은 탭이 기다림·끝남·오류가 되면 안 읽음으로 둔다
-    fn set_status(&mut self, idx: usize, state: AgentState, activity: Option<String>, agent: Option<String>) {
-        let watching = self.focused && idx == self.active;
-        let t = &mut self.tabs[idx];
-        t.hooked = true;
-        if let Some(kind) = agent.as_deref().and_then(AgentKind::from_process) {
-            t.agent = Some(kind);
-        }
-        let attention = state.urgency() >= 3 && t.state != state;
-        t.state = state;
-        let clean = activity.map(|a| bt_core::proto::printable(&a).chars().take(200).collect::<String>());
-        if state == AgentState::Working {
-            t.activity = clean;
-        } else {
-            // 작업이 끝났으면 지난 도구 줄은 지우고, 기다리는 까닭(권한을 묻는 명령)이나 마지막 답을 알림 줄로 둔다
-            t.activity = None;
-            if clean.is_some() {
-                t.last_note = clean;
-            }
-        }
-        if attention && !watching {
-            t.unread = true;
-        }
-        self.request_redraw();
     }
 
     fn close_tab(&mut self, index: usize, event_loop: &ActiveEventLoop) {
@@ -543,7 +389,8 @@ impl App {
         if self.active >= self.tabs.len() {
             self.active = self.tabs.len() - 1;
         }
-        self.request_redraw();
+        // 탭이 하나가 되면 탭 줄이 사라져 격자가 커진다
+        self.resize_all();
     }
 
     fn active_tab(&self) -> Option<&Tab> {
@@ -644,15 +491,6 @@ impl App {
                     t.session.scroll_to_bottom();
                 }
             }
-            Shortcut::ToggleSidebar => {
-                self.sidebar_visible = !self.sidebar_visible;
-                self.resize_all();
-            }
-            Shortcut::NextAttention => {
-                if let Some(i) = self.next_attention() {
-                    self.activate(i);
-                }
-            }
             _ => {}
         }
         self.request_redraw();
@@ -691,25 +529,22 @@ impl App {
         let theme = self.config.theme.clone();
         let (gx, gy, _, _) = self.grid_rect();
         let screen = self.active_tab().map(|t| t.session.snapshot());
-        let pad = self.pad();
-        let usage_rows = self.usage_rows();
-        let sidebar_items: Option<Vec<sidebar::Item>> = self.sidebar_visible.then(|| {
+        let labels: Vec<tabbar::TabLabel> = if self.tabs.len() > 1 {
             self.tabs
                 .iter()
                 .enumerate()
-                .map(|(i, t)| sidebar::Item {
-                    title: t.sidebar_title(),
-                    detail: t.sidebar_detail(),
-                    state: t.state,
-                    unread: t.unread,
+                .map(|(i, t)| tabbar::TabLabel {
+                    title: t.display_title(),
                     active: i == self.active,
+                    unread: t.unread,
                 })
                 .collect()
-        });
+        } else {
+            Vec::new()
+        };
         let title = self
             .active_tab()
-            .map(|t| t.title.clone())
-            .filter(|t| !t.is_empty())
+            .map(|t| t.display_title())
             .unwrap_or_else(|| "b-terminal".into());
         let Some(gfx) = self.gfx.as_mut() else { return };
         let Some(fonts) = self.fonts.as_mut() else { return };
@@ -727,8 +562,8 @@ impl App {
             let mut canvas = Canvas::new(&mut buffer, size.width, size.height);
             let bg = screen.as_ref().map(|s| s.background).unwrap_or(theme.background);
             canvas.clear(bg);
-            if let Some(items) = &sidebar_items {
-                sidebar::draw(&mut canvas, fonts, &theme, items, pad, &usage_rows);
+            if !labels.is_empty() {
+                tabbar::draw(&mut canvas, fonts, &theme, &labels);
             }
             if let Some(screen) = &screen {
                 let cells = to_draw_cells(screen);
@@ -872,20 +707,14 @@ impl ApplicationHandler<UserEvent> for App {
                         }
                     }
                     SessionEvent::Notification(note) => self.on_notification(idx, note),
-                    SessionEvent::Progress { state, .. } => {
-                        // 진행 표시는 훅이 없는 에이전트 탭에서만 작업 중의 근거로 쓴다
-                        let t = &mut self.tabs[idx];
-                        if !t.hooked && t.agent.is_some() && matches!(state, 1 | 3) {
-                            t.state = AgentState::Working;
-                        }
-                    }
                     SessionEvent::Exited(code) => {
                         self.tabs[idx].exited = Some(code);
                         // 셸이 끝나면 탭을 닫는다(Ghostty 기본과 같다)
                         self.close_tab(idx, event_loop);
                         return;
                     }
-                    SessionEvent::Bell | SessionEvent::Output => {}
+                    // 진행 표시(OSC 9;4)는 아직 그리지 않는다
+                    SessionEvent::Bell | SessionEvent::Output | SessionEvent::Progress { .. } => {}
                 }
                 self.request_redraw();
             }
@@ -964,13 +793,14 @@ impl ApplicationHandler<UserEvent> for App {
                 }
             }
             WindowEvent::MouseInput { state, button, .. } => {
-                // 사이드바를 누르면 그 탭으로
-                if (self.cursor_pos.x as u32) < self.sidebar_width() {
+                // 탭 줄을 누르면 그 탭으로
+                if (self.cursor_pos.y as u32) < self.tabbar_height() {
                     if state == ElementState::Pressed && button == MouseButton::Left {
+                        let width = self.gfx.as_ref().map(|g| g.window.inner_size().width).unwrap_or(0);
                         let hit = self
                             .fonts
                             .as_ref()
-                            .and_then(|f| sidebar::hit(f, self.pad(), self.cursor_pos.y, self.tabs.len()));
+                            .and_then(|f| tabbar::hit(f, width, self.cursor_pos.x, self.tabs.len()));
                         if let Some(i) = hit {
                             self.activate(i);
                         }
@@ -1079,7 +909,7 @@ impl ApplicationHandler<UserEvent> for App {
         // 1초마다 전경 프로세스를 본다(사이드바 이름, 에이전트 알아보기)
         let now = Instant::now();
         if now >= self.next_poll {
-            if self.poll_foreground() && self.sidebar_visible {
+            if self.poll_foreground() {
                 self.request_redraw();
             }
             self.next_poll = now + Duration::from_secs(1);

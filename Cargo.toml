@@ -14,7 +14,6 @@ repository = "https://github.com/dj258255/b-terminal"
 bt-core = { path = "crates/bt-core" }
 bt-term = { path = "crates/bt-term" }
 bt-render = { path = "crates/bt-render" }
-bt-studio = { path = "crates/bt-studio" }
 
 anyhow = "1"
 thiserror = "2"

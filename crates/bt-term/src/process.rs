@@ -6,7 +6,7 @@ use std::path::PathBuf;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Foreground {
     pub pid: i32,
-    /// 실행 파일 이름. node 스크립트면 스크립트 이름(예: claude)
+    /// 실행 파일 이름. node 스크립트면 스크립트 이름(예: vite)
     pub name: String,
 }
 
@@ -39,7 +39,7 @@ fn raw_name(_pid: i32) -> Option<String> {
     None
 }
 
-/// 명령줄 두 번째 낱말의 파일 이름(`node /…/bin/claude --resume` → `claude`)
+/// 명령줄 두 번째 낱말의 파일 이름(`node /…/bin/vite --port 3000` → `vite`)
 fn script_name(pid: i32) -> Option<String> {
     let args = command_line(pid)?;
     let script = args.split_whitespace().nth(1)?;

@@ -18,9 +18,6 @@ pub enum Shortcut {
     PrevTab,
     /// Cmd-1 … Cmd-9
     GotoTab(usize),
-    ToggleSidebar,
-    /// 다음 안 읽은(기다리는) 탭으로
-    NextAttention,
     ClearScrollback,
     ScrollPageUp,
     ScrollPageDown,
@@ -63,8 +60,6 @@ pub fn shortcut(event: &KeyEvent, mods: ModifiersState) -> Option<Shortcut> {
         "w" => Shortcut::CloseTab,
         "]" | "}" => Shortcut::NextTab,
         "[" | "{" => Shortcut::PrevTab,
-        "b" => Shortcut::ToggleSidebar,
-        "j" => Shortcut::NextAttention,
         "k" => Shortcut::ClearScrollback,
         d if d.len() == 1 && ("1"..="9").contains(&d) => Shortcut::GotoTab(d.parse::<usize>().unwrap_or(1) - 1),
         _ => return None,

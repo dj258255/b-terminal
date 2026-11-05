@@ -294,7 +294,7 @@ impl Session {
         self.master.lock().process_group_leader()
     }
 
-    /// 지금 키 입력을 받는 프로세스(셸에서 claude를 띄웠으면 claude)
+    /// 지금 키 입력을 받는 프로세스(셸에서 vim을 띄웠으면 vim)
     pub fn foreground(&self) -> Option<crate::process::Foreground> {
         let pid = self.master.lock().process_group_leader()?;
         let name = crate::process::process_name(pid)?;
