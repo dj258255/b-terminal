@@ -45,7 +45,8 @@ pub enum UserEvent {
     /// 어떤 탭의 화면이 바뀌었다(여러 번 와도 한 번 그린다)
     Redraw,
     Session(u64, SessionEvent),
-    /// 메뉴 막대 항목을 눌렀다(항목 id)
+    /// 메뉴 막대 항목을 눌렀다(항목 id). 메뉴는 macOS에만 있다
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     Menu(String),
     /// 제어 소켓 요청. 답은 함께 온 통로로 보낸다
     Control(
