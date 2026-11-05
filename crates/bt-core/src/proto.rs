@@ -1,0 +1,189 @@
+//! 제어 소켓 프로토콜. 한 줄에 JSON 하나(요청 → 응답). btctl과 훅이 쓴다.
+//!
+//! 소켓은 같은 사용자만 닿는 폴더(0700)에 있다. 소켓에 붙으면 탭에 글을 넣을 수 있으므로 그 사용자의 셸 권한과 같다(SECURITY.md)
+
+use std::path::{Path, PathBuf};
+
+use serde::{Deserialize, Serialize};
+
+use crate::agent::AgentState;
+
+/// 요청 한 줄의 상한(바이트). 읽기 전에 본다
+pub const MAX_LINE: usize = 1024 * 1024;
+
+/// 앱이 자식 셸에 넘기는 환경 변수
+pub const ENV_SOCKET: &str = "BT_SOCKET";
+pub const ENV_TAB: &str = "BT_TAB_ID";
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Request {
+    #[serde(default)]
+    pub id: u64,
+    #[serde(flatten)]
+    pub call: Call,
+}
+
+/// 요청 종류. `tab`이 없으면 부른 쪽의 탭(BT_TAB_ID), 그것도 없으면 지금 보는 탭
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "method", content = "params", rename_all = "snake_case")]
+pub enum Call {
+    Ping,
+    /// 탭 목록
+    List,
+    /// 새 탭. `command`가 비면 로그인 셸
+    New {
+        #[serde(default)]
+        cwd: Option<PathBuf>,
+        #[serde(default)]
+        command: Vec<String>,
+    },
+    Focus {
+        tab: u64,
+    },
+    /// 탭에 글을 넣는다(키보드로 친 것처럼)
+    Send {
+        #[serde(default)]
+        tab: Option<u64>,
+        text: String,
+    },
+    /// 탭 화면을 글로 읽는다
+    Read {
+        #[serde(default)]
+        tab: Option<u64>,
+    },
+    /// 탭에 알림을 단다(OSC 알림과 같게 다룬다)
+    Notify {
+        #[serde(default)]
+        tab: Option<u64>,
+        #[serde(default)]
+        title: String,
+        #[serde(default)]
+        body: String,
+    },
+    /// 에이전트 상태를 알린다(훅이 쓴다)
+    Status {
+        #[serde(default)]
+        tab: Option<u64>,
+        state: AgentState,
+        #[serde(default)]
+        activity: Option<String>,
+        #[serde(default)]
+        agent: Option<String>,
+    },
+    /// 구독 한도 사용량을 알린다(Claude 상태줄이 쓴다, #11)
+    Usage {
+        source: String,
+        windows: Vec<UsageWindow>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct UsageWindow {
+    /// five_hour·seven_day 등
+    pub kind: String,
+    pub used_percent: f64,
+    /// 다시 차는 때(유닉스 초)
+    #[serde(default)]
+    pub resets_at: Option<i64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Response {
+    #[serde(default)]
+    pub id: u64,
+    pub ok: bool,
+    #[serde(default, skip_serializing_if = "serde_json::Value::is_null")]
+    pub result: serde_json::Value,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+impl Response {
+    pub fn ok(id: u64, result: serde_json::Value) -> Self {
+        Self {
+            id,
+            ok: true,
+            result,
+            error: None,
+        }
+    }
+
+    pub fn err(id: u64, msg: impl Into<String>) -> Self {
+        Self {
+            id,
+            ok: false,
+            result: serde_json::Value::Null,
+            error: Some(msg.into()),
+        }
+    }
+}
+
+/// `list` 결과의 한 줄
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TabInfo {
+    pub id: u64,
+    pub title: String,
+    pub active: bool,
+    pub state: AgentState,
+    #[serde(default)]
+    pub agent: Option<String>,
+    #[serde(default)]
+    pub activity: Option<String>,
+    pub unread: bool,
+    #[serde(default)]
+    pub cwd: Option<PathBuf>,
+    #[serde(default)]
+    pub process: Option<String>,
+}
+
+/// 소켓 폴더. macOS는 사용자마다 다른 `$TMPDIR`, 그 밖에는 `$XDG_RUNTIME_DIR`, 둘 다 없으면 /tmp 아래 사용자 폴더
+pub fn socket_dir(uid: u32) -> PathBuf {
+    let base = std::env::var_os("XDG_RUNTIME_DIR")
+        .or_else(|| std::env::var_os("TMPDIR"))
+        .map(PathBuf::from)
+        .filter(|p| p.is_absolute())
+        .unwrap_or_else(|| PathBuf::from("/tmp"));
+    base.join(format!("b-terminal-{uid}"))
+}
+
+/// 앱 프로세스 하나의 소켓 경로
+pub fn socket_path(dir: &Path, pid: u32) -> PathBuf {
+    dir.join(format!("{pid}.sock"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::agent::WaitReason;
+
+    #[test]
+    fn requests_round_trip_as_one_line_json() {
+        let req = Request {
+            id: 7,
+            call: Call::Status {
+                tab: Some(2),
+                state: AgentState::Waiting(WaitReason::Permission),
+                activity: Some("Bash: cargo test".into()),
+                agent: Some("claude".into()),
+            },
+        };
+        let line = serde_json::to_string(&req).unwrap();
+        assert!(!line.contains('\n'));
+        assert_eq!(serde_json::from_str::<Request>(&line).unwrap(), req);
+        let parsed: Request = serde_json::from_str(r#"{"id":1,"method":"ping"}"#).unwrap();
+        assert_eq!(parsed.call, Call::Ping);
+        let send: Request = serde_json::from_str(r#"{"method":"send","params":{"text":"ls\r"}}"#).unwrap();
+        assert_eq!(
+            send.call,
+            Call::Send {
+                tab: None,
+                text: "ls\r".into()
+            }
+        );
+    }
+
+    #[test]
+    fn unknown_method_is_an_error_not_a_panic() {
+        assert!(serde_json::from_str::<Request>(r#"{"method":"rm_rf"}"#).is_err());
+    }
+}

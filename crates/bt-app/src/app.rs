@@ -26,6 +26,11 @@ pub enum UserEvent {
     /// 어떤 탭의 화면이 바뀌었다(여러 번 와도 한 번 그린다)
     Redraw,
     Session(u64, SessionEvent),
+    /// 제어 소켓 요청. 답은 함께 온 통로로 보낸다
+    Control(
+        bt_core::proto::Request,
+        std::sync::mpsc::SyncSender<bt_core::proto::Response>,
+    ),
 }
 
 /// 앱 설정. 설정 파일 읽기는 #13
@@ -59,7 +64,10 @@ pub struct Tab {
     /// 전경 프로세스 이름(1초마다 갱신). pid가 같으면 다시 묻지 않는다(node 스크립트는 ps를 부른다)
     pub fg_name: Option<String>,
     fg_pid: Option<i32>,
+    /// 보이는 에이전트(프로세스 이름 또는 훅이 알려 준 것)
     pub agent: Option<AgentKind>,
+    /// 전경 프로세스 이름으로 알아본 에이전트
+    proc_agent: Option<AgentKind>,
     pub state: AgentState,
     /// 지금 하는 일 한 줄(훅이 알려 준 도구·대상)
     pub activity: Option<String>,
@@ -133,6 +141,9 @@ pub struct App {
     focused: bool,
     sidebar_visible: bool,
     next_poll: Instant,
+    control: Option<crate::control::ControlServer>,
+    /// 마지막으로 받은 구독 한도 사용량(출처, 창들). #11에서 그린다
+    pub usage: Option<(String, Vec<bt_core::proto::UsageWindow>)>,
 }
 
 impl App {
@@ -160,6 +171,8 @@ impl App {
             focused: true,
             sidebar_visible: true,
             next_poll: Instant::now(),
+            control: None,
+            usage: None,
         }
     }
 
@@ -239,13 +252,19 @@ impl App {
             }
             t.fg_pid = Some(pid);
             let name = bt_term::process::process_name(pid);
-            let agent = name.as_deref().and_then(AgentKind::from_process);
-            if agent.is_none() && t.agent.is_some() {
-                // 에이전트가 끝나 셸로 돌아왔다
+            let proc_agent = name.as_deref().and_then(AgentKind::from_process);
+            if proc_agent.is_none() && t.proc_agent.is_some() {
+                // 프로세스로 알아본 에이전트가 끝나 셸로 돌아왔다. 훅이 알려 준 상태도 함께 끝낸다
                 t.state = AgentState::Idle;
                 t.activity = None;
+                t.agent = None;
+                t.hooked = false;
             }
-            t.agent = agent;
+            if proc_agent.is_some() {
+                t.agent = proc_agent;
+            }
+            // 훅이 알려 준 에이전트(전경 이름이 node·셸 스크립트라 못 알아본 경우)는 지우지 않는다
+            t.proc_agent = proc_agent;
             t.fg_name = name;
             changed = true;
         }
@@ -313,14 +332,21 @@ impl App {
         })
     }
 
-    pub fn open_tab(&mut self, options: SpawnOptions) {
+    pub fn open_tab(&mut self, options: SpawnOptions) -> Option<u64> {
         let id = self.next_id;
         self.next_id += 1;
         let size = self.grid_size();
-        let options = SpawnOptions {
+        let mut options = SpawnOptions {
             scrollback: self.config.scrollback,
             ..options
         };
+        // 탭 안의 btctl·훅이 이 터미널과 이 탭을 찾게 한다
+        if let Some(c) = &self.control {
+            options
+                .env
+                .push((bt_core::proto::ENV_SOCKET.into(), c.path.to_string_lossy().into_owned()));
+        }
+        options.env.push((bt_core::proto::ENV_TAB.into(), id.to_string()));
         match Session::spawn(options, size, self.config.theme.clone(), self.sink(id)) {
             Ok(session) => {
                 self.tabs.push(Tab {
@@ -331,6 +357,7 @@ impl App {
                     fg_name: None,
                     fg_pid: None,
                     agent: None,
+                    proc_agent: None,
                     state: AgentState::Idle,
                     activity: None,
                     unread: false,
@@ -340,8 +367,130 @@ impl App {
                     last_desktop: None,
                 });
                 self.active = self.tabs.len() - 1;
+                self.request_redraw();
+                Some(id)
             }
-            Err(e) => log::error!("셸을 띄우지 못했습니다: {e}"),
+            Err(e) => {
+                log::error!("셸을 띄우지 못했습니다: {e}");
+                None
+            }
+        }
+    }
+
+    /// 제어 소켓 요청 하나를 처리한다
+    fn handle_call(&mut self, req: bt_core::proto::Request) -> bt_core::proto::Response {
+        use bt_core::proto::{Call, Response, TabInfo};
+        use serde_json::json;
+        let id = req.id;
+        // tab을 주지 않으면 지금 보는 탭
+        let pick = |app: &App, tab: Option<u64>| -> Result<usize, Response> {
+            match tab {
+                Some(t) => app
+                    .tabs
+                    .iter()
+                    .position(|x| x.id == t)
+                    .ok_or_else(|| Response::err(id, format!("탭 {t}이 없습니다"))),
+                None if !app.tabs.is_empty() => Ok(app.active),
+                None => Err(Response::err(id, "탭이 없습니다")),
+            }
+        };
+        match req.call {
+            Call::Ping => Response::ok(id, json!({ "app": "b-terminal", "version": env!("CARGO_PKG_VERSION") })),
+            Call::List => {
+                let tabs: Vec<TabInfo> = self
+                    .tabs
+                    .iter()
+                    .enumerate()
+                    .map(|(i, t)| TabInfo {
+                        id: t.id,
+                        title: t.sidebar_title(),
+                        active: i == self.active,
+                        state: t.state,
+                        agent: t.agent.map(|a| a.name().to_string()),
+                        activity: t.activity.clone(),
+                        unread: t.unread,
+                        cwd: t.cwd.clone(),
+                        process: t.fg_name.clone(),
+                    })
+                    .collect();
+                Response::ok(id, serde_json::to_value(tabs).unwrap_or_default())
+            }
+            Call::New { cwd, command } => {
+                let mut opts = SpawnOptions {
+                    cwd: cwd.filter(|c| c.is_dir()),
+                    ..Default::default()
+                };
+                if let Some((prog, args)) = command.split_first() {
+                    opts.program = Some(prog.clone());
+                    opts.args = args.to_vec();
+                }
+                match self.open_tab(opts) {
+                    Some(tab) => Response::ok(id, json!({ "tab": tab })),
+                    None => Response::err(id, "탭을 열지 못했습니다"),
+                }
+            }
+            Call::Focus { tab } => match pick(self, Some(tab)) {
+                Ok(i) => {
+                    self.activate(i);
+                    Response::ok(id, json!({}))
+                }
+                Err(r) => r,
+            },
+            Call::Send { tab, text } => match pick(self, tab) {
+                Ok(i) => {
+                    self.tabs[i].session.write(text.as_bytes());
+                    Response::ok(id, json!({}))
+                }
+                Err(r) => r,
+            },
+            Call::Read { tab } => match pick(self, tab) {
+                Ok(i) => Response::ok(id, json!({ "text": self.tabs[i].session.snapshot().text() })),
+                Err(r) => r,
+            },
+            Call::Notify { tab, title, body } => match pick(self, tab) {
+                Ok(i) => {
+                    self.on_notification(i, bt_term::Notification { title, body });
+                    Response::ok(id, json!({}))
+                }
+                Err(r) => r,
+            },
+            Call::Status {
+                tab,
+                state,
+                activity,
+                agent,
+            } => match pick(self, tab) {
+                Ok(i) => {
+                    self.set_status(i, state, activity, agent);
+                    Response::ok(id, json!({}))
+                }
+                Err(r) => r,
+            },
+            Call::Usage { source, windows } => {
+                self.usage = Some((source, windows));
+                self.request_redraw();
+                Response::ok(id, json!({}))
+            }
+        }
+    }
+
+    /// 훅이 알린 상태. 보고 있지 않은 탭이 기다림·끝남·오류가 되면 안 읽음으로 둔다
+    fn set_status(&mut self, idx: usize, state: AgentState, activity: Option<String>, agent: Option<String>) {
+        let watching = self.focused && idx == self.active;
+        let t = &mut self.tabs[idx];
+        t.hooked = true;
+        if let Some(kind) = agent.as_deref().and_then(AgentKind::from_process) {
+            t.agent = Some(kind);
+        }
+        let attention = state.urgency() >= 3 && t.state != state;
+        t.state = state;
+        if state == AgentState::Working {
+            t.activity = activity.map(|a| a.chars().take(200).collect());
+        } else if let Some(a) = activity {
+            t.last_note = Some(a.chars().take(200).collect());
+        }
+        if attention && !watching {
+            t.unread = true;
         }
         self.request_redraw();
     }
@@ -652,6 +801,15 @@ impl ApplicationHandler<UserEvent> for App {
             event_loop.exit();
             return;
         }
+        if self.control.is_none() {
+            match crate::control::start(self.proxy.clone()) {
+                Ok(c) => {
+                    log::info!("제어 소켓: {}", c.path.display());
+                    self.control = Some(c);
+                }
+                Err(e) => log::warn!("제어 소켓을 열지 못했습니다(btctl·훅이 동작하지 않습니다): {e}"),
+            }
+        }
         if self.tabs.is_empty() {
             let first = self.first.take().unwrap_or_default();
             self.open_tab(first);
@@ -661,6 +819,10 @@ impl ApplicationHandler<UserEvent> for App {
     fn user_event(&mut self, event_loop: &ActiveEventLoop, event: UserEvent) {
         match event {
             UserEvent::Redraw => self.request_redraw(),
+            UserEvent::Control(req, reply) => {
+                let resp = self.handle_call(req);
+                let _ = reply.send(resp);
+            }
             UserEvent::Session(id, e) => {
                 let Some(idx) = self.tabs.iter().position(|t| t.id == id) else {
                     return;
