@@ -14,7 +14,9 @@ use alacritty_terminal::index::{Column, Line, Point, Side};
 use alacritty_terminal::selection::{Selection, SelectionType};
 use alacritty_terminal::term::cell::Flags;
 use alacritty_terminal::term::{Config, Osc52, Term, TermMode};
-use alacritty_terminal::vte::ansi::{CursorShape as VtCursorShape, NamedColor, Processor, Rgb as VtRgb};
+use alacritty_terminal::vte::ansi::{
+    CursorShape as VtCursorShape, CursorStyle as VtCursorStyle, NamedColor, Processor, Rgb as VtRgb,
+};
 use bt_core::Theme;
 use parking_lot::Mutex;
 use portable_pty::{CommandBuilder, MasterPty, PtySize, native_pty_system};
@@ -85,6 +87,9 @@ pub struct SpawnOptions {
     /// 더하거나 덮을 환경 변수
     pub env: Vec<(String, String)>,
     pub scrollback: usize,
+    /// 프로그램이 DECSCUSR로 바꾸기 전의 커서 모양(설정 cursor-style)
+    pub cursor_shape: Option<CursorShape>,
+    pub cursor_blink: bool,
 }
 
 /// 세션이 앱에 알리는 일. 읽기 스레드에서 불린다
@@ -235,6 +240,15 @@ impl Session {
                 options.scrollback
             },
             osc52: Osc52::Disabled,
+            default_cursor_style: VtCursorStyle {
+                shape: match options.cursor_shape {
+                    Some(CursorShape::Beam) => VtCursorShape::Beam,
+                    Some(CursorShape::Underline) => VtCursorShape::Underline,
+                    Some(CursorShape::HollowBlock) => VtCursorShape::HollowBlock,
+                    _ => VtCursorShape::Block,
+                },
+                blinking: options.cursor_blink,
+            },
             ..Config::default()
         };
         let term = Term::new(config, &Dims(size), listener);

@@ -6,11 +6,33 @@ use std::rc::Rc;
 use fontdb::{Database, Family, Query, Style, Weight};
 use fontdue::{Font, FontSettings};
 
+/// 넣어 둔 글꼴(Ghostty가 기본으로 넣어 두는 것과 같다. assets/fonts/README.md)
+const EMBEDDED: &[&[u8]] = &[
+    include_bytes!("../../../assets/fonts/JetBrainsMono-Regular.ttf"),
+    include_bytes!("../../../assets/fonts/JetBrainsMono-Bold.ttf"),
+    include_bytes!("../../../assets/fonts/JetBrainsMono-Italic.ttf"),
+    include_bytes!("../../../assets/fonts/JetBrainsMono-BoldItalic.ttf"),
+    include_bytes!("../../../assets/fonts/SymbolsNerdFontMono-Regular.ttf"),
+];
+
+/// 넣어 둔 기본 글꼴 이름(설정에 font-family가 없을 때. Ghostty 기본과 같다)
+pub const DEFAULT_FAMILY: &str = "JetBrains Mono";
+const NERD_SYMBOLS: &str = "Symbols Nerd Font Mono";
+
+/// 셀 크기 보정
+pub use bt_core::config::Adjust;
+
 /// 글꼴 설정
 #[derive(Debug, Clone, PartialEq)]
 pub struct FontConfig {
-    /// 기본 글꼴 이름. 없거나 못 찾으면 고정폭 후보를 차례로 찾는다
+    /// 기본 글꼴 이름. 없거나 못 찾으면 넣어 둔 JetBrains Mono, 그다음 고정폭 후보를 차례로 찾는다
     pub family: Option<String>,
+    /// 굵게·기울임·굵은 기울임에 따로 쓸 글꼴(없으면 기본 글꼴의 그 꼴)
+    pub family_bold: Option<String>,
+    pub family_italic: Option<String>,
+    pub family_bold_italic: Option<String>,
+    pub adjust_cell_height: Option<Adjust>,
+    pub adjust_cell_width: Option<Adjust>,
     /// 논리 크기(pt). 화면 배율을 곱해 픽셀로 쓴다
     pub size: f32,
     /// 화면 배율(Retina 2.0)
@@ -23,9 +45,16 @@ impl Default for FontConfig {
     fn default() -> Self {
         Self {
             family: None,
-            size: 14.0,
+            family_bold: None,
+            family_italic: None,
+            family_bold_italic: None,
+            adjust_cell_height: None,
+            adjust_cell_width: None,
+            size: 13.0,
             scale: 1.0,
             fallbacks: vec![
+                // 프롬프트 아이콘(사설 영역)
+                NERD_SYMBOLS.into(),
                 // 한글
                 "Apple SD Gothic Neo".into(),
                 "Noto Sans CJK KR".into(),
@@ -43,6 +72,7 @@ impl Default for FontConfig {
 
 /// 기본 글꼴을 못 찾았을 때 차례로 찾는 고정폭 글꼴
 const MONO_CANDIDATES: &[&str] = &[
+    DEFAULT_FAMILY,
     "SF Mono",
     "Menlo",
     "Monaco",
@@ -98,8 +128,7 @@ pub struct CellMetrics {
 pub struct Fonts {
     /// 0: 기본 글꼴의 네 꼴(없는 꼴은 Regular로), 그 뒤: 대체 글꼴
     regular: [Rc<Font>; 4],
-    /// 대체 글꼴과 넓은 글자를 그릴 때의 크기 배율
-    fallbacks: Vec<(Rc<Font>, f32)>,
+    fallbacks: Vec<Fallback>,
     px: f32,
     metrics: CellMetrics,
     cache: HashMap<(char, FontStyle), Option<Rc<Glyph>>>,
@@ -144,6 +173,9 @@ impl Fonts {
     pub fn new(config: &FontConfig) -> Result<Self, FontError> {
         let mut db = Database::new();
         db.load_system_fonts();
+        for data in EMBEDDED {
+            db.load_font_data(data.to_vec());
+        }
         Self::with_database(&db, config)
     }
 
@@ -158,20 +190,38 @@ impl Fonts {
             .find_map(|n| load(db, n, Weight::NORMAL, Style::Normal).map(|f| (n.to_string(), f)))
             .ok_or_else(|| FontError::NotFound(names.join(", ")))?;
         let regular = Rc::new(regular);
-        let pick = |w, s| load(db, &family, w, s).map(Rc::new).unwrap_or_else(|| regular.clone());
-        let bold = pick(Weight::BOLD, Style::Normal);
-        let italic = pick(Weight::NORMAL, Style::Italic);
-        let bold_italic = pick(Weight::BOLD, Style::Italic);
+        // 꼴마다 따로 정한 글꼴이 있으면 그것, 없으면 기본 글꼴의 그 꼴, 그것도 없으면 Regular
+        let pick = |own: &Option<String>, w, s| {
+            own.as_deref()
+                .and_then(|name| load(db, name, w, s).or_else(|| load(db, name, Weight::NORMAL, Style::Normal)))
+                .or_else(|| load(db, &family, w, s))
+                .map(Rc::new)
+                .unwrap_or_else(|| regular.clone())
+        };
+        let bold = pick(&config.family_bold, Weight::BOLD, Style::Normal);
+        let italic = pick(&config.family_italic, Weight::NORMAL, Style::Italic);
+        let bold_italic = pick(&config.family_bold_italic, Weight::BOLD, Style::Italic);
         let px = (config.size * config.scale).max(4.0);
-        let metrics = cell_metrics(&regular, px);
+        let metrics = cell_metrics(
+            &regular,
+            px,
+            config.adjust_cell_width,
+            config.adjust_cell_height,
+            config.scale,
+        );
         let fallbacks = config
             .fallbacks
             .iter()
             .filter(|n| !n.eq_ignore_ascii_case(&family))
-            .filter_map(|n| load(db, n, Weight::NORMAL, Style::Normal))
-            .map(|f| {
+            .filter_map(|n| load(db, n, Weight::NORMAL, Style::Normal).map(|f| (n, f)))
+            .map(|(n, f)| {
                 let k = wide_scale(&f, px, metrics);
-                (Rc::new(f), k)
+                let pua = is_symbol_font(n);
+                Fallback {
+                    font: Rc::new(f),
+                    wide_scale: k,
+                    pua,
+                }
             })
             .collect();
         Ok(Self {
@@ -206,9 +256,14 @@ impl Fonts {
         } else if self.regular[0].lookup_glyph_index(ch) != 0 {
             (self.regular[0].clone(), self.px)
         } else {
-            let (f, k) = self.fallbacks.iter().find(|(f, _)| f.lookup_glyph_index(ch) != 0)?;
+            // 사설 영역(Nerd Font 아이콘)은 기호 글꼴에서만 찾는다. 한글 글꼴이 같은 번호에 엉뚱한 글자를 둔 경우가 있다
+            let pua = is_private_use(ch);
+            let fb = self
+                .fallbacks
+                .iter()
+                .find(|f| (!pua || f.pua) && f.font.lookup_glyph_index(ch) != 0)?;
             let wide = crate::text::char_cells(ch) == 2;
-            (f.clone(), if wide { self.px * k } else { self.px })
+            (fb.font.clone(), if wide { self.px * fb.wide_scale } else { self.px })
         };
         let (m, bitmap) = font.rasterize(ch, px);
         Some(Glyph {
@@ -221,8 +276,26 @@ impl Fonts {
     }
 }
 
+struct Fallback {
+    font: Rc<Font>,
+    /// 넓은 글자를 그릴 때의 크기 배율
+    wide_scale: f32,
+    /// 사설 영역 글자를 찾아도 되는 기호 글꼴
+    pua: bool,
+}
+
+fn is_symbol_font(name: &str) -> bool {
+    let n = name.to_ascii_lowercase();
+    n.contains("nerd") || n.contains("symbols") || n.contains("powerline")
+}
+
+/// 유니코드 사설 영역(Nerd Font·Powerline 아이콘이 쓰는 자리)
+pub fn is_private_use(c: char) -> bool {
+    matches!(c as u32, 0xE000..=0xF8FF | 0xF0000..=0xFFFFD | 0x100000..=0x10FFFD)
+}
+
 /// 대체 글꼴의 넓은 글자(한글)를 두 칸에 맞추는 배율. 기본 글꼴의 두 칸보다 좁으면 벌어져 보인다.
-/// 셀 높이를 넘지 않게 1.0~1.12로 묶는다(Ghostty의 대체 글꼴 크기 맞춤과 같은 생각)
+/// 폭으로는 두 칸의 92%까지, 높이로는 셀 높이까지 키운다(Ghostty의 대체 글꼴 크기 맞춤과 같은 생각)
 fn wide_scale(font: &Font, px: f32, m: CellMetrics) -> f32 {
     if font.lookup_glyph_index('가') == 0 {
         return 1.0;
@@ -231,18 +304,36 @@ fn wide_scale(font: &Font, px: f32, m: CellMetrics) -> f32 {
     if adv <= 0.0 {
         return 1.0;
     }
-    ((m.width as f32 * 2.0 * 0.92) / adv).clamp(1.0, 1.12)
+    let by_width = (m.width as f32 * 2.0 * 0.92) / adv;
+    let by_height = font
+        .horizontal_line_metrics(px)
+        .map(|l| (l.ascent - l.descent).max(1.0))
+        .map(|h| m.height as f32 / h)
+        .unwrap_or(by_width);
+    by_width.min(by_height).clamp(1.0, 1.35)
 }
 
-fn cell_metrics(font: &Font, px: f32) -> CellMetrics {
+fn cell_metrics(font: &Font, px: f32, adjust_w: Option<Adjust>, adjust_h: Option<Adjust>, scale: f32) -> CellMetrics {
     let advance = font.metrics('M', px).advance_width;
     let (ascent, descent, gap) = font
         .horizontal_line_metrics(px)
         .map(|l| (l.ascent, l.descent, l.line_gap))
         .unwrap_or((px * 0.8, -px * 0.2, 0.0));
-    let width = advance.round().max(1.0) as u32;
-    let height = (ascent - descent + gap).ceil().max(1.0) as u32;
-    let baseline = (ascent + gap / 2.0).round() as u32;
+    // 보정 값의 포인트는 화면 배율을 곱해 픽셀로
+    let scaled = |a: Adjust| match a {
+        Adjust::Points(p) => Adjust::Points(p * scale),
+        other => other,
+    };
+    let natural_h = ascent - descent + gap;
+    let width = adjust_w
+        .map(|a| scaled(a).apply(advance))
+        .unwrap_or(advance)
+        .round()
+        .max(1.0) as u32;
+    let height_f = adjust_h.map(|a| scaled(a).apply(natural_h)).unwrap_or(natural_h);
+    let height = height_f.ceil().max(1.0) as u32;
+    // 높이를 바꾸면 늘어난(줄어든) 만큼의 절반을 위에 둬 글자를 가운데에 둔다(Ghostty와 같다)
+    let baseline = (ascent + gap / 2.0 + (height_f - natural_h) / 2.0).round().max(1.0) as u32;
     let stroke = (px / 14.0).round().max(1.0) as u32;
     let underline_offset = (baseline + stroke + 1).min(height.saturating_sub(stroke));
     CellMetrics {

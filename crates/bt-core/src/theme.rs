@@ -51,37 +51,51 @@ pub struct Theme {
     /// 커서 칸 안의 글자색
     pub cursor_text: Rgb,
     pub selection_background: Rgb,
+    /// 고른 칸의 글자색. 없으면 칸의 글자색 그대로
+    pub selection_foreground: Option<Rgb>,
     /// 0~15번 색
     pub palette: [Rgb; 16],
+    /// 굵은 글자의 0~7번 색을 밝은 8~15번으로 올린다(Ghostty 기본은 끔)
+    pub bold_is_bright: bool,
 }
 
 impl Default for Theme {
     fn default() -> Self {
-        // 어두운 바탕에 대비가 지나치지 않은 색. Ghostty 설정이 있으면 그 값이 덮는다(#13)
+        Self::ghostty_default()
+    }
+}
+
+impl Theme {
+    /// Ghostty 1.3의 기본 색(`ghostty +show-config --default`로 확인). 고른 칸은 Ghostty처럼 색을 뒤집는다
+    pub fn ghostty_default() -> Self {
+        let background = Rgb::new(0x28, 0x2c, 0x34);
+        let foreground = Rgb::new(0xff, 0xff, 0xff);
         Self {
-            foreground: Rgb::new(0xd8, 0xdb, 0xe2),
-            background: Rgb::new(0x16, 0x18, 0x1d),
-            cursor: Rgb::new(0xd8, 0xdb, 0xe2),
-            cursor_text: Rgb::new(0x16, 0x18, 0x1d),
-            selection_background: Rgb::new(0x3a, 0x40, 0x4c),
+            foreground,
+            background,
+            cursor: foreground,
+            cursor_text: background,
+            selection_background: foreground,
+            selection_foreground: Some(background),
             palette: [
-                Rgb::new(0x1d, 0x1f, 0x24),
-                Rgb::new(0xe0, 0x6c, 0x75),
-                Rgb::new(0x98, 0xc3, 0x79),
-                Rgb::new(0xe5, 0xc0, 0x7b),
-                Rgb::new(0x61, 0xaf, 0xef),
-                Rgb::new(0xc6, 0x78, 0xdd),
-                Rgb::new(0x56, 0xb6, 0xc2),
-                Rgb::new(0xab, 0xb2, 0xbf),
-                Rgb::new(0x5c, 0x63, 0x70),
-                Rgb::new(0xf0, 0x7f, 0x88),
-                Rgb::new(0xa9, 0xd4, 0x8a),
-                Rgb::new(0xf0, 0xcf, 0x8f),
-                Rgb::new(0x7c, 0xc0, 0xf5),
-                Rgb::new(0xd7, 0x8f, 0xe8),
-                Rgb::new(0x6c, 0xc8, 0xd3),
-                Rgb::new(0xe6, 0xe9, 0xef),
+                Rgb::new(0x1d, 0x1f, 0x21),
+                Rgb::new(0xcc, 0x66, 0x66),
+                Rgb::new(0xb5, 0xbd, 0x68),
+                Rgb::new(0xf0, 0xc6, 0x74),
+                Rgb::new(0x81, 0xa2, 0xbe),
+                Rgb::new(0xb2, 0x94, 0xbb),
+                Rgb::new(0x8a, 0xbe, 0xb7),
+                Rgb::new(0xc5, 0xc8, 0xc6),
+                Rgb::new(0x66, 0x66, 0x66),
+                Rgb::new(0xd5, 0x4e, 0x53),
+                Rgb::new(0xb9, 0xca, 0x4a),
+                Rgb::new(0xe7, 0xc5, 0x47),
+                Rgb::new(0x7a, 0xa6, 0xda),
+                Rgb::new(0xc3, 0x97, 0xd8),
+                Rgb::new(0x70, 0xc0, 0xb1),
+                Rgb::new(0xea, 0xea, 0xea),
             ],
+            bold_is_bright: false,
         }
     }
 }

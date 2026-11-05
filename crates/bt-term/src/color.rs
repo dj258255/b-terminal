@@ -42,11 +42,15 @@ pub(crate) fn resolve(theme: &Theme, overrides: &Colors, color: Color) -> Rgb {
 
 /// 셀 하나의 전경·배경을 꾸밈까지 반영해 푼다
 pub(crate) fn cell_colors(theme: &Theme, overrides: &Colors, fg: Color, bg: Color, flags: Flags) -> (Rgb, Rgb) {
-    // 굵은 글자는 0~7번을 밝은 8~15번으로 올린다(xterm·Ghostty 기본과 같다)
-    let fg = match fg {
-        Color::Named(n) if flags.contains(Flags::BOLD) && (n as usize) < 8 => Color::Indexed(n as u8 + 8),
-        Color::Indexed(i) if flags.contains(Flags::BOLD) && i < 8 => Color::Indexed(i + 8),
-        other => other,
+    // 굵은 글자의 0~7번을 밝은 8~15번으로 올리는 것은 설정(bold-is-bright)을 따른다. Ghostty 기본은 끔
+    let fg = if !theme.bold_is_bright {
+        fg
+    } else {
+        match fg {
+            Color::Named(n) if flags.contains(Flags::BOLD) && (n as usize) < 8 => Color::Indexed(n as u8 + 8),
+            Color::Indexed(i) if flags.contains(Flags::BOLD) && i < 8 => Color::Indexed(i + 8),
+            other => other,
+        }
     };
     let mut fg_rgb = resolve(theme, overrides, fg);
     let mut bg_rgb = resolve(theme, overrides, bg);
@@ -78,6 +82,19 @@ mod tests {
             Flags::INVERSE,
         );
         assert_eq!((fg, bg), (t.background, t.foreground));
+        let bright = Theme {
+            bold_is_bright: true,
+            ..Theme::default()
+        };
+        let (plain, _) = cell_colors(
+            &t,
+            &o,
+            Color::Named(NamedColor::Red),
+            Color::Named(NamedColor::Background),
+            Flags::BOLD,
+        );
+        assert_eq!(plain, t.palette[1], "기본(Ghostty)은 굵어도 밝게 올리지 않는다");
+        let t = bright;
         let (fg, _) = cell_colors(
             &t,
             &o,
