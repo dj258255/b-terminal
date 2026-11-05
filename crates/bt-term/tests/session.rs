@@ -114,7 +114,7 @@ fn notifications_from_the_pty_reach_the_sink() {
     while Instant::now() < deadline && (note.is_none() || cwd.is_none()) {
         match rx.recv_timeout(Duration::from_millis(100)) {
             Ok(SessionEvent::Notification(n)) => note = Some(n),
-            Ok(SessionEvent::Cwd(p)) => cwd = Some(p),
+            Ok(SessionEvent::Cwd { path, .. }) => cwd = Some(path),
             _ => {}
         }
     }

@@ -95,8 +95,11 @@ pub enum SessionEvent {
     Title(String),
     Bell,
     Notification(Notification),
-    /// 셸이 알린 작업 폴더(OSC 7)
-    Cwd(PathBuf),
+    /// 셸이 알린 작업 폴더(OSC 7)와 그 호스트
+    Cwd {
+        host: String,
+        path: PathBuf,
+    },
     /// 진행 표시(OSC 9;4). 상태 0은 지움
     Progress {
         state: u8,
@@ -426,7 +429,7 @@ impl Session {
 fn signal_event(sig: Signal) -> SessionEvent {
     match sig {
         Signal::Notify(n) => SessionEvent::Notification(n),
-        Signal::Cwd(p) => SessionEvent::Cwd(p),
+        Signal::Cwd { host, path } => SessionEvent::Cwd { host, path },
         Signal::Progress { state, percent } => SessionEvent::Progress { state, percent },
     }
 }

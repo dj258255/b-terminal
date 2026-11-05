@@ -3,24 +3,51 @@
 //! 알림 글은 터미널에 찍힌 글에서 왔으므로 셸 문자열로 잇지 않고 인자 배열로 넘긴다(AGENTS.md "OSC 문자열은 믿지 않습니다")
 
 use std::process::{Command, Stdio};
+use std::sync::OnceLock;
+use std::sync::mpsc::{SyncSender, TrySendError, sync_channel};
 
-/// 알림을 띄운다. 기다리지 않는다
-pub fn notify(title: &str, body: &str) {
-    let title = if title.is_empty() {
-        "b-terminal".to_string()
+/// 기다리는 알림의 상한. 넘으면 버린다(출력이 몰려도 프로세스를 끝없이 띄우지 않는다)
+const QUEUE: usize = 4;
+
+fn worker() -> &'static SyncSender<(String, String)> {
+    static TX: OnceLock<SyncSender<(String, String)>> = OnceLock::new();
+    TX.get_or_init(|| {
+        let (tx, rx) = sync_channel::<(String, String)>(QUEUE);
+        std::thread::Builder::new()
+            .name("bt-desktop-notify".into())
+            .spawn(move || {
+                // 알림 프로세스는 한 번에 하나만 띄운다
+                for (title, body) in rx {
+                    let status = command(&title, &body)
+                        .stdout(Stdio::null())
+                        .stderr(Stdio::null())
+                        .status();
+                    if let Err(e) = status {
+                        log::debug!("데스크톱 알림을 띄우지 못했습니다: {e}");
+                    }
+                }
+            })
+            .expect("알림 스레드");
+        tx
+    })
+}
+
+/// 알림을 띄운다. 기다리지 않는다. 줄이 차 있으면 버리고 거짓
+pub fn notify(title: &str, body: &str) -> bool {
+    let title = if title.is_empty() { "b-terminal" } else { title };
+    match worker().try_send((defang(title), defang(body))) {
+        Ok(()) => true,
+        Err(TrySendError::Full(_)) | Err(TrySendError::Disconnected(_)) => false,
+    }
+}
+
+/// 인자 앞의 '-'를 무력화한다. `--`를 모르는 도구가 옵션으로 읽지 않게 하는 두 번째 방어
+fn defang(s: &str) -> String {
+    if s.starts_with('-') {
+        format!("\u{2060}{s}")
     } else {
-        title.to_string()
-    };
-    let body = body.to_string();
-    std::thread::spawn(move || {
-        let status = command(&title, &body)
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status();
-        if let Err(e) = status {
-            log::debug!("데스크톱 알림을 띄우지 못했습니다: {e}");
-        }
-    });
+        s.to_string()
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -34,6 +61,8 @@ fn command(title: &str, body: &str) -> Command {
         "display notification (item 2 of argv) with title (item 1 of argv)",
         "-e",
         "end run",
+        // 여기부터는 스크립트 인자다. 제목이 "-e"여도 옵션으로 읽지 않는다
+        "--",
         title,
         body,
     ]);
@@ -50,6 +79,14 @@ fn command(title: &str, body: &str) -> Command {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn leading_dash_cannot_become_an_option() {
+        let c = command(&defang("-e"), &defang("do shell script \"x\""));
+        let args: Vec<_> = c.get_args().map(|a| a.to_string_lossy().into_owned()).collect();
+        let sep = args.iter().position(|a| a == "--").expect("-- 구분자");
+        assert!(args[sep + 1..].iter().all(|a| !a.starts_with('-')));
+    }
 
     #[test]
     fn hostile_text_stays_a_single_argument() {

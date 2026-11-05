@@ -265,6 +265,7 @@ dependencies = [
  "bt-render",
  "bt-term",
  "env_logger",
+ "gethostname",
  "log",
  "softbuffer",
  "winit",

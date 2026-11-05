@@ -62,4 +62,22 @@ mod tests {
         assert!(parse(&["-e"]).is_err());
         assert!(parse(&["--nope"]).is_err());
     }
+
+    #[test]
+    fn osc7_cwd_must_be_a_local_directory() {
+        let tmp = std::env::temp_dir();
+        assert!(app::osc7_is_local("", &tmp));
+        assert!(app::osc7_is_local("localhost", &tmp));
+        let me = gethostname::gethostname().to_string_lossy().into_owned();
+        assert!(app::osc7_is_local(&me, &tmp));
+        assert!(
+            !app::osc7_is_local("evil.example.com", &tmp),
+            "다른 호스트의 경로는 받지 않는다"
+        );
+        assert!(
+            !app::osc7_is_local("", std::path::Path::new("/definitely/not/here")),
+            "없는 폴더는 받지 않는다"
+        );
+        assert!(!app::osc7_is_local("", std::path::Path::new("relative")));
+    }
 }

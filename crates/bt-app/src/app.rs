@@ -71,6 +71,8 @@ pub struct Tab {
     pub cwd: Option<std::path::PathBuf>,
     /// 훅(btctl)이 상태를 알려 온 적이 있다. 있으면 OSC로 상태를 추측하지 않는다
     pub hooked: bool,
+    /// 마지막으로 데스크톱 알림을 띄운 때(탭마다 묶는다)
+    last_desktop: Option<Instant>,
 }
 
 impl Tab {
@@ -266,12 +268,17 @@ impl App {
         }
         if !watching {
             t.unread = true;
-            let title = if note.title.is_empty() {
-                t.sidebar_title()
-            } else {
-                note.title.clone()
-            };
-            crate::desktop::notify(&title, &note.body);
+            // 같은 탭의 데스크톱 알림은 3초에 한 번(출력에 알림이 몰려도 화면을 덮지 않게)
+            let now = Instant::now();
+            if t.last_desktop.is_none_or(|at| now - at >= Duration::from_secs(3)) {
+                t.last_desktop = Some(now);
+                let title = if note.title.is_empty() {
+                    t.sidebar_title()
+                } else {
+                    note.title.clone()
+                };
+                crate::desktop::notify(&title, &note.body);
+            }
         }
         self.request_redraw();
     }
@@ -330,6 +337,7 @@ impl App {
                     last_note: None,
                     cwd: None,
                     hooked: false,
+                    last_desktop: None,
                 });
                 self.active = self.tabs.len() - 1;
             }
@@ -575,6 +583,17 @@ impl App {
     }
 }
 
+/// OSC 7 폴더를 새 탭의 시작 폴더로 써도 되는가: 호스트가 이 컴퓨터(빈 값·localhost·호스트 이름)이고 실제 폴더일 때만.
+/// ssh 안의 셸이 보낸 원격 경로나 터미널에 찍힌 글이 고른 경로로 새 셸을 열지 않는다
+pub fn osc7_is_local(host: &str, path: &std::path::Path) -> bool {
+    let local = gethostname::gethostname().to_string_lossy().to_ascii_lowercase();
+    let host = host.to_ascii_lowercase();
+    let short = local.split('.').next().unwrap_or(&local).to_string();
+    let host_ok =
+        host.is_empty() || host == "localhost" || host == local || host.split('.').next() == Some(short.as_str());
+    host_ok && path.is_absolute() && path.is_dir()
+}
+
 pub fn to_draw_cells(s: &Screen) -> Vec<DrawCell> {
     s.cells
         .iter()
@@ -648,7 +667,11 @@ impl ApplicationHandler<UserEvent> for App {
                 };
                 match e {
                     SessionEvent::Title(t) => self.tabs[idx].title = t,
-                    SessionEvent::Cwd(p) => self.tabs[idx].cwd = Some(p),
+                    SessionEvent::Cwd { host, path } => {
+                        if osc7_is_local(&host, &path) {
+                            self.tabs[idx].cwd = Some(path);
+                        }
+                    }
                     SessionEvent::Notification(note) => self.on_notification(idx, note),
                     SessionEvent::Progress { state, .. } => {
                         // 진행 표시는 훅이 없는 에이전트 탭에서만 작업 중의 근거로 쓴다

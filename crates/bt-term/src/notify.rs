@@ -16,8 +16,11 @@ pub struct Notification {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Signal {
     Notify(Notification),
-    /// 셸이 알린 작업 폴더(OSC 7)
-    Cwd(PathBuf),
+    /// 셸이 알린 작업 폴더(OSC 7). 호스트가 이 컴퓨터인지는 받는 쪽이 본다(ssh 안의 셸도 보낸다)
+    Cwd {
+        host: String,
+        path: PathBuf,
+    },
     /// 진행 표시(OSC 9;4;상태;값). 상태 0은 지움, 1 보통, 2 오류, 3 끝 모름, 4 멈춤
     Progress {
         state: u8,
@@ -178,9 +181,13 @@ fn parse_osc(s: &str) -> Option<Signal> {
         "7" => {
             // 7;file://호스트/경로 (경로는 퍼센트 인코딩)
             let rest = rest.strip_prefix("file://")?;
-            let path = &rest[rest.find('/')?..];
-            let decoded = percent_decode(path)?;
-            (decoded.starts_with('/') && !decoded.contains('\0')).then(|| Signal::Cwd(PathBuf::from(decoded)))
+            let slash = rest.find('/')?;
+            let host = clean(&rest[..slash], 255);
+            let decoded = percent_decode(&rest[slash..])?;
+            (decoded.starts_with('/') && !decoded.contains('\0')).then(|| Signal::Cwd {
+                host,
+                path: PathBuf::from(decoded),
+            })
         }
         _ => None,
     }
@@ -276,7 +283,10 @@ mod tests {
     fn osc7_reports_decoded_cwd() {
         assert_eq!(
             notes(b"\x1b]7;file://mac.local/Users/me/My%20Dir\x07"),
-            vec![Signal::Cwd(PathBuf::from("/Users/me/My Dir"))]
+            vec![Signal::Cwd {
+                host: "mac.local".into(),
+                path: PathBuf::from("/Users/me/My Dir")
+            }]
         );
         assert!(notes(b"\x1b]7;http://x/y\x07").is_empty());
     }
