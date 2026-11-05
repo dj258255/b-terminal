@@ -17,14 +17,18 @@ cargo run --release -p bt-app -- -e htop      # 처음 탭에서 다른 프로�
 cargo run --release -p bt-app -- --cwd ~/dev  # 시작 폴더
 ```
 
-| 키 | 하는 일 |
+| 키(macOS 기본) | 하는 일 |
 |---|---|
-| Cmd-C / Cmd-V | 고른 글 복사 / 붙여넣기(괄호 붙여넣기 모드면 감싸서) |
-| Cmd-= / Cmd-- / Cmd-0 | 글자 크기 키우기 / 줄이기 / 처음대로 |
+| Cmd-C / Cmd-V | 복사 / 붙여넣기(괄호 붙여넣기 모드면 감싸서). 고르기만 해도 복사됩니다(copy-on-select) |
+| Cmd-= / Cmd-- / Cmd-0 | 글자 크기 |
 | Cmd-T / Cmd-W | 새 탭 / 탭 닫기 |
-| Cmd-1~9, Cmd-[ / Cmd-] | 탭 옮기기(탭 줄을 눌러도 됩니다) |
+| Cmd-1~8, Cmd-9, Cmd-[ / Cmd-] | 탭 옮기기(탭 줄을 눌러도 됩니다) |
 | Shift-PageUp / PageDown, Cmd-↑ / ↓ | 스크롤백 |
+| Cmd-K | 화면 지우기 |
+| Cmd-Shift-, | 설정 다시 읽기 |
 | 마우스 끌기, 두 번·세 번 누르기 | 글자·단어·줄 고르기(앱이 마우스를 쓰면 Shift를 누른 채로) |
+
+모든 키는 설정의 `keybind`로 바꿀 수 있습니다([docs/configuration.md](docs/configuration.md#키-묶음)).
 
 ## 설정(Ghostty 문법)
 
@@ -53,6 +57,7 @@ btctl new --cwd ~/dev -- htop            # 새 탭에서 htop
 btctl send --tab 2 --enter "make test"   # 2번 탭에 글과 Enter
 btctl read --tab 2                       # 2번 탭 화면을 글로
 btctl notify "빌드" "끝났습니다"           # 이 탭에 알림
+btctl reload-config                      # 설정 다시 읽기
 ```
 
 제어 소켓은 같은 사용자만 닿는 폴더(0700)의 소켓(0600)입니다. 자세한 경계는 [SECURITY.md](SECURITY.md)에 있습니다.

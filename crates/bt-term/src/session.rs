@@ -176,7 +176,7 @@ pub struct Session {
     writer: Writer,
     master: Mutex<Box<dyn MasterPty + Send>>,
     size: Arc<Mutex<GridSize>>,
-    theme: Arc<Theme>,
+    theme: Mutex<Arc<Theme>>,
     pid: Option<u32>,
     exited: Arc<Mutex<Option<Option<u32>>>>,
 }
@@ -293,7 +293,7 @@ impl Session {
             writer,
             master: Mutex::new(pair.master),
             size: size_cell,
-            theme,
+            theme: Mutex::new(theme),
             pid,
             exited,
         })
@@ -435,8 +435,14 @@ impl Session {
 
     /// 지금 화면을 꺼낸다
     pub fn snapshot(&self) -> Screen {
+        let theme = self.theme.lock().clone();
         let g = self.inner.lock();
-        snapshot_of(&g.term, &self.theme)
+        snapshot_of(&g.term, &theme)
+    }
+
+    /// 색 테마를 바꾼다(설정 다시 읽기). 다음 화면부터 새 색으로 푼다
+    pub fn set_theme(&self, theme: Theme) {
+        *self.theme.lock() = Arc::new(theme);
     }
 }
 

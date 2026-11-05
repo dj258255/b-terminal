@@ -15,7 +15,8 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoopProxy};
 use winit::keyboard::ModifiersState;
 use winit::window::{Window, WindowId};
 
-use crate::keys::{self, Shortcut};
+use crate::keymap::{Action, Keymap};
+use crate::keys;
 use crate::mouse;
 use crate::tabbar;
 
@@ -108,11 +109,25 @@ pub struct App {
     focused: bool,
     next_poll: Instant,
     control: Option<crate::control::ControlServer>,
+    keymap: Keymap,
+    /// --config-file(설정을 다시 읽을 때 같은 파일을 읽는다)
+    config_extra: Option<std::path::PathBuf>,
 }
 
 impl App {
-    pub fn new(config: AppConfig, proxy: EventLoopProxy<UserEvent>, first: SpawnOptions) -> Self {
+    pub fn new(
+        config: AppConfig,
+        config_extra: Option<std::path::PathBuf>,
+        proxy: EventLoopProxy<UserEvent>,
+        first: SpawnOptions,
+    ) -> Self {
+        let mut config = config;
         let font_size = config.font_size;
+        let (keymap, kw) = Keymap::build(&config.keybinds);
+        for w in &kw {
+            log::warn!("설정: {w}");
+        }
+        config.warnings.extend(kw);
         Self {
             config,
             proxy,
@@ -135,6 +150,8 @@ impl App {
             focused: true,
             next_poll: Instant::now(),
             control: None,
+            keymap,
+            config_extra,
         }
     }
 
@@ -383,6 +400,13 @@ impl App {
                 Ok(i) => Response::ok(id, json!({ "text": self.tabs[i].session.snapshot().text() })),
                 Err(r) => r,
             },
+            Call::ReloadConfig => {
+                self.reload_config();
+                Response::ok(
+                    id,
+                    json!({ "warnings": self.config.warnings, "sources": self.config.sources }),
+                )
+            }
             Call::Notify { tab, title, body } => match pick(self, tab) {
                 Ok(i) => {
                     self.on_notification(i, bt_term::Notification { title, body });
@@ -453,26 +477,26 @@ impl App {
         Some((col.min(size.cols as usize - 1), row.min(size.rows as usize - 1)))
     }
 
-    fn handle_shortcut(&mut self, s: Shortcut, event_loop: &ActiveEventLoop) {
-        match s {
-            Shortcut::Copy => {
+    fn handle_action(&mut self, action: Action, event_loop: &ActiveEventLoop) {
+        match action {
+            Action::Copy => {
                 if let Some(text) = self.active_tab().and_then(|t| t.session.selection_text()) {
                     if let Some(cb) = self.clipboard.as_mut() {
                         let _ = cb.set_text(text);
                     }
                 }
             }
-            Shortcut::Paste => {
+            Action::Paste => {
                 let text = self.clipboard.as_mut().and_then(|cb| cb.get_text().ok());
                 if let (Some(text), Some(t)) = (text, self.active_tab()) {
                     let bytes = bt_term::encode_paste(&text, t.session.modes().bracketed_paste);
                     self.write_active(&bytes);
                 }
             }
-            Shortcut::FontBigger => self.set_font_size(self.font_size + 1.0),
-            Shortcut::FontSmaller => self.set_font_size(self.font_size - 1.0),
-            Shortcut::FontReset => self.set_font_size(self.config.font_size),
-            Shortcut::NewTab => {
+            Action::FontBigger(n) => self.set_font_size(self.font_size + n),
+            Action::FontSmaller(n) => self.set_font_size(self.font_size - n),
+            Action::FontReset => self.set_font_size(self.config.font_size),
+            Action::NewTab => {
                 // 새 탭은 지금 탭의 폴더에서 연다(OSC 7로 알려진 것, 없으면 프로세스에게 묻는다)
                 let cwd = self
                     .active_tab()
@@ -483,36 +507,85 @@ impl App {
                 }
                 self.open_tab(opts);
             }
-            Shortcut::CloseTab => self.close_tab(self.active, event_loop),
-            Shortcut::NextTab if !self.tabs.is_empty() => self.activate((self.active + 1) % self.tabs.len()),
-            Shortcut::PrevTab if !self.tabs.is_empty() => {
+            Action::CloseTab => self.close_tab(self.active, event_loop),
+            Action::NextTab if !self.tabs.is_empty() => self.activate((self.active + 1) % self.tabs.len()),
+            Action::PrevTab if !self.tabs.is_empty() => {
                 self.activate((self.active + self.tabs.len() - 1) % self.tabs.len())
             }
-            Shortcut::GotoTab(i) if i < self.tabs.len() => self.activate(i),
-            Shortcut::ClearScrollback => self.write_active(b"\x0c"),
-            Shortcut::ScrollPageUp | Shortcut::ScrollPageDown => {
+            Action::LastTab if !self.tabs.is_empty() => self.activate(self.tabs.len() - 1),
+            Action::GotoTab(n) if n <= self.tabs.len() => self.activate(n - 1),
+            // Ghostty의 clear_screen: 화면과 스크롤백을 지운다. 셸에 Ctrl-L을 보내 프롬프트를 다시 그리게 한다
+            Action::ClearScreen => self.write_active(b"\x0c"),
+            Action::ScrollPageUp | Action::ScrollPageDown => {
                 let rows = self.grid_size().rows as i32;
                 if let Some(t) = self.active_tab() {
-                    t.session.scroll(if s == Shortcut::ScrollPageUp {
+                    t.session.scroll(if action == Action::ScrollPageUp {
                         rows - 1
                     } else {
                         -(rows - 1)
                     });
                 }
             }
-            Shortcut::ScrollTop => {
+            Action::ScrollTop => {
                 if let Some(t) = self.active_tab() {
                     t.session.scroll(i32::MAX / 2);
                 }
             }
-            Shortcut::ScrollBottom => {
+            Action::ScrollBottom => {
                 if let Some(t) = self.active_tab() {
                     t.session.scroll_to_bottom();
+                }
+            }
+            Action::SelectAll => {
+                if let Some(t) = self.active_tab() {
+                    let size = t.session.size();
+                    t.session.select_start(0, 0, SelectKind::Line);
+                    t.session.select_update(size.cols as usize - 1, size.rows as usize - 1);
+                }
+            }
+            Action::ReloadConfig => self.reload_config(),
+            Action::Text(text) => {
+                if let Some(t) = self.active_tab() {
+                    t.session.write(text.as_bytes());
                 }
             }
             _ => {}
         }
         self.request_redraw();
+    }
+
+    /// 설정을 다시 읽어 글꼴·색·키 묶음·여백을 바꾼다. 이미 열린 탭에도 새 색을 쓴다
+    fn reload_config(&mut self) {
+        let next = AppConfig::load(self.config_extra.as_deref(), crate::system_is_dark());
+        for w in &next.warnings {
+            log::warn!("설정: {w}");
+        }
+        let mut next = next;
+        let (keymap, kw) = Keymap::build(&next.keybinds);
+        for w in &kw {
+            log::warn!("설정: {w}");
+        }
+        // 키 묶음 경고도 설정 경고로 함께 보인다(btctl reload-config)
+        next.warnings.extend(kw);
+        self.keymap = keymap;
+        self.font_size = next.font_size;
+        for t in &self.tabs {
+            t.session.set_theme(next.theme.clone());
+        }
+        #[cfg(target_os = "macos")]
+        if let Some(g) = &self.gfx {
+            use winit::platform::macos::{OptionAsAlt, WindowExtMacOS};
+            g.window.set_option_as_alt(match next.option_as_alt {
+                bt_core::config::OptionAsAlt::Both => OptionAsAlt::Both,
+                bt_core::config::OptionAsAlt::Left => OptionAsAlt::OnlyLeft,
+                bt_core::config::OptionAsAlt::Right => OptionAsAlt::OnlyRight,
+                bt_core::config::OptionAsAlt::None => OptionAsAlt::None,
+            });
+        }
+        self.config = next;
+        self.load_fonts();
+        self.resize_all();
+        log::info!("설정을 다시 읽었습니다");
     }
 
     fn mouse_reporting(&self) -> Option<bt_term::Modes> {
@@ -808,8 +881,9 @@ impl ApplicationHandler<UserEvent> for App {
                 if event.state != ElementState::Pressed {
                     return;
                 }
-                if let Some(s) = keys::shortcut(&event, self.mods) {
-                    self.handle_shortcut(s, event_loop);
+                let action = keys::trigger(&event, self.mods).and_then(|t| self.keymap.lookup(&t).cloned());
+                if let Some(action) = action {
+                    self.handle_action(action, event_loop);
                     return;
                 }
                 let app_cursor = self.active_tab().map(|t| t.session.modes().app_cursor).unwrap_or(false);
