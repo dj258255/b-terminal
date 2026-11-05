@@ -80,3 +80,13 @@ fn bracketed_paste_and_app_cursor_modes_are_reported() {
     assert!(m.bracketed_paste);
     assert!(m.app_cursor);
 }
+
+#[test]
+fn kitty_keyboard_mode_is_pushed_popped_and_reported() {
+    let mut e = emu(10, 2);
+    e.feed(b"\x1b[>1u");
+    assert!(e.modes().kitty.disambiguate, "CSI > 1 u로 켠다");
+    assert!(!e.modes().kitty.all_as_escapes);
+    e.feed(b"\x1b[<u");
+    assert!(!e.modes().kitty.active(), "CSI < u로 되돌린다");
+}

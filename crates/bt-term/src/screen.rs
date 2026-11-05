@@ -94,6 +94,8 @@ pub struct Modes {
     pub sgr_mouse: bool,
     pub focus_events: bool,
     pub alternate_scroll: bool,
+    /// kitty 키보드 프로토콜 단계
+    pub kitty: crate::input::KittyFlags,
 }
 
 /// 한 순간의 화면. 줄 우선으로 `rows * cols`칸

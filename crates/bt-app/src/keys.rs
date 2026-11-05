@@ -1,6 +1,6 @@
 //! winit 키 이벤트를 PTY 바이트로 바꾼다. 앱 단축키(Cmd-…)는 여기서 거른다
 
-use bt_term::{Mods as TermMods, NamedKey, encode_named, encode_text};
+use bt_term::{Mods as TermMods, NamedKey, encode_char_kitty, encode_named, encode_named_kitty, encode_text};
 
 use crate::keymap::{Mods, Trigger, normalize_key};
 use winit::event::KeyEvent;
@@ -59,11 +59,14 @@ fn named_key_name(n: WKey) -> Option<&'static str> {
 }
 
 /// 키 이벤트를 PTY 바이트로. 보낼 것이 없으면 빈 벡터
-pub fn encode(event: &KeyEvent, mods: ModifiersState, app_cursor: bool, option_as_alt: bool) -> Vec<u8> {
+pub fn encode(event: &KeyEvent, mods: ModifiersState, modes: bt_term::Modes, option_as_alt: bool) -> Vec<u8> {
+    let app_cursor = modes.app_cursor;
+    let kitty = modes.kitty;
     let m = TermMods {
         shift: mods.shift_key(),
         ctrl: mods.control_key(),
         alt: mods.alt_key() && option_as_alt,
+        sup: false,
     };
     if let Key::Named(named) = &event.logical_key {
         let key = match named {
@@ -96,7 +99,24 @@ pub fn encode(event: &KeyEvent, mods: ModifiersState, app_cursor: bool, option_a
             WKey::Space => return encode_text(" ", m),
             _ => None,
         };
+        // 프로그램이 kitty 키보드 프로토콜을 켰으면 Shift+Enter 같은 키를 CSI u로(#41)
+        if let Some(k) = key {
+            if let Some(bytes) = encode_named_kitty(k, m, kitty) {
+                return bytes;
+            }
+        }
         return key.map(|k| encode_named(k, m, app_cursor)).unwrap_or_default();
+    }
+    if kitty.active() {
+        use winit::platform::modifier_supplement::KeyEventExtModifierSupplement;
+        if let Key::Character(base) = event.key_without_modifiers() {
+            let mut chars = base.chars();
+            if let (Some(c), None) = (chars.next(), chars.next()) {
+                if let Some(bytes) = encode_char_kitty(c, m, kitty) {
+                    return bytes;
+                }
+            }
+        }
     }
     // Ctrl·Alt 조합은 수식 키를 뺀 글자로 만든다(Option이 만드는 ∫ 같은 글자 대신 b)
     if m.ctrl || m.alt {

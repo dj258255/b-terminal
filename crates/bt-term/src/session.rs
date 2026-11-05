@@ -243,6 +243,8 @@ impl Session {
                 options.scrollback
             },
             osc52: Osc52::Disabled,
+            // Claude Code 등이 Shift+Enter를 받으려고 켠다(#41)
+            kitty_keyboard: true,
             default_cursor_style: VtCursorStyle {
                 shape: match options.cursor_shape {
                     Some(CursorShape::Beam) => VtCursorShape::Beam,
@@ -506,6 +508,10 @@ fn modes_of(m: TermMode) -> Modes {
         sgr_mouse: m.contains(TermMode::SGR_MOUSE),
         focus_events: m.contains(TermMode::FOCUS_IN_OUT),
         alternate_scroll: m.contains(TermMode::ALTERNATE_SCROLL),
+        kitty: crate::input::KittyFlags {
+            disambiguate: m.contains(TermMode::DISAMBIGUATE_ESC_CODES),
+            all_as_escapes: m.contains(TermMode::REPORT_ALL_KEYS_AS_ESC),
+        },
     }
 }
 
@@ -620,6 +626,7 @@ impl Emulator {
     pub fn new(size: GridSize, theme: Theme) -> Self {
         let config = Config {
             osc52: Osc52::Disabled,
+            kitty_keyboard: true,
             ..Config::default()
         };
         Self {
