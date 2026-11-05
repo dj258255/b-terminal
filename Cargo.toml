@@ -1,6 +1,7 @@
 [workspace]
 resolver = "3"
 members = ["crates/*"]
+exclude = ["vendor"]
 
 [workspace.package]
 version = "0.1.0"
@@ -35,3 +36,7 @@ todo = "warn"
 [profile.release]
 lto = "thin"
 codegen-units = 1
+
+# 한글 IME 확정 직후의 스페이스·Enter를 버리지 않게 고친 winit(vendor/README.md)
+[patch.crates-io]
+winit = { path = "vendor/winit" }
