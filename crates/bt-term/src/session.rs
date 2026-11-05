@@ -679,6 +679,10 @@ fn modes_of(m: TermMode) -> Modes {
     }
 }
 
+/// 한 화면이 담는 OSC 8 링크 수와 주소 길이의 상한
+const MAX_LINKS: usize = 4096;
+const MAX_LINK_URI: usize = 8192;
+
 fn snapshot_of<T: EventListener>(term: &Term<T>, theme: &Theme) -> Screen {
     let cols = term.columns();
     let rows = term.screen_lines();
@@ -690,6 +694,8 @@ fn snapshot_of<T: EventListener>(term: &Term<T>, theme: &Theme) -> Screen {
     let offset = content.display_offset as i32;
     let selection = content.selection;
     let mut links: Vec<String> = Vec::new();
+    // 주소 → 자리. 칸마다 다른 링크를 찍어도 그릴 때마다 칸 수 × 링크 수를 비교하지 않게(#54)
+    let mut link_ids: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
 
     for indexed in content.display_iter {
         let row = indexed.point.line.0 + offset;
@@ -735,16 +741,22 @@ fn snapshot_of<T: EventListener>(term: &Term<T>, theme: &Theme) -> Screen {
         if f.contains(Flags::WRAPLINE) {
             flags.insert(CellFlags::WRAPLINE);
         }
-        // OSC 8 링크: 같은 주소는 한 번만 담는다
-        let link = src.hyperlink().map(|h| {
+        // OSC 8 링크: 같은 주소는 한 번만 담는다. 너무 긴 주소와 상한을 넘는 링크는 링크로 보지 않는다
+        let link = src.hyperlink().and_then(|h| {
             let uri = h.uri();
-            match links.iter().position(|l| l == uri) {
-                Some(i) => i as u32,
-                None => {
-                    links.push(uri.to_string());
-                    (links.len() - 1) as u32
-                }
+            if uri.len() > MAX_LINK_URI {
+                return None;
             }
+            if let Some(&i) = link_ids.get(uri) {
+                return Some(i);
+            }
+            if links.len() >= MAX_LINKS {
+                return None;
+            }
+            let i = links.len() as u32;
+            links.push(uri.to_string());
+            link_ids.insert(uri.to_string(), i);
+            Some(i)
         });
         let combining = src.zerowidth().map(|z| z.to_vec()).unwrap_or_default();
         cells[row as usize * cols + col] = Cell {
