@@ -81,3 +81,24 @@ fn environment_identifies_the_terminal() {
     wait_exit(&rx);
     assert_eq!(s.snapshot().row_text(0), "b-terminal xterm-256color");
 }
+
+#[test]
+fn foreground_process_follows_the_running_child() {
+    // Linux의 dash는 마지막 명령을 exec하지 않고 fork한다(작업 제어가 없어 전경 그룹 대표가 sh로 남는다). exec로 못 박는다
+    let (s, _rx) = sh("exec sleep 5", GridSize::new(40, 5));
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        if let Some(fg) = s.foreground() {
+            if fg.name == "sleep" {
+                break;
+            }
+        }
+        assert!(
+            Instant::now() < deadline,
+            "전경 프로세스가 sleep이 되지 않았다: {:?}",
+            s.foreground()
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(s.cwd().is_some());
+}

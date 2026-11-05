@@ -279,6 +279,28 @@ impl Session {
         self.pid
     }
 
+    /// 전경 프로세스 그룹의 pid(가볍다: ioctl 한 번)
+    pub fn foreground_pid(&self) -> Option<i32> {
+        self.master.lock().process_group_leader()
+    }
+
+    /// 지금 키 입력을 받는 프로세스(셸에서 claude를 띄웠으면 claude)
+    pub fn foreground(&self) -> Option<crate::process::Foreground> {
+        let pid = self.master.lock().process_group_leader()?;
+        let name = crate::process::process_name(pid)?;
+        Some(crate::process::Foreground { pid, name })
+    }
+
+    /// 전경 프로세스의 작업 폴더(없으면 셸의 것)
+    pub fn cwd(&self) -> Option<PathBuf> {
+        let pid = self
+            .master
+            .lock()
+            .process_group_leader()
+            .or(self.pid.map(|p| p as i32))?;
+        crate::process::process_cwd(pid)
+    }
+
     /// 끝났으면 `Some(종료 코드)`
     pub fn exit_status(&self) -> Option<Option<u32>> {
         *self.exited.lock()
