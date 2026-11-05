@@ -19,6 +19,8 @@ impl CellFlags {
     /// 마우스로 고른 칸
     pub const SELECTED: Self = Self(1 << 7);
     pub const UNDERCURL: Self = Self(1 << 8);
+    /// 줄의 마지막 칸: 글이 길어 다음 줄로 접혔다(soft wrap). 링크 찾기가 줄을 잇는다
+    pub const WRAPLINE: Self = Self(1 << 9);
 
     pub const fn empty() -> Self {
         Self(0)
@@ -49,6 +51,8 @@ pub struct Cell {
     pub fg: Rgb,
     pub bg: Rgb,
     pub flags: CellFlags,
+    /// 프로그램이 OSC 8로 단 링크(`Screen::links`의 자리)
+    pub link: Option<u32>,
 }
 
 impl Cell {
@@ -59,6 +63,7 @@ impl Cell {
             fg,
             bg,
             flags: CellFlags::empty(),
+            link: None,
         }
     }
 }
@@ -111,6 +116,8 @@ pub struct Screen {
     /// 스크롤백 줄 수
     pub history: usize,
     pub background: Rgb,
+    /// 화면에 보이는 OSC 8 링크 주소들(칸의 `link`가 가리킨다)
+    pub links: Vec<String>,
 }
 
 impl Screen {

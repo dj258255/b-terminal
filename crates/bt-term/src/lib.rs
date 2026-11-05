@@ -2,6 +2,7 @@
 
 mod color;
 pub mod input;
+pub mod links;
 pub mod notify;
 pub mod plain;
 pub mod process;

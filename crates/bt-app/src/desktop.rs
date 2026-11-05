@@ -76,6 +76,35 @@ fn command(title: &str, body: &str) -> Command {
     c
 }
 
+/// 링크를 연다(#38). 사용자가 Cmd-클릭했을 때만 부른다. 주소는 `classify`를 통과한 것이고, 셸을 거치지 않고 인자로 넘긴다
+pub fn open_link(target: &bt_term::links::OpenTarget) {
+    use bt_term::links::OpenTarget;
+    let mut cmd = if cfg!(target_os = "macos") {
+        Command::new("open")
+    } else {
+        Command::new("xdg-open")
+    };
+    match target {
+        OpenTarget::Web(url) => cmd.arg(url),
+        OpenTarget::Open(path) => cmd.arg(path),
+        // 열면 실행되는 파일은 Finder에서 보이기만 한다(Linux는 그 폴더를 연다)
+        OpenTarget::Reveal(path) if cfg!(target_os = "macos") => cmd.arg("-R").arg(path),
+        OpenTarget::Reveal(path) => cmd.arg(path.parent().unwrap_or(path)),
+    };
+    // 기다리지 않는다. 끝난 프로세스는 따로 거두는 스레드가 기다린다
+    match cmd
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+    {
+        Ok(mut child) => {
+            std::thread::spawn(move || child.wait());
+        }
+        Err(e) => log::warn!("링크를 열지 못했습니다: {e}"),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
