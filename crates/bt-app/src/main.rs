@@ -10,6 +10,7 @@ mod mouse;
 mod palette;
 mod shellint;
 mod split;
+mod state;
 mod tabbar;
 
 use bt_term::SpawnOptions;

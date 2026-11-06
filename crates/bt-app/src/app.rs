@@ -1557,6 +1557,121 @@ impl App {
         }
     }
 
+    /// 모든 창의 상태(창 크기·자리, 탭, 분할, 칸의 폴더)를 적는다(#94)
+    fn save_state(&self) {
+        let Some(path) = crate::state::path() else { return };
+        let cwd_of = |id: u64| {
+            self.panes
+                .iter()
+                .find(|p| p.id == id)
+                .and_then(|p| p.cwd.clone().or_else(|| p.session.cwd()))
+        };
+        let windows: Vec<crate::state::SavedWindow> = std::iter::once(&self.w)
+            .chain(&self.others)
+            .filter(|w| !w.tabs.is_empty())
+            .filter_map(|w| {
+                let g = w.gfx.as_ref()?;
+                let size = g.window.inner_size();
+                Some(crate::state::SavedWindow {
+                    size: (size.width, size.height),
+                    position: g.window.outer_position().ok().map(|p| (p.x, p.y)),
+                    tabs: w
+                        .tabs
+                        .iter()
+                        .map(|t| crate::state::SavedTab {
+                            layout: crate::state::SavedNode::from_node(&t.layout, &cwd_of),
+                            focus: t.layout.leaves().iter().position(|&id| id == t.focus).unwrap_or(0),
+                            zoomed: t.zoomed,
+                        })
+                        .collect(),
+                    active: w.active,
+                })
+            })
+            .collect();
+        let state = crate::state::SavedState {
+            version: crate::state::VERSION,
+            windows,
+        };
+        match crate::state::save(&path, &state) {
+            Ok(()) => log::info!("창 상태를 적었습니다: 창 {}개", state.windows.len()),
+            Err(e) => log::warn!("창 상태를 적지 못했습니다: {e}"),
+        }
+    }
+
+    /// 지난번 창 상태를 되살린다. 되살린 탭이 하나라도 있으면 참(#94)
+    fn restore_state(&mut self, event_loop: &ActiveEventLoop) -> bool {
+        let Some(state) = crate::state::path().and_then(|p| crate::state::load(&p)) else {
+            return false;
+        };
+        let mut restored = false;
+        for (wi, sw) in state.windows.iter().enumerate() {
+            // 첫 창은 이미 만든 창을 쓰고, 그다음부터 새 창
+            if wi > 0 {
+                let Some(gfx) = self.create_gfx(event_loop) else { break };
+                let mut win = Win::new();
+                win.focused = gfx.window.has_focus();
+                win.gfx = Some(gfx);
+                let old = std::mem::replace(&mut self.w, win);
+                self.others.push(old);
+            }
+            if let Some(g) = &self.w.gfx {
+                let _ = g
+                    .window
+                    .request_inner_size(PhysicalSize::new(sw.size.0.max(320), sw.size.1.max(200)));
+                if let Some((x, y)) = sw.position {
+                    g.window.set_outer_position(PhysicalPosition::new(x, y));
+                }
+            }
+            for st in &sw.tabs {
+                let size = self.grid_size_for(self.content_rect());
+                let mut ids = Vec::new();
+                for cwd in st.layout.panes() {
+                    let mut opts = self.default_spawn();
+                    if let Some(dir) = cwd.filter(|d| d.is_dir()) {
+                        opts.cwd = Some(dir);
+                    }
+                    if let Some(p) = self.spawn_pane(opts, size) {
+                        ids.push(p.id);
+                        self.panes.push(p);
+                    }
+                }
+                let Some(layout) = st.layout.to_node(&mut ids.clone().into_iter()) else {
+                    // 칸을 다 띄우지 못했으면 그 탭은 버린다
+                    for id in ids {
+                        if let Some(i) = self.pane_index(id) {
+                            self.panes.remove(i);
+                        }
+                    }
+                    continue;
+                };
+                let leaves = layout.leaves();
+                let focus = leaves.get(st.focus).copied().unwrap_or(leaves[0]);
+                self.w.tabs.push(TabGroup {
+                    layout,
+                    focus,
+                    zoomed: st.zoomed && leaves.len() > 1,
+                });
+                restored = true;
+            }
+            if self.w.tabs.is_empty() {
+                // 칸을 하나도 띄우지 못한 창: 첫 창이 아니면 닫는다(첫 창은 기본 탭을 연다)
+                if wi > 0 {
+                    if let Some(prev) = self.others.pop() {
+                        self.w = prev;
+                    }
+                }
+                continue;
+            }
+            self.w.active = sw.active.min(self.w.tabs.len() - 1);
+            self.last_focused = self.w.id();
+            self.resize_all();
+        }
+        if restored {
+            log::info!("창 상태를 되살렸습니다");
+        }
+        restored
+    }
+
     /// 새 창을 열어 지금 창으로 하고 탭 하나를 띄운다(#36)
     fn open_window(&mut self, event_loop: &ActiveEventLoop, options: SpawnOptions) -> Option<u64> {
         let gfx = self.create_gfx(event_loop)?;
@@ -2168,6 +2283,14 @@ impl ApplicationHandler<UserEvent> for App {
         }
         if self.panes.is_empty() {
             let mut first = self.first.take().unwrap_or_default();
+            // 창 상태 복원(#94): -e·--cwd로 띄운 것이 아니면 지난번 창·탭·분할을 되살린다
+            if self.config.window_save_state
+                && first.program.is_none()
+                && first.cwd.is_none()
+                && self.restore_state(event_loop)
+            {
+                return;
+            }
             if first.program.is_none() {
                 let d = self.default_spawn();
                 first.program = d.program;
@@ -2177,6 +2300,13 @@ impl ApplicationHandler<UserEvent> for App {
                 first.cwd = self.default_spawn().cwd;
             }
             self.open_tab(first);
+        }
+    }
+
+    fn exiting(&mut self, _event_loop: &ActiveEventLoop) {
+        // 끌 때 창 상태를 적는다(#94). 마지막 창을 닫고 꺼진 것이면 창이 없어 파일을 지운다
+        if self.config.window_save_state {
+            self.save_state();
         }
     }
 

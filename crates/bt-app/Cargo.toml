@@ -20,6 +20,7 @@ env_logger.workspace = true
 gethostname = "1.1.0"
 log.workspace = true
 rustix = { version = "1", features = ["process"] }
+serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 softbuffer = "0.4"
 winit = "0.30"

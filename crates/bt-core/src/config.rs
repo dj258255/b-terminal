@@ -111,6 +111,8 @@ pub struct Config {
     pub colorspace_srgb: bool,
     /// 바탕 불투명도(0~1, Ghostty `background-opacity`). 1보다 작으면 기본 바탕색 칸으로 창 뒤가 비친다(#78)
     pub background_opacity: f32,
+    /// 끌 때 창·탭·분할·폴더를 적어 두고 켤 때 되살린다(Ghostty `window-save-state`, #94). never면 끔
+    pub window_save_state: bool,
     pub warnings: Vec<String>,
     /// 실제로 읽은 파일
     pub sources: Vec<PathBuf>,
@@ -151,6 +153,7 @@ impl Default for Config {
             split_divider_color: None,
             colorspace_srgb: false,
             background_opacity: 1.0,
+            window_save_state: true,
             warnings: Vec::new(),
             sources: Vec::new(),
         }
@@ -550,6 +553,11 @@ impl Config {
                 _ => bad(warnings),
             },
             "mouse-reset-on-shell" => self.mouse_reset_on_shell = parse_bool(v).unwrap_or(true),
+            "window-save-state" => match v {
+                "default" | "always" => self.window_save_state = true,
+                "never" => self.window_save_state = false,
+                _ => bad(warnings),
+            },
             "background-opacity" => match v.parse::<f32>() {
                 Ok(o) if o.is_finite() => self.background_opacity = o.clamp(0.0, 1.0),
                 _ => bad(warnings),
@@ -663,7 +671,6 @@ const KNOWN_IGNORED: &[&str] = &[
     "background-blur-radius",
     "window-decoration",
     "window-theme",
-    "window-save-state",
     "macos-titlebar-style",
     "macos-titlebar-proxy-icon",
     "macos-icon",
@@ -848,6 +855,17 @@ mod tests {
         assert_eq!(c.font_size, 13.0);
         assert_eq!(c.cursor_style, CursorStyle::Block);
         assert_eq!(c.warnings.len(), 3);
+    }
+
+    #[test]
+    fn window_save_state_key() {
+        assert!(
+            Config::default().window_save_state,
+            "기본은 되살림(Ghostty macOS와 같음)"
+        );
+        assert!(!Config::from_text("window-save-state = never\n", true).window_save_state);
+        assert!(Config::from_text("window-save-state = always\n", true).window_save_state);
+        assert_eq!(Config::from_text("window-save-state = maybe\n", true).warnings.len(), 1);
     }
 
     #[test]
