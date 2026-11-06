@@ -50,8 +50,22 @@
 
 이번에 배운 것: 보안 경계를 건드린 PR은 커밋 보안 검토 결과를 확인한 뒤 병합한다(#53에서 어김). 병합 스크립트가 그 결과를 기록에서 읽되, 다른 검토와 겹치면 사람이 확인하게 멈춘다.
 
+## 0.3.0 (2026-11-06)
+
+가볍고 정확하게. 추적 이슈 [#64](https://github.com/dj258255/b-terminal/issues/64). 실제 시간은 사람 없이 코딩 에이전트가 진행한 대략값이다.
+
+| 이슈 | 내용 | 예상 | 실제 | PR | 상태 |
+|---|---|---|---|---|---|
+| [#59](https://github.com/dj258255/b-terminal/issues/59) | 색 이모지 글꼴은 필요한 크기 한 벌만(sfnt 골라 읽기, unsafe 없이) | 1~3시간 | 약 50분 | [#69](https://github.com/dj258255/b-terminal/pull/69) | 끝(첫 커밋 검토가 끝나지 않아 보안 검토를 따로 돌림) |
+| [#65](https://github.com/dj258255/b-terminal/issues/65) | 흑백 글자도 swash로, fontdue 빼기(ADR-008) | 2~4시간 | 약 50분 | [#70](https://github.com/dj258255/b-terminal/pull/70) | 끝(처음 메모리 378→158MiB) |
+| [#66](https://github.com/dj258255/b-terminal/issues/66) | btctl read --lines, btctl wait | 2~3시간 | 약 40분 | [#71](https://github.com/dj258255/b-terminal/pull/71) | 끝 |
+| [#67](https://github.com/dj258255/b-terminal/issues/67) | U+FE0F 이모지를 색으로 | 1~2시간 | 약 30분 | [#72](https://github.com/dj258255/b-terminal/pull/72) | 끝 |
+| [#68](https://github.com/dj258255/b-terminal/issues/68) | 실험 E3: 창에 올리기, 화면 색 공간(ADR-009) | 1~2시간 | 약 1시간 10분 | [#73](https://github.com/dj258255/b-terminal/pull/73) | 끝(올리기 15→2.7ms) |
+
+이번에 배운 것: 자동 커밋 검토는 끝나지 않을 수 있다(모델에 닿지 못함, 결과 없이 멈춤). 기다리는 데에 기한을 두고, 보안 경계를 건드린 변경이면 검토를 따로 돌린다.
+
 ## 다음
 
-- 범수 님이 직접 쳐 보고 확인할 것: 한글 2벌식 "안녕 하세요⏎"(ADR-004 패치), Claude Code의 Shift+Enter, vim·htop 키와 마우스, Cmd 단축키(Cmd-D 분할, Cmd-F 찾기, Cmd-클릭 링크, Cmd-N 창), 메뉴 항목, 창 닫기 단추
-- 범수 님이 정할 것: 색 이모지 글꼴 매핑의 unsafe 예외([#59](https://github.com/dj258255/b-terminal/issues/59))
-- 이모지 결합(변형 선택자·ZWJ·피부색), 창에 올리는 비용 줄이기(실험 E2의 다음), 처음 메모리 줄이기, 서명·공증된 macOS 앱 묶음
+- 범수 님이 직접 쳐 보고 확인할 것: 한글 2벌식 "안녕 하세요⏎", Claude Code의 Shift+Enter, Cmd-D·Cmd-F·Cmd-클릭·Cmd-N, 메뉴, 창 닫기 단추, vim·htop
+- 범수 님이 정할 것: `window-colorspace` 기본값(빠른 `display-p3` / 정확한 `srgb`, ADR-009)
+- ZWJ 묶음·피부색(VT 엔진의 글자 묶음), softbuffer 버퍼 다시 쓰기, 외부 모니터에서의 색·속도, 서명·공증된 macOS 앱 묶음
