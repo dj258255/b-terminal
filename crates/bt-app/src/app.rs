@@ -208,6 +208,8 @@ struct Win {
     link_click: bool,
     /// 열린 찾기 막대(칸 하나에 붙는다)
     search: Option<SearchBar>,
+    /// 열린 명령 팔레트(#77): 친 글, 고른 줄
+    palette: Option<(String, usize)>,
     /// 들고 있는 프레임과 그 내용(바뀐 줄만 다시 그리려고, #40)
     frame: Vec<u32>,
     last_frame: Option<FrameMemo>,
@@ -235,6 +237,7 @@ impl Win {
             hover: None,
             link_click: false,
             search: None,
+            palette: None,
             frame: Vec::new(),
             last_frame: None,
             blink_on: true,
@@ -1226,6 +1229,58 @@ impl App {
         });
     }
 
+    /// 설정 파일을 기본 글 편집기로 연다(없으면 예시로 만든다)
+    fn open_settings(&mut self) {
+        match crate::menu::ensure_config_file() {
+            Ok(path) => {
+                let _ = std::process::Command::new("open").arg("-t").arg(&path).spawn();
+                self.toast("설정을 고친 뒤 Cmd-Shift-, 로 다시 읽습니다".into());
+            }
+            Err(e) => log::warn!("설정 파일을 만들지 못했습니다: {e}"),
+        }
+    }
+
+    /// 명령 팔레트가 열려 있으면 키를 받는다(Cmd·Ctrl 조합은 키 묶음에 맡긴다). 받았으면 참
+    fn palette_key(&mut self, event: &winit::event::KeyEvent, event_loop: &ActiveEventLoop) -> bool {
+        use winit::keyboard::{Key, NamedKey};
+        let Some((query, selected)) = self.w.palette.as_mut() else {
+            return false;
+        };
+        if self.mods.super_key() || self.mods.control_key() {
+            return false;
+        }
+        let entries = crate::palette::entries();
+        let shown = crate::palette::filter(&entries, query);
+        match &event.logical_key {
+            Key::Named(NamedKey::Escape) => self.w.palette = None,
+            Key::Named(NamedKey::ArrowDown) => *selected = (*selected + 1).min(shown.len().saturating_sub(1)),
+            Key::Named(NamedKey::ArrowUp) => *selected = selected.saturating_sub(1),
+            Key::Named(NamedKey::Backspace) => {
+                query.pop();
+                *selected = 0;
+            }
+            Key::Named(NamedKey::Enter) => {
+                let pick = shown.get(*selected).map(|&i| entries[i].command.clone());
+                self.w.palette = None;
+                match pick {
+                    Some(crate::palette::Command::Action(a)) => self.handle_action(a, event_loop),
+                    Some(crate::palette::Command::OpenSettings) => self.open_settings(),
+                    None => {}
+                }
+            }
+            _ => {
+                if let Some(text) = event.text.as_ref().filter(|t| !t.chars().any(char::is_control)) {
+                    if query.chars().count() < 64 {
+                        query.push_str(text);
+                        *selected = 0;
+                    }
+                }
+            }
+        }
+        self.request_redraw();
+        true
+    }
+
     /// 고른 칸의 자리
     fn active_index(&self) -> Option<usize> {
         self.focused_id().and_then(|id| self.pane_index(id))
@@ -1248,6 +1303,12 @@ impl App {
                 }
             }
             Action::StartSearch => self.start_search(),
+            Action::TogglePalette => {
+                self.w.palette = match self.w.palette {
+                    Some(_) => None,
+                    None => Some((String::new(), 0)),
+                };
+            }
             Action::EndSearch => self.end_search(),
             Action::NavigateSearch(older) => self.search_step(older),
             Action::Paste => {
@@ -1652,6 +1713,18 @@ impl App {
         let title = self.config.title.clone().unwrap_or(title);
         let preedit = self.w.preedit.clone();
         let hover = self.w.hover.clone();
+        // 명령 팔레트: (친 글, 보일 줄들(이름, 단축키), 고른 줄)
+        let palette = self.w.palette.as_ref().map(|(q, sel)| {
+            let entries = crate::palette::entries();
+            let rows: Vec<(String, String)> = crate::palette::filter(&entries, q)
+                .into_iter()
+                .map(|i| {
+                    let e = &entries[i];
+                    (e.label.to_string(), crate::palette::shortcut(&self.keymap, &e.command))
+                })
+                .collect();
+            (q.clone(), rows, *sel)
+        });
         let search = self.w.search.as_ref().map(|s| {
             (
                 s.pane,
@@ -1695,7 +1768,8 @@ impl App {
                     text_color: theme.cursor_text,
                 });
                 // IME 조합 글은 고른 칸에만 그린다(찾기 막대가 열려 있으면 막대에)
-                let pre = (v.focused && search.is_none() && !preedit.is_empty()).then(|| preedit.clone());
+                let pre = (v.focused && search.is_none() && palette.is_none() && !preedit.is_empty())
+                    .then(|| preedit.clone());
                 (cells, cursor, pre)
             })
             .collect();
@@ -1729,6 +1803,7 @@ impl App {
             overlay: toast.is_some()
                 || hover.is_some()
                 || search.is_some()
+                || palette.is_some()
                 // kitty 그림은 칸 위에 겹쳐 그린다(#76)
                 || views.iter().any(|v| !v.screen.images.is_empty())
                 || (single_tab && views.iter().any(|v| v.progress.is_some())),
@@ -1853,6 +1928,9 @@ impl App {
                 // 실제 주소를 창 왼쪽 아래에 보인다(OSC 8 링크는 보이는 글과 주소가 다를 수 있다)
                 if let Some((_, hit)) = &hover {
                     tabbar::draw_link_hint(&mut canvas, fonts, &theme, &bt_core::proto::printable(&hit.url));
+                }
+                if let Some((q, rows, sel)) = &palette {
+                    tabbar::draw_palette(&mut canvas, fonts, &theme, &format!("{q}{preedit}"), rows, *sel);
                 }
                 if let Some((text, _)) = &toast {
                     crate::tabbar::draw_toast(&mut canvas, fonts, &theme, text);
@@ -2093,14 +2171,7 @@ impl ApplicationHandler<UserEvent> for App {
                 // 메뉴는 보고 있는 창에 대한 것
                 _ if self.last_focused.is_some_and(|w| !self.switch_to(w)) => {}
                 Some(crate::menu::MenuCommand::Action(a)) => self.handle_action(a, event_loop),
-                Some(crate::menu::MenuCommand::OpenSettings) => match crate::menu::ensure_config_file() {
-                    // 기본 글 편집기로 연다
-                    Ok(path) => {
-                        let _ = std::process::Command::new("open").arg("-t").arg(&path).spawn();
-                        self.toast("설정을 고친 뒤 Cmd-Shift-, 로 다시 읽습니다".into());
-                    }
-                    Err(e) => log::warn!("설정 파일을 만들지 못했습니다: {e}"),
-                },
+                Some(crate::menu::MenuCommand::OpenSettings) => self.open_settings(),
                 None => {}
             },
             UserEvent::Control(req, reply) => {
@@ -2244,8 +2315,12 @@ impl ApplicationHandler<UserEvent> for App {
                 Ime::Commit(text) => {
                     self.w.preedit.clear();
                     self.reset_blink();
-                    // 찾기 막대가 열려 있으면 확정 글은 찾을 글로
-                    if self.w.search.is_some() {
+                    // 팔레트·찾기 막대가 열려 있으면 확정 글은 거기로
+                    if let Some((q, sel)) = self.w.palette.as_mut() {
+                        q.push_str(&text);
+                        *sel = 0;
+                        self.request_redraw();
+                    } else if self.w.search.is_some() {
                         self.search_push(&text);
                     } else {
                         self.write_active(text.as_bytes());
@@ -2261,7 +2336,7 @@ impl ApplicationHandler<UserEvent> for App {
                     return;
                 }
                 self.reset_blink();
-                if self.search_key(&event) {
+                if self.palette_key(&event, event_loop) || self.search_key(&event) {
                     return;
                 }
                 let action = keys::trigger(&event, self.mods).and_then(|t| self.keymap.lookup(&t).cloned());

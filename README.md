@@ -35,6 +35,7 @@ open ~/Applications/b-terminal.app
 | Cmd-↑ / Cmd-↓ | 앞·뒤 프롬프트로(셸 통합) |
 | Shift-Enter | Claude Code 등에서 줄바꿈(kitty 키보드 프로토콜. 프로그램이 켰을 때) |
 | Cmd-F, Enter / Shift-Enter, Esc | 스크롤백에서 찾기, 위 / 아래 맞은 곳, 닫기(Cmd-G / Cmd-Shift-G도 됨) |
+| Cmd-Shift-P | 명령 팔레트(동작을 이름으로 찾아 부름, ↑↓ Enter, Esc) |
 | Cmd-K | 화면 지우기 |
 | Cmd-Shift-, | 설정 다시 읽기 |
 | Cmd-클릭 | 링크 열기(Cmd를 누르면 URL·OSC 8 링크에 밑줄과 실제 주소가 보입니다) |
