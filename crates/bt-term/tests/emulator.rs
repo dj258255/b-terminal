@@ -125,3 +125,57 @@ fn tail_text_reads_scrollback_and_joins_wrapped_lines() {
     let five = e.tail_text(5);
     assert!(five.contains("line 19"), "{five:?}");
 }
+
+/// #76: kitty 그래픽 바이트가 VT 엔진을 거쳐 커서 자리에 놓이고, 커서가 그림 아래·오른쪽으로 가며, OK로 답한다.
+/// 스크롤하면 그림이 따라 올라가고, 화면을 지우면 사라진다
+#[test]
+fn kitty_graphics_place_scroll_and_clear() {
+    fn b64(data: &[u8]) -> String {
+        const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+        let mut s = String::new();
+        for ch in data.chunks(3) {
+            let n = (ch[0] as u32) << 16 | (*ch.get(1).unwrap_or(&0) as u32) << 8 | *ch.get(2).unwrap_or(&0) as u32;
+            for i in 0..4 {
+                s.push(if i <= ch.len() {
+                    T[(n >> (18 - 6 * i) & 63) as usize] as char
+                } else {
+                    '='
+                });
+            }
+        }
+        s
+    }
+    let size = bt_term::GridSize {
+        cols: 20,
+        rows: 6,
+        cell_width: 10,
+        cell_height: 20,
+    };
+    let mut e = bt_term::Emulator::new(size, bt_core::Theme::default());
+    e.feed(b"ab");
+    // 25x30px RGB: 3칸 x 2줄
+    let px = vec![9u8; 25 * 30 * 3];
+    e.feed(format!("\x1b_Ga=T,f=24,s=25,v=30,i=4;{}\x1b\\", b64(&px)).as_bytes());
+    assert_eq!(e.take_replies(), b"\x1b_Gi=4;OK\x1b\\");
+    let s = e.snapshot();
+    assert_eq!(s.images.len(), 1);
+    let im = &s.images[0];
+    assert_eq!(
+        (im.row, im.col, im.cols, im.rows, im.width, im.height),
+        (0, 2, 3, 2, 25, 30)
+    );
+    assert_eq!((s.cursor.row, s.cursor.col), (1, 5), "그림의 마지막 줄, 그림 오른쪽 칸");
+    // 다섯 줄 내려 스크롤: 그림이 화면 위로 밀려 일부(또는 전부) 가려진다
+    e.feed(b"\r\n\r\n\r\n\r\n\r\n");
+    let s = e.snapshot();
+    assert!(
+        s.images.is_empty() || s.images[0].row < 0,
+        "{:?}",
+        s.images.first().map(|i| i.row)
+    );
+    // 다시 놓고 화면 지우기(clear가 보내는 ED 2·3)
+    e.feed(b"\x1b_Ga=p,i=4,q=2\x1b\\");
+    assert_eq!(e.snapshot().images.len(), 1);
+    e.feed(b"\x1b[H\x1b[2J\x1b[3J");
+    assert!(e.snapshot().images.is_empty(), "화면을 지우면 그림도 지운다");
+}

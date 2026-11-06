@@ -127,6 +127,41 @@ impl<'a> Canvas<'a> {
         }
     }
 
+    /// RGBA 그림(`iw × ih`)을 (x, y)에서 `w × h`로 늘려(가장 가까운 픽셀) 덮는다. `clip`(x0, y0, x1, y1) 밖은 그리지 않는다(#76)
+    #[allow(clippy::too_many_arguments)]
+    pub fn draw_rgba(
+        &mut self,
+        x: i32,
+        y: i32,
+        w: u32,
+        h: u32,
+        rgba: &[u8],
+        iw: u32,
+        ih: u32,
+        clip: (i32, i32, i32, i32),
+    ) {
+        if w == 0 || h == 0 || iw == 0 || ih == 0 || rgba.len() < (iw * ih * 4) as usize {
+            return;
+        }
+        let x0 = x.max(clip.0).max(0);
+        let y0 = y.max(clip.1).max(self.clip.0);
+        let x1 = (x + w as i32).min(clip.2).min(self.width as i32);
+        let y1 = (y + h as i32).min(clip.3).min(self.clip.1);
+        for py in y0..y1 {
+            let sy = ((py - y) as u64 * ih as u64 / h as u64) as u32;
+            for px in x0..x1 {
+                let sx = ((px - x) as u64 * iw as u64 / w as u64) as u32;
+                let s = ((sy * iw + sx) * 4) as usize;
+                let a = rgba[s + 3] as u32;
+                if a == 0 {
+                    continue;
+                }
+                let i = (py as u32 * self.width + px as u32) as usize;
+                self.buf[i] = blend(self.buf[i], Rgb::new(rgba[s], rgba[s + 1], rgba[s + 2]), a);
+            }
+        }
+    }
+
     pub fn pixel(&self, x: u32, y: u32) -> Rgb {
         Rgb::from_u32(self.buf[(y * self.width + x) as usize])
     }
