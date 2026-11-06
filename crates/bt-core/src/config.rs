@@ -67,6 +67,8 @@ pub struct Config {
     pub font_family_bold: Option<String>,
     pub font_family_italic: Option<String>,
     pub font_family_bold_italic: Option<String>,
+    /// `font-feature`(#96): 다듬기에 줄 글꼴 기능(태그, 값). `-calt`면 (calt, 0)
+    pub font_features: Vec<([u8; 4], u16)>,
     pub font_size: f32,
     pub adjust_cell_height: Option<Adjust>,
     pub adjust_cell_width: Option<Adjust>,
@@ -125,6 +127,7 @@ impl Default for Config {
             font_family_bold: None,
             font_family_italic: None,
             font_family_bold_italic: None,
+            font_features: Vec::new(),
             font_size: 13.0,
             adjust_cell_height: None,
             adjust_cell_width: None,
@@ -241,6 +244,19 @@ fn expand_home(p: &str, base: &Path) -> PathBuf {
 
 fn home() -> PathBuf {
     std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default()
+}
+
+/// 글꼴 기능 하나(Ghostty 문법): `calt`·`+calt`는 켬, `-calt`는 끔, `calt=2`는 그 값. 태그는 네 글자(ASCII)
+pub fn parse_font_feature(s: &str) -> Option<([u8; 4], u16)> {
+    let (tag, val) = if let Some(t) = s.strip_prefix('-') {
+        (t, 0)
+    } else if let Some((t, v)) = s.split_once('=') {
+        (t.trim(), v.trim().parse().ok()?)
+    } else {
+        (s.strip_prefix('+').unwrap_or(s), 1)
+    };
+    let tag: [u8; 4] = tag.as_bytes().try_into().ok()?;
+    tag.iter().all(|b| b.is_ascii_graphic()).then_some((tag, val))
 }
 
 fn parse_bool(v: &str) -> Option<bool> {
@@ -448,6 +464,22 @@ impl Config {
                     self.font_family.push(v.to_string());
                 }
             }
+            "font-feature" => {
+                if v.is_empty() {
+                    self.font_features.clear();
+                } else {
+                    // 쉼표로 여럿을 한 줄에 써도 된다(Ghostty)
+                    for f in v.split(',').map(str::trim).filter(|f| !f.is_empty()) {
+                        match parse_font_feature(f) {
+                            Some(feat) => {
+                                self.font_features.retain(|(t, _)| *t != feat.0);
+                                self.font_features.push(feat);
+                            }
+                            None => bad(warnings),
+                        }
+                    }
+                }
+            }
             "font-family-bold" => self.font_family_bold = Some(v.to_string()).filter(|s| !s.is_empty()),
             "font-family-italic" => self.font_family_italic = Some(v.to_string()).filter(|s| !s.is_empty()),
             "font-family-bold-italic" => self.font_family_bold_italic = Some(v.to_string()).filter(|s| !s.is_empty()),
@@ -615,6 +647,17 @@ impl Config {
         }
         for f in &self.font_family {
             push("font-family", f.clone());
+        }
+        for (tag, val) in &self.font_features {
+            let tag = String::from_utf8_lossy(tag);
+            push(
+                "font-feature",
+                if *val == 0 {
+                    format!("-{tag}")
+                } else {
+                    format!("{tag}={val}")
+                },
+            );
         }
         push("font-size", format!("{}", self.font_size));
         push("background", hex(t.background));
@@ -975,5 +1018,25 @@ mod tests {
             Rgb::new(0x1e, 0x1e, 0x2e),
             "대소문자를 무시하고 찾는다"
         );
+    }
+
+    /// #96: font-feature(Ghostty 문법). 쌓이고, 같은 태그는 나중 값, 빈 값은 지움, 쉼표로 여럿
+    #[test]
+    fn font_feature_parses_like_ghostty() {
+        assert_eq!(parse_font_feature("-calt"), Some((*b"calt", 0)));
+        assert_eq!(parse_font_feature("+liga"), Some((*b"liga", 1)));
+        assert_eq!(parse_font_feature("ss01"), Some((*b"ss01", 1)));
+        assert_eq!(parse_font_feature("cv01=3"), Some((*b"cv01", 3)));
+        assert_eq!(parse_font_feature("toolong"), None);
+        assert_eq!(parse_font_feature("ca\u{1}t"), None);
+        let c = Config::from_text(
+            "font-feature = -calt\nfont-feature = ss01, -liga\nfont-feature = calt\nfont-feature = xx\n",
+            false,
+        );
+        assert_eq!(c.font_features, vec![(*b"ss01", 1), (*b"liga", 0), (*b"calt", 1)]);
+        assert_eq!(c.warnings.len(), 1, "{:?}", c.warnings);
+        assert!(c.render().contains("font-feature = -liga"));
+        let c = Config::from_text("font-feature = -calt\nfont-feature =\n", false);
+        assert!(c.font_features.is_empty());
     }
 }

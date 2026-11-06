@@ -38,6 +38,8 @@ pub struct FontConfig {
     pub scale: f32,
     /// 기본 글꼴에 없는 글자를 찾을 글꼴들. 앞에 있을수록 먼저
     pub fallbacks: Vec<String>,
+    /// 다듬기에 줄 글꼴 기능(#96, `font-feature`). 없으면 글꼴의 기본(calt·liga 등이 켜짐)
+    pub features: Vec<([u8; 4], u16)>,
 }
 
 impl Default for FontConfig {
@@ -69,6 +71,7 @@ impl Default for FontConfig {
                 "Noto Sans Symbols 2".into(),
                 "Noto Sans Math".into(),
             ],
+            features: Vec::new(),
         }
     }
 }
@@ -146,7 +149,15 @@ pub struct Fonts {
     emoji: Option<ColorFont>,
     /// 흑백 글리프를 푸는 swash 작업 공간
     context: std::cell::RefCell<swash::scale::ScaleContext>,
+    /// 합자(#96): 글꼴 기능, 다듬기 작업 공간, 다듬은 묶음(글자마다 바뀐 글리프 번호, 0은 그대로), 글리프 번호로 푼 글리프
+    features: Vec<([u8; 4], u16)>,
+    shaper: std::cell::RefCell<swash::shape::ShapeContext>,
+    shape_cache: HashMap<(Box<str>, FontStyle), Rc<[u16]>>,
+    gid_cache: HashMap<(u16, FontStyle), Option<Rc<Glyph>>>,
 }
+
+/// 다듬은 묶음 캐시의 상한. 넘으면 비운다(화면에 보이는 글은 곧 다시 찬다)
+const SHAPE_CACHE_MAX: usize = 8192;
 
 /// 색 글꼴의 바이트와 모음 안의 자리. swash가 읽는다
 struct ColorFont {
@@ -415,6 +426,10 @@ impl Fonts {
             family_name: family,
             emoji: load_color_font(db),
             context: std::cell::RefCell::new(swash::scale::ScaleContext::new()),
+            features: config.features.clone(),
+            shaper: std::cell::RefCell::new(swash::shape::ShapeContext::new()),
+            shape_cache: HashMap::new(),
+            gid_cache: HashMap::new(),
         })
     }
 
@@ -470,6 +485,78 @@ impl Fonts {
             bitmap: img.data,
             color: None,
         })
+    }
+
+    /// 그 꼴의 기본 글꼴에 있는 글자인가(합자로 다듬을 수 있는 글자, #96)
+    pub fn primary_has(&self, ch: char, style: FontStyle) -> bool {
+        self.regular[style as usize].has(ch)
+    }
+
+    /// 한 꼴의 글자 묶음을 다듬어(#96) 글자마다 바뀐 글리프 번호를 돌려준다. 0이면 그 글자는 그대로 그린다.
+    /// 터미널은 칸 폭이 정해져 있어, 글자 수와 글리프 수가 같은 다듬기(JetBrains Mono·Fira Code의 calt 합자)만 받는다
+    pub fn shape_run(&mut self, text: &str, style: FontStyle) -> Rc<[u16]> {
+        let key = (Box::<str>::from(text), style);
+        if let Some(hit) = self.shape_cache.get(&key) {
+            return hit.clone();
+        }
+        let font = self.regular[style as usize].clone();
+        let chars: Vec<char> = text.chars().collect();
+        let starts: Vec<usize> = text.char_indices().map(|(b, _)| b).collect();
+        let mut out = vec![0u16; chars.len()];
+        {
+            let mut sctx = self.shaper.borrow_mut();
+            let mut shaper = sctx
+                .builder(font.font())
+                .script(swash::text::Script::Latin)
+                .features(self.features.iter())
+                .build();
+            shaper.add_str(text);
+            shaper.shape_with(|c| {
+                let first = starts.partition_point(|&b| b < c.source.start as usize);
+                let last = starts.partition_point(|&b| b < c.source.end as usize);
+                if last - first != c.glyphs.len() {
+                    return;
+                }
+                for (k, g) in c.glyphs.iter().enumerate() {
+                    let i = first + k;
+                    if g.id != 0 && g.id != font.glyph_id(chars[i]) {
+                        out[i] = g.id;
+                    }
+                }
+            });
+        }
+        let out: Rc<[u16]> = out.into();
+        if self.shape_cache.len() >= SHAPE_CACHE_MAX {
+            self.shape_cache.clear();
+        }
+        self.shape_cache.insert(key, out.clone());
+        out
+    }
+
+    /// 그 꼴의 기본 글꼴에서 글리프 번호로 푼 글리프(합자, #96)
+    pub fn glyph_by_id(&mut self, gid: u16, style: FontStyle) -> Option<Rc<Glyph>> {
+        if let Some(g) = self.gid_cache.get(&(gid, style)) {
+            return g.clone();
+        }
+        let font = self.regular[style as usize].clone();
+        let g = {
+            let mut ctx = self.context.borrow_mut();
+            let mut scaler = ctx.builder(font.font()).size(self.px).hint(false).build();
+            swash::scale::Render::new(&[swash::scale::Source::Outline])
+                .render(&mut scaler, gid)
+                .map(|img| {
+                    Rc::new(Glyph {
+                        width: img.placement.width as usize,
+                        height: img.placement.height as usize,
+                        left: img.placement.left,
+                        top: img.placement.top,
+                        bitmap: img.data,
+                        color: None,
+                    })
+                })
+        };
+        self.gid_cache.insert((gid, style), g.clone());
+        g
     }
 
     /// U+FE0F가 붙어 이모지 모양으로 그릴 글자(#67). `cells`칸 안에 맞춘 색 글리프. 색 글꼴에 없으면 없다

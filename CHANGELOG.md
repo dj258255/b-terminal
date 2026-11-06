@@ -7,6 +7,7 @@
 - `btctl read --lines N`이 화면 아래쪽 빈 줄까지 세어 글이 위쪽에만 있으면 빈 글을 돌려주던 것을 고쳤습니다(마지막 글 줄부터 셈).
 - 창 상태 복원(`window-save-state`, Ghostty 키): Cmd-Q로 끌 때 창·탭·분할·작업 폴더를 적어 두고 다음에 켤 때 되살립니다.
 - 퀵 터미널(`toggle_quick_terminal`, Ghostty 동작): 화면 위쪽에 떠 있는 창을 전역 단축키(`keybind = global:…`)나 `btctl quick`으로 보였다 숨깁니다. 포커스를 잃으면 숨습니다.
+- 글꼴 합자: JetBrains Mono의 `->` `!=` `===` 같은 합자를 그립니다(Ghostty처럼 기본으로 켬). `font-feature = -calt`로 끄고, `ss01`·`cv01=2` 같은 다른 글꼴 기능도 줍니다. 칸 폭은 그대로입니다.
 
 ## [0.5.0] - 2026-11-06
 

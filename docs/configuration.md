@@ -26,7 +26,7 @@ palette = 1=#f38ba8
 config-file = ?~/.config/b-terminal/local   # ?가 붙으면 없어도 된다
 ```
 
-- 값의 큰따옴표는 벗깁니다. 같은 키를 여러 번 쓰면 마지막 값이 이깁니다(`font-family`·`palette`·`keybind`는 쌓입니다).
+- 값의 큰따옴표는 벗깁니다. 같은 키를 여러 번 쓰면 마지막 값이 이깁니다(`font-family`·`font-feature`·`palette`·`keybind`는 쌓입니다).
 - 모르는 키와 읽지 못한 값은 버리고 경고로 남깁니다. 앱 로그와 `--show-config`에 보입니다.
 
 ## 지원하는 키
@@ -35,6 +35,7 @@ config-file = ?~/.config/b-terminal/local   # ?가 붙으면 없어도 된다
 |---|---|---|---|
 | `font-family` | 글꼴 이름(여러 번) | 넣어 둔 JetBrains Mono | 첫째가 기본, 나머지는 대체 글꼴(그 뒤에 한글·기호 기본 대체 글꼴이 붙음) |
 | `font-family-bold` / `-italic` / `-bold-italic` | 글꼴 이름 | 기본 글꼴의 그 꼴 | |
+| `font-feature` | 글꼴 기능(여러 번, 쉼표로 여럿): `-calt` 끔, `ss01` 켬, `cv01=2` 값 | 글꼴의 기본(calt·liga 켬) | 합자(`->` `!=` `===`)를 끄려면 `-calt`(JetBrains Mono·Fira Code). 커서 칸에서는 합자를 풀어 보입니다. 빈 값이면 지움 |
 | `font-size` | 포인트 | `13` | Cmd-= / Cmd-- / Cmd-0 |
 | `adjust-cell-height` / `adjust-cell-width` | `10%` 또는 포인트(`2`, `-1`) | 없음 | 높이를 바꾸면 글자를 가운데에 둡니다 |
 | `theme` | 테마 이름, 절대 경로, `light:…,dark:…` | 없음 | 찾는 곳: `~/.config/b-terminal/themes`, 그다음 앱에 넣어 둔 905개([assets/themes-README.md](../assets/themes-README.md), `b-terminal --list-themes`). 이름은 띄어쓰기·대소문자를 무시합니다(`Tokyo Night` = `TokyoNight`) |

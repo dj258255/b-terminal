@@ -77,6 +77,7 @@ fn font_config(c: &AppConfig, size: f32, scale: f32) -> FontConfig {
         size,
         scale,
         fallbacks,
+        features: c.font_features.clone(),
     }
 }
 
