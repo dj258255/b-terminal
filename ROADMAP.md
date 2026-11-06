@@ -87,8 +87,28 @@
 | [#87](https://github.com/dj258255/b-terminal/issues/87) | 이모지 묶음(ZWJ·피부색·국기) | 2~3시간 | 약 50분 | [#90](https://github.com/dj258255/b-terminal/pull/90) | 끝 |
 | [#88](https://github.com/dj258255/b-terminal/issues/88) | 서명·공증 준비 | 1시간 | 약 30분 | [#91](https://github.com/dj258255/b-terminal/pull/91) | 끝(실제 공증은 계정이 있어야 함) |
 
+## 0.6.0 (2026-11-06)
+
+매일 쓰는 터미널. 추적 이슈 [#93](https://github.com/dj258255/b-terminal/issues/93). 사람 없이 코딩 에이전트가 진행했다. 이번 판은 이슈마다 실제 시간을 재지 않았다. 병합 시각(KST)만 적는다: 0.5.0 릴리스 병합 14:42부터 마지막 PR 병합 15:28까지.
+
+| 이슈 | 내용 | 예상 | 실제 | PR | 상태 |
+|---|---|---|---|---|---|
+| [#94](https://github.com/dj258255/b-terminal/issues/94) | 창 상태 복원(`window-save-state`) | 2~3시간 | 재지 않음(병합 14:55) | [#98](https://github.com/dj258255/b-terminal/pull/98) | 끝 |
+| [#99](https://github.com/dj258255/b-terminal/issues/99) | `btctl read --lines`가 마지막 글 줄부터(#94 확인 중 찾음) | — | 재지 않음(병합 14:58) | [#100](https://github.com/dj258255/b-terminal/pull/100) | 끝 |
+| [#95](https://github.com/dj258255/b-terminal/issues/95) | 퀵 터미널(전역 단축키, `btctl quick`) | 2~3시간 | 재지 않음(병합 15:07) | [#101](https://github.com/dj258255/b-terminal/pull/101) | 끝(실제 키로는 눌러 보지 않음) |
+| [#96](https://github.com/dj258255/b-terminal/issues/96) | 글꼴 합자(`font-feature`) | 2~3시간 | 재지 않음(병합 15:14) | [#102](https://github.com/dj258255/b-terminal/pull/102) | 끝 |
+| [#97](https://github.com/dj258255/b-terminal/issues/97) | 창이 있는 화면의 색 공간 | 1~2시간 | 재지 않음(병합 15:28) | [#103](https://github.com/dj258255/b-terminal/pull/103) | 끝(다른 화면으로 옮겨 보지 못함) |
+
+이번에 배운 것:
+
+- 다른 앱이 앞에 있을 때 창을 띄우면, 앱이 앞으로 오는 사이에 포커스 잃음이 먼저 온다. 포커스를 잃으면 숨는 창은 보인 직후를 무시해야 한다(#95).
+- JetBrains Mono의 합자는 글자 수만큼 글리프를 내고 마지막 글리프가 앞 칸으로 넘쳐 그린다. 칸마다 그리는 렌더러에 그대로 맞는다(#96).
+- 한 번씩 띄운 올리기 시간은 같은 빌드에서도 0.1ms 넘게 흔들린다. 견줄 때는 번갈아 여러 번 띄운다(#97).
+
+
 ## 다음
 
 - 범수 님이 직접 해야 할 것: 키보드·마우스 확인(한글 2벌식 "안녕 하세요⏎", Claude Code의 Shift+Enter, Cmd-D·Cmd-F·Cmd-클릭·Cmd-N·Cmd-Shift-P, 메뉴, 창 닫기 단추, vim·htop, kitty icat·yazi, 투명 창), Developer ID 계정으로 `scripts/bundle-macos.sh --sign … --notarize … --dmg`
 - 범수 님이 정할 것: `window-colorspace` 기본값(ADR-009)
-- 큰 일로 남긴 것: GPU(또는 IOSurface) 렌더러, 글자 묶음 폭(mode 2027), 외부 모니터 색 공간
+- 범수 님이 확인할 것(0.6): 퀵 터미널을 실제 전역 단축키로(`keybind = global:ctrl+backquote=toggle_quick_terminal`), 외부 모니터로 창을 옮겼을 때 present 시간(`RUST_LOG=b_terminal=debug`)
+- 큰 일로 남긴 것: GPU(또는 IOSurface) 렌더러, 글자 묶음 폭(mode 2027), 퀵 터미널 움직임·화면 고르기
