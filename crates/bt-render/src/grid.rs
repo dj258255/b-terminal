@@ -133,6 +133,8 @@ fn draw_rows(
         let py = y + row as i32 * ch;
         // 이모지 묶음을 한 글리프로 그렸으면 그 칸들은 건너뛴다
         let mut skip_until = 0;
+        let cursor_col = view.cursor.filter(|c| c.row == row).map(|c| c.col);
+        let subs = ligatures(fonts, &view.cells[row * view.cols..(row + 1) * view.cols], cursor_col);
         for col in 0..view.cols {
             let cell = &view.cells[row * view.cols + col];
             if cell.spacer || col < skip_until {
@@ -156,12 +158,19 @@ fn draw_rows(
             };
             // U+FE0F가 붙은 글자는 그 칸 안에 색 이모지로(색 글꼴에 없으면 글자로)
             let emoji = cell.emoji.then(|| fonts.emoji_glyph(cell.ch, span)).flatten();
-            match emoji {
-                Some(g) => {
+            let style = FontStyle::from_flags(cell.bold, cell.italic);
+            // 합자 글리프는 칸 자리에 그대로 둔다(앞 칸으로 넘쳐 그리는 것이 글꼴의 뜻이다)
+            let lig = match subs.get(col) {
+                Some(&gid) if gid != 0 => fonts.glyph_by_id(gid, style),
+                _ => None,
+            };
+            match (emoji, lig) {
+                (Some(g), _) => {
                     let ox = (m.width as i32 * span as i32 - g.width as i32) / 2;
                     canvas.draw_color_glyph(px + ox, py + m.baseline as i32, &g);
                 }
-                None => draw_cell_text(canvas, fonts, m, px, py, span, cell.ch, fg, cell.bold, cell.italic),
+                (None, Some(g)) => canvas.draw_glyph(px, py + m.baseline as i32, &g, fg),
+                (None, None) => draw_cell_text(canvas, fonts, m, px, py, span, cell.ch, fg, cell.bold, cell.italic),
             }
             if cell.underline {
                 canvas.fill_rect(px, py + m.underline_offset as i32, m.width * span, m.stroke, cell.fg);
@@ -192,6 +201,45 @@ fn draw_rows(
             }
         }
     }
+}
+
+/// 한 줄에서 합자로 바꿀 글리프 번호(칸마다, 0은 그대로, #96).
+/// 같은 꼴이고 기본 글꼴에 있는 한 칸 글자가 이어진 묶음만 다듬는다. 공백·넓은 글자·이모지·커서 칸에서 끊는다
+/// (커서 밑의 합자는 풀어 보인다. Ghostty와 같다). 공백에서 끊으므로 같은 낱말은 캐시에서 꺼낸다
+fn ligatures(fonts: &mut Fonts, row: &[DrawCell], cursor_col: Option<usize>) -> Vec<u16> {
+    let mut subs = vec![0u16; row.len()];
+    let mut text = String::new();
+    let mut col = 0;
+    while col < row.len() {
+        let style = FontStyle::from_flags(row[col].bold, row[col].italic);
+        let joins = |c: usize| {
+            let cell = &row[c];
+            !cell.spacer
+                && !cell.wide
+                && !cell.emoji
+                && cell.cluster.is_none()
+                && cell.ch > ' '
+                // 상자 그림·블록은 직접 그린다
+                && !matches!(cell.ch as u32, 0x2500..=0x259F)
+                && Some(c) != cursor_col
+                && FontStyle::from_flags(cell.bold, cell.italic) == style
+                && fonts.primary_has(cell.ch, style)
+        };
+        let start = col;
+        while col < row.len() && joins(col) {
+            col += 1;
+        }
+        if col - start >= 2 {
+            text.clear();
+            text.extend(row[start..col].iter().map(|c| c.ch));
+            let shaped = fonts.shape_run(&text, style);
+            subs[start..col].copy_from_slice(&shaped);
+        }
+        if col == start {
+            col += 1;
+        }
+    }
+    subs
 }
 
 #[allow(clippy::too_many_arguments)]

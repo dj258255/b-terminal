@@ -487,3 +487,68 @@ fn emoji_clusters_draw_as_one_glyph_centered() {
     );
     assert!(ink(&fr, 2, 0, 2, bg) > 100);
 }
+
+/// 셀 (col,row) 안에서 두 그림의 픽셀이 다른 수
+fn cell_diff(a: &Frame, b: &Frame, col: u32, row: u32) -> usize {
+    let mut n = 0;
+    for y in row * a.ch..(row + 1) * a.ch {
+        for x in col * a.cw..(col + 1) * a.cw {
+            if a.buf[(y * a.w + x) as usize] != b.buf[(y * b.w + x) as usize] {
+                n += 1;
+            }
+        }
+    }
+    n
+}
+
+/// "->"를 한 줄에 그린 것과, "-"만·">"만 따로 그린 칸이 얼마나 다른가(합자가 없으면 0)
+fn ligature_diff(f: &mut Fonts, text: &str) -> usize {
+    let both = render(f, text.as_bytes(), 6, 1, false);
+    let mut chars = text.chars();
+    let (a, b) = (chars.next().unwrap(), chars.next().unwrap());
+    let left = render(f, format!("{a}").as_bytes(), 6, 1, false);
+    let right = render(f, format!(" {b}").as_bytes(), 6, 1, false);
+    cell_diff(&both, &left, 0, 0) + cell_diff(&both, &right, 1, 0)
+}
+
+/// #96: JetBrains Mono의 합자(calt). "->"는 글자마다 그린 것과 다른 글리프가 된다. 칸 폭은 그대로(글리프도 칸마다 하나)
+#[test]
+fn ligatures_replace_glyphs_like_ghostty() {
+    let Some(mut f) = fonts(2.0) else { return };
+    if f.family_name != "JetBrains Mono" {
+        return;
+    }
+    assert!(ligature_diff(&mut f, "->") > 20, "-> 합자");
+    assert!(ligature_diff(&mut f, "!=") > 20, "!= 합자");
+    assert_eq!(ligature_diff(&mut f, "ab"), 0, "글자에는 합자가 없다");
+}
+
+/// #96: `font-feature = -calt`면 합자를 끈다
+#[test]
+fn ligatures_turn_off_with_minus_calt() {
+    let Ok(mut f) = Fonts::new(&FontConfig {
+        scale: 2.0,
+        features: vec![(*b"calt", 0)],
+        ..FontConfig::default()
+    }) else {
+        return;
+    };
+    if f.family_name != "JetBrains Mono" {
+        return;
+    }
+    assert_eq!(ligature_diff(&mut f, "->"), 0);
+    assert_eq!(ligature_diff(&mut f, "!="), 0);
+}
+
+/// #96: 커서 칸은 합자를 끊는다(블록 커서가 덮는 칸의 글자가 반쪽 합자로 보이지 않게)
+#[test]
+fn cursor_breaks_ligature() {
+    let Some(mut f) = fonts(2.0) else { return };
+    if f.family_name != "JetBrains Mono" {
+        return;
+    }
+    // "->" 뒤로 커서를 왼쪽으로 한 칸 옮겨 ">" 위에 둔다
+    let with_cursor = render(&mut f, b"->\x1b[D", 6, 1, true);
+    let plain = render(&mut f, b"-", 6, 1, false);
+    assert_eq!(cell_diff(&with_cursor, &plain, 0, 0), 0, "앞 칸은 합자가 아닌 '-'");
+}
