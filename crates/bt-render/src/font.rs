@@ -139,6 +139,8 @@ pub struct Fonts {
     cache: HashMap<(char, FontStyle), Option<Rc<Glyph>>>,
     /// 이모지 모양 글리프(글자, 칸 수)
     emoji_cache: HashMap<(char, u32), Option<Rc<Glyph>>>,
+    /// 이모지 묶음 글리프(묶음 글)
+    cluster_cache: HashMap<String, Option<Rc<Glyph>>>,
     pub family_name: String,
     /// 색 이모지 글꼴(#37). 없으면 이모지는 다른 대체 글꼴이나 빈 상자로
     emoji: Option<ColorFont>,
@@ -151,6 +153,8 @@ struct ColorFont {
     data: ColorData,
     index: usize,
     context: std::cell::RefCell<swash::scale::ScaleContext>,
+    /// 이모지 묶음을 다듬는 swash 작업 공간(#87)
+    shaper: std::cell::RefCell<swash::shape::ShapeContext>,
 }
 
 /// 색 이모지 글꼴 이름(찾는 차례)
@@ -247,6 +251,7 @@ fn load_color_font(db: &Database) -> Option<ColorFont> {
             data,
             index: index as usize,
             context: std::cell::RefCell::new(swash::scale::ScaleContext::new()),
+            shaper: std::cell::RefCell::new(swash::shape::ShapeContext::new()),
         })
     })
 }
@@ -406,6 +411,7 @@ impl Fonts {
             metrics,
             cache: HashMap::new(),
             emoji_cache: HashMap::new(),
+            cluster_cache: HashMap::new(),
             family_name: family,
             emoji: load_color_font(db),
             context: std::cell::RefCell::new(swash::scale::ScaleContext::new()),
@@ -479,12 +485,8 @@ impl Fonts {
 
     /// 색 글꼴에서 이모지를 `max_w × max_h` 안에 래스터한다(sbix·CBDT 비트맵, COLR 윤곽)
     fn color_glyph(&self, ch: char, max_w: u32, max_h: u32) -> Option<Glyph> {
-        use swash::scale::image::Content;
-        use swash::scale::{Render, Source, StrikeWith};
         let cf = self.emoji.as_ref()?;
         let m = self.metrics;
-        // 폭과 높이 중 작은 쪽에 맞춘다
-        let target = max_w.min(max_h) as f32;
         // 비트맵 벌은 늘 두 칸 크기로 고른다. 한 칸 이모지(#67)도 같은 벌을 줄여 쓴다(골라 읽은 글꼴을 번갈아 다시 읽지 않게)
         let strike_px = (m.width * 2).min(m.height) as u16;
         let bytes = cf.data.bytes(cf.index, strike_px)?;
@@ -493,6 +495,48 @@ impl Fonts {
         if gid == 0 {
             return None;
         }
+        self.render_color_gid(font, gid, max_w, max_h)
+    }
+
+    /// 이모지 묶음(ZWJ·피부색·국기, #87)을 색 글꼴의 다듬기(morx·GSUB)로 한 글리프로 만들어 두 칸 크기로 그린다.
+    /// 한 글리프로 다듬어지지 않으면 없다(그러면 글자마다 그린다)
+    pub fn cluster_glyph(&mut self, text: &str) -> Option<Rc<Glyph>> {
+        if let Some(g) = self.cluster_cache.get(text) {
+            return g.clone();
+        }
+        let g = self.shape_color(text).map(Rc::new);
+        if self.cluster_cache.len() < 4096 {
+            self.cluster_cache.insert(text.to_string(), g.clone());
+        }
+        g
+    }
+
+    fn shape_color(&self, text: &str) -> Option<Glyph> {
+        let cf = self.emoji.as_ref()?;
+        let m = self.metrics;
+        let (max_w, max_h) = (m.width * 2, m.height);
+        let bytes = cf.data.bytes(cf.index, max_w.min(max_h) as u16)?;
+        let font = bytes.font()?;
+        let mut ids = Vec::new();
+        {
+            let mut sctx = cf.shaper.borrow_mut();
+            let mut shaper = sctx.builder(font).size(max_w.min(max_h) as f32).build();
+            shaper.add_str(text);
+            shaper.shape_with(|c| ids.extend(c.glyphs.iter().map(|g| g.id)));
+        }
+        match ids.as_slice() {
+            [gid] if *gid != 0 => self.render_color_gid(font, *gid, max_w, max_h),
+            _ => None,
+        }
+    }
+
+    /// 색 글꼴의 글리프 하나를 `max_w × max_h` 안에 래스터한다
+    fn render_color_gid(&self, font: swash::FontRef<'_>, gid: u16, max_w: u32, max_h: u32) -> Option<Glyph> {
+        use swash::scale::image::Content;
+        use swash::scale::{Render, Source, StrikeWith};
+        let cf = self.emoji.as_ref()?;
+        let m = self.metrics;
+        let target = max_w.min(max_h) as f32;
         let mut ctx = cf.context.borrow_mut();
         let mut scaler = ctx.builder(font).size(target).build();
         let img = Render::new(&[Source::ColorBitmap(StrikeWith::BestFit), Source::ColorOutline(0)])

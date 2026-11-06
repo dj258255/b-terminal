@@ -20,7 +20,8 @@ fn fonts(scale: f32) -> Option<Fonts> {
 }
 
 fn cells(s: &Screen) -> Vec<DrawCell> {
-    s.cells
+    let mut cells: Vec<DrawCell> = s
+        .cells
         .iter()
         .map(|c| DrawCell {
             ch: c.ch,
@@ -34,8 +35,19 @@ fn cells(s: &Screen) -> Vec<DrawCell> {
             spacer: c.flags.contains(CellFlags::SPACER),
             selected: c.flags.contains(CellFlags::SELECTED),
             emoji: c.combining.contains(&'\u{fe0f}'),
+            cluster: None,
+            cluster_cells: 0,
         })
-        .collect()
+        .collect();
+    bt_render::cluster::mark(&mut cells, s.cols, |i| {
+        let c = &s.cells[i];
+        bt_render::cluster::ClusterCell {
+            ch: c.ch,
+            combining: &c.combining,
+            spacer: c.flags.contains(CellFlags::SPACER),
+        }
+    });
+    cells
 }
 
 struct Frame {
@@ -442,4 +454,36 @@ fn variation_selector_16_draws_a_color_emoji_inside_its_cell() {
         0,
         "옆 칸(공백)은 비어 있다"
     );
+}
+
+/// #87: 피부색 👍🏽(VT 엔진에서 두 칸씩 네 칸)과 ZWJ 가족 👨‍👩‍👧(여섯 칸)을 한 글리프로, 묶음 칸 가운데에 그린다.
+/// 글자마다 그리면 맨 앞·맨 뒤 칸에도 그림이 있다
+#[test]
+fn emoji_clusters_draw_as_one_glyph_centered() {
+    let Some(mut f) = fonts(2.0) else { return };
+    if !f.has_color_emoji() {
+        eprintln!("건너뜀: 색 이모지 글꼴이 없다");
+        return;
+    }
+    let bg = Theme::default().background;
+    let fr = render(&mut f, "\u{1f44d}\u{1f3fd}".as_bytes(), 10, 1, false);
+    assert_eq!(
+        ink(&fr, 0, 0, 1, bg) + ink(&fr, 3, 0, 1, bg),
+        0,
+        "맨 앞·맨 뒤 칸은 비고"
+    );
+    assert!(ink(&fr, 1, 0, 2, bg) > 100, "가운데 두 칸에 한 글리프");
+    let fr = render(
+        &mut f,
+        "\u{1f468}\u{200d}\u{1f469}\u{200d}\u{1f467}".as_bytes(),
+        10,
+        1,
+        false,
+    );
+    assert_eq!(
+        ink(&fr, 0, 0, 1, bg) + ink(&fr, 5, 0, 1, bg),
+        0,
+        "가족 여섯 칸의 맨 앞·맨 뒤는 빔"
+    );
+    assert!(ink(&fr, 2, 0, 2, bg) > 100);
 }

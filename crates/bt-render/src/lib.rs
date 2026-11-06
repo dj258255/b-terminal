@@ -2,6 +2,7 @@
 
 mod boxdraw;
 pub mod canvas;
+pub mod cluster;
 pub mod font;
 pub mod grid;
 mod sfnt;

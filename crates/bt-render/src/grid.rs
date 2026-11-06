@@ -20,6 +20,9 @@ pub struct DrawCell {
     pub selected: bool,
     /// 이모지 모양으로 그린다(뒤에 U+FE0F가 붙은 글자, #67). 칸 폭 안에 색 글리프로
     pub emoji: bool,
+    /// 이모지 묶음의 첫 칸이면 묶음 글과 차지한 칸 수(#87). 한 글리프로 다듬어지면 그 칸들 가운데에 그린다
+    pub cluster: Option<std::sync::Arc<str>>,
+    pub cluster_cells: u16,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -128,10 +131,22 @@ fn draw_rows(
     let text_rows = a.saturating_sub(1)..(b + 1).min(view.rows);
     for row in text_rows.clone() {
         let py = y + row as i32 * ch;
+        // 이모지 묶음을 한 글리프로 그렸으면 그 칸들은 건너뛴다
+        let mut skip_until = 0;
         for col in 0..view.cols {
             let cell = &view.cells[row * view.cols + col];
-            if cell.spacer {
+            if cell.spacer || col < skip_until {
                 continue;
+            }
+            if let Some(text) = &cell.cluster {
+                if let Some(g) = fonts.cluster_glyph(text) {
+                    let span = cell.cluster_cells.max(1) as i32;
+                    let px = x + col as i32 * cw;
+                    let ox = (m.width as i32 * span - g.width as i32) / 2;
+                    canvas.draw_color_glyph(px + ox, py + m.baseline as i32, &g);
+                    skip_until = col + span as usize;
+                    continue;
+                }
             }
             let px = x + col as i32 * cw;
             let span = if cell.wide { 2 } else { 1 };
