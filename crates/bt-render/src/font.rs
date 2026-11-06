@@ -4,7 +4,6 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use fontdb::{Database, Family, Query, Style, Weight};
-use fontdue::{Font, FontSettings};
 
 /// 넣어 둔 글꼴(Ghostty가 기본으로 넣어 두는 것과 같다. assets/fonts/README.md)
 const EMBEDDED: &[&[u8]] = &[
@@ -141,6 +140,8 @@ pub struct Fonts {
     pub family_name: String,
     /// 색 이모지 글꼴(#37). 없으면 이모지는 다른 대체 글꼴이나 빈 상자로
     emoji: Option<ColorFont>,
+    /// 흑백 글리프를 푸는 swash 작업 공간
+    context: std::cell::RefCell<swash::scale::ScaleContext>,
 }
 
 /// 색 글꼴의 바이트와 모음 안의 자리. swash가 읽는다
@@ -254,8 +255,50 @@ pub enum FontError {
     NotFound(String),
 }
 
-/// 읽어 둔 글꼴(#58). fontdue는 글꼴을 읽을 때 모든 글리프 윤곽을 풀어 두므로 한글·한자 글꼴은 수십 MiB다.
-/// 글꼴은 크기와 상관없으므로, 설정을 다시 읽거나 글자 크기를 바꿀 때 같은 글꼴을 다시 풀지 않고 나눠 쓴다
+/// 글꼴 한 꼴(#65): 그 꼴만 담은 바이트와 swash의 캐시 열쇠. 글리프는 그릴 때 swash가 푼다(fontdue처럼 미리 풀지 않는다)
+pub(crate) struct Font {
+    data: Vec<u8>,
+    offset: u32,
+    key: swash::CacheKey,
+}
+
+impl Font {
+    fn new(data: Vec<u8>, index: usize) -> Option<Self> {
+        let f = swash::FontRef::from_index(&data, index)?;
+        let (offset, key) = (f.offset, f.key);
+        Some(Self { data, offset, key })
+    }
+
+    fn font(&self) -> swash::FontRef<'_> {
+        swash::FontRef {
+            data: &self.data,
+            offset: self.offset,
+            key: self.key,
+        }
+    }
+
+    fn glyph_id(&self, c: char) -> u16 {
+        self.font().charmap().map(c)
+    }
+
+    fn has(&self, c: char) -> bool {
+        self.glyph_id(c) != 0
+    }
+
+    /// 글자의 나아가는 폭(px)
+    fn advance(&self, c: char, px: f32) -> f32 {
+        let f = self.font();
+        f.glyph_metrics(&[]).scale(px).advance_width(f.charmap().map(c))
+    }
+
+    /// (위로 올라가는 높이, 아래로 내려가는 깊이(음수), 줄 사이) px
+    fn line(&self, px: f32) -> (f32, f32, f32) {
+        let m = self.font().metrics(&[]).scale(px);
+        (m.ascent, -m.descent.abs(), m.leading)
+    }
+}
+
+/// 읽어 둔 글꼴(#58). 글꼴은 크기와 상관없으므로, 설정을 다시 읽거나 글자 크기를 바꿀 때 같은 글꼴을 다시 읽지 않고 나눠 쓴다
 type FontKey = (String, u16, u8);
 thread_local! {
     static PARSED: std::cell::RefCell<HashMap<FontKey, Option<Rc<Font>>>> = std::cell::RefCell::new(HashMap::new());
@@ -284,18 +327,20 @@ fn parse(db: &Database, family: &str, weight: Weight, style: Style) -> Option<Fo
     if !face.families.iter().any(|(n, _)| n.eq_ignore_ascii_case(family)) {
         return None;
     }
-    db.with_face_data(id, |data, index| {
-        Font::from_bytes(
-            data,
-            FontSettings {
-                collection_index: index,
-                scale: 40.0,
-                ..FontSettings::default()
-            },
-        )
-        .ok()
-    })
-    .flatten()
+    // 파일이면 그 꼴의 표만 읽는다(모음 파일 전체를 들지 않게, #65). 앱에 넣어 둔 글꼴은 이미 메모리에 있다
+    let (source, index) = db.face_source(id)?;
+    match source {
+        fontdb::Source::File(path) => match crate::sfnt::read_face(&path, index, None) {
+            Ok(face) => Font::new(face.data, 0),
+            Err(e) => {
+                log::warn!("글꼴을 읽지 못했습니다({}): {e}", path.display());
+                None
+            }
+        },
+        fontdb::Source::Binary(data) | fontdb::Source::SharedFile(_, data) => {
+            Font::new((*data).as_ref().to_vec(), index as usize)
+        }
+    }
 }
 
 impl Fonts {
@@ -360,6 +405,7 @@ impl Fonts {
             cache: HashMap::new(),
             family_name: family,
             emoji: load_color_font(db),
+            context: std::cell::RefCell::new(swash::scale::ScaleContext::new()),
         })
     }
 
@@ -391,27 +437,27 @@ impl Fonts {
         }
         let idx = style as usize;
         let primary = &self.regular[idx];
-        let (font, px) = if primary.lookup_glyph_index(ch) != 0 {
+        let (font, px) = if primary.has(ch) {
             (primary.clone(), self.px)
-        } else if self.regular[0].lookup_glyph_index(ch) != 0 {
+        } else if self.regular[0].has(ch) {
             (self.regular[0].clone(), self.px)
         } else {
             // 사설 영역(Nerd Font 아이콘)은 기호 글꼴에서만 찾는다. 한글 글꼴이 같은 번호에 엉뚱한 글자를 둔 경우가 있다
             let pua = is_private_use(ch);
-            let fb = self
-                .fallbacks
-                .iter()
-                .find(|f| (!pua || f.pua) && f.font.lookup_glyph_index(ch) != 0)?;
+            let fb = self.fallbacks.iter().find(|f| (!pua || f.pua) && f.font.has(ch))?;
             let wide = crate::text::char_cells(ch) == 2;
             (fb.font.clone(), if wide { self.px * fb.wide_scale } else { self.px })
         };
-        let (m, bitmap) = font.rasterize(ch, px);
+        let mut ctx = self.context.borrow_mut();
+        let mut scaler = ctx.builder(font.font()).size(px).hint(false).build();
+        let gid = font.glyph_id(ch);
+        let img = swash::scale::Render::new(&[swash::scale::Source::Outline]).render(&mut scaler, gid)?;
         Some(Glyph {
-            width: m.width,
-            height: m.height,
-            left: m.xmin,
-            top: m.ymin + m.height as i32,
-            bitmap,
+            width: img.placement.width as usize,
+            height: img.placement.height as usize,
+            left: img.placement.left,
+            top: img.placement.top,
+            bitmap: img.data,
             color: None,
         })
     }
@@ -522,28 +568,22 @@ pub fn is_private_use(c: char) -> bool {
 /// 대체 글꼴의 넓은 글자(한글)를 두 칸에 맞추는 배율. 기본 글꼴의 두 칸보다 좁으면 벌어져 보인다.
 /// 폭으로는 두 칸의 92%까지, 높이로는 셀 높이까지 키운다(Ghostty의 대체 글꼴 크기 맞춤과 같은 생각)
 fn wide_scale(font: &Font, px: f32, m: CellMetrics) -> f32 {
-    if font.lookup_glyph_index('가') == 0 {
+    if !font.has('가') {
         return 1.0;
     }
-    let adv = font.metrics('가', px).advance_width;
+    let adv = font.advance('가', px);
     if adv <= 0.0 {
         return 1.0;
     }
     let by_width = (m.width as f32 * 2.0 * 0.92) / adv;
-    let by_height = font
-        .horizontal_line_metrics(px)
-        .map(|l| (l.ascent - l.descent).max(1.0))
-        .map(|h| m.height as f32 / h)
-        .unwrap_or(by_width);
+    let (ascent, descent, _) = font.line(px);
+    let by_height = m.height as f32 / (ascent - descent).max(1.0);
     by_width.min(by_height).clamp(1.0, 1.35)
 }
 
 fn cell_metrics(font: &Font, px: f32, adjust_w: Option<Adjust>, adjust_h: Option<Adjust>, scale: f32) -> CellMetrics {
-    let advance = font.metrics('M', px).advance_width;
-    let (ascent, descent, gap) = font
-        .horizontal_line_metrics(px)
-        .map(|l| (l.ascent, l.descent, l.line_gap))
-        .unwrap_or((px * 0.8, -px * 0.2, 0.0));
+    let advance = font.advance('M', px);
+    let (ascent, descent, gap) = font.line(px);
     // 보정 값의 포인트는 화면 배율을 곱해 픽셀로
     let scaled = |a: Adjust| match a {
         Adjust::Points(p) => Adjust::Points(p * scale),
@@ -585,5 +625,24 @@ mod parsed_cache_tests {
         .unwrap();
         assert!(Rc::ptr_eq(&a.regular[0], &b.regular[0]), "같은 글꼴이면 같은 객체");
         assert_ne!(a.metrics(), b.metrics(), "크기는 따로");
+    }
+}
+
+#[cfg(test)]
+mod face_size_tests {
+    use super::*;
+
+    /// #65: 한글 대체 글꼴(Apple SD Gothic Neo, 53MiB 모음)에서 한 꼴만 들고 있다(macOS에서만)
+    #[test]
+    fn korean_fallback_keeps_only_one_face() {
+        let f = Fonts::new(&FontConfig::default()).unwrap();
+        let Some(fb) = f.fallbacks.iter().find(|fb| fb.font.has('가')) else {
+            return;
+        };
+        let len = fb.font.data.len();
+        let whole = std::fs::metadata("/System/Library/Fonts/AppleSDGothicNeo.ttc")
+            .map(|m| m.len() as usize)
+            .unwrap_or(usize::MAX);
+        assert!(len < whole / 2, "한 꼴 {len}바이트, 모음 전체 {whole}바이트");
     }
 }
