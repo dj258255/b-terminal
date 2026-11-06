@@ -4,6 +4,7 @@ mod boxdraw;
 pub mod canvas;
 pub mod font;
 pub mod grid;
+mod sfnt;
 pub mod text;
 
 pub use canvas::Canvas;
