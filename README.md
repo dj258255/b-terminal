@@ -20,6 +20,8 @@ scripts/bundle-macos.sh --install   # ~/Applications/b-terminal.app (btctl도 �
 open ~/Applications/b-terminal.app
 ```
 
+다른 Mac에 나눠 주려면 Developer ID 서명과 공증이 필요합니다: [docs/release-macos.md](docs/release-macos.md).
+
 개발 중에는 `cargo run --release -p bt-app`(인자: `-e <프로그램>`, `--cwd <폴더>`, `--config-file`, `--show-config`, `--list-themes`)로 띄웁니다. 메뉴 막대의 "설정…"이 `~/.config/b-terminal/config`를 예시와 함께 만들어 엽니다.
 
 | 키(macOS 기본) | 하는 일 |

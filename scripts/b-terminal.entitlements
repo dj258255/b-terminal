@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- 하드닝 런타임에서 b-terminal이 쓰는 권한(#88). 셸과 그 자식 프로그램은 각자의 서명으로 돌므로 따로 권한이 필요 없다.
+     더할 것이 생기면 이유와 함께 docs/release-macos.md에 적는다 -->
+<plist version="1.0">
+<dict>
+</dict>
+</plist>
