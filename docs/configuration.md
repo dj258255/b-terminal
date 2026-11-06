@@ -72,7 +72,7 @@ config-file = ?~/.config/b-terminal/local   # ?가 붙으면 없어도 된다
 
 ### 받기만 하고 쓰지 않는 Ghostty 키
 
-경고 없이 넘깁니다: `font-feature`, `font-thicken`, `background-blur`, `window-decoration`, `window-theme`, `window-save-state`, `macos-titlebar-style`, `macos-icon`, `confirm-close-surface`, `auto-update`, `minimum-contrast` 등. 그 밖의 키는 경고합니다.
+경고 없이 넘깁니다: `font-feature`, `font-thicken`, `background-blur`, `window-decoration`, `window-theme`, `macos-titlebar-style`, `macos-icon`, `confirm-close-surface`, `auto-update`, `minimum-contrast` 등. 그 밖의 키는 경고합니다.
 
 ## 키 묶음
 
