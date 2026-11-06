@@ -64,8 +64,21 @@
 
 이번에 배운 것: 자동 커밋 검토는 끝나지 않을 수 있다(모델에 닿지 못함, 결과 없이 멈춤). 기다리는 데에 기한을 두고, 보안 경계를 건드린 변경이면 검토를 따로 돌린다.
 
+## 0.4.0 (2026-11-06)
+
+그림과 손에 잡히는 것. 추적 이슈 [#75](https://github.com/dj258255/b-terminal/issues/75). 실제 시간은 사람 없이 코딩 에이전트가 진행한 대략값이다.
+
+| 이슈 | 내용 | 예상 | 실제 | PR | 상태 |
+|---|---|---|---|---|---|
+| [#76](https://github.com/dj258255/b-terminal/issues/76) | kitty 그래픽 프로토콜(ADR-010) | 4~6시간 | 약 1시간 40분 | [#80](https://github.com/dj258255/b-terminal/pull/80) | 끝(보안 지적 2건 병합 전 고침, 셀 픽셀 크기 버그도 고침) |
+| [#77](https://github.com/dj258255/b-terminal/issues/77) | 명령 팔레트(Cmd-Shift-P) | 2~3시간 | 약 40분 | [#81](https://github.com/dj258255/b-terminal/pull/81) | 끝 |
+| [#78](https://github.com/dj258255/b-terminal/issues/78) | 투명 창(background-opacity) | 2~3시간 | 약 40분 | [#82](https://github.com/dj258255/b-terminal/pull/82) | 끝 |
+| [#79](https://github.com/dj258255/b-terminal/issues/79) | 실험 E4: 창 버퍼 다시 쓰기 | 1~2시간 | 약 40분 | [#83](https://github.com/dj258255/b-terminal/pull/83) | 끝(이득 작음, 중앙값 약 0.2ms) |
+
+이번에 배운 것: 터미널에 찍힌 글이 보내는 자료(그림)는 바이트 상한만으로 모자라다. 개수와 그리는 양에도 상한이 있어야 한다(보안 검토 지적).
+
 ## 다음
 
-- 범수 님이 직접 쳐 보고 확인할 것: 한글 2벌식 "안녕 하세요⏎", Claude Code의 Shift+Enter, Cmd-D·Cmd-F·Cmd-클릭·Cmd-N, 메뉴, 창 닫기 단추, vim·htop
-- 범수 님이 정할 것: `window-colorspace` 기본값(빠른 `display-p3` / 정확한 `srgb`, ADR-009)
-- ZWJ 묶음·피부색(VT 엔진의 글자 묶음), softbuffer 버퍼 다시 쓰기, 외부 모니터에서의 색·속도, 서명·공증된 macOS 앱 묶음
+- 범수 님이 직접 쳐 보고 확인할 것: 한글 2벌식 "안녕 하세요⏎", Claude Code의 Shift+Enter, Cmd-D·Cmd-F·Cmd-클릭·Cmd-N·Cmd-Shift-P, 메뉴, 창 닫기 단추, vim·htop, kitty icat·yazi 그림, 투명 창
+- 범수 님이 정할 것: `window-colorspace` 기본값(ADR-009)
+- 투명 창 글자 가장자리(렌더러가 알파를 다루게), ZWJ 묶음·피부색, IOSurface·GPU로 올리기(실험 E4의 다음), 서명·공증된 macOS 앱 묶음
