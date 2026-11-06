@@ -1729,6 +1729,8 @@ impl App {
             overlay: toast.is_some()
                 || hover.is_some()
                 || search.is_some()
+                // kitty 그림은 칸 위에 겹쳐 그린다(#76)
+                || views.iter().any(|v| !v.screen.images.is_empty())
                 || (single_tab && views.iter().any(|v| v.progress.is_some())),
             theme: (theme.background, theme.foreground),
             dim: (dim_alpha, dim_fill, divider_color),
@@ -1768,6 +1770,33 @@ impl App {
                 if full {
                     canvas.fill_rect(v.outer.x, v.outer.y, v.outer.w, v.outer.h, screen.background);
                     draw_grid(&mut canvas, fonts, v.inner.x, v.inner.y, &view);
+                    // kitty 그림: 놓인 칸에, 칸 수에 맞춰 늘리거나 원래 크기로. 격자 밖은 자른다
+                    let grid_clip = (
+                        v.inner.x,
+                        v.inner.y,
+                        v.inner.x + (screen.cols as u32 * m.width) as i32,
+                        v.inner.y + (screen.rows as u32 * m.height) as i32,
+                    );
+                    for im in &screen.images {
+                        let (cw, chh) = (im.cols * m.width, im.rows * m.height);
+                        let (w, h) = if im.scaled { (cw, chh) } else { (im.width, im.height) };
+                        let clip = (
+                            grid_clip.0,
+                            grid_clip.1,
+                            grid_clip.2.min(v.inner.x + (im.col as u32 * m.width + cw) as i32),
+                            grid_clip.3,
+                        );
+                        canvas.draw_rgba(
+                            v.inner.x + (im.col as u32 * m.width) as i32,
+                            v.inner.y + im.row * m.height as i32,
+                            w,
+                            h,
+                            &im.rgba,
+                            im.width,
+                            im.height,
+                            clip,
+                        );
+                    }
                     if split && !v.focused && dim_alpha > 0 {
                         canvas.blend_rect(v.outer.x, v.outer.y, v.outer.w, v.outer.h, dim_fill, dim_alpha);
                     }

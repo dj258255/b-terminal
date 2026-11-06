@@ -109,6 +109,22 @@ pub struct Modes {
     pub kitty: crate::input::KittyFlags,
 }
 
+/// 화면에 보이는 kitty 그림 하나(#76)
+#[derive(Debug, Clone)]
+pub struct ImageView {
+    /// 곱하지 않은 알파 RGBA
+    pub rgba: std::sync::Arc<Vec<u8>>,
+    pub width: u32,
+    pub height: u32,
+    /// 왼쪽 위 칸(보이는 화면 기준. 위로 일부 가려졌으면 음수)
+    pub row: i32,
+    pub col: usize,
+    pub cols: u32,
+    pub rows: u32,
+    /// 칸 수에 맞춰 늘린다. 아니면 그림 원래 픽셀 크기(칸 밖은 자른다)
+    pub scaled: bool,
+}
+
 /// 한 순간의 화면. 줄 우선으로 `rows * cols`칸
 #[derive(Debug, Clone)]
 pub struct Screen {
@@ -124,6 +140,8 @@ pub struct Screen {
     pub background: Rgb,
     /// 화면에 보이는 OSC 8 링크 주소들(칸의 `link`가 가리킨다)
     pub links: Vec<String>,
+    /// 화면에 보이는 kitty 그림들(놓인 차례)
+    pub images: Vec<ImageView>,
 }
 
 impl Screen {

@@ -30,6 +30,13 @@ pub enum Signal {
         state: u8,
         percent: u8,
     },
+    /// kitty 그래픽 명령(APC `ESC _ G … ESC \`)의 `G` 뒤 바이트(#76)
+    Graphics(Vec<u8>),
+    /// 화면 지우기(ED 2: 보이는 화면, ED 3: 스크롤백)나 초기화(RIS). 놓인 그림을 함께 지운다
+    Erase {
+        visible: bool,
+        scrollback: bool,
+    },
 }
 
 /// 셸 통합 표지. <https://gitlab.freedesktop.org/Per_Bothner/specifications/blob/master/proposals/semantic-prompts.md>
@@ -61,6 +68,11 @@ enum St {
     /// 상한을 넘은 OSC를 끝까지 버리는 중
     Skip,
     SkipEsc,
+    /// APC(`ESC _`) 안
+    Apc,
+    ApcEsc,
+    /// CSI(`ESC [`) 안: 화면 지우기(ED)만 알아본다
+    Csi,
 }
 
 /// 조각난 바이트를 이어 가며 신호를 찾는다
@@ -68,7 +80,16 @@ enum St {
 pub struct Scanner {
     st: St,
     buf: Vec<u8>,
+    /// APC 바이트(kitty 그래픽 조각). OSC와 따로 둔다
+    apc: Vec<u8>,
+    /// APC가 상한을 넘어 버리는 중
+    apc_skip: bool,
+    /// CSI 매개변수(짧게만)
+    csi: Vec<u8>,
 }
+
+/// APC 하나의 상한. kitty는 조각을 4096바이트로 보내지만 한 번에 보내는 도구도 있다
+const MAX_APC: usize = 8 * 1024 * 1024;
 
 impl Scanner {
     /// 바이트를 먹이고 끝난 OSC에서 뽑은 신호를 돌려준다
@@ -92,8 +113,76 @@ impl Scanner {
                     self.buf.clear();
                     St::Osc
                 }
+                (St::Esc, b'_') => {
+                    self.apc.clear();
+                    self.apc_skip = false;
+                    St::Apc
+                }
+                (St::Esc, b'[') => {
+                    self.csi.clear();
+                    St::Csi
+                }
+                (St::Esc, b'c') => {
+                    out.push((
+                        i + 1,
+                        Signal::Erase {
+                            visible: true,
+                            scrollback: true,
+                        },
+                    ));
+                    St::Ground
+                }
                 (St::Esc, 0x1b) => St::Esc,
                 (St::Esc, _) => St::Ground,
+                (St::Apc, 0x1b) => St::ApcEsc,
+                (St::Apc, b) => {
+                    if self.apc.len() >= MAX_APC {
+                        self.apc = Vec::new();
+                        self.apc_skip = true;
+                    } else if !self.apc_skip {
+                        self.apc.push(b);
+                    }
+                    St::Apc
+                }
+                (St::ApcEsc, b'\\') => {
+                    let raw = std::mem::take(&mut self.apc);
+                    if !self.apc_skip && raw.first() == Some(&b'G') {
+                        out.push((i + 1, Signal::Graphics(raw[1..].to_vec())));
+                    }
+                    St::Ground
+                }
+                // APC 안의 ESC 뒤가 \가 아니면 끊긴 것이다
+                (St::ApcEsc, _) => St::Ground,
+                (St::Csi, b'0'..=b'9' | b';' | b'?') => {
+                    if self.csi.len() < 16 {
+                        self.csi.push(b);
+                    }
+                    St::Csi
+                }
+                (St::Csi, 0x1b) => St::Esc,
+                (St::Csi, 0x40..=0x7e) => {
+                    if b == b'J' {
+                        match self.csi.as_slice() {
+                            b"2" => out.push((
+                                i + 1,
+                                Signal::Erase {
+                                    visible: true,
+                                    scrollback: false,
+                                },
+                            )),
+                            b"3" => out.push((
+                                i + 1,
+                                Signal::Erase {
+                                    visible: false,
+                                    scrollback: true,
+                                },
+                            )),
+                            _ => {}
+                        }
+                    }
+                    St::Ground
+                }
+                (St::Csi, _) => St::Csi,
                 (St::Osc, 0x07) => {
                     self.finish(&mut out, i + 1);
                     St::Ground
@@ -270,6 +359,55 @@ fn percent_decode(s: &str) -> Option<String> {
         }
     }
     String::from_utf8(out).ok()
+}
+
+#[cfg(test)]
+mod apc_tests {
+    use super::*;
+
+    /// #76: APC _G를 조각난 바이트에서도 뽑고, 다른 APC와 화면 지우기를 가린다
+    #[test]
+    fn graphics_apc_and_erase_signals() {
+        let mut s = Scanner::default();
+        let bytes = b"ab\x1b_Ga=q,i=1;AAAA\x1b\\cd\x1b_Xother\x1b\\\x1b[2J\x1b[3J\x1b[0J\x1bc";
+        let mut got = Vec::new();
+        for ch in bytes.chunks(3) {
+            got.extend(s.feed(ch));
+        }
+        assert_eq!(
+            got,
+            vec![
+                Signal::Graphics(b"a=q,i=1;AAAA".to_vec()),
+                Signal::Erase {
+                    visible: true,
+                    scrollback: false
+                },
+                Signal::Erase {
+                    visible: false,
+                    scrollback: true
+                },
+                Signal::Erase {
+                    visible: true,
+                    scrollback: true
+                },
+            ]
+        );
+        // 끝난 자리는 ESC \ 바로 뒤
+        let at = Scanner::default().feed_at(b"xx\x1b_Gq\x1b\\yy");
+        assert_eq!(at[0].0, 8, "x x ESC _ G q ESC \\ 다음 자리");
+    }
+
+    #[test]
+    fn oversized_apc_is_dropped_without_growing() {
+        let mut s = Scanner::default();
+        s.feed(b"\x1b_G");
+        let chunk = vec![b'A'; 1024 * 1024];
+        for _ in 0..9 {
+            assert!(s.feed(&chunk).is_empty());
+        }
+        assert!(s.feed(b"\x1b\\").is_empty(), "상한을 넘은 APC는 버린다");
+        assert!(s.apc.capacity() <= MAX_APC * 2);
+    }
 }
 
 #[cfg(test)]

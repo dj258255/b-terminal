@@ -11,7 +11,9 @@ alacritty_terminal = "0.26"
 anyhow.workspace = true
 bt-core = { version = "0.3.0", path = "../bt-core" }
 log.workspace = true
+miniz_oxide = "0.8"
 parking_lot.workspace = true
+png = "0.17"
 portable-pty = "0.9"
 
 [lints]

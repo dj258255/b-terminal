@@ -213,6 +213,10 @@ struct Inner {
     prompts: std::collections::VecDeque<i64>,
     /// 찾기(#39). 찾는 중이 아니면 없다
     search: Option<crate::search::Search>,
+    /// kitty 그래픽(#76): 저장한 그림과 놓인 자리
+    graphics: crate::graphics::Graphics,
+    /// 셀 크기(px). 그림을 칸에 맞출 때 쓴다
+    cell: (u32, u32),
 }
 
 /// 프롬프트를 기억하는 상한(오래된 것부터 버린다)
@@ -235,6 +239,22 @@ impl Inner {
     /// 지금 커서 줄(절대)
     fn cursor_abs(&self) -> i64 {
         self.term.grid().history_size() as i64 + self.term.grid().cursor.point.line.0 as i64
+    }
+
+    fn graphics_command(&mut self, raw: &[u8]) -> Option<Vec<u8>> {
+        let Inner {
+            term,
+            parser,
+            graphics,
+            cell,
+            ..
+        } = self;
+        graphics_command(term, parser, graphics, *cell, raw)
+    }
+
+    /// 화면 지우기에 맞춰 놓인 그림을 지운다
+    fn graphics_erase(&mut self, visible: bool, scrollback: bool) {
+        self.graphics.erase(visible, scrollback);
     }
 }
 
@@ -364,6 +384,8 @@ impl Session {
             parser: Processor::new(),
             prompts: std::collections::VecDeque::new(),
             search: None,
+            graphics: Default::default(),
+            cell: (size.cell_width.max(1) as u32, size.cell_height.max(1) as u32),
         }));
         let integrated = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let thread_integrated = integrated.clone();
@@ -371,6 +393,7 @@ impl Session {
 
         let thread_inner = inner.clone();
         let thread_exited = exited.clone();
+        let thread_writer = writer.clone();
         std::thread::Builder::new().name("bt-pty-read".into()).spawn(move || {
             let mut buf = vec![0u8; 64 * 1024];
             let mut scanner = Scanner::default();
@@ -425,6 +448,14 @@ impl Session {
                                     }
                                     Signal::Prompt(PromptMark::CommandStart) => {}
                                     Signal::CommandLine(c) => pending_cmd = Some(c),
+                                    Signal::Graphics(raw) => {
+                                        if let Some(reply) = g.graphics_command(&raw) {
+                                            let mut w = thread_writer.lock();
+                                            let _ = w.write_all(&reply);
+                                            let _ = w.flush();
+                                        }
+                                    }
+                                    Signal::Erase { visible, scrollback } => g.graphics_erase(visible, scrollback),
                                     other => events.push(signal_event(other)),
                                 }
                             }
@@ -514,11 +545,13 @@ impl Session {
     }
 
     pub fn resize(&self, size: GridSize) {
-        let size = GridSize::new(size.cols, size.rows);
+        // 셀 픽셀 크기는 그대로 둔다: PTY 창 크기(TIOCGWINSZ의 픽셀)와 그림 칸 맞춤이 쓴다.
+        // 전에는 GridSize::new로 다시 만들어 8×16으로 바뀌었다(#76에서 고침)
         let size = GridSize {
+            cols: size.cols.max(2),
+            rows: size.rows.max(1),
             cell_width: size.cell_width.max(1),
             cell_height: size.cell_height.max(1),
-            ..size
         };
         {
             let mut cur = self.size.lock();
@@ -527,7 +560,11 @@ impl Session {
             }
             *cur = size;
         }
-        self.inner.lock().term.resize(Dims(size));
+        {
+            let mut g = self.inner.lock();
+            g.term.resize(Dims(size));
+            g.cell = (size.cell_width as u32, size.cell_height as u32);
+        }
         if let Err(e) = self.master.lock().resize(size.pty()) {
             log::debug!("pty resize failed: {e}");
         }
@@ -644,8 +681,10 @@ impl Session {
     pub fn snapshot(&self) -> Screen {
         let theme = self.theme.lock().clone();
         let mut g = self.inner.lock();
-        let Inner { term, search, .. } = &mut *g;
-        snapshot_of(term, &theme, search.as_mut())
+        let Inner {
+            term, search, graphics, ..
+        } = &mut *g;
+        snapshot_of(term, &theme, search.as_mut(), Some(graphics))
     }
 
     /// 색 테마를 바꾼다(설정 다시 읽기). 다음 화면부터 새 색으로 푼다
@@ -659,8 +698,8 @@ fn signal_event(sig: Signal) -> SessionEvent {
         Signal::Notify(n) => SessionEvent::Notification(n),
         Signal::Cwd { host, path } => SessionEvent::Cwd { host, path },
         Signal::Progress { state, percent } => SessionEvent::Progress { state, percent },
-        // 셸 통합 표지는 읽기 스레드가 따로 다룬다. 해석기(Emulator)에서는 무시
-        Signal::Prompt(_) | Signal::CommandLine(_) => SessionEvent::Output,
+        // 셸 통합 표지와 그래픽은 읽기 스레드가 따로 다룬다
+        Signal::Prompt(_) | Signal::CommandLine(_) | Signal::Graphics(_) | Signal::Erase { .. } => SessionEvent::Output,
     }
 }
 
@@ -754,7 +793,12 @@ fn tail_text<T>(term: &Term<T>, lines: usize) -> String {
 const MAX_LINKS: usize = 4096;
 const MAX_LINK_URI: usize = 8192;
 
-fn snapshot_of<T: EventListener>(term: &Term<T>, theme: &Theme, search: Option<&mut crate::search::Search>) -> Screen {
+fn snapshot_of<T: EventListener>(
+    term: &Term<T>,
+    theme: &Theme,
+    search: Option<&mut crate::search::Search>,
+    graphics: Option<&mut crate::graphics::Graphics>,
+) -> Screen {
     let cols = term.columns();
     let rows = term.screen_lines();
     let content = term.renderable_content();
@@ -885,7 +929,86 @@ fn snapshot_of<T: EventListener>(term: &Term<T>, theme: &Theme, search: Option<&
         history: term.grid().history_size(),
         background,
         links,
+        images: graphics.map(|g| visible_images(term, g)).unwrap_or_default(),
     }
+}
+
+/// kitty 그래픽 명령을 처리한다: 그림을 저장·놓고, 놓은 만큼 VT 커서를 옮기고(줄을 확보), 답을 돌려준다
+fn graphics_command<T: EventListener>(
+    term: &mut Term<T>,
+    parser: &mut Processor,
+    graphics: &mut crate::graphics::Graphics,
+    cell: (u32, u32),
+    raw: &[u8],
+) -> Option<Vec<u8>> {
+    let cur = crate::graphics::Cursor {
+        line: term.grid().history_size() as i64 + term.grid().cursor.point.line.0 as i64,
+        col: term.grid().cursor.point.column.0,
+        cell_w: cell.0,
+        cell_h: cell.1,
+        alt: term.mode().contains(TermMode::ALT_SCREEN),
+    };
+    let out = graphics.handle(raw, cur);
+    if let Some((down, right)) = out.advance {
+        // 그림이 차지한 줄만큼 줄을 내린다(맨 아래면 스크롤된다). 그다음 그림 오른쪽 칸으로
+        let mut seq = "\n".repeat(down as usize);
+        if right > 0 {
+            seq.push_str(&format!("\x1b[{right}C"));
+        }
+        parser.advance(term, seq.as_bytes());
+    }
+    out.reply
+}
+
+/// 지금 보이는 줄에 걸친 kitty 그림들. 대체 화면을 나왔으면 그 화면의 그림을 지운다
+fn visible_images<T>(term: &Term<T>, g: &mut crate::graphics::Graphics) -> Vec<crate::screen::ImageView> {
+    let alt = term.mode().contains(TermMode::ALT_SCREEN);
+    if !alt {
+        g.left_alt_screen();
+    }
+    let top = term.grid().history_size() as i64 - term.grid().display_offset() as i64;
+    let rows = term.screen_lines() as i64;
+    let cols = term.columns() as i64;
+    // 그릴 양의 상한(보안 검토): 최근 것부터, 같은 자리의 중복은 빼고, 보이는 칸 넓이의 합이 화면 칸 수의 4배까지
+    let budget = 4 * rows * cols;
+    let mut used = 0i64;
+    let mut seen = std::collections::HashSet::new();
+    let mut picked: Vec<&crate::graphics::Placement> = Vec::new();
+    for p in g.placements.iter().rev().filter(|p| p.alt == alt) {
+        let row = p.line - top;
+        if row + p.rows as i64 <= 0 || row >= rows || !seen.insert((p.image, p.line, p.col, p.cols, p.rows)) {
+            continue;
+        }
+        let visible_rows = (row + p.rows as i64).min(rows) - row.max(0);
+        let visible_cols = (p.col as i64 + p.cols as i64).min(cols) - (p.col as i64).min(cols);
+        let area = visible_rows.max(0) * visible_cols.max(0);
+        if used + area > budget {
+            break;
+        }
+        used += area;
+        picked.push(p);
+    }
+    picked.reverse();
+    picked
+        .into_iter()
+        .filter_map(|p| {
+            let row = p.line - top;
+            if row + p.rows as i64 <= 0 || row >= rows {
+                return None;
+            }
+            let img = g.image(p.image)?;
+            Some(crate::screen::ImageView {
+                rgba: img.rgba.clone(),
+                width: img.width,
+                height: img.height,
+                row: row as i32,
+                col: p.col,
+                cols: p.cols,
+                rows: p.rows,
+                scaled: p.scaled,
+            })
+        })
+        .collect()
 }
 
 /// PTY 없이 바이트를 VT로 해석해 화면을 얻는다. 렌더러 테스트와 b-studio 세션 터미널(바이트가 HTTP로 오는 칸)에 쓴다
@@ -895,6 +1018,10 @@ pub struct Emulator {
     theme: Theme,
     scanner: Scanner,
     search: Option<crate::search::Search>,
+    graphics: crate::graphics::Graphics,
+    cell: (u32, u32),
+    /// 그래픽 명령의 답(PTY가 없으므로 모아 둔다)
+    replies: Vec<u8>,
 }
 
 #[derive(Clone, Copy)]
@@ -914,13 +1041,40 @@ impl Emulator {
             theme,
             scanner: Scanner::default(),
             search: None,
+            graphics: Default::default(),
+            cell: (size.cell_width.max(1) as u32, size.cell_height.max(1) as u32),
+            replies: Vec::new(),
         }
+    }
+
+    /// 지금까지 모은 그래픽 명령의 답을 꺼낸다
+    pub fn take_replies(&mut self) -> Vec<u8> {
+        std::mem::take(&mut self.replies)
     }
 
     /// 바이트를 먹이고 그 안의 신호(알림·폴더·진행)를 돌려준다
     pub fn feed(&mut self, bytes: &[u8]) -> Vec<Signal> {
-        let notes = self.scanner.feed(bytes);
-        self.parser.advance(&mut self.term, bytes);
+        // 세션의 읽기 스레드와 같이 신호가 끝난 자리까지 나눠 먹인다(그래픽은 그 자리의 커서에 놓인다)
+        let mut pos = 0;
+        let mut notes = Vec::new();
+        for (end, sig) in self.scanner.feed_at(bytes) {
+            let end = end.min(bytes.len());
+            self.parser.advance(&mut self.term, &bytes[pos..end]);
+            pos = end;
+            match &sig {
+                Signal::Graphics(raw) => {
+                    if let Some(r) =
+                        graphics_command(&mut self.term, &mut self.parser, &mut self.graphics, self.cell, raw)
+                    {
+                        self.replies.extend(r);
+                    }
+                }
+                Signal::Erase { visible, scrollback } => self.graphics.erase(*visible, *scrollback),
+                _ => {}
+            }
+            notes.push(sig);
+        }
+        self.parser.advance(&mut self.term, &bytes[pos..]);
         notes
     }
 
@@ -937,7 +1091,7 @@ impl Emulator {
     }
 
     pub fn snapshot(&mut self) -> Screen {
-        snapshot_of(&self.term, &self.theme, self.search.as_mut())
+        snapshot_of(&self.term, &self.theme, self.search.as_mut(), Some(&mut self.graphics))
     }
 
     /// 찾기를 시작한다(맨 아래에서 위로 첫 맞은 곳). 빈 글이면 찾기를 끄고 없다
