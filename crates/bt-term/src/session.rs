@@ -754,9 +754,21 @@ fn modes_of(m: TermMode) -> Modes {
 /// 화면 맨 아래에서 위로 `lines`줄(스크롤백 포함)을 글로 꺼낸다(#66). 줄 넘김으로 접힌 줄은 이어 붙이고,
 /// 줄 끝 공백과 끝의 빈 줄은 뺀다. 넓은 글자의 뒤 칸은 건너뛴다
 fn tail_text<T>(term: &Term<T>, lines: usize) -> String {
-    let bottom = term.bottommost_line();
-    let top = std::cmp::max(term.topmost_line(), bottom - (lines.max(1) as i32 - 1));
+    // 화면 맨 아래가 아니라 마지막 글 줄(또는 커서 줄)부터 센다. 글이 화면 위쪽에만 있을 때 아래 빈 줄을 세지 않게(#99)
     let cols = term.columns();
+    let blank = |line: Line| {
+        let row = &term.grid()[line];
+        (0..cols).all(|c| {
+            let ch = row[Column(c)].c;
+            ch == ' ' || ch == '\0'
+        })
+    };
+    let mut bottom = term.bottommost_line();
+    let cursor = term.grid().cursor.point.line;
+    while bottom > cursor && bottom > Line(0) && blank(bottom) {
+        bottom -= 1;
+    }
+    let top = std::cmp::max(term.topmost_line(), bottom - (lines.max(1) as i32 - 1));
     let mut out = String::new();
     let mut line = top;
     while line <= bottom {

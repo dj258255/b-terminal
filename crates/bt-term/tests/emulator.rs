@@ -211,3 +211,12 @@ fn kitty_graphics_visible_images_are_deduped_and_budgeted() {
     assert!(area <= 4 * 20 * 6, "그릴 칸 {area}개, 그림 {}개", s.images.len());
     assert!(!s.images.is_empty());
 }
+
+/// 버그: read --lines가 화면 아래쪽 빈 줄까지 세면 글이 위쪽에만 있을 때 빈 글이 된다. 마지막 글 줄(또는 커서 줄)부터 센다
+#[test]
+fn tail_text_counts_from_the_last_written_line() {
+    let mut e = bt_term::Emulator::new(bt_term::GridSize::new(20, 10), bt_core::Theme::default());
+    e.feed(b"one\r\ntwo\r\nthree\r\n$ ");
+    assert_eq!(e.tail_text(2), "three\n$");
+    assert_eq!(e.tail_text(100), "one\ntwo\nthree\n$");
+}
