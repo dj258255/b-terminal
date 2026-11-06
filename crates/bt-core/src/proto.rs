@@ -39,6 +39,9 @@ pub enum Call {
         split: Option<String>,
         #[serde(default)]
         tab: Option<u64>,
+        /// 새 탭 대신 새 창에 연다(#36)
+        #[serde(default)]
+        window: bool,
     },
     Focus {
         tab: u64,

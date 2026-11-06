@@ -4,6 +4,8 @@
 
 ## [아직 릴리스하지 않음]
 
+- 창 여러 개: Cmd-N(`new_window`)으로 새 창을 엽니다. 창마다 탭·분할·찾기를 따로 두고, 셸이 끝나 창의 마지막 칸이 닫히면 그 창이, 마지막 창이 닫히면 앱이 끝납니다. `btctl new --window`. 창 밖에서 부른 btctl은 마지막으로 보던 창을 씁니다. 전에는 `new_window`가 새 탭을 열었습니다.
+
 - 색 이모지: 😀🎉✅ 같은 두 칸 이모지를 색 글꼴(macOS는 Apple Color Emoji, Linux는 Noto Color Emoji)에서 두 칸 가운데에 그립니다(swash). Claude Code의 `⏺`처럼 한 칸 기호는 글자색을 따르는 흑백 글꼴(STIX Two Math·Noto Sans Symbols 2)에서 그립니다. 변형 선택자(❤️)·ZWJ 묶음(👨‍👩‍👧)·피부색은 아직 합치지 않고 글자마다 그립니다.
 
 - 커서 깜빡임: `cursor-style-blink = true`이거나 프로그램이 깜빡이는 커서(DECSCUSR)를 고르면 0.6초마다 깜빡입니다. 키를 치면 다시 보이고, 창을 보지 않을 때는 멈춥니다.

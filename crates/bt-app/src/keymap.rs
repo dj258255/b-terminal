@@ -29,6 +29,8 @@ pub enum Action {
     Copy,
     Paste,
     NewTab,
+    /// 새 창(#36)
+    NewWindow,
     /// 지금 칸을 닫는다(칸이 하나면 탭이 닫힌다)
     CloseSurface,
     /// 탭을 칸째 닫는다
@@ -184,7 +186,8 @@ pub fn parse_action(s: &str) -> Result<Option<Action>, String> {
         "unbind" => return Ok(None),
         "copy_to_clipboard" => Action::Copy,
         "paste_from_clipboard" | "paste_from_selection" => Action::Paste,
-        "new_tab" | "new_window" => Action::NewTab,
+        "new_tab" => Action::NewTab,
+        "new_window" => Action::NewWindow,
         "close_surface" => Action::CloseSurface,
         "close_tab" => Action::CloseTab,
         "new_split" => match arg.map(str::trim).unwrap_or("auto") {
@@ -251,6 +254,7 @@ fn defaults() -> Vec<(&'static str, &'static str)> {
         ("super+c", "copy_to_clipboard"),
         ("super+v", "paste_from_clipboard"),
         ("super+t", "new_tab"),
+        ("super+n", "new_window"),
         ("super+w", "close_surface"),
         ("super+alt+w", "close_tab"),
         ("super+shift+bracket_left", "previous_tab"),

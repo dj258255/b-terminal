@@ -10,8 +10,8 @@ const USAGE: &str = "사용: btctl <명령> [인자]
 
   ping                              터미널이 떠 있는지
   list [--json]                     탭 목록
-  new [--cwd 폴더] [--split 방향] [-- 명령 인자...]
-                                    새 탭. --split right·down·left·up·auto면 탭(칸)을 나눠 연다
+  new [--cwd 폴더] [--split 방향 | --window] [-- 명령 인자...]
+                                    새 탭. --split right·down·left·up·auto면 탭(칸)을 나눠, --window면 새 창에 연다
   focus <탭>                        그 탭으로
   send [--tab N] [--enter] <글...>  탭에 글 넣기(--enter면 끝에 Enter)
   read [--tab N]                    탭 화면을 글로
@@ -141,6 +141,7 @@ fn run(args: &[String]) -> Result<String, Error> {
             let mut cwd = None;
             let mut command = Vec::new();
             let mut split = None;
+            let mut window = false;
             let (tab, rest) = take_tab(rest)?;
             let mut it = rest.iter();
             while let Some(a) = it.next() {
@@ -153,11 +154,15 @@ fn run(args: &[String]) -> Result<String, Error> {
                         }
                         split = Some(d.clone());
                     }
+                    "--window" => window = true,
                     "--" => {
                         command = it.by_ref().cloned().collect();
                     }
                     other => return Err(usage(format!("모르는 인자: {other}"))),
                 }
+            }
+            if window && split.is_some() {
+                return Err(usage("--window와 --split은 함께 쓸 수 없습니다"));
             }
             // 나눌 때만 칸을 쓴다(새 탭은 어느 칸에서 불러도 같다)
             let tab = if split.is_some() { tab } else { None };
@@ -168,6 +173,7 @@ fn run(args: &[String]) -> Result<String, Error> {
                     command,
                     split,
                     tab,
+                    window,
                 },
             )?;
             Ok(v["tab"].to_string())

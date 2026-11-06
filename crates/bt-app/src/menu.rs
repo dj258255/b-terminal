@@ -10,6 +10,7 @@ pub fn action_for(id: &str) -> Option<MenuCommand> {
         "settings" => MenuCommand::OpenSettings,
         "reload_config" => MenuCommand::Action(Action::ReloadConfig),
         "new_tab" => MenuCommand::Action(Action::NewTab),
+        "new_window" => MenuCommand::Action(Action::NewWindow),
         "close_surface" => MenuCommand::Action(Action::CloseSurface),
         "close_tab" => MenuCommand::Action(Action::CloseTab),
         "split_right" => MenuCommand::Action(Action::NewSplit(Some(Direction::Right))),
@@ -72,6 +73,7 @@ pub fn build() -> muda::Menu {
         "셸",
         true,
         &[
+            &item("new_window", "새 창"),
             &item("new_tab", "새 탭"),
             &item("split_right", "오른쪽으로 나누기"),
             &item("split_down", "아래로 나누기"),

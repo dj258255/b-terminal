@@ -89,6 +89,7 @@ keybind = clear                       # 기본 묶음을 모두 지우기
 | 동작 | 하는 일 | macOS 기본 |
 |---|---|---|
 | `copy_to_clipboard` / `paste_from_clipboard` | 복사 / 붙여넣기 | `super+c` / `super+v` |
+| `new_window` | 새 창(마지막 창이 닫히면 앱이 끝남) | `super+n` |
 | `new_tab` / `close_surface` / `close_tab` | 새 탭 / 칸 닫기(칸이 하나면 탭) / 탭을 칸째 닫기 | `super+t` / `super+w` / `super+alt+w` |
 | `goto_tab:N` / `last_tab` | N번째 / 마지막 탭 | `super+1`~`8` / `super+9` |
 | `next_tab` / `previous_tab` | 다음 / 앞 탭 | `super+shift+]` / `super+shift+[` |
