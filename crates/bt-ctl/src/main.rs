@@ -19,6 +19,7 @@ const USAGE: &str = "사용: btctl <명령> [인자]
                                     탭 글(화면과 최근 스크롤백 500줄)에 그 글이 나올 때까지 기다림. 기한이 지나면 1로 끝남
   notify [--tab N] <제목> [본문]    알림 달기(OSC 알림과 같게 다룸)
   reload-config                     설정 파일을 다시 읽기
+  quick                             퀵 터미널 보이기·숨기기(전역 단축키와 같음)
   run [--tab N] [--timeout 초] [--json] -- <명령...>
                                     탭에서 명령을 돌리고 끝날 때까지 기다려 출력을 찍고 그 종료 코드로 끝남(셸 통합 필요)
   last [--tab N] [--json]           탭에서 마지막으로 끝난 명령의 출력과 종료 코드
@@ -179,6 +180,10 @@ fn run(args: &[String]) -> Result<String, Error> {
                 },
             )?;
             Ok(v["tab"].to_string())
+        }
+        "quick" => {
+            call(&socket, Call::QuickTerminal)?;
+            Ok(String::new())
         }
         "focus" => {
             let tab = rest

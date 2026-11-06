@@ -19,6 +19,7 @@ pub fn action_for(id: &str) -> Option<MenuCommand> {
         "split_next" => MenuCommand::Action(Action::GotoSplit(SplitTarget::Next)),
         "split_zoom" => MenuCommand::Action(Action::ToggleSplitZoom),
         "split_equalize" => MenuCommand::Action(Action::EqualizeSplits),
+        "quick_terminal" => MenuCommand::Action(Action::ToggleQuickTerminal),
         "copy" => MenuCommand::Action(Action::Copy),
         "paste" => MenuCommand::Action(Action::Paste),
         "select_all" => MenuCommand::Action(Action::SelectAll),
@@ -120,6 +121,8 @@ pub fn build() -> muda::Menu {
             &item("split_prev", "앞 칸"),
             &item("split_zoom", "칸 크게 보기"),
             &item("split_equalize", "칸 크기 고르게"),
+            &PredefinedMenuItem::separator(),
+            &item("quick_terminal", "퀵 터미널"),
         ],
     );
     for sub in [&app, &shell, &edit, &view, &window] {

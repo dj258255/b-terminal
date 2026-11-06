@@ -45,6 +45,8 @@ pub enum Action {
     /// 찾기 막대를 연다(#39)
     StartSearch,
     EndSearch,
+    /// 퀵 터미널을 보이고 숨긴다(#95)
+    ToggleQuickTerminal,
     /// 명령 팔레트를 열고 닫는다(#77)
     TogglePalette,
     /// 다음 맞은 곳: 참이면 위(오래된 쪽)로
@@ -100,7 +102,7 @@ pub fn normalize_key(k: &str) -> String {
         "/" => "slash".into(),
         ";" => "semicolon".into(),
         "'" => "quote".into(),
-        "`" => "backquote".into(),
+        "`" | "grave_accent" => "backquote".into(),
         "[" | "left_bracket" => "bracket_left".into(),
         "]" | "right_bracket" => "bracket_right".into(),
         "\\" => "backslash".into(),
@@ -211,6 +213,7 @@ pub fn parse_action(s: &str) -> Result<Option<Action>, String> {
         "equalize_splits" => Action::EqualizeSplits,
         "toggle_split_zoom" => Action::ToggleSplitZoom,
         "start_search" => Action::StartSearch,
+        "toggle_quick_terminal" => Action::ToggleQuickTerminal,
         "toggle_command_palette" => Action::TogglePalette,
         "end_search" => Action::EndSearch,
         // next는 위(오래된 출력)로: 터미널은 맨 아래에서 찾기 시작한다(iTerm2와 같다)
@@ -249,6 +252,8 @@ pub fn parse_action(s: &str) -> Result<Option<Action>, String> {
 #[derive(Debug, Clone, Default)]
 pub struct Keymap {
     map: HashMap<Trigger, Action>,
+    /// 전역 단축키(`keybind = global:…`, #95): 앱이 앞에 없어도 받는다
+    pub global: Vec<(Trigger, Action)>,
 }
 
 /// 기본 묶음(Ghostty macOS 기본에서 b-terminal에 있는 것). 다른 OS는 super 대신 ctrl+shift
@@ -344,6 +349,18 @@ impl Keymap {
                 continue;
             };
             let (t, a) = (&line[..eq], &line[eq + 1..]);
+            // global: 접두사(Ghostty와 같다): 전역 단축키로 따로 둔다
+            if let Some(t) = t.strip_prefix("global:") {
+                match (parse_trigger(t), parse_action(a)) {
+                    (Ok(trig), Ok(Some(act))) => {
+                        km.global.retain(|(g, _)| *g != trig);
+                        km.global.push((trig, act));
+                    }
+                    (Ok(trig), Ok(None)) => km.global.retain(|(g, _)| *g != trig),
+                    (Err(e), _) | (_, Err(e)) => warnings.push(format!("keybind {line}: {e}")),
+                }
+                continue;
+            }
             // text:에 =가 들어간 경우를 위해 동작 이름이 알려진 첫 =로 다시 나눠 본다
             let (t, a) = match line.find('=') {
                 Some(first) if first < eq && parse_action(&line[first + 1..]).is_ok() => {
@@ -369,6 +386,48 @@ impl Keymap {
             }
         }
         (km, warnings)
+    }
+
+    /// 전역 단축키 글(global-hotkey 크레이트의 꼴, 예: `ctrl+Backquote`). 받지 못하는 키면 없다
+    pub fn hotkey_string(t: &Trigger) -> Option<String> {
+        let key = match t.key.as_str() {
+            k if k.len() == 1 && k.as_bytes()[0].is_ascii_lowercase() => k.to_ascii_uppercase(),
+            k if k.starts_with("digit_") => format!("Digit{}", &k["digit_".len()..]),
+            k if k.len() >= 2 && k.starts_with('f') && k[1..].parse::<u8>().is_ok_and(|n| (1..=24).contains(&n)) => {
+                k.to_ascii_uppercase()
+            }
+            "backquote" => "Backquote".into(),
+            "space" => "Space".into(),
+            "enter" => "Enter".into(),
+            "tab" => "Tab".into(),
+            "escape" => "Escape".into(),
+            "minus" => "Minus".into(),
+            "equal" => "Equal".into(),
+            "comma" => "Comma".into(),
+            "period" => "Period".into(),
+            "slash" => "Slash".into(),
+            "semicolon" => "Semicolon".into(),
+            "quote" => "Quote".into(),
+            "backslash" => "Backslash".into(),
+            "bracket_left" => "BracketLeft".into(),
+            "bracket_right" => "BracketRight".into(),
+            _ => return None,
+        };
+        let mut parts = Vec::new();
+        if t.mods.sup {
+            parts.push("super".to_string());
+        }
+        if t.mods.ctrl {
+            parts.push("ctrl".to_string());
+        }
+        if t.mods.alt {
+            parts.push("alt".to_string());
+        }
+        if t.mods.shift {
+            parts.push("shift".to_string());
+        }
+        parts.push(key);
+        Some(parts.join("+"))
     }
 
     pub fn lookup(&self, t: &Trigger) -> Option<&Action> {
@@ -473,6 +532,30 @@ mod tests {
             "text 안의 =는 그대로"
         );
         assert_eq!(w.len(), 1, "{w:?}");
+    }
+
+    #[test]
+    fn global_keybinds_are_kept_apart_and_converted() {
+        let (km, w) = Keymap::build(&[
+            "global:ctrl+grave_accent=toggle_quick_terminal".into(),
+            "global:super+shift+f9=new_window".into(),
+            "global:super+shift+f9=unbind".into(),
+        ]);
+        assert!(w.is_empty(), "{w:?}");
+        assert_eq!(km.global.len(), 1, "unbind로 지운다");
+        let (t, a) = &km.global[0];
+        assert_eq!(a, &Action::ToggleQuickTerminal);
+        assert_eq!(Keymap::hotkey_string(t).as_deref(), Some("ctrl+Backquote"));
+        assert!(km.lookup(t).is_none(), "앱 안 키 묶음에는 넣지 않는다");
+        assert_eq!(
+            Keymap::hotkey_string(&trig("super+alt+t")).as_deref(),
+            Some("super+alt+T")
+        );
+        assert_eq!(
+            Keymap::hotkey_string(&trig("ctrl+digit_1")).as_deref(),
+            Some("ctrl+Digit1")
+        );
+        assert_eq!(Keymap::hotkey_string(&trig("ctrl+page_up")), None);
     }
 
     #[test]

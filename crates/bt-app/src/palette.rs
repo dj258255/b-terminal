@@ -47,6 +47,7 @@ const ENTRIES: &[(&str, &str)] = &[
     ("스크롤 맨 위로", "scroll_to_top"),
     ("스크롤 맨 아래로", "scroll_to_bottom"),
     ("설정 다시 읽기", "reload_config"),
+    ("퀵 터미널", "toggle_quick_terminal"),
 ];
 
 /// 팔레트의 모든 항목(이름 차례)

@@ -40,6 +40,7 @@ open ~/Applications/b-terminal.app
 | Cmd-Shift-P | 명령 팔레트(동작을 이름으로 찾아 부름, ↑↓ Enter, Esc) |
 | Cmd-K | 화면 지우기 |
 | Cmd-Shift-, | 설정 다시 읽기 |
+| (전역, 직접 묶음) | 퀵 터미널: `keybind = global:ctrl+backquote=toggle_quick_terminal`이면 어느 앱에서든 Ctrl-` 로 화면 위쪽 창을 보였다 숨김 |
 | Cmd-클릭 | 링크 열기(Cmd를 누르면 URL·OSC 8 링크에 밑줄과 실제 주소가 보입니다) |
 | 마우스 끌기, 두 번·세 번 누르기 | 글자·단어·줄 고르기(앱이 마우스를 쓰면 Shift를 누른 채로) |
 
@@ -71,6 +72,7 @@ btctl list                               # 탭 목록
 btctl new --cwd ~/dev -- htop            # 새 탭에서 htop
 btctl new --split right -- tail -f log   # 이 칸을 나눠 오른쪽에서 tail
 btctl new --window                       # 새 창
+btctl quick                              # 퀵 터미널 보이기·숨기기
 btctl send --tab 2 --enter "make test"   # 2번 탭에 글과 Enter
 btctl read --tab 2                       # 2번 탭 화면을 글로
 btctl read --tab 2 --lines 2000          # 스크롤백까지 2000줄

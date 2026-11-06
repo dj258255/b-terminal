@@ -46,6 +46,8 @@ pub enum UserEvent {
     /// 어떤 탭의 화면이 바뀌었다(여러 번 와도 한 번 그린다)
     Redraw,
     Session(u64, SessionEvent),
+    /// 전역 단축키가 눌렸다(단축키 번호, #95)
+    Hotkey(u32),
     /// 메뉴 막대 항목을 눌렀다(항목 id). 메뉴는 macOS에만 있다
     #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     Menu(String),
@@ -210,6 +212,10 @@ struct Win {
     search: Option<SearchBar>,
     /// 열린 명령 팔레트(#77): 친 글, 고른 줄
     palette: Option<(String, usize)>,
+    /// 퀵 터미널 창(#95): 화면 위쪽에 떠서 전역 단축키로 보였다 숨는다. 창 상태 복원에서 뺀다
+    quick: bool,
+    /// 퀵 터미널을 보인 때. 직후의 포커스 잃음(앱이 앞으로 오기 전)은 숨기지 않는다
+    quick_shown: Option<Instant>,
     /// 들고 있는 프레임과 그 내용(바뀐 줄만 다시 그리려고, #40)
     frame: Vec<u32>,
     last_frame: Option<FrameMemo>,
@@ -238,6 +244,8 @@ impl Win {
             link_click: false,
             search: None,
             palette: None,
+            quick: false,
+            quick_shown: None,
             frame: Vec::new(),
             last_frame: None,
             blink_on: true,
@@ -287,6 +295,10 @@ pub struct App {
     others: Vec<Win>,
     /// 마지막으로 보던 창(창 밖에서 온 btctl 요청이 쓴다)
     last_focused: Option<WindowId>,
+    /// 전역 단축키(#95): 등록한 관리자와 단축키 번호 → 동작
+    hotkeys: Option<global_hotkey::GlobalHotKeyManager>,
+    hotkey_registered: Vec<global_hotkey::hotkey::HotKey>,
+    hotkey_actions: std::collections::HashMap<u32, Action>,
 }
 
 impl App {
@@ -327,6 +339,9 @@ impl App {
             w: Win::new(),
             others: Vec::new(),
             last_focused: None,
+            hotkeys: None,
+            hotkey_registered: Vec::new(),
+            hotkey_actions: std::collections::HashMap::new(),
         }
     }
 
@@ -783,6 +798,10 @@ impl App {
         };
         match req.call {
             Call::Ping => Response::ok(id, json!({ "app": "b-terminal", "version": env!("CARGO_PKG_VERSION") })),
+            Call::QuickTerminal => {
+                self.toggle_quick(event_loop);
+                Response::ok(id, json!({}))
+            }
             Call::List => {
                 // 지금 창부터 창마다 탭 줄 순서, 탭 안에서는 왼쪽·위부터
                 let order: Vec<usize> = std::iter::once(&self.w)
@@ -1303,6 +1322,7 @@ impl App {
                 }
             }
             Action::StartSearch => self.start_search(),
+            Action::ToggleQuickTerminal => self.toggle_quick(event_loop),
             Action::TogglePalette => {
                 self.w.palette = match self.w.palette {
                     Some(_) => None,
@@ -1466,6 +1486,7 @@ impl App {
         self.config = next;
         self.load_fonts();
         self.for_each_window(|app| app.resize_all());
+        self.register_hotkeys();
         log::info!("설정을 다시 읽었습니다");
         let warn = self.config.warnings.len();
         self.toast(if warn == 0 {
@@ -1504,6 +1525,12 @@ impl App {
 
     /// 창과 그림판을 만든다(첫 창, 새 창)
     fn create_gfx(&mut self, event_loop: &ActiveEventLoop) -> Option<Gfx> {
+        self.create_gfx_with(event_loop, false)
+    }
+
+    /// 창을 만든다. `quick`이면 퀵 터미널 모양(테두리 없음, 항상 위, 주 화면 맨 위에 폭 전체·높이 40%)으로 처음부터 만든다.
+    /// 만든 뒤에 테두리를 바꾸면 macOS가 포커스를 잠깐 거둬 곧바로 숨는다(#95)
+    fn create_gfx_with(&mut self, event_loop: &ActiveEventLoop, quick: bool) -> Option<Gfx> {
         // 화면 색 공간으로 넘길지(ADR-009). 새 그림판부터 따른다
         softbuffer::set_native_color_space(!self.config.colorspace_srgb);
         // 투명 창(#78): 창을 투명으로 만들고 그림판이 알파를 넘기게 한다
@@ -1516,6 +1543,14 @@ impl App {
             .with_inner_size(LogicalSize::new(1000.0, 680.0))
             .with_min_inner_size(LogicalSize::new(320.0, 200.0))
             .with_transparent(transparent);
+        let attrs = match event_loop.primary_monitor().filter(|_| quick) {
+            Some(m) => attrs
+                .with_decorations(false)
+                .with_window_level(winit::window::WindowLevel::AlwaysOnTop)
+                .with_inner_size(PhysicalSize::new(m.size().width, (m.size().height as f64 * 0.4) as u32))
+                .with_position(m.position()),
+            None => attrs,
+        };
         #[cfg(target_os = "macos")]
         let attrs = {
             use winit::platform::macos::{OptionAsAlt, WindowAttributesExtMacOS};
@@ -1557,6 +1592,91 @@ impl App {
         }
     }
 
+    /// 설정의 전역 단축키(`keybind = global:…`)를 등록한다. 설정을 다시 읽으면 다시 한다(#95)
+    fn register_hotkeys(&mut self) {
+        use global_hotkey::{GlobalHotKeyEvent, GlobalHotKeyManager, HotKeyState};
+        if self.keymap.global.is_empty() && self.hotkeys.is_none() {
+            return;
+        }
+        if self.hotkeys.is_none() {
+            match GlobalHotKeyManager::new() {
+                Ok(m) => self.hotkeys = Some(m),
+                Err(e) => {
+                    log::warn!("전역 단축키를 쓸 수 없습니다: {e}");
+                    return;
+                }
+            }
+            let proxy = self.proxy.clone();
+            GlobalHotKeyEvent::set_event_handler(Some(move |e: GlobalHotKeyEvent| {
+                if e.state == HotKeyState::Pressed {
+                    let _ = proxy.send_event(UserEvent::Hotkey(e.id));
+                }
+            }));
+        }
+        let Some(manager) = &self.hotkeys else { return };
+        let _ = manager.unregister_all(&self.hotkey_registered);
+        self.hotkey_registered.clear();
+        self.hotkey_actions.clear();
+        for (trig, action) in &self.keymap.global {
+            let Some(text) = Keymap::hotkey_string(trig) else {
+                log::warn!("전역 단축키로 쓸 수 없는 키입니다: {}", trig.key);
+                continue;
+            };
+            let Ok(hk) = text.parse::<global_hotkey::hotkey::HotKey>() else {
+                log::warn!("전역 단축키를 읽지 못했습니다: {text}");
+                continue;
+            };
+            match manager.register(hk) {
+                Ok(()) => {
+                    log::info!("전역 단축키: {text}");
+                    self.hotkey_actions.insert(hk.id(), action.clone());
+                    self.hotkey_registered.push(hk);
+                }
+                Err(e) => log::warn!("전역 단축키 {text}를 등록하지 못했습니다(다른 앱이 쓰는 중일 수 있습니다): {e}"),
+            }
+        }
+    }
+
+    /// 퀵 터미널(#95): 없으면 화면 위쪽에 만들고, 보이고 있으면 숨기고, 숨어 있으면 보인다
+    fn toggle_quick(&mut self, event_loop: &ActiveEventLoop) {
+        let quick = std::iter::once(&self.w)
+            .chain(&self.others)
+            .find(|w| w.quick)
+            .and_then(|w| w.id());
+        let Some(id) = quick else {
+            self.open_quick(event_loop);
+            return;
+        };
+        self.switch_to(id);
+        let Some(g) = &self.w.gfx else { return };
+        log::debug!(
+            "퀵 터미널 토글: 보임 {:?}, 포커스 {}",
+            g.window.is_visible(),
+            self.w.focused
+        );
+        if g.window.is_visible() == Some(true) {
+            g.window.set_visible(false);
+        } else {
+            g.window.set_visible(true);
+            g.window.focus_window();
+            self.w.quick_shown = Some(Instant::now());
+            self.last_focused = Some(id);
+        }
+    }
+
+    /// 퀵 터미널 창을 만든다: 테두리 없이, 항상 위, 화면 폭 전체·높이 40%로 화면 맨 위에
+    fn open_quick(&mut self, event_loop: &ActiveEventLoop) {
+        let opts = self.default_spawn();
+        if self.open_window_with(event_loop, opts, true).is_none() {
+            return;
+        }
+        self.w.quick = true;
+        self.w.quick_shown = Some(Instant::now());
+        if let Some(g) = &self.w.gfx {
+            g.window.focus_window();
+        }
+    }
+
     /// 모든 창의 상태(창 크기·자리, 탭, 분할, 칸의 폴더)를 적는다(#94)
     fn save_state(&self) {
         let Some(path) = crate::state::path() else { return };
@@ -1568,7 +1688,7 @@ impl App {
         };
         let windows: Vec<crate::state::SavedWindow> = std::iter::once(&self.w)
             .chain(&self.others)
-            .filter(|w| !w.tabs.is_empty())
+            .filter(|w| !w.tabs.is_empty() && !w.quick)
             .filter_map(|w| {
                 let g = w.gfx.as_ref()?;
                 let size = g.window.inner_size();
@@ -1674,7 +1794,11 @@ impl App {
 
     /// 새 창을 열어 지금 창으로 하고 탭 하나를 띄운다(#36)
     fn open_window(&mut self, event_loop: &ActiveEventLoop, options: SpawnOptions) -> Option<u64> {
-        let gfx = self.create_gfx(event_loop)?;
+        self.open_window_with(event_loop, options, false)
+    }
+
+    fn open_window_with(&mut self, event_loop: &ActiveEventLoop, options: SpawnOptions, quick: bool) -> Option<u64> {
+        let gfx = self.create_gfx_with(event_loop, quick)?;
         let id = gfx.window.id();
         let mut win = Win::new();
         win.focused = gfx.window.has_focus();
@@ -1684,7 +1808,9 @@ impl App {
         old.focused = false;
         self.others.push(old);
         self.last_focused = Some(id);
-        self.apply_initial_size();
+        if !quick {
+            self.apply_initial_size();
+        }
         let tab = self.open_tab(options);
         if tab.is_none() {
             self.close_current_window(event_loop);
@@ -2266,6 +2392,7 @@ impl ApplicationHandler<UserEvent> for App {
             return;
         }
         self.apply_initial_size();
+        self.register_hotkeys();
         if self.shell_integration_dir.is_none() && self.config.shell_integration != "none" {
             match crate::shellint::install() {
                 Ok(dir) => self.shell_integration_dir = Some(dir),
@@ -2320,6 +2447,11 @@ impl ApplicationHandler<UserEvent> for App {
                 self.check_text_waiters();
                 // 어느 창의 칸이 바뀌었는지 모르므로 모든 창(바뀐 줄이 없는 창은 올리지 않는다)
                 self.request_redraw_all()
+            }
+            UserEvent::Hotkey(id) => {
+                if let Some(a) = self.hotkey_actions.get(&id).cloned() {
+                    self.handle_action(a, event_loop);
+                }
             }
             UserEvent::Menu(id) => match crate::menu::action_for(&id) {
                 // 메뉴는 보고 있는 창에 대한 것
@@ -2447,6 +2579,18 @@ impl ApplicationHandler<UserEvent> for App {
             }
             WindowEvent::Focused(focused) => {
                 self.w.focused = focused;
+                // 퀵 터미널은 포커스를 잃으면 숨는다(Ghostty quick-terminal-autohide 기본과 같다)
+                // 보인 직후(0.5초 안)의 포커스 잃음은 앱이 앞으로 오는 중일 수 있어 무시한다
+                let just_shown = self
+                    .w
+                    .quick_shown
+                    .is_some_and(|t| t.elapsed() < Duration::from_millis(500));
+                if !focused && self.w.quick && !just_shown {
+                    log::debug!("퀵 터미널이 포커스를 잃어 숨깁니다");
+                    if let Some(g) = &self.w.gfx {
+                        g.window.set_visible(false);
+                    }
+                }
                 if focused {
                     self.last_focused = Some(id);
                 }
