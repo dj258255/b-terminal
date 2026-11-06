@@ -7,7 +7,7 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
-bt-core = { version = "0.1.0", path = "../bt-core" }
+bt-core = { version = "0.2.0", path = "../bt-core" }
 fontdb = "0.24"
 fontdue = "0.9"
 log.workspace = true
