@@ -13,9 +13,9 @@ path = "src/main.rs"
 [dependencies]
 anyhow.workspace = true
 arboard = "3"
-bt-core = { version = "0.1.0", path = "../bt-core" }
-bt-render = { version = "0.1.0", path = "../bt-render" }
-bt-term = { version = "0.1.0", path = "../bt-term" }
+bt-core = { version = "0.2.0", path = "../bt-core" }
+bt-render = { version = "0.2.0", path = "../bt-render" }
+bt-term = { version = "0.2.0", path = "../bt-term" }
 env_logger.workspace = true
 gethostname = "1.1.0"
 log.workspace = true

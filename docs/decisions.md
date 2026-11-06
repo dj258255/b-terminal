@@ -10,6 +10,7 @@
 - [ADR-004 한글 IME를 위해 winit을 vendor로 고쳐 쓴다](#adr-004-한글-ime를-위해-winit을-vendor로-고쳐-쓴다)
 - [ADR-005 b-terminal은 순수 터미널이고, AI 작업 화면은 b-studio가 맡는다](#adr-005-b-terminal은-순수-터미널이고-ai-작업-화면은-b-studio가-맡는다)
 - [ADR-006 Ghostty는 본보기일 뿐 기대지 않는다: AI CLI가 가장 잘 도는 우리 터미널](#adr-006-ghostty는-본보기일-뿐-기대지-않는다-ai-cli가-가장-잘-도는-우리-터미널)
+- [ADR-007 링크는 Cmd-클릭으로만 열고, 웹과 이 컴퓨터의 파일만 연다](#adr-007-링크는-cmd-클릭으로만-열고-웹과-이-컴퓨터의-파일만-연다)
 
 ## ADR-001 VT 엔진은 alacritty_terminal로 시작하고, bt-term 밖으로 엔진 타입을 내보내지 않는다
 

@@ -26,7 +26,32 @@
 
 예상보다 대체로 짧았던 까닭: 예상은 사람이 하는 시간으로 적었고, 실제는 코딩 에이전트가 쉬지 않고 진행한 시간이다. 대신 키보드·마우스로 직접 쳐 보는 확인이 빠져 있다(각 PR의 "돌리지 않은 검증").
 
+## 0.2.0 (2026-11-06)
+
+범위는 [ADR-006](docs/decisions.md#adr-006-ghostty는-본보기일-뿐-기대지-않는다-ai-cli가-가장-잘-도는-우리-터미널): Ghostty 없이 혼자 서는 우리 터미널. 추적 이슈 [#32](https://github.com/dj258255/b-terminal/issues/32). 실제 시간은 2026-11-06 낮, 사람 없이 코딩 에이전트가 진행한 대략값이다.
+
+| 이슈 | 내용 | 예상 | 실제 | PR | 상태 |
+|---|---|---|---|---|---|
+| [#33](https://github.com/dj258255/b-terminal/issues/33) | Ghostty 없이 혼자 서기: 테마 905개 넣기, Ghostty 설정 읽기 끔(ADR-006) | 1~2시간 | 약 1시간 | [#44](https://github.com/dj258255/b-terminal/pull/44) | 끝 |
+| [#41](https://github.com/dj258255/b-terminal/issues/41) | kitty 키보드 프로토콜(Shift+Enter) | 3~4시간 | 약 40분 | [#45](https://github.com/dj258255/b-terminal/pull/45) | 끝 |
+| [#42](https://github.com/dj258255/b-terminal/issues/42) | 진행 표시(OSC 9;4)와 클립보드 쓰기(OSC 52) | 2~3시간 | 약 40분 | [#46](https://github.com/dj258255/b-terminal/pull/46) | 끝 |
+| [#47](https://github.com/dj258255/b-terminal/issues/47) | [버그] OSC 52 쓰기가 붙여넣기 하이재킹을 연다 | — | 약 35분 | [#48](https://github.com/dj258255/b-terminal/pull/48)·[#49](https://github.com/dj258255/b-terminal/pull/49) | 끝(보고 있는 칸만, 알림 띠) |
+| [#43](https://github.com/dj258255/b-terminal/issues/43) | 셸 통합(OSC 133): 프롬프트 이동, 끝난 명령 알림, btctl run | 6~8시간 | 약 2시간 | [#50](https://github.com/dj258255/b-terminal/pull/50) | 끝 |
+| [#34](https://github.com/dj258255/b-terminal/issues/34) | macOS 앱 묶음과 메뉴 막대 | 3~4시간 | 약 50분 | [#51](https://github.com/dj258255/b-terminal/pull/51) | 끝 |
+| [#35](https://github.com/dj258255/b-terminal/issues/35) | 화면 분할 | 3~5시간 | 약 1시간 30분 | [#52](https://github.com/dj258255/b-terminal/pull/52) | 끝 |
+| [#38](https://github.com/dj258255/b-terminal/issues/38) | 링크 열기(URL·OSC 8, Cmd-클릭, ADR-007) | 2~4시간 | 약 1시간 | [#53](https://github.com/dj258255/b-terminal/pull/53) | 끝(보안 검토 전에 병합한 실수 → #54) |
+| [#54](https://github.com/dj258255/b-terminal/issues/54) | [버그] 링크 열기: 실행 파일 판정 우회, 주소 속이기, 제곱 시간 | — | 약 40분 | [#55](https://github.com/dj258255/b-terminal/pull/55) | 끝 |
+| [#39](https://github.com/dj258255/b-terminal/issues/39) | 찾기(Cmd-F) | 2~3시간 | 약 1시간 10분 | [#56](https://github.com/dj258255/b-terminal/pull/56) | 끝 |
+| [#40](https://github.com/dj258255/b-terminal/issues/40) | 커서 깜빡임과 바뀐 줄만 다시 그리기, 실험 E2 | 3~4시간 | 약 1시간 20분 | [#57](https://github.com/dj258255/b-terminal/pull/57) | 끝 |
+| [#37](https://github.com/dj258255/b-terminal/issues/37) | 색 이모지(swash) | 2~3시간 | 약 50분 | [#60](https://github.com/dj258255/b-terminal/pull/60) | 끝 |
+| [#36](https://github.com/dj258255/b-terminal/issues/36) | 창 여러 개(Cmd-N) | 3~4시간 | 약 1시간 10분 | [#61](https://github.com/dj258255/b-terminal/pull/61) | 끝(보안 지적 1건 병합 전 고침) |
+| [#58](https://github.com/dj258255/b-terminal/issues/58) | [버그] 처음 설정을 다시 읽을 때 메모리가 뛴다 | — | 약 40분 | [#62](https://github.com/dj258255/b-terminal/pull/62) | 끝 |
+| [#59](https://github.com/dj258255/b-terminal/issues/59) | 색 이모지 글꼴 메모리 매핑(unsafe 예외) 정하기 | 1~3시간 | — | — | 0.3으로(범수 님 결정) |
+
+이번에 배운 것: 보안 경계를 건드린 PR은 커밋 보안 검토 결과를 확인한 뒤 병합한다(#53에서 어김). 병합 스크립트가 그 결과를 기록에서 읽되, 다른 검토와 겹치면 사람이 확인하게 멈춘다.
+
 ## 다음
 
-- 범수 님이 직접 쳐 보고 확인할 것: 한글 2벌식 "안녕 하세요⏎"(ADR-004 패치), vim·htop 키와 마우스, Cmd 단축키, 붙여넣기, 설정 다시 읽기 단축키
-- 화면 분할, OSC 8 링크, 색 이모지, 바뀐 줄만 그리기(실험 E1의 다음), 서명·공증된 macOS 앱 묶음
+- 범수 님이 직접 쳐 보고 확인할 것: 한글 2벌식 "안녕 하세요⏎"(ADR-004 패치), Claude Code의 Shift+Enter, vim·htop 키와 마우스, Cmd 단축키(Cmd-D 분할, Cmd-F 찾기, Cmd-클릭 링크, Cmd-N 창), 메뉴 항목, 창 닫기 단추
+- 범수 님이 정할 것: 색 이모지 글꼴 매핑의 unsafe 예외([#59](https://github.com/dj258255/b-terminal/issues/59))
+- 이모지 결합(변형 선택자·ZWJ·피부색), 창에 올리는 비용 줄이기(실험 E2의 다음), 처음 메모리 줄이기, 서명·공증된 macOS 앱 묶음
