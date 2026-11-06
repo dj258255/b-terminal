@@ -133,23 +133,26 @@ fn one_strike(f: &mut File, table: u64, len: u32, num_glyphs: usize, px: u16) ->
     Ok((out, ppem))
 }
 
+/// 표 목록 머리의 searchRange·entrySelector·rangeShift. 32비트로 계산해 넘치지 않게 하고(보안 검토),
+/// 16비트 필드에 넣을 때는 자른다(표가 4096개를 넘는 글꼴만 해당, swash는 이 값을 쓰지 않는다)
+fn search_values(n: u16) -> (u16, u16, u16) {
+    let n = u32::from(n.max(1));
+    let log = 31 - n.leading_zeros();
+    let search = (1u32 << log) * 16;
+    (search as u16, log as u16, (n * 16 - search) as u16)
+}
+
 /// 표들로 홀로 서는 sfnt를 쓴다(표는 4바이트 경계에 둔다. 검사합은 원래 값을 둔다)
 fn write_sfnt(version: u32, tables: &[([u8; 4], u32, Vec<u8>)]) -> Vec<u8> {
     let n = tables.len() as u16;
-    let mut pow = 1u16;
-    let mut log = 0u16;
-    while pow * 2 <= n.max(1) {
-        pow *= 2;
-        log += 1;
-    }
-    let search = pow * 16;
+    let (search, log, shift) = search_values(n);
     let header = 12 + 16 * tables.len();
     let mut out = Vec::with_capacity(header + tables.iter().map(|t| t.2.len() + 3).sum::<usize>());
     out.extend_from_slice(&version.to_be_bytes());
     out.extend_from_slice(&n.to_be_bytes());
     out.extend_from_slice(&search.to_be_bytes());
     out.extend_from_slice(&log.to_be_bytes());
-    out.extend_from_slice(&(n * 16 - search).to_be_bytes());
+    out.extend_from_slice(&shift.to_be_bytes());
     let mut offset = header;
     for (tag, checksum, data) in tables {
         out.extend_from_slice(tag);
@@ -219,6 +222,16 @@ mod tests {
         let p = std::env::temp_dir().join(format!("bt-sfnt-{}-{name}", std::process::id()));
         std::fs::write(&p, bytes).unwrap();
         p
+    }
+
+    /// 보안 검토: 표가 32768개 이상이어도 머리 값 계산이 넘치거나 끝없이 돌지 않는다
+    #[test]
+    fn header_search_values_do_not_overflow() {
+        assert_eq!(search_values(1), (16, 0, 0));
+        assert_eq!(search_values(9), (128, 3, 16));
+        // 필드가 16비트라 이만큼 크면 값이 잘리지만(swash는 이 값을 쓰지 않는다) 넘쳐서 멈추지 않는다
+        assert_eq!(search_values(40_000).1, 15);
+        assert_eq!(search_values(u16::MAX).1, 15);
     }
 
     #[test]
