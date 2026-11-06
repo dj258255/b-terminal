@@ -106,6 +106,9 @@ pub struct Config {
     pub unfocused_split_fill: Option<Rgb>,
     /// 칸 사이 경계선 색. 없으면 바탕색과 글자색 사이
     pub split_divider_color: Option<Rgb>,
+    /// macOS에서 색 맞춤을 하는가(`window-colorspace = srgb`). 기본은 끔(`display-p3`): 화면 색 공간으로 그대로 넘겨
+    /// 프레임마다의 변환을 피한다(실험 E3, ADR-009)
+    pub colorspace_srgb: bool,
     pub warnings: Vec<String>,
     /// 실제로 읽은 파일
     pub sources: Vec<PathBuf>,
@@ -144,6 +147,7 @@ impl Default for Config {
             unfocused_split_opacity: 0.7,
             unfocused_split_fill: None,
             split_divider_color: None,
+            colorspace_srgb: false,
             warnings: Vec::new(),
             sources: Vec::new(),
         }
@@ -543,6 +547,11 @@ impl Config {
                 _ => bad(warnings),
             },
             "mouse-reset-on-shell" => self.mouse_reset_on_shell = parse_bool(v).unwrap_or(true),
+            "window-colorspace" => match v {
+                "srgb" => self.colorspace_srgb = true,
+                "display-p3" => self.colorspace_srgb = false,
+                _ => bad(warnings),
+            },
             "unfocused-split-opacity" => match v.parse::<f32>() {
                 // Ghostty와 같이 0.15~1로 묶는다
                 Ok(o) if o.is_finite() => self.unfocused_split_opacity = o.clamp(0.15, 1.0),
@@ -649,7 +658,6 @@ const KNOWN_IGNORED: &[&str] = &[
     "window-decoration",
     "window-theme",
     "window-save-state",
-    "window-colorspace",
     "macos-titlebar-style",
     "macos-titlebar-proxy-icon",
     "macos-icon",
@@ -834,6 +842,14 @@ mod tests {
         assert_eq!(c.font_size, 13.0);
         assert_eq!(c.cursor_style, CursorStyle::Block);
         assert_eq!(c.warnings.len(), 3);
+    }
+
+    #[test]
+    fn window_colorspace_key() {
+        assert!(!Config::default().colorspace_srgb, "기본은 화면 색 공간(빠름)");
+        assert!(Config::from_text("window-colorspace = srgb\n", true).colorspace_srgb);
+        let c = Config::from_text("window-colorspace = rainbow\n", true);
+        assert_eq!(c.warnings.len(), 1);
     }
 
     #[test]

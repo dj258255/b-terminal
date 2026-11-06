@@ -20,3 +20,17 @@ winit 저장소의 main(0.31 베타)에도 같은 코드가 남아 있습니다(
 ### 되돌릴 조건
 
 winit이 같은 문제를 고친 판을 내면 패치를 지우고 그 판으로 올립니다. 그 전에 한글 2벌식으로 "안녕 하세요⏎"를 쳐서 스페이스와 Enter가 한 번에 들어가는지 확인합니다.
+
+## softbuffer 0.4.8
+
+- 원본: crates.io `softbuffer 0.4.8`(MIT 또는 Apache-2.0, `vendor/softbuffer/LICENSE-*`). 벤치마크는 뺐습니다.
+- 연결: 루트 `Cargo.toml`의 `[patch.crates-io]`.
+- 고친 곳: `src/lib.rs` 끝의 `set_native_color_space`(스위치 하나)와 `src/backends/cg.rs`의 색 공간 만들기 한 군데. `b-terminal(ADR-009)`로 찾을 수 있습니다. 기능 플래그 `CGDirectDisplay`·`CGDisplayConfiguration`을 더했습니다(`Cargo.toml`).
+
+### 왜
+
+macOS 백엔드는 그림을 기기 RGB 색 공간으로 Core Animation에 넘깁니다. 그러면 Core Animation이 프레임마다 화면 색 공간으로 색 맞춤 변환을 하고, 이것이 큰 창(2000×1360px)에서 present 한 번에 약 14ms였습니다(실험 E3). 화면 자신의 색 공간(`CGDisplayCopyColorSpace`)을 주면 변환이 없어 약 0.1ms입니다. 설정 `window-colorspace = srgb`면 원래대로 둡니다.
+
+### 되돌릴 조건
+
+softbuffer가 색 공간을 고를 수 있게 되거나, GPU 렌더러로 바꿔 softbuffer를 쓰지 않게 되면 지웁니다.
