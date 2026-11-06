@@ -201,7 +201,9 @@ impl Win {
             selecting: false,
             last_click: None,
             scroll_accum: 0.0,
-            focused: true,
+            // 포커스 사건이 오기 전에는 보고 있지 않은 창으로 둔다. 보고 있다고 잘못 알면
+            // 그 창의 OSC 52 클립보드 쓰기를 받게 된다(보안 검토, #36)
+            focused: false,
             toast: None,
             hover: None,
             link_click: false,
@@ -1401,8 +1403,11 @@ impl App {
         let gfx = self.create_gfx(event_loop)?;
         let id = gfx.window.id();
         let mut win = Win::new();
+        win.focused = gfx.window.has_focus();
         win.gfx = Some(gfx);
-        let old = std::mem::replace(&mut self.w, win);
+        let mut old = std::mem::replace(&mut self.w, win);
+        // 새 창이 앞으로 온다. 앞 창의 포커스 잃음 사건을 기다리지 않고 바로 보고 있지 않은 창으로
+        old.focused = false;
         self.others.push(old);
         self.last_focused = Some(id);
         self.apply_initial_size();
@@ -1893,6 +1898,7 @@ impl ApplicationHandler<UserEvent> for App {
             return;
         };
         self.last_focused = Some(gfx.window.id());
+        self.w.focused = gfx.window.has_focus();
         self.w.gfx = Some(gfx);
         #[cfg(target_os = "macos")]
         if self.menu.is_none() {
@@ -2433,6 +2439,12 @@ mod tests {
             vec![true; 3],
             "앞 프레임이 없으면 모두"
         );
+    }
+
+    /// 보안 검토(#36): 새 창은 포커스 사건이 오기 전까지 보고 있지 않은 창이다(클립보드 쓰기를 받지 않는다)
+    #[test]
+    fn new_window_state_is_not_focused_until_told() {
+        assert!(!Win::new().focused);
     }
 
     #[test]
