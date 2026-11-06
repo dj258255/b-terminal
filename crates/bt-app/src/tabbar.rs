@@ -226,3 +226,83 @@ pub fn draw_search_bar(
         false,
     );
 }
+
+/// 명령 팔레트(#77)를 창 위쪽 가운데에 그린다: 친 글 한 줄, 그 아래 맞는 동작들(이름 왼쪽, 단축키 오른쪽)
+pub fn draw_palette(
+    canvas: &mut Canvas,
+    fonts: &mut Fonts,
+    theme: &Theme,
+    query: &str,
+    rows: &[(String, String)],
+    selected: usize,
+) {
+    let m = fonts.metrics();
+    let cw = m.width as i32;
+    let line_h = m.height + m.height / 3;
+    let max_rows = 10usize;
+    let width_cells = ((canvas.width / m.width.max(1)) as usize)
+        .saturating_sub(4)
+        .clamp(20, 60);
+    let w = width_cells as u32 * m.width;
+    let shown = rows.len().min(max_rows);
+    // 고른 줄이 보이게 목록을 민다
+    let first = selected
+        .saturating_sub(max_rows - 1)
+        .min(rows.len().saturating_sub(shown));
+    let h = line_h * (1 + shown.max(1) as u32) + m.height / 2;
+    let x = (canvas.width as i32 - w as i32) / 2;
+    let y = m.height as i32;
+    canvas.fill_rect(x, y, w, h, theme.background.mix(theme.foreground, 0.08));
+    canvas.stroke_rect(x, y, w, h, 1, theme.background.mix(theme.foreground, 0.35));
+    let pad = (line_h as i32 - m.height as i32) / 2;
+    let dim = theme.foreground.mix(theme.background, 0.45);
+    // 친 글
+    let prompt = "› ";
+    draw_text(canvas, fonts, x + cw, y + pad, prompt, dim, false);
+    let qx = x + cw * (1 + text_cells(prompt) as i32);
+    let q = truncate(query, width_cells.saturating_sub(4));
+    draw_text(canvas, fonts, qx, y + pad, &q, theme.foreground, false);
+    canvas.fill_rect(
+        qx + cw * text_cells(&q) as i32,
+        y + pad,
+        (m.stroke * 2).max(2),
+        m.height,
+        theme.cursor,
+    );
+    canvas.fill_rect(x, y + line_h as i32, w, 1, theme.background.mix(theme.foreground, 0.2));
+    if rows.is_empty() {
+        draw_text(
+            canvas,
+            fonts,
+            x + cw,
+            y + line_h as i32 + pad,
+            "맞는 명령이 없습니다",
+            dim,
+            false,
+        );
+        return;
+    }
+    for (n, (label, keys)) in rows.iter().enumerate().skip(first).take(shown) {
+        let ry = y + line_h as i32 * (1 + (n - first) as i32) + m.height as i32 / 4;
+        if n == selected {
+            canvas.fill_rect(x + 1, ry, w - 2, line_h, theme.selection_background);
+        }
+        let fg = if n == selected {
+            theme.selection_foreground.unwrap_or(theme.foreground)
+        } else {
+            theme.foreground
+        };
+        let keys_cells = text_cells(keys);
+        let label = truncate(label, width_cells.saturating_sub(keys_cells + 4));
+        draw_text(canvas, fonts, x + cw, ry + pad, &label, fg, false);
+        draw_text(
+            canvas,
+            fonts,
+            x + w as i32 - cw * (keys_cells as i32 + 1),
+            ry + pad,
+            keys,
+            dim,
+            false,
+        );
+    }
+}

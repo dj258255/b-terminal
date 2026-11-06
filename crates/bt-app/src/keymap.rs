@@ -45,6 +45,8 @@ pub enum Action {
     /// 찾기 막대를 연다(#39)
     StartSearch,
     EndSearch,
+    /// 명령 팔레트를 열고 닫는다(#77)
+    TogglePalette,
     /// 다음 맞은 곳: 참이면 위(오래된 쪽)로
     NavigateSearch(bool),
     /// 1부터
@@ -209,6 +211,7 @@ pub fn parse_action(s: &str) -> Result<Option<Action>, String> {
         "equalize_splits" => Action::EqualizeSplits,
         "toggle_split_zoom" => Action::ToggleSplitZoom,
         "start_search" => Action::StartSearch,
+        "toggle_command_palette" => Action::TogglePalette,
         "end_search" => Action::EndSearch,
         // next는 위(오래된 출력)로: 터미널은 맨 아래에서 찾기 시작한다(iTerm2와 같다)
         "navigate_search" => match arg.map(str::trim).unwrap_or("next") {
@@ -276,6 +279,7 @@ fn defaults() -> Vec<(&'static str, &'static str)> {
         ("super+shift+enter", "toggle_split_zoom"),
         // 찾기(Ghostty와 같은 동작 이름)
         ("super+f", "start_search"),
+        ("super+shift+p", "toggle_command_palette"),
         ("super+g", "navigate_search:next"),
         ("super+shift+g", "navigate_search:previous"),
         ("super+equal", "increase_font_size:1"),
@@ -369,6 +373,11 @@ impl Keymap {
 
     pub fn lookup(&self, t: &Trigger) -> Option<&Action> {
         self.map.get(t)
+    }
+
+    /// 이 동작에 걸린 트리거들(명령 팔레트가 단축키를 보일 때)
+    pub fn triggers_for(&self, action: &Action) -> Vec<&Trigger> {
+        self.map.iter().filter(|(_, a)| *a == action).map(|(t, _)| t).collect()
     }
 }
 
