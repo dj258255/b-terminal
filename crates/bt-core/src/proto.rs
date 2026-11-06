@@ -56,6 +56,17 @@ pub enum Call {
     Read {
         #[serde(default)]
         tab: Option<u64>,
+        /// 맨 아래에서 위로 이만큼 줄(스크롤백 포함). 없으면 보이는 화면만(#66)
+        #[serde(default)]
+        lines: Option<usize>,
+    },
+    /// 탭의 글(화면과 최근 스크롤백)에 `text`가 나올 때까지 기다린다(#66). 이미 있으면 바로 답한다
+    Wait {
+        #[serde(default)]
+        tab: Option<u64>,
+        text: String,
+        #[serde(default = "default_run_timeout")]
+        timeout_ms: u64,
     },
     /// 탭에 명령을 넣고, 셸 통합이 그 명령의 끝(OSC 133;D)을 알릴 때까지 기다려 출력과 종료 코드를 돌려준다.
     /// 에이전트가 다른 탭을 도구로 쓰는 길이다
@@ -92,7 +103,9 @@ impl Call {
     /// 창 스레드의 답을 기다리는 상한. run은 명령이 끝날 때까지
     pub fn reply_timeout(&self) -> std::time::Duration {
         match self {
-            Call::Run { timeout_ms, .. } => std::time::Duration::from_millis(timeout_ms.saturating_add(3000)),
+            Call::Run { timeout_ms, .. } | Call::Wait { timeout_ms, .. } => {
+                std::time::Duration::from_millis(timeout_ms.saturating_add(3000))
+            }
             _ => std::time::Duration::from_secs(5),
         }
     }

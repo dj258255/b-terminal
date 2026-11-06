@@ -105,3 +105,23 @@ fn decscusr_blinking_reaches_the_screen() {
     assert!(s.cursor.blinking);
     assert_eq!(s.cursor.shape, bt_term::CursorShape::Beam);
 }
+
+/// #66: 스크롤백까지 맨 아래에서 위로 N줄을 글로 꺼낸다. 접힌 줄은 잇고 넓은 글자의 뒤 칸은 뺀다
+#[test]
+fn tail_text_reads_scrollback_and_joins_wrapped_lines() {
+    let mut e = bt_term::Emulator::new(bt_term::GridSize::new(10, 3), bt_core::Theme::default());
+    for i in 0..20 {
+        e.feed(format!("line {i}\r\n").as_bytes());
+    }
+    e.feed("한글이 길게 접히는 줄\r\nend".as_bytes());
+    let all = e.tail_text(100);
+    assert!(all.starts_with("line 0\nline 1\n"), "{all}");
+    assert!(
+        all.ends_with("한글이 길게 접히는 줄\nend"),
+        "접힌 줄을 이어 한 줄로: {all:?}"
+    );
+    assert_eq!(e.tail_text(1), "end");
+    // 화면(3줄)보다 많이: 스크롤백에서 온다
+    let five = e.tail_text(5);
+    assert!(five.contains("line 19"), "{five:?}");
+}

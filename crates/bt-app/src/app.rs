@@ -125,6 +125,33 @@ struct TabGroup {
     zoomed: bool,
 }
 
+/// btctl wait 하나: 칸, 기다리는 글, 답할 곳, 기한(#66)
+struct TextWaiter {
+    pane: u64,
+    text: String,
+    req_id: u64,
+    reply: std::sync::mpsc::SyncSender<bt_core::proto::Response>,
+    deadline: Instant,
+}
+
+/// btctl wait가 살피는 줄 수(화면과 최근 스크롤백)
+const WAIT_LINES: usize = 500;
+/// btctl read --lines의 상한과 답 글의 상한(제어 소켓 한 줄 1MiB 안)
+const READ_MAX_LINES: usize = 100_000;
+const READ_MAX_BYTES: usize = 900 * 1024;
+
+/// 글이 길면 앞을 버리고 끝 `max`바이트 안쪽만 남긴다(글자 경계에서). 버렸으면 참
+fn keep_tail(text: String, max: usize) -> (String, bool) {
+    if text.len() <= max {
+        return (text, false);
+    }
+    let mut cut = text.len() - max;
+    while !text.is_char_boundary(cut) {
+        cut += 1;
+    }
+    (text[cut..].to_string(), true)
+}
+
 /// 찾기 막대(#39): 찾는 칸, 친 글, 결과
 struct SearchBar {
     pane: u64,
@@ -243,6 +270,8 @@ pub struct App {
     shell_integration_dir: Option<std::path::PathBuf>,
     /// btctl run이 기다리는 탭: 탭 id → (요청 id, 답할 통로, 기한)
     run_waiters: std::collections::HashMap<u64, (u64, std::sync::mpsc::SyncSender<bt_core::proto::Response>, Instant)>,
+    /// btctl wait가 기다리는 글(#66)
+    text_waiters: Vec<TextWaiter>,
     /// 메뉴 막대(살려 두어야 메뉴가 남는다)
     #[cfg(target_os = "macos")]
     menu: Option<muda::Menu>,
@@ -288,6 +317,7 @@ impl App {
             menu: None,
             shell_integration_dir: None,
             run_waiters: std::collections::HashMap::new(),
+            text_waiters: Vec::new(),
             control: None,
             keymap,
             config_extra,
@@ -716,7 +746,8 @@ impl App {
         let target = match &req.call {
             Call::Focus { tab } => Some(*tab),
             Call::Send { tab, .. }
-            | Call::Read { tab }
+            | Call::Read { tab, .. }
+            | Call::Wait { tab, .. }
             | Call::Run { tab, .. }
             | Call::LastCommand { tab }
             | Call::Notify { tab, .. }
@@ -834,8 +865,33 @@ impl App {
                 }
                 Err(r) => r,
             },
-            Call::Read { tab } => match pick(self, tab) {
-                Ok(i) => Response::ok(id, json!({ "text": self.panes[i].session.snapshot().text() })),
+            Call::Read { tab, lines } => match pick(self, tab) {
+                Ok(i) => match lines {
+                    None => Response::ok(id, json!({ "text": self.panes[i].session.snapshot().text() })),
+                    Some(n) => {
+                        let text = self.panes[i].session.tail_text(n.clamp(1, READ_MAX_LINES));
+                        let (text, truncated) = keep_tail(text, READ_MAX_BYTES);
+                        Response::ok(id, json!({ "text": text, "truncated": truncated }))
+                    }
+                },
+                Err(r) => r,
+            },
+            Call::Wait { tab, text, timeout_ms } => match pick(self, tab) {
+                Ok(i) => {
+                    if text.is_empty() || text.chars().count() > 4096 {
+                        return Response::err(id, "기다릴 글은 1~4096글자여야 합니다");
+                    }
+                    if self.panes[i].session.tail_text(WAIT_LINES).contains(&text) {
+                        return Response::ok(id, json!({ "found": true }));
+                    }
+                    // 답은 글이 나올 때(check_text_waiters) 보낸다
+                    Response {
+                        id: u64::MAX,
+                        ok: true,
+                        result: json!({ "pending_wait": self.panes[i].id, "text": text, "deadline_ms": timeout_ms }),
+                        error: None,
+                    }
+                }
                 Err(r) => r,
             },
             Call::Run {
@@ -900,6 +956,7 @@ impl App {
         }
         // Session을 떨어뜨리면 PTY가 닫히고 셸은 SIGHUP을 받는다
         let id = self.panes.remove(index).id;
+        self.fail_text_waiters(|w| w.pane == id, "글이 나오기 전에 칸이 닫혔습니다");
         if let Some((req_id, reply, _)) = self.run_waiters.remove(&id) {
             let _ = reply.send(bt_core::proto::Response::err(
                 req_id,
@@ -1134,6 +1191,39 @@ impl App {
             }
         }
         true
+    }
+
+    /// 기다리던 글이 나온 btctl wait에 답한다(출력이 바뀔 때마다)
+    fn check_text_waiters(&mut self) {
+        if self.text_waiters.is_empty() {
+            return;
+        }
+        let panes = &self.panes;
+        self.text_waiters.retain(|w| {
+            let found = panes
+                .iter()
+                .find(|p| p.id == w.pane)
+                .is_some_and(|p| p.session.tail_text(WAIT_LINES).contains(&w.text));
+            if found {
+                let _ = w.reply.send(bt_core::proto::Response::ok(
+                    w.req_id,
+                    serde_json::json!({ "found": true }),
+                ));
+            }
+            !found
+        });
+    }
+
+    /// 조건에 맞는 btctl wait를 오류로 끝낸다(기한, 칸 닫힘)
+    fn fail_text_waiters(&mut self, pick: impl Fn(&TextWaiter) -> bool, why: &str) {
+        self.text_waiters.retain(|w| {
+            if pick(w) {
+                let _ = w.reply.send(bt_core::proto::Response::err(w.req_id, why));
+                false
+            } else {
+                true
+            }
+        });
     }
 
     /// 고른 칸의 자리
@@ -1426,6 +1516,7 @@ impl App {
                 // Session을 떨어뜨리면 PTY가 닫히고 셸은 SIGHUP을 받는다
                 self.panes.remove(i);
             }
+            self.fail_text_waiters(|w| w.pane == id, "글이 나오기 전에 창이 닫혔습니다");
             if let Some((req_id, reply, _)) = self.run_waiters.remove(&id) {
                 let _ = reply.send(bt_core::proto::Response::err(
                     req_id,
@@ -1952,6 +2043,7 @@ impl ApplicationHandler<UserEvent> for App {
                 if self.w.hover.is_some() {
                     self.update_hover();
                 }
+                self.check_text_waiters();
                 // 어느 창의 칸이 바뀌었는지 모르므로 모든 창(바뀐 줄이 없는 창은 올리지 않는다)
                 self.request_redraw_all()
             }
@@ -1972,15 +2064,26 @@ impl ApplicationHandler<UserEvent> for App {
             UserEvent::Control(req, reply) => {
                 let req_id = req.id;
                 let timeout = match &req.call {
-                    bt_core::proto::Call::Run { timeout_ms, .. } => Some(*timeout_ms),
+                    bt_core::proto::Call::Run { timeout_ms, .. } | bt_core::proto::Call::Wait { timeout_ms, .. } => {
+                        Some(*timeout_ms)
+                    }
                     _ => None,
                 };
                 let resp = self.handle_call(req, event_loop);
                 // run: 명령을 넣었으면 끝날 때 답한다(기한이 지나면 about_to_wait가 오류로 답한다)
                 if resp.id == u64::MAX {
+                    let deadline = Instant::now() + Duration::from_millis(timeout.unwrap_or(60_000));
                     if let Some(tab_id) = resp.result.get("pending").and_then(|v| v.as_u64()) {
-                        let deadline = Instant::now() + Duration::from_millis(timeout.unwrap_or(60_000));
                         self.run_waiters.insert(tab_id, (req_id, reply, deadline));
+                    } else if let Some(pane) = resp.result.get("pending_wait").and_then(|v| v.as_u64()) {
+                        let text = resp.result["text"].as_str().unwrap_or_default().to_string();
+                        self.text_waiters.push(TextWaiter {
+                            pane,
+                            text,
+                            req_id,
+                            reply,
+                            deadline,
+                        });
                     }
                 } else {
                     let _ = reply.send(resp);
@@ -2342,6 +2445,7 @@ impl ApplicationHandler<UserEvent> for App {
                     ));
                 }
             }
+            self.fail_text_waiters(|w| w.deadline <= now, "기한 안에 글이 나오지 않았습니다");
             if self.poll_foreground() || expired {
                 self.request_redraw_all();
             }
@@ -2445,6 +2549,14 @@ mod tests {
     #[test]
     fn new_window_state_is_not_focused_until_told() {
         assert!(!Win::new().focused);
+    }
+
+    #[test]
+    fn keep_tail_cuts_at_char_boundaries() {
+        assert_eq!(keep_tail("abc".into(), 10), ("abc".into(), false));
+        assert_eq!(keep_tail("abcdef".into(), 3), ("def".into(), true));
+        // "한"은 3바이트: 4바이트 안쪽으로 자르면 글자를 쪼개지 않고 "글"만 남는다
+        assert_eq!(keep_tail("한글".into(), 4), ("글".into(), true));
     }
 
     #[test]

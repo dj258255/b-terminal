@@ -70,6 +70,8 @@ btctl new --split right -- tail -f log   # 이 칸을 나눠 오른쪽에서 tai
 btctl new --window                       # 새 창
 btctl send --tab 2 --enter "make test"   # 2번 탭에 글과 Enter
 btctl read --tab 2                       # 2번 탭 화면을 글로
+btctl read --tab 2 --lines 2000          # 스크롤백까지 2000줄
+btctl wait --tab 2 --timeout 30 -- 준비됨  # 그 글이 나올 때까지 기다림
 btctl notify "빌드" "끝났습니다"           # 이 탭에 알림
 btctl reload-config                      # 설정 다시 읽기
 btctl run --tab 2 -- cargo test          # 2번 탭에서 돌리고 끝날 때까지 기다려 출력·종료 코드(셸 통합)
