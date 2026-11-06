@@ -137,6 +137,8 @@ pub struct Fonts {
     px: f32,
     metrics: CellMetrics,
     cache: HashMap<(char, FontStyle), Option<Rc<Glyph>>>,
+    /// 이모지 모양 글리프(글자, 칸 수)
+    emoji_cache: HashMap<(char, u32), Option<Rc<Glyph>>>,
     pub family_name: String,
     /// 색 이모지 글꼴(#37). 없으면 이모지는 다른 대체 글꼴이나 빈 상자로
     emoji: Option<ColorFont>,
@@ -403,6 +405,7 @@ impl Fonts {
             px,
             metrics,
             cache: HashMap::new(),
+            emoji_cache: HashMap::new(),
             family_name: family,
             emoji: load_color_font(db),
             context: std::cell::RefCell::new(swash::scale::ScaleContext::new()),
@@ -431,7 +434,8 @@ impl Fonts {
     fn rasterize(&self, ch: char, style: FontStyle) -> Option<Glyph> {
         // 두 칸 이모지는 색 글꼴이 먼저(기본 글꼴의 흑백 모양보다)
         if is_emoji(ch) {
-            if let Some(g) = self.color_glyph(ch) {
+            let m = self.metrics;
+            if let Some(g) = self.color_glyph(ch, m.width * 2, m.height) {
                 return Some(g);
             }
         }
@@ -462,16 +466,28 @@ impl Fonts {
         })
     }
 
-    /// 색 글꼴에서 이모지를 두 칸 크기로 래스터한다(sbix·CBDT 비트맵, COLR 윤곽)
-    fn color_glyph(&self, ch: char) -> Option<Glyph> {
+    /// U+FE0F가 붙어 이모지 모양으로 그릴 글자(#67). `cells`칸 안에 맞춘 색 글리프. 색 글꼴에 없으면 없다
+    pub fn emoji_glyph(&mut self, ch: char, cells: u32) -> Option<Rc<Glyph>> {
+        if let Some(g) = self.emoji_cache.get(&(ch, cells)) {
+            return g.clone();
+        }
+        let m = self.metrics;
+        let g = self.color_glyph(ch, m.width * cells.max(1), m.height).map(Rc::new);
+        self.emoji_cache.insert((ch, cells), g.clone());
+        g
+    }
+
+    /// 색 글꼴에서 이모지를 `max_w × max_h` 안에 래스터한다(sbix·CBDT 비트맵, COLR 윤곽)
+    fn color_glyph(&self, ch: char, max_w: u32, max_h: u32) -> Option<Glyph> {
         use swash::scale::image::Content;
         use swash::scale::{Render, Source, StrikeWith};
         let cf = self.emoji.as_ref()?;
         let m = self.metrics;
-        // 두 칸 폭과 셀 높이 중 작은 쪽에 맞춘다
-        let (max_w, max_h) = (m.width * 2, m.height);
+        // 폭과 높이 중 작은 쪽에 맞춘다
         let target = max_w.min(max_h) as f32;
-        let bytes = cf.data.bytes(cf.index, target.ceil() as u16)?;
+        // 비트맵 벌은 늘 두 칸 크기로 고른다. 한 칸 이모지(#67)도 같은 벌을 줄여 쓴다(골라 읽은 글꼴을 번갈아 다시 읽지 않게)
+        let strike_px = (m.width * 2).min(m.height) as u16;
+        let bytes = cf.data.bytes(cf.index, strike_px)?;
         let font = bytes.font()?;
         let gid = font.charmap().map(ch);
         if gid == 0 {

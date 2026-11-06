@@ -33,6 +33,7 @@ fn cells(s: &Screen) -> Vec<DrawCell> {
             wide: c.flags.contains(CellFlags::WIDE),
             spacer: c.flags.contains(CellFlags::SPACER),
             selected: c.flags.contains(CellFlags::SELECTED),
+            emoji: c.combining.contains(&'\u{fe0f}'),
         })
         .collect()
 }
@@ -415,4 +416,30 @@ fn record_symbol_used_by_claude_code_is_a_monochrome_glyph() {
     };
     assert!(g.color.is_none(), "글자색을 따르는 흑백 글리프여야 한다");
     assert!(g.width > 0);
+}
+
+/// #67: U+FE0F가 붙은 ❤️는 그 칸(VT 엔진이 정한 한 칸) 안에 색으로 그린다. 옆 칸은 덮지 않는다
+#[test]
+fn variation_selector_16_draws_a_color_emoji_inside_its_cell() {
+    let Some(mut f) = fonts(2.0) else { return };
+    if !f.has_color_emoji() {
+        eprintln!("건너뜀: 색 이모지 글꼴이 없다");
+        return;
+    }
+    let fr = render(&mut f, "\u{2764}\u{fe0f} a".as_bytes(), 6, 1, false);
+    let mut red = 0;
+    for y in 0..fr.ch {
+        for x in 0..fr.cw {
+            let p = Rgb::from_u32(fr.buf[(y * fr.w + x) as usize]);
+            if p.r > 180 && p.g < 90 && p.b < 110 {
+                red += 1;
+            }
+        }
+    }
+    assert!(red > (fr.cw * fr.ch / 20) as usize, "빨간 하트 픽셀 {red}개");
+    assert_eq!(
+        ink(&fr, 1, 0, 1, Theme::default().background),
+        0,
+        "옆 칸(공백)은 비어 있다"
+    );
 }

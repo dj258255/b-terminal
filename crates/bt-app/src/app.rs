@@ -1975,6 +1975,7 @@ pub fn to_draw_cells(s: &Screen, theme: &bt_core::Theme) -> Vec<DrawCell> {
             wide: c.flags.contains(CellFlags::WIDE),
             spacer: c.flags.contains(CellFlags::SPACER),
             selected: c.flags.contains(CellFlags::SELECTED),
+            emoji: c.combining.contains(&'\u{fe0f}'),
         })
         .collect()
 }
@@ -2505,6 +2506,7 @@ mod tests {
             wide: false,
             spacer: false,
             selected: false,
+            emoji: false,
         };
         let (cols, rows) = (4, 3);
         let cells = vec![blank.clone(); cols * rows];

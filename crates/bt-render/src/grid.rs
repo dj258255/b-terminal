@@ -18,6 +18,8 @@ pub struct DrawCell {
     pub wide: bool,
     pub spacer: bool,
     pub selected: bool,
+    /// 이모지 모양으로 그린다(뒤에 U+FE0F가 붙은 글자, #67). 칸 폭 안에 색 글리프로
+    pub emoji: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -137,7 +139,15 @@ fn draw_rows(
                 (true, Some(c)) => c,
                 _ => cell.fg,
             };
-            draw_cell_text(canvas, fonts, m, px, py, span, cell.ch, fg, cell.bold, cell.italic);
+            // U+FE0F가 붙은 글자는 그 칸 안에 색 이모지로(색 글꼴에 없으면 글자로)
+            let emoji = cell.emoji.then(|| fonts.emoji_glyph(cell.ch, span)).flatten();
+            match emoji {
+                Some(g) => {
+                    let ox = (m.width as i32 * span as i32 - g.width as i32) / 2;
+                    canvas.draw_color_glyph(px + ox, py + m.baseline as i32, &g);
+                }
+                None => draw_cell_text(canvas, fonts, m, px, py, span, cell.ch, fg, cell.bold, cell.italic),
+            }
             if cell.underline {
                 canvas.fill_rect(px, py + m.underline_offset as i32, m.width * span, m.stroke, cell.fg);
             }
