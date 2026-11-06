@@ -161,37 +161,18 @@ struct Gfx {
     _context: softbuffer::Context<Rc<Window>>,
 }
 
-pub struct App {
-    config: AppConfig,
-    proxy: EventLoopProxy<UserEvent>,
-    redraw_pending: Arc<AtomicBool>,
+/// 창 하나의 상태(#36). 칸(셸)은 모든 창이 App에서 함께 든다
+struct Win {
     gfx: Option<Gfx>,
-    fonts: Option<Fonts>,
-    font_size: f32,
-    scale: f64,
-    /// 모든 탭의 칸들(탭 순서와 상관없다)
-    panes: Vec<Pane>,
     tabs: Vec<TabGroup>,
     /// 보고 있는 탭(tabs의 자리)
     active: usize,
-    next_id: u64,
-    mods: ModifiersState,
     preedit: String,
     cursor_pos: PhysicalPosition<f64>,
     selecting: bool,
     last_click: Option<(Instant, usize, usize, u8)>,
-    clipboard: Option<arboard::Clipboard>,
     scroll_accum: f64,
-    first: Option<SpawnOptions>,
     focused: bool,
-    next_poll: Instant,
-    /// 셸 통합 스크립트를 풀어 둔 폴더(없으면 셸 통합을 싣지 않는다)
-    shell_integration_dir: Option<std::path::PathBuf>,
-    /// btctl run이 기다리는 탭: 탭 id → (요청 id, 답할 통로, 기한)
-    run_waiters: std::collections::HashMap<u64, (u64, std::sync::mpsc::SyncSender<bt_core::proto::Response>, Instant)>,
-    /// 메뉴 막대(살려 두어야 메뉴가 남는다)
-    #[cfg(target_os = "macos")]
-    menu: Option<muda::Menu>,
     /// 창 안 알림 띠(글, 띄운 때). 2.5초 보인다
     toast: Option<(String, Instant)>,
     /// Cmd를 누른 채 마우스가 올라간 링크(칸 id, 링크)
@@ -207,10 +188,73 @@ pub struct App {
     blink_on: bool,
     blink_next: Instant,
     blink_wanted: bool,
+}
+
+impl Win {
+    fn new() -> Self {
+        Self {
+            gfx: None,
+            tabs: Vec::new(),
+            active: 0,
+            preedit: String::new(),
+            cursor_pos: PhysicalPosition::new(0.0, 0.0),
+            selecting: false,
+            last_click: None,
+            scroll_accum: 0.0,
+            // 포커스 사건이 오기 전에는 보고 있지 않은 창으로 둔다. 보고 있다고 잘못 알면
+            // 그 창의 OSC 52 클립보드 쓰기를 받게 된다(보안 검토, #36)
+            focused: false,
+            toast: None,
+            hover: None,
+            link_click: false,
+            search: None,
+            frame: Vec::new(),
+            last_frame: None,
+            blink_on: true,
+            blink_next: Instant::now(),
+            blink_wanted: false,
+        }
+    }
+
+    fn id(&self) -> Option<WindowId> {
+        self.gfx.as_ref().map(|g| g.window.id())
+    }
+
+    fn holds(&self, pane: u64) -> bool {
+        self.tabs.iter().any(|g| g.layout.contains(pane))
+    }
+}
+
+pub struct App {
+    config: AppConfig,
+    proxy: EventLoopProxy<UserEvent>,
+    redraw_pending: Arc<AtomicBool>,
+    fonts: Option<Fonts>,
+    font_size: f32,
+    scale: f64,
+    /// 모든 탭의 칸들(탭 순서와 상관없다)
+    panes: Vec<Pane>,
+    next_id: u64,
+    mods: ModifiersState,
+    clipboard: Option<arboard::Clipboard>,
+    first: Option<SpawnOptions>,
+    next_poll: Instant,
+    /// 셸 통합 스크립트를 풀어 둔 폴더(없으면 셸 통합을 싣지 않는다)
+    shell_integration_dir: Option<std::path::PathBuf>,
+    /// btctl run이 기다리는 탭: 탭 id → (요청 id, 답할 통로, 기한)
+    run_waiters: std::collections::HashMap<u64, (u64, std::sync::mpsc::SyncSender<bt_core::proto::Response>, Instant)>,
+    /// 메뉴 막대(살려 두어야 메뉴가 남는다)
+    #[cfg(target_os = "macos")]
+    menu: Option<muda::Menu>,
     control: Option<crate::control::ControlServer>,
     keymap: Keymap,
     /// --config-file(설정을 다시 읽을 때 같은 파일을 읽는다)
     config_extra: Option<std::path::PathBuf>,
+    /// 지금 창(사건을 받은 창)의 상태. 다른 창의 사건이 오면 `others`와 바꿔 끼운다(#36)
+    w: Win,
+    others: Vec<Win>,
+    /// 마지막으로 보던 창(창 밖에서 온 btctl 요청이 쓴다)
+    last_focused: Option<WindowId>,
 }
 
 impl App {
@@ -231,33 +275,15 @@ impl App {
             config,
             proxy,
             redraw_pending: Arc::new(AtomicBool::new(false)),
-            gfx: None,
             fonts: None,
             font_size,
             scale: 1.0,
             panes: Vec::new(),
-            tabs: Vec::new(),
-            active: 0,
             next_id: 1,
             mods: ModifiersState::empty(),
-            preedit: String::new(),
-            cursor_pos: PhysicalPosition::new(0.0, 0.0),
-            selecting: false,
-            last_click: None,
             clipboard: arboard::Clipboard::new().ok(),
-            scroll_accum: 0.0,
             first: Some(first),
-            focused: true,
             next_poll: Instant::now(),
-            toast: None,
-            hover: None,
-            link_click: false,
-            search: None,
-            frame: Vec::new(),
-            last_frame: None,
-            blink_on: true,
-            blink_next: Instant::now(),
-            blink_wanted: false,
             #[cfg(target_os = "macos")]
             menu: None,
             shell_integration_dir: None,
@@ -265,6 +291,9 @@ impl App {
             control: None,
             keymap,
             config_extra,
+            w: Win::new(),
+            others: Vec::new(),
+            last_focused: None,
         }
     }
 
@@ -284,7 +313,7 @@ impl App {
 
     /// 탭 줄 아래 칸들이 차지하는 자리. 여백은 칸마다 따로 뺀다(Ghostty처럼)
     fn content_rect(&self) -> Rect {
-        let Some(g) = &self.gfx else { return Rect::default() };
+        let Some(g) = &self.w.gfx else { return Rect::default() };
         let size = g.window.inner_size();
         let top = self.tabbar_height();
         Rect::new(0, top as i32, size.width, size.height.saturating_sub(top))
@@ -310,7 +339,9 @@ impl App {
 
     /// 탭 하나의 칸 배치(바깥 사각형). 크게 보기면 고른 칸만 전체를 차지한다
     fn group_layout(&self, gi: usize) -> Vec<(u64, Rect)> {
-        let Some(g) = self.tabs.get(gi) else { return Vec::new() };
+        let Some(g) = self.w.tabs.get(gi) else {
+            return Vec::new();
+        };
         let area = self.content_rect();
         if g.zoomed {
             return vec![(g.focus, area)];
@@ -333,18 +364,18 @@ impl App {
 
     /// 칸이 든 탭
     fn group_of(&self, id: u64) -> Option<usize> {
-        self.tabs.iter().position(|g| g.layout.contains(id))
+        self.w.tabs.iter().position(|g| g.layout.contains(id))
     }
 
     /// 보고 있는 탭의 고른 칸 id
     fn focused_id(&self) -> Option<u64> {
-        self.tabs.get(self.active).map(|g| g.focus)
+        self.w.tabs.get(self.w.active).map(|g| g.focus)
     }
 
     /// 칸이 지금 창에 보이는가(보고 있는 탭에 있고 크게 보기에 가리지 않았다)
     fn is_visible(&self, idx: usize) -> bool {
         let Some(p) = self.panes.get(idx) else { return false };
-        self.tabs.get(self.active).is_some_and(|g| {
+        self.w.tabs.get(self.w.active).is_some_and(|g| {
             if g.zoomed {
                 g.focus == p.id
             } else {
@@ -361,15 +392,15 @@ impl App {
     /// 탭 줄 높이. 탭이 하나면 없다(Ghostty처럼)
     fn tabbar_height(&self) -> u32 {
         match &self.fonts {
-            Some(f) if self.tabs.len() > 1 => tabbar::height_px(f),
+            Some(f) if self.w.tabs.len() > 1 => tabbar::height_px(f),
             _ => 0,
         }
     }
 
     fn activate(&mut self, index: usize) {
-        if index < self.tabs.len() && index != self.active {
+        if index < self.w.tabs.len() && index != self.w.active {
             let before = self.focused_id();
-            self.active = index;
+            self.w.active = index;
             self.focus_changed(before);
         }
         self.clear_visible_unread();
@@ -380,8 +411,8 @@ impl App {
     fn focus_pane(&mut self, id: u64) {
         let Some(gi) = self.group_of(id) else { return };
         let before = self.focused_id();
-        self.active = gi;
-        let g = &mut self.tabs[gi];
+        self.w.active = gi;
+        let g = &mut self.w.tabs[gi];
         let unzoom = g.zoomed && g.focus != id;
         g.focus = id;
         if unzoom {
@@ -397,11 +428,11 @@ impl App {
     fn focus_changed(&mut self, before: Option<u64>) {
         let after = self.focused_id();
         // 찾기 막대는 그 칸에 붙어 있다. 다른 칸으로 옮기면 닫는다
-        if self.search.as_ref().is_some_and(|s| Some(s.pane) != after) {
+        if self.w.search.as_ref().is_some_and(|s| Some(s.pane) != after) {
             self.end_search();
         }
-        self.selecting = false;
-        if before == after || !self.focused {
+        self.w.selecting = false;
+        if before == after || !self.w.focused {
             return;
         }
         for (id, seq) in [(before, b"\x1b[O"), (after, b"\x1b[I")] {
@@ -448,7 +479,7 @@ impl App {
 
     /// 탭이 알림을 보냈다. 보고 있는 탭이 아니면 안 읽음으로 두고, 창을 보고 있지 않으면 데스크톱 알림을 띄운다
     fn on_notification(&mut self, idx: usize, note: bt_term::Notification) {
-        let watching = self.focused && self.is_visible(idx);
+        let watching = self.w.focused && self.is_visible(idx);
         let t = &mut self.panes[idx];
         if !watching {
             t.unread = true;
@@ -478,7 +509,7 @@ impl App {
             ));
         }
         let limit = self.config.notify_command_seconds;
-        let watching = self.focused && self.is_visible(idx);
+        let watching = self.w.focused && self.is_visible(idx);
         if limit > 0 && rec.duration.as_secs() >= limit && !watching {
             let cmd = rec.command.clone().unwrap_or_else(|| "명령".into());
             let code = rec
@@ -504,7 +535,7 @@ impl App {
 
     /// 창 오른쪽 아래에 잠깐 알림 띠를 띄운다
     fn toast(&mut self, text: String) {
-        self.toast = Some((text, Instant::now()));
+        self.w.toast = Some((text, Instant::now()));
         self.request_redraw();
     }
 
@@ -592,7 +623,7 @@ impl App {
     pub fn open_tab(&mut self, options: SpawnOptions) -> Option<u64> {
         // 탭이 하나에서 둘이 되면 탭 줄이 생긴다. 새 칸은 탭 줄을 뺀 크기로 띄운다
         let mut area = self.content_rect();
-        if self.tabs.len() == 1 {
+        if self.w.tabs.len() == 1 {
             let bar = self.fonts.as_ref().map(tabbar::height_px).unwrap_or(0);
             area.y += bar as i32;
             area.h = area.h.saturating_sub(bar);
@@ -602,12 +633,12 @@ impl App {
         let id = pane.id;
         self.panes.push(pane);
         let before = self.focused_id();
-        self.tabs.push(TabGroup {
+        self.w.tabs.push(TabGroup {
             layout: Node::Leaf(id),
             focus: id,
             zoomed: false,
         });
-        self.active = self.tabs.len() - 1;
+        self.w.active = self.w.tabs.len() - 1;
         self.focus_changed(before);
         self.resize_all();
         Some(id)
@@ -615,14 +646,14 @@ impl App {
 
     /// 고른 칸을 나눠 새 칸을 연다. `dir`이 없으면 긴 쪽으로 나눈다
     fn open_split(&mut self, dir: Option<Direction>, options: SpawnOptions) -> Option<u64> {
-        let gi = self.active;
+        let gi = self.w.active;
         let target = self.focused_id()?;
         let dir = dir.unwrap_or_else(|| match self.pane_rect(target) {
             Some(r) if r.h > r.w => Direction::Down,
             _ => Direction::Right,
         });
         // 나눈 뒤의 배치로 새 칸 크기를 미리 잰다(셸이 처음부터 맞는 크기로 뜨게)
-        let mut layout = self.tabs[gi].layout.clone();
+        let mut layout = self.w.tabs[gi].layout.clone();
         let new_id = self.next_id;
         layout.split(target, new_id, dir);
         let rect = layout
@@ -635,7 +666,7 @@ impl App {
         debug_assert_eq!(pane.id, new_id);
         self.panes.push(pane);
         let before = self.focused_id();
-        let g = &mut self.tabs[gi];
+        let g = &mut self.w.tabs[gi];
         g.layout = layout;
         g.focus = new_id;
         g.zoomed = false;
@@ -677,10 +708,31 @@ impl App {
     }
 
     /// 제어 소켓 요청 하나를 처리한다
-    fn handle_call(&mut self, req: bt_core::proto::Request) -> bt_core::proto::Response {
+    fn handle_call(&mut self, req: bt_core::proto::Request, event_loop: &ActiveEventLoop) -> bt_core::proto::Response {
         use bt_core::proto::{Call, Response, TabInfo};
         use serde_json::json;
         let id = req.id;
+        // 칸을 주면 그 칸의 창, 주지 않으면 마지막으로 보던 창에서 처리한다(#36)
+        let target = match &req.call {
+            Call::Focus { tab } => Some(*tab),
+            Call::Send { tab, .. }
+            | Call::Read { tab }
+            | Call::Run { tab, .. }
+            | Call::LastCommand { tab }
+            | Call::Notify { tab, .. }
+            | Call::New { tab, .. } => *tab,
+            _ => None,
+        };
+        match target {
+            Some(t) => {
+                self.switch_to_pane(t);
+            }
+            None => {
+                if let Some(w) = self.last_focused {
+                    self.switch_to(w);
+                }
+            }
+        }
         // tab을 주지 않으면 지금 보는 탭
         let pick = |app: &App, tab: Option<u64>| -> Result<usize, Response> {
             match tab {
@@ -698,10 +750,10 @@ impl App {
         match req.call {
             Call::Ping => Response::ok(id, json!({ "app": "b-terminal", "version": env!("CARGO_PKG_VERSION") })),
             Call::List => {
-                // 탭 줄 순서, 탭 안에서는 왼쪽·위부터
-                let order: Vec<usize> = self
-                    .tabs
-                    .iter()
+                // 지금 창부터 창마다 탭 줄 순서, 탭 안에서는 왼쪽·위부터
+                let order: Vec<usize> = std::iter::once(&self.w)
+                    .chain(&self.others)
+                    .flat_map(|w| w.tabs.iter())
                     .flat_map(|g| g.layout.leaves())
                     .filter_map(|pid| self.pane_index(pid))
                     .collect();
@@ -724,6 +776,7 @@ impl App {
                 command,
                 split,
                 tab,
+                window,
             } => {
                 let mut opts = SpawnOptions {
                     cwd: cwd.filter(|c| c.is_dir()),
@@ -732,6 +785,12 @@ impl App {
                 if let Some((prog, args)) = command.split_first() {
                     opts.program = Some(prog.clone());
                     opts.args = args.to_vec();
+                }
+                if window {
+                    return match self.open_window(event_loop, opts) {
+                        Some(tab) => Response::ok(id, json!({ "tab": tab })),
+                        None => Response::err(id, "창을 열지 못했습니다"),
+                    };
                 }
                 let Some(split) = split else {
                     return match self.open_tab(opts) {
@@ -849,7 +908,7 @@ impl App {
         }
         let before = self.focused_id();
         if let Some(gi) = self.group_of(id) {
-            let g = &mut self.tabs[gi];
+            let g = &mut self.w.tabs[gi];
             let layout = std::mem::replace(&mut g.layout, Node::Leaf(id));
             match layout.remove(id) {
                 (Some(rest), next) => {
@@ -860,15 +919,15 @@ impl App {
                     g.layout = rest;
                 }
                 (None, _) => {
-                    self.tabs.remove(gi);
-                    if gi < self.active || self.active >= self.tabs.len() {
-                        self.active = self.active.saturating_sub(1);
+                    self.w.tabs.remove(gi);
+                    if gi < self.w.active || self.w.active >= self.w.tabs.len() {
+                        self.w.active = self.w.active.saturating_sub(1);
                     }
                 }
             }
         }
-        if self.tabs.is_empty() {
-            event_loop.exit();
+        if self.w.tabs.is_empty() {
+            self.close_current_window(event_loop);
             return;
         }
         self.focus_changed(before);
@@ -879,7 +938,7 @@ impl App {
 
     /// 탭을 칸째 닫는다
     fn close_tab(&mut self, gi: usize, event_loop: &ActiveEventLoop) {
-        let Some(g) = self.tabs.get(gi) else { return };
+        let Some(g) = self.w.tabs.get(gi) else { return };
         for id in g.layout.leaves() {
             if let Some(i) = self.pane_index(id) {
                 self.close_pane(i, event_loop);
@@ -894,7 +953,7 @@ impl App {
     }
 
     fn request_redraw(&self) {
-        if let Some(g) = &self.gfx {
+        if let Some(g) = &self.w.gfx {
             g.window.request_redraw();
         }
     }
@@ -908,7 +967,7 @@ impl App {
 
     /// 모든 탭의 칸을 지금 배치에 맞춘다(창 크기·글꼴·분할이 바뀐 뒤)
     fn resize_all(&mut self) {
-        for gi in 0..self.tabs.len() {
+        for gi in 0..self.w.tabs.len() {
             for (id, rect) in self.group_layout(gi) {
                 let size = self.grid_size_for(rect);
                 if let Some(i) = self.pane_index(id) {
@@ -922,12 +981,12 @@ impl App {
     fn set_font_size(&mut self, size: f32) {
         self.font_size = size.clamp(6.0, 72.0);
         self.load_fonts();
-        self.resize_all();
+        self.for_each_window(|app| app.resize_all());
     }
 
     /// 창 좌표 아래의 칸(보고 있는 탭에서)
     fn pane_at(&self, pos: PhysicalPosition<f64>) -> Option<u64> {
-        self.group_layout(self.active)
+        self.group_layout(self.w.active)
             .into_iter()
             .find(|(_, r)| r.contains(pos.x, pos.y))
             .map(|(id, _)| id)
@@ -970,21 +1029,21 @@ impl App {
     /// Cmd를 누른 동안 마우스 아래 링크를 다시 본다. 바뀌면 밑줄과 마우스 모양을 바꾼다
     fn update_hover(&mut self) {
         let next = if self.link_mod() {
-            self.link_under(self.cursor_pos)
+            self.link_under(self.w.cursor_pos)
         } else {
             None
         };
-        if next == self.hover {
+        if next == self.w.hover {
             return;
         }
-        if let Some(g) = &self.gfx {
+        if let Some(g) = &self.w.gfx {
             g.window.set_cursor(if next.is_some() {
                 CursorIcon::Pointer
             } else {
                 CursorIcon::Default
             });
         }
-        self.hover = next;
+        self.w.hover = next;
         self.request_redraw();
     }
 
@@ -1002,11 +1061,11 @@ impl App {
     /// 고른 칸에 찾기 막대를 연다. 이미 열려 있으면 그대로
     fn start_search(&mut self) {
         let Some(id) = self.focused_id() else { return };
-        if self.search.as_ref().is_some_and(|s| s.pane == id) {
+        if self.w.search.as_ref().is_some_and(|s| s.pane == id) {
             return;
         }
         self.end_search();
-        self.search = Some(SearchBar {
+        self.w.search = Some(SearchBar {
             pane: id,
             query: String::new(),
             status: None,
@@ -1016,7 +1075,7 @@ impl App {
 
     /// 찾기 막대를 닫고 강조를 지운다. 화면 자리는 그대로 둔다
     fn end_search(&mut self) {
-        if let Some(s) = self.search.take() {
+        if let Some(s) = self.w.search.take() {
             if let Some(i) = self.pane_index(s.pane) {
                 self.panes[i].session.search_clear();
             }
@@ -1026,7 +1085,7 @@ impl App {
 
     /// 친 글이 바뀌었다: 처음부터(맨 아래에서 위로) 다시 찾는다
     fn search_query_changed(&mut self) {
-        let Some(s) = self.search.as_mut() else { return };
+        let Some(s) = self.w.search.as_mut() else { return };
         if let Some(p) = self.panes.iter().find(|p| p.id == s.pane) {
             s.status = p.session.search(&s.query);
         }
@@ -1034,7 +1093,7 @@ impl App {
     }
 
     fn search_step(&mut self, older: bool) {
-        let Some(s) = self.search.as_mut() else { return };
+        let Some(s) = self.w.search.as_mut() else { return };
         if let Some(p) = self.panes.iter().find(|p| p.id == s.pane) {
             s.status = p.session.search_step(older).or(s.status);
         }
@@ -1043,7 +1102,7 @@ impl App {
 
     /// 찾기 막대에 글을 더한다(친 글, IME 확정, 붙여넣기의 첫 줄)
     fn search_push(&mut self, text: &str) {
-        let Some(s) = self.search.as_mut() else { return };
+        let Some(s) = self.w.search.as_mut() else { return };
         let text: String = text.chars().filter(|c| !c.is_control()).collect();
         if s.query.chars().count() + text.chars().count() > 256 {
             return;
@@ -1055,7 +1114,7 @@ impl App {
     /// 찾기 막대가 열려 있으면 키를 받는다(Cmd·Ctrl 조합은 키 묶음에 맡긴다). 받았으면 참
     fn search_key(&mut self, event: &winit::event::KeyEvent) -> bool {
         use winit::keyboard::{Key, NamedKey};
-        if self.search.is_none() || self.mods.super_key() || self.mods.control_key() {
+        if self.w.search.is_none() || self.mods.super_key() || self.mods.control_key() {
             return false;
         }
         match &event.logical_key {
@@ -1063,7 +1122,7 @@ impl App {
             // Enter는 위(오래된 쪽)로, Shift-Enter는 아래로
             Key::Named(NamedKey::Enter) => self.search_step(!self.mods.shift_key()),
             Key::Named(NamedKey::Backspace) => {
-                if let Some(s) = self.search.as_mut() {
+                if let Some(s) = self.w.search.as_mut() {
                     s.query.pop();
                 }
                 self.search_query_changed();
@@ -1092,7 +1151,7 @@ impl App {
                 }
             }
             // 찾기 막대가 열려 있으면 첫 줄을 찾을 글에 붙인다
-            Action::Paste if self.search.is_some() => {
+            Action::Paste if self.w.search.is_some() => {
                 let text = self.clipboard.as_mut().and_then(|cb| cb.get_text().ok());
                 if let Some(line) = text.as_deref().and_then(|t| t.lines().next()) {
                     self.search_push(line);
@@ -1115,6 +1174,10 @@ impl App {
             Action::NewTab => {
                 self.open_tab(self.spawn_here());
             }
+            Action::NewWindow => {
+                let opts = self.spawn_here();
+                self.open_window(event_loop, opts);
+            }
             Action::NewSplit(dir) => {
                 self.open_split(dir, self.spawn_here());
             }
@@ -1123,11 +1186,11 @@ impl App {
                     self.close_pane(i, event_loop);
                 }
             }
-            Action::CloseTab => self.close_tab(self.active, event_loop),
+            Action::CloseTab => self.close_tab(self.w.active, event_loop),
             Action::GotoSplit(target) => {
                 let area = self.content_rect();
                 let divider = self.divider_px();
-                let next = self.tabs.get(self.active).and_then(|g| match target {
+                let next = self.w.tabs.get(self.w.active).and_then(|g| match target {
                     SplitTarget::Previous => g.layout.cycle(g.focus, -1),
                     SplitTarget::Next => g.layout.cycle(g.focus, 1),
                     SplitTarget::Toward(d) => g.layout.neighbor(area, divider, g.focus, d),
@@ -1140,7 +1203,7 @@ impl App {
                 let area = self.content_rect();
                 let divider = self.divider_px();
                 let px = (points as f64 * self.scale).round() as u32;
-                if let Some(g) = self.tabs.get_mut(self.active) {
+                if let Some(g) = self.w.tabs.get_mut(self.w.active) {
                     let focus = g.focus;
                     // 크게 보는 중에는 경계가 보이지 않으니 밀지 않는다
                     if !g.zoomed && g.layout.resize(area, divider, focus, dir, px) {
@@ -1149,24 +1212,29 @@ impl App {
                 }
             }
             Action::EqualizeSplits => {
-                if let Some(g) = self.tabs.get_mut(self.active) {
+                if let Some(g) = self.w.tabs.get_mut(self.w.active) {
                     g.layout.equalize();
                     self.resize_all();
                 }
             }
             Action::ToggleSplitZoom => {
                 // 칸이 하나면 크게 볼 것이 없다
-                if let Some(g) = self.tabs.get_mut(self.active).filter(|g| g.layout.leaves().len() > 1) {
+                if let Some(g) = self
+                    .w
+                    .tabs
+                    .get_mut(self.w.active)
+                    .filter(|g| g.layout.leaves().len() > 1)
+                {
                     g.zoomed = !g.zoomed;
                     self.resize_all();
                 }
             }
-            Action::NextTab if !self.tabs.is_empty() => self.activate((self.active + 1) % self.tabs.len()),
-            Action::PrevTab if !self.tabs.is_empty() => {
-                self.activate((self.active + self.tabs.len() - 1) % self.tabs.len())
+            Action::NextTab if !self.w.tabs.is_empty() => self.activate((self.w.active + 1) % self.w.tabs.len()),
+            Action::PrevTab if !self.w.tabs.is_empty() => {
+                self.activate((self.w.active + self.w.tabs.len() - 1) % self.w.tabs.len())
             }
-            Action::LastTab if !self.tabs.is_empty() => self.activate(self.tabs.len() - 1),
-            Action::GotoTab(n) if n <= self.tabs.len() => self.activate(n - 1),
+            Action::LastTab if !self.w.tabs.is_empty() => self.activate(self.w.tabs.len() - 1),
+            Action::GotoTab(n) if n <= self.w.tabs.len() => self.activate(n - 1),
             // Ghostty의 clear_screen: 화면과 스크롤백을 지운다. 셸에 Ctrl-L을 보내 프롬프트를 다시 그리게 한다
             Action::ClearScreen => self.write_active(b"\x0c"),
             Action::ScrollPageUp | Action::ScrollPageDown => {
@@ -1233,18 +1301,20 @@ impl App {
             t.session.set_theme(next.theme.clone());
         }
         #[cfg(target_os = "macos")]
-        if let Some(g) = &self.gfx {
+        for w in std::iter::once(&self.w).chain(&self.others) {
             use winit::platform::macos::{OptionAsAlt, WindowExtMacOS};
-            g.window.set_option_as_alt(match next.option_as_alt {
-                bt_core::config::OptionAsAlt::Both => OptionAsAlt::Both,
-                bt_core::config::OptionAsAlt::Left => OptionAsAlt::OnlyLeft,
-                bt_core::config::OptionAsAlt::Right => OptionAsAlt::OnlyRight,
-                bt_core::config::OptionAsAlt::None => OptionAsAlt::None,
-            });
+            if let Some(g) = &w.gfx {
+                g.window.set_option_as_alt(match next.option_as_alt {
+                    bt_core::config::OptionAsAlt::Both => OptionAsAlt::Both,
+                    bt_core::config::OptionAsAlt::Left => OptionAsAlt::OnlyLeft,
+                    bt_core::config::OptionAsAlt::Right => OptionAsAlt::OnlyRight,
+                    bt_core::config::OptionAsAlt::None => OptionAsAlt::None,
+                });
+            }
         }
         self.config = next;
         self.load_fonts();
-        self.resize_all();
+        self.for_each_window(|app| app.resize_all());
         log::info!("설정을 다시 읽었습니다");
         let warn = self.config.warnings.len();
         self.toast(if warn == 0 {
@@ -1265,7 +1335,7 @@ impl App {
 
     fn send_mouse(&mut self, idx: usize, button: mouse::Button, action: mouse::Action) {
         let Some(m) = self.mouse_reporting(idx) else { return };
-        let Some((col, row)) = self.cell_in(idx, self.cursor_pos) else {
+        let Some((col, row)) = self.cell_in(idx, self.w.cursor_pos) else {
             return;
         };
         let bytes = mouse::encode(
@@ -1281,13 +1351,153 @@ impl App {
         self.panes[idx].session.write(&bytes);
     }
 
+    /// 창과 그림판을 만든다(첫 창, 새 창)
+    fn create_gfx(&mut self, event_loop: &ActiveEventLoop) -> Option<Gfx> {
+        let attrs = Window::default_attributes()
+            .with_title("b-terminal")
+            .with_inner_size(LogicalSize::new(1000.0, 680.0))
+            .with_min_inner_size(LogicalSize::new(320.0, 200.0));
+        #[cfg(target_os = "macos")]
+        let attrs = {
+            use winit::platform::macos::{OptionAsAlt, WindowAttributesExtMacOS};
+            attrs.with_option_as_alt(match self.config.option_as_alt {
+                bt_core::config::OptionAsAlt::Both => OptionAsAlt::Both,
+                bt_core::config::OptionAsAlt::Left => OptionAsAlt::OnlyLeft,
+                bt_core::config::OptionAsAlt::Right => OptionAsAlt::OnlyRight,
+                bt_core::config::OptionAsAlt::None => OptionAsAlt::None,
+            })
+        };
+        let window = match event_loop.create_window(attrs) {
+            Ok(w) => Rc::new(w),
+            Err(e) => {
+                log::error!("창을 만들지 못했습니다: {e}");
+                return None;
+            }
+        };
+        window.set_ime_allowed(true);
+        self.scale = window.scale_factor();
+        let context = softbuffer::Context::new(window.clone()).ok()?;
+        let surface = softbuffer::Surface::new(&context, window.clone()).ok()?;
+        Some(Gfx {
+            window,
+            surface,
+            _context: context,
+        })
+    }
+
+    /// 설정의 window-width·window-height(셀)로 지금 창 크기를 맞춘다
+    fn apply_initial_size(&self) {
+        if let (Some(f), Some(g)) = (&self.fonts, &self.w.gfx) {
+            if let (Some(cols), Some(rows)) = (self.config.window_width, self.config.window_height) {
+                let m = f.metrics();
+                let px = |pt: f32| (pt as f64 * self.scale).round() as u32;
+                let w = m.width * cols as u32 + px(self.config.padding_x.0) + px(self.config.padding_x.1);
+                let h = m.height * rows as u32 + px(self.config.padding_y.0) + px(self.config.padding_y.1);
+                let _ = g.window.request_inner_size(PhysicalSize::new(w, h));
+            }
+        }
+    }
+
+    /// 새 창을 열어 지금 창으로 하고 탭 하나를 띄운다(#36)
+    fn open_window(&mut self, event_loop: &ActiveEventLoop, options: SpawnOptions) -> Option<u64> {
+        let gfx = self.create_gfx(event_loop)?;
+        let id = gfx.window.id();
+        let mut win = Win::new();
+        win.focused = gfx.window.has_focus();
+        win.gfx = Some(gfx);
+        let mut old = std::mem::replace(&mut self.w, win);
+        // 새 창이 앞으로 온다. 앞 창의 포커스 잃음 사건을 기다리지 않고 바로 보고 있지 않은 창으로
+        old.focused = false;
+        self.others.push(old);
+        self.last_focused = Some(id);
+        self.apply_initial_size();
+        let tab = self.open_tab(options);
+        if tab.is_none() {
+            self.close_current_window(event_loop);
+        }
+        tab
+    }
+
+    /// 지금 창을 닫는다: 그 창의 칸들을 닫고, 다른 창이 있으면 그 창이 지금 창이 된다. 마지막 창이면 앱이 끝난다
+    fn close_current_window(&mut self, event_loop: &ActiveEventLoop) {
+        let ids: Vec<u64> = self.w.tabs.iter().flat_map(|g| g.layout.leaves()).collect();
+        for id in ids {
+            if let Some(i) = self.pane_index(id) {
+                // Session을 떨어뜨리면 PTY가 닫히고 셸은 SIGHUP을 받는다
+                self.panes.remove(i);
+            }
+            if let Some((req_id, reply, _)) = self.run_waiters.remove(&id) {
+                let _ = reply.send(bt_core::proto::Response::err(
+                    req_id,
+                    "명령이 끝나기 전에 창이 닫혔습니다",
+                ));
+            }
+        }
+        self.w.tabs.clear();
+        match self.others.pop() {
+            // 앞 Win을 떨어뜨리면 창이 닫힌다
+            Some(next) => {
+                self.w = next;
+                self.request_redraw();
+            }
+            None => event_loop.exit(),
+        }
+    }
+
+    /// 이 창을 지금 창으로 바꿔 끼운다. 모르는 창이면 거짓
+    fn switch_to(&mut self, id: WindowId) -> bool {
+        if self.w.id() == Some(id) {
+            return true;
+        }
+        match self.others.iter().position(|w| w.id() == Some(id)) {
+            Some(i) => {
+                std::mem::swap(&mut self.w, &mut self.others[i]);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// 칸이 든 창을 지금 창으로
+    fn switch_to_pane(&mut self, pane: u64) -> bool {
+        if self.w.holds(pane) {
+            return true;
+        }
+        match self.others.iter().position(|w| w.holds(pane)) {
+            Some(i) => {
+                std::mem::swap(&mut self.w, &mut self.others[i]);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// 모든 창을 다시 그리게 한다
+    fn request_redraw_all(&self) {
+        for w in std::iter::once(&self.w).chain(&self.others) {
+            if let Some(g) = &w.gfx {
+                g.window.request_redraw();
+            }
+        }
+    }
+
+    /// 창마다 차례로 지금 창으로 바꿔 끼워 `f`를 부른다(글꼴·설정이 바뀌어 모든 창을 맞출 때)
+    fn for_each_window(&mut self, f: impl Fn(&mut Self)) {
+        f(self);
+        for i in 0..self.others.len() {
+            std::mem::swap(&mut self.w, &mut self.others[i]);
+            f(self);
+            std::mem::swap(&mut self.w, &mut self.others[i]);
+        }
+    }
+
     fn redraw(&mut self) {
         self.redraw_pending.store(false, Ordering::Release);
         let theme = self.config.theme.clone();
-        let toast = self.toast.clone().filter(|(_, at)| at.elapsed() < TOAST_FOR);
+        let toast = self.w.toast.clone().filter(|(_, at)| at.elapsed() < TOAST_FOR);
         let focus = self.focused_id();
         // 보이는 칸마다: 바깥 사각형, 격자 자리, 화면, 고른 칸인가, 진행 표시
-        let layout = self.group_layout(self.active);
+        let layout = self.group_layout(self.w.active);
         let views: Vec<PaneView> = layout
             .iter()
             .filter_map(|(id, outer)| {
@@ -1303,7 +1513,7 @@ impl App {
             })
             .collect();
         let split = views.len() > 1;
-        let dividers = match self.tabs.get(self.active) {
+        let dividers = match self.w.tabs.get(self.w.active) {
             Some(g) if split => g.layout.dividers(self.content_rect(), self.divider_px()),
             _ => Vec::new(),
         };
@@ -1314,11 +1524,12 @@ impl App {
         // 고르지 않은 칸은 바탕색으로 살짝 덮는다(Ghostty의 unfocused-split-opacity)
         let dim_alpha = ((1.0 - self.config.unfocused_split_opacity) * 255.0).round() as u8;
         let dim_fill = self.config.unfocused_split_fill.unwrap_or(theme.background);
-        let single_tab = self.tabs.len() == 1;
+        let single_tab = self.w.tabs.len() == 1;
         let labels: Vec<tabbar::TabLabel> = if single_tab {
             Vec::new()
         } else {
-            self.tabs
+            self.w
+                .tabs
                 .iter()
                 .enumerate()
                 .map(|(gi, g)| {
@@ -1331,7 +1542,7 @@ impl App {
                     let focused = panes.iter().find(|p| p.id == g.focus);
                     tabbar::TabLabel {
                         title: focused.map(|p| p.display_title()).unwrap_or_default(),
-                        active: gi == self.active,
+                        active: gi == self.w.active,
                         unread: panes.iter().any(|p| p.unread),
                         // 고른 칸의 진행 표시, 없으면 다른 칸의 것
                         progress: focused
@@ -1346,9 +1557,9 @@ impl App {
             .map(|t| t.display_title())
             .unwrap_or_else(|| "b-terminal".into());
         let title = self.config.title.clone().unwrap_or(title);
-        let preedit = self.preedit.clone();
-        let hover = self.hover.clone();
-        let search = self.search.as_ref().map(|s| {
+        let preedit = self.w.preedit.clone();
+        let hover = self.w.hover.clone();
+        let search = self.w.search.as_ref().map(|s| {
             (
                 s.pane,
                 s.query.clone(),
@@ -1357,8 +1568,8 @@ impl App {
             )
         });
         // 칸마다 렌더러 셀과 커서를 미리 만든다(앞 프레임과 견주려고)
-        let blink_hidden = self.blink_wanted_for(&views) && !self.blink_on;
-        self.blink_wanted = self.blink_wanted_for(&views);
+        let blink_hidden = self.blink_wanted_for(&views) && !self.w.blink_on;
+        self.w.blink_wanted = self.blink_wanted_for(&views);
         let drawn: Vec<(Vec<DrawCell>, Option<DrawCursor>, Option<String>)> = views
             .iter()
             .map(|v| {
@@ -1395,7 +1606,7 @@ impl App {
                 (cells, cursor, pre)
             })
             .collect();
-        let Some(gfx) = self.gfx.as_mut() else { return };
+        let Some(gfx) = self.w.gfx.as_mut() else { return };
         let Some(fonts) = self.fonts.as_mut() else { return };
         let size = gfx.window.inner_size();
         let m = fonts.metrics();
@@ -1432,13 +1643,13 @@ impl App {
         let started = Instant::now();
         let n = (size.width * size.height) as usize;
         let full =
-            chrome.overlay || self.last_frame.as_ref().is_none_or(|f| f.chrome != chrome) || self.frame.len() != n;
-        if self.frame.len() != n {
-            self.frame = vec![0; n];
+            chrome.overlay || self.w.last_frame.as_ref().is_none_or(|f| f.chrome != chrome) || self.w.frame.len() != n;
+        if self.w.frame.len() != n {
+            self.w.frame = vec![0; n];
         }
         let mut repainted_rows = 0;
         {
-            let mut canvas = Canvas::new(&mut self.frame, size.width, size.height);
+            let mut canvas = Canvas::new(&mut self.w.frame, size.width, size.height);
             if full {
                 let bg = views
                     .iter()
@@ -1471,6 +1682,7 @@ impl App {
                 } else {
                     // 앞 프레임과 다른 줄만: 칸이 다르거나, 커서·조합 글이 있던·있는 줄
                     let prev = self
+                        .w
                         .last_frame
                         .as_ref()
                         .and_then(|f| f.panes.iter().find(|p| p.0 == v.id));
@@ -1526,7 +1738,7 @@ impl App {
             }
         }
         let draw_ms = started.elapsed().as_secs_f64() * 1000.0;
-        self.last_frame = Some(FrameMemo {
+        self.w.last_frame = Some(FrameMemo {
             chrome,
             panes: views
                 .iter()
@@ -1549,7 +1761,7 @@ impl App {
             return;
         };
         // macOS의 softbuffer는 프레임마다 빈 버퍼를 준다(age 0). 들고 있는 프레임을 통째로 옮긴다
-        buffer.copy_from_slice(&self.frame);
+        buffer.copy_from_slice(&self.w.frame);
         let _ = buffer.present();
         log::debug!(
             "다시 그리기: {} {}줄 그리기 {:.2}ms, 올리기까지 {:.2}ms",
@@ -1562,8 +1774,8 @@ impl App {
 
     /// 고른 칸의 커서가 깜빡여야 하는가(창을 보고 있고 찾기 막대가 닫혀 있을 때만)
     fn blink_wanted_for(&self, views: &[PaneView]) -> bool {
-        self.focused
-            && self.search.is_none()
+        self.w.focused
+            && self.w.search.is_none()
             && views
                 .iter()
                 .any(|v| v.focused && v.screen.cursor.visible && v.screen.cursor.blinking)
@@ -1571,9 +1783,9 @@ impl App {
 
     /// 커서를 보이게 하고 깜빡임을 처음부터(키를 치는 동안은 깜빡이지 않는다)
     fn reset_blink(&mut self) {
-        self.blink_next = Instant::now() + BLINK;
-        if !self.blink_on {
-            self.blink_on = true;
+        self.w.blink_next = Instant::now() + BLINK;
+        if !self.w.blink_on {
+            self.w.blink_on = true;
             self.request_redraw();
         }
     }
@@ -1678,32 +1890,16 @@ pub fn to_draw_cells(s: &Screen, theme: &bt_core::Theme) -> Vec<DrawCell> {
 
 impl ApplicationHandler<UserEvent> for App {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
-        if self.gfx.is_some() {
+        if self.w.gfx.is_some() {
             return;
         }
-        let attrs = Window::default_attributes()
-            .with_title("b-terminal")
-            .with_inner_size(LogicalSize::new(1000.0, 680.0))
-            .with_min_inner_size(LogicalSize::new(320.0, 200.0));
-        #[cfg(target_os = "macos")]
-        let attrs = {
-            use winit::platform::macos::{OptionAsAlt, WindowAttributesExtMacOS};
-            attrs.with_option_as_alt(match self.config.option_as_alt {
-                bt_core::config::OptionAsAlt::Both => OptionAsAlt::Both,
-                bt_core::config::OptionAsAlt::Left => OptionAsAlt::OnlyLeft,
-                bt_core::config::OptionAsAlt::Right => OptionAsAlt::OnlyRight,
-                bt_core::config::OptionAsAlt::None => OptionAsAlt::None,
-            })
+        let Some(gfx) = self.create_gfx(event_loop) else {
+            event_loop.exit();
+            return;
         };
-        let window = match event_loop.create_window(attrs) {
-            Ok(w) => Rc::new(w),
-            Err(e) => {
-                log::error!("창을 만들지 못했습니다: {e}");
-                event_loop.exit();
-                return;
-            }
-        };
-        window.set_ime_allowed(true);
+        self.last_focused = Some(gfx.window.id());
+        self.w.focused = gfx.window.has_focus();
+        self.w.gfx = Some(gfx);
         #[cfg(target_os = "macos")]
         if self.menu.is_none() {
             let menu = crate::menu::build();
@@ -1714,28 +1910,12 @@ impl ApplicationHandler<UserEvent> for App {
             }));
             self.menu = Some(menu);
         }
-        self.scale = window.scale_factor();
-        let context = softbuffer::Context::new(window.clone()).expect("softbuffer context");
-        let surface = softbuffer::Surface::new(&context, window.clone()).expect("softbuffer surface");
-        self.gfx = Some(Gfx {
-            window,
-            surface,
-            _context: context,
-        });
         self.load_fonts();
-        if let (Some(f), Some(g)) = (&self.fonts, &self.gfx) {
-            if let (Some(cols), Some(rows)) = (self.config.window_width, self.config.window_height) {
-                let m = f.metrics();
-                let px = |pt: f32| (pt as f64 * self.scale).round() as u32;
-                let w = m.width * cols as u32 + px(self.config.padding_x.0) + px(self.config.padding_x.1);
-                let h = m.height * rows as u32 + px(self.config.padding_y.0) + px(self.config.padding_y.1);
-                let _ = g.window.request_inner_size(PhysicalSize::new(w, h));
-            }
-        }
         if self.fonts.is_none() {
             event_loop.exit();
             return;
         }
+        self.apply_initial_size();
         if self.shell_integration_dir.is_none() && self.config.shell_integration != "none" {
             match crate::shellint::install() {
                 Ok(dir) => self.shell_integration_dir = Some(dir),
@@ -1769,12 +1949,15 @@ impl ApplicationHandler<UserEvent> for App {
         match event {
             UserEvent::Redraw => {
                 // 화면이 바뀌면 짚고 있던 링크도 바뀔 수 있다
-                if self.hover.is_some() {
+                if self.w.hover.is_some() {
                     self.update_hover();
                 }
-                self.request_redraw()
+                // 어느 창의 칸이 바뀌었는지 모르므로 모든 창(바뀐 줄이 없는 창은 올리지 않는다)
+                self.request_redraw_all()
             }
             UserEvent::Menu(id) => match crate::menu::action_for(&id) {
+                // 메뉴는 보고 있는 창에 대한 것
+                _ if self.last_focused.is_some_and(|w| !self.switch_to(w)) => {}
                 Some(crate::menu::MenuCommand::Action(a)) => self.handle_action(a, event_loop),
                 Some(crate::menu::MenuCommand::OpenSettings) => match crate::menu::ensure_config_file() {
                     // 기본 글 편집기로 연다
@@ -1792,7 +1975,7 @@ impl ApplicationHandler<UserEvent> for App {
                     bt_core::proto::Call::Run { timeout_ms, .. } => Some(*timeout_ms),
                     _ => None,
                 };
-                let resp = self.handle_call(req);
+                let resp = self.handle_call(req, event_loop);
                 // run: 명령을 넣었으면 끝날 때 답한다(기한이 지나면 about_to_wait가 오류로 답한다)
                 if resp.id == u64::MAX {
                     if let Some(tab_id) = resp.result.get("pending").and_then(|v| v.as_u64()) {
@@ -1804,6 +1987,8 @@ impl ApplicationHandler<UserEvent> for App {
                 }
             }
             UserEvent::Session(id, e) => {
+                // 그 칸이 든 창이 지금 창이 되게(보고 있음·안 읽음·다시 그리기를 그 창 기준으로)
+                self.switch_to_pane(id);
                 let Some(idx) = self.panes.iter().position(|t| t.id == id) else {
                     return;
                 };
@@ -1830,7 +2015,7 @@ impl ApplicationHandler<UserEvent> for App {
                         // 프로그램이 OSC 52로 보낸 글(Claude Code의 /copy 등).
                         // 보고 있는 창의 고른 칸에서 온 것만 받는다: 뒤쪽 탭이나 옆 칸에 흘러간 출력이 몰래 클립보드를 바꿔
                         // 나중의 붙여넣기에 명령을 끼워 넣지 못하게(붙여넣기 하이재킹). 받으면 알림으로 보인다
-                        let watching = self.focused && self.is_focused(idx);
+                        let watching = self.w.focused && self.is_focused(idx);
                         if watching && text.len() <= 1024 * 1024 {
                             if let Some(cb) = self.clipboard.as_mut() {
                                 let _ = cb.set_text(text.clone());
@@ -1868,9 +2053,13 @@ impl ApplicationHandler<UserEvent> for App {
         }
     }
 
-    fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
+    fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
+        // 사건을 받은 창을 지금 창으로(창마다 상태를 바꿔 끼운다, #36)
+        if !self.switch_to(id) {
+            return;
+        }
         match event {
-            WindowEvent::CloseRequested => event_loop.exit(),
+            WindowEvent::CloseRequested => self.close_current_window(event_loop),
             WindowEvent::Resized(_) => self.resize_all(),
             WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
                 // 창을 만든 직후에도 같은 배율로 한 번 오므로 바뀌었을 때만 글꼴을 다시 읽는다
@@ -1887,7 +2076,10 @@ impl ApplicationHandler<UserEvent> for App {
                 self.update_hover();
             }
             WindowEvent::Focused(focused) => {
-                self.focused = focused;
+                self.w.focused = focused;
+                if focused {
+                    self.last_focused = Some(id);
+                }
                 if focused {
                     // 창으로 돌아오면 보고 있던 탭의 안 읽음을 지운다
                     self.clear_visible_unread();
@@ -1901,21 +2093,21 @@ impl ApplicationHandler<UserEvent> for App {
             }
             WindowEvent::Ime(ime) => match ime {
                 Ime::Preedit(text, _) => {
-                    self.preedit = text;
+                    self.w.preedit = text;
                     self.request_redraw();
                 }
                 Ime::Commit(text) => {
-                    self.preedit.clear();
+                    self.w.preedit.clear();
                     self.reset_blink();
                     // 찾기 막대가 열려 있으면 확정 글은 찾을 글로
-                    if self.search.is_some() {
+                    if self.w.search.is_some() {
                         self.search_push(&text);
                     } else {
                         self.write_active(text.as_bytes());
                     }
                 }
                 Ime::Enabled | Ime::Disabled => {
-                    self.preedit.clear();
+                    self.w.preedit.clear();
                     self.request_redraw();
                 }
             },
@@ -1936,7 +2128,7 @@ impl ApplicationHandler<UserEvent> for App {
                 let meta = self.config.option_as_alt != bt_core::config::OptionAsAlt::None;
                 let bytes = keys::encode(&event, self.mods, modes, meta);
                 if self.config.mouse_hide_while_typing {
-                    if let Some(g) = &self.gfx {
+                    if let Some(g) = &self.w.gfx {
                         g.window.set_cursor_visible(false);
                     }
                 }
@@ -1945,15 +2137,15 @@ impl ApplicationHandler<UserEvent> for App {
                 }
             }
             WindowEvent::CursorMoved { position, .. } => {
-                self.cursor_pos = position;
+                self.w.cursor_pos = position;
                 if self.config.mouse_hide_while_typing {
-                    if let Some(g) = &self.gfx {
+                    if let Some(g) = &self.w.gfx {
                         g.window.set_cursor_visible(true);
                     }
                 }
                 self.update_hover();
                 let Some(idx) = self.active_index() else { return };
-                if self.selecting {
+                if self.w.selecting {
                     if let Some((c, r)) = self.cell_in(idx, position) {
                         self.panes[idx].session.select_update(c, r);
                         self.request_redraw();
@@ -1967,13 +2159,13 @@ impl ApplicationHandler<UserEvent> for App {
             }
             WindowEvent::MouseInput { state, button, .. } => {
                 // 탭 줄을 누르면 그 탭으로
-                if (self.cursor_pos.y as u32) < self.tabbar_height() {
+                if (self.w.cursor_pos.y as u32) < self.tabbar_height() {
                     if state == ElementState::Pressed && button == MouseButton::Left {
-                        let width = self.gfx.as_ref().map(|g| g.window.inner_size().width).unwrap_or(0);
+                        let width = self.w.gfx.as_ref().map(|g| g.window.inner_size().width).unwrap_or(0);
                         let hit = self
                             .fonts
                             .as_ref()
-                            .and_then(|f| tabbar::hit(f, width, self.cursor_pos.x, self.tabs.len()));
+                            .and_then(|f| tabbar::hit(f, width, self.w.cursor_pos.x, self.w.tabs.len()));
                         if let Some(i) = hit {
                             self.activate(i);
                         }
@@ -1982,13 +2174,13 @@ impl ApplicationHandler<UserEvent> for App {
                 }
                 // Cmd-클릭: 링크를 연다. 누름과 놓기 모두 프로그램(마우스 보고)·고르기에 보내지 않는다
                 if button == MouseButton::Left {
-                    if state == ElementState::Released && self.link_click {
-                        self.link_click = false;
+                    if state == ElementState::Released && self.w.link_click {
+                        self.w.link_click = false;
                         return;
                     }
                     if state == ElementState::Pressed && self.link_mod() {
-                        if let Some((_, hit)) = self.link_under(self.cursor_pos) {
-                            self.link_click = true;
+                        if let Some((_, hit)) = self.link_under(self.w.cursor_pos) {
+                            self.w.link_click = true;
                             self.open_link(&hit.url);
                             return;
                         }
@@ -1997,7 +2189,7 @@ impl ApplicationHandler<UserEvent> for App {
                 // 다른 칸을 누르면 그 칸을 고른다. 누름은 고른 칸이 그대로 받는다
                 if state == ElementState::Pressed {
                     if let Some(id) = self
-                        .pane_at(self.cursor_pos)
+                        .pane_at(self.w.cursor_pos)
                         .filter(|id| Some(*id) != self.focused_id())
                     {
                         self.focus_pane(id);
@@ -2024,17 +2216,17 @@ impl ApplicationHandler<UserEvent> for App {
                 }
                 match state {
                     ElementState::Pressed => {
-                        let Some((c, r)) = self.cell_in(idx, self.cursor_pos) else {
+                        let Some((c, r)) = self.cell_in(idx, self.w.cursor_pos) else {
                             return;
                         };
                         let now = Instant::now();
-                        let clicks = match self.last_click {
+                        let clicks = match self.w.last_click {
                             Some((t, lc, lr, n)) if now - t < Duration::from_millis(400) && lc == c && lr == r => {
                                 n % 3 + 1
                             }
                             _ => 1,
                         };
-                        self.last_click = Some((now, c, r, clicks));
+                        self.w.last_click = Some((now, c, r, clicks));
                         let kind = match clicks {
                             2 => SelectKind::Word,
                             3 => SelectKind::Line,
@@ -2049,11 +2241,11 @@ impl ApplicationHandler<UserEvent> for App {
                                 t.session.select_update(c, r);
                             }
                         }
-                        self.selecting = true;
+                        self.w.selecting = true;
                         self.request_redraw();
                     }
                     ElementState::Released => {
-                        self.selecting = false;
+                        self.w.selecting = false;
                         // copy-on-select(Ghostty 기본 켬): 고르기를 마치면 바로 클립보드로
                         if self.config.copy_on_select {
                             if let Some(text) = self.active_pane().and_then(|t| t.session.selection_text()) {
@@ -2073,15 +2265,15 @@ impl ApplicationHandler<UserEvent> for App {
                         p.y / ch
                     }
                 };
-                self.scroll_accum += lines;
-                let whole = self.scroll_accum.trunc() as i32;
+                self.w.scroll_accum += lines;
+                let whole = self.w.scroll_accum.trunc() as i32;
                 if whole == 0 {
                     return;
                 }
-                self.scroll_accum -= whole as f64;
+                self.w.scroll_accum -= whole as f64;
                 // 휠은 마우스 아래 칸이 받는다(고르지 않은 칸도 굴려 볼 수 있게)
                 let Some(idx) = self
-                    .pane_at(self.cursor_pos)
+                    .pane_at(self.w.cursor_pos)
                     .and_then(|id| self.pane_index(id))
                     .or_else(|| self.active_index())
                 else {
@@ -2130,9 +2322,11 @@ impl ApplicationHandler<UserEvent> for App {
                     expired = true;
                 }
             }
-            if self.toast.as_ref().is_some_and(|(_, at)| at.elapsed() >= TOAST_FOR) {
-                self.toast = None;
-                expired = true;
+            for w in std::iter::once(&mut self.w).chain(self.others.iter_mut()) {
+                if w.toast.as_ref().is_some_and(|(_, at)| at.elapsed() >= TOAST_FOR) {
+                    w.toast = None;
+                    expired = true;
+                }
             }
             let late: Vec<u64> = self
                 .run_waiters
@@ -2149,30 +2343,37 @@ impl ApplicationHandler<UserEvent> for App {
                 }
             }
             if self.poll_foreground() || expired {
-                self.request_redraw();
+                self.request_redraw_all();
             }
             self.next_poll = now + Duration::from_secs(1);
         }
-        // 커서 깜빡임
-        if self.blink_wanted && now >= self.blink_next {
-            self.blink_on = !self.blink_on;
-            self.blink_next = now + BLINK;
-            self.request_redraw();
+        // 커서 깜빡임(창마다)
+        for w in std::iter::once(&mut self.w).chain(self.others.iter_mut()) {
+            if w.blink_wanted && now >= w.blink_next {
+                w.blink_on = !w.blink_on;
+                w.blink_next = now + BLINK;
+                if let Some(g) = &w.gfx {
+                    g.window.request_redraw();
+                }
+            }
         }
+        let blink_next = std::iter::once(&self.w)
+            .chain(&self.others)
+            .filter(|w| w.blink_wanted)
+            .map(|w| w.blink_next)
+            .min();
         // 동기화 출력(DEC 2026)이 끝나지 않은 탭이 있으면 기한에 깨어 반영한다
         let deadline = self
             .panes
             .iter()
             .filter_map(|t| t.session.sync_deadline())
             .chain([self.next_poll])
-            .chain(self.blink_wanted.then_some(self.blink_next))
+            .chain(blink_next)
             .min();
         match deadline {
             Some(d) if d <= Instant::now() => {
-                for t in &self.panes {
-                    if t.session.flush_expired_sync() {
-                        self.request_redraw();
-                    }
+                if self.panes.iter().any(|t| t.session.flush_expired_sync()) {
+                    self.request_redraw_all();
                 }
                 event_loop.set_control_flow(ControlFlow::Wait);
             }
@@ -2238,6 +2439,12 @@ mod tests {
             vec![true; 3],
             "앞 프레임이 없으면 모두"
         );
+    }
+
+    /// 보안 검토(#36): 새 창은 포커스 사건이 오기 전까지 보고 있지 않은 창이다(클립보드 쓰기를 받지 않는다)
+    #[test]
+    fn new_window_state_is_not_focused_until_told() {
+        assert!(!Win::new().focused);
     }
 
     #[test]

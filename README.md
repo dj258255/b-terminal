@@ -26,7 +26,7 @@ open ~/Applications/b-terminal.app
 |---|---|
 | Cmd-C / Cmd-V | 복사 / 붙여넣기(괄호 붙여넣기 모드면 감싸서). 고르기만 해도 복사됩니다(copy-on-select) |
 | Cmd-= / Cmd-- / Cmd-0 | 글자 크기 |
-| Cmd-T / Cmd-W / Cmd-Opt-W | 새 탭 / 칸 닫기(칸이 하나면 탭) / 탭 닫기 |
+| Cmd-N / Cmd-T / Cmd-W / Cmd-Opt-W | 새 창 / 새 탭 / 칸 닫기(칸이 하나면 탭) / 탭 닫기 |
 | Cmd-1~8, Cmd-9, Cmd-Shift-[ / Cmd-Shift-] | 탭 옮기기(탭 줄을 눌러도 됩니다) |
 | Cmd-D / Cmd-Shift-D | 화면을 오른쪽 / 아래로 나누기 |
 | Cmd-[ / Cmd-], Cmd-Opt-방향키 | 앞·다음 칸, 그쪽 칸으로(칸을 눌러도 됩니다) |
@@ -67,6 +67,7 @@ kitty·WezTerm의 원격 조종처럼, 스크립트가 터미널의 탭을 열�
 btctl list                               # 탭 목록
 btctl new --cwd ~/dev -- htop            # 새 탭에서 htop
 btctl new --split right -- tail -f log   # 이 칸을 나눠 오른쪽에서 tail
+btctl new --window                       # 새 창
 btctl send --tab 2 --enter "make test"   # 2번 탭에 글과 Enter
 btctl read --tab 2                       # 2번 탭 화면을 글로
 btctl notify "빌드" "끝났습니다"           # 이 탭에 알림
