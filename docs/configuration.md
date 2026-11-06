@@ -83,11 +83,13 @@ keybind = super+shift+n=new_tab
 keybind = super+t=unbind              # 기본 묶음 지우기
 keybind = ctrl+alt+g=text:git status\r # 글 보내기(\n \r \t \e \xHH)
 keybind = clear                       # 기본 묶음을 모두 지우기
+keybind = global:ctrl+backquote=toggle_quick_terminal  # 앱이 뒤에 있어도 듣는 전역 단축키
 ```
 
 - 수식 키: `super`(cmd) `ctrl` `alt`(opt) `shift`. 키 이름은 Ghostty 이름: `a`~`z`, `digit_1`(또는 `1`), `equal`, `minus`, `comma`, `bracket_left`, `bracket_right`, `arrow_up`, `page_up`, `home`, `enter`, `f1` …
 - 키 순서(`ctrl+a>n`)와 분할 동작은 아직 받지 않습니다(경고).
 - macOS가 아니면 기본 묶음의 `super`는 `ctrl+shift`로 바뀝니다.
+- `global:` 접두사를 붙이면 시스템 전역 단축키가 됩니다(Ghostty와 같은 문법). 다른 앱이 앞에 있어도 듣습니다. 기본 전역 묶음은 없습니다. 다른 앱이 이미 잡은 조합이면 경고를 남기고 건너뜁니다.
 
 | 동작 | 하는 일 | macOS 기본 |
 |---|---|---|
@@ -111,10 +113,11 @@ keybind = clear                       # 기본 묶음을 모두 지우기
 | `clear_screen` | 화면 지우기(셸에 Ctrl-L) | `super+k` |
 | `select_all` | 보이는 화면 모두 고르기 | `super+a` |
 | `reload_config` | 설정 다시 읽기 | `super+shift+comma` |
+| `toggle_quick_terminal` | 퀵 터미널(화면 위쪽에 떠서 내려오는 창) 보이기·숨기기. 포커스를 잃으면 숨습니다. 창 상태 복원에서 빠집니다 | (없음, `global:`로 묶으세요) |
 | `text:글` / `csi:…` / `esc:…` | 글·이스케이프 보내기 | |
 | `unbind` | 그 트리거 지우기 | |
 
-설정 다시 읽기는 글꼴·색(이미 열린 탭 포함)·키 묶음·여백·Option 키를 바꿉니다. 바깥에서 부르려면 `btctl reload-config`.
+설정 다시 읽기는 글꼴·색(이미 열린 탭 포함)·키 묶음(전역 단축키 포함)·여백·Option 키를 바꿉니다. 바깥에서 부르려면 `btctl reload-config`. 퀵 터미널은 `btctl quick`.
 
 ## 셸 통합
 
