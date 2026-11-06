@@ -1509,6 +1509,8 @@ impl App {
         // 투명 창(#78): 창을 투명으로 만들고 그림판이 알파를 넘기게 한다
         let transparent = self.config.background_opacity < 1.0;
         softbuffer::set_transparent(transparent);
+        // 실험 E4: BT_E4_NO_REUSE가 있으면 버퍼 다시 쓰기를 끈다(견주어 재려고)
+        softbuffer::set_reuse_buffers(std::env::var_os("BT_E4_NO_REUSE").is_none());
         let attrs = Window::default_attributes()
             .with_title("b-terminal")
             .with_inner_size(LogicalSize::new(1000.0, 680.0))

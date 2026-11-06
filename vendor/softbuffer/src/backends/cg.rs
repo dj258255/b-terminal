@@ -265,8 +265,12 @@ impl<D: HasDisplayHandle, W: HasWindowHandle> SurfaceInterface<D, W> for CGImpl<
     }
 
     fn buffer_mut(&mut self) -> Result<BufferImpl<'_, D, W>, SoftBufferError> {
+        // b-terminal(#79): Core Animation이 다 쓰고 돌려준 버퍼를 다시 쓴다. 새로 잡으면 0으로 채운 쪽마다
+        // 처음 쓸 때 쪽 부재가 나 큰 창에서 약 2ms가 든다(실험 E3·E4). 내용은 정해지지 않는다(age 0, 원래와 같음)
+        let n = self.width * self.height;
+        let reused = if crate::reuse_buffers() { take_spare(n) } else { None };
         Ok(BufferImpl {
-            buffer: util::PixelBuffer(vec![0; self.width * self.height]),
+            buffer: util::PixelBuffer(reused.unwrap_or_else(|| vec![0; n])),
             imp: self,
         })
     }
@@ -310,7 +314,9 @@ impl<D: HasDisplayHandle, W: HasWindowHandle> BufferInterface for BufferImpl<'_,
             let data = data.cast::<u32>();
             let slice = slice_from_raw_parts_mut(data.as_ptr(), size / size_of::<u32>());
             // SAFETY: This is the same slice that we passed to `Box::into_raw` below.
-            drop(unsafe { Box::from_raw(slice) })
+            let boxed = unsafe { Box::from_raw(slice) };
+            // b-terminal(#79): 버리지 않고 다시 쓸 자리에 둔다(Core Animation이 다 쓴 뒤 부른다)
+            put_spare(boxed.into_vec());
         }
 
         let data_provider = {
@@ -374,6 +380,27 @@ impl<D: HasDisplayHandle, W: HasWindowHandle> BufferInterface for BufferImpl<'_,
 
     fn present_with_damage(self, _damage: &[Rect]) -> Result<(), SoftBufferError> {
         self.present()
+    }
+}
+
+/// b-terminal(#79): 다시 쓸 버퍼들. release는 Core Animation의 다른 스레드에서 불릴 수 있어 잠근다
+static SPARE: std::sync::Mutex<Vec<Vec<u32>>> = std::sync::Mutex::new(Vec::new());
+/// 두는 버퍼 수 상한(창 크기가 바뀌면 옛 크기의 것은 버린다)
+const MAX_SPARE: usize = 3;
+
+fn take_spare(len: usize) -> Option<Vec<u32>> {
+    let mut spare = SPARE.lock().ok()?;
+    let i = spare.iter().position(|b| b.len() == len)?;
+    Some(spare.swap_remove(i))
+}
+
+fn put_spare(buf: Vec<u32>) {
+    if let Ok(mut spare) = SPARE.lock() {
+        // 다른 크기(창 크기가 바뀐 뒤)의 것은 버리고, 상한을 넘으면 버린다
+        spare.retain(|b| b.len() == buf.len());
+        if spare.len() < MAX_SPARE {
+            spare.push(buf);
+        }
     }
 }
 
