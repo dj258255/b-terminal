@@ -331,7 +331,12 @@ impl<D: HasDisplayHandle, W: HasWindowHandle> BufferInterface for BufferImpl<'_,
         //
         // TODO: Use `CGBitmapInfo::new` once the next version of objc2-core-graphics is released.
         let bitmap_info = CGBitmapInfo(
-            CGImageAlphaInfo::NoneSkipFirst.0
+            // b-terminal(#78): 투명 창이면 곱한 알파를 넘긴다(바탕 칸으로 창 뒤가 비침)
+            (if crate::transparent() {
+                CGImageAlphaInfo::PremultipliedFirst.0
+            } else {
+                CGImageAlphaInfo::NoneSkipFirst.0
+            })
                 | CGImageComponentInfo::Integer.0
                 | CGImageByteOrderInfo::Order32Little.0
                 | CGImagePixelFormatInfo::Packed.0,

@@ -25,7 +25,7 @@ winit이 같은 문제를 고친 판을 내면 패치를 지우고 그 판으로
 
 - 원본: crates.io `softbuffer 0.4.8`(MIT 또는 Apache-2.0, `vendor/softbuffer/LICENSE-*`). 벤치마크는 뺐습니다.
 - 연결: 루트 `Cargo.toml`의 `[patch.crates-io]`.
-- 고친 곳: `src/lib.rs` 끝의 `set_native_color_space`(스위치 하나)와 `src/backends/cg.rs`의 색 공간 만들기 한 군데. `b-terminal(ADR-009)`로 찾을 수 있습니다. 기능 플래그 `CGDirectDisplay`·`CGDisplayConfiguration`을 더했습니다(`Cargo.toml`).
+- 고친 곳: `src/lib.rs` 끝의 `set_native_color_space`·`set_transparent`(스위치 둘)와 `src/backends/cg.rs`의 색 공간 만들기·알파 형식 두 군데. `b-terminal(ADR-009)`·`b-terminal(#78)`로 찾을 수 있습니다. 투명 창이면 그림을 곱한 알파(ARGB)로 넘깁니다. 기능 플래그 `CGDirectDisplay`·`CGDisplayConfiguration`을 더했습니다(`Cargo.toml`).
 
 ### 왜
 

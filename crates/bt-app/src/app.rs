@@ -1506,10 +1506,14 @@ impl App {
     fn create_gfx(&mut self, event_loop: &ActiveEventLoop) -> Option<Gfx> {
         // 화면 색 공간으로 넘길지(ADR-009). 새 그림판부터 따른다
         softbuffer::set_native_color_space(!self.config.colorspace_srgb);
+        // 투명 창(#78): 창을 투명으로 만들고 그림판이 알파를 넘기게 한다
+        let transparent = self.config.background_opacity < 1.0;
+        softbuffer::set_transparent(transparent);
         let attrs = Window::default_attributes()
             .with_title("b-terminal")
             .with_inner_size(LogicalSize::new(1000.0, 680.0))
-            .with_min_inner_size(LogicalSize::new(320.0, 200.0));
+            .with_min_inner_size(LogicalSize::new(320.0, 200.0))
+            .with_transparent(transparent);
         #[cfg(target_os = "macos")]
         let attrs = {
             use winit::platform::macos::{OptionAsAlt, WindowAttributesExtMacOS};
@@ -1963,8 +1967,18 @@ impl App {
             return;
         };
         let t_copy = Instant::now();
-        // macOS의 softbuffer는 프레임마다 빈 버퍼를 준다(age 0). 들고 있는 프레임을 통째로 옮긴다
-        buffer.copy_from_slice(&self.w.frame);
+        // macOS의 softbuffer는 프레임마다 빈 버퍼를 준다(age 0). 들고 있는 프레임을 통째로 옮긴다.
+        // 투명 창이면 기본 바탕색 픽셀에만 투명도를 준다(글자는 또렷하게, Ghostty와 같다)
+        let opacity = self.config.background_opacity;
+        if opacity < 1.0 {
+            let bg = theme.background.to_u32();
+            let alpha = (opacity * 255.0).round() as u8;
+            for (dst, &src) in buffer.iter_mut().zip(self.w.frame.iter()) {
+                *dst = translucent(src, bg, alpha);
+            }
+        } else {
+            buffer.copy_from_slice(&self.w.frame);
+        }
         let t_present = Instant::now();
         let _ = buffer.present();
         let ms = |a: Instant, b: Instant| (b - a).as_secs_f64() * 1000.0;
@@ -1999,6 +2013,17 @@ impl App {
             self.request_redraw();
         }
     }
+}
+
+/// 0RGB 픽셀을 곱한 알파 ARGB로(#78): 바탕색과 같으면 `alpha`만큼 비치게, 아니면 불투명
+fn translucent(px: u32, bg: u32, alpha: u8) -> u32 {
+    let rgb = px & 0x00ff_ffff;
+    if rgb != bg & 0x00ff_ffff || alpha == 255 {
+        return 0xff00_0000 | rgb;
+    }
+    let a = alpha as u32;
+    let mul = |shift: u32| (((rgb >> shift) & 0xff) * a + 127) / 255;
+    (a << 24) | (mul(16) << 16) | (mul(8) << 8) | mul(0)
 }
 
 /// 커서 깜빡임 간격
@@ -2661,6 +2686,16 @@ mod tests {
             vec![true; 3],
             "앞 프레임이 없으면 모두"
         );
+    }
+
+    /// #78: 바탕색 픽셀만 투명도를 주고(곱한 알파), 나머지는 불투명(알파 255)
+    #[test]
+    fn translucent_background_pixels() {
+        let bg = 0x0028_2c34;
+        assert_eq!(translucent(bg, bg, 255), 0xff28_2c34);
+        // 반투명이면 색도 알파를 곱한다(PremultipliedFirst)
+        assert_eq!(translucent(bg, bg, 128), 0x8014_161a);
+        assert_eq!(translucent(0x00ff_ffff, bg, 128), 0xffff_ffff, "글자 픽셀은 불투명");
     }
 
     /// 보안 검토(#36): 새 창은 포커스 사건이 오기 전까지 보고 있지 않은 창이다(클립보드 쓰기를 받지 않는다)

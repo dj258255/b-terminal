@@ -388,3 +388,16 @@ pub fn set_native_color_space(on: bool) {
 pub(crate) fn native_color_space() -> bool {
     NATIVE_COLOR_SPACE.load(core::sync::atomic::Ordering::Relaxed)
 }
+
+/// b-terminal(#78): 그림 바이트의 맨 앞 바이트를 곱한 알파로 넘길지(투명 창). 다음에 만드는 그림부터 따른다
+static TRANSPARENT: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+
+/// b-terminal(#78): 켜면 macOS에서 알파(곱한 알파, ARGB)를 넘긴다
+pub fn set_transparent(on: bool) {
+    TRANSPARENT.store(on, core::sync::atomic::Ordering::Relaxed);
+}
+
+#[allow(dead_code)]
+pub(crate) fn transparent() -> bool {
+    TRANSPARENT.load(core::sync::atomic::Ordering::Relaxed)
+}

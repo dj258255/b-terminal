@@ -109,6 +109,8 @@ pub struct Config {
     /// macOS에서 색 맞춤을 하는가(`window-colorspace = srgb`). 기본은 끔(`display-p3`): 화면 색 공간으로 그대로 넘겨
     /// 프레임마다의 변환을 피한다(실험 E3, ADR-009)
     pub colorspace_srgb: bool,
+    /// 바탕 불투명도(0~1, Ghostty `background-opacity`). 1보다 작으면 기본 바탕색 칸으로 창 뒤가 비친다(#78)
+    pub background_opacity: f32,
     pub warnings: Vec<String>,
     /// 실제로 읽은 파일
     pub sources: Vec<PathBuf>,
@@ -148,6 +150,7 @@ impl Default for Config {
             unfocused_split_fill: None,
             split_divider_color: None,
             colorspace_srgb: false,
+            background_opacity: 1.0,
             warnings: Vec::new(),
             sources: Vec::new(),
         }
@@ -547,6 +550,10 @@ impl Config {
                 _ => bad(warnings),
             },
             "mouse-reset-on-shell" => self.mouse_reset_on_shell = parse_bool(v).unwrap_or(true),
+            "background-opacity" => match v.parse::<f32>() {
+                Ok(o) if o.is_finite() => self.background_opacity = o.clamp(0.0, 1.0),
+                _ => bad(warnings),
+            },
             "window-colorspace" => match v {
                 "srgb" => self.colorspace_srgb = true,
                 "display-p3" => self.colorspace_srgb = false,
@@ -652,7 +659,6 @@ const KNOWN_IGNORED: &[&str] = &[
     "font-thicken",
     "font-thicken-strength",
     "font-synthetic-style",
-    "background-opacity",
     "background-blur",
     "background-blur-radius",
     "window-decoration",
@@ -830,7 +836,7 @@ mod tests {
         assert_eq!(
             c.warnings.len(),
             1,
-            "background-opacity는 알려진 무시 키, what-is-this만 경고: {:?}",
+            "background-opacity는 읽는 키, what-is-this만 경고: {:?}",
             c.warnings
         );
         assert!(c.warnings[0].contains("what-is-this"));
@@ -842,6 +848,21 @@ mod tests {
         assert_eq!(c.font_size, 13.0);
         assert_eq!(c.cursor_style, CursorStyle::Block);
         assert_eq!(c.warnings.len(), 3);
+    }
+
+    #[test]
+    fn background_opacity_key() {
+        assert_eq!(Config::default().background_opacity, 1.0);
+        assert_eq!(
+            Config::from_text("background-opacity = 0.85\n", true).background_opacity,
+            0.85
+        );
+        assert_eq!(
+            Config::from_text("background-opacity = 3\n", true).background_opacity,
+            1.0,
+            "1로 묶는다"
+        );
+        assert_eq!(Config::from_text("background-opacity = x\n", true).warnings.len(), 1);
     }
 
     #[test]
