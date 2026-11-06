@@ -8,6 +8,7 @@
 - 창 상태 복원(`window-save-state`, Ghostty 키): Cmd-Q로 끌 때 창·탭·분할·작업 폴더를 적어 두고 다음에 켤 때 되살립니다.
 - 퀵 터미널(`toggle_quick_terminal`, Ghostty 동작): 화면 위쪽에 떠 있는 창을 전역 단축키(`keybind = global:…`)나 `btctl quick`으로 보였다 숨깁니다. 포커스를 잃으면 숨습니다.
 - 글꼴 합자: JetBrains Mono의 `->` `!=` `===` 같은 합자를 그립니다(Ghostty처럼 기본으로 켬). `font-feature = -calt`로 끄고, `ss01`·`cv01=2` 같은 다른 글꼴 기능도 줍니다. 칸 폭은 그대로입니다.
+- `window-colorspace = display-p3`(기본)에서 주 화면이 아니라 창이 있는 화면의 색 공간을 씁니다. 창을 다른 화면으로 옮기면 그 화면의 색 공간으로 바꿉니다(외부 모니터에서 색 맞춤 변환이 다시 생기지 않게, 실제로 옮겨 보지는 못함).
 
 ## [0.5.0] - 2026-11-06
 

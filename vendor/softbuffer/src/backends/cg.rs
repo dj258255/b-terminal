@@ -104,6 +104,10 @@ pub struct CGImpl<D, W> {
     root_layer: SendCALayer,
     observer: Retained<Observer>,
     color_space: CFRetained<CGColorSpace>,
+    /// b-terminal(#97): 색 공간을 가져온 화면 번호. 창이 다른 화면으로 가면 그 화면의 색 공간으로 바꾼다
+    display: u32,
+    /// b-terminal(#97): 마지막으로 본 창의 NSScreen 객체 자리. 같으면 화면 번호를 다시 묻지 않는다
+    screen: usize,
     /// The width of the underlying buffer.
     width: usize,
     /// The height of the underlying buffer.
@@ -228,8 +232,10 @@ impl<D: HasDisplayHandle, W: HasWindowHandle> SurfaceInterface<D, W> for CGImpl<
         // Initialize color space here, to reduce work later on.
         // b-terminal(ADR-009): 화면 자신의 색 공간으로 넘기면 Core Animation이 프레임마다 색 맞춤 변환을 하지 않는다
         // (실험 E3: 큰 창 present 14ms → 0.1ms). 색은 맞추지 않고 그대로 나간다. 끄면 원래대로 기기 RGB
+        // b-terminal(#97): 주 화면이 아니라 창이 있는 화면(못 구하면 주 화면)
+        let display = display_of(&window_src).unwrap_or_else(|| objc2_core_graphics::CGMainDisplayID());
         let color_space = if crate::native_color_space() {
-            objc2_core_graphics::CGDisplayCopyColorSpace(objc2_core_graphics::CGMainDisplayID())
+            objc2_core_graphics::CGDisplayCopyColorSpace(display)
         } else {
             CGColorSpace::new_device_rgb().unwrap()
         };
@@ -246,6 +252,8 @@ impl<D: HasDisplayHandle, W: HasWindowHandle> SurfaceInterface<D, W> for CGImpl<
             root_layer: SendCALayer(root_layer),
             observer,
             color_space,
+            display,
+            screen: 0,
             width,
             height,
             _display: PhantomData,
@@ -274,6 +282,33 @@ impl<D: HasDisplayHandle, W: HasWindowHandle> SurfaceInterface<D, W> for CGImpl<
             imp: self,
         })
     }
+}
+
+/// b-terminal(#97): 창이 있는 화면(NSScreen). 창이 화면에 없으면 없다.
+/// AppKit 뷰만(UIKit은 없다). 메인 스레드에서 부른다(그림판을 만들고 올리는 곳)
+fn screen_of<W: HasWindowHandle>(window: &W) -> Option<Retained<NSObject>> {
+    let RawWindowHandle::AppKit(handle) = window.window_handle().ok()?.as_raw() else {
+        return None;
+    };
+    // SAFETY: `WindowHandle`이 살아 있는 NSView를 가리킨다고 보장한다. `-[NSView window]`와 `-[NSWindow screen]`은
+    // 없을 수 있는 객체를 돌려준다(Option)
+    unsafe {
+        let view: &NSObject = handle.ns_view.cast().as_ref();
+        let window: Option<Retained<NSObject>> = msg_send![view, window];
+        msg_send![&*window?, screen]
+    }
+}
+
+/// b-terminal(#97): 화면의 번호(`NSScreenNumber`, CGDirectDisplayID)
+fn screen_number(screen: &NSObject) -> Option<u32> {
+    // SAFETY: `-[NSScreen deviceDescription]`은 NSDictionary<NSString, id>를 돌려준다
+    let desc: Retained<NSDictionary<NSString, AnyObject>> = unsafe { msg_send![screen, deviceDescription] };
+    let number = desc.objectForKey(ns_string!("NSScreenNumber"))?;
+    Some(number.downcast::<NSNumber>().ok()?.unsignedIntValue())
+}
+
+fn display_of<W: HasWindowHandle>(window: &W) -> Option<u32> {
+    screen_number(&*screen_of(window)?)
 }
 
 #[derive(Debug)]
@@ -347,6 +382,21 @@ impl<D: HasDisplayHandle, W: HasWindowHandle> BufferInterface for BufferImpl<'_,
                 | CGImageByteOrderInfo::Order32Little.0
                 | CGImagePixelFormatInfo::Packed.0,
         );
+
+        // b-terminal(#97): 창이 다른 화면으로 옮겨 갔으면 그 화면의 색 공간으로 바꾼다(화면 색 공간을 쓸 때만).
+        // NSScreen 객체가 그대로면 번호를 묻지 않는다(deviceDescription은 프레임마다 묻기에 비싸다)
+        if crate::native_color_space() {
+            if let Some(screen) = screen_of(&self.imp.window_handle) {
+                let at = Retained::as_ptr(&screen) as usize;
+                if at != self.imp.screen {
+                    self.imp.screen = at;
+                    if let Some(d) = screen_number(&screen).filter(|d| *d != self.imp.display) {
+                        self.imp.color_space = objc2_core_graphics::CGDisplayCopyColorSpace(d);
+                        self.imp.display = d;
+                    }
+                }
+            }
+        }
 
         let image = unsafe {
             CGImage::new(

@@ -217,6 +217,8 @@ struct Win {
     quick: bool,
     /// 퀵 터미널을 보인 때. 직후의 포커스 잃음(앱이 앞으로 오기 전)은 숨기지 않는다
     quick_shown: Option<Instant>,
+    /// 바뀐 것이 없어도 다음 그리기에서 창에 한 번 올린다(창이 다른 화면으로 옮겨 가면 그 화면의 색 공간으로, #97)
+    force_present: bool,
     /// 들고 있는 프레임과 그 내용(바뀐 줄만 다시 그리려고, #40)
     frame: Vec<u32>,
     last_frame: Option<FrameMemo>,
@@ -247,6 +249,7 @@ impl Win {
             palette: None,
             quick: false,
             quick_shown: None,
+            force_present: false,
             frame: Vec::new(),
             last_frame: None,
             blink_on: true,
@@ -2200,7 +2203,8 @@ impl App {
         });
         gfx.window.set_title(&title);
         // 바뀐 것이 없으면 창에 올리지 않는다(올리기만 약 10ms, 실험 E2)
-        if !full && repainted_rows == 0 {
+        let force_present = std::mem::take(&mut self.w.force_present);
+        if !full && repainted_rows == 0 && !force_present {
             return;
         }
         let (Some(w), Some(h)) = (NonZeroU32::new(size.width), NonZeroU32::new(size.height)) else {
@@ -2564,6 +2568,11 @@ impl ApplicationHandler<UserEvent> for App {
         match event {
             WindowEvent::CloseRequested => self.close_current_window(event_loop),
             WindowEvent::Resized(_) => self.resize_all(),
+            // 다른 화면으로 옮겨 갔을 수 있다. 다시 그리지 않고 올리기만 해 softbuffer가 그 화면의 색 공간을 고르게 한다(#97)
+            WindowEvent::Moved(_) => {
+                self.w.force_present = true;
+                self.request_redraw();
+            }
             WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
                 // 창을 만든 직후에도 같은 배율로 한 번 오므로 바뀌었을 때만 글꼴을 다시 읽는다
                 if (scale_factor - self.scale).abs() < f64::EPSILON {
