@@ -62,7 +62,7 @@ config-file = ?~/.config/b-terminal/local   # ?가 붙으면 없어도 된다
 | `clipboard-read` | `allow` / `deny` / `ask` | `deny` | 프로그램이 OSC 52로 클립보드 읽기. `ask`는 아직 묻는 창이 없어 `deny`로 봅니다 |
 | `shell-integration` | `detect` `none` `zsh` `bash` | `detect` | 탭의 셸에 셸 통합을 싣습니다(아래 "셸 통합") |
 | `notify-command-seconds` | 초 | `10` | b-terminal 키. 셸 통합으로 안 명령이 이만큼 넘게 걸려 끝나면 창을 보지 않을 때 알림. `0`이면 끔 |
-| `background-opacity` | `0`~`1` | `1` | 기본 바탕색 칸으로 창 뒤가 비칩니다(글자·색 칸은 불투명). 새 창부터 따릅니다. 밝은 배경 위에서는 글자 가장자리가 조금 어둡게 보일 수 있습니다 |
+| `background-opacity` | `0`~`1` | `1` | 기본 바탕색 칸으로 창 뒤가 비칩니다(글자·색 칸은 불투명). 새 창부터 따릅니다 |
 | `window-colorspace` | `display-p3` / `srgb` | `display-p3` | macOS. `display-p3`는 화면 색 공간으로 그대로 넘겨 빠르고(색은 맞추지 않음), `srgb`는 테마 색을 정확히 맞추지만 큰 창에서 프레임마다 약 10ms가 더 듭니다(실험 E3). 새 창부터 따릅니다 |
 | `unfocused-split-opacity` | `0.15`~`1` | `0.7` | 화면을 나눴을 때 고르지 않은 칸의 불투명도. 낮을수록 흐립니다 |
 | `unfocused-split-fill` | `#rrggbb` | 바탕색 | 고르지 않은 칸을 덮는 색 |
