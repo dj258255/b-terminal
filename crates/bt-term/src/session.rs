@@ -566,6 +566,11 @@ impl Session {
         self.inner.lock().search = None;
     }
 
+    /// 맨 아래에서 위로 `lines`줄(스크롤백 포함)의 글(#66)
+    pub fn tail_text(&self, lines: usize) -> String {
+        tail_text(&self.inner.lock().term, lines)
+    }
+
     /// 마우스 보고 모드가 켜져 있으면 끈다. 껐으면 참.
     /// 마우스를 켠 프로그램이 끄지 못하고 죽으면 셸에 `ESC[<35;x;yM`이 글자로 쏟아진다(#24). PTY에는 쓰지 않고 화면 상태만 바꾼다
     pub fn reset_mouse_modes(&self) -> bool {
@@ -705,6 +710,44 @@ fn modes_of(m: TermMode) -> Modes {
             all_as_escapes: m.contains(TermMode::REPORT_ALL_KEYS_AS_ESC),
         },
     }
+}
+
+/// 화면 맨 아래에서 위로 `lines`줄(스크롤백 포함)을 글로 꺼낸다(#66). 줄 넘김으로 접힌 줄은 이어 붙이고,
+/// 줄 끝 공백과 끝의 빈 줄은 뺀다. 넓은 글자의 뒤 칸은 건너뛴다
+fn tail_text<T>(term: &Term<T>, lines: usize) -> String {
+    let bottom = term.bottommost_line();
+    let top = std::cmp::max(term.topmost_line(), bottom - (lines.max(1) as i32 - 1));
+    let cols = term.columns();
+    let mut out = String::new();
+    let mut line = top;
+    while line <= bottom {
+        let row = &term.grid()[line];
+        let mut text = String::new();
+        for col in 0..cols {
+            let cell = &row[Column(col)];
+            if cell
+                .flags
+                .intersects(Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER)
+            {
+                continue;
+            }
+            text.push(cell.c);
+            if let Some(z) = cell.zerowidth() {
+                text.extend(z);
+            }
+        }
+        let wrapped = row[Column(cols - 1)].flags.contains(Flags::WRAPLINE);
+        if wrapped {
+            out.push_str(&text);
+        } else {
+            out.push_str(text.trim_end());
+            out.push('\n');
+        }
+        line += 1;
+    }
+    let trimmed = out.trim_end_matches(['\n', ' ']).len();
+    out.truncate(trimmed);
+    out
 }
 
 /// 한 화면이 담는 OSC 8 링크 수와 주소 길이의 상한
@@ -913,5 +956,9 @@ impl Emulator {
 
     pub fn search_clear(&mut self) {
         self.search = None;
+    }
+
+    pub fn tail_text(&self, lines: usize) -> String {
+        tail_text(&self.term, lines)
     }
 }

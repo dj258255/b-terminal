@@ -14,7 +14,9 @@ const USAGE: &str = "사용: btctl <명령> [인자]
                                     새 탭. --split right·down·left·up·auto면 탭(칸)을 나눠, --window면 새 창에 연다
   focus <탭>                        그 탭으로
   send [--tab N] [--enter] <글...>  탭에 글 넣기(--enter면 끝에 Enter)
-  read [--tab N]                    탭 화면을 글로
+  read [--tab N] [--lines N]        탭 화면을 글로(--lines면 맨 아래에서 위로 N줄, 스크롤백 포함)
+  wait [--tab N] [--timeout 초] -- <글...>
+                                    탭 글(화면과 최근 스크롤백 500줄)에 그 글이 나올 때까지 기다림. 기한이 지나면 1로 끝남
   notify [--tab N] <제목> [본문]    알림 달기(OSC 알림과 같게 다룸)
   reload-config                     설정 파일을 다시 읽기
   run [--tab N] [--timeout 초] [--json] -- <명령...>
@@ -201,10 +203,58 @@ fn run(args: &[String]) -> Result<String, Error> {
             Ok(String::new())
         }
         "read" => {
-            let (tab, _) = take_tab(rest)?;
-            let v = call(&socket, Call::Read { tab })?;
+            let (tab, rest) = take_tab(rest)?;
+            let mut lines = None;
+            let mut it = rest.iter();
+            while let Some(a) = it.next() {
+                match a.as_str() {
+                    "--lines" => {
+                        let v = it.next().ok_or_else(|| usage("--lines 뒤에 줄 수가 필요합니다"))?;
+                        lines = Some(
+                            v.parse::<usize>()
+                                .map_err(|_| usage(format!("줄 수가 아닙니다: {v}")))?,
+                        );
+                    }
+                    other => return Err(usage(format!("모르는 인자: {other}"))),
+                }
+            }
+            let v = call(&socket, Call::Read { tab, lines })?;
+            if v["truncated"].as_bool() == Some(true) {
+                eprintln!("btctl: 글이 길어 앞부분을 버렸습니다");
+            }
             // 화면 글은 그대로 돌려준다(스크립트가 읽는 값). 다만 엔진이 지운 이스케이프는 이미 없다
             Ok(v["text"].as_str().unwrap_or_default().to_string())
+        }
+        "wait" => {
+            let (tab, rest) = take_tab(rest)?;
+            let mut timeout_ms = 60_000u64;
+            let mut words = Vec::new();
+            let mut it = rest.iter();
+            while let Some(a) = it.next() {
+                match a.as_str() {
+                    "--timeout" => {
+                        let v = it.next().ok_or_else(|| usage("--timeout 뒤에 초가 필요합니다"))?;
+                        timeout_ms = v
+                            .parse::<u64>()
+                            .map_err(|_| usage(format!("초가 아닙니다: {v}")))?
+                            .saturating_mul(1000);
+                    }
+                    "--" => words.extend(it.by_ref().cloned()),
+                    other => words.push(other.to_string()),
+                }
+            }
+            if words.is_empty() {
+                return Err(usage("기다릴 글이 필요합니다"));
+            }
+            call(
+                &socket,
+                Call::Wait {
+                    tab,
+                    text: words.join(" "),
+                    timeout_ms,
+                },
+            )?;
+            Ok(String::new())
         }
         "notify" => {
             let (tab, rest) = take_tab(rest)?;
