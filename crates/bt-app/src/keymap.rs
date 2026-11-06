@@ -423,6 +423,11 @@ mod tests {
         assert_eq!(parse_action("close_surface").unwrap(), Some(Action::CloseSurface));
         assert_eq!(parse_action("start_search").unwrap(), Some(Action::StartSearch));
         assert_eq!(
+            parse_action("new_window").unwrap(),
+            Some(Action::NewWindow),
+            "새 탭이 아니라 새 창"
+        );
+        assert_eq!(
             parse_action("navigate_search:previous").unwrap(),
             Some(Action::NavigateSearch(false))
         );
