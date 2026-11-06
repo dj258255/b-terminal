@@ -12,6 +12,7 @@
 - [ADR-006 Ghostty는 본보기일 뿐 기대지 않는다: AI CLI가 가장 잘 도는 우리 터미널](#adr-006-ghostty는-본보기일-뿐-기대지-않는다-ai-cli가-가장-잘-도는-우리-터미널)
 - [ADR-007 링크는 Cmd-클릭으로만 열고, 웹과 이 컴퓨터의 파일만 연다](#adr-007-링크는-cmd-클릭으로만-열고-웹과-이-컴퓨터의-파일만-연다)
 - [ADR-008 글리프 래스터를 fontdue에서 swash로 바꾸고, 글꼴 파일은 필요한 부분만 읽는다](#adr-008-글리프-래스터를-fontdue에서-swash로-바꾸고-글꼴-파일은-필요한-부분만-읽는다)
+- [ADR-009 macOS에서 그림을 화면 자신의 색 공간으로 넘긴다(softbuffer를 vendor로 고쳐 씀)](#adr-009-macos에서-그림을-화면-자신의-색-공간으로-넘긴다softbuffer를-vendor로-고쳐-씀)
 
 ## ADR-001 VT 엔진은 alacritty_terminal로 시작하고, bt-term 밖으로 엔진 타입을 내보내지 않는다
 
@@ -203,3 +204,23 @@
 ### 감수한 트레이드오프
 - 글꼴 파일 구조를 우리가 직접 읽는다(sfnt 표 목록, ttc, sbix). 읽지 못하면 그 글꼴을 건너뛴다.
 - 새로 깐 글꼴은 앱을 다시 띄워야 보인다(전과 같음).
+
+## ADR-009 macOS에서 그림을 화면 자신의 색 공간으로 넘긴다(softbuffer를 vendor로 고쳐 씀)
+
+상태: 채택
+관련: [#68](https://github.com/dj258255/b-terminal/issues/68), [실험 E3](experiments/2026-11-06-e3-present.md), [vendor/README.md](../vendor/README.md)
+
+### 맥락
+- 실험 E2에서 한 줄만 바뀐 프레임도 창에 올리기까지 약 10~15ms였다. 실험 E3에서 나눠 재니 거의 전부가 softbuffer의 `present`였고, 창이 작으면 줄었다(픽셀 수를 따르는 일).
+- softbuffer(macOS)는 그림을 기기 RGB로 넘긴다. Core Animation이 프레임마다 화면 색 공간으로 색 맞춤 변환을 한다. sRGB·Display P3를 이름으로 줘도 변환은 남았고(13.7·22.4ms), 화면 자신의 색 공간 객체를 줄 때만 사라졌다(0.11ms).
+- 테마 색은 sRGB로 적혀 있다. 화면 색 공간으로 그대로 넘기면 P3 화면에서 조금 더 진하게 보인다(바탕 #282c34가 화면에 (40,44,52) 대신 (39,44,53)). Alacritty·kitty 같은 OpenGL 터미널의 기본 동작과 같다. Ghostty는 `window-colorspace = srgb | display-p3`(기본 srgb)로 고르게 하고 GPU로 변환한다.
+
+### 결정
+1. softbuffer를 vendor로 고쳐(ADR-004의 winit과 같은 방식) macOS에서 화면 자신의 색 공간으로 넘길 수 있게 한다.
+2. 설정 키는 Ghostty와 같은 `window-colorspace`. `display-p3`(기본)는 화면 색 공간으로 그대로 넘기고(빠름), `srgb`는 원래대로 색을 맞춘다(정확하지만 큰 창에서 프레임마다 약 10~15ms).
+3. 기본을 빠른 쪽으로 둔다. 바뀐 줄만 그리기(ADR 없음, #40)로 그리기는 0.2ms인데 올리기가 15ms면 키 입력이 늦게 보인다. 범수 님이 정확한 색을 먼저 원하면 기본을 `srgb`로 바꾼다.
+
+### 감수한 트레이드오프
+- 기본 설정에서 색이 sRGB 정의보다 조금 진하게 보일 수 있다(P3 화면).
+- 색 공간은 창을 만들 때의 주 화면 것이다. 다른 화면으로 옮기면 Core Animation이 다시 변환할 수 있다(재지 않음). 설정을 바꾸면 새 창부터 따른다.
+- vendor로 고친 크레이트가 둘이 된다.

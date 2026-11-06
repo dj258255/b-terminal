@@ -1443,6 +1443,8 @@ impl App {
 
     /// 창과 그림판을 만든다(첫 창, 새 창)
     fn create_gfx(&mut self, event_loop: &ActiveEventLoop) -> Option<Gfx> {
+        // 화면 색 공간으로 넘길지(ADR-009). 새 그림판부터 따른다
+        softbuffer::set_native_color_space(!self.config.colorspace_srgb);
         let attrs = Window::default_attributes()
             .with_title("b-terminal")
             .with_inner_size(LogicalSize::new(1000.0, 680.0))
@@ -1845,21 +1847,31 @@ impl App {
         let (Some(w), Some(h)) = (NonZeroU32::new(size.width), NonZeroU32::new(size.height)) else {
             return;
         };
+        let t_resize = Instant::now();
         if gfx.surface.resize(w, h).is_err() {
             return;
         }
+        let t_buffer = Instant::now();
         let Ok(mut buffer) = gfx.surface.buffer_mut() else {
             return;
         };
+        let t_copy = Instant::now();
         // macOS의 softbuffer는 프레임마다 빈 버퍼를 준다(age 0). 들고 있는 프레임을 통째로 옮긴다
         buffer.copy_from_slice(&self.w.frame);
+        let t_present = Instant::now();
         let _ = buffer.present();
+        let ms = |a: Instant, b: Instant| (b - a).as_secs_f64() * 1000.0;
+        let end = Instant::now();
         log::debug!(
-            "다시 그리기: {} {}줄 그리기 {:.2}ms, 올리기까지 {:.2}ms",
+            "다시 그리기: {} {}줄 그리기 {:.2}ms, 올리기까지 {:.2}ms (크기 {:.2} 버퍼 {:.2} 옮기기 {:.2} present {:.2})",
             if full { "통째" } else { "바뀐 줄" },
             repainted_rows,
             draw_ms,
-            started.elapsed().as_secs_f64() * 1000.0
+            ms(started, end),
+            ms(t_resize, t_buffer),
+            ms(t_buffer, t_copy),
+            ms(t_copy, t_present),
+            ms(t_present, end)
         );
     }
 
