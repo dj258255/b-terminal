@@ -145,7 +145,7 @@ pub struct Fonts {
 
 /// 색 글꼴의 바이트와 모음 안의 자리. swash가 읽는다
 struct ColorFont {
-    data: Vec<u8>,
+    data: ColorData,
     index: usize,
     context: std::cell::RefCell<swash::scale::ScaleContext>,
 }
@@ -158,6 +158,30 @@ const COLOR_EMOJI: &[&str] = &[
     "Twemoji Mozilla",
 ];
 
+/// 색 글꼴이 있는 곳. Apple Color Emoji는 180MiB라 글꼴을 읽을 때 바이트를 읽지 않는다
+enum ColorData {
+    /// 파일: 처음 이모지를 그릴 때 한 번 읽고 프로세스 안에서 나눠 쓴다
+    File(std::path::PathBuf),
+    /// 이미 메모리에 있는 글꼴(fontdb가 들고 있는 것)
+    Shared(std::sync::Arc<dyn AsRef<[u8]> + Send + Sync>),
+}
+
+/// 한 번 읽은 색 글꼴 파일. 글꼴 묶음을 다시 만들어도(글자 크기 바꾸기) 다시 읽지 않는다
+static COLOR_FILE: std::sync::OnceLock<Option<(std::path::PathBuf, Vec<u8>)>> = std::sync::OnceLock::new();
+
+impl ColorData {
+    fn bytes(&self) -> Option<&[u8]> {
+        match self {
+            ColorData::Shared(a) => Some((**a).as_ref()),
+            ColorData::File(path) => {
+                let cached = COLOR_FILE.get_or_init(|| std::fs::read(path).ok().map(|d| (path.clone(), d)));
+                // 다른 파일을 이미 읽었으면(색 글꼴이 바뀜) 쓰지 않는다
+                cached.as_ref().filter(|(p, _)| p == path).map(|(_, d)| d.as_slice())
+            }
+        }
+    }
+}
+
 fn load_color_font(db: &Database) -> Option<ColorFont> {
     COLOR_EMOJI.iter().find_map(|name| {
         let families = [Family::Name(name)];
@@ -169,8 +193,13 @@ fn load_color_font(db: &Database) -> Option<ColorFont> {
         if !face.families.iter().any(|(n, _)| n.eq_ignore_ascii_case(name)) {
             return None;
         }
-        db.with_face_data(id, |data, index| ColorFont {
-            data: data.to_vec(),
+        let (source, index) = db.face_source(id)?;
+        let data = match source {
+            fontdb::Source::File(path) => ColorData::File(path),
+            fontdb::Source::Binary(data) | fontdb::Source::SharedFile(_, data) => ColorData::Shared(data),
+        };
+        Some(ColorFont {
+            data,
             index: index as usize,
             context: std::cell::RefCell::new(swash::scale::ScaleContext::new()),
         })
@@ -335,7 +364,7 @@ impl Fonts {
         use swash::scale::image::Content;
         use swash::scale::{Render, Source, StrikeWith};
         let cf = self.emoji.as_ref()?;
-        let font = swash::FontRef::from_index(&cf.data, cf.index)?;
+        let font = swash::FontRef::from_index(cf.data.bytes()?, cf.index)?;
         let gid = font.charmap().map(ch);
         if gid == 0 {
             return None;
