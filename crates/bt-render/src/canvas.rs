@@ -101,6 +101,32 @@ impl<'a> Canvas<'a> {
         }
     }
 
+    /// 색 글리프(RGBA)를 기준선 자리(x, baseline_y)에 덮는다
+    pub fn draw_color_glyph(&mut self, x: i32, baseline_y: i32, glyph: &Glyph) {
+        let Some(rgba) = &glyph.color else { return };
+        let gx = x + glyph.left;
+        let gy = baseline_y - glyph.top;
+        for row in 0..glyph.height {
+            let py = gy + row as i32;
+            if py < self.clip.0 || py >= self.clip.1 {
+                continue;
+            }
+            for col in 0..glyph.width {
+                let px = gx + col as i32;
+                if px < 0 || px >= self.width as i32 {
+                    continue;
+                }
+                let s = (row * glyph.width + col) * 4;
+                let a = rgba[s + 3] as u32;
+                if a == 0 {
+                    continue;
+                }
+                let i = (py as u32 * self.width + px as u32) as usize;
+                self.buf[i] = blend(self.buf[i], Rgb::new(rgba[s], rgba[s + 1], rgba[s + 2]), a);
+            }
+        }
+    }
+
     pub fn pixel(&self, x: u32, y: u32) -> Rgb {
         Rgb::from_u32(self.buf[(y * self.width + x) as usize])
     }

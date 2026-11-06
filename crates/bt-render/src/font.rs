@@ -65,6 +65,10 @@ impl Default for FontConfig {
                 "Apple Symbols".into(),
                 "DejaVu Sans Mono".into(),
                 "DejaVu Sans".into(),
+                // Claude Code의 ⏺(U+23FA) 같은 기호: 흑백 윤곽이 있는 글꼴(글자색을 따르게, 색 이모지보다 먼저)
+                "STIX Two Math".into(),
+                "Noto Sans Symbols 2".into(),
+                "Noto Sans Math".into(),
             ],
         }
     }
@@ -111,6 +115,8 @@ pub struct Glyph {
     /// 기준선에서 비트맵 위쪽까지(위가 양수)
     pub top: i32,
     pub bitmap: Vec<u8>,
+    /// 색 글리프(이모지)면 RGBA(곱하지 않은 알파). 그때 `bitmap`은 비어 있다
+    pub color: Option<Vec<u8>>,
 }
 
 /// 셀 크기(픽셀)
@@ -133,6 +139,71 @@ pub struct Fonts {
     metrics: CellMetrics,
     cache: HashMap<(char, FontStyle), Option<Rc<Glyph>>>,
     pub family_name: String,
+    /// 색 이모지 글꼴(#37). 없으면 이모지는 다른 대체 글꼴이나 빈 상자로
+    emoji: Option<ColorFont>,
+}
+
+/// 색 글꼴의 바이트와 모음 안의 자리. swash가 읽는다
+struct ColorFont {
+    data: ColorData,
+    index: usize,
+    context: std::cell::RefCell<swash::scale::ScaleContext>,
+}
+
+/// 색 이모지 글꼴 이름(찾는 차례)
+const COLOR_EMOJI: &[&str] = &[
+    "Apple Color Emoji",
+    "Noto Color Emoji",
+    "Segoe UI Emoji",
+    "Twemoji Mozilla",
+];
+
+/// 색 글꼴이 있는 곳. Apple Color Emoji는 180MiB라 글꼴을 읽을 때 바이트를 읽지 않는다
+enum ColorData {
+    /// 파일: 처음 이모지를 그릴 때 한 번 읽고 프로세스 안에서 나눠 쓴다
+    File(std::path::PathBuf),
+    /// 이미 메모리에 있는 글꼴(fontdb가 들고 있는 것)
+    Shared(std::sync::Arc<dyn AsRef<[u8]> + Send + Sync>),
+}
+
+/// 한 번 읽은 색 글꼴 파일. 글꼴 묶음을 다시 만들어도(글자 크기 바꾸기) 다시 읽지 않는다
+static COLOR_FILE: std::sync::OnceLock<Option<(std::path::PathBuf, Vec<u8>)>> = std::sync::OnceLock::new();
+
+impl ColorData {
+    fn bytes(&self) -> Option<&[u8]> {
+        match self {
+            ColorData::Shared(a) => Some((**a).as_ref()),
+            ColorData::File(path) => {
+                let cached = COLOR_FILE.get_or_init(|| std::fs::read(path).ok().map(|d| (path.clone(), d)));
+                // 다른 파일을 이미 읽었으면(색 글꼴이 바뀜) 쓰지 않는다
+                cached.as_ref().filter(|(p, _)| p == path).map(|(_, d)| d.as_slice())
+            }
+        }
+    }
+}
+
+fn load_color_font(db: &Database) -> Option<ColorFont> {
+    COLOR_EMOJI.iter().find_map(|name| {
+        let families = [Family::Name(name)];
+        let id = db.query(&Query {
+            families: &families,
+            ..Query::default()
+        })?;
+        let face = db.face(id)?;
+        if !face.families.iter().any(|(n, _)| n.eq_ignore_ascii_case(name)) {
+            return None;
+        }
+        let (source, index) = db.face_source(id)?;
+        let data = match source {
+            fontdb::Source::File(path) => ColorData::File(path),
+            fontdb::Source::Binary(data) | fontdb::Source::SharedFile(_, data) => ColorData::Shared(data),
+        };
+        Some(ColorFont {
+            data,
+            index: index as usize,
+            context: std::cell::RefCell::new(swash::scale::ScaleContext::new()),
+        })
+    })
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -231,11 +302,17 @@ impl Fonts {
             metrics,
             cache: HashMap::new(),
             family_name: family,
+            emoji: load_color_font(db),
         })
     }
 
     pub fn metrics(&self) -> CellMetrics {
         self.metrics
+    }
+
+    /// 색 이모지 글꼴을 찾았는가
+    pub fn has_color_emoji(&self) -> bool {
+        self.emoji.is_some()
     }
 
     /// 글리프를 꺼낸다. 어느 글꼴에도 없으면 없다
@@ -249,6 +326,12 @@ impl Fonts {
     }
 
     fn rasterize(&self, ch: char, style: FontStyle) -> Option<Glyph> {
+        // 두 칸 이모지는 색 글꼴이 먼저(기본 글꼴의 흑백 모양보다)
+        if is_emoji(ch) {
+            if let Some(g) = self.color_glyph(ch) {
+                return Some(g);
+            }
+        }
         let idx = style as usize;
         let primary = &self.regular[idx];
         let (font, px) = if primary.lookup_glyph_index(ch) != 0 {
@@ -272,8 +355,92 @@ impl Fonts {
             left: m.xmin,
             top: m.ymin + m.height as i32,
             bitmap,
+            color: None,
         })
     }
+
+    /// 색 글꼴에서 이모지를 두 칸 크기로 래스터한다(sbix·CBDT 비트맵, COLR 윤곽)
+    fn color_glyph(&self, ch: char) -> Option<Glyph> {
+        use swash::scale::image::Content;
+        use swash::scale::{Render, Source, StrikeWith};
+        let cf = self.emoji.as_ref()?;
+        let font = swash::FontRef::from_index(cf.data.bytes()?, cf.index)?;
+        let gid = font.charmap().map(ch);
+        if gid == 0 {
+            return None;
+        }
+        let m = self.metrics;
+        // 두 칸 폭과 셀 높이 중 작은 쪽에 맞춘다
+        let (max_w, max_h) = (m.width * 2, m.height);
+        let target = max_w.min(max_h) as f32;
+        let mut ctx = cf.context.borrow_mut();
+        let mut scaler = ctx.builder(font).size(target).build();
+        let img = Render::new(&[Source::ColorBitmap(StrikeWith::BestFit), Source::ColorOutline(0)])
+            .render(&mut scaler, gid)?;
+        if img.content != Content::Color || img.placement.width == 0 || img.placement.height == 0 {
+            return None;
+        }
+        let (w, h, rgba) = fit_rgba(
+            &img.data,
+            img.placement.width as usize,
+            img.placement.height as usize,
+            max_w as usize,
+            max_h as usize,
+        );
+        Some(Glyph {
+            width: w,
+            height: h,
+            left: 0,
+            // 셀 높이 가운데에 둔다
+            top: m.baseline as i32 - (m.height as i32 - h as i32) / 2,
+            bitmap: Vec::new(),
+            color: Some(rgba),
+        })
+    }
+}
+
+/// 두 칸에 그리는 이모지인가(유니코드 폭이 2이고 이모지 영역)
+fn is_emoji(c: char) -> bool {
+    let u = c as u32;
+    let range = matches!(u, 0x1F000..=0x1FAFF | 0x2300..=0x23FF | 0x2600..=0x27BF | 0x2B00..=0x2BFF);
+    range && crate::text::char_cells(c) == 2
+}
+
+/// RGBA 그림이 `max_w × max_h`보다 크면 비율을 지켜 줄인다(칸마다 평균)
+fn fit_rgba(data: &[u8], w: usize, h: usize, max_w: usize, max_h: usize) -> (usize, usize, Vec<u8>) {
+    if w <= max_w && h <= max_h {
+        return (w, h, data.to_vec());
+    }
+    let k = (max_w as f32 / w as f32).min(max_h as f32 / h as f32);
+    let (nw, nh) = (((w as f32 * k) as usize).max(1), ((h as f32 * k) as usize).max(1));
+    let mut out = vec![0u8; nw * nh * 4];
+    for y in 0..nh {
+        let (y0, y1) = (y * h / nh, ((y + 1) * h / nh).max(y * h / nh + 1));
+        for x in 0..nw {
+            let (x0, x1) = (x * w / nw, ((x + 1) * w / nw).max(x * w / nw + 1));
+            // 알파를 곱해 더한 뒤 나눈다(투명한 칸의 색이 섞여 테두리가 어두워지지 않게)
+            let (mut r, mut g, mut b, mut a, mut n) = (0u32, 0u32, 0u32, 0u32, 0u32);
+            for sy in y0..y1.min(h) {
+                for sx in x0..x1.min(w) {
+                    let i = (sy * w + sx) * 4;
+                    let pa = data[i + 3] as u32;
+                    r += data[i] as u32 * pa;
+                    g += data[i + 1] as u32 * pa;
+                    b += data[i + 2] as u32 * pa;
+                    a += pa;
+                    n += 1;
+                }
+            }
+            let o = (y * nw + x) * 4;
+            if let (Some(r), Some(g), Some(b)) = (r.checked_div(a), g.checked_div(a), b.checked_div(a)) {
+                out[o] = r as u8;
+                out[o + 1] = g as u8;
+                out[o + 2] = b as u8;
+                out[o + 3] = (a / n.max(1)) as u8;
+            }
+        }
+    }
+    (nw, nh, out)
 }
 
 struct Fallback {
