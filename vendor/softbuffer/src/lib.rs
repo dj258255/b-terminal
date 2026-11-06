@@ -401,3 +401,16 @@ pub fn set_transparent(on: bool) {
 pub(crate) fn transparent() -> bool {
     TRANSPARENT.load(core::sync::atomic::Ordering::Relaxed)
 }
+
+/// b-terminal(#79): macOS에서 다 쓴 그림 버퍼를 다시 쓸지(실험 E4). 기본 켬
+static REUSE: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(true);
+
+/// b-terminal(#79): 버퍼 다시 쓰기를 켜고 끈다(재기용)
+pub fn set_reuse_buffers(on: bool) {
+    REUSE.store(on, core::sync::atomic::Ordering::Relaxed);
+}
+
+#[allow(dead_code)]
+pub(crate) fn reuse_buffers() -> bool {
+    REUSE.load(core::sync::atomic::Ordering::Relaxed)
+}
