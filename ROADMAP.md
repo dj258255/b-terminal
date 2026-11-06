@@ -77,8 +77,18 @@
 
 이번에 배운 것: 터미널에 찍힌 글이 보내는 자료(그림)는 바이트 상한만으로 모자라다. 개수와 그리는 양에도 상한이 있어야 한다(보안 검토 지적).
 
+## 0.5.0 (2026-11-06)
+
+다듬기. 추적 이슈 [#85](https://github.com/dj258255/b-terminal/issues/85). 실제 시간은 사람 없이 코딩 에이전트가 진행한 대략값이다.
+
+| 이슈 | 내용 | 예상 | 실제 | PR | 상태 |
+|---|---|---|---|---|---|
+| [#86](https://github.com/dj258255/b-terminal/issues/86) | 투명 창 글자 가장자리(캔버스 곱한 알파) | 1~2시간 | 약 30분 | [#89](https://github.com/dj258255/b-terminal/pull/89) | 끝 |
+| [#87](https://github.com/dj258255/b-terminal/issues/87) | 이모지 묶음(ZWJ·피부색·국기) | 2~3시간 | 약 50분 | [#90](https://github.com/dj258255/b-terminal/pull/90) | 끝 |
+| [#88](https://github.com/dj258255/b-terminal/issues/88) | 서명·공증 준비 | 1시간 | 약 30분 | [#91](https://github.com/dj258255/b-terminal/pull/91) | 끝(실제 공증은 계정이 있어야 함) |
+
 ## 다음
 
-- 범수 님이 직접 쳐 보고 확인할 것: 한글 2벌식 "안녕 하세요⏎", Claude Code의 Shift+Enter, Cmd-D·Cmd-F·Cmd-클릭·Cmd-N·Cmd-Shift-P, 메뉴, 창 닫기 단추, vim·htop, kitty icat·yazi 그림, 투명 창
+- 범수 님이 직접 해야 할 것: 키보드·마우스 확인(한글 2벌식 "안녕 하세요⏎", Claude Code의 Shift+Enter, Cmd-D·Cmd-F·Cmd-클릭·Cmd-N·Cmd-Shift-P, 메뉴, 창 닫기 단추, vim·htop, kitty icat·yazi, 투명 창), Developer ID 계정으로 `scripts/bundle-macos.sh --sign … --notarize … --dmg`
 - 범수 님이 정할 것: `window-colorspace` 기본값(ADR-009)
-- 투명 창 글자 가장자리(렌더러가 알파를 다루게), ZWJ 묶음·피부색, IOSurface·GPU로 올리기(실험 E4의 다음), 서명·공증된 macOS 앱 묶음
+- 큰 일로 남긴 것: GPU(또는 IOSurface) 렌더러, 글자 묶음 폭(mode 2027), 외부 모니터 색 공간
