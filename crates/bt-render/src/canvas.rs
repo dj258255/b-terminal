@@ -4,13 +4,16 @@ use bt_core::Rgb;
 
 use crate::font::Glyph;
 
-/// 창의 픽셀 버퍼(softbuffer와 같은 0RGB). 줄 우선
+/// 창의 픽셀 버퍼. 줄 우선, 곱한 알파 ARGB(맨 앞 바이트가 알파). 불투명 창은 알파를 무시하고,
+/// 투명 창(#86)은 그대로 넘겨 기본 바탕이 비치고 글자 가장자리가 바르게 섞인다
 pub struct Canvas<'a> {
     pub buf: &'a mut [u32],
     pub width: u32,
     pub height: u32,
     /// 세로로 그릴 수 있는 범위 `[위, 아래)`. 바뀐 줄만 다시 그릴 때 이웃 줄을 건드리지 않게 좁힌다
     clip: (i32, i32),
+    /// 투명 창: (기본 바탕색 RGB, 그 색으로 칠할 반투명 픽셀). 그 색을 칠하면 반투명으로 칠한다
+    see_through: Option<(u32, u32)>,
 }
 
 impl<'a> Canvas<'a> {
@@ -21,6 +24,24 @@ impl<'a> Canvas<'a> {
             width,
             height,
             clip: (0, height as i32),
+            see_through: None,
+        }
+    }
+
+    /// 투명 창(#86): 앞으로 `bg`를 칠하면 `alpha`만큼만 덮는 반투명(곱한 알파)으로 칠한다
+    pub fn set_see_through(&mut self, bg: Rgb, alpha: u8) {
+        let a = alpha as u32;
+        let mul = |c: u8| (c as u32 * a + 127) / 255;
+        let px = (a << 24) | (mul(bg.r) << 16) | (mul(bg.g) << 8) | mul(bg.b);
+        self.see_through = Some((bg.to_u32(), px));
+    }
+
+    /// 칠할 픽셀 값: 보통은 불투명, 투명 창의 기본 바탕색이면 반투명
+    fn solid(&self, color: Rgb) -> u32 {
+        let rgb = color.to_u32();
+        match self.see_through {
+            Some((bg, px)) if bg == rgb => px,
+            _ => 0xff00_0000 | rgb,
         }
     }
 
@@ -35,7 +56,8 @@ impl<'a> Canvas<'a> {
 
     pub fn clear(&mut self, color: Rgb) {
         let n = (self.width * self.height) as usize;
-        self.buf[..n].fill(color.to_u32());
+        let c = self.solid(color);
+        self.buf[..n].fill(c);
     }
 
     /// 사각형을 칠한다. 화면 밖은 자른다
@@ -47,7 +69,7 @@ impl<'a> Canvas<'a> {
         if x0 >= x1 || y0 >= y1 {
             return;
         }
-        let c = color.to_u32();
+        let c = self.solid(color);
         for row in y0..y1 {
             let start = (row * self.width + x0) as usize;
             let end = (row * self.width + x1) as usize;
@@ -162,21 +184,23 @@ impl<'a> Canvas<'a> {
         }
     }
 
+    /// 픽셀의 색(알파는 버린다)
     pub fn pixel(&self, x: u32, y: u32) -> Rgb {
         Rgb::from_u32(self.buf[(y * self.width + x) as usize])
     }
 }
 
+/// 불투명한 `src`를 덮음 `a`(0~255)만큼 곱한 알파 픽셀 `dst` 위에 얹는다(over). 바탕이 불투명이면 알파는 ff 그대로
 fn blend(dst: u32, src: Rgb, a: u32) -> u32 {
     if a >= 255 {
-        return src.to_u32();
+        return 0xff00_0000 | src.to_u32();
     }
     let inv = 255 - a;
-    let ch = |shift: u32, s: u8| -> u32 {
+    let ch = |shift: u32, s: u32| -> u32 {
         let d = (dst >> shift) & 0xff;
-        ((s as u32 * a + d * inv + 127) / 255) << shift
+        ((s * a + d * inv + 127) / 255) << shift
     };
-    ch(16, src.r) | ch(8, src.g) | ch(0, src.b)
+    ch(24, 255) | ch(16, src.r as u32) | ch(8, src.g as u32) | ch(0, src.b as u32)
 }
 
 #[cfg(test)]
@@ -197,7 +221,33 @@ mod tests {
 
     #[test]
     fn blend_half() {
-        assert_eq!(blend(0x000000, Rgb::new(255, 255, 255), 128), 0x808080);
-        assert_eq!(blend(0x123456, Rgb::new(1, 2, 3), 255), 0x010203);
+        // 불투명 바탕(알파 ff) 위에 섞으면 알파는 ff 그대로
+        assert_eq!(blend(0xff00_0000, Rgb::new(255, 255, 255), 128), 0xff80_8080);
+        assert_eq!(blend(0xff12_3456, Rgb::new(1, 2, 3), 255), 0xff01_0203);
+    }
+
+    /// #86: 투명 창이면 기본 바탕색은 반투명(곱한 알파)으로 칠하고, 그 위의 글자 가장자리는 덮음 정도만큼 알파가 오른다
+    #[test]
+    fn see_through_background_blends_alpha() {
+        let bg = Rgb::new(40, 44, 52);
+        let mut buf = vec![0u32; 4];
+        let mut c = Canvas::new(&mut buf, 2, 2);
+        c.set_see_through(bg, 128);
+        c.clear(bg);
+        // 반투명 바탕: 알파 128, 색은 곱한 값
+        assert_eq!(c.buf[0], 0x8014_161a);
+        // 다른 색은 불투명
+        c.fill_rect(1, 0, 1, 1, Rgb::new(255, 0, 0));
+        assert_eq!(c.buf[1] >> 24, 0xff);
+        // 흰 글자를 덮음 50%로 섞은 가장자리: 알파는 128과 255 사이, 곱한 색은 알파를 넘지 않는다
+        c.buf[2] = blend(c.buf[2], Rgb::new(255, 255, 255), 128);
+        let a = c.buf[2] >> 24;
+        assert!(a > 128 && a < 255, "알파 {a}");
+        assert!((c.buf[2] >> 16 & 0xff) <= a);
+        // 덮음 0이면 그대로, 255면 불투명 흰색
+        let before = c.buf[3];
+        c.buf[3] = blend(c.buf[3], Rgb::new(255, 255, 255), 0);
+        assert_eq!(c.buf[3], before);
+        assert_eq!(blend(before, Rgb::new(255, 255, 255), 255), 0xffff_ffff);
     }
 }
