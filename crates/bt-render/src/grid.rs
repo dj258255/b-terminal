@@ -200,7 +200,11 @@ fn draw_cell_text(
     } else {
         0
     };
-    canvas.draw_glyph(px + offset, py + m.baseline as i32, &g, fg);
+    if g.color.is_some() {
+        canvas.draw_color_glyph(px + offset, py + m.baseline as i32, &g);
+    } else {
+        canvas.draw_glyph(px + offset, py + m.baseline as i32, &g, fg);
+    }
 }
 
 fn draw_cursor(

@@ -374,3 +374,45 @@ fn e2_partial_vs_full_redraw_200x60_retina() {
     println!("프레임 옮기기: {}", stat(&mut copy_ms));
     assert!(out[0] == buf[0]);
 }
+
+/// #37: 😀는 색 글꼴(Apple Color Emoji·Noto Color Emoji)에서 색 픽셀로 그린다. 색 이모지 글꼴이 없는 기기(CI)는 건너뛴다
+#[test]
+fn emoji_paints_color_pixels_across_two_cells() {
+    let Some(mut f) = fonts(2.0) else { return };
+    if !f.has_color_emoji() {
+        eprintln!("건너뜀: 색 이모지 글꼴이 없다");
+        return;
+    }
+    let fr = render(&mut f, "😀 a".as_bytes(), 6, 1, false);
+    // 바탕과 멀고 채도가 높은(노랑 얼굴) 픽셀
+    let mut colorful = 0;
+    for y in 0..fr.ch {
+        for x in 0..fr.cw * 2 {
+            let p = Rgb::from_u32(fr.buf[(y * fr.w + x) as usize]);
+            let (mx, mn) = (p.r.max(p.g).max(p.b) as i32, p.r.min(p.g).min(p.b) as i32);
+            if mx - mn > 80 && mx > 150 {
+                colorful += 1;
+            }
+        }
+    }
+    let cells = (fr.cw * fr.ch * 2) as usize;
+    assert!(colorful > cells / 10, "색 픽셀 {colorful}개(두 칸 {cells}픽셀)");
+    // 셋째 칸 너머(공백 뒤 a)는 이모지가 덮지 않는다
+    assert_eq!(ink(&fr, 2, 0, 1, Theme::default().background), 0, "공백 칸은 비어 있다");
+}
+
+/// #37: Claude Code가 쓰는 ⏺(U+23FA)은 한 칸 글자다. 색 이모지가 아니라 글자색을 따르는 윤곽 글꼴에서 그린다
+#[test]
+fn record_symbol_used_by_claude_code_is_a_monochrome_glyph() {
+    let Some(mut f) = fonts(2.0) else { return };
+    let Some(g) = f.glyph('\u{23fa}', bt_render::FontStyle::Regular) else {
+        // macOS에는 STIX Two Math가 늘 있다
+        if cfg!(target_os = "macos") {
+            panic!("macOS인데 ⏺를 그릴 글꼴을 찾지 못했다");
+        }
+        eprintln!("건너뜀: ⏺를 가진 기호 글꼴이 없다");
+        return;
+    };
+    assert!(g.color.is_none(), "글자색을 따르는 흑백 글리프여야 한다");
+    assert!(g.width > 0);
+}
