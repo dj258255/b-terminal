@@ -212,7 +212,24 @@ pub enum FontError {
     NotFound(String),
 }
 
-fn load(db: &Database, family: &str, weight: Weight, style: Style) -> Option<Font> {
+/// 읽어 둔 글꼴(#58). fontdue는 글꼴을 읽을 때 모든 글리프 윤곽을 풀어 두므로 한글·한자 글꼴은 수십 MiB다.
+/// 글꼴은 크기와 상관없으므로, 설정을 다시 읽거나 글자 크기를 바꿀 때 같은 글꼴을 다시 풀지 않고 나눠 쓴다
+type FontKey = (String, u16, u8);
+thread_local! {
+    static PARSED: std::cell::RefCell<HashMap<FontKey, Option<Rc<Font>>>> = std::cell::RefCell::new(HashMap::new());
+}
+
+fn load(db: &Database, family: &str, weight: Weight, style: Style) -> Option<Rc<Font>> {
+    let key = (family.to_ascii_lowercase(), weight.0, style as u8);
+    if let Some(hit) = PARSED.with(|p| p.borrow().get(&key).cloned()) {
+        return hit;
+    }
+    let font = parse(db, family, weight, style).map(Rc::new);
+    PARSED.with(|p| p.borrow_mut().insert(key, font.clone()));
+    font
+}
+
+fn parse(db: &Database, family: &str, weight: Weight, style: Style) -> Option<Font> {
     let families = [Family::Name(family)];
     let id = db.query(&Query {
         families: &families,
@@ -260,13 +277,11 @@ impl Fonts {
             .iter()
             .find_map(|n| load(db, n, Weight::NORMAL, Style::Normal).map(|f| (n.to_string(), f)))
             .ok_or_else(|| FontError::NotFound(names.join(", ")))?;
-        let regular = Rc::new(regular);
         // 꼴마다 따로 정한 글꼴이 있으면 그것, 없으면 기본 글꼴의 그 꼴, 그것도 없으면 Regular
         let pick = |own: &Option<String>, w, s| {
             own.as_deref()
                 .and_then(|name| load(db, name, w, s).or_else(|| load(db, name, Weight::NORMAL, Style::Normal)))
                 .or_else(|| load(db, &family, w, s))
-                .map(Rc::new)
                 .unwrap_or_else(|| regular.clone())
         };
         let bold = pick(&config.family_bold, Weight::BOLD, Style::Normal);
@@ -289,7 +304,7 @@ impl Fonts {
                 let k = wide_scale(&f, px, metrics);
                 let pua = is_symbol_font(n);
                 Fallback {
-                    font: Rc::new(f),
+                    font: f,
                     wide_scale: k,
                     pua,
                 }
@@ -509,5 +524,23 @@ fn cell_metrics(font: &Font, px: f32, adjust_w: Option<Adjust>, adjust_h: Option
         baseline,
         underline_offset,
         stroke,
+    }
+}
+
+#[cfg(test)]
+mod parsed_cache_tests {
+    use super::*;
+
+    /// #58: 글꼴 묶음을 다시 만들어도(설정 다시 읽기, 글자 크기) 풀어 둔 글꼴을 다시 풀지 않는다
+    #[test]
+    fn rebuilding_fonts_reuses_parsed_faces() {
+        let a = Fonts::new(&FontConfig::default()).expect("넣어 둔 글꼴은 늘 있다");
+        let b = Fonts::new(&FontConfig {
+            size: 20.0,
+            ..FontConfig::default()
+        })
+        .unwrap();
+        assert!(Rc::ptr_eq(&a.regular[0], &b.regular[0]), "같은 글꼴이면 같은 객체");
+        assert_ne!(a.metrics(), b.metrics(), "크기는 따로");
     }
 }
