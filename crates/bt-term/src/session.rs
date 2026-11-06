@@ -968,9 +968,29 @@ fn visible_images<T>(term: &Term<T>, g: &mut crate::graphics::Graphics) -> Vec<c
     }
     let top = term.grid().history_size() as i64 - term.grid().display_offset() as i64;
     let rows = term.screen_lines() as i64;
-    g.placements
-        .iter()
-        .filter(|p| p.alt == alt)
+    let cols = term.columns() as i64;
+    // 그릴 양의 상한(보안 검토): 최근 것부터, 같은 자리의 중복은 빼고, 보이는 칸 넓이의 합이 화면 칸 수의 4배까지
+    let budget = 4 * rows * cols;
+    let mut used = 0i64;
+    let mut seen = std::collections::HashSet::new();
+    let mut picked: Vec<&crate::graphics::Placement> = Vec::new();
+    for p in g.placements.iter().rev().filter(|p| p.alt == alt) {
+        let row = p.line - top;
+        if row + p.rows as i64 <= 0 || row >= rows || !seen.insert((p.image, p.line, p.col, p.cols, p.rows)) {
+            continue;
+        }
+        let visible_rows = (row + p.rows as i64).min(rows) - row.max(0);
+        let visible_cols = (p.col as i64 + p.cols as i64).min(cols) - (p.col as i64).min(cols);
+        let area = visible_rows.max(0) * visible_cols.max(0);
+        if used + area > budget {
+            break;
+        }
+        used += area;
+        picked.push(p);
+    }
+    picked.reverse();
+    picked
+        .into_iter()
         .filter_map(|p| {
             let row = p.line - top;
             if row + p.rows as i64 <= 0 || row >= rows {

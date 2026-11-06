@@ -17,6 +17,10 @@ const MAX_SIDE: u32 = 10_000;
 const MAX_STORE: usize = 256 * 1024 * 1024;
 /// 한 화면에 놓는 그림 수 상한
 const MAX_PLACEMENTS: usize = 1024;
+/// 저장하는 그림 수 상한(작은 그림을 많이 보내 바이트 상한을 피하지 못하게, 보안 검토)
+const MAX_IMAGES: usize = 4096;
+/// 그림마다 총량에 더하는 고정 몫(바이트). 아주 작은 그림도 0으로 세지 않는다
+const IMAGE_OVERHEAD: usize = 4096;
 
 /// 저장한 그림
 #[derive(Debug, Clone)]
@@ -77,6 +81,12 @@ pub struct Graphics {
     pub placements: Vec<Placement>,
     pending: Option<Pending>,
     seq: u64,
+    /// 저장한 그림의 총량(바이트, 고정 몫 포함). 넣고 뺄 때마다 고친다
+    stored: usize,
+}
+
+fn cost(img: &Image) -> usize {
+    img.rgba.len() + IMAGE_OVERHEAD
 }
 
 fn parse_control(s: &[u8]) -> HashMap<u8, String> {
@@ -280,15 +290,24 @@ impl Graphics {
     fn store(&mut self, id: u32, mut image: Image) {
         self.seq += 1;
         image.seq = self.seq;
-        self.images.insert(id, image);
-        // 총량을 넘으면 오래된 그림부터 버린다(지금 넣은 것은 남긴다)
-        while self.images.values().map(|i| i.rgba.len()).sum::<usize>() > MAX_STORE {
+        self.stored += cost(&image);
+        if let Some(old) = self.images.insert(id, image) {
+            self.stored -= cost(&old);
+        }
+        // 총량이나 그림 수를 넘으면 오래된 그림부터 버린다(지금 넣은 것은 남긴다)
+        while self.stored > MAX_STORE || self.images.len() > MAX_IMAGES {
             let Some((&old, _)) = self.images.iter().filter(|(k, _)| **k != id).min_by_key(|(_, i)| i.seq) else {
                 break;
             };
-            self.images.remove(&old);
-            self.placements.retain(|p| p.image != old);
+            self.remove_image(old);
         }
+    }
+
+    fn remove_image(&mut self, id: u32) {
+        if let Some(img) = self.images.remove(&id) {
+            self.stored -= cost(&img);
+        }
+        self.placements.retain(|p| p.image != id);
     }
 
     /// 커서 자리에 그림을 놓는다. c·r이 없으면 그림 픽셀 크기만큼의 칸
@@ -337,12 +356,10 @@ impl Graphics {
             "A" => {
                 self.placements.clear();
                 self.images.clear();
+                self.stored = 0;
             }
             "i" => self.placements.retain(|p| p.image != id),
-            "I" => {
-                self.placements.retain(|p| p.image != id);
-                self.images.remove(&id);
-            }
+            "I" => self.remove_image(id),
             // 다른 대상(자리·z 등)은 아직 받지 않는다: 아무것도 지우지 않는다
             _ => {}
         }
@@ -500,6 +517,19 @@ mod tests {
         let out = g.handle(format!("a=T,f=32,s=4,v=4,i=5;{}", b64(b"short")).as_bytes(), CUR);
         assert_eq!(out.reply.unwrap(), b"\x1b_Gi=5;ENODATA\x1b\\");
         assert!(g.image(5).is_none());
+    }
+
+    /// 보안 검토: 작은 그림을 아주 많이 보내도 그림 수가 상한에서 멈춘다
+    #[test]
+    fn image_count_is_capped() {
+        let mut g = Graphics::default();
+        let px = b64(&[1, 2, 3]);
+        for i in 1..=5000u32 {
+            g.handle(format!("a=t,f=24,s=1,v=1,i={i},q=2;{px}").as_bytes(), CUR);
+        }
+        assert!(g.images.len() <= 4096, "{}개", g.images.len());
+        assert!(g.image(5000).is_some(), "최근 것은 남는다");
+        assert!(g.image(1).is_none(), "오래된 것부터 버린다");
     }
 
     #[test]

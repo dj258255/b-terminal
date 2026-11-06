@@ -179,3 +179,35 @@ fn kitty_graphics_place_scroll_and_clear() {
     e.feed(b"\x1b[H\x1b[2J\x1b[3J");
     assert!(e.snapshot().images.is_empty(), "화면을 지우면 그림도 지운다");
 }
+
+/// 보안 검토(#76): 화면 크기 그림을 같은 자리에 수백 번 놓아도 화면 값에는 중복을 빼고 화면 칸 수의 몇 배까지만 담는다
+#[test]
+fn kitty_graphics_visible_images_are_deduped_and_budgeted() {
+    let size = bt_term::GridSize {
+        cols: 20,
+        rows: 6,
+        cell_width: 10,
+        cell_height: 20,
+    };
+    let mut e = bt_term::Emulator::new(size, bt_core::Theme::default());
+    e.feed(b"\x1b_Ga=t,f=24,s=1,v=1,i=1,q=2;AAAA\x1b\\");
+    let mut many = String::new();
+    for _ in 0..500 {
+        // 커서를 왼쪽 위로 되돌려 같은 자리에, 화면 전체(20칸 x 6줄)로
+        many.push_str("\x1b[H\x1b_Ga=p,i=1,c=20,r=6,C=1,q=2\x1b\\");
+    }
+    // 자리를 조금씩 달리한 것도 많이
+    for col in 0..19 {
+        many.push_str(&format!("\x1b[1;{}H\x1b_Ga=p,i=1,c=20,r=6,C=1,q=2\x1b\\", col + 1));
+    }
+    e.feed(many.as_bytes());
+    let s = e.snapshot();
+    // 화면에 보이는(잘린) 넓이로 센다
+    let area: u32 = s
+        .images
+        .iter()
+        .map(|i| (i.col as u32 + i.cols).min(20).saturating_sub(i.col as u32) * i.rows.min(6))
+        .sum();
+    assert!(area <= 4 * 20 * 6, "그릴 칸 {area}개, 그림 {}개", s.images.len());
+    assert!(!s.images.is_empty());
+}
