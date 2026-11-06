@@ -2082,7 +2082,8 @@ pub fn is_local_host(host: &str) -> bool {
 /// 화면 값을 렌더러 셀로. 찾기에 맞은 칸은 여기서 색을 바꾼다(지금 것은 노랑 바탕, 나머지는 옅은 노랑)
 pub fn to_draw_cells(s: &Screen, theme: &bt_core::Theme) -> Vec<DrawCell> {
     let yellow = theme.palette[3];
-    s.cells
+    let mut cells: Vec<DrawCell> = s
+        .cells
         .iter()
         .map(|c| DrawCell {
             ch: c.ch,
@@ -2106,8 +2107,20 @@ pub fn to_draw_cells(s: &Screen, theme: &bt_core::Theme) -> Vec<DrawCell> {
             spacer: c.flags.contains(CellFlags::SPACER),
             selected: c.flags.contains(CellFlags::SELECTED),
             emoji: c.combining.contains(&'\u{fe0f}'),
+            cluster: None,
+            cluster_cells: 0,
         })
-        .collect()
+        .collect();
+    // 이모지 묶음(ZWJ·피부색·국기, #87)
+    bt_render::cluster::mark(&mut cells, s.cols, |i| {
+        let c = &s.cells[i];
+        bt_render::cluster::ClusterCell {
+            ch: c.ch,
+            combining: &c.combining,
+            spacer: c.flags.contains(CellFlags::SPACER),
+        }
+    });
+    cells
 }
 
 impl ApplicationHandler<UserEvent> for App {
@@ -2634,6 +2647,8 @@ mod tests {
             spacer: false,
             selected: false,
             emoji: false,
+            cluster: None,
+            cluster_cells: 0,
         };
         let (cols, rows) = (4, 3);
         let cells = vec![blank.clone(); cols * rows];
