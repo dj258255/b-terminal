@@ -103,12 +103,12 @@ pub fn system_is_dark() -> bool {
 }
 
 fn main() -> anyhow::Result<()> {
-    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
-    // `+동작`(Ghostty의 `ghostty +동작`)은 창 없이 돌고 끝난다
+    // `+동작`(Ghostty의 `ghostty +동작`)은 창 없이 돌고 끝난다. 출력에 로그가 섞이지 않게 로거보다 먼저
     let argv: Vec<String> = std::env::args().skip(1).collect();
     if let Some(code) = cliact::try_run(&argv) {
         std::process::exit(code);
     }
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
     let cli = match parse_args(argv.into_iter()) {
         Ok(o) => o,
         Err(msg) => {
