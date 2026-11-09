@@ -13,8 +13,9 @@ const MAX_PAYLOAD: usize = 48 * 1024 * 1024;
 const MAX_IMAGE_BYTES: usize = 64 * 1024 * 1024;
 /// 그림 한 변의 상한(px)
 const MAX_SIDE: u32 = 10_000;
-/// 저장해 두는 그림 총량. 넘으면 오래된 그림부터 버린다(kitty도 상한을 둔다)
-const MAX_STORE: usize = 256 * 1024 * 1024;
+/// 저장 상한의 기본(바이트). Ghostty의 `image-storage-limit` 기본과 같다(전에는 256MiB 고정, ADR-013).
+/// 넘으면 오래된 그림부터 버린다
+pub const DEFAULT_STORE: usize = 320_000_000;
 /// 한 화면에 놓는 그림 수 상한
 const MAX_PLACEMENTS: usize = 1024;
 /// 저장하는 그림 수 상한(작은 그림을 많이 보내 바이트 상한을 피하지 못하게, 보안 검토)
@@ -75,7 +76,6 @@ struct Pending {
     payload: Vec<u8>,
 }
 
-#[derive(Default)]
 pub struct Graphics {
     images: HashMap<u32, Image>,
     pub placements: Vec<Placement>,
@@ -83,6 +83,28 @@ pub struct Graphics {
     seq: u64,
     /// 저장한 그림의 총량(바이트, 고정 몫 포함). 넣고 뺄 때마다 고친다
     stored: usize,
+    /// 저장 상한(바이트, 설정 image-storage-limit). 0이면 그림 프로토콜을 쓰지 않는다
+    limit: usize,
+}
+
+impl Default for Graphics {
+    fn default() -> Self {
+        Self::with_limit(DEFAULT_STORE)
+    }
+}
+
+impl Graphics {
+    /// 저장 상한(바이트)을 정해 만든다. 0이면 그림 프로토콜을 쓰지 않는다
+    pub fn with_limit(limit: usize) -> Self {
+        Self {
+            images: HashMap::new(),
+            placements: Vec::new(),
+            pending: None,
+            seq: 0,
+            stored: 0,
+            limit,
+        }
+    }
 }
 
 fn cost(img: &Image) -> usize {
@@ -169,6 +191,11 @@ impl Graphics {
 
     /// `ESC _ G` 뒤부터 `ESC \` 앞까지(제어;자료)를 처리한다
     pub fn handle(&mut self, raw: &[u8], cur: Cursor) -> Outcome {
+        // 상한 0은 그림 프로토콜을 쓰지 않는다는 뜻이다(Ghostty): 질의에도 답하지 않아 지원하지 않는 터미널처럼 보인다
+        if self.limit == 0 {
+            self.pending = None;
+            return Outcome::default();
+        }
         let (ctl, payload) = match raw.iter().position(|&b| b == b';') {
             Some(i) => (&raw[..i], &raw[i + 1..]),
             None => (raw, &[][..]),
@@ -217,6 +244,10 @@ impl Graphics {
                 let id = num(&control, b'i');
                 if id == 0 {
                     return self.error(&control, "EINVAL", "그림 번호(i)가 필요합니다");
+                }
+                // 한 장이 저장 상한보다 크면 받지 않는다: 지금 넣은 것은 남기므로 상한을 넘겨 두게 된다
+                if cost(&image) > self.limit {
+                    return self.error(&control, "ENOSPC", "그림이 저장 상한(image-storage-limit)을 넘습니다");
                 }
                 self.store(id, image);
                 if action == "T" {
@@ -295,7 +326,7 @@ impl Graphics {
             self.stored -= cost(&old);
         }
         // 총량이나 그림 수를 넘으면 오래된 그림부터 버린다(지금 넣은 것은 남긴다)
-        while self.stored > MAX_STORE || self.images.len() > MAX_IMAGES {
+        while self.stored > self.limit || self.images.len() > MAX_IMAGES {
             let Some((&old, _)) = self.images.iter().filter(|(k, _)| **k != id).min_by_key(|(_, i)| i.seq) else {
                 break;
             };
@@ -517,6 +548,40 @@ mod tests {
         let out = g.handle(format!("a=T,f=32,s=4,v=4,i=5;{}", b64(b"short")).as_bytes(), CUR);
         assert_eq!(out.reply.unwrap(), b"\x1b_Gi=5;ENODATA\x1b\\");
         assert!(g.image(5).is_none());
+    }
+
+    #[test]
+    fn storage_limit_evicts_old_images_and_refuses_oversized_ones() {
+        // 1×1 RGB 한 장의 몫은 4 + 4096 = 4100바이트. 상한 3장 몫(12300)
+        let mut g = Graphics::with_limit(3 * 4100);
+        let px = b64(&[1, 2, 3]);
+        for i in 1..=5u32 {
+            g.handle(format!("a=t,f=24,s=1,v=1,i={i},q=2;{px}").as_bytes(), CUR);
+        }
+        assert!(g.images.len() <= 3, "{}개", g.images.len());
+        assert!(g.image(5).is_some() && g.image(1).is_none());
+        // 한 장이 상한보다 크면 거절한다(ENOSPC)
+        let mut g = Graphics::with_limit(4000);
+        let out = g.handle(format!("a=t,f=24,s=1,v=1,i=9;{px}").as_bytes(), CUR);
+        assert_eq!(out.reply.unwrap(), b"\x1b_Gi=9;ENOSPC\x1b\\");
+        assert!(g.image(9).is_none());
+    }
+
+    #[test]
+    fn zero_limit_disables_the_protocol_without_replying() {
+        let mut g = Graphics::with_limit(0);
+        let px = b64(&[1, 2, 3]);
+        // 질의(a=q)에도 답하지 않는다: 지원하지 않는 터미널처럼 보인다
+        for cmd in ["a=q,i=1,s=1,v=1,f=24", "a=T,i=2,s=1,v=1,f=24", "a=t,i=3,s=1,v=1,f=24"] {
+            let out = g.handle(format!("{cmd};{px}").as_bytes(), CUR);
+            assert!(out.reply.is_none() && out.advance.is_none(), "{cmd}");
+        }
+        assert!(g.images.is_empty() && g.placements.is_empty());
+    }
+
+    #[test]
+    fn default_limit_is_ghostty_320mb() {
+        assert_eq!(DEFAULT_STORE, 320_000_000);
     }
 
     /// 보안 검토: 작은 그림을 아주 많이 보내도 그림 수가 상한에서 멈춘다

@@ -20,5 +20,5 @@ pub use process::Foreground;
 pub use screen::{Cell, CellFlags, Cursor, CursorShape, ImageView, Modes, Screen};
 pub use session::{
     ClipboardReply, CommandRecord, Emulator, EventSink, GridSize, SelectKind, SelectionAdjust, Session, SessionEvent,
-    SpawnOptions,
+    SpawnOptions, window_resize_target,
 };

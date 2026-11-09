@@ -136,6 +136,74 @@ pub enum OscColorReportFormat {
     Bit16,
 }
 
+/// 복사할 때 글자를 바꾸는 규칙 하나(Ghostty `clipboard-codepoint-map`, #176). 범위는 양 끝을 포함한다
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CodepointRule {
+    pub range: (u32, u32),
+    pub replacement: String,
+}
+
+/// OSC 52 클립보드 쓰기 한 번의 고정 상한(바이트). `clipboard-write-limit-bytes`는 이보다 크게 늘리지 못하고 줄이기만 한다(ADR-013)
+pub const OSC52_WRITE_CAP: usize = 1024 * 1024;
+
+/// OSC 52로 온 글(바이트 수 `len`)을 클립보드에 넣어도 되는가. 고정 상한과 설정(`None`은 `unlimited`) 중 작은 쪽을 넘으면 안 된다
+pub fn clipboard_write_allowed(len: usize, limit: Option<usize>) -> bool {
+    len <= OSC52_WRITE_CAP && limit.is_none_or(|l| len <= l)
+}
+
+/// 복사할 글에 `clipboard-codepoint-map`을 적용한다. 겹치면 나중에 적은 규칙이 이긴다
+pub fn map_clipboard_text(rules: &[CodepointRule], text: &str) -> String {
+    if rules.is_empty() {
+        return text.to_string();
+    }
+    let mut out = String::with_capacity(text.len());
+    for c in text.chars() {
+        let cp = c as u32;
+        match rules.iter().rev().find(|r| r.range.0 <= cp && cp <= r.range.1) {
+            Some(r) => out.push_str(&r.replacement),
+            None => out.push(c),
+        }
+    }
+    out
+}
+
+/// `U+1F600` 꼴의 코드포인트 하나(앞의 `U+`는 있어야 한다). 서로게이트와 유니코드 밖은 읽지 못한다
+fn parse_codepoint(s: &str) -> Option<u32> {
+    let hex = s.trim().strip_prefix("U+").or_else(|| s.trim().strip_prefix("u+"))?;
+    let cp = u32::from_str_radix(hex, 16).ok()?;
+    char::from_u32(cp).map(|_| cp)
+}
+
+/// `clipboard-codepoint-map`의 값 하나(`범위[,범위…]=바꿀 글`)를 규칙들로 읽는다.
+/// 범위는 `U+1234`나 `U+1234-U+5678`, 바꿀 글은 `U+ABCD` 하나이거나 아무 글(빈 글이면 그 글자를 지운다)
+pub fn parse_codepoint_rules(v: &str) -> Option<Vec<CodepointRule>> {
+    let (key, value) = v.split_once('=')?;
+    let value = value.trim();
+    let replacement = if value.starts_with("U+") {
+        char::from_u32(parse_codepoint(value)?)?.to_string()
+    } else {
+        value.to_string()
+    };
+    let mut rules = Vec::new();
+    for part in key.split(',') {
+        let range = match part.split_once('-') {
+            Some((a, b)) => (parse_codepoint(a)?, parse_codepoint(b)?),
+            None => {
+                let c = parse_codepoint(part)?;
+                (c, c)
+            }
+        };
+        if range.0 > range.1 {
+            return None;
+        }
+        rules.push(CodepointRule {
+            range,
+            replacement: replacement.clone(),
+        });
+    }
+    Some(rules)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OptionAsAlt {
     None,
@@ -405,6 +473,18 @@ pub struct Config {
     pub title_report: bool,
     /// 색 질의에 답하는 꼴(Ghostty `osc-color-report-format`, #151)
     pub osc_color_report_format: OscColorReportFormat,
+    /// ENQ(0x05)를 받으면 PTY로 돌려보낼 글(Ghostty `enquiry-response`, 기본 빈 값 = 답하지 않음, #176)
+    pub enquiry_response: String,
+    /// 프로그램이 키보드 잠금 모드(KAM, `CSI 2 h`)로 사람의 키 입력을 막을 수 있는가(Ghostty `vt-kam-allowed`, 기본 끔, #176)
+    pub vt_kam_allowed: bool,
+    /// 프로그램이 `CSI 8 ; 행 ; 열 t`로 창 크기를 바꿀 수 있는가(Ghostty `vt-window-resize-allowed`, 기본 끔, #176)
+    pub vt_window_resize_allowed: bool,
+    /// kitty 그림 저장 바이트 상한. 0이면 그림 프로토콜을 쓰지 않는다(Ghostty `image-storage-limit`, 기본 320000000, #176)
+    pub image_storage_limit: u32,
+    /// 프로그램의 클립보드 쓰기 한 번의 바이트 상한. `None`은 `unlimited`(Ghostty `clipboard-write-limit-bytes`, 기본 64MiB, #176)
+    pub clipboard_write_limit_bytes: Option<usize>,
+    /// 복사할 때 글자 바꾸기(Ghostty `clipboard-codepoint-map`, 여러 번, #176)
+    pub clipboard_codepoint_map: Vec<CodepointRule>,
     /// 남는 자리를 네 변에 고르게(Ghostty `window-padding-balance`, #136)
     pub padding_balance: bool,
     /// 여백 색(Ghostty `window-padding-color`)
@@ -934,6 +1014,12 @@ impl Default for Config {
             scroll_to_bottom: ScrollToBottom::default(),
             title_report: false,
             osc_color_report_format: OscColorReportFormat::Bit16,
+            enquiry_response: String::new(),
+            vt_kam_allowed: false,
+            vt_window_resize_allowed: false,
+            image_storage_limit: 320_000_000,
+            clipboard_write_limit_bytes: Some(64 * 1024 * 1024),
+            clipboard_codepoint_map: Vec::new(),
             padding_balance: false,
             padding_color: PaddingColor::Background,
             cursor_opacity: 1.0,
@@ -2097,6 +2183,36 @@ impl Config {
                 Some(b) => self.title_report = b,
                 None => bad(warnings),
             },
+            "enquiry-response" => self.enquiry_response = v.to_string(),
+            "vt-kam-allowed" => match parse_bool(v) {
+                Some(b) => self.vt_kam_allowed = b,
+                None => bad(warnings),
+            },
+            "vt-window-resize-allowed" => match parse_bool(v) {
+                Some(b) => self.vt_window_resize_allowed = b,
+                None => bad(warnings),
+            },
+            "image-storage-limit" => match v.parse::<u32>() {
+                Ok(n) => self.image_storage_limit = n,
+                Err(_) => bad(warnings),
+            },
+            "clipboard-write-limit-bytes" => match v {
+                "unlimited" => self.clipboard_write_limit_bytes = None,
+                _ => match v.parse::<usize>() {
+                    Ok(n) => self.clipboard_write_limit_bytes = Some(n),
+                    Err(_) => bad(warnings),
+                },
+            },
+            "clipboard-codepoint-map" => {
+                if v.is_empty() {
+                    self.clipboard_codepoint_map.clear();
+                } else {
+                    match parse_codepoint_rules(v) {
+                        Some(r) => self.clipboard_codepoint_map.extend(r),
+                        None => bad(warnings),
+                    }
+                }
+            }
             "osc-color-report-format" => match v {
                 "none" => self.osc_color_report_format = OscColorReportFormat::None,
                 "8-bit" => self.osc_color_report_format = OscColorReportFormat::Bit8,
@@ -3267,6 +3383,122 @@ mod tests {
             1
         );
         assert_eq!(Config::from_text("title-report = maybe\n", true).warnings.len(), 1);
+    }
+
+    #[test]
+    fn vt_limit_keys_default_like_ghostty() {
+        let d = Config::default();
+        assert_eq!(d.enquiry_response, "");
+        assert!(!d.vt_kam_allowed && !d.vt_window_resize_allowed);
+        assert_eq!(d.image_storage_limit, 320_000_000);
+        assert_eq!(d.clipboard_write_limit_bytes, Some(64 * 1024 * 1024));
+        assert!(d.clipboard_codepoint_map.is_empty());
+    }
+
+    #[test]
+    fn vt_limit_keys_parse() {
+        let c = Config::from_text(
+            "enquiry-response = \"b-terminal\"\nvt-kam-allowed = true\nvt-window-resize-allowed = true\n\
+             image-storage-limit = 1000\nclipboard-write-limit-bytes = 1234\n",
+            true,
+        );
+        assert!(c.warnings.is_empty(), "{:?}", c.warnings);
+        assert_eq!(c.enquiry_response, "b-terminal");
+        assert!(c.vt_kam_allowed && c.vt_window_resize_allowed);
+        assert_eq!(c.image_storage_limit, 1000);
+        assert_eq!(c.clipboard_write_limit_bytes, Some(1234));
+        let c = Config::from_text(
+            "clipboard-write-limit-bytes = unlimited\nimage-storage-limit = 0\n",
+            true,
+        );
+        assert_eq!((c.clipboard_write_limit_bytes, c.image_storage_limit), (None, 0));
+        // 읽지 못하는 값은 경고하고 기본을 둔다
+        for bad in [
+            "image-storage-limit = -1",
+            "image-storage-limit = 4294967296",
+            "image-storage-limit = big",
+            "clipboard-write-limit-bytes = -5",
+            "clipboard-write-limit-bytes = lots",
+            "vt-kam-allowed = maybe",
+            "vt-window-resize-allowed = maybe",
+        ] {
+            let c = Config::from_text(&format!("{bad}\n"), true);
+            assert_eq!(c.warnings.len(), 1, "{bad}");
+            let d = Config::default();
+            assert_eq!(
+                (
+                    c.image_storage_limit,
+                    c.clipboard_write_limit_bytes,
+                    c.vt_kam_allowed,
+                    c.vt_window_resize_allowed
+                ),
+                (
+                    d.image_storage_limit,
+                    d.clipboard_write_limit_bytes,
+                    d.vt_kam_allowed,
+                    d.vt_window_resize_allowed
+                ),
+                "{bad}"
+            );
+        }
+    }
+
+    #[test]
+    fn clipboard_write_limit_only_narrows_the_osc52_cap() {
+        let mb = 1024 * 1024;
+        assert!(clipboard_write_allowed(mb, Some(64 * mb)));
+        assert!(
+            !clipboard_write_allowed(mb + 1, Some(64 * mb)),
+            "고정 1MiB를 넘기지 못한다"
+        );
+        assert!(
+            !clipboard_write_allowed(mb + 1, None),
+            "unlimited여도 고정 상한은 남는다"
+        );
+        assert!(clipboard_write_allowed(10, Some(10)));
+        assert!(!clipboard_write_allowed(11, Some(10)));
+        assert!(
+            !clipboard_write_allowed(1, Some(0)),
+            "0은 빈 글이 아닌 쓰기를 모두 거절한다"
+        );
+        assert!(clipboard_write_allowed(0, Some(0)));
+    }
+
+    #[test]
+    fn clipboard_codepoint_map_parses_and_applies() {
+        let c = Config::from_text(
+            "clipboard-codepoint-map = U+2500=U+002D\nclipboard-codepoint-map = U+2502 = U+007C\n\
+             clipboard-codepoint-map = U+03A3=SUM\nclipboard-codepoint-map = U+2580-U+2590,U+25A0=#\n",
+            true,
+        );
+        assert!(c.warnings.is_empty(), "{:?}", c.warnings);
+        assert_eq!(c.clipboard_codepoint_map.len(), 5);
+        let m = |t: &str| map_clipboard_text(&c.clipboard_codepoint_map, t);
+        assert_eq!(m("a─│Σb"), "a-|SUMb");
+        assert_eq!(m("▀▄■▒"), "###▒");
+        assert_eq!(m("한글 plain"), "한글 plain");
+        // 나중에 적은 규칙이 이긴다
+        let c = Config::from_text(
+            "clipboard-codepoint-map = U+0041-U+005A=X\nclipboard-codepoint-map = U+0042=b\n",
+            true,
+        );
+        assert_eq!(map_clipboard_text(&c.clipboard_codepoint_map, "ABC"), "XbX");
+        // 빈 값은 목록을 비운다
+        let c = Config::from_text("clipboard-codepoint-map = U+0041=x\nclipboard-codepoint-map =\n", true);
+        assert!(c.clipboard_codepoint_map.is_empty() && c.warnings.is_empty());
+        for bad in [
+            "U+zz=x",
+            "U+0041",
+            "=x",
+            "U+0042-U+0041=x",
+            "U+D800=x",
+            "U+0041=U+110000",
+            "U+0041=U+zz",
+        ] {
+            let c = Config::from_text(&format!("clipboard-codepoint-map = {bad}\n"), true);
+            assert_eq!(c.warnings.len(), 1, "{bad}");
+            assert!(c.clipboard_codepoint_map.is_empty(), "{bad}");
+        }
     }
 
     #[test]

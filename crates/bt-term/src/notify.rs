@@ -39,6 +39,15 @@ pub enum Signal {
     },
     /// 창 제목 보고 질의(CSI 21 t). VT 엔진은 답하지 않으므로 세션이 설정(title-report)을 보고 답한다(#151)
     TitleReport,
+    /// ENQ(0x05). 세션이 설정(enquiry-response)을 보고 답한다(#176)
+    Enquiry,
+    /// 키보드 잠금 모드(KAM, `CSI 2 h`는 true, `CSI 2 l`은 false). 세션이 설정(vt-kam-allowed)을 보고 따른다(#176)
+    Kam(bool),
+    /// 창 크기 바꾸기 요청(`CSI 8 ; 행 ; 열 t`). 빠졌거나 0인 쪽은 0. 세션이 설정(vt-window-resize-allowed)을 본다(#176)
+    WindowResize {
+        rows: u16,
+        cols: u16,
+    },
 }
 
 /// 셸 통합 표지. <https://gitlab.freedesktop.org/Per_Bothner/specifications/blob/master/proposals/semantic-prompts.md>
@@ -88,7 +97,12 @@ pub struct Scanner {
     apc_skip: bool,
     /// CSI 매개변수(짧게만)
     csi: Vec<u8>,
+    /// 이 CSI에 중간 바이트(0x20~0x2f)나 `: < = >`가 끼었다: 우리가 아는 모양이 아니다
+    csi_taint: bool,
 }
+
+/// CSI 매개변수를 모으는 상한. 이만큼 차면 잘린 것으로 보고 믿지 않는다
+const MAX_CSI: usize = 24;
 
 /// APC 하나의 상한. kitty는 조각을 4096바이트로 보내지만 한 번에 보내는 도구도 있다
 const MAX_APC: usize = 8 * 1024 * 1024;
@@ -110,6 +124,10 @@ impl Scanner {
                     // 8비트 OSC는 UTF-8 글의 이어지는 바이트와 겹치므로 보지 않는다
                     St::Ground
                 }
+                (St::Ground, 0x05) => {
+                    out.push((i + 1, Signal::Enquiry));
+                    St::Ground
+                }
                 (St::Ground, _) => St::Ground,
                 (St::Esc, b']') => {
                     self.buf.clear();
@@ -122,7 +140,13 @@ impl Scanner {
                 }
                 (St::Esc, b'[') => {
                     self.csi.clear();
+                    self.csi_taint = false;
                     St::Csi
+                }
+                // ENQ는 VT 엔진도 ESC 사이에서 실행한다
+                (St::Esc, 0x05) => {
+                    out.push((i + 1, Signal::Enquiry));
+                    St::Esc
                 }
                 (St::Esc, b'c') => {
                     out.push((
@@ -156,15 +180,21 @@ impl Scanner {
                 // APC 안의 ESC 뒤가 \가 아니면 끊긴 것이다
                 (St::ApcEsc, _) => St::Ground,
                 (St::Csi, b'0'..=b'9' | b';' | b'?') => {
-                    if self.csi.len() < 16 {
+                    if self.csi.len() < MAX_CSI {
                         self.csi.push(b);
                     }
                     St::Csi
                 }
                 (St::Csi, 0x1b) => St::Esc,
+                (St::Csi, 0x05) => {
+                    out.push((i + 1, Signal::Enquiry));
+                    St::Csi
+                }
                 (St::Csi, 0x40..=0x7e) => {
-                    if b == b't' && self.csi.as_slice() == b"21" {
-                        out.push((i + 1, Signal::TitleReport));
+                    if !self.csi_taint && self.csi.len() < MAX_CSI {
+                        if let Some(sig) = csi_signal(b, &self.csi) {
+                            out.push((i + 1, sig));
+                        }
                     }
                     if b == b'J' {
                         match self.csi.as_slice() {
@@ -186,6 +216,10 @@ impl Scanner {
                         }
                     }
                     St::Ground
+                }
+                (St::Csi, 0x20..=0x2f | 0x3a | 0x3c..=0x3e) => {
+                    self.csi_taint = true;
+                    St::Csi
                 }
                 (St::Csi, _) => St::Csi,
                 (St::Osc, 0x07) => {
@@ -228,6 +262,34 @@ impl Scanner {
         if let Some(sig) = parse_osc(&text) {
             out.push((at, sig));
         }
+    }
+}
+
+/// 매개변수 하나를 수로 읽는다. 비면 0, 넘치면 최댓값
+fn csi_num(p: &str) -> u32 {
+    p.bytes()
+        .fold(0u32, |n, d| n.saturating_mul(10).saturating_add((d - b'0') as u32))
+}
+
+/// 끝난 CSI(`ESC [ 매개변수 끝바이트`)에서 뽑는 신호: 제목 보고(21 t), 창 크기 요청(8 ; 행 ; 열 t), 키보드 잠금(2 h·l)
+fn csi_signal(fin: u8, params: &[u8]) -> Option<Signal> {
+    // 매개변수 바이트는 숫자, `;`, `?`만 모았다. 비공개 표시(?)가 든 것은 아래 모양이 아니다
+    if params.contains(&b'?') {
+        return None;
+    }
+    let text = std::str::from_utf8(params).ok()?;
+    let parts: Vec<&str> = text.split(';').collect();
+    match fin {
+        b't' if text == "21" => Some(Signal::TitleReport),
+        b't' if parts[0] == "8" && parts.len() <= 3 => {
+            let dim = |i: usize| csi_num(parts.get(i).copied().unwrap_or("")).min(u16::MAX as u32) as u16;
+            Some(Signal::WindowResize {
+                rows: dim(1),
+                cols: dim(2),
+            })
+        }
+        b'h' | b'l' if parts.iter().any(|p| csi_num(p) == 2 && !p.is_empty()) => Some(Signal::Kam(fin == b'h')),
+        _ => None,
     }
 }
 
@@ -371,6 +433,51 @@ mod apc_tests {
     use super::*;
 
     /// #76: APC _G를 조각난 바이트에서도 뽑고, 다른 APC와 화면 지우기를 가린다
+    #[test]
+    fn enquiry_byte_is_a_signal_only_outside_strings() {
+        let mut sc = Scanner::default();
+        assert_eq!(sc.feed(b"a\x05b"), vec![Signal::Enquiry]);
+        // CSI 매개변수 사이의 C0는 VT 엔진도 실행한다
+        assert_eq!(sc.feed(b"\x1b[1\x05m"), vec![Signal::Enquiry]);
+        // OSC·APC 문자열 안의 0x05는 글자다
+        assert_eq!(sc.feed(b"\x1b]2;a\x05b\x07"), vec![]);
+        assert_eq!(
+            sc.feed(b"\x1b_Gi=1;a\x05b\x1b\\"),
+            vec![Signal::Graphics(b"i=1;a\x05b".to_vec())]
+        );
+    }
+
+    #[test]
+    fn kam_set_and_reset_are_plain_ansi_modes_only() {
+        let mut sc = Scanner::default();
+        assert_eq!(sc.feed(b"\x1b[2h"), vec![Signal::Kam(true)]);
+        assert_eq!(sc.feed(b"\x1b[2l"), vec![Signal::Kam(false)]);
+        assert_eq!(sc.feed(b"\x1b[4;2h"), vec![Signal::Kam(true)], "여러 모드 중 하나");
+        assert_eq!(sc.feed(b"\x1b[?2h\x1b[4h\x1b[12h\x1b[22h\x1b[2;4t"), vec![]);
+        // 조각으로 와도 이어 읽는다
+        assert_eq!(sc.feed(b"\x1b[").len() + sc.feed(b"2").len(), 0);
+        assert_eq!(sc.feed(b"h"), vec![Signal::Kam(true)]);
+    }
+
+    #[test]
+    fn window_resize_request_is_parsed() {
+        let r = |s: &[u8]| Scanner::default().feed(s);
+        let w = |rows, cols| vec![Signal::WindowResize { rows, cols }];
+        assert_eq!(r(b"\x1b[8;30;100t"), w(30, 100));
+        assert_eq!(r(b"\x1b[8;0;100t"), w(0, 100));
+        assert_eq!(r(b"\x1b[8;30t"), w(30, 0));
+        assert_eq!(r(b"\x1b[8;;100t"), w(0, 100));
+        assert_eq!(r(b"\x1b[8t"), w(0, 0));
+        assert_eq!(r(b"\x1b[8;99999;70000t"), w(u16::MAX, u16::MAX), "넘치면 최댓값");
+        // 다른 CSI t(보고·제목 스택)와 모양이 다른 것은 신호가 아니다
+        assert_eq!(
+            r(b"\x1b[14t\x1b[18t\x1b[22;0t\x1b[88;3;4t\x1b[?8;3;4t\x1b[8;a;4t"),
+            vec![]
+        );
+        // 매개변수가 너무 길어 잘렸으면 믿지 않는다
+        assert_eq!(r(b"\x1b[8;1;2;3;4;5;6;7;8;9;100t"), vec![]);
+    }
+
     #[test]
     fn graphics_apc_and_erase_signals() {
         let mut s = Scanner::default();

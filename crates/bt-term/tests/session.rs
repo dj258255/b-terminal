@@ -422,3 +422,123 @@ fn title_report_strips_control_chars() {
     let got = reply_to("\\033]2;a\\001b\\177c\\007\\033[21t", |o| o.title_report = true);
     assert_eq!(got, hex_of("\x1b]labc\x1b\\"));
 }
+
+// ---- VT 제한 키(#176): enquiry-response, vt-kam-allowed, vt-window-resize-allowed, image-storage-limit ----
+
+#[test]
+fn enquiry_gets_no_answer_by_default() {
+    assert_eq!(reply_to("\\005", |_| {}), "");
+}
+
+#[test]
+fn enquiry_answers_with_the_configured_text() {
+    let got = reply_to("\\005", |o| o.enquiry_response = "b-term".into());
+    assert_eq!(got, hex_of("b-term"));
+    // 두 번 물으면 두 번 답한다
+    let got = reply_to("\\005\\005", |o| o.enquiry_response = "ok".into());
+    assert_eq!(got, hex_of("okok"));
+}
+
+#[test]
+fn enquiry_byte_inside_a_string_sequence_is_not_a_question() {
+    // OSC 제목 안의 0x05는 글자일 뿐이다
+    let got = reply_to("\\033]2;a\\005b\\007", |o| o.enquiry_response = "NO".into());
+    assert_eq!(got, "");
+}
+
+/// 스크립트가 READY를 찍은 뒤 사람이 `x`를 친 것처럼 쓰고, 스크립트가 받은 바이트를 16진수로 돌려준다
+fn typed_after(setup: &str, opts: impl FnOnce(&mut SpawnOptions)) -> String {
+    let (tx, rx) = channel();
+    let tx = std::sync::Mutex::new(tx);
+    let sink = Arc::new(move |e: SessionEvent| {
+        let _ = tx.lock().unwrap().send(e);
+    });
+    let script = format!(
+        "stty raw -echo min 0 time 15; printf '{setup}'; printf READY; \
+         r=$(dd bs=256 count=1 2>/dev/null | od -An -v -tx1 | tr -d ' \\n'); printf 'R[%s]\\n' \"$r\""
+    );
+    let mut o = SpawnOptions {
+        program: Some("/bin/sh".into()),
+        args: vec!["-c".into(), script],
+        cwd: Some(std::env::temp_dir()),
+        ..Default::default()
+    };
+    opts(&mut o);
+    let s = Session::spawn(o, GridSize::new(80, 10), Theme::default(), sink).expect("spawn");
+    wait_until(&s, |t| t.contains("READY"));
+    s.write_input(b"x", false);
+    wait_exit(&rx);
+    let text = s.snapshot().text();
+    let start = text.find("R[").unwrap_or_else(|| panic!("답 줄이 없다:\n{text}")) + 2;
+    let end = text[start..].find(']').expect("닫는 ]") + start;
+    text[start..end].to_string()
+}
+
+#[test]
+fn kam_is_ignored_unless_allowed() {
+    // 허용하지 않으면 키보드 잠금 요청을 무시한다: 친 글이 간다
+    assert_eq!(typed_after("\\033[2h", |_| {}), "78");
+}
+
+#[test]
+fn kam_locks_the_keyboard_when_allowed_and_unlocks() {
+    let allow = |o: &mut SpawnOptions| o.vt_kam_allowed = true;
+    assert_eq!(typed_after("\\033[2h", allow), "", "잠기면 키 입력이 PTY에 가지 않는다");
+    assert_eq!(typed_after("\\033[2h\\033[2l", allow), "78", "CSI 2 l로 푼다");
+    assert_eq!(typed_after("\\033[2h\\033c", allow), "78", "초기화(RIS)가 푼다");
+    // 비공개 모드(?2)와 다른 모드(4)는 KAM이 아니다
+    assert_eq!(typed_after("\\033[?2h\\033[4h", allow), "78");
+}
+
+/// 프로그램이 `printf`로 찍은 것에 세션이 낸 창 크기 요청 사건을 모은다
+fn resize_events(script: &str, allow: bool) -> Vec<(u16, u16)> {
+    let (tx, rx) = channel();
+    let tx = std::sync::Mutex::new(tx);
+    let sink = Arc::new(move |e: SessionEvent| {
+        let _ = tx.lock().unwrap().send(e);
+    });
+    let o = SpawnOptions {
+        program: Some("/bin/sh".into()),
+        args: vec!["-c".into(), script.into()],
+        cwd: Some(std::env::temp_dir()),
+        vt_window_resize_allowed: allow,
+        ..Default::default()
+    };
+    let _s = Session::spawn(o, GridSize::new(80, 10), Theme::default(), sink).expect("spawn");
+    let mut got = Vec::new();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while Instant::now() < deadline {
+        match rx.recv_timeout(Duration::from_millis(100)) {
+            Ok(SessionEvent::WindowResize { rows, cols }) => got.push((rows, cols)),
+            Ok(SessionEvent::Exited(_)) => break,
+            _ => {}
+        }
+    }
+    got
+}
+
+#[test]
+fn window_resize_request_reaches_the_app_only_when_allowed() {
+    let script = "printf '\\033[8;30;100t'";
+    assert_eq!(resize_events(script, true), vec![(30, 100)]);
+    assert_eq!(resize_events(script, false), vec![], "꺼져 있으면 앱에 알리지 않는다");
+}
+
+#[test]
+fn window_resize_request_forms() {
+    // 0이나 빠진 쪽은 0으로 알린다(그대로 두라는 뜻). 다른 CSI t와 뒤섞이지 않는다
+    let script = "printf '\\033[8;0;120t\\033[8;40t\\033[8;;90t\\033[14t\\033[18t\\033[22;0t'";
+    assert_eq!(resize_events(script, true), vec![(0, 120), (40, 0), (0, 90)]);
+}
+
+#[test]
+fn kitty_graphics_query_follows_image_storage_limit() {
+    let q = "\\033_Ga=q,i=1,s=1,v=1,f=24;AAAA\\033\\\\";
+    assert_eq!(reply_to(q, |_| {}), hex_of("\x1b_Gi=1;OK\x1b\\"));
+    // 0이면 그림 프로토콜을 쓰지 않는다: 질의에도 답하지 않는다
+    assert_eq!(reply_to(q, |o| o.image_storage_limit = Some(0)), "");
+    assert_eq!(
+        reply_to(q, |o| o.image_storage_limit = Some(1_000_000)),
+        hex_of("\x1b_Gi=1;OK\x1b\\")
+    );
+}

@@ -1025,6 +1025,10 @@ impl App {
             scroll_on_output: self.config.scroll_to_bottom.output,
             title_report: self.config.title_report,
             osc_color_report_format: self.config.osc_color_report_format,
+            enquiry_response: self.config.enquiry_response.clone(),
+            vt_kam_allowed: self.config.vt_kam_allowed,
+            vt_window_resize_allowed: self.config.vt_window_resize_allowed,
+            image_storage_limit: Some(self.config.image_storage_limit),
             ..options
         };
         // 칸 안의 btctl이 이 터미널과 이 칸을 찾게 한다
@@ -1455,6 +1459,8 @@ impl App {
         if self.config.clipboard_trim_trailing_spaces {
             text = bt_term::trim_trailing_spaces(&text);
         }
+        // 복사할 때 글자 바꾸기(clipboard-codepoint-map)
+        text = bt_core::config::map_clipboard_text(&self.config.clipboard_codepoint_map, &text);
         match self.clipboard.as_mut() {
             Some(cb) => cb.set_text(text).is_ok(),
             None => false,
@@ -2621,6 +2627,50 @@ impl App {
         let inc = crate::startup::step_increments(self.config.window_step_resize, m.width, m.height);
         g.window
             .set_resize_increments(inc.map(|(w, h)| PhysicalSize::new(w, h)));
+    }
+
+    /// 프로그램의 창 크기 바꾸기 요청(CSI 8 t, 설정 vt-window-resize-allowed가 켜졌을 때만 세션이 알린다, ADR-013).
+    /// Ghostty처럼 창에 탭이 하나이고 분할이 없고 퀵 터미널·전체 화면·최대화가 아닐 때만 따른다.
+    /// 40열 × 10행보다 작게는 줄이지 않고 화면보다 크게는 키우지 않는다
+    fn on_window_resize_request(&mut self, idx: usize, rows: u16, cols: u16) {
+        let Some(pane) = self.panes.get(idx) else { return };
+        let (Some(g), Some(f)) = (&self.w.gfx, &self.fonts) else {
+            return;
+        };
+        let single = self.w.tabs.len() == 1 && self.w.tabs[0].layout.leaves() == [pane.id];
+        #[cfg(target_os = "macos")]
+        let simple_fullscreen = {
+            use winit::platform::macos::WindowExtMacOS;
+            g.window.simple_fullscreen()
+        };
+        #[cfg(not(target_os = "macos"))]
+        let simple_fullscreen = false;
+        if !single || self.w.quick || g.window.fullscreen().is_some() || simple_fullscreen || g.window.is_maximized() {
+            log::debug!("창 크기 바꾸기 요청을 무시했습니다(탭·분할·퀵·전체 화면·최대화)");
+            return;
+        }
+        let m = f.metrics();
+        let px = |pt: f32| (pt as f64 * self.scale).round() as u32;
+        let (pad_w, pad_h) = (
+            px(self.config.padding_x.0) + px(self.config.padding_x.1),
+            px(self.config.padding_y.0) + px(self.config.padding_y.1) + self.tabbar_height(),
+        );
+        let size = pane.session.size();
+        let max = match g.window.current_monitor() {
+            Some(mon) => {
+                let ms = mon.size();
+                (
+                    (ms.width.saturating_sub(pad_w) / m.width.max(1)).min(u16::MAX as u32) as u16,
+                    (ms.height.saturating_sub(pad_h) / m.height.max(1)).min(u16::MAX as u32) as u16,
+                )
+            }
+            None => (size.cols, size.rows),
+        };
+        let (cols, rows) = bt_term::window_resize_target((cols, rows), (size.cols, size.rows), max);
+        let _ = g.window.request_inner_size(PhysicalSize::new(
+            m.width * cols as u32 + pad_w,
+            m.height * rows as u32 + pad_h,
+        ));
     }
 
     /// 설정의 window-width·window-height(셀)로 지금 창 크기를 맞춘다
@@ -3950,7 +4000,12 @@ impl ApplicationHandler<UserEvent> for App {
                         // 보고 있는 창의 고른 칸에서 온 것만 받는다: 뒤쪽 탭이나 옆 칸에 흘러간 출력이 몰래 클립보드를 바꿔
                         // 나중의 붙여넣기에 명령을 끼워 넣지 못하게(붙여넣기 하이재킹). 받으면 알림으로 보인다
                         let watching = self.w.focused && self.is_focused(idx);
-                        if watching && text.len() <= 1024 * 1024 {
+                        // 한 번에 쓸 수 있는 크기: 고정 1MiB와 clipboard-write-limit-bytes 중 작은 쪽(ADR-013)
+                        let fits = bt_core::config::clipboard_write_allowed(
+                            text.len(),
+                            self.config.clipboard_write_limit_bytes,
+                        );
+                        if watching && fits {
                             if let Some(cb) = self.clipboard.as_mut() {
                                 let _ = cb.set_text(text.clone());
                             }
@@ -3966,8 +4021,13 @@ impl ApplicationHandler<UserEvent> for App {
                             }
                         } else {
                             log::warn!(
-                                "탭 {}: 보고 있지 않은 탭의 클립보드 쓰기(OSC 52)를 버렸습니다",
-                                self.panes[idx].id
+                                "탭 {}: 클립보드 쓰기(OSC 52)를 버렸습니다({})",
+                                self.panes[idx].id,
+                                if fits {
+                                    "보고 있지 않은 탭"
+                                } else {
+                                    "크기가 상한을 넘음"
+                                }
                             );
                         }
                     }
@@ -3983,6 +4043,7 @@ impl ApplicationHandler<UserEvent> for App {
                     SessionEvent::CommandStarted(cmd) => self.panes[idx].running = Some((cmd, Instant::now())),
                     SessionEvent::CommandFinished(rec) => self.on_command_finished(idx, rec),
                     SessionEvent::Bell => self.on_bell(idx),
+                    SessionEvent::WindowResize { rows, cols } => self.on_window_resize_request(idx, rows, cols),
                     SessionEvent::Output => {}
                 }
                 self.request_redraw();

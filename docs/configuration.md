@@ -58,6 +58,12 @@ config-file = ?~/.config/b-terminal/local   # ?가 붙으면 없어도 된다
 | `scroll-to-bottom` | `keystroke` `output` (쉼표로 이음, 앞에 `no-`를 붙이면 끔), `true` `false` | `keystroke, no-output` | Ghostty 값. 스크롤해 올라가 있을 때 언제 맨 아래로 돌아갈지. `keystroke`는 키를 치거나 붙여넣어 칸에 글을 보낼 때(앱 단축키·수식 키만 누른 것은 아님), `output`은 새 출력이 올 때. `output`을 켜면 로그를 거슬러 읽는 중에도 출력이 오면 맨 아래로 끌려갑니다. 적지 않은 쪽은 기본값, 모르는 이름이 있으면 경고하고 기본값 |
 | `title-report` | `true` `false` | `false` | 프로그램이 창 제목을 묻는 질의(CSI 21 t)에 제목으로 답합니다(제어 문자는 지움). 제목은 출력이 정하므로 답이 셸 입력이 되어 명령이 될 수 있어 기본으로 끕니다. 새로 연 칸부터 적용 |
 | `osc-color-report-format` | `none` `8-bit` `16-bit` | `16-bit` | 프로그램이 색을 묻는 질의(OSC 4·10·11)에 답하는 꼴. `none`은 답하지 않고, `8-bit`는 `rgb:RR/GG/BB`, `16-bit`는 `rgb:RRRR/GGGG/BBBB`입니다. 새로 연 칸부터 적용 |
+| `enquiry-response` | 글(따옴표로 감싸도 됨) | (빈 값) | 프로그램이 ENQ(0x05)를 보내면 PTY로 돌려보낼 글. 비어 있으면 답하지 않습니다. 글은 설정이 정하고 출력이 정하지 못합니다. 줄바꿈 같은 이스케이프는 풀지 않고 적은 그대로 보냅니다. 새로 연 칸부터 적용 |
+| `vt-kam-allowed` | `true` `false` | `false` | 프로그램이 키보드 잠금 모드(KAM, `CSI 2 h`)로 사람의 키 입력을 막을 수 있게 합니다. `CSI 2 l`이나 초기화(RIS)로 풀리고, 잠가 놓고 죽은 프로그램이 있으면 그 탭은 입력을 받지 못하니(탭 닫기·앱 단축키는 됩니다) 필요한 사람만 켜세요. 새로 연 칸부터 적용 |
+| `vt-window-resize-allowed` | `true` `false` | `false` | 프로그램이 `CSI 8 ; 행 ; 열 t`로 창 크기를 바꾸게 합니다. 0이나 빠진 쪽은 그대로 두고, 40열 × 10행보다 작게는 줄이지 않고 화면보다 크게는 키우지 않습니다. 창에 탭이 하나이고 분할이 없고 퀵 터미널·전체 화면·최대화가 아닐 때만 따릅니다. 새로 연 칸부터 적용 |
+| `image-storage-limit` | 바이트(0 이상 4294967295 이하) | `320000000` | kitty 그림을 저장하는 총량. 넘으면 오래된 그림부터 버리고, 그림 한 장이 이보다 크면 `ENOSPC`로 거절합니다. `0`이면 그림 프로토콜을 쓰지 않고 질의에도 답하지 않습니다. Ghostty는 주 화면·대체 화면에 따로 적용하지만 b-terminal은 칸 하나에 하나입니다. 한 장 64MiB·한 변 10000px·그림 4096개 같은 다른 상한은 그대로입니다. 새로 연 칸부터 적용 |
+| `clipboard-write-limit-bytes` | 바이트 또는 `unlimited` | `67108864` | 프로그램의 클립보드 쓰기 한 번의 크기 상한(`0`은 빈 글 말고 모두 거절). Ghostty에서는 kitty 클립보드(OSC 5522)에만 걸리지만 b-terminal은 OSC 52에 겁니다. OSC 52에는 1MiB 고정 상한이 따로 있어 이 값은 그보다 줄이기만 하고(`unlimited`여도 1MiB), 설정을 다시 읽으면 바로 반영됩니다 |
+| `clipboard-codepoint-map` | `범위=바꿀 글`(여러 번). 범위는 `U+2500`, `U+2500-U+257F`, 쉼표로 이은 목록. 바꿀 글은 `U+002D` 하나이거나 아무 글 | 없음 | 복사할 때 글자를 바꿉니다(예 `U+2500=U+002D`, `U+03A3=SUM`). 겹치면 나중에 적은 것이 이기고, 바꿀 글이 비어 있으면 그 글자를 지우고, 값이 비면 목록을 비웁니다. 글을 복사하는 동작에만 적용하고 링크 복사와 프로그램의 OSC 52 쓰기에는 적용하지 않습니다 |
 | `selection-background` / `selection-foreground` | `#rrggbb` | 색 뒤집기 | |
 | `bold-is-bright` | `true` / `false` | `false` | Ghostty 기본과 같게 끔 |
 | `bold-color` | `#rrggbb`, `bright` | 없음 | 굵은 글자의 색(Ghostty 1.2). 색을 주면 굵은 기본 글자색이 그 색이 되고, 나머지 굵은 0~7번 색은 밝은 8~15번 색이 됩니다. `bright`는 색 없이 굵은 0~7번 색만 밝게 올립니다(`bold-is-bright = true`와 같음). 값을 비우면 기본 |
