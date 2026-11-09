@@ -96,6 +96,8 @@ pub struct SpawnOptions {
     /// OSC 52 쓰기·읽기 허용(설정 clipboard-write·clipboard-read)
     pub clipboard_write: bool,
     pub clipboard_read: bool,
+    /// 단어 고르기(두 번 누르기)의 경계 글자(설정 selection-word-chars, #126). 없으면 VT 엔진 기본
+    pub word_chars: Option<String>,
 }
 
 /// 세션이 앱에 알리는 일. 읽기 스레드에서 불린다
@@ -376,6 +378,10 @@ impl Session {
                 },
                 blinking: options.cursor_blink,
             },
+            semantic_escape_chars: options
+                .word_chars
+                .clone()
+                .unwrap_or_else(|| Config::default().semantic_escape_chars),
             ..Config::default()
         };
         let term = Term::new(config, &Dims(size), listener);

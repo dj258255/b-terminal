@@ -210,3 +210,29 @@ sleep 1"#;
     assert!(s.snapshot().display_offset > 0);
     assert!(s.jump_to_prompt(1));
 }
+
+/// #126: 단어 고르기의 경계 글자를 설정으로 바꾼다(selection-word-chars)
+#[test]
+fn word_selection_follows_selection_word_chars() {
+    let pick = |chars: Option<&str>| {
+        let (tx, rx) = channel();
+        let tx = std::sync::Mutex::new(tx);
+        let sink = Arc::new(move |e: SessionEvent| {
+            let _ = tx.lock().unwrap().send(e);
+        });
+        let opts = SpawnOptions {
+            program: Some("/bin/sh".into()),
+            args: vec!["-c".into(), "printf 'foo:bar baz'".into()],
+            cwd: Some(std::env::temp_dir()),
+            word_chars: chars.map(str::to_string),
+            ..Default::default()
+        };
+        let s = Session::spawn(opts, GridSize::new(40, 5), Theme::default(), sink).expect("spawn");
+        wait_exit(&rx);
+        wait_until(&s, |t| t.contains("baz"));
+        s.select_start(1, 0, bt_term::SelectKind::Word);
+        s.selection_text()
+    };
+    assert_eq!(pick(None).as_deref(), Some("foo"), "VT 엔진 기본은 :에서 끊는다");
+    assert_eq!(pick(Some(" ")).as_deref(), Some("foo:bar"), "공백만 경계");
+}
