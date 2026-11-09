@@ -3120,7 +3120,11 @@ impl App {
         if self.w.search.as_ref().is_some_and(|s| leaves.contains(&s.pane)) {
             self.end_search();
         }
-        if self.w.title_prompt.as_ref().is_some_and(|(p, _)| leaves.contains(p)) {
+        // 칸·탭 제목 막대만 옮긴 칸에 매인다. 창 제목 막대는 남는 창의 것이다
+        if self.w.title_prompt.as_ref().is_some_and(|(target, _)| match target {
+            TitleTarget::Surface(p) | TitleTarget::Tab(p) => leaves.contains(p),
+            TitleTarget::Window => false,
+        }) {
             self.w.title_prompt = None;
         }
         let id = gfx.window.id();
