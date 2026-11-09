@@ -270,7 +270,20 @@ pub struct Config {
     pub window_position_x: Option<i32>,
     pub window_position_y: Option<i32>,
     pub option_as_alt: OptionAsAlt,
+    /// 스크롤백 줄 수 상한. `scrollback-limit-bytes`와 `-lines`에서 정해진다(`scrollback_rows`, #177)
     pub scrollback_lines: usize,
+    /// `scrollback-limit-bytes`(Ghostty 1.4, 기본 50MB). 없으면 `unlimited`
+    pub scrollback_limit_bytes: Option<u64>,
+    /// `scrollback-limit-lines`(Ghostty 1.4, 기본 `unlimited`)
+    pub scrollback_limit_lines: Option<usize>,
+    /// `palette-generate`(Ghostty 1.3, 기본 끔): 16~255번 색을 기본 16색에서 만든다(#177)
+    pub palette_generate: bool,
+    /// `palette-harmonious`(Ghostty 1.3, 기본 끔): 밝은 테마도 바탕·글자색 순서를 맞바꾸지 않는다
+    pub palette_harmonious: bool,
+    /// `palette = 100=#...`로 사용자가 정한 16~255번 색. 만든 색이 덮지 않는다
+    pub palette_set: Vec<(u8, Rgb)>,
+    /// `background-opacity-cells`(Ghostty 1.2, 기본 끔): 색이 있는 바탕 칸도 `background-opacity`로 비친다
+    pub background_opacity_cells: bool,
     pub copy_on_select: CopyOnSelect,
     /// 클립보드로 복사하는 글의 줄 끝 공백·탭을 지운다(Ghostty `clipboard-trim-trailing-spaces`)
     pub clipboard_trim_trailing_spaces: bool,
@@ -824,7 +837,13 @@ impl Default for Config {
             window_position_x: None,
             window_position_y: None,
             option_as_alt: OptionAsAlt::None,
-            scrollback_lines: 10_000,
+            scrollback_lines: scrollback_rows(Some(SCROLLBACK_BYTES_DEFAULT), None),
+            scrollback_limit_bytes: Some(SCROLLBACK_BYTES_DEFAULT),
+            scrollback_limit_lines: None,
+            palette_generate: false,
+            palette_harmonious: false,
+            palette_set: Vec::new(),
+            background_opacity_cells: false,
             copy_on_select: CopyOnSelect::True,
             clipboard_trim_trailing_spaces: true,
             selection_clear_on_typing: true,
@@ -1235,6 +1254,33 @@ impl Config {
     }
 }
 
+/// `scrollback-limit-bytes` 기본. 릴리스된 Ghostty(1.3까지)의 10MB를 따른다.
+/// 1.4 소스는 50MB로 올렸지만 스크롤백 압축과 함께이고, b-terminal에는 압축이 없다
+pub const SCROLLBACK_BYTES_DEFAULT: u64 = 10_000_000;
+/// 스크롤백 줄 수의 맨 위(두 상한이 모두 `unlimited`여도 이만큼에서 멈춘다)
+pub const SCROLLBACK_ROWS_MAX: usize = 1_000_000;
+
+/// 두 상한(`scrollback-limit-bytes`, `scrollback-limit-lines`; 없으면 `unlimited`)에서 VT 엔진에 줄 스크롤백 줄 수를 정한다.
+/// 엔진은 줄 수 상한만 있어 바이트는 줄 하나를 약 1KB로 보고 줄 수로 바꾼다(100줄 이상).
+/// Ghostty처럼 둘 다 정했으면 먼저 닿는 쪽, 곧 작은 쪽이다
+pub fn scrollback_rows(bytes: Option<u64>, lines: Option<usize>) -> usize {
+    let from_bytes = match bytes {
+        Some(b) => ((b / 1000).min(SCROLLBACK_ROWS_MAX as u64) as usize).max(100),
+        None => SCROLLBACK_ROWS_MAX,
+    };
+    let from_lines = lines.map_or(SCROLLBACK_ROWS_MAX, |n| n.min(SCROLLBACK_ROWS_MAX));
+    from_bytes.min(from_lines)
+}
+
+/// 한도 값(Ghostty `Limit`): 빈 값은 기본, `unlimited`는 한도 없음, 아니면 수. 읽지 못하면 없다
+fn parse_limit<T: std::str::FromStr>(v: &str, default: Option<T>) -> Option<Option<T>> {
+    match v.trim() {
+        "" => Some(default),
+        "unlimited" => Some(None),
+        n => n.parse::<T>().ok().map(Some),
+    }
+}
+
 impl Config {
     /// 기본값 → Ghostty 설정 → b-terminal 설정 → 덧붙인 파일 순서로 읽는다. `dark`는 `theme = light:…,dark:…`에서 고를 쪽
     pub fn load(extra: Option<&Path>, dark: bool) -> Self {
@@ -1325,6 +1371,10 @@ impl Config {
             }
             self.apply(e, warnings);
         }
+        // 키를 다 읽은 뒤에 정한다: 바탕·글자색과 palette가 어느 순서로 와도 같은 결과(#177)
+        self.theme
+            .build_extended(self.palette_generate, self.palette_harmonious, &self.palette_set);
+        self.scrollback_lines = scrollback_rows(self.scrollback_limit_bytes, self.scrollback_limit_lines);
     }
 
     fn apply_color(&mut self, e: &Entry, warnings: &mut Vec<String>) -> bool {
@@ -1360,8 +1410,16 @@ impl Config {
                 });
                 match parsed {
                     Some((n, c)) if n < 16 => t.palette[n] = c,
-                    // 16~255번은 xterm 표를 그대로 쓴다(바꾼 값은 아직 받지 않는다)
-                    Some(_) => {}
+                    // 16~255번(#177): 정한 값은 xterm 표나 만든 색 위에 얹는다
+                    Some((n, c)) if n < 256 => {
+                        self.palette_set.retain(|(i, _)| *i as usize != n);
+                        self.palette_set.push((n as u8, c));
+                    }
+                    Some(_) => warnings.push(format!(
+                        "{}:{}: palette 번호는 0~255입니다: {v}",
+                        e.file.display(),
+                        e.line
+                    )),
                     None => warnings.push(format!(
                         "{}:{}: palette 값을 읽지 못했습니다: {v}",
                         e.file.display(),
@@ -1574,15 +1632,36 @@ impl Config {
                 "right" => self.option_as_alt = OptionAsAlt::Right,
                 _ => bad(warnings),
             },
-            // Ghostty는 바이트 수다. 줄 하나를 대략 1KB로 보고 줄 수로 바꾼다
-            "scrollback-limit" => match v.parse::<u64>() {
-                Ok(bytes) => self.scrollback_lines = ((bytes / 1000) as usize).clamp(100, 200_000),
+            // Ghostty 1.4: 바이트 상한(옛 이름 scrollback-limit도 같은 뜻)과 줄 상한. 먼저 닿는 쪽이 이긴다(#177)
+            "scrollback-limit-bytes" | "scrollback-limit" => {
+                match parse_limit::<u64>(v, Some(SCROLLBACK_BYTES_DEFAULT)) {
+                    Some(b) => self.scrollback_limit_bytes = b,
+                    None => bad(warnings),
+                }
+            }
+            "scrollback-limit-lines" => match parse_limit::<usize>(v, None) {
+                Some(n) => self.scrollback_limit_lines = n,
+                None => bad(warnings),
+            },
+            // b-terminal 옛 키: 정확히 그 줄 수(바이트 상한은 푼다)
+            "scrollback-lines" => match v.parse::<usize>() {
+                Ok(n) => {
+                    self.scrollback_limit_lines = Some(n);
+                    self.scrollback_limit_bytes = None;
+                }
                 Err(_) => bad(warnings),
             },
-            // b-terminal 키: 줄 수로 바로
-            "scrollback-lines" => match v.parse::<usize>() {
-                Ok(n) => self.scrollback_lines = n.clamp(0, 1_000_000),
-                Err(_) => bad(warnings),
+            "palette-generate" => match parse_bool(v) {
+                Some(b) => self.palette_generate = b,
+                None => bad(warnings),
+            },
+            "palette-harmonious" => match parse_bool(v) {
+                Some(b) => self.palette_harmonious = b,
+                None => bad(warnings),
+            },
+            "background-opacity-cells" => match parse_bool(v) {
+                Some(b) => self.background_opacity_cells = b,
+                None => bad(warnings),
             },
             // Ghostty 1.4의 값 이름(none·primary·both)도 받는다. primary(선택 클립보드만)는 macOS에서 하는 일이 없다
             "copy-on-select" => match v {
@@ -1991,6 +2070,9 @@ impl Config {
         for (i, c) in t.palette.iter().enumerate() {
             push("palette", format!("{i}={}", hex(*c)));
         }
+        for (i, c) in &self.palette_set {
+            push("palette", format!("{i}={}", hex(*c)));
+        }
         push("bold-is-bright", t.bold_is_bright.to_string());
         if let Some(c) = t.bold_color {
             push("bold-color", hex(c));
@@ -2029,7 +2111,18 @@ impl Config {
             }
             .into(),
         );
-        push("scrollback-lines", self.scrollback_lines.to_string());
+        let limit = |v: Option<String>| v.unwrap_or_else(|| "unlimited".into());
+        push(
+            "scrollback-limit-bytes",
+            limit(self.scrollback_limit_bytes.map(|b| b.to_string())),
+        );
+        push(
+            "scrollback-limit-lines",
+            limit(self.scrollback_limit_lines.map(|n| n.to_string())),
+        );
+        push("palette-generate", self.palette_generate.to_string());
+        push("palette-harmonious", self.palette_harmonious.to_string());
+        push("background-opacity-cells", self.background_opacity_cells.to_string());
         push(
             "copy-on-select",
             match self.copy_on_select {
@@ -3311,6 +3404,159 @@ mod tests {
             r.contains("bell-audio-path = /tmp/b.wav") && r.contains("bell-audio-volume = 0.25"),
             "{r}"
         );
+    }
+
+    /// #177: 바이트 상한을 줄 수로 바꾸고, 두 상한 중 작은 쪽을 쓴다
+    #[test]
+    fn scrollback_rows_takes_the_smaller_limit() {
+        assert_eq!(scrollback_rows(Some(50_000_000), None), 50_000);
+        assert_eq!(scrollback_rows(Some(10_000_000), None), 10_000);
+        assert_eq!(
+            scrollback_rows(Some(10), None),
+            100,
+            "바이트는 100줄 밑으로 내려가지 않는다"
+        );
+        assert_eq!(
+            scrollback_rows(Some(50_000_000), Some(2_000)),
+            2_000,
+            "줄 상한이 먼저 닿는다"
+        );
+        assert_eq!(
+            scrollback_rows(Some(50_000_000), Some(900_000)),
+            50_000,
+            "바이트 상한이 먼저 닿는다"
+        );
+        assert_eq!(scrollback_rows(None, Some(0)), 0, "줄 0이면 기록하지 않는다");
+        assert_eq!(scrollback_rows(None, Some(123)), 123);
+        assert_eq!(
+            scrollback_rows(None, None),
+            SCROLLBACK_ROWS_MAX,
+            "둘 다 무제한이어도 맨 위에서 멈춘다"
+        );
+        assert_eq!(scrollback_rows(None, Some(usize::MAX)), SCROLLBACK_ROWS_MAX);
+        assert_eq!(scrollback_rows(Some(u64::MAX), None), SCROLLBACK_ROWS_MAX);
+    }
+
+    /// #177: scrollback-limit-bytes·-lines 해석. 기본은 10MB(릴리스된 Ghostty), 줄 무제한
+    #[test]
+    fn scrollback_limit_keys_parse_like_ghostty() {
+        let d = Config::default();
+        assert_eq!(d.scrollback_limit_bytes, Some(10_000_000));
+        assert_eq!(d.scrollback_limit_lines, None);
+        assert_eq!(d.scrollback_lines, 10_000);
+
+        let c = Config::from_text(
+            "scrollback-limit-bytes = 20000000\nscrollback-limit-lines = 5000\n",
+            true,
+        );
+        assert_eq!(c.scrollback_limit_bytes, Some(20_000_000));
+        assert_eq!(c.scrollback_limit_lines, Some(5000));
+        assert_eq!(c.scrollback_lines, 5000);
+        assert!(c.warnings.is_empty(), "{:?}", c.warnings);
+
+        let c = Config::from_text(
+            "scrollback-limit-bytes = unlimited\nscrollback-limit-lines = unlimited\n",
+            true,
+        );
+        assert_eq!((c.scrollback_limit_bytes, c.scrollback_limit_lines), (None, None));
+        assert_eq!(c.scrollback_lines, SCROLLBACK_ROWS_MAX);
+
+        // 빈 값은 기본으로 돌린다
+        let c = Config::from_text(
+            "scrollback-limit-bytes = 1000\nscrollback-limit-lines = 7\nscrollback-limit-bytes =\nscrollback-limit-lines =\n",
+            true,
+        );
+        assert_eq!(
+            (c.scrollback_limit_bytes, c.scrollback_limit_lines),
+            (Some(10_000_000), None)
+        );
+
+        let c = Config::from_text("scrollback-limit-lines = lots\nscrollback-limit-bytes = -1\n", true);
+        assert_eq!(c.warnings.len(), 2, "{:?}", c.warnings);
+        assert_eq!(c.scrollback_lines, 10_000, "잘못된 값은 기본 그대로");
+    }
+
+    /// #177: 옛 이름 scrollback-limit(Ghostty 1.4가 -bytes로 바꿈)과 b-terminal 키 scrollback-lines는 그대로 동작한다
+    #[test]
+    fn scrollback_old_keys_still_work() {
+        let c = Config::from_text("scrollback-limit = 10000000\n", true);
+        assert_eq!(c.scrollback_limit_bytes, Some(10_000_000));
+        assert_eq!(c.scrollback_lines, 10_000);
+        // scrollback-lines는 전과 같이 정확히 그 줄 수(기본 바이트 상한에 막히지 않는다)
+        let c = Config::from_text("scrollback-lines = 200000\n", true);
+        assert_eq!(c.scrollback_lines, 200_000);
+        let c = Config::from_text("scrollback-lines = 0\n", true);
+        assert_eq!(c.scrollback_lines, 0);
+        // 뒤에 쓴 새 키가 이긴다
+        let c = Config::from_text("scrollback-lines = 200000\nscrollback-limit-bytes = 3000000\n", true);
+        assert_eq!(c.scrollback_lines, 3000);
+    }
+
+    /// #177: palette-generate·palette-harmonious 키와 16번 이후 palette 값
+    #[test]
+    fn palette_generate_keys_build_256_colors() {
+        let d = Config::default();
+        assert!(!d.palette_generate && !d.palette_harmonious && !d.background_opacity_cells);
+        assert_eq!(d.theme.indexed(196), Rgb::new(255, 0, 0), "기본은 xterm 표 그대로");
+
+        let c = Config::from_text("palette-generate = true\n", true);
+        assert!(c.palette_generate);
+        assert!(c.warnings.is_empty(), "{:?}", c.warnings);
+        assert_ne!(c.theme.indexed(196), Rgb::new(255, 0, 0));
+        let bg = c.theme.background;
+        let g = c.theme.indexed(16);
+        assert!((g.r as i32 - bg.r as i32).abs() <= 1, "16번은 바탕");
+
+        // 직접 정한 번호는 지켜진다. 바탕·글자색을 뒤에 써도 만든 색에 반영된다
+        let c = Config::from_text(
+            "palette = 20=#010203\npalette-generate = true\nbackground = #000000\nforeground = #ffffff\n",
+            true,
+        );
+        assert_eq!(c.theme.indexed(20), Rgb::new(1, 2, 3));
+        assert_eq!(c.theme.indexed(16), Rgb::new(0, 0, 0));
+        assert_eq!(c.theme.indexed(231), Rgb::new(255, 255, 255));
+
+        // 만들지 않아도 16번 이후를 정할 수 있다(나머지는 xterm)
+        let c = Config::from_text("palette = 255=#123456\npalette = 300=#ffffff\n", true);
+        assert_eq!(c.theme.indexed(255), Rgb::new(0x12, 0x34, 0x56));
+        assert_eq!(c.theme.indexed(254), Rgb::new(228, 228, 228));
+        assert_eq!(c.warnings.len(), 1, "256 이상 번호는 경고: {:?}", c.warnings);
+
+        // 밝은 테마: 기본은 16번이 어둡고, harmonious는 바탕 그대로
+        let light = "background = #ffffff\nforeground = #000000\npalette-generate = true\n";
+        let c = Config::from_text(light, true);
+        assert_eq!(c.theme.indexed(16), Rgb::new(0, 0, 0));
+        let c = Config::from_text(&format!("{light}palette-harmonious = true\n"), true);
+        assert!(c.palette_harmonious);
+        assert_eq!(c.theme.indexed(16), Rgb::new(255, 255, 255));
+    }
+
+    /// #177: background-opacity-cells
+    #[test]
+    fn background_opacity_cells_key() {
+        assert!(Config::from_text("background-opacity-cells = true\n", true).background_opacity_cells);
+        assert!(!Config::from_text("background-opacity-cells = false\n", true).background_opacity_cells);
+        assert_eq!(
+            Config::from_text("background-opacity-cells = maybe\n", true)
+                .warnings
+                .len(),
+            1
+        );
+    }
+
+    /// #177: --show-config가 쓰는 글을 다시 읽으면 같은 값이 된다
+    #[test]
+    fn new_keys_round_trip_through_show_config() {
+        let c = Config::from_text(
+            "scrollback-limit-bytes = unlimited\nscrollback-limit-lines = 321\npalette-generate = true\npalette-harmonious = true\nbackground-opacity-cells = true\npalette = 99=#0a0b0c\n",
+            true,
+        );
+        let text = c.render();
+        let r = Config::from_text(&text, true);
+        assert_eq!(r.scrollback_limit_bytes, None);
+        assert_eq!(r.scrollback_limit_lines, Some(321));
+        assert!(r.palette_generate && r.palette_harmonious && r.background_opacity_cells);
+        assert_eq!(r.theme.indexed(99), Rgb::new(10, 11, 12));
     }
 
     #[test]

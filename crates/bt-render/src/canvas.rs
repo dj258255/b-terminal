@@ -16,6 +16,13 @@ pub struct Canvas<'a> {
     see_through: Option<(u32, u32)>,
     /// 배경 그림 층(#134): (기본 바탕색 RGB, 화면 크기의 미리 합성한 픽셀). 그 색을 칠하면 층에서 베낀다
     backdrop: Option<(u32, &'a [u32])>,
+    /// `background-opacity-cells`(#177): 색이 있는 바탕 칸을 칠할 알파(0~255)
+    cells_alpha: Option<u8>,
+}
+
+/// `background-opacity-cells`가 켜져 있고 창이 투명하면 색 바탕 칸을 칠할 알파(0~255). 아니면 없다(#177)
+pub fn cells_alpha(opacity: f32, cells: bool) -> Option<u8> {
+    (cells && opacity < 1.0).then(|| (opacity.clamp(0.0, 1.0) * 255.0).round() as u8)
 }
 
 impl<'a> Canvas<'a> {
@@ -28,6 +35,45 @@ impl<'a> Canvas<'a> {
             clip: (0, height as i32),
             see_through: None,
             backdrop: None,
+            cells_alpha: None,
+        }
+    }
+
+    /// `background-opacity-cells`(#177): 앞으로 `fill_rect_cell`로 칠하는 색 바탕 칸을 `alpha`만큼만 덮는 반투명으로 칠한다
+    pub fn set_cells_alpha(&mut self, alpha: Option<u8>) {
+        self.cells_alpha = alpha;
+    }
+
+    /// 칸 하나의 바탕을 칠한다. `set_cells_alpha`가 있으면 색 바탕 칸도 반투명으로, 기본 바탕색은 `fill_rect`와 같다
+    pub fn fill_rect_cell(&mut self, x: i32, y: i32, w: u32, h: u32, color: Rgb) {
+        match self.cells_alpha {
+            Some(a) if !self.is_default_bg(color) => self.fill_rect_translucent(x, y, w, h, color, a),
+            _ => self.fill_rect(x, y, w, h, color),
+        }
+    }
+
+    /// 투명 창·배경 그림이 기본 바탕색으로 다루는 색인가
+    fn is_default_bg(&self, color: Rgb) -> bool {
+        let rgb = color.to_u32();
+        self.see_through.is_some_and(|(bg, _)| bg == rgb) || self.backdrop.is_some_and(|(bg, _)| bg == rgb)
+    }
+
+    /// 사각형을 곱한 알파 `alpha`의 반투명 단색으로 칠한다(아래 픽셀은 덮어쓴다)
+    fn fill_rect_translucent(&mut self, x: i32, y: i32, w: u32, h: u32, color: Rgb, alpha: u8) {
+        let x0 = x.max(0) as u32;
+        let y0 = y.max(self.clip.0) as u32;
+        let x1 = (x + w as i32).clamp(0, self.width as i32) as u32;
+        let y1 = (y + h as i32).clamp(0, self.clip.1) as u32;
+        if x0 >= x1 || y0 >= y1 {
+            return;
+        }
+        let a = alpha as u32;
+        let mul = |c: u8| (c as u32 * a + 127) / 255;
+        let px = (a << 24) | (mul(color.r) << 16) | (mul(color.g) << 8) | mul(color.b);
+        for row in y0..y1 {
+            let start = (row * self.width + x0) as usize;
+            let end = (row * self.width + x1) as usize;
+            self.buf[start..end].fill(px);
         }
     }
 
@@ -304,5 +350,42 @@ mod tests {
         c.buf[3] = blend(c.buf[3], Rgb::new(255, 255, 255), 0);
         assert_eq!(c.buf[3], before);
         assert_eq!(blend(before, Rgb::new(255, 255, 255), 255), 0xffff_ffff);
+    }
+
+    /// #177: 색 바탕 칸의 알파는 투명 창에서 옵션을 켰을 때만 있다
+    #[test]
+    fn cells_alpha_needs_transparent_window_and_option() {
+        assert_eq!(cells_alpha(0.5, true), Some(128));
+        assert_eq!(cells_alpha(0.0, true), Some(0));
+        assert_eq!(cells_alpha(0.5, false), None);
+        assert_eq!(cells_alpha(1.0, true), None, "불투명 창이면 할 일이 없다");
+        assert_eq!(cells_alpha(7.0, true), None);
+    }
+
+    /// #177: 기본은 색 바탕 칸이 불투명이고, 켜면 곱한 알파로 비친다. 기본 바탕색 칸은 둘 다 같다
+    #[test]
+    fn colored_cells_become_translucent_only_with_cells_alpha() {
+        let bg = Rgb::new(40, 44, 52);
+        let red = Rgb::new(200, 100, 50);
+        let mut buf = vec![0u32; 4];
+        let mut c = Canvas::new(&mut buf, 4, 1);
+        c.set_see_through(bg, 128);
+        c.fill_rect_cell(0, 0, 1, 1, bg);
+        c.fill_rect_cell(1, 0, 1, 1, red);
+        assert_eq!(c.buf[0], 0x8014_161a, "기본 바탕은 반투명");
+        assert_eq!(c.buf[1], 0xffc8_6432, "옵션이 없으면 색 칸은 불투명");
+        c.set_cells_alpha(Some(128));
+        c.fill_rect_cell(2, 0, 1, 1, red);
+        // 알파 128, 곱한 색: 200*128/255=100(0x64), 100->50(0x32), 50->25(0x19)
+        assert_eq!(c.buf[2], 0x8064_3219);
+        c.fill_rect_cell(3, 0, 1, 1, bg);
+        assert_eq!(c.buf[3], 0x8014_161a, "기본 바탕색은 그대로 반투명");
+        // fill_rect(UI 등)는 옵션의 영향을 받지 않는다
+        c.fill_rect(0, 0, 1, 1, red);
+        assert_eq!(c.buf[0], 0xffc8_6432);
+        // 끄면 다시 불투명
+        c.set_cells_alpha(None);
+        c.fill_rect_cell(2, 0, 1, 1, red);
+        assert_eq!(c.buf[2], 0xffc8_6432);
     }
 }

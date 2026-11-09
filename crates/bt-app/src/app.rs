@@ -3297,6 +3297,11 @@ impl App {
             if self.config.background_opacity < 1.0 {
                 canvas.set_see_through(theme.background, (self.config.background_opacity * 255.0).round() as u8);
             }
+            // background-opacity-cells(#177): 색 바탕 칸도 같은 알파로
+            canvas.set_cells_alpha(bt_render::cells_alpha(
+                self.config.background_opacity,
+                self.config.background_opacity_cells,
+            ));
             if full {
                 let bg = views
                     .iter()
