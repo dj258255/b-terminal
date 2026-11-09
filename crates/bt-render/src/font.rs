@@ -1301,3 +1301,146 @@ mod face_size_tests {
         assert!(len < whole / 2, "한 꼴 {len}바이트, 모음 전체 {whole}바이트");
     }
 }
+
+/// 터미널 글꼴과 탭 줄 제목 글꼴(#241 `window-title-font-family`)
+pub struct FontSet {
+    pub terminal: Fonts,
+    /// 제목 글꼴. 키가 없거나 글꼴을 못 찾았으면 없다(그러면 제목도 터미널 글꼴로)
+    pub title: Option<Fonts>,
+    /// 제목 글꼴을 못 찾았을 때의 경고
+    pub title_warning: Option<String>,
+}
+
+impl Fonts {
+    /// 터미널 글꼴과 제목 글꼴을 한 번에 만든다(시스템 글꼴 읽기는 한 번).
+    /// 제목 글꼴은 터미널 글꼴과 같은 크기이고, 그 글꼴에 없는 글자(한글·기호·이모지)는 터미널의 기본 글꼴 다음
+    /// 터미널과 같은 대체 순서로 찾는다. 이름의 글꼴을 못 찾으면 제목 글꼴은 없고 경고가 있다
+    pub fn new_with_title(config: &FontConfig, title_family: Option<&str>) -> Result<FontSet, FontError> {
+        let mut db = Database::new();
+        db.load_system_fonts();
+        for data in EMBEDDED {
+            db.load_font_data(data.to_vec());
+        }
+        let terminal = Self::with_database(&db, config)?;
+        let (mut title, mut title_warning) = (None, None);
+        if let Some(name) = title_family {
+            if load(&db, name, Weight::NORMAL, Style::Normal).is_none() {
+                title_warning = Some(format!(
+                    "window-title-font-family: 글꼴 \"{name}\"을 찾지 못해 탭 제목을 터미널 글꼴로 그립니다"
+                ));
+            } else {
+                // 대체 글꼴: 터미널 기본 글꼴이 먼저, 그다음 터미널과 같은 순서
+                let mut fallbacks = vec![terminal.family_name.clone()];
+                fallbacks.extend(config.fallbacks.iter().cloned());
+                let tc = FontConfig {
+                    family: Some(name.to_string()),
+                    fallbacks,
+                    size: config.size,
+                    scale: config.scale,
+                    ..FontConfig::default()
+                };
+                title = Self::with_database(&db, &tc).ok();
+            }
+        }
+        Ok(FontSet {
+            terminal,
+            title,
+            title_warning,
+        })
+    }
+
+    /// 글자 하나가 나아가는 폭(px). 제목처럼 셀 격자 밖에 그릴 때 쓴다. 그리는 글리프가 어느 글꼴에서 오는지를 따른다:
+    /// 색 이모지와 대체 글꼴의 넓은 글자는 두 칸 폭(글리프를 그 폭에 맞춰 그리므로), 그 밖에는 글꼴이 정한 advance
+    pub fn advance(&mut self, ch: char) -> f32 {
+        let cells = crate::text::char_cells(ch);
+        if cells == 0 {
+            return 0.0;
+        }
+        let slot = (self.metrics.width * cells as u32) as f32;
+        if is_emoji(ch) && self.glyph(ch, FontStyle::Regular).is_some_and(|g| g.color.is_some()) {
+            return slot;
+        }
+        let primary = &self.regular[0];
+        if primary.has(ch) {
+            return primary.advance(ch, self.px);
+        }
+        let pua = is_private_use(ch);
+        // 고정폭 제목 글꼴이면 터미널처럼 두 칸, 비례폭이면 대체 글꼴의 폭(두 칸이면 글자 사이가 벌어진다)
+        let monospace = (primary.advance('i', self.px) - primary.advance('M', self.px)).abs() < 0.5;
+        match self.fallbacks.iter().find(|f| (!pua || f.pua) && f.font.has(ch)) {
+            Some(_) if cells == 2 && monospace => slot,
+            Some(fb) => fb.font.advance(ch, self.px),
+            None => slot,
+        }
+    }
+}
+
+#[cfg(test)]
+mod title_font_tests {
+    use super::*;
+
+    #[test]
+    fn no_title_family_means_terminal_font() {
+        let s = Fonts::new_with_title(&FontConfig::default(), None).unwrap();
+        assert!(s.title.is_none());
+        assert!(s.title_warning.is_none());
+    }
+
+    #[test]
+    fn missing_title_family_warns_and_falls_back() {
+        let s = Fonts::new_with_title(&FontConfig::default(), Some("없는글꼴-XYZ-241")).unwrap();
+        assert!(s.title.is_none(), "못 찾은 글꼴로 조용히 다른 글꼴을 쓰면 안 된다");
+        let w = s.title_warning.expect("경고가 있어야 한다");
+        assert!(
+            w.contains("window-title-font-family") && w.contains("없는글꼴-XYZ-241"),
+            "{w}"
+        );
+    }
+
+    #[test]
+    fn found_title_family_is_used_without_warning() {
+        // 넣어 둔 JetBrains Mono는 어느 시스템에나 있다
+        let s = Fonts::new_with_title(&FontConfig::default(), Some("JetBrains Mono")).unwrap();
+        assert!(s.title.is_some());
+        assert!(s.title_warning.is_none());
+    }
+
+    #[test]
+    fn title_font_does_not_change_terminal_metrics() {
+        let plain = Fonts::new(&FontConfig::default()).unwrap();
+        let s = Fonts::new_with_title(&FontConfig::default(), Some("JetBrains Mono")).unwrap();
+        assert_eq!(plain.metrics(), s.terminal.metrics());
+    }
+
+    #[test]
+    fn monospace_advance_is_the_cell_width() {
+        let mut f = Fonts::new(&FontConfig::default()).unwrap();
+        let w = f.metrics().width as f32;
+        assert!((f.advance('i') - w).abs() < 0.5, "{}", f.advance('i'));
+        assert!((f.advance('W') - w).abs() < 0.5);
+        // 두 칸 글자(한글)는 어느 글꼴에서 오든 두 칸을 나아가 겹치지 않는다
+        if f.glyph('한', FontStyle::Regular).is_some() {
+            assert!((f.advance('한') - 2.0 * w).abs() < 0.5, "{}", f.advance('한'));
+        }
+        assert_eq!(f.advance('\u{200d}'), 0.0);
+    }
+
+    #[test]
+    fn proportional_title_font_has_different_advances() {
+        // 비례폭 글꼴(macOS의 Helvetica)이 있는 시스템에서만
+        let Ok(s) = Fonts::new_with_title(&FontConfig::default(), Some("Helvetica")) else {
+            return;
+        };
+        let Some(mut t) = s.title else { return };
+        let (i, w) = (t.advance('i'), t.advance('W'));
+        assert!(i > 0.0 && i < w, "i={i} W={w}");
+        // 글꼴에 없는 한글은 대체 글꼴에서 온다. 비례폭 제목이면 두 칸이 아니라 그 글꼴의 폭을 나아가
+        // 글자 사이가 벌어지지 않고(실제 창에서 "안 녕"처럼 벌어졌다), 글리프보다 좁지는 않아 겹치지 않는다
+        let cell = t.metrics().width as f32;
+        if let Some(g) = t.glyph('한', FontStyle::Regular) {
+            let a = t.advance('한');
+            assert!(a < 2.0 * cell - 0.5, "두 칸({})보다 좁아야 한다: {a}", 2.0 * cell);
+            assert!(a + 0.5 >= g.width as f32, "글리프 폭({})보다 넓어야 한다: {a}", g.width);
+        }
+    }
+}

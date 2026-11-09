@@ -771,6 +771,8 @@ pub struct App {
     applied_dark: bool,
     /// 칸에 마지막으로 알린 시스템 모양(`CSI ? 996 n`의 답, 모드 2031 알림, #232)
     reported_dark: bool,
+    /// 탭 줄 제목 글꼴(#241 `window-title-font-family`). 키가 없거나 글꼴을 못 찾았으면 없고, 그러면 터미널 글꼴로 그린다
+    title_fonts: Option<Fonts>,
 }
 
 impl App {
@@ -828,19 +830,34 @@ impl App {
             theme_override: None,
             applied_dark: crate::system_is_dark(),
             reported_dark: crate::system_is_dark(),
+            title_fonts: None,
         }
     }
 
     fn load_fonts(&mut self) {
         let cfg = font_config(&self.config, self.font_size, self.scale as f32);
-        match Fonts::new(&cfg) {
-            Ok(f) => {
-                log::info!("글꼴: {} {}pt × {}", f.family_name, self.font_size, self.scale);
-                self.fonts = Some(f);
+        match Fonts::new_with_title(&cfg, self.config.window_title_font_family.as_deref()) {
+            Ok(set) => {
+                log::info!(
+                    "글꼴: {} {}pt × {}",
+                    set.terminal.family_name,
+                    self.font_size,
+                    self.scale
+                );
+                if let Some(w) = set.title_warning {
+                    log::warn!("설정: {w}");
+                    // 같은 경고를 글꼴을 다시 읽을 때마다 쌓지 않는다
+                    if !self.config.warnings.contains(&w) {
+                        self.config.warnings.push(w);
+                    }
+                }
+                self.fonts = Some(set.terminal);
+                self.title_fonts = set.title;
             }
             Err(e) => {
                 log::error!("{e}");
                 self.fonts = None;
+                self.title_fonts = None;
             }
         }
     }
@@ -4398,7 +4415,14 @@ impl App {
                     .unwrap_or(theme.background);
                 canvas.clear(bg);
                 if !labels.is_empty() {
-                    tabbar::draw(&mut canvas, fonts, &theme, &labels, top_inset as i32);
+                    tabbar::draw_with_title_font(
+                        &mut canvas,
+                        fonts,
+                        self.title_fonts.as_mut(),
+                        &theme,
+                        &labels,
+                        top_inset as i32,
+                    );
                 }
             }
             for (((v, (cells, cursor, pre)), pad), bar) in views.iter().zip(&drawn).zip(&pads).zip(&bars) {
