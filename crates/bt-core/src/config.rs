@@ -125,6 +125,8 @@ pub struct Config {
     pub confirm_close: ConfirmClose,
     /// 퀵 터미널의 자리·크기·화면·자동 숨김·움직임(Ghostty `quick-terminal-*`, #110)
     pub quick: QuickTerminal,
+    /// 글자색과 바탕의 최소 명암비(1~21, Ghostty `minimum-contrast`, #123). 1이면 끔
+    pub minimum_contrast: f32,
     /// 분할에서 마우스가 올라간 칸을 고른다(Ghostty `focus-follows-mouse`, #126)
     pub focus_follows_mouse: bool,
     /// 마우스 휠 배율: (줄 단위 기기, 픽셀 단위 기기). Ghostty `mouse-scroll-multiplier` 기본 3·1
@@ -353,6 +355,7 @@ impl Default for Config {
             bell_features: BellFeatures::default(),
             confirm_close: ConfirmClose::True,
             quick: QuickTerminal::default(),
+            minimum_contrast: 1.0,
             focus_follows_mouse: false,
             scroll_multiplier: (3.0, 1.0),
             selection_word_chars: DEFAULT_WORD_CHARS.into(),
@@ -797,6 +800,10 @@ impl Config {
                 "never" => self.window_save_state = false,
                 _ => bad(warnings),
             },
+            "minimum-contrast" => match v.parse::<f32>() {
+                Ok(c) if c.is_finite() => self.minimum_contrast = c.clamp(1.0, 21.0),
+                _ => bad(warnings),
+            },
             "focus-follows-mouse" => match parse_bool(v) {
                 Some(b) => self.focus_follows_mouse = b,
                 None => bad(warnings),
@@ -1007,7 +1014,6 @@ const KNOWN_IGNORED: &[&str] = &[
     "shell-integration-features",
     "auto-update",
     "auto-update-channel",
-    "minimum-contrast",
     "link-url",
     "resize-overlay",
     "gtk-titlebar",
@@ -1192,6 +1198,16 @@ mod tests {
         assert!(!Config::from_text("window-save-state = never\n", true).window_save_state);
         assert!(Config::from_text("window-save-state = always\n", true).window_save_state);
         assert_eq!(Config::from_text("window-save-state = maybe\n", true).warnings.len(), 1);
+    }
+
+    #[test]
+    fn minimum_contrast_key() {
+        assert_eq!(Config::default().minimum_contrast, 1.0, "기본은 끔");
+        assert_eq!(Config::from_text("minimum-contrast = 3\n", true).minimum_contrast, 3.0);
+        assert_eq!(Config::from_text("minimum-contrast = 50\n", true).minimum_contrast, 21.0);
+        assert_eq!(Config::from_text("minimum-contrast = 0.2\n", true).minimum_contrast, 1.0);
+        let c = Config::from_text("minimum-contrast = high\n", true);
+        assert_eq!((c.minimum_contrast, c.warnings.len()), (1.0, 1));
     }
 
     #[test]
