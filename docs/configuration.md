@@ -13,7 +13,7 @@ b-terminal은 Ghostty와 같은 문법으로 설정합니다. Ghostty를 깔지 
 
 `b-terminal --config-default-files=false`(Ghostty와 같은 명령줄 전용 키)를 주면 2·3번(기본 설정 파일)을 읽지 않고, 4번으로 준 파일만 읽습니다. 설정을 다시 읽을 때도 같습니다. 설정 파일 안에 이 키를 써도 경고 없이 아무 일도 하지 않습니다(Ghostty와 같음). 값 없이 `--config-default-files`만 쓰면 켬(기본)입니다.
 
-`b-terminal --show-config`는 읽은 파일, 경고, 지금 적용된 값을 Ghostty 문법으로 보입니다.
+`b-terminal --show-config`는 읽은 파일, 경고, 지금 적용된 값을 Ghostty 문법으로 보입니다. `+show-config --changes-only=false`와 같은 글(`theme` 줄 포함)이고 기본과의 비교는 없습니다.
 
 ## 명령줄 동작 `+동작`
 
@@ -23,7 +23,7 @@ b-terminal은 Ghostty와 같은 문법으로 설정합니다. Ghostty를 깔지 
 |---|---|
 | `+version` | `b-terminal <버전>` 한 줄(`--version`과 같음). Ghostty처럼 빌드 정보를 늘어놓지는 않습니다 |
 | `+help` | 동작 목록 |
-| `+show-config` `[--default] [--changes-only[=false]] [--docs]` | Ghostty처럼 **기본과 다른 키만** 보입니다(`--changes-only`는 기본 true, `--changes-only=false`면 `--show-config`처럼 전부. 기본과 같은 줄을 빼는 방식이라, 기본 묶음에서 지운 키는 드러나지 않습니다). `--default`는 파일을 읽지 않은 기본값 전체를 보이고 `--changes-only`는 거기에는 효과가 없습니다. `--docs`는 키 위에 이 문서 "지원하는 키" 표의 값·기본·메모를 `# ` 주석으로 답니다(`+explain-config`와 같은 표, 같은 키가 여러 줄이면 첫 줄 위에 한 번, 표에 없는 키는 설명 없이). `--config-file`, `--config-default-files`도 받습니다 |
+| `+show-config` `[--default] [--changes-only[=false]] [--docs]` | Ghostty처럼 **기본과 다른 키만** 보입니다(`--changes-only`는 기본 true, `--changes-only=false`면 `--show-config`처럼 전부. 키 하나를 한 덩어리로 기본과 견주어, 줄 묶음이 다르면 그 키의 줄을 모두 보입니다(Ghostty `Config.changed`처럼. 그래서 `palette`를 하나만 바꿔도 256줄이 나옵니다). 기본에 있는데 지금 없는 키는 `키 = `로 드러납니다. `theme`을 썼으면 쓴 값 그대로(`light:…,dark:…` 포함) `theme = 값` 줄이 나오고, 테마가 정한 색도 바뀐 키라서 함께 나옵니다(Ghostty도 테마를 설정에 적용한 뒤 견줍니다). 한계: 키 묶음은 Ghostty처럼 기본 묶음까지 풀어 찍지 않고 쓴 `keybind` 줄(`keybind = clear` 포함)을 그대로 보입니다). `--default`는 파일을 읽지 않은 기본값 전체를 보이고 `--changes-only`는 거기에는 효과가 없습니다. `--docs`는 키 위에 이 문서 "지원하는 키" 표의 값·기본·메모를 `# ` 주석으로 답니다(`+explain-config`와 같은 표, 같은 키가 여러 줄이면 첫 줄 위에 한 번, 표에 없는 키는 설명 없이). `--config-file`, `--config-default-files`도 받습니다 |
 | `+list-themes` `[--path] [--color=all\|dark\|light] [--plain]` | `이름 (resources)`(넣어 둔 것)·`이름 (user)`(`~/.config/b-terminal/themes`)를 이름순으로 한 줄씩. 사용자 테마가 이름이 같으면 이깁니다. `--path`는 사용자 테마 줄 끝에 파일 경로를 붙입니다(`이름 (user) /경로`). 넣어 둔 테마는 파일이 없어 경로를 붙이지 않고 `이름 (resources)` 그대로입니다. `--color`는 배경색의 밝기(0.2126 R + 0.7152 G + 0.0722 B, 0.5 미만이면 어두움)로 거릅니다. 배경을 `#rrggbb`로 읽지 못한 테마는 어둡다고 칩니다. `--plain`은 받기만 합니다(늘 목록, 대화형 미리보기 없음) |
 | `+validate-config` | 설정을 읽어 경고를 한 줄씩 표준 출력에 보이고, 경고가 있으면 종료 코드 1, 없으면 0. `--config-file`, `--config-default-files`와 함께 씁니다. `--config-file`로 준 파일이 없으면 오류(1)입니다 |
 | `+edit-config` | `~/.config/b-terminal/config`(없으면 주석 한 줄로 만들고)를 `$VISUAL`(없거나 비면 `$EDITOR`)로 열고 편집기가 끝나길 기다려 그 종료 코드를 따릅니다. 편집기 값은 셸을 거치지 않고 빈칸·따옴표로 갈라 인자 배열로 넘깁니다(`code -w`는 됩니다. 셸 문법인 `;`·`$(…)`·`~`·환경 변수 풀이는 되지 않습니다). 둘 다 없으면 오류(1)입니다 |

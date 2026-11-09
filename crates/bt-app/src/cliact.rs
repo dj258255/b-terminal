@@ -203,6 +203,39 @@ fn take_load_arg(a: &str, it: &mut std::slice::Iter<String>, out: &mut LoadArgs)
     Ok(true)
 }
 
+/// `키 = 값` 글을 키별 줄 묶음으로 나눈다(처음 나온 순서). 주석·빈 줄은 건너뛴다
+fn group_by_key(text: &str) -> Vec<(&str, Vec<&str>)> {
+    let mut out: Vec<(&str, Vec<&str>)> = Vec::new();
+    for l in text.lines() {
+        let Some((k, _)) = l.split_once(" = ") else { continue };
+        match out.iter_mut().find(|(key, _)| *key == k) {
+            Some((_, v)) => v.push(l),
+            None => out.push((k, vec![l])),
+        }
+    }
+    out
+}
+
+/// `+show-config --changes-only`: Ghostty `formatter_file.zig`처럼 키 단위로 기본과 견주어,
+/// 키의 줄 묶음이 기본과 다르면 그 키의 줄을 모두 남긴다(Ghostty가 `Config.changed`로 값 전체를 견주는 것과 같다).
+/// 기본에는 있는데 지금 없는 키(지운 것)는 `키 = `(비움)으로 드러낸다
+fn changed_keys(current: &str, default: &str) -> String {
+    let cur = group_by_key(current);
+    let def = group_by_key(default);
+    let mut out: Vec<String> = Vec::new();
+    for (k, lines) in &cur {
+        if def.iter().find(|(dk, _)| dk == k).map(|(_, d)| d) != Some(lines) {
+            out.extend(lines.iter().map(|l| (*l).to_string()));
+        }
+    }
+    for (k, _) in &def {
+        if !cur.iter().any(|(ck, _)| ck == k) {
+            out.push(format!("{k} = "));
+        }
+    }
+    out.join("\n")
+}
+
 fn show_config(args: &[String], env: &Env, io: &mut Io) -> i32 {
     let mut la = LoadArgs {
         default_files: true,
@@ -237,14 +270,9 @@ fn show_config(args: &[String], env: &Env, io: &mut Io) -> i32 {
     } else {
         let config = bt_core::Config::load_with(la.config_file.as_deref(), env.dark, la.default_files);
         let mut text = config.render();
-        // Ghostty처럼 기본과 같은 줄은 빼고 다른 키만 남긴다(`--default`에는 효과가 없다)
+        // Ghostty처럼 키마다 기본과 견주어 바뀐 키만 남긴다(`--default`에는 효과가 없다)
         if la.changes_only {
-            let defaults: std::collections::HashSet<&str> = default_text.lines().collect();
-            text = text
-                .lines()
-                .filter(|l| !defaults.contains(l))
-                .collect::<Vec<_>>()
-                .join("\n");
+            text = changed_keys(&text, &default_text);
         }
         (text, Some(config))
     };
@@ -735,6 +763,46 @@ mod tests {
         );
         // 잘못된 값
         assert_eq!(show(&d, &["--changes-only=maybe"]).0, 1);
+    }
+
+    #[test]
+    fn changed_keys_compares_whole_keys_and_shows_cleared_ones() {
+        let def = "a = 1\nb = 2\nb = 3\nc = 4\nd = 5";
+        // 줄 비교로는 `b = 2`가 기본에 있어 숨지만, 키의 묶음이 다르므로 키의 줄을 모두 남긴다
+        let cur = "a = 1\nb = 2\nc = 9";
+        assert_eq!(changed_keys(cur, def), "b = 2\nc = 9\nd = ");
+        // 같으면 아무것도 없다
+        assert_eq!(changed_keys(def, def), "");
+        // 기본에 없는 키는 바뀐 키다
+        assert_eq!(changed_keys("a = 1\ne = 7\nb = 2\nb = 3\nc = 4\nd = 5", def), "e = 7");
+    }
+
+    #[test]
+    fn show_config_prints_theme_line_and_the_colors_it_sets() {
+        let d = tmpdir("theme251");
+        let theme = d.join("MyLight");
+        std::fs::write(&theme, "background = #fafafa\nforeground = #111111\n").unwrap();
+        let f = d.join("c");
+        std::fs::write(&f, format!("font-size = 15\ntheme = {}\n", theme.display())).unwrap();
+        let run = |extra: &[&str]| {
+            let mut a = vec!["--config-default-files=false", "--config-file", f.to_str().unwrap()];
+            a.extend_from_slice(extra);
+            go("show-config", &a, &env(&d)).1
+        };
+        let want = [
+            "font-size = 15".to_string(),
+            format!("theme = {}", theme.display()),
+            "background = #fafafa".to_string(),
+            "foreground = #111111".to_string(),
+        ];
+        let out = run(&[]);
+        let keys: Vec<&str> = out.lines().filter(|l| !l.starts_with('#')).collect();
+        let mut sorted: Vec<&str> = want.iter().map(String::as_str).collect();
+        sorted.sort_unstable();
+        let mut got = keys.clone();
+        got.sort_unstable();
+        assert_eq!(got, sorted, "{out}");
+        assert!(run(&["--changes-only=false"]).contains(&want[1]));
     }
 
     #[test]
