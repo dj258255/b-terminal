@@ -64,6 +64,17 @@ impl Direction {
 const MIN_RATIO: f32 = 0.1;
 const MAX_RATIO: f32 = 0.9;
 
+/// 칸 하나가 트리에서 놓인 자리(#164): 붙어 있던 이웃 묶음의 잎들(`sibling`), 그 묶음의 가까운 칸(`anchor`),
+/// 나눈 방향과 비율, 앞쪽(왼쪽·위)이었는가
+#[derive(Debug, Clone, PartialEq)]
+pub struct Slot {
+    pub sibling: Vec<u64>,
+    pub anchor: u64,
+    pub axis: Axis,
+    pub ratio: f32,
+    pub before: bool,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum Node {
     Leaf(u64),
@@ -192,6 +203,79 @@ impl Node {
                     (None, None) => (None, None),
                 }
             }
+        }
+    }
+
+    /// `target` 칸이 트리에서 놓인 자리(되살릴 때 쓴다). 칸이 하나뿐이면 `None`
+    pub fn slot_of(&self, target: u64) -> Option<Slot> {
+        let Node::Split {
+            axis,
+            ratio,
+            first,
+            second,
+        } = self
+        else {
+            return None;
+        };
+        let slot = |sibling: &Node, anchor: Option<u64>, before: bool| {
+            anchor.map(|anchor| Slot {
+                sibling: sibling.leaves(),
+                anchor,
+                axis: *axis,
+                ratio: *ratio,
+                before,
+            })
+        };
+        if **first == Node::Leaf(target) {
+            return slot(second, second.leaves().first().copied(), true);
+        }
+        if **second == Node::Leaf(target) {
+            return slot(first, first.leaves().last().copied(), false);
+        }
+        first.slot_of(target).or_else(|| second.slot_of(target))
+    }
+
+    /// `slot`이 가리키는 자리에 `new` 칸을 되살린다. 기준 칸이 없으면 거짓
+    /// 이웃 묶음이 그대로 있으면 그 묶음 곁에, 달라졌으면 가까운 칸 하나를 나눠 그 곁에 놓는다
+    pub fn insert_at(&mut self, slot: &Slot, new: u64) -> bool {
+        self.wrap_group(slot, new) || self.wrap_leaf(slot, new)
+    }
+
+    fn joined(slot: &Slot, old: Node, new: u64) -> Node {
+        let (first, second) = if slot.before {
+            (Node::Leaf(new), old)
+        } else {
+            (old, Node::Leaf(new))
+        };
+        Node::Split {
+            axis: slot.axis,
+            ratio: slot.ratio,
+            first: Box::new(first),
+            second: Box::new(second),
+        }
+    }
+
+    fn wrap_group(&mut self, slot: &Slot, new: u64) -> bool {
+        if self.leaves() == slot.sibling {
+            let old = std::mem::replace(self, Node::Leaf(new));
+            *self = Self::joined(slot, old, new);
+            return true;
+        }
+        match self {
+            Node::Leaf(_) => false,
+            Node::Split { first, second, .. } => first.wrap_group(slot, new) || second.wrap_group(slot, new),
+        }
+    }
+
+    fn wrap_leaf(&mut self, slot: &Slot, new: u64) -> bool {
+        match self {
+            Node::Leaf(id) if *id == slot.anchor => {
+                let old = Node::Leaf(*id);
+                *self = Self::joined(slot, old, new);
+                true
+            }
+            Node::Leaf(_) => false,
+            Node::Split { first, second, .. } => first.wrap_leaf(slot, new) || second.wrap_leaf(slot, new),
         }
     }
 
@@ -372,6 +456,37 @@ mod tests {
         assert_eq!(focus, Some(2));
         // 마지막 칸이 빠지면 트리가 빈다
         assert_eq!(Node::Leaf(7).remove(7), (None, None));
+    }
+
+    #[test]
+    fn closed_pane_returns_to_its_slot() {
+        // 1 | (2 / 3) 에서 비율을 바꿔 둔 뒤 각 칸을 빼고 되살리면 같은 트리가 된다
+        let mut t = Node::Leaf(1);
+        t.split(1, 2, Direction::Right);
+        t.split(2, 3, Direction::Down);
+        if let Node::Split { ratio, .. } = &mut t {
+            *ratio = 0.3;
+        }
+        for target in [1, 2, 3] {
+            let slot = t.slot_of(target).expect("칸이 둘 이상이면 자리가 있다");
+            let (rest, _) = t.clone().remove(target);
+            let mut rest = rest.unwrap();
+            assert!(rest.insert_at(&slot, target), "{target}");
+            assert_eq!(rest, t, "{target}을 되살리면 원래 트리");
+        }
+    }
+
+    #[test]
+    fn slot_of_single_pane_or_unknown_is_none() {
+        assert_eq!(Node::Leaf(1).slot_of(1), None);
+        let mut t = Node::Leaf(1);
+        t.split(1, 2, Direction::Right);
+        assert_eq!(t.slot_of(9), None);
+        let mut gone = Node::Leaf(5);
+        assert!(
+            !gone.insert_at(&t.slot_of(2).unwrap(), 2),
+            "기준 칸 1이 없으면 되살리지 못한다"
+        );
     }
 
     #[test]

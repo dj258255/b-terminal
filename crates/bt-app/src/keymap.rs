@@ -35,6 +35,10 @@ pub enum Action {
     CloseSurface,
     /// 탭을 칸째 닫는다
     CloseTab,
+    /// 닫은 칸·탭을 되살린다(`undo-timeout` 안에서, #164)
+    Undo,
+    /// 되살린 것을 다시 닫는다
+    Redo,
     /// 지금 칸을 나눠 그쪽에 새 칸을 연다. `None`이면 긴 쪽으로 나눈다(Ghostty의 auto)
     NewSplit(Option<Direction>),
     GotoSplit(SplitTarget),
@@ -234,6 +238,8 @@ pub fn parse_action(s: &str) -> Result<Option<Action>, String> {
         "new_window" => Action::NewWindow,
         "close_surface" => Action::CloseSurface,
         "close_tab" => Action::CloseTab,
+        "undo" => Action::Undo,
+        "redo" => Action::Redo,
         "new_split" => match arg.map(str::trim).unwrap_or("auto") {
             "auto" => Action::NewSplit(None),
             d => Action::NewSplit(Some(parse_direction(d).ok_or("new_split:right·down·left·up·auto")?)),
@@ -440,6 +446,14 @@ fn defaults() -> Vec<(&'static str, &'static str)> {
         ("shift+home", "scroll_to_top"),
         ("shift+end", "scroll_to_bottom"),
     ];
+    // 되살리기(Ghostty macOS 기본, performable): 다른 OS의 기본에는 없다. 되살릴 것이 없으면 키는 프로그램으로 간다
+    if cfg!(target_os = "macos") {
+        v.extend([
+            ("super+z", "undo"),
+            ("super+shift+t", "undo"),
+            ("super+shift+z", "redo"),
+        ]);
+    }
     for (t, a) in [
         ("super+1", "goto_tab:1"),
         ("super+2", "goto_tab:2"),
@@ -469,11 +483,15 @@ impl Keymap {
                     trig.mods.ctrl = true;
                     trig.mods.shift = true;
                 }
+                let performable = matches!(act, Action::Undo | Action::Redo);
                 km.map.insert(
                     trig,
                     Bound {
                         action: act,
-                        flags: BindFlags::default(),
+                        flags: BindFlags {
+                            performable,
+                            ..BindFlags::default()
+                        },
                     },
                 );
             }
@@ -1078,6 +1096,38 @@ mod tests {
 
     fn feed_all(sq: &mut Sequencer, km: &Keymap, k: &str, bytes: &[u8], can: bool) -> KeyOutcome {
         sq.feed_with(km, Some(trig(k)), bytes.to_vec(), &mut |_| can)
+    }
+
+    #[test]
+    fn undo_redo_actions_parse_and_default_keys_are_performable_on_macos() {
+        assert_eq!(parse_action("undo").unwrap(), Some(Action::Undo));
+        assert_eq!(parse_action("redo").unwrap(), Some(Action::Redo));
+        let (km, _) = Keymap::build(&[]);
+        if cfg!(target_os = "macos") {
+            for (k, a) in [
+                ("super+z", Action::Undo),
+                ("super+shift+t", Action::Undo),
+                ("super+shift+z", Action::Redo),
+            ] {
+                assert_eq!(km.lookup(&trig(k)), Some(&a), "{k}");
+                assert_eq!(
+                    km.flags(&[trig(k)]),
+                    Some(BindFlags {
+                        performable: true,
+                        ..Default::default()
+                    }),
+                    "{k}: 되살릴 것이 없으면 키는 프로그램으로"
+                );
+            }
+            // 되살릴 것이 없으면 ⌘Z는 묶이지 않은 키처럼 프로그램에 간다
+            let mut sq = Sequencer::default();
+            let out = feed_all(&mut sq, &km, "super+z", b"z", false);
+            assert_eq!((out.action, out.send), (None, b"z".to_vec()));
+            let out = feed_all(&mut sq, &km, "super+z", b"z", true);
+            assert_eq!(out.action, Some(Action::Undo));
+        } else {
+            assert_eq!(km.lookup(&trig("ctrl+shift+z")), None, "Ghostty는 macOS에만 묶는다");
+        }
     }
 
     #[test]

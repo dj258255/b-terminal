@@ -107,6 +107,7 @@ config-file = ?~/.config/b-terminal/local   # ?가 붙으면 없어도 된다
 | `resize-overlay` | `always` `never` `after-first` | `after-first` | 칸의 칸·줄 수가 바뀌면 칸 안에 `80 × 24`를 보입니다. `after-first`는 칸을 만든 직후(0.5초 안)의 크기 맞추기에는 보이지 않습니다 |
 | `resize-overlay-position` | `center` `top-left` `top-center` `top-right` `bottom-left` `bottom-center` `bottom-right` | `center` | 크기 표시 자리 |
 | `resize-overlay-duration` | 기간(`750ms`, `2s`, `1m30s`; 단위 `y` `d` `h` `m` `s` `ms` `us` `ns`) | `750ms` | 크기 표시가 보이는 시간 |
+| `undo-timeout` | 기간(`5s`, `1m30s` 등 `resize-overlay-duration`과 같은 문법) | `5s` | 닫은 칸·탭을 되살릴 수 있는 시간(Ghostty와 같은 뜻). 칸·탭을 직접 닫으면(⌘W, ⌥⌘W) 셸을 바로 끝내지 않고 이 시간 동안 들고 있다가 `undo`(⌘Z, ⇧⌘T)로 원래 자리에 되살립니다. 시간이 지나면 그때 셸이 끊깁니다. 일마다 따로 셉니다. `0s`면 끕니다(바로 끊음). 셸이 스스로 끝나 닫힌 칸·창 닫기·앱 끝내기는 되살리지 않습니다. 들고 있는 동안 셸은 계속 돌며 출력을 받습니다 |
 | `minimum-contrast` | `1`~`21` | `1` | 글자색과 바탕의 명암비(WCAG)가 이보다 낮으면 글자를 흰색이나 검은색(바탕과 명암비가 큰 쪽)으로 그립니다. `1`이면 끔. 3이면 대개 읽힙니다 |
 | `focus-follows-mouse` | `true` `false` | `false` | 화면을 나눴을 때 마우스가 올라간 칸을 고릅니다(끌어 고르는 중에는 바꾸지 않음) |
 | `mouse-scroll-multiplier` | 수, `discrete:수`, `precision:수`(쉼표로 둘) | `discrete:3,precision:1` | 휠 배율. `discrete`는 줄 단위 기기(마우스 휠), `precision`은 픽셀 단위 기기(트랙패드). 접두 없는 수는 둘 다. 0.01~10000 |
@@ -184,6 +185,7 @@ keybind = ctrl+a>ctrl+a=text:\x01     # 앞 키 자체를 보내고 싶을 때
 | `resize_split:방향,포인트` | 고른 칸을 감싼 경계를 그쪽으로 민다 | `super+ctrl+방향키`(10) |
 | `equalize_splits` | 같은 줄에 선 칸들을 같은 크기로 | `super+ctrl+equal` |
 | `toggle_split_zoom` | 고른 칸만 탭 전체로 크게 보기 / 되돌리기 | `super+shift+enter` |
+| `undo` / `redo` | 닫은 칸·탭을 원래 자리에 되살리기(`undo-timeout` 안에서) / 되살린 것을 다시 닫기. 되살릴 것이 없으면 키는 프로그램으로 갑니다(Ghostty의 `performable`과 같다) | `super+z` `super+shift+t` / `super+shift+z`(macOS만) |
 | `increase_font_size:N` / `decrease_font_size:N` / `reset_font_size` | 글자 크기 | `super+=` / `super+-` / `super+0` |
 | `scroll_page_up` / `scroll_page_down` | 스크롤백 한 쪽 | `shift+page_up` `super+page_up` / 아래도 같음 |
 | `jump_to_prompt:-1` / `jump_to_prompt:1` | 앞·뒤 프롬프트로(셸 통합) | `super+arrow_up` / `super+arrow_down` |
