@@ -44,13 +44,33 @@ pub fn icon_for(shape: MouseShape) -> CursorIcon {
     }
 }
 
-/// 지금 보일 포인터. Ghostty처럼 링크 위의 손가락이 프로그램이 정한 모양보다 앞서고, 링크가 아니면 프로그램이 정한 모양을,
-/// 정한 것이 없으면(OSC 22를 받은 적 없거나 되돌렸으면) 기본 화살표를 쓴다
-pub fn decide(over_link: bool, program: Option<MouseShape>) -> CursorIcon {
-    if over_link {
+/// 포인터를 정하는 데 쓰는 상태(#250)
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct PointerInput {
+    /// Cmd(Linux는 Ctrl)를 누른 채 링크 위에 있다
+    pub over_link: bool,
+    /// 마우스 아래 칸이 프로그램이 OSC 22로 정한 모양. 정한 것이 없으면 `None`
+    pub program: Option<MouseShape>,
+    /// Shift를 누르고 있다
+    pub shift: bool,
+    /// 지금 누른 수식 키 그대로 마우스를 프로그램이 받는다(마우스 보고 모드가 켜져 있고 Shift가 그것을 막지 않는다).
+    /// 프로그램이 받으면 마우스는 프로그램의 것이라 Shift 모양을 보이지 않는다
+    pub reports_to_program: bool,
+    /// 마우스 포인터를 숨겼다(입력 중 숨김)
+    pub hidden: bool,
+}
+
+/// 지금 보일 포인터. Ghostty(surface_mouse.zig)처럼 링크 위의 손가락이 가장 앞서고, 그다음 Shift를 누른 채 마우스가 고르기를
+/// 하게 될 때의 I자, 아니면 프로그램이 정한 모양, 정한 것이 없으면(OSC 22를 받은 적 없거나 되돌렸으면) 기본 화살표를 쓴다.
+/// 마우스를 숨겼으면 키가 모양을 바꾸지 않는다. Ghostty의 사각 고르기 `crosshair`는 b-terminal에 사각 고르기가 없어 뺐다
+pub fn decide(input: PointerInput) -> CursorIcon {
+    if input.over_link {
         return CursorIcon::Pointer;
     }
-    program.map_or(CursorIcon::Default, icon_for)
+    if input.shift && !input.reports_to_program && !input.hidden {
+        return CursorIcon::Text;
+    }
+    input.program.map_or(CursorIcon::Default, icon_for)
 }
 
 #[cfg(test)]
@@ -78,16 +98,71 @@ mod tests {
         }
     }
 
+    fn input() -> PointerInput {
+        PointerInput::default()
+    }
+
     #[test]
-    fn link_hover_beats_the_program_shape() {
-        assert_eq!(decide(true, Some(MouseShape::Crosshair)), CursorIcon::Pointer);
-        assert_eq!(decide(true, None), CursorIcon::Pointer);
+    fn link_hover_beats_everything() {
+        let i = PointerInput {
+            over_link: true,
+            program: Some(MouseShape::Crosshair),
+            shift: true,
+            ..input()
+        };
+        assert_eq!(decide(i), CursorIcon::Pointer);
+        assert_eq!(
+            decide(PointerInput {
+                over_link: true,
+                ..input()
+            }),
+            CursorIcon::Pointer
+        );
     }
 
     #[test]
     fn program_shape_applies_off_links_and_default_without_one() {
-        assert_eq!(decide(false, Some(MouseShape::Crosshair)), CursorIcon::Crosshair);
-        assert_eq!(decide(false, Some(MouseShape::Default)), CursorIcon::Default);
-        assert_eq!(decide(false, None), CursorIcon::Default);
+        let with = |p| PointerInput { program: p, ..input() };
+        assert_eq!(decide(with(Some(MouseShape::Crosshair))), CursorIcon::Crosshair);
+        assert_eq!(decide(with(Some(MouseShape::Default))), CursorIcon::Default);
+        assert_eq!(decide(with(None)), CursorIcon::Default);
+    }
+
+    #[test]
+    fn shift_shows_the_text_beam_over_the_program_shape_when_the_mouse_selects() {
+        // 마우스 보고가 없으면(또는 Shift가 보고를 끊으면) Shift는 고르기라 I자다. 기본 화살표 위에서도 그렇다(Ghostty와 같다)
+        let i = PointerInput {
+            shift: true,
+            program: Some(MouseShape::Progress),
+            ..input()
+        };
+        assert_eq!(decide(i), CursorIcon::Text);
+        assert_eq!(decide(PointerInput { shift: true, ..input() }), CursorIcon::Text);
+        // 떼면 프로그램 모양으로 돌아간다
+        assert_eq!(decide(PointerInput { shift: false, ..i }), CursorIcon::Progress);
+    }
+
+    #[test]
+    fn shift_is_ignored_while_the_program_keeps_the_mouse() {
+        // mouse-shift-capture로 Shift까지 프로그램이 받으면 고르기가 아니다
+        let i = PointerInput {
+            shift: true,
+            reports_to_program: true,
+            program: Some(MouseShape::Pointer),
+            ..input()
+        };
+        assert_eq!(decide(i), CursorIcon::Pointer);
+        assert_eq!(decide(PointerInput { program: None, ..i }), CursorIcon::Default);
+    }
+
+    #[test]
+    fn hidden_mouse_is_not_changed_by_shift() {
+        let i = PointerInput {
+            shift: true,
+            hidden: true,
+            program: Some(MouseShape::Wait),
+            ..input()
+        };
+        assert_eq!(decide(i), CursorIcon::Wait);
     }
 }

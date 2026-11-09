@@ -360,6 +360,18 @@ pub struct CommandRecord {
 }
 
 impl Inner {
+    /// 읽은 바이트를 VT에 먹인다. 마우스 보고 모드(X10·버튼·움직임)를 켜거나 끄면 프로그램이 앞서 OSC 22로 정한 모양을 지운다.
+    /// Ghostty가 모드를 켜고 끌 때 모양을 `default`·`text`로 되돌리는 것(stream_handler.zig)에 해당하고, b-terminal의 기본은
+    /// 화살표라 둘 다 "정한 것 없음"이다(#250). 모드를 바꾼 바이트 뒤에 오는 OSC 22는 신호로 따로 오므로 남는다
+    fn advance_tracking_mouse(&mut self, bytes: &[u8], shape: &std::sync::atomic::AtomicU8) {
+        let before = self.term.mode().intersects(TermMode::MOUSE_MODE);
+        let Inner { term, parser, .. } = self;
+        parser.advance(term, bytes);
+        if before != term.mode().intersects(TermMode::MOUSE_MODE) {
+            shape.store(0, std::sync::atomic::Ordering::Release);
+        }
+    }
+
     /// 지금 커서 줄(절대)
     fn cursor_abs(&self) -> i64 {
         self.term.grid().history_size() as i64 + self.term.grid().cursor.point.line.0 as i64
@@ -640,10 +652,7 @@ impl Session {
                             // 신호가 끝난 자리까지 나눠 먹인다: 프롬프트 줄을 정확히 적고, 출력을 C와 D 사이에서 자른다
                             for (end, sig) in signals {
                                 let seg = &bytes[pos..end.min(bytes.len())];
-                                {
-                                    let Inner { term, parser, .. } = &mut *g;
-                                    parser.advance(term, seg);
-                                }
+                                g.advance_tracking_mouse(seg, &thread_mouse_shape);
                                 if let Some((cap, _)) = capture.as_mut() {
                                     push_capped(cap, seg);
                                 }
@@ -737,8 +746,7 @@ impl Session {
                                 }
                             }
                             let rest = &bytes[pos..];
-                            let Inner { term, parser, .. } = &mut *g;
-                            parser.advance(term, rest);
+                            g.advance_tracking_mouse(rest, &thread_mouse_shape);
                             if let Some((cap, _)) = capture.as_mut() {
                                 push_capped(cap, rest);
                             }
