@@ -326,6 +326,14 @@ struct Inner {
     sel_end: Option<Point>,
 }
 
+/// 절대 줄(스크롤백 맨 위가 0) `row`가 화면 맨 위에 오게 한다. 범위를 넘으면 맨 아래
+fn scroll_term_to_row(term: &mut Term<Listener>, row: usize) {
+    let history = term.grid().history_size();
+    let offset = term.grid().display_offset();
+    let want = history.saturating_sub(row);
+    term.scroll_display(Scroll::Delta(want as i32 - offset as i32));
+}
+
 /// 프롬프트를 기억하는 상한(오래된 것부터 버린다)
 const MAX_PROMPTS: usize = 2000;
 /// 명령 하나의 출력을 모으는 상한(넘으면 앞을 버리고 끝을 남긴다)
@@ -799,6 +807,43 @@ impl Session {
 
     pub fn scroll_to_bottom(&self) {
         self.inner.lock().term.scroll_display(Scroll::Bottom);
+    }
+
+    /// 터미널을 초기화한다(Ghostty `reset`): VT의 RIS(`ESC c`)를 엔진에 먹인다. PTY에는 아무것도 보내지 않는다.
+    /// 읽기 스레드가 RIS를 볼 때 하는 일(그림 지우기, 키보드 잠금 풀기)과 프롬프트 기억·고른 끝점도 함께 비운다
+    pub fn reset(&self) {
+        {
+            let mut g = self.inner.lock();
+            let Inner { term, parser, .. } = &mut *g;
+            parser.advance(term, b"\x1bc");
+            g.graphics_erase(true, true);
+            g.prompts.clear();
+            g.sel_end = None;
+        }
+        self.kam_locked.store(false, std::sync::atomic::Ordering::Release);
+    }
+
+    /// 스크롤백 맨 위를 0으로 센 절대 줄 `row`가 화면 맨 위에 오게 스크롤한다(Ghostty `scroll_to_row`).
+    /// 맨 아래보다 아래거나 범위를 넘으면 맨 아래에서 멈춘다
+    pub fn scroll_to_row(&self, row: usize) {
+        scroll_term_to_row(&mut self.inner.lock().term, row);
+    }
+
+    /// 고른 곳이 보이게 스크롤한다(Ghostty `scroll_to_selection`). 시작 줄이 이미 보이면 움직이지 않고,
+    /// 아니면 그 줄이 화면 맨 위에 오게 한다. 고른 것이 없으면 아무것도 하지 않고 거짓
+    pub fn scroll_to_selection(&self) -> bool {
+        let mut g = self.inner.lock();
+        let term = &mut g.term;
+        let Some(range) = term.selection.as_ref().and_then(|s| s.to_range(term)) else {
+            return false;
+        };
+        let history = term.grid().history_size();
+        let top = history - term.grid().display_offset();
+        let row = (range.start.line.0 + history as i32).max(0) as usize;
+        if row < top || row >= top + term.screen_lines() {
+            scroll_term_to_row(term, row);
+        }
+        true
     }
 
     /// 찾기를 시작한다(#39): 맨 아래에서 위로 첫 맞은 곳으로 화면을 옮긴다. 빈 글이면 찾기를 끄고 없다
