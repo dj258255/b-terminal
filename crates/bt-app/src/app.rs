@@ -1882,6 +1882,7 @@ impl App {
 
     /// 모든 탭의 칸을 지금 배치에 맞춘다(창 크기·글꼴·분할이 바뀐 뒤)
     fn resize_all(&mut self) {
+        self.apply_step_resize();
         for gi in 0..self.w.tabs.len() {
             for (id, rect) in self.group_layout(gi) {
                 let size = self.grid_size_for(rect);
@@ -2338,9 +2339,8 @@ impl App {
             }
             Action::ToggleFullscreen => {
                 if let Some(g) = &self.w.gfx {
-                    let on = g.window.fullscreen().is_some();
-                    g.window
-                        .set_fullscreen((!on).then_some(winit::window::Fullscreen::Borderless(None)));
+                    let on = window_is_fullscreen(&g.window);
+                    self.set_window_fullscreen(&g.window, !on);
                 }
             }
             Action::ToggleMaximize => {
@@ -2451,6 +2451,7 @@ impl App {
             }
         }
         self.config = next;
+        apply_hidden_from_dock(self.config.macos_hidden);
         self.load_background();
         self.load_fonts();
         self.for_each_window(|app| app.resize_all());
@@ -2540,6 +2541,14 @@ impl App {
                 bt_core::config::OptionAsAlt::None => OptionAsAlt::None,
             })
         };
+        // macos-window-buttons = hidden: 새 창부터 신호등 단추를 숨긴다(퀵 창은 테두리가 없어 해당 없음, #179)
+        #[cfg(target_os = "macos")]
+        let attrs = if !quick && self.config.macos_window_buttons == bt_core::config::MacWindowButtons::Hidden {
+            use winit::platform::macos::WindowAttributesExtMacOS;
+            attrs.with_titlebar_buttons_hidden(true)
+        } else {
+            attrs
+        };
         let window = match event_loop.create_window(attrs) {
             Ok(w) => Rc::new(w),
             Err(e) => {
@@ -2556,6 +2565,33 @@ impl App {
             surface,
             _context: context,
         })
+    }
+
+    /// 창의 전체 화면을 켜고 끈다. `macos-non-native-fullscreen`이 켜진 macOS는 새 Space 없는 전체 화면(winit simple fullscreen)을 쓴다.
+    /// 끌 때는 지금 어느 방식으로 들어가 있는지를 따른다(설정이 중간에 바뀌어도 빠져나올 수 있게)
+    fn set_window_fullscreen(&self, window: &Window, on: bool) {
+        #[cfg(target_os = "macos")]
+        {
+            use winit::platform::macos::WindowExtMacOS;
+            let simple_now = window.simple_fullscreen();
+            let kind = crate::startup::fullscreen_kind(self.config.non_native_fullscreen, true);
+            if (on && kind == crate::startup::FullscreenKind::Simple) || (!on && simple_now) {
+                window.set_simple_fullscreen(on);
+                return;
+            }
+        }
+        window.set_fullscreen(on.then_some(winit::window::Fullscreen::Borderless(None)));
+    }
+
+    /// window-step-resize: 칸 크기 단위로 창 크기가 바뀌게 한다(끄면 픽셀 단위로 되돌린다)
+    fn apply_step_resize(&self) {
+        let (Some(f), Some(g)) = (&self.fonts, &self.w.gfx) else {
+            return;
+        };
+        let m = f.metrics();
+        let inc = crate::startup::step_increments(self.config.window_step_resize, m.width, m.height);
+        g.window
+            .set_resize_increments(inc.map(|(w, h)| PhysicalSize::new(w, h)));
     }
 
     /// 설정의 window-width·window-height(셀)로 지금 창 크기를 맞춘다
@@ -2578,9 +2614,7 @@ impl App {
         match crate::startup::start_mode(self.config.maximize, self.config.fullscreen, false) {
             crate::startup::StartMode::Normal => {}
             crate::startup::StartMode::Maximized => g.window.set_maximized(true),
-            crate::startup::StartMode::Fullscreen => g
-                .window
-                .set_fullscreen(Some(winit::window::Fullscreen::Borderless(None))),
+            crate::startup::StartMode::Fullscreen => self.set_window_fullscreen(&g.window, true),
         }
         if first {
             if let Some(pos) =
@@ -3659,6 +3693,7 @@ impl ApplicationHandler<UserEvent> for App {
             }));
             self.menu = Some(menu);
         }
+        apply_hidden_from_dock(self.config.macos_hidden);
         self.load_fonts();
         if self.fonts.is_none() {
             event_loop.exit();
@@ -4316,6 +4351,39 @@ impl ApplicationHandler<UserEvent> for App {
             }
             Some(d) => event_loop.set_control_flow(ControlFlow::WaitUntil(d)),
             None => event_loop.set_control_flow(ControlFlow::Wait),
+        }
+    }
+}
+
+/// 창이 어떤 방식으로든 전체 화면인가(운영체제 전체 화면 또는 macOS의 새 Space 없는 전체 화면)
+fn window_is_fullscreen(window: &Window) -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        use winit::platform::macos::WindowExtMacOS;
+        if window.simple_fullscreen() {
+            return true;
+        }
+    }
+    window.fullscreen().is_some()
+}
+
+/// macos-hidden: Dock과 앱 전환기에서 앱을 숨기거나(`always`: Accessory) 보인다(`never`: Regular). macOS 밖에서는 하는 일이 없다
+#[cfg_attr(not(target_os = "macos"), allow(unused_variables))]
+fn apply_hidden_from_dock(hidden: bt_core::config::MacHidden) {
+    #[cfg(target_os = "macos")]
+    {
+        use objc2_app_kit::{NSApplication, NSApplicationActivationPolicy};
+        let Some(mtm) = objc2::MainThreadMarker::new() else {
+            return;
+        };
+        let policy = if hidden == bt_core::config::MacHidden::Always {
+            NSApplicationActivationPolicy::Accessory
+        } else {
+            NSApplicationActivationPolicy::Regular
+        };
+        let app = NSApplication::sharedApplication(mtm);
+        if app.activationPolicy() != policy && !app.setActivationPolicy(policy) {
+            log::warn!("Dock 숨김 설정(macos-hidden)을 적용하지 못했습니다");
         }
     }
 }

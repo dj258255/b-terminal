@@ -69,7 +69,13 @@ config-file = ?~/.config/b-terminal/local   # ?가 붙으면 없어도 된다
 | `window-padding-color` | `background` `extend` `extend-always` | `background` | 여백 색. `extend`는 가장 가까운 칸의 바탕색으로 늘이되, 주 화면에서 가장 가까운 줄에 기본 바탕색 칸·프롬프트·powerline 꼭 맞춤 글자가 있으면 위아래로는 늘이지 않습니다(Ghostty와 같은 규칙). `extend-always`는 따지지 않고 늘입니다 |
 | `window-width` / `window-height` | 셀 수 | 없음 | 둘 다 있을 때 처음 창 크기 |
 | `maximize` | `true` `false` | `false` | 새 창을 최대화로 띄웁니다(Ghostty처럼 첫 창만이 아니라 새 창 모두. 탭·분할·퀵 터미널 창은 해당 없음). 창 상태 복원으로 되살린 창은 복원한 크기가 이깁니다 |
-| `fullscreen` | `true` `false` | `false` | 새 창을 전체 화면으로 띄웁니다. `maximize`와 같이 켜면 전체 화면이 이깁니다. Ghostty의 `non-native*` 값도 받지만 모두 같은 전체 화면입니다. 퀵 터미널 창과 되살린 창에는 적용하지 않습니다 |
+| `fullscreen` | `true` `false` `non-native` `non-native-visible-menu` `non-native-padded-notch` | `false` | 새 창을 전체 화면으로 띄웁니다. `maximize`와 같이 켜면 전체 화면이 이깁니다. `non-native*` 값은 전체 화면을 켜면서 `macos-non-native-fullscreen`을 그 값으로 정합니다. 퀵 터미널 창과 되살린 창에는 적용하지 않습니다 |
+| `macos-non-native-fullscreen` | `false` `true` `visible-menu` `padded-notch` | `false` | macOS에서 전체 화면을 새 Space 없이 합니다(winit simple fullscreen). 켜면 `toggle_fullscreen`과 `fullscreen`이 이 방식을 씁니다. 메뉴 막대와 Dock은 마우스를 대면 나타나는 자동 숨김입니다. `visible-menu`와 `padded-notch`는 `true`와 구분하지 못합니다(메뉴 막대를 늘 보이게 하거나 노치를 피하는 일은 안전한 API만으로는 못 합니다). 이미 전체 화면인 창은 끌 때까지 들어간 방식을 따릅니다. macOS 밖에서는 하는 일이 없습니다 |
+| `window-step-resize` | `true` `false` | `false` | 창 크기를 칸 크기 단위로 바꿉니다(`NSWindow` 내용 크기 증분). 끌어서 바꿀 때만 적용되고 여백·탭 줄 높이는 단위에 넣지 않아 끝 칸이 조금 어긋날 수 있습니다. 글꼴 크기를 바꾸면 다음 크기 변경 때 새 칸 크기로 맞춥니다 |
+| `macos-window-buttons` | `visible` `hidden` | `visible` | 제목 막대의 닫기·최소화·확대 단추를 숨깁니다. 새 창부터 적용합니다(퀵 터미널 창은 테두리가 없어 해당 없음) |
+| `macos-hidden` | `never` `always` | `never` | `always`면 Dock과 앱 전환기에서 앱을 숨깁니다(`NSApplication` 활성화 정책 Accessory). 다시 읽으면 바로 적용합니다. 메뉴 막대는 앱이 앞에 있을 때만 보입니다 |
+| `window-subtitle` | `false` `working-directory` | `false` | 받기만 합니다. Ghostty에서도 GTK 전용 키이고, macOS의 창 부제목은 winit이 노출하지 않아 safe로 정할 수 없습니다 |
+| `window-titlebar-background` `window-titlebar-foreground` | 색 | (없음) | 받기만 합니다. Ghostty에서도 GTK 앱 런타임 전용이고, macOS 제목 막대 색은 winit·objc2의 safe 함수로 정할 수 없습니다 |
 | `window-position-x` / `window-position-y` | 정수(점) | 없음 | 첫 창의 자리. 주 화면의 보이는 영역(macOS는 메뉴 막대 아래) 왼쪽 위에서 잰 값이고, 둘 다 있어야 쓰며 하나만 있으면 무시합니다(Ghostty와 같음). 창 상태 복원으로 되살린 창은 복원한 자리가 이깁니다 |
 | `macos-option-as-alt` | `true` `false` `left` `right` | `false` | Ghostty 기본과 같게 끔 |
 | `scrollback-limit` | 바이트 | 1000만 | Ghostty 값. 줄 하나를 약 1KB로 보고 줄 수로 바꿉니다(100~20만 줄) |

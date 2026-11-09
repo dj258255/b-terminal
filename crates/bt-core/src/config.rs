@@ -144,6 +144,36 @@ pub enum OptionAsAlt {
     Both,
 }
 
+/// `macos-non-native-fullscreen`(Ghostty): 전체 화면을 새 Space 없이 하는가
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum NonNativeFullscreen {
+    /// 운영체제 기본 전체 화면
+    #[default]
+    False,
+    /// 새 Space 없는 전체 화면, 메뉴 막대를 숨긴다
+    True,
+    /// 새 Space 없는 전체 화면, 메뉴 막대를 보인다
+    VisibleMenu,
+    /// 새 Space 없는 전체 화면, 노치를 피한다
+    PaddedNotch,
+}
+
+/// `macos-window-buttons`(Ghostty): 제목 막대의 닫기·최소화·확대 단추
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum MacWindowButtons {
+    #[default]
+    Visible,
+    Hidden,
+}
+
+/// `macos-hidden`(Ghostty): Dock과 앱 전환기에서 숨기는가
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum MacHidden {
+    #[default]
+    Never,
+    Always,
+}
+
 /// 셀 크기 보정: 퍼센트 또는 픽셀
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Adjust {
@@ -228,6 +258,14 @@ pub struct Config {
     pub maximize: bool,
     /// 새 창을 전체 화면으로 띄운다(Ghostty `fullscreen`, #148)
     pub fullscreen: bool,
+    /// 새 Space 없는 전체 화면(Ghostty `macos-non-native-fullscreen`, #179). `fullscreen`의 non-native 값도 여기로 온다
+    pub non_native_fullscreen: NonNativeFullscreen,
+    /// 칸 크기 단위로 창 크기를 바꾼다(Ghostty `window-step-resize`, #179)
+    pub window_step_resize: bool,
+    /// 제목 막대 단추(Ghostty `macos-window-buttons`, #179). 새 창부터 적용
+    pub macos_window_buttons: MacWindowButtons,
+    /// Dock·앱 전환기에서 숨김(Ghostty `macos-hidden`, #179)
+    pub macos_hidden: MacHidden,
     /// 첫 창 자리(Ghostty `window-position-x`·`-y`, #148). 둘 다 있어야 쓴다
     pub window_position_x: Option<i32>,
     pub window_position_y: Option<i32>,
@@ -779,6 +817,10 @@ impl Default for Config {
             window_height: None,
             maximize: false,
             fullscreen: false,
+            non_native_fullscreen: NonNativeFullscreen::False,
+            window_step_resize: false,
+            macos_window_buttons: MacWindowButtons::Visible,
+            macos_hidden: MacHidden::Never,
             window_position_x: None,
             window_position_y: None,
             option_as_alt: OptionAsAlt::None,
@@ -1480,8 +1522,41 @@ impl Config {
             },
             // Ghostty는 non-native 값도 받는다. 여기서는 모두 같은 전체 화면으로 띄운다
             "fullscreen" => match v {
-                "true" | "non-native" | "non-native-visible-menu" | "non-native-padded-notch" => self.fullscreen = true,
+                "true" => self.fullscreen = true,
+                "non-native" => {
+                    self.fullscreen = true;
+                    self.non_native_fullscreen = NonNativeFullscreen::True;
+                }
+                "non-native-visible-menu" => {
+                    self.fullscreen = true;
+                    self.non_native_fullscreen = NonNativeFullscreen::VisibleMenu;
+                }
+                "non-native-padded-notch" => {
+                    self.fullscreen = true;
+                    self.non_native_fullscreen = NonNativeFullscreen::PaddedNotch;
+                }
                 "false" => self.fullscreen = false,
+                _ => bad(warnings),
+            },
+            "macos-non-native-fullscreen" => match v {
+                "false" => self.non_native_fullscreen = NonNativeFullscreen::False,
+                "true" => self.non_native_fullscreen = NonNativeFullscreen::True,
+                "visible-menu" => self.non_native_fullscreen = NonNativeFullscreen::VisibleMenu,
+                "padded-notch" => self.non_native_fullscreen = NonNativeFullscreen::PaddedNotch,
+                _ => bad(warnings),
+            },
+            "window-step-resize" => match parse_bool(v) {
+                Some(b) => self.window_step_resize = b,
+                None => bad(warnings),
+            },
+            "macos-window-buttons" => match v {
+                "visible" => self.macos_window_buttons = MacWindowButtons::Visible,
+                "hidden" => self.macos_window_buttons = MacWindowButtons::Hidden,
+                _ => bad(warnings),
+            },
+            "macos-hidden" => match v {
+                "never" => self.macos_hidden = MacHidden::Never,
+                "always" => self.macos_hidden = MacHidden::Always,
                 _ => bad(warnings),
             },
             "window-position-x" => match v.parse::<i32>() {
@@ -2126,6 +2201,10 @@ const KNOWN_IGNORED: &[&str] = &[
     "background-blur-radius",
     "window-decoration",
     "window-theme",
+    // GTK에서만 뜻이 있는 Ghostty 키(받기만 한다, #179)
+    "window-subtitle",
+    "window-titlebar-background",
+    "window-titlebar-foreground",
     "macos-titlebar-style",
     "macos-titlebar-proxy-icon",
     "macos-icon",
@@ -2554,6 +2633,66 @@ mod tests {
         assert!(Config::from_text("fullscreen = non-native\n", true).fullscreen);
         assert_eq!(Config::from_text("maximize = yes\n", true).warnings.len(), 1);
         assert_eq!(Config::from_text("window-position-x = left\n", true).warnings.len(), 1);
+    }
+
+    #[test]
+    fn macos_window_keys() {
+        let d = Config::default();
+        assert_eq!(d.non_native_fullscreen, NonNativeFullscreen::False);
+        assert!(!d.window_step_resize);
+        assert_eq!(d.macos_window_buttons, MacWindowButtons::Visible);
+        assert_eq!(d.macos_hidden, MacHidden::Never);
+        let c = Config::from_text(
+            "macos-non-native-fullscreen = visible-menu\nwindow-step-resize = true\nmacos-window-buttons = hidden\nmacos-hidden = always\n",
+            true,
+        );
+        assert_eq!(c.non_native_fullscreen, NonNativeFullscreen::VisibleMenu);
+        assert!(c.window_step_resize);
+        assert_eq!(c.macos_window_buttons, MacWindowButtons::Hidden);
+        assert_eq!(c.macos_hidden, MacHidden::Always);
+        assert!(c.warnings.is_empty());
+        for (v, want) in [
+            ("true", NonNativeFullscreen::True),
+            ("false", NonNativeFullscreen::False),
+            ("padded-notch", NonNativeFullscreen::PaddedNotch),
+        ] {
+            let c = Config::from_text(&format!("macos-non-native-fullscreen = {v}\n"), true);
+            assert_eq!(c.non_native_fullscreen, want, "{v}");
+        }
+        for bad in [
+            "macos-non-native-fullscreen = maybe",
+            "window-step-resize = 2",
+            "macos-window-buttons = gone",
+            "macos-hidden = sometimes",
+        ] {
+            assert_eq!(Config::from_text(&format!("{bad}\n"), true).warnings.len(), 1, "{bad}");
+        }
+    }
+
+    #[test]
+    fn fullscreen_non_native_values_set_kind() {
+        let c = Config::from_text("fullscreen = non-native-visible-menu\n", true);
+        assert!(c.fullscreen);
+        assert_eq!(c.non_native_fullscreen, NonNativeFullscreen::VisibleMenu);
+        let c = Config::from_text("fullscreen = non-native\n", true);
+        assert_eq!(c.non_native_fullscreen, NonNativeFullscreen::True);
+        let c = Config::from_text("fullscreen = non-native-padded-notch\n", true);
+        assert_eq!(c.non_native_fullscreen, NonNativeFullscreen::PaddedNotch);
+        let c = Config::from_text("fullscreen = true\n", true);
+        assert_eq!(
+            c.non_native_fullscreen,
+            NonNativeFullscreen::False,
+            "native true는 그대로"
+        );
+    }
+
+    #[test]
+    fn receive_only_window_keys_do_not_warn() {
+        let c = Config::from_text(
+            "window-subtitle = working-directory\nwindow-titlebar-background = #112233\nwindow-titlebar-foreground = white\n",
+            true,
+        );
+        assert!(c.warnings.is_empty(), "{:?}", c.warnings);
     }
 
     #[test]
