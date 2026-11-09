@@ -31,6 +31,8 @@ pub enum CursorStyle {
     Beam,
     Underline,
     Hollow,
+    /// 암호 입력 중의 자물쇠(Ghostty `.lock`, #258)
+    Lock,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -365,12 +367,43 @@ fn draw_cursor(
                 ch.saturating_sub(2 * t),
             );
         }
+        CursorStyle::Lock => {
+            for (x, y, rw, rh) in lock_rects(px, cy, w, ch) {
+                paint(canvas, x, y, rw, rh);
+            }
+        }
         CursorStyle::Beam => paint(canvas, px, cy, m.cursor_beam.min(w), ch),
         CursorStyle::Underline => {
             let t = (m.stroke * 2).min(ch);
             paint(canvas, px, cy + ch as i32 - t as i32, w, t)
         }
     }
+}
+
+/// 자물쇠를 이루는 네모들(x, y, 폭, 높이). 칸 `(x, y, w, h)` 안에 든다: 아래쪽 몸통과 그 위의 ㄇ자 고리(#258)
+pub fn lock_rects(x: i32, y: i32, w: u32, h: u32) -> Vec<(i32, i32, u32, u32)> {
+    // 몸통은 아래 55%, 고리는 그 위. 좁은 칸에서도 보이게 가장자리를 칸 폭의 1/8만 비운다
+    let margin = (w / 8).max(1);
+    let bw = w.saturating_sub(2 * margin).max(1);
+    let bx = x + ((w - bw) / 2) as i32;
+    let body_h = (h * 11 / 20).max(2).min(h);
+    let by = y + (h - body_h) as i32;
+    let top = y + (h / 10) as i32;
+    let t = (bw / 5).max(1);
+    let sw = (bw * 3 / 5).max(t * 2 + 1).min(bw);
+    let sx = x + ((w - sw) / 2) as i32;
+    let rise = (by - top).max(1) as u32;
+    let mut v = vec![(bx, by, bw, body_h)];
+    if rise > t {
+        v.push((sx, top, sw, t));
+        v.push((sx, top + t as i32, t, rise - t));
+        v.push((sx + sw as i32 - t as i32, top + t as i32, t, rise - t));
+    } else {
+        v.push((sx, top, sw, rise));
+        v.push((sx, top, t, rise));
+        v.push((sx + sw as i32 - t as i32, top, t, rise));
+    }
+    v
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -398,5 +431,30 @@ fn draw_preedit(
             color,
         );
         x += (m.width * span) as i32;
+    }
+}
+
+#[cfg(test)]
+mod lock_tests {
+    use super::lock_rects;
+
+    #[test]
+    fn lock_has_a_body_and_a_shackle_inside_the_box() {
+        for (w, h) in [(8u32, 17u32), (16, 34), (10, 20), (4, 8), (30, 18)] {
+            let (x, y) = (100, 50);
+            let r = lock_rects(x, y, w, h);
+            assert!(r.len() >= 4, "{w}x{h}: 몸통 하나와 고리 셋");
+            for &(rx, ry, rw, rh) in &r {
+                assert!(rw > 0 && rh > 0, "{w}x{h}: 빈 네모 {rx},{ry},{rw},{rh}");
+                assert!(rx >= x && ry >= y, "{w}x{h}: 칸 밖(왼쪽·위)");
+                assert!(rx + rw as i32 <= x + w as i32, "{w}x{h}: 칸 밖(오른쪽)");
+                assert!(ry + rh as i32 <= y + h as i32, "{w}x{h}: 칸 밖(아래)");
+            }
+            // 몸통은 가장 아래에 있고 고리보다 넓다
+            let body = r.iter().max_by_key(|b| b.1 + b.3 as i32).unwrap();
+            let top = r.iter().map(|b| b.1).min().unwrap();
+            assert!(body.1 > top, "{w}x{h}: 고리가 몸통 위에 있다");
+            assert!(body.2 >= r.iter().filter(|b| *b != body).map(|b| b.2).max().unwrap());
+        }
     }
 }

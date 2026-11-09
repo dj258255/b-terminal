@@ -22,6 +22,7 @@
 
 - [ADR-018 읽기 전용 칸은 PTY 쓰기 한 곳에서 막고, `btctl send`도 막으며, 프로그램이 물은 것에 대한 터미널의 답은 막지 않는다](#adr-018-읽기-전용-칸은-pty-쓰기-한-곳에서-막고-btctl-send도-막으며-프로그램이-물은-것에-대한-터미널의-답은-막지-않는다)
 - [ADR-019 클립보드 ask는 창 안 막대로 묻고 Enter로는 허용하지 않으며 막대는 하나만 띄운다](#adr-019-클립보드-ask는-창-안-막대로-묻고-enter로는-허용하지-않으며-막대는-하나만-띄운다)
+- [ADR-020 보안 키보드 입력은 PTY의 termios로 암호 입력을 추측하고, 상태 한 곳이 켠 횟수와 끈 횟수를 맞춘다](#adr-020-보안-키보드-입력은-pty의-termios로-암호-입력을-추측하고-상태-한-곳이-켠-횟수와-끈-횟수를-맞춘다)
 
 ## ADR-001 VT 엔진은 alacritty_terminal로 시작하고, bt-term 밖으로 엔진 타입을 내보내지 않는다
 
@@ -523,3 +524,25 @@
 - 막대가 가리키는 칸의 탭을 `move_tab_to_new_window`로 옮기면 막대를 닫는다(거절과 같다, #223의 `Pending::binds_to`).
 - 막대는 창 하나에 하나이고 시간 제한이 없다. 답이 없으면 읽기를 기다리는 프로그램은 그 자리에서 기다린다.
 - 막대의 자리·겹침·키 동작은 실제 창에서 보지 않았다. 판단 함수는 단위 테스트로만 확인했다.
+
+## ADR-020 보안 키보드 입력은 PTY의 termios로 암호 입력을 추측하고, 상태 한 곳이 켠 횟수와 끈 횟수를 맞춘다
+
+상태: 받아들임(#258)
+
+### 배경
+macOS의 Carbon `EnableSecureEventInput`은 켜 있는 동안 키 입력이 다른 앱에 새지 않게 한다. 호출은 프로세스 전역이고 켠 만큼 꺼야 한다. Ghostty는 암호 입력을 PTY의 termios로 추측하고(termio/Exec.zig: `ICANON` 켜짐·`ECHO` 꺼짐, 200ms마다), 그 칸이 초점일 때만 켠다(SecureInput.swift). 이 작업 공간은 `unsafe_code = "deny"`다.
+
+### 결정
+1. 암호 입력 추측: portable-pty `MasterPty::get_termios`(unsafe 없음)로 `ICANON`·`ECHO`를 읽는다. 터미널에 찍힌 글이 아니라 PTY 설정에서 읽으므로 출력이 이 추측을 직접 쓸 수 없다. 앱이 앞이고 창에 초점이 있을 때만 200ms마다 깨운다. 이를 위해 bt-term이 nix 0.28(Cargo.lock에 이미 있던 portable-pty의 의존)에 직접 기댄다.
+2. Carbon 호출 두 개는 vendored winit에 `winit::platform::macos::set_secure_event_input(bool) -> bool`로 최소 패치해 넣는다(`vendor/README.md`). 앱 코드에는 unsafe가 없다.
+3. 상태는 `secure_input.rs`의 순수 상태 기계 한 곳에서 든다. 바라는 상태 = 앱 전체 켜짐 또는 초점인 암호 칸이 하나라도 있음. 앱이 활성일 때만 시스템에 반영하고, 비활성이 되면 끄고 활성이 되면 다시 켜며, 호출이 실패하면 상태를 바꾸지 않고(다음 계기에 다시 시도), 끝날 때 켜 둔 것을 끈다. 시스템 호출은 주입해 호출 순서와 횟수를 테스트한다.
+4. 칸 단위와 앱 전체를 나눈다. 키 묶음 `toggle_secure_input`은 초점 칸의 칸 단위 상태만 뒤집고(`macos-auto-secure-input = false`면 아무 일 없음), 앱 메뉴 `보안 키보드 입력`은 앱 전체를 뒤집어 상태 파일 옆 `secure-input` 파일에 남긴다(Ghostty의 UserDefaults 대신). 자물쇠 커서는 칸의 암호 입력 표시를 따르며 `macos-auto-secure-input`과 상관없다(Ghostty core의 `password_input`).
+5. 표시: `macos-secure-input-indication`이 켜 있고 보안 입력이 켜져 있는 동안 창 오른쪽 위에 자물쇠 배지를 그린다.
+
+### 감수한 트레이드오프
+- termios 추측은 ssh 너머의 암호를 못 알아챈다(Ghostty도 같다). 되울림을 끄고 줄 단위로 읽는 아무 프로그램이 자물쇠 커서와 보안 입력을 켤 수 있다(켜는 것뿐이고 입력이 막히지는 않는다).
+- 칸의 상태는 200ms 간격이라 암호 프롬프트가 뜬 직후 한 박자 늦게 켜진다. 그 사이의 키 입력은 보호되지 않는다. 앱이 앞으로 올 때는 바로 한 번 살핀다.
+- 창 하나에서 다른 창으로 초점이 옮겨 가는 사이 앱이 잠깐 비활성으로 보여 보안 입력을 껐다 켠다(winit에 앱 단위 활성 사건이 없어 창 초점의 합으로 본다).
+- Ghostty와 달리 `toggle_secure_input`이 칸의 자물쇠 커서는 바꾸지 않는다(Ghostty도 커서는 터미널의 표시를 따른다). 설정을 다시 읽어 `macos-auto-secure-input`이 꺼져도 이미 켠 칸 단위 상태는 칸이 암호를 벗어날 때까지 남는다.
+- 표시 배지가 있는 동안 창은 부분 그리기 없이 전체를 다시 그린다. 이 비용은 재지 않았다.
+- 판단·상태 기계·termios 읽기는 단위·통합 테스트로 확인했다. 실제 창에서는 암호 입력 동안 보안 입력이 켜지고(`ioreg`의 `kCGSSessionSecureInputPID`) 끝나면 풀리는 것과 자물쇠 커서·배지를 봤다. 메뉴, `toggle_secure_input`, 다른 앱으로 갔다 올 때는 보지 않았다(키·마우스를 흉내 내지 않음).

@@ -33,6 +33,19 @@ pub(crate) use crate::cursor::OnlyCursorImageSource as PlatformCustomCursorSourc
 pub(crate) use crate::icon::NoIcon as PlatformIcon;
 pub(crate) use crate::platform_impl::Fullscreen;
 
+/// b-terminal(#258): Carbon secure event input is process-global, so it is a free function rather than a window method.
+pub fn set_secure_event_input(enable: bool) -> bool {
+    // SAFETY: both functions take no arguments and have no preconditions.
+    let status = unsafe {
+        if enable {
+            ffi::EnableSecureEventInput()
+        } else {
+            ffi::DisableSecureEventInput()
+        }
+    };
+    status == 0
+}
+
 #[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct DeviceId;
 

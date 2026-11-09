@@ -198,6 +198,14 @@ extern "C" {
 
     pub fn LMGetKbdType() -> u8;
 
+    // b-terminal(#258)
+    #[allow(non_snake_case)]
+    pub fn EnableSecureEventInput() -> OSStatus;
+
+    // b-terminal(#258)
+    #[allow(non_snake_case)]
+    pub fn DisableSecureEventInput() -> OSStatus;
+
     #[allow(non_snake_case)]
     pub fn UCKeyTranslate(
         keyLayoutPtr: *const UCKeyboardLayout,

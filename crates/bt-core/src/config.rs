@@ -630,6 +630,10 @@ pub struct Config {
     pub scroll_multiplier: (f64, f64),
     /// 단어 고르기의 경계 글자(Ghostty `selection-word-chars`)
     pub selection_word_chars: String,
+    /// 암호 입력을 알아채면 그 칸이 초점일 때 보안 키보드 입력을 켠다(Ghostty `macos-auto-secure-input`, 기본 켬, #258)
+    pub macos_auto_secure_input: bool,
+    /// 보안 입력이 켜져 있는 동안 창 오른쪽 위에 자물쇠를 보인다(Ghostty `macos-secure-input-indication`, 기본 켬, #258)
+    pub macos_secure_input_indication: bool,
     pub warnings: Vec<String>,
     /// 실제로 읽은 파일
     pub sources: Vec<PathBuf>,
@@ -1504,6 +1508,8 @@ impl Default for Config {
             focus_follows_mouse: false,
             scroll_multiplier: (3.0, 1.0),
             selection_word_chars: DEFAULT_WORD_CHARS.into(),
+            macos_auto_secure_input: true,
+            macos_secure_input_indication: true,
             warnings: Vec::new(),
             sources: Vec::new(),
             entries: Vec::new(),
@@ -3283,6 +3289,14 @@ impl Config {
                     })
                 }
             }
+            "macos-auto-secure-input" => match parse_bool(v) {
+                Some(b) => self.macos_auto_secure_input = b,
+                None => bad(warnings),
+            },
+            "macos-secure-input-indication" => match parse_bool(v) {
+                Some(b) => self.macos_secure_input_indication = b,
+                None => bad(warnings),
+            },
             other => {
                 // Ghostty에만 있는 키는 조용히 넘기지 않고 알린다
                 if !KNOWN_IGNORED.contains(&other) {
@@ -3512,6 +3526,11 @@ impl Config {
                 },
             );
         }
+        push("macos-auto-secure-input", self.macos_auto_secure_input.to_string());
+        push(
+            "macos-secure-input-indication",
+            self.macos_secure_input_indication.to_string(),
+        );
         for k in &self.keybinds {
             push("keybind", k.clone());
         }
@@ -3736,8 +3755,6 @@ const KNOWN_IGNORED: &[&str] = &[
     // unsafe나 시스템 연동(AppleScript·단축어·보안 입력)이 필요하다
     "macos-applescript",
     "macos-shortcuts",
-    "macos-auto-secure-input",
-    "macos-secure-input-indication",
 ];
 
 fn hex(c: Rgb) -> String {
@@ -5115,8 +5132,6 @@ mod tests {
             "scrollback-compression = false",
             "macos-applescript = false",
             "macos-shortcuts = deny",
-            "macos-auto-secure-input = false",
-            "macos-secure-input-indication = false",
             "drag-handle = never",
             "background-blur = 20",
         ] {
@@ -5697,6 +5712,33 @@ mod tests {
             !LinkPreviews::Osc8.shows(false),
             "화면 글의 URL은 글 자체가 주소라 띠를 보이지 않는다"
         );
+    }
+
+    #[test]
+    fn secure_input_keys_parse_and_render() {
+        let d = Config::default();
+        assert!(
+            d.macos_auto_secure_input && d.macos_secure_input_indication,
+            "Ghostty 기본은 둘 다 켬"
+        );
+        let c = Config::from_text(
+            "macos-auto-secure-input = false\nmacos-secure-input-indication = false\n",
+            true,
+        );
+        assert!(c.warnings.is_empty(), "{:?}", c.warnings);
+        assert!(!c.macos_auto_secure_input);
+        assert!(!c.macos_secure_input_indication);
+        let c = Config::from_text("macos-auto-secure-input = false\n", true);
+        assert!(
+            !c.macos_auto_secure_input && c.macos_secure_input_indication,
+            "하나만 바꾼다"
+        );
+        let r = c.render();
+        assert!(r.contains("macos-auto-secure-input = false"), "{r}");
+        assert!(r.contains("macos-secure-input-indication = true"), "{r}");
+        let bad = Config::from_text("macos-auto-secure-input = maybe\n", true);
+        assert_eq!(bad.warnings.len(), 1);
+        assert!(bad.macos_auto_secure_input, "잘못된 값은 기본을 둔다");
     }
 
     #[test]

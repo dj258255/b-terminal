@@ -799,6 +799,24 @@ impl Session {
         self.master.lock().process_group_leader()
     }
 
+    /// 암호를 치는 중인가(#258). PTY의 termios가 줄 단위 입력(`ICANON`)이고 되울림(`ECHO`)이 꺼졌으면 그렇다고 본다
+    /// (Ghostty termio/Exec.zig의 같은 추측). 읽지 못하면 `None`
+    pub fn password_input(&self) -> Option<bool> {
+        #[cfg(unix)]
+        {
+            use nix::sys::termios::LocalFlags;
+            let t = self.master.lock().get_termios()?;
+            Some(is_password_mode(
+                t.local_flags.contains(LocalFlags::ICANON),
+                t.local_flags.contains(LocalFlags::ECHO),
+            ))
+        }
+        #[cfg(not(unix))]
+        {
+            None
+        }
+    }
+
     /// 지금 키 입력을 받는 프로세스(셸에서 vim을 띄웠으면 vim)
     pub fn foreground(&self) -> Option<crate::process::Foreground> {
         let pid = self.master.lock().process_group_leader()?;
@@ -1635,6 +1653,25 @@ mod tests {
         assert_eq!(adj(at(2, 3), End), at(9, 9));
         assert_eq!(adj(at(2, 3), BeginningOfLine), at(2, 0));
         assert_eq!(adj(at(2, 3), EndOfLine), at(2, 9));
+    }
+}
+
+/// 암호 입력 추측: 줄 단위 입력이고 되울림이 꺼졌다(Ghostty `mode.canonical and !mode.echo`)
+#[cfg_attr(not(unix), allow(dead_code))]
+fn is_password_mode(canonical: bool, echo: bool) -> bool {
+    canonical && !echo
+}
+
+#[cfg(test)]
+mod password_tests {
+    use super::is_password_mode;
+
+    #[test]
+    fn password_mode_needs_canonical_without_echo() {
+        assert!(is_password_mode(true, false));
+        assert!(!is_password_mode(true, true), "되울림이 켜진 보통 줄 입력");
+        assert!(!is_password_mode(false, false), "vim 같은 원시 입력");
+        assert!(!is_password_mode(false, true));
     }
 }
 
