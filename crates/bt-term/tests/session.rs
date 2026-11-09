@@ -735,3 +735,103 @@ fn scroll_metrics_report_rows_history_and_offset_for_the_scrollbar() {
     let (_, h, o) = s.scroll_metrics();
     assert_eq!(h - o, 10);
 }
+
+// ---- 색 구성표 보고(#232): CSI ? 996 n, 모드 2031 ----
+
+#[test]
+fn color_scheme_query_answers_dark_by_default() {
+    assert_eq!(reply_to("\\033[?996n", |_| {}), hex_of("\x1b[?997;1n"));
+}
+
+#[test]
+fn color_scheme_query_answers_light_when_the_pane_is_light() {
+    assert_eq!(
+        reply_to("\\033[?996n", |o| o.color_scheme_light = true),
+        hex_of("\x1b[?997;2n")
+    );
+}
+
+#[test]
+fn color_scheme_query_is_answered_each_time() {
+    assert_eq!(
+        reply_to("\\033[?996n\\033[?996n", |_| {}),
+        hex_of("\x1b[?997;1n\x1b[?997;1n")
+    );
+}
+
+/// 셸이 `setup`을 찍고 READY를 보인 뒤 읽은 바이트를 16진수로 돌려준다. `act`는 READY 뒤에 칸에 대고 한다
+fn notified_after(setup: &str, act: impl FnOnce(&Session)) -> String {
+    let (tx, rx) = channel();
+    let tx = std::sync::Mutex::new(tx);
+    let sink = Arc::new(move |e: SessionEvent| {
+        let _ = tx.lock().unwrap().send(e);
+    });
+    let script = format!(
+        "stty raw -echo min 0 time 15; printf '{setup}'; printf READY; \
+         r=$(dd bs=256 count=1 2>/dev/null | od -An -v -tx1 | tr -d ' \\n'); printf 'R[%s]\\n' \"$r\""
+    );
+    let o = SpawnOptions {
+        program: Some("/bin/sh".into()),
+        args: vec!["-c".into(), script],
+        cwd: Some(std::env::temp_dir()),
+        ..Default::default()
+    };
+    let s = Session::spawn(o, GridSize::new(80, 10), Theme::default(), sink).expect("spawn");
+    wait_until(&s, |t| t.contains("READY"));
+    act(&s);
+    wait_exit(&rx);
+    let text = s.snapshot().text();
+    let start = text.find("R[").unwrap_or_else(|| panic!("답 줄이 없다:\n{text}")) + 2;
+    let end = text[start..].find(']').expect("닫는 ]") + start;
+    text[start..end].to_string()
+}
+
+#[test]
+fn mode_2031_reports_a_look_change_but_not_when_turned_on() {
+    // 켠 직후에는 보고하지 않는다(Ghostty와 같다). 어두움에서 밝음으로 바뀌면 `CSI ? 997 ; 2 n`
+    let got = notified_after("\\033[?2031h", |s| {
+        assert!(s.color_scheme_updates());
+        s.set_color_scheme(false);
+    });
+    assert_eq!(got, hex_of("\x1b[?997;2n"));
+}
+
+#[test]
+fn mode_2031_report_is_sent_once_per_change() {
+    let got = notified_after("\\033[?2031h", |s| {
+        s.set_color_scheme(true); // 처음부터 어두움이라 같은 값
+        s.set_color_scheme(false);
+        s.set_color_scheme(false); // 같은 값이 또
+        s.set_color_scheme(true);
+    });
+    assert_eq!(got, hex_of("\x1b[?997;2n\x1b[?997;1n"));
+}
+
+#[test]
+fn mode_2031_is_silent_when_off() {
+    assert_eq!(notified_after("", |s| s.set_color_scheme(false)), "");
+    let got = notified_after("\\033[?2031h\\033[?2031l", |s| {
+        assert!(!s.color_scheme_updates());
+        s.set_color_scheme(false);
+    });
+    assert_eq!(got, "");
+}
+
+#[test]
+fn reset_turns_mode_2031_off() {
+    let got = notified_after("\\033[?2031h\\033c", |s| {
+        assert!(!s.color_scheme_updates());
+        s.set_color_scheme(false);
+    });
+    assert_eq!(got, "");
+}
+
+#[test]
+fn mode_2031_report_reaches_a_readonly_pane() {
+    // 터미널의 답이라 읽기 전용 칸에서도 막지 않는다(ADR-018 결정 4)
+    let got = notified_after("\\033[?2031h", |s| {
+        s.set_readonly(true);
+        s.set_color_scheme(false);
+    });
+    assert_eq!(got, hex_of("\x1b[?997;2n"));
+}

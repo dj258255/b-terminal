@@ -48,6 +48,10 @@ pub enum Signal {
         rows: u16,
         cols: u16,
     },
+    /// 색 구성표 질문(`CSI ? 996 n`). 세션이 지금 밝음·어두움을 답한다(#232)
+    ColorSchemeQuery,
+    /// 색 구성표 변경 알림 모드(DEC 모드 2031)를 켜거나(`CSI ? 2031 h`) 껐다(`CSI ? 2031 l`)(#232)
+    ColorSchemeUpdates(bool),
 }
 
 /// 셸 통합 표지. <https://gitlab.freedesktop.org/Per_Bothner/specifications/blob/master/proposals/semantic-prompts.md>
@@ -273,7 +277,20 @@ fn csi_num(p: &str) -> u32 {
 
 /// 끝난 CSI(`ESC [ 매개변수 끝바이트`)에서 뽑는 신호: 제목 보고(21 t), 창 크기 요청(8 ; 행 ; 열 t), 키보드 잠금(2 h·l)
 fn csi_signal(fin: u8, params: &[u8]) -> Option<Signal> {
-    // 매개변수 바이트는 숫자, `;`, `?`만 모았다. 비공개 표시(?)가 든 것은 아래 모양이 아니다
+    // 매개변수 바이트는 숫자, `;`, `?`만 모았다. 맨 앞의 `?`(DEC 비공개)만 아래에서 따로 읽고, 다른 곳의 `?`는 모양이 아니다
+    if let Some(private) = params.strip_prefix(b"?") {
+        let text = std::str::from_utf8(private).ok()?;
+        if text.contains('?') {
+            return None;
+        }
+        return match fin {
+            // 색 구성표 질문: `CSI ? 996 n`만(다른 매개변수가 붙으면 다른 질문이다)
+            b'n' if text == "996" => Some(Signal::ColorSchemeQuery),
+            // DEC 모드 2031(색 구성표 변경 알림). 여러 모드 중 하나여도 읽는다
+            b'h' | b'l' if text.split(';').any(|p| p == "2031") => Some(Signal::ColorSchemeUpdates(fin == b'h')),
+            _ => None,
+        };
+    }
     if params.contains(&b'?') {
         return None;
     }
@@ -457,6 +474,27 @@ mod apc_tests {
         // 조각으로 와도 이어 읽는다
         assert_eq!(sc.feed(b"\x1b[").len() + sc.feed(b"2").len(), 0);
         assert_eq!(sc.feed(b"h"), vec![Signal::Kam(true)]);
+    }
+
+    #[test]
+    fn color_scheme_query_and_mode_2031_are_parsed() {
+        let mut sc = Scanner::default();
+        assert_eq!(sc.feed(b"\x1b[?996n"), vec![Signal::ColorSchemeQuery]);
+        assert_eq!(sc.feed(b"\x1b[?2031h"), vec![Signal::ColorSchemeUpdates(true)]);
+        assert_eq!(sc.feed(b"\x1b[?2031l"), vec![Signal::ColorSchemeUpdates(false)]);
+        assert_eq!(
+            sc.feed(b"\x1b[?25;2031h"),
+            vec![Signal::ColorSchemeUpdates(true)],
+            "여러 모드 중 하나"
+        );
+        // 비슷하지만 다른 것은 신호가 아니다
+        assert_eq!(
+            sc.feed(b"\x1b[996n\x1b[?2030h\x1b[?996;1n\x1b[?20310h\x1b[2031h\x1b[5n"),
+            vec![]
+        );
+        // 조각으로 와도 이어 읽는다
+        assert_eq!(sc.feed(b"\x1b[?99").len() + sc.feed(b"6").len(), 0);
+        assert_eq!(sc.feed(b"n"), vec![Signal::ColorSchemeQuery]);
     }
 
     #[test]

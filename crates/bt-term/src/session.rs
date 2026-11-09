@@ -117,6 +117,8 @@ pub struct SpawnOptions {
     pub vt_window_resize_allowed: bool,
     /// kitty 그림 저장 바이트 상한(설정 image-storage-limit). 없으면 기본(320000000), 0이면 그림을 쓰지 않는다
     pub image_storage_limit: Option<u32>,
+    /// 처음 칸의 색 구성표가 밝음인가(기본은 어두움). `CSI ? 996 n`의 답과 모드 2031 알림의 기준(#232)
+    pub color_scheme_light: bool,
     /// 글자 묶음 폭을 세는 방식(설정 grapheme-width-method, #180). `Unicode`면 mode 2027이 처음부터 켜져 있다
     pub grapheme_width_method: bt_core::config::GraphemeWidthMethod,
 }
@@ -397,9 +399,31 @@ pub struct Session {
     kam_locked: Arc<std::sync::atomic::AtomicBool>,
     /// 사람이 칸을 읽기 전용으로 했다(`toggle_readonly`, ADR-018). 켜져 있으면 `write`가 아무것도 쓰지 않는다
     readonly: Arc<std::sync::atomic::AtomicBool>,
+    /// 프로그램이 색 구성표 변경 알림(모드 2031)을 켰다(#232)
+    scheme_updates: Arc<std::sync::atomic::AtomicBool>,
+    /// 칸에 알린 지금 색 구성표가 밝음인가(#232)
+    scheme_light: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl Session {
+    /// 색 구성표(시스템 모양)가 바뀌었음을 알린다. 모드 2031이 켜져 있고 값이 달라졌을 때만 `CSI ? 997 ; 1|2 n`을
+    /// PTY에 쓴다. 터미널의 답이라 읽기 전용 칸에서도 쓴다(ADR-018 결정 4). 같은 값이 또 오면 아무것도 하지 않는다(#232)
+    pub fn set_color_scheme(&self, dark: bool) {
+        use std::sync::atomic::Ordering::{AcqRel, Acquire};
+        let light = !dark;
+        let changed = self.scheme_light.swap(light, AcqRel) != light;
+        if changed && self.scheme_updates.load(Acquire) {
+            let mut w = self.writer.lock();
+            let _ = w.write_all(scheme_report(light));
+            let _ = w.flush();
+        }
+    }
+
+    /// 프로그램이 색 구성표 변경 알림(모드 2031)을 켜 두었는가
+    pub fn color_scheme_updates(&self) -> bool {
+        self.scheme_updates.load(std::sync::atomic::Ordering::Acquire)
+    }
+
     /// 이 칸이 읽기 전용인가
     pub fn readonly(&self) -> bool {
         self.readonly.load(std::sync::atomic::Ordering::Acquire)
@@ -575,7 +599,11 @@ impl Session {
         let kam_locked = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let thread_kam_locked = kam_locked.clone();
         let exited = Arc::new(Mutex::new(None));
+        let scheme_updates = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let scheme_light = Arc::new(std::sync::atomic::AtomicBool::new(options.color_scheme_light));
 
+        let thread_scheme_updates = scheme_updates.clone();
+        let thread_scheme_light = scheme_light.clone();
         let thread_inner = inner.clone();
         let thread_exited = exited.clone();
         let thread_writer = writer.clone();
@@ -650,7 +678,18 @@ impl Session {
                                         // 초기화(RIS)는 키보드 잠금도 푼다
                                         if visible && scrollback {
                                             thread_kam_locked.store(false, std::sync::atomic::Ordering::Release);
+                                            thread_scheme_updates.store(false, std::sync::atomic::Ordering::Release);
                                         }
+                                    }
+                                    Signal::ColorSchemeUpdates(on) => {
+                                        thread_scheme_updates.store(on, std::sync::atomic::Ordering::Release);
+                                    }
+                                    // 색 구성표 질문: 터미널의 답이라 읽기 전용 칸에서도 쓴다(ADR-018 결정 4)
+                                    Signal::ColorSchemeQuery => {
+                                        let light = thread_scheme_light.load(std::sync::atomic::Ordering::Acquire);
+                                        let mut w = thread_writer.lock();
+                                        let _ = w.write_all(scheme_report(light));
+                                        let _ = w.flush();
                                     }
                                     // ENQ: 설정한 글이 있을 때만 답한다(ADR-013). 글은 사용자가 정한 것이다
                                     Signal::Enquiry => {
@@ -722,6 +761,8 @@ impl Session {
             scroll_on_output,
             kam_locked,
             readonly,
+            scheme_updates,
+            scheme_light,
         })
     }
 
@@ -846,6 +887,7 @@ impl Session {
             g.sel_end = None;
         }
         self.kam_locked.store(false, std::sync::atomic::Ordering::Release);
+        self.scheme_updates.store(false, std::sync::atomic::Ordering::Release);
     }
 
     /// 스크롤 막대를 그리고 누르는 데 쓰는 값: (보이는 줄 수, 스크롤백 줄 수, 맨 아래에서 올라간 줄 수).
@@ -1015,6 +1057,11 @@ impl Session {
     }
 }
 
+/// 색 구성표 보고(`CSI ? 997 ; 1 n` 어두움, `; 2 n` 밝음). 고정된 바이트이고 출력이 정한 글은 들어가지 않는다(#232)
+fn scheme_report(light: bool) -> &'static [u8] {
+    if light { b"\x1b[?997;2n" } else { b"\x1b[?997;1n" }
+}
+
 fn signal_event(sig: Signal) -> SessionEvent {
     match sig {
         Signal::Notify(n) => SessionEvent::Notification(n),
@@ -1028,6 +1075,8 @@ fn signal_event(sig: Signal) -> SessionEvent {
         | Signal::TitleReport
         | Signal::Enquiry
         | Signal::Kam(_)
+        | Signal::ColorSchemeQuery
+        | Signal::ColorSchemeUpdates(_)
         | Signal::WindowResize { .. } => SessionEvent::Output,
     }
 }
