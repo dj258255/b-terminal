@@ -34,6 +34,39 @@ impl Rgb {
         Some(Self::from_u32(v))
     }
 
+    /// WCAG 상대 휘도(0~1, #123)
+    pub fn luminance(self) -> f32 {
+        let lin = |c: u8| {
+            let c = c as f32 / 255.0;
+            if c <= 0.04045 {
+                c / 12.92
+            } else {
+                ((c + 0.055) / 1.055).powf(2.4)
+            }
+        };
+        0.2126 * lin(self.r) + 0.7152 * lin(self.g) + 0.0722 * lin(self.b)
+    }
+
+    /// WCAG 명암비(1~21, #123)
+    pub fn contrast(self, other: Rgb) -> f32 {
+        let (a, b) = (self.luminance(), other.luminance());
+        (a.max(b) + 0.05) / (a.min(b) + 0.05)
+    }
+
+    /// 바탕 `bg` 위에서 명암비가 `min`보다 낮으면 흰색과 검은색 중 바탕과 명암비가 큰 쪽으로 바꾼다
+    /// (Ghostty `minimum-contrast`와 같은 규칙). `min`이 1 이하면 그대로
+    pub fn contrasted(self, bg: Rgb, min: f32) -> Rgb {
+        if min <= 1.0 || self.contrast(bg) >= min {
+            return self;
+        }
+        let (white, black) = (Rgb::new(255, 255, 255), Rgb::new(0, 0, 0));
+        if white.contrast(bg) > black.contrast(bg) {
+            white
+        } else {
+            black
+        }
+    }
+
     /// 두 색을 섞는다. t=0이면 self, t=1이면 other
     pub fn mix(self, other: Rgb, t: f32) -> Rgb {
         let t = t.clamp(0.0, 1.0);
@@ -121,6 +154,27 @@ impl Theme {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn contrast_matches_wcag_and_fixes_unreadable_colors_like_ghostty() {
+        let (white, black) = (Rgb::new(255, 255, 255), Rgb::new(0, 0, 0));
+        assert!((white.contrast(black) - 21.0).abs() < 0.01);
+        assert!((black.contrast(white) - 21.0).abs() < 0.01, "순서와 상관없다");
+        assert!((white.contrast(white) - 1.0).abs() < 1e-6);
+        // WCAG 예시: #777777은 흰 바탕에서 약 4.48
+        assert!((Rgb::new(0x77, 0x77, 0x77).contrast(white) - 4.48).abs() < 0.01);
+        assert!((Rgb::new(255, 0, 0).luminance() - 0.2126).abs() < 1e-4);
+        // 어두운 바탕에 짙은 파랑: 3을 원하면 흰색으로
+        let (navy, bg) = (Rgb::new(0, 0, 0x80), Rgb::new(0x1e, 0x1e, 0x2e));
+        assert!(navy.contrast(bg) < 3.0);
+        assert_eq!(navy.contrasted(bg, 3.0), white);
+        // 밝은 바탕에 연노랑: 검은색으로
+        let (pale, light) = (Rgb::new(0xff, 0xff, 0xcc), Rgb::new(0xf0, 0xf0, 0xf0));
+        assert_eq!(pale.contrasted(light, 3.0), black);
+        // 이미 충분하거나 min이 1이면 그대로
+        assert_eq!(navy.contrasted(white, 3.0), navy);
+        assert_eq!(navy.contrasted(bg, 1.0), navy);
+    }
 
     #[test]
     fn xterm_256_cube_and_gray() {

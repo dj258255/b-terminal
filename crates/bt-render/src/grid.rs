@@ -54,6 +54,8 @@ pub struct GridView<'a> {
     pub selection_fg: Option<Rgb>,
     /// IME 조합 중인 글(커서 자리에 덮어 그린다, PTY에는 보내지 않는다)
     pub preedit: Option<&'a str>,
+    /// 글자색과 바탕의 최소 명암비(Ghostty `minimum-contrast`, #123). 1이면 끔
+    pub min_contrast: f32,
 }
 
 /// 격자를 (x, y)에 통째로 그린다
@@ -129,6 +131,7 @@ fn draw_rows(
     }
     // 2) 글자와 밑줄. 이웃 줄에서 넘쳐 들어온 글자도 그린다
     let text_rows = a.saturating_sub(1)..(b + 1).min(view.rows);
+    let mut contrast_memo: Option<((Rgb, Rgb), Rgb)> = None;
     for row in text_rows.clone() {
         let py = y + row as i32 * ch;
         // 이모지 묶음을 한 글리프로 그렸으면 그 칸들은 건너뛴다
@@ -155,6 +158,20 @@ fn draw_rows(
             let fg = match (cell.selected, view.selection_fg) {
                 (true, Some(c)) => c,
                 _ => cell.fg,
+            };
+            // 최소 명암비(#123): 바탕과 너무 비슷한 글자색은 흰색이나 검은색으로. 이어지는 칸은 같은 쌍이 많아 앞 결과를 쓴다
+            let fg = if view.min_contrast > 1.0 {
+                let bg = if cell.selected { view.selection_bg } else { cell.bg };
+                match contrast_memo {
+                    Some((pair, out)) if pair == (fg, bg) => out,
+                    _ => {
+                        let out = fg.contrasted(bg, view.min_contrast);
+                        contrast_memo = Some(((fg, bg), out));
+                        out
+                    }
+                }
+            } else {
+                fg
             };
             // U+FE0F가 붙은 글자는 그 칸 안에 색 이모지로(색 글꼴에 없으면 글자로)
             let emoji = cell.emoji.then(|| fonts.emoji_glyph(cell.ch, span)).flatten();

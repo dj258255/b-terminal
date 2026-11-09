@@ -82,6 +82,7 @@ fn render(fonts: &mut Fonts, bytes: &[u8], cols: u16, rows: u16, cursor: bool) -
         selection_bg: t.selection_background,
         selection_fg: t.selection_foreground,
         preedit: None,
+        min_contrast: 1.0,
     };
     let mut canvas = Canvas::new(&mut buf, w, h);
     canvas.clear(s.background);
@@ -253,6 +254,7 @@ fn view_of<'a>(s: &Screen, dc: &'a [DrawCell], t: &Theme) -> GridView<'a> {
         selection_bg: t.selection_background,
         selection_fg: t.selection_foreground,
         preedit: None,
+        min_contrast: 1.0,
     }
 }
 
@@ -594,4 +596,43 @@ fn draw_glyph_ignores_glyph_without_coverage_bitmap() {
     };
     c.draw_glyph(2, 8, &g, Rgb::new(255, 255, 255));
     assert_eq!(c.pixel(3, 5), Rgb::new(0, 0, 0), "그리지 않는다");
+}
+
+/// #123: 어두운 바탕의 짙은 파랑 글자는 minimum-contrast가 3이면 흰색으로 그린다(Ghostty와 같은 규칙)
+#[test]
+fn minimum_contrast_turns_unreadable_text_white() {
+    let Some(mut f) = fonts(1.0) else { return };
+    let brightest = |f: &mut Fonts, min: f32| {
+        let mut e = Emulator::new(GridSize::new(4, 1), Theme::default());
+        e.feed(b"\x1b[38;2;0;0;128m\x1b[48;2;30;30;46mHH");
+        let s = e.snapshot();
+        let dc = cells(&s);
+        let m = f.metrics();
+        let (w, h) = (m.width * 4, m.height);
+        let mut buf = vec![0u32; (w * h) as usize];
+        let t = Theme::default();
+        let view = GridView {
+            cols: s.cols,
+            rows: s.rows,
+            cells: &dc,
+            cursor: None,
+            selection_bg: t.selection_background,
+            selection_fg: t.selection_foreground,
+            preedit: None,
+            min_contrast: min,
+        };
+        let mut c = Canvas::new(&mut buf, w, h);
+        draw_grid(&mut c, f, 0, 0, &view);
+        (0..h)
+            .flat_map(|y| (0..m.width * 2).map(move |x| (x, y)))
+            .map(|(x, y)| {
+                let p = c.pixel(x, y);
+                p.r as u32 + p.g as u32 + p.b as u32
+            })
+            .max()
+            .unwrap_or(0)
+    };
+    let (off, on) = (brightest(&mut f, 1.0), brightest(&mut f, 3.0));
+    assert!(off <= 128 + 3 * 46, "끄면 짙은 파랑 그대로: {off}");
+    assert!(on > 600, "켜면 흰 글자: {on}");
 }

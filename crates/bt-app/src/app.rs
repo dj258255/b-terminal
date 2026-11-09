@@ -2491,6 +2491,7 @@ impl App {
                     selection_bg: theme.selection_background,
                     selection_fg: theme.selection_foreground,
                     preedit: pre.as_deref(),
+                    min_contrast: self.config.minimum_contrast,
                 };
                 if full {
                     canvas.fill_rect(v.outer.x, v.outer.y, v.outer.w, v.outer.h, screen.background);
