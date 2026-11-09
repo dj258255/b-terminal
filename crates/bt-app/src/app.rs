@@ -105,6 +105,8 @@ pub struct Pane {
     pub session: Session,
     pub title: String,
     pub exited: Option<Option<u32>>,
+    /// 명령이 끝났지만 칸을 남기고 키를 기다린다(`wait-after-command`·비정상 종료, #178)
+    pub held_after_exit: bool,
     /// 전경 프로세스 이름(1초마다 갱신). pid가 같으면 다시 묻지 않는다(node 스크립트는 ps를 부른다)
     pub fg_name: Option<String>,
     fg_pid: Option<i32>,
@@ -596,6 +598,8 @@ pub struct App {
     /// 닫고 들고 있는 칸·탭(`undo-timeout`, #164)과 되살린 것을 다시 닫는 일(`redo`)
     undo: UndoStack<Closed>,
     redo: UndoStack<Redo>,
+    /// 마지막 창이 닫힌 뒤 앱을 끝낼 때(`quit-after-last-window-closed-delay`, #178). 새 창이 열리면 지운다
+    quit_deadline: Option<Instant>,
 }
 
 impl App {
@@ -647,6 +651,7 @@ impl App {
             hotkey_actions: std::collections::HashMap::new(),
             undo: UndoStack::default(),
             redo: UndoStack::default(),
+            quit_deadline: None,
         }
     }
 
@@ -1029,6 +1034,7 @@ impl App {
                 session,
                 title: String::new(),
                 exited: None,
+                held_after_exit: false,
                 fg_name: None,
                 fg_pid: None,
                 unread: false,
@@ -1133,8 +1139,9 @@ impl App {
         let mut o = SpawnOptions::default();
         if let Some(cmd) = &self.config.command {
             // Ghostty처럼 셸을 거쳐 띄운다
-            o.program = Some("/bin/sh".into());
-            o.args = vec!["-c".into(), format!("exec {cmd}")];
+            let (program, args) = crate::lifecycle::shell_command(cmd);
+            o.program = Some(program);
+            o.args = args;
         }
         o.cwd = match &self.config.working_directory {
             bt_core::config::WorkingDirectory::Home => std::env::var_os("HOME").map(std::path::PathBuf::from),
@@ -1224,7 +1231,8 @@ impl App {
                 window,
             } => {
                 let opts = ctl_spawn(self.default_spawn(), cwd.filter(|c| c.is_dir()), &command);
-                if window {
+                // 창이 하나도 없으면 탭·분할 대신 새 창을 연다(#178)
+                if window || self.windowless() {
                     return match self.open_window(event_loop, opts) {
                         Some(tab) => Response::ok(id, json!({ "tab": tab })),
                         None => Response::err(id, "창을 열지 못했습니다"),
@@ -2172,6 +2180,18 @@ impl App {
     }
 
     fn handle_action(&mut self, action: Action, event_loop: &ActiveEventLoop) {
+        // 창이 하나도 없을 때(#178)는 새 창을 여는 동작과 앱 단위 동작만 받는다. 나머지는 고를 칸이 없다
+        if self.windowless() {
+            match action {
+                Action::NewTab | Action::NewWindow | Action::NewSplit(_) => {
+                    let opts = self.default_spawn();
+                    self.open_window(event_loop, opts);
+                    return;
+                }
+                Action::Quit | Action::ToggleQuickTerminal | Action::ReloadConfig => {}
+                _ => return,
+            }
+        }
         match action {
             Action::Copy => {
                 self.copy_selection_command();
@@ -2956,9 +2976,13 @@ impl App {
         win.focused = gfx.window.has_focus();
         win.gfx = Some(gfx);
         let mut old = std::mem::replace(&mut self.w, win);
-        // 새 창이 앞으로 온다. 앞 창의 포커스 잃음 사건을 기다리지 않고 바로 보고 있지 않은 창으로
-        old.focused = false;
-        self.others.push(old);
+        // 새 창이 앞으로 온다. 앞 창의 포커스 잃음 사건을 기다리지 않고 바로 보고 있지 않은 창으로.
+        // 창이 하나도 없던 자리(창 없는 상태, #178)는 남기지 않는다
+        if old.gfx.is_some() {
+            old.focused = false;
+            self.others.push(old);
+        }
+        self.quit_deadline = None;
         self.last_focused = Some(id);
         if !quick {
             self.apply_initial_size();
@@ -2994,7 +3018,31 @@ impl App {
                 self.w = next;
                 self.request_redraw();
             }
-            None => event_loop.exit(),
+            // 마지막 창: 앱을 끝낼지는 quit-after-last-window-closed가 정한다(#178)
+            None => {
+                self.w = Win::new();
+                self.last_focused = None;
+                self.on_last_window_closed(event_loop, false);
+            }
+        }
+    }
+
+    /// 창이 하나도 없는 상태인가(첫 창 없이 띄웠거나 마지막 창을 닫았는데 앱이 남아 있다, #178)
+    fn windowless(&self) -> bool {
+        self.w.gfx.is_none() && self.others.is_empty()
+    }
+
+    /// 마지막 창이 닫혔다(또는 첫 창 없이 띄웠다): 설정에 따라 바로 끝내거나 기한을 건다.
+    /// 첫 창 없이 띄운 때(`at_start`)는 기한이 있을 때만 끝낸다(Ghostty `initial-window` 문서)
+    fn on_last_window_closed(&mut self, event_loop: &ActiveEventLoop, at_start: bool) {
+        use crate::lifecycle::LastWindow;
+        match crate::lifecycle::last_window_closed(
+            self.config.quit_after_last_window_closed,
+            self.config.quit_after_last_window_closed_delay,
+        ) {
+            LastWindow::QuitNow if !at_start => event_loop.exit(),
+            LastWindow::QuitAfter(d) => self.quit_deadline = Some(Instant::now() + d),
+            LastWindow::QuitNow | LastWindow::Stay => {}
         }
     }
 
@@ -3681,7 +3729,12 @@ impl ApplicationHandler<UserEvent> for App {
         if self.w.gfx.is_some() {
             return;
         }
-        let Some(gfx) = self.create_gfx(event_loop) else {
+        // initial-window = false면 글꼴 크기를 알려고 만드는 창이라 보이지 않게 만든다(#178)
+        let no_window = crate::lifecycle::start_without_window(
+            self.config.initial_window,
+            self.first.as_ref().is_some_and(|f| f.program.is_some()),
+        );
+        let Some(gfx) = self.create_gfx_with(event_loop, no_window) else {
             event_loop.exit();
             return;
         };
@@ -3724,10 +3777,18 @@ impl ApplicationHandler<UserEvent> for App {
         }
         if self.panes.is_empty() {
             let mut first = self.first.take().unwrap_or_default();
-            // 창 상태 복원(#94): -e·--cwd로 띄운 것이 아니면 지난번 창·탭·분할을 되살린다
+            // initial-window = false: 창 없이 띄운다(#178). 글꼴 크기를 알려고 만든 창은 닫고, 새 창은 메뉴·btctl·전역 단축키로 연다
+            if crate::lifecycle::start_without_window(self.config.initial_window, first.program.is_some()) {
+                self.w.gfx = None;
+                self.last_focused = None;
+                self.on_last_window_closed(event_loop, true);
+                return;
+            }
+            // 창 상태 복원(#94): -e·--cwd로 띄운 것이 아니고 initial-command도 없으면 지난번 창·탭·분할을 되살린다
             if self.config.window_save_state
                 && first.program.is_none()
                 && first.cwd.is_none()
+                && self.config.initial_command.is_none()
                 && self.restore_state(event_loop)
             {
                 return;
@@ -3735,7 +3796,20 @@ impl ApplicationHandler<UserEvent> for App {
             // 되살린 창은 복원한 크기·자리가 이기므로 여기(복원하지 않는 경우)에서만 적용한다
             self.apply_start_window(event_loop, true);
             if first.program.is_none() {
-                let d = self.default_spawn();
+                // 첫 칸은 initial-command, 없으면 command(#178)
+                let d = match crate::lifecycle::first_command(
+                    self.config.initial_command.as_deref(),
+                    self.config.command.as_deref(),
+                ) {
+                    Some(cmd) => {
+                        let mut d = self.default_spawn();
+                        let (program, args) = crate::lifecycle::shell_command(cmd);
+                        d.program = Some(program);
+                        d.args = args;
+                        d
+                    }
+                    None => self.default_spawn(),
+                };
                 first.program = d.program;
                 first.args = d.args;
             }
@@ -3835,9 +3909,29 @@ impl ApplicationHandler<UserEvent> for App {
                     }
                     SessionEvent::Exited(code) => {
                         self.panes[idx].exited = Some(code);
-                        // 셸이 끝나면 그 칸을 닫는다(Ghostty 기본과 같다)
-                        self.close_pane(idx, event_loop, false);
-                        return;
+                        let runtime = self.panes[idx].created.elapsed();
+                        let action = crate::lifecycle::exit_action(
+                            self.config.wait_after_command,
+                            runtime,
+                            self.config.abnormal_command_exit_runtime,
+                            code,
+                            // Ghostty처럼 macOS는 로그인 셸을 거쳐 띄워서 어떤 종료 코드든 비정상으로 본다
+                            cfg!(target_os = "macos"),
+                        );
+                        match action {
+                            // 셸이 끝나면 그 칸을 닫는다(Ghostty 기본과 같다)
+                            crate::lifecycle::ExitAction::Close => {
+                                self.close_pane(idx, event_loop, false);
+                                return;
+                            }
+                            // 칸을 남기고 안내를 그린다. 아무 키나 누르면 닫는다
+                            crate::lifecycle::ExitAction::Hold(reason) => {
+                                let p = &mut self.panes[idx];
+                                p.held_after_exit = true;
+                                p.session
+                                    .feed_local(crate::lifecycle::hold_message(reason, code, runtime).as_bytes());
+                            }
+                        }
                     }
                     SessionEvent::Progress { state, percent } => {
                         self.panes[idx].progress = (state != 0).then(|| (state, percent, Instant::now()));
@@ -3986,6 +4080,18 @@ impl ApplicationHandler<UserEvent> for App {
             WindowEvent::KeyboardInput { event, .. } => {
                 if event.state != ElementState::Pressed {
                     return;
+                }
+                // 명령이 끝나 남겨 둔 칸은 아무 키나 누르면 닫는다(wait-after-command, #178)
+                if crate::lifecycle::is_dismiss_key(&event.logical_key) {
+                    let held = self
+                        .focused_id()
+                        .and_then(|id| self.pane_index(id))
+                        .filter(|&i| self.panes[i].held_after_exit);
+                    if let Some(i) = held {
+                        self.close_pane(i, event_loop, false);
+                        self.request_redraw();
+                        return;
+                    }
                 }
                 self.reset_blink();
                 if self.confirm_key(&event, event_loop)
@@ -4242,6 +4348,11 @@ impl ApplicationHandler<UserEvent> for App {
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        // 마지막 창을 닫고 기다리던 시간이 지났다(quit-after-last-window-closed-delay, #178)
+        if self.quit_deadline.is_some_and(|d| Instant::now() >= d) {
+            event_loop.exit();
+            return;
+        }
         // 1초마다 전경 프로세스를 본다(사이드바 이름, 에이전트 알아보기)
         let now = Instant::now();
         if now >= self.next_poll {
@@ -4341,6 +4452,7 @@ impl ApplicationHandler<UserEvent> for App {
             .chain(overlay_next)
             .chain(self.undo.next_deadline())
             .chain(self.redo.next_deadline())
+            .chain(self.quit_deadline)
             .min();
         match deadline {
             Some(d) if d <= Instant::now() => {

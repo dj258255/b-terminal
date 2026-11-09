@@ -4,6 +4,7 @@
 
 ## [아직 릴리스하지 않음]
 
+- 명령 실행·창 수명 키(Ghostty): `initial-command`(첫 칸만), `wait-after-command`(끝나도 칸을 남기고 아무 키나 누르면 닫음), `abnormal-command-exit-runtime`(기본 250ms, 이보다 짧게 끝나면 칸을 남기고 안내), `initial-window`, `quit-after-last-window-closed`, `-delay`. 기본 동작이 달라집니다: macOS에서 마지막 창을 닫아도 앱이 남고(Ghostty 기본, 메뉴·btctl·전역 단축키로 새 창), 너무 빨리 끝난 칸은 닫히지 않고 안내가 남습니다. 실제 창에서는 아직 확인하지 않았고 순수 함수·PTY 테스트로만 확인했습니다. #178
 - 스크롤백·팔레트 키(Ghostty): `scrollback-limit-bytes`(기본 1000만, 스크롤백 기본은 전과 같은 1만 줄), `scrollback-limit-lines`(먼저 닿는 쪽), `palette-generate`·`palette-harmonious`(16~255번 색 만들기, 기본 끔), `palette = 100=#...`(16번 이후), `background-opacity-cells`(색 바탕 칸도 비침, 기본 끔). 옛 `scrollback-limit`·`scrollback-lines`는 그대로 받습니다. 실제 창에서는 아직 확인하지 않았습니다. #177
 - macOS 창 키 추가: `macos-non-native-fullscreen`(새 Space 없는 전체 화면), `window-step-resize`, `macos-window-buttons`, `macos-hidden`. `window-subtitle`·`window-titlebar-*`는 받기만 한다 #179
 - 마우스 키 `mouse-reporting`·`mouse-shift-capture`·`middle-click-action`·`click-repeat-interval`을 Ghostty와 같은 뜻으로 받습니다. 두 번 누르기 기본 간격이 400ms에서 OS 값(macOS)·500ms로 바뀝니다 #175
