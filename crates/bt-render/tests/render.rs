@@ -552,3 +552,46 @@ fn cursor_breaks_ligature() {
     let plain = render(&mut f, b"-", 6, 1, false);
     assert_eq!(cell_diff(&with_cursor, &plain, 0, 0), 0, "앞 칸은 합자가 아닌 '-'");
 }
+
+/// #112: 탭 막대·찾기 막대의 글(`draw_text`)에 색 이모지가 있으면 죽지 않고 색으로 그린다.
+/// 탭 제목은 프로그램이 OSC 2로 정하므로, 이것이 죽으면 출력 한 줄로 터미널이 꺼진다
+#[test]
+fn draw_text_paints_color_emoji_without_panicking() {
+    let Some(mut f) = fonts(1.0) else { return };
+    if !f.has_color_emoji() {
+        eprintln!("건너뜀: 색 이모지 글꼴 없음");
+        return;
+    }
+    let m = f.metrics();
+    let (w, h) = (m.width * 8, m.height);
+    let mut buf = vec![0u32; (w * h) as usize];
+    let mut c = Canvas::new(&mut buf, w, h);
+    c.clear(Rgb::new(0, 0, 0));
+    let drawn = bt_render::draw_text(&mut c, &mut f, 0, 0, "😀🔔 a", Rgb::new(255, 255, 255), false);
+    assert_eq!(drawn, (m.width * 6) as i32, "두 칸 이모지 둘과 공백·글자");
+    let colored = (0..h)
+        .flat_map(|y| (0..m.width * 4).map(move |x| (x, y)))
+        .filter(|&(x, y)| {
+            let p = c.pixel(x, y);
+            p.r.max(p.g).max(p.b) - p.r.min(p.g).min(p.b) > 60
+        })
+        .count();
+    assert!(colored > 20, "이모지 칸에 색 픽셀: {colored}");
+}
+
+/// #112: 흑백 그리기에 색 글리프(bitmap이 빔)가 잘못 들어와도 죽지 않는다
+#[test]
+fn draw_glyph_ignores_glyph_without_coverage_bitmap() {
+    let mut buf = vec![0u32; 16 * 16];
+    let mut c = Canvas::new(&mut buf, 16, 16);
+    let g = bt_render::font::Glyph {
+        width: 4,
+        height: 4,
+        left: 0,
+        top: 4,
+        bitmap: Vec::new(),
+        color: Some(vec![255; 4 * 4 * 4]),
+    };
+    c.draw_glyph(2, 8, &g, Rgb::new(255, 255, 255));
+    assert_eq!(c.pixel(3, 5), Rgb::new(0, 0, 0), "그리지 않는다");
+}
