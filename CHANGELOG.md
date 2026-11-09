@@ -4,6 +4,8 @@
 
 ## [아직 릴리스하지 않음]
 
+- CSI 질의를 Ghostty처럼 채웁니다: XTVERSION(`CSI > q`)에 `DCS > | b-terminal 버전 ST`, 크기 보고 `CSI 16 t`(칸 하나의 픽셀)·`CSI 19 t`(화면 크기, 글자 수), DEC 모드 2048(크기 알림: 켜면 바로 한 번, 그 뒤 크기가 바뀔 때마다 `CSI 48 ; 행 ; 열 ; 높이px ; 너비px t`)과 그 DECRQM(켜짐 1, 꺼짐 2). **기본 동작이 바뀝니다**: DA1(`CSI c`)은 `?6c`에서 `?62;22;52c`(`clipboard-write = deny`면 `?62;22c`)로, DA2(`CSI > c`)는 `>0;2600;1c`에서 `>1;10;0c`로 Ghostty와 같게 바꿉니다. DA2의 버전 숫자로 xterm 기능을 추측하는 프로그램(vim 등)이 있어 영향이 있을 수 있는데, vim 소스는 확인하지 못했고 Ghostty가 같은 값을 쓰고 있다는 점이 근거입니다. DA를 VT 엔진이 따로 답하지 않게 vendor를 조금 고쳤습니다(답이 하나만 나갑니다, 테스트로 확인). 답은 고정 바이트와 검사한 숫자뿐입니다. 14 t·18 t는 전에도 답했습니다. `/bin/sh`와 `printf`로 PTY를 띄우는 테스트로 확인했습니다. 격리한 실제 창에서는 XTVERSION·DA1·DA2(답이 한 번)·DA3 없음·16 t·19 t·2048을 켤 때의 보고와 DECRQM을 봤고, 창 크기를 바꿀 때의 2048 보고는 보지 않았습니다. #264
+
 ## [0.19.0] - 2026-11-10
 
 보안 입력과 체크섬 보고. 받기만 하던 Ghostty 키 가운데 macOS에서 뜻이 있는 둘을 채웠습니다: 보안 키보드 입력(`macos-auto-secure-input`·`macos-secure-input-indication`·`toggle_secure_input`), DECRQCRA 체크섬 보고(`vt-xt-checksum-report`·`vt-xt-checksum-extension`). 둘 다 보안 경계라 ADR과 커밋 보안 검토를 거쳤습니다. 하위 이슈마다 에이전트 하나가 구현하고, 주 세션이 Ghostty 원본과 대조·검토·실제 확인·병합했습니다. 추적 이슈 #257.

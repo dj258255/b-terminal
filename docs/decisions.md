@@ -24,6 +24,7 @@
 - [ADR-019 클립보드 ask는 창 안 막대로 묻고 Enter로는 허용하지 않으며 막대는 하나만 띄운다](#adr-019-클립보드-ask는-창-안-막대로-묻고-enter로는-허용하지-않으며-막대는-하나만-띄운다)
 - [ADR-020 보안 키보드 입력은 PTY의 termios로 암호 입력을 추측하고, 상태 한 곳이 켠 횟수와 끈 횟수를 맞춘다](#adr-020-보안-키보드-입력은-pty의-termios로-암호-입력을-추측하고-상태-한-곳이-켠-횟수와-끈-횟수를-맞춘다)
 - [ADR-021 DECRQCRA 체크섬 보고는 기본 꺼짐이고, 켜도 터미널이 가진 화면만 답하며 계산은 Ghostty와 같다](#adr-021-decrqcra-체크섬-보고는-기본-꺼짐이고-켜도-터미널이-가진-화면만-답하며-계산은-ghostty와-같다)
+- [ADR-022 CSI 질의는 고정 바이트와 검사한 숫자로만 늘 답하고, DA는 Ghostty 값으로 바꾸며 엔진의 옛 답은 끈다](#adr-022-csi-질의는-고정-바이트와-검사한-숫자로만-늘-답하고-da는-ghostty-값으로-바꾸며-엔진의-옛-답은-끈다)
 
 ## ADR-001 VT 엔진은 alacritty_terminal로 시작하고, bt-term 밖으로 엔진 타입을 내보내지 않는다
 
@@ -583,3 +584,34 @@ macOS의 Carbon `EnableSecureEventInput`은 켜 있는 동안 키 입력이 다�
 - 기본 동작은 바뀌지 않는다(꺼짐, 전에도 답하지 않았다).
 - 제어 문자·ESC가 섞인 답이 아니라 `DCS`로 감싼 숫자만 나가므로, 제목 보고(ADR-012)와 달리 셸이 명령으로 읽을 글이 만들어지지 않는다.
 - PTY 통합 테스트(`/bin/sh`와 `printf`)와 단위 테스트로 확인했다. 실제 창에서는 기본 계산의 답(`FEDA`)과 꺼진 설정에서 답이 없는 것만 봤다. esctest·vttest는 돌리지 않았다.
+
+## ADR-022 CSI 질의는 고정 바이트와 검사한 숫자로만 늘 답하고, DA는 Ghostty 값으로 바꾸며 엔진의 옛 답은 끈다
+
+상태: 채택
+관련: [#264](https://github.com/dj258255/b-terminal/issues/264), ADR-005, ADR-012, ADR-018, ADR-021
+
+### 맥락
+- 격리한 창에서 질의를 보내 본 결과(0.19.0): `CSI > q` 답 없음, `CSI c` → `ESC[?6c`, `CSI > c` → `ESC[>0;2600;1c`, `CSI 14 t` → 답함, `CSI 16 t`·`CSI 19 t` 답 없음, `CSI ? 2048 $ p` → `ESC[?2048;0$y`(모르는 모드). Ghostty는 모두 답한다.
+- Ghostty 원본: XTVERSION `stream_handler.zig` 980~995줄(`DCS > | ghostty 버전 ST`), DA `826~850`줄(DA1 `?62;22;52c`, `clipboard-write`가 deny면 `?62;22c`, DA2 `>1;10;0c`, DA3 답 없음), 크기 보고 `terminal/size_report.zig`와 `stream_handler.zig` 1852~1860줄, 모드 2048 `terminal_modes.zig` 416줄·`termio/Termio.zig` 550~595줄·`stream_handler.zig` 760줄. CSI 매개변수 규칙은 `stream.zig` 2170~2190·2680~2705줄.
+- DA1·DA2와 모르는 모드의 DECRQM(0)은 VT 엔진(alacritty_terminal)이 직접 답하고 있었다. 이 답들은 PTY로 돌아가 프로그램의 입력이 되므로 ENQ·제목 보고(ADR-012)와 같은 종류의 길이다.
+
+### 선택지
+| 선택지 | 얻는 것 | 잃는 것 |
+|---|---|---|
+| (가) vendor에서 엔진의 DA 값만 Ghostty 값으로 바꾼다 | 고친 줄이 적다 | `clipboard-write` 설정을 엔진이 모른다(DA1의 52를 가를 수 없다). 모드 2048은 엔진 밖이라 따로 해야 한다 |
+| (나) 스캐너가 질의를 읽어 bt-term이 답하고, 엔진의 답은 끈다 | 설정·크기·모드 상태가 bt-term에 있어 한 곳에서 답한다. ENQ·제목 보고·색 구성표와 같은 길 | 엔진의 답을 끄는 vendor 패치가 두 군데 필요하다 |
+
+### 결정
+1. (나). 스캐너(`notify.rs`)가 `CSI c`·`CSI > c`·`CSI > q`·`CSI 16 t`·`CSI 19 t`·`CSI ? 2048 h|l`·`CSI ? 2048 $ p`를 신호로 뽑고(`csi_query.rs`), 읽기 스레드가 답을 PTY에 쓴다. 매개변수 규칙은 Ghostty와 같다: DA1·DA2·XTVERSION은 매개변수를 보지 않고, `16 t`·`19 t`는 매개변수가 정확히 하나일 때만이다. DA3(`CSI = c`)·`?` 표시·둘 이상의 표시는 답하지 않는다.
+2. vendor 패치(vendor/README.md): 엔진의 `identify_terminal`은 답하지 않고, `report_private_mode`는 모드 2048에 답하지 않는다. 답이 하나인 것은 PTY 통합 테스트가 단언한다(패치를 되돌리면 `?6c?62;22c`처럼 둘이 이어 붙어 나온다).
+3. 답은 고정 바이트와 검사한 숫자(칸 수·픽셀, 64비트로 곱해 넘치지 않음)뿐이다. 요청에서 온 바이트는 되돌려 넣지 않는다. XTVERSION의 버전은 빌드 때의 `CARGO_PKG_VERSION`이다.
+4. 읽기 전용 칸에서도 답한다(ADR-018 결정 4). `clipboard-write`는 `SpawnOptions`로 넘어오고, deny가 아니면 DA1에 52를 넣는다(ask도 넣는다: Ghostty의 `!= .deny`와 같다).
+5. 모드 2048: 켜면 바로 한 번 보고하고(`Session` 안의 표시), 크기가 바뀔 때마다 `Session::resize`가 `CSI 48 ; 행 ; 열 ; 높이px ; 너비px t`를 보낸다. 같은 크기로 다시 줄이면 보내지 않는다. DECRQM은 켜짐 1, 꺼짐 2. 초기화(RIS)와 `Session::reset`이 끈다(DECSTR은 끄지 않는다: Ghostty `softReset`의 모드 목록에 없다).
+6. 14 t·18 t는 전에도 엔진이 답했고(`TextAreaSizeRequest`·`PtyWrite`) 같은 모양이라 그대로 둔다.
+
+### 기본 동작이 바뀌는 것
+- DA1은 `?6c`에서 `?62;22;52c`로, DA2는 `>0;2600;1c`에서 `>1;10;0c`로 바뀐다. DA2의 둘째 값(버전)으로 xterm 기능을 추측하는 프로그램이 있다(이슈 #264는 vim을 예로 들었다). vim 소스는 받지 못해 DA2를 실제로 어떻게 쓰는지 확인하지 못했다. 근거는 Ghostty가 같은 값을 쓰고, 그 위에서 vim이 쓰이고 있다는 점이다. 이상이 보이면 이 ADR로 돌아온다.
+
+### 결과
+- 단위 테스트(스캐너 모양, Ghostty 테스트 값)와 `/bin/sh`·`printf` PTY 통합 테스트(답이 하나인지, 설정에 따른 DA1, 크기 바뀜마다 2048 보고, RIS)로 확인했다. 실제 창에서는 질의마다 답이 한 번 오는 것과 2048을 켤 때의 보고를 봤다. 창 크기를 바꿀 때의 보고와 vim이 DA2로 무엇을 판단하는지는 보지 않았다.
+- 모드 2048은 사용자가 창 크기를 바꿀 때만 입력을 만든다. 비용(창 크기를 끌 때 쓰는 바이트 수)은 재지 않았다.

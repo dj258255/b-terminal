@@ -48,6 +48,8 @@ softbuffer가 색 공간을 고를 수 있게 되거나, GPU 렌더러로 바꿔
 
 - 더한 곳(#259, ADR-021): 같은 파일에 `Term::scroll_region()`(스크롤 영역 줄 범위를 읽는 getter) 여섯 줄. `b-terminal 패치(#259)`로 찾을 수 있습니다. DECRQCRA(체크섬 보고)가 원점 모드의 위 여백을 읽으려고 더했고, 필드는 그대로 비공개입니다. 되돌릴 조건: alacritty_terminal이 같은 getter를 내놓으면 지웁니다.
 
+- 고친 곳(#264, ADR-022): 같은 파일의 `identify_terminal`(DA1·DA2에 답하던 것)을 답하지 않게 했고, `report_private_mode`가 모드 2048에는 답하지 않게 한 줄을 더했습니다. `b-terminal(#264)`로 찾을 수 있습니다. 이유: DA1·DA2는 Ghostty 값(`?62;22;52c`·`>1;10;0c`)으로, 모드 2048은 켜짐·꺼짐(1·2)으로 bt-term 스캐너가 답합니다. 엔진이 옛 값(`?6c`, `>0;버전;1c`, 모르는 모드 0)으로 또 답하면 PTY에 답이 둘 나갑니다. 되돌릴 조건: alacritty_terminal이 장치 속성 답과 모르는 모드 보고를 이벤트로 바꿔 밖에서 정할 수 있게 하면 지웁니다.
+
 ### 왜
 
 alacritty_terminal은 글자마다 `unicode-width`로 폭을 세고, 폭 0인 글자만 앞 칸에 붙입니다. 그래서 ZWJ 가족은 6칸, 피부색은 4칸을 차지해 Ghostty(`grapheme-width-method = unicode`)와 어긋나고 프로그램이 mode 2027로 묶음 폭을 요청해도 받지 못합니다. 엔진 바깥(바이트를 바꾸는 방식)에서는 줄바꿈·커서·지우기와 섞여 안전하게 할 수 없었습니다.
