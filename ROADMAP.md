@@ -283,6 +283,22 @@ Ghostty 동작 맞추기. 추적 이슈 [#219](https://github.com/dj258255/b-ter
 - 앞서 병합한 PR이 열거형에 쓰는 함수(`Pending::binds_to`)를 더하면, 뒤에 병합하는 PR의 새 갈래가 컴파일을 깨뜨립니다(#220). 0.14(#206)와 같은 꼴이었습니다. 옮긴 뒤 빌드를 먼저 확인하는 순서를 지켜 바로 잡았습니다.
 - 에이전트가 이슈 지시와 다르게 한 것(#223 초점 보고: "I와 O 한 번씩" 대신 상태가 바뀔 때만)은 근거가 맞으면 받아들이고 PR에 적었습니다.
 
+## 0.16.0 (2026-11-10)
+
+Ghostty 명령줄 동작과 색 구성표 보고. 추적 이슈 [#229](https://github.com/dj258255/b-terminal/issues/229). 0.15와 같은 방식으로 진행했습니다. 에이전트 셋이 각자 worktree에서 구현·커밋하고, 주 세션이 옮기고 검토·병합했습니다. 병합 시각(KST)은 추적 이슈를 연 02:18부터 마지막 병합 02:44까지입니다.
+
+| 이슈 | 내용 | 예상 | 실제 | PR | 주 세션이 한 것 |
+|---|---|---|---|---|---|
+| [#230](https://github.com/dj258255/b-terminal/issues/230) | 명령줄 동작 1: `+version`·`+help`·`+show-config`·`+list-themes`·`+validate-config`·`+edit-config` | 2~4시간 | 에이전트 약 7분(병합 02:31) | [#233](https://github.com/dj258255/b-terminal/pull/233) | 격리 HOME에서 여덟 명령의 출력·종료 코드, 가짜 편집기로 `+edit-config`의 인자 나누기 |
+| [#231](https://github.com/dj258255/b-terminal/issues/231) | 명령줄 동작 2: `+list-keybinds`·`+list-actions`·`+list-fonts`·`+show-face`·`+list-colors`·`+explain-config` | 2~4시간 | 에이전트 약 12분(병합 02:44) | [#235](https://github.com/dj258255/b-terminal/pull/235) | #230과 따로 만든 `+동작` 길을 하나로 모음(테스트 먼저), 로그가 출력에 섞이던 것 고침, X11 색 표를 Ghostty 원본과 대조, 격리 설정으로 실제 실행 |
+| [#232](https://github.com/dj258255/b-terminal/issues/232) | 색 구성표 보고(`CSI ? 996 n`, 모드 2031) | 2~4시간 | 에이전트 약 7.5분(병합 02:35) | [#234](https://github.com/dj258255/b-terminal/pull/234) | 보안 관점 diff 읽기(읽기 전용 칸의 답), 실제 창(밝은 시스템에서 `ESC[?997;2n`) |
+
+이번에 배운 것:
+
+- 두 에이전트에게 같은 틀(`+동작`)의 다른 부분을 맡기자, 둘 다 `main()`에 자기 길을 만들었습니다. 잇는 자리(`run_unknown`)를 #230 쪽에만 알렸기 때문입니다. #231은 첫 인자만 봤고 #230은 자리를 가리지 않아, 그대로 두면 같은 명령이 길에 따라 다르게 읽혔습니다. 다음부터는 잇는 자리를 양쪽 프롬프트에 함께 적습니다.
+- 에이전트가 WebFetch 요약을 거쳐 옮긴 데이터(X11 색 676개)는 원본을 직접 받아 대조했습니다. 이번에는 다른 값이 없었지만, 요약기를 거친 값은 대조하기 전에는 믿지 않습니다.
+- 합치면서 실행 순서가 바뀌는 것(로거 초기화 앞뒤)은 테스트로는 잡히지 않았고, 실제로 명령을 돌려 출력에 로그 줄이 섞인 것을 보고 찾았습니다.
+
 ## 다음
 
 - 범수 님이 직접 해야 할 것: 키보드·마우스 확인(한글 2벌식 "안녕 하세요⏎", Claude Code의 Shift+Enter, Cmd-D·Cmd-F·Cmd-클릭·Cmd-N·Cmd-Shift-P, 메뉴, 창 닫기 단추, vim·htop, kitty icat·yazi, 투명 창), Developer ID 계정으로 `scripts/bundle-macos.sh --sign … --notarize … --dmg`
@@ -298,4 +314,5 @@ Ghostty 동작 맞추기. 추적 이슈 [#219](https://github.com/dj258255/b-ter
 - 범수 님이 확인할 것(0.14): `keybind = ctrl+alt+r=toggle_readonly`로 칸을 읽기 전용으로 한 뒤 타자·⌘V·`btctl send`가 막히고 제목에 🔒가 붙는지, `prompt_tab_title`의 입력 막대, `move_tab_to_new_window`, `toggle_visibility`, `toggle_background_opacity`(`background-opacity = 0.8`과 함께), `set_window_theme:light`, `keybind = ctrl+a>activate_key_table:nav`와 `nav/h=goto_split:left` 같은 키 테이블
 - 범수 님이 확인할 것(0.15): `seq 1 500` 뒤 오른쪽 끝 막대를 끌고 빈 곳 누르기, `theme = light:GitHub Light Default,dark:GitHub Dark`로 시스템 설정의 모양을 바꿔 색이 바로 바뀌는지, `clipboard-write = ask`·`clipboard-read = ask`에서 막대가 뜰 때 Enter가 허용이 아닌지·`y`는 되는지, 탭 제목을 붙이고 ⌘Q 뒤 다시 켜서 되살아나는지
 - 범수 님이 정할 것(0.15): `clipboard-read` 기본을 Ghostty처럼 `ask`로 바꿀지(지금 `deny`)
+- 범수 님이 확인할 것(0.16): `theme = light:…,dark:…`에서 nvim을 켜고 시스템 모양을 바꿔 nvim 색이 따라오는지(모드 2031), `EDITOR="code -w" b-terminal +edit-config`, `b-terminal +list-keybinds`가 실제 설정의 키 묶음과 맞는지, `b-terminal +show-face --string="가😀"`가 창에 그려지는 글꼴과 같은지
 - 큰 일로 남긴 것: GPU(또는 IOSurface) 렌더러

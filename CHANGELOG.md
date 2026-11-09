@@ -4,9 +4,25 @@
 
 ## [아직 릴리스하지 않음]
 
-- 명령줄 동작 `b-terminal +동작`을 받습니다(Ghostty의 `ghostty +동작`): `+version`, `+help`, `+show-config`, `+list-themes`, `+validate-config`(경고가 있으면 종료 코드 1), `+edit-config`(`$VISUAL`/`$EDITOR`를 셸 없이 인자 배열로 열고, 설정 파일이 없으면 만듭니다). 모르는 `+동작`은 오류(1)입니다. 기존 `--` 인자는 그대로입니다. Ghostty와 다른 점: 편집기 값을 셸이 아니라 빈칸·따옴표로 갈라 실행하고, `+show-config --changes-only/--docs`·`+list-themes --path/--color`는 아직 없습니다. 판단은 테스트로 확인했고, 실제 명령은 `+edit-config`를 가짜 편집기(`true`)로, 나머지는 직접 돌려 봤습니다(실제 편집기는 띄우지 않음). #230
+## [0.16.0] - 2026-11-10
+
+Ghostty 명령줄 동작과 색 구성표 보고. Ghostty의 `ghostty +동작` 열두 개와 색 구성표 보고(`CSI ? 996 n`, 모드 2031)를 더했습니다. 하위 이슈마다 에이전트 하나가 구현하고, 주 세션이 Ghostty 소스와 대조·검토·병합했습니다. 두 에이전트가 따로 만든 `+동작` 길은 주 세션이 하나로 모았습니다. 추적 이슈 #229.
+
+- 명령줄 동작 `b-terminal +동작`을 받습니다(Ghostty의 `ghostty +동작`): `+version`, `+help`, `+show-config`, `+list-themes`, `+validate-config`(경고가 있으면 종료 코드 1), `+edit-config`(`$VISUAL`/`$EDITOR`를 셸 없이 인자 배열로 열고, 설정 파일이 없으면 만듭니다). 모르는 `+동작`은 오류(1)입니다. 기존 `--` 인자는 그대로입니다. Ghostty와 다른 점: 편집기 값을 셸이 아니라 빈칸·따옴표로 갈라 실행하고, `+show-config --changes-only/--docs`·`+list-themes --path/--color`는 아직 없습니다. 판단은 테스트로 확인했고, 실제 명령은 `+edit-config`를 `cat`을 편집기로 삼아, 나머지는 직접 돌려 봤습니다(실제 편집기는 띄우지 않음). #230
+- 명령줄 `+list-fonts`·`+list-keybinds`·`+list-actions`·`+list-colors`·`+show-face`·`+explain-config`를 더했습니다(Ghostty와 같은 이름·인자). 창을 띄우지 않고 글만 찍고 끝납니다. 판단은 테스트로, 동작은 임시 HOME에서 직접 돌려 확인했습니다. `+list-keybinds`는 설정을 반영한 표, `+explain-config`는 설정 문서 표에서 설명을 뽑습니다. `+list-colors`의 X11 색 676개는 Ghostty 원본 `rgb.txt`와 한 줄씩 대조했습니다. #231
 - 색 구성표 보고를 받습니다(Ghostty와 같음): 프로그램이 `CSI ? 996 n`으로 물으면 `CSI ? 997 ; 1 n`(어두움)·`; 2 n`(밝음)으로 답하고, DEC 모드 2031을 켜 두면 시스템 밝음·어두움이 바뀔 때 같은 보고를 보냅니다. 기준은 테마 바탕색이 아니라 시스템 모양이고(`window-theme = light|dark`로 고정한 창은 그 값), 테마가 하나뿐이어도 알리며, 켠 직후에는 보내지 않고 같은 값은 다시 보내지 않으며 초기화(RIS)는 모드를 끕니다. 읽기 전용 칸에서도 답합니다. 판단과 PTY 답은 테스트로 확인했고 실제 창에서 시스템 모양을 바꿔 보지는 않았습니다. #232
-- 명령줄 `+list-fonts`·`+list-keybinds`·`+list-actions`·`+list-colors`·`+show-face`·`+explain-config`를 더했습니다(Ghostty와 같은 이름·인자). 창을 띄우지 않고 글만 찍고 끝납니다. 판단은 테스트로, 동작은 임시 HOME에서 직접 돌려 확인했습니다. `+list-keybinds`는 설정을 반영한 표, `+explain-config`는 설정 문서 표에서 설명을 뽑습니다. #231
+
+### 알려진 한계
+
+- 기본 동작이 바뀐 것:
+  - `+`로 시작하는 인자는 이제 동작으로 읽힙니다(전에는 "모르는 인자" 오류). `-e` 뒤는 그대로입니다.
+  - 프로그램이 `CSI ? 996 n`으로 물으면 이제 답합니다.
+- `+edit-config`는 편집기 값을 셸로 풀지 않습니다(`;`, `$(…)`, `~`, 환경 변수가 풀리지 않음). Ghostty는 `/bin/sh -c`로 엽니다.
+- 받기만 하는 인자: `+list-keybinds`·`+list-actions`의 `--docs`, `+list-themes`의 `--plain`. 아직 없는 인자: `+show-config --changes-only/--docs`, `+list-themes --path/--color`.
+- `+list-keybinds`·`+list-fonts`·`+show-face`·`+explain-config`는 `--config-file`을 받지 않고 기본 설정 파일만 읽습니다.
+- `+동작`은 로그를 남기지 않습니다(출력에 섞이지 않게 로거보다 먼저 돎).
+- `set_window_theme`으로 창 테마를 실행 중에 바꾸면 열린 칸에 모드 2031 알림을 보내지 않습니다.
+- 실제로 보지 않은 것: 시스템 모양을 바꿔 모드 2031 알림을 받는 것, nvim 같은 실제 프로그램의 색 구성표 질문, 실제 편집기(`code -w` 등)로 `+edit-config`, `+show-face`가 고른 글꼴과 창에 그려지는 글꼴의 비교, Linux.
 
 ## [0.15.0] - 2026-11-10
 
