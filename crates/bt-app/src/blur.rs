@@ -3,6 +3,7 @@
 /// 창에 줄 흐림 반지름. `None`이면 비공개 API를 부르지 않는다.
 /// Ghostty `ghostty_set_window_background_blur`처럼 `background-opacity`가 1 이상이면 부르지 않는다
 /// (불투명하면 흐림이 보이지 않는다). 그 밖에는 세기(0이면 끔)를 그대로 반지름으로 쓴다
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub fn radius_to_apply(blur: u8, opacity: f32) -> Option<i64> {
     (opacity < 1.0).then_some(i64::from(blur))
 }
