@@ -4226,6 +4226,8 @@ impl App {
         let toast = self.w.toast.clone().filter(|(_, at)| at.elapsed() < TOAST_FOR);
         // 보안 입력이 켜져 있는 동안 창 오른쪽 위의 자물쇠 표시(`macos-secure-input-indication`, #258)
         let secure_badge = self.secure.enabled() && self.config.macos_secure_input_indication;
+        // 배지는 탭 줄 아래(탭 줄과 겹치지 않게)
+        let badge_top = top_inset + self.tabbar_height();
         let confirm = self
             .w
             .confirm
@@ -4719,7 +4721,7 @@ impl App {
                     crate::tabbar::draw_toast(&mut canvas, fonts, &theme, text);
                 }
                 if secure_badge {
-                    crate::tabbar::draw_secure_badge(&mut canvas, fonts, &theme, top_inset);
+                    crate::tabbar::draw_secure_badge(&mut canvas, fonts, &theme, badge_top);
                 }
                 if let Some((label, text)) = &title_prompt {
                     tabbar::draw_prompt(

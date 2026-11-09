@@ -167,12 +167,12 @@ pub fn draw_toast(canvas: &mut Canvas, fonts: &mut Fonts, theme: &Theme, text: &
 }
 
 /// 보안 키보드 입력이 켜져 있는 동안 창 오른쪽 위에 자물쇠를 띄운다(Ghostty `macos-secure-input-indication`, #258)
-pub fn draw_secure_badge(canvas: &mut Canvas, fonts: &mut Fonts, theme: &Theme, top_inset: u32) {
+pub fn draw_secure_badge(canvas: &mut Canvas, fonts: &mut Fonts, theme: &Theme, top: u32) {
     let m = fonts.metrics();
     let side = m.height + m.height / 2;
     let margin = (m.height / 2).max(4);
     let x = canvas.width as i32 - side as i32 - margin as i32;
-    let y = top_inset as i32 + margin as i32;
+    let y = top as i32 + margin as i32;
     let edge = theme.background.mix(theme.foreground, 0.5);
     canvas.fill_rect(x, y, side, side, edge);
     canvas.fill_rect(x + 1, y + 1, side - 2, side - 2, theme.background);
