@@ -760,6 +760,8 @@ fn color_scheme_query_is_answered_each_time() {
 }
 
 /// 셸이 `setup`을 찍고 READY를 보인 뒤 읽은 바이트를 16진수로 돌려준다. `act`는 READY 뒤에 칸에 대고 한다
+/// 답이 여러 번 따로 쓰일 수 있어(모드 2031 알림 둘) 한 번만 읽지 않고, 한 바이트씩 읽다가
+/// 1.5초(`time 15`) 동안 오는 것이 없으면 끝낸다. 한 번만 읽으면 둘째 답을 놓쳐 병렬 실행에서 흔들렸다
 fn notified_after(setup: &str, act: impl FnOnce(&Session)) -> String {
     let (tx, rx) = channel();
     let tx = std::sync::Mutex::new(tx);
@@ -768,7 +770,7 @@ fn notified_after(setup: &str, act: impl FnOnce(&Session)) -> String {
     });
     let script = format!(
         "stty raw -echo min 0 time 15; printf '{setup}'; printf READY; \
-         r=$(dd bs=256 count=1 2>/dev/null | od -An -v -tx1 | tr -d ' \\n'); printf 'R[%s]\\n' \"$r\""
+         r=$(dd bs=1 count=256 2>/dev/null | od -An -v -tx1 | tr -d ' \\n'); printf 'R[%s]\\n' \"$r\""
     );
     let o = SpawnOptions {
         program: Some("/bin/sh".into()),
