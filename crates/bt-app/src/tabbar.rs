@@ -328,6 +328,50 @@ pub fn draw_confirm(canvas: &mut Canvas, fonts: &mut Fonts, theme: &Theme, messa
     draw_text(canvas, fonts, x + cw * 2, y + pad + line_h as i32, hint, dim, false);
 }
 
+/// 글 입력 막대(#124, 칸 제목 바꾸기)를 창 위쪽 가운데에: 앞말과 친 글·커서 한 줄, 그 아래 키 안내
+pub fn draw_prompt(canvas: &mut Canvas, fonts: &mut Fonts, theme: &Theme, label: &str, text: &str, hint: &str) {
+    let m = fonts.metrics();
+    let cw = m.width as i32;
+    let line_h = m.height + m.height / 3;
+    let width_cells = ((canvas.width / m.width.max(1)) as usize)
+        .saturating_sub(4)
+        .clamp(20, 60);
+    let w = width_cells as u32 * m.width;
+    let h = line_h * 2 + m.height / 2;
+    let x = (canvas.width as i32 - w as i32) / 2;
+    let y = m.height as i32;
+    canvas.fill_rect(x, y, w, h, theme.background.mix(theme.foreground, 0.08));
+    canvas.stroke_rect(x, y, w, h, 1, theme.background.mix(theme.foreground, 0.35));
+    let pad = (line_h as i32 - m.height as i32) / 2 + m.height as i32 / 4;
+    let dim = theme.foreground.mix(theme.background, 0.45);
+    draw_text(canvas, fonts, x + cw, y + pad, label, dim, false);
+    let tx = x + cw * (1 + text_cells(label) as i32);
+    let room = width_cells.saturating_sub(text_cells(label) + 3);
+    // 긴 글은 끝(친 자리)이 보이게 앞을 자른다
+    let shown: String = {
+        let mut cells = 0;
+        let mut out: Vec<char> = Vec::new();
+        for c in text.chars().rev() {
+            cells += bt_render::char_cells(c);
+            if cells > room {
+                break;
+            }
+            out.push(c);
+        }
+        out.into_iter().rev().collect()
+    };
+    draw_text(canvas, fonts, tx, y + pad, &shown, theme.foreground, false);
+    canvas.fill_rect(
+        tx + cw * text_cells(&shown) as i32,
+        y + pad,
+        (m.stroke * 2).max(2),
+        m.height,
+        theme.cursor,
+    );
+    let hint = truncate(hint, width_cells.saturating_sub(2));
+    draw_text(canvas, fonts, x + cw, y + pad + line_h as i32, &hint, dim, false);
+}
+
 /// 크기 표시 띠(`w`×`h`)를 칸 안 어디에 둘지(#122). 가장자리에서 `margin`만큼 띄운다
 pub fn overlay_origin(
     pos: bt_core::config::OverlayPosition,
@@ -382,6 +426,26 @@ pub fn draw_resize_overlay(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn prompt_bar_keeps_the_end_of_long_text_visible() {
+        let Ok(mut fonts) = Fonts::new(&bt_render::FontConfig::default()) else {
+            return;
+        };
+        let theme = Theme::ghostty_default();
+        let (w, h) = (600u32, 200u32);
+        let mut buf = vec![0u32; (w * h) as usize];
+        let mut c = Canvas::new(&mut buf, w, h);
+        c.clear(theme.background);
+        let long = "가".repeat(200) + "끝";
+        draw_prompt(&mut c, &mut fonts, &theme, "제목 › ", &long, "↩ 정하기");
+        // 커서(theme.cursor 색 막대)가 상자 안에 있다
+        let m = fonts.metrics();
+        let row = m.height + m.height / 2;
+        let cursor: Vec<u32> = (0..w).filter(|&x| c.pixel(x, row) == theme.cursor).collect();
+        assert!(!cursor.is_empty(), "커서가 보인다");
+        assert!(*cursor.last().unwrap() < w - m.width, "커서가 상자 안");
+    }
 
     #[test]
     fn resize_overlay_sits_at_the_chosen_spot_inside_the_pane() {

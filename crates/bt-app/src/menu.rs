@@ -20,6 +20,7 @@ pub fn action_for(id: &str) -> Option<MenuCommand> {
         "split_zoom" => MenuCommand::Action(Action::ToggleSplitZoom),
         "split_equalize" => MenuCommand::Action(Action::EqualizeSplits),
         "quick_terminal" => MenuCommand::Action(Action::ToggleQuickTerminal),
+        "surface_title" => MenuCommand::Action(Action::PromptSurfaceTitle),
         "copy" => MenuCommand::Action(Action::Copy),
         "paste" => MenuCommand::Action(Action::Paste),
         "select_all" => MenuCommand::Action(Action::SelectAll),
@@ -83,6 +84,8 @@ pub fn build() -> muda::Menu {
             &PredefinedMenuItem::separator(),
             &item("close_surface", "닫기"),
             &item("close_tab", "탭 닫기"),
+            &PredefinedMenuItem::separator(),
+            &item("surface_title", "제목 바꾸기…"),
         ],
     );
     let edit = Submenu::with_items(

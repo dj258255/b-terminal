@@ -4,6 +4,8 @@
 
 ## [아직 릴리스하지 않음]
 
+- 칸 제목 바꾸기(`prompt_surface_title`·`set_surface_title`, Ghostty 동작): 메뉴 "셸 › 제목 바꾸기…"나 팔레트로 입력 막대를 열어 탭 제목을 붙입니다. 붙인 제목은 프로그램이 정한 제목보다 먼저 보이고, 비우면 원래대로 돌아갑니다.
+
 - 크기 표시(`resize-overlay`·`-position`·`-duration`, Ghostty 키, 기본 `after-first`·`center`·`750ms`): 창이나 분할 칸의 크기가 바뀌면 칸 안에 `80 × 24`를 잠깐 보입니다.
 
 - 최소 명암비(`minimum-contrast`, Ghostty 키, 기본 `1`=끔): 바탕과 너무 비슷한 글자색을 흰색이나 검은색으로 그립니다. 켜면 화면 전체 다시 그리기가 약 0.6ms 늘었습니다(200×60 레티나, 한 번 잰 값).

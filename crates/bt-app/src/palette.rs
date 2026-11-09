@@ -49,6 +49,7 @@ const ENTRIES: &[(&str, &str)] = &[
     ("설정 다시 읽기", "reload_config"),
     ("퀵 터미널", "toggle_quick_terminal"),
     ("전체 화면", "toggle_fullscreen"),
+    ("제목 바꾸기", "prompt_surface_title"),
     ("b-terminal 종료", "quit"),
 ];
 

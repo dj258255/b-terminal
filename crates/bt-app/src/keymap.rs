@@ -68,6 +68,10 @@ pub enum Action {
     SelectAll,
     /// 앞(-1)·뒤(+1) 프롬프트로(셸 통합)
     JumpToPrompt(i32),
+    /// 입력 막대로 지금 칸의 제목을 묻는다(Ghostty `prompt_surface_title`, #124)
+    PromptSurfaceTitle,
+    /// 지금 칸의 제목을 정한다. 빈 글이면 사람이 붙인 제목을 지운다(Ghostty `set_surface_title`)
+    SetSurfaceTitle(String),
     /// 전체 화면 켜고 끄기(Ghostty `toggle_fullscreen`, #126)
     ToggleFullscreen,
     /// 줄 단위 스크롤: 양수면 아래로(Ghostty `scroll_page_lines`)
@@ -249,6 +253,8 @@ pub fn parse_action(s: &str) -> Result<Option<Action>, String> {
         "reload_config" => Action::ReloadConfig,
         "quit" => Action::Quit,
         "toggle_fullscreen" => Action::ToggleFullscreen,
+        "prompt_surface_title" => Action::PromptSurfaceTitle,
+        "set_surface_title" => Action::SetSurfaceTitle(arg.unwrap_or("").to_string()),
         "scroll_page_lines" => Action::ScrollLines(
             arg.and_then(|a| a.trim().parse().ok())
                 .ok_or("scroll_page_lines:줄 수(양수면 아래로)")?,
@@ -626,6 +632,19 @@ mod tests {
         assert_eq!(
             parse_action("toggle_fullscreen").unwrap(),
             Some(Action::ToggleFullscreen)
+        );
+        assert_eq!(
+            parse_action("prompt_surface_title").unwrap(),
+            Some(Action::PromptSurfaceTitle)
+        );
+        assert_eq!(
+            parse_action("set_surface_title:빌드 서버").unwrap(),
+            Some(Action::SetSurfaceTitle("빌드 서버".into()))
+        );
+        assert_eq!(
+            parse_action("set_surface_title").unwrap(),
+            Some(Action::SetSurfaceTitle(String::new())),
+            "글이 없으면 지우기"
         );
         assert_eq!(
             parse_action("scroll_page_lines:-3").unwrap(),

@@ -94,6 +94,8 @@ pub struct Pane {
     pub unread: bool,
     /// 보지 않은 벨이 있다(`bell-features = title`, #107): 제목 앞에 🔔
     pub bell: bool,
+    /// 사람이 붙인 제목(`prompt_surface_title`·`set_surface_title`, #124). 프로그램이 정한 제목보다 먼저
+    pub user_title: Option<String>,
     /// 칸을 만든 때와 크기 표시를 지울 때(#122)
     created: Instant,
     overlay_until: Option<Instant>,
@@ -116,15 +118,34 @@ impl Pane {
             .map(|(s, p, _)| (s, p))
     }
 
-    /// 탭 줄·창 제목에 쓸 이름: 셸이 보낸 제목 → 전경 프로세스 이름. 보지 않은 벨이 있으면 앞에 🔔
+    /// 탭 줄·창 제목에 쓸 이름: 사람이 붙인 제목 → 셸이 보낸 제목 → 전경 프로세스 이름. 보지 않은 벨이 있으면 앞에 🔔
     fn display_title(&self) -> String {
-        let name = if !self.title.is_empty() {
-            self.title.clone()
-        } else {
-            self.fg_name.clone().unwrap_or_else(|| "셸".into())
-        };
-        if self.bell { format!("🔔 {name}") } else { name }
+        title_of(
+            self.user_title.as_deref(),
+            &self.title,
+            self.fg_name.as_deref(),
+            self.bell,
+        )
     }
+}
+
+/// 칸 제목(#124): 사람이 붙인 것 → 프로그램이 정한 것 → 전경 프로세스 이름 → "셸". 벨이 있으면 앞에 🔔
+fn title_of(user: Option<&str>, program: &str, fg: Option<&str>, bell: bool) -> String {
+    let name = if let Some(u) = user.filter(|u| !u.is_empty()) {
+        u.to_string()
+    } else if !program.is_empty() {
+        program.to_string()
+    } else {
+        fg.unwrap_or("셸").to_string()
+    };
+    if bell { format!("🔔 {name}") } else { name }
+}
+
+/// 사람이 친 제목을 다듬는다: 제어 문자를 지우고 앞뒤 공백을 떼고 200자까지. 비면 없다
+fn clean_user_title(text: &str) -> Option<String> {
+    let t: String = bt_core::proto::printable(text).trim().chars().take(200).collect();
+    let t = t.trim_end().to_string();
+    (!t.is_empty()).then_some(t)
 }
 
 /// 칸을 만든 직후 이만큼은 크기 맞추기로 보고 크기 표시를 하지 않는다(`resize-overlay = after-first`, #122)
@@ -343,6 +364,8 @@ struct Win {
     keyseq: crate::keymap::Sequencer,
     /// 닫기·끝내기 확인 막대(#108)
     confirm: Option<Confirm>,
+    /// 칸 제목 입력 막대(#124): 그 칸과 친 글
+    title_prompt: Option<(u64, String)>,
     /// 바뀐 것이 없어도 다음 그리기에서 창에 한 번 올린다(창이 다른 화면으로 옮겨 가면 그 화면의 색 공간으로, #97)
     force_present: bool,
     /// 들고 있는 프레임과 그 내용(바뀐 줄만 다시 그리려고, #40)
@@ -379,6 +402,7 @@ impl Win {
             quick_anim: None,
             keyseq: Default::default(),
             confirm: None,
+            title_prompt: None,
             force_present: false,
             frame: Vec::new(),
             last_frame: None,
@@ -815,6 +839,7 @@ impl App {
                 fg_pid: None,
                 unread: false,
                 bell: false,
+                user_title: None,
                 created: Instant::now(),
                 overlay_until: None,
                 cwd: None,
@@ -1240,6 +1265,44 @@ impl App {
         }
     }
 
+    /// 칸 제목 입력 막대가 떠 있으면 키를 가로챈다: Enter는 정하고, Esc는 그만두고, 글자는 붙인다(#124)
+    fn title_key(&mut self, event: &winit::event::KeyEvent) -> bool {
+        use winit::keyboard::{Key, NamedKey};
+        if self.w.title_prompt.is_none() || self.mods.super_key() || self.mods.control_key() {
+            return false;
+        }
+        match &event.logical_key {
+            Key::Named(NamedKey::Escape) => self.w.title_prompt = None,
+            Key::Named(NamedKey::Enter) => {
+                if let Some((pane, text)) = self.w.title_prompt.take() {
+                    self.set_user_title(pane, &text);
+                }
+            }
+            Key::Named(NamedKey::Backspace) => {
+                if let Some((_, t)) = self.w.title_prompt.as_mut() {
+                    t.pop();
+                }
+            }
+            _ => {
+                if let (Some(text), Some((_, t))) = (event.text.as_ref(), self.w.title_prompt.as_mut()) {
+                    if !text.chars().any(char::is_control) {
+                        t.push_str(text);
+                    }
+                }
+            }
+        }
+        self.request_redraw();
+        true
+    }
+
+    /// 칸에 사람이 붙인 제목을 정한다. 빈 글이면 지운다(프로그램이 정한 제목으로 돌아감)
+    fn set_user_title(&mut self, pane: u64, text: &str) {
+        if let Some(i) = self.pane_index(pane) {
+            self.panes[i].user_title = clean_user_title(text);
+            self.request_redraw_all();
+        }
+    }
+
     /// 확인 막대가 떠 있으면 키를 모두 가로챈다: Enter·y는 하고, Esc·n은 그만둔다
     fn confirm_key(&mut self, event: &winit::event::KeyEvent, event_loop: &ActiveEventLoop) -> bool {
         use winit::keyboard::{Key, NamedKey};
@@ -1662,6 +1725,18 @@ impl App {
                 }
             }
             Action::Quit => self.request(Pending::Quit, event_loop),
+            Action::PromptSurfaceTitle => {
+                if let Some(p) = self.active_pane() {
+                    let (id, now) = (p.id, p.user_title.clone().unwrap_or_default());
+                    self.w.palette = None;
+                    self.w.title_prompt = Some((id, now));
+                }
+            }
+            Action::SetSurfaceTitle(text) => {
+                if let Some(id) = self.focused_id() {
+                    self.set_user_title(id, &text);
+                }
+            }
             Action::GotoSplit(target) => {
                 let area = self.content_rect();
                 let divider = self.divider_px();
@@ -2320,6 +2395,7 @@ impl App {
         let theme = self.config.theme.clone();
         let toast = self.w.toast.clone().filter(|(_, at)| at.elapsed() < TOAST_FOR);
         let confirm = self.w.confirm.as_ref().map(|c| (c.message.clone(), c.yes));
+        let title_prompt = self.w.title_prompt.as_ref().map(|(_, t)| t.clone());
         let now_overlay = Instant::now();
         let resize_overlays: Vec<u64> = self
             .panes
@@ -2483,6 +2559,7 @@ impl App {
                 || search.is_some()
                 || palette.is_some()
                 || confirm.is_some()
+                || title_prompt.is_some()
                 || views.iter().any(|v| resize_overlays.contains(&v.id))
                 // kitty 그림은 칸 위에 겹쳐 그린다(#76)
                 || views.iter().any(|v| !v.screen.images.is_empty())
@@ -2629,6 +2706,16 @@ impl App {
                 }
                 if let Some((text, _)) = &toast {
                     crate::tabbar::draw_toast(&mut canvas, fonts, &theme, text);
+                }
+                if let Some(text) = &title_prompt {
+                    tabbar::draw_prompt(
+                        &mut canvas,
+                        fonts,
+                        &theme,
+                        "제목 › ",
+                        &format!("{text}{preedit}"),
+                        "↩ 정하기    esc 취소    비우고 ↩면 프로그램이 정한 제목으로",
+                    );
                 }
                 if let Some((message, yes)) = &confirm {
                     tabbar::draw_confirm(&mut canvas, fonts, &theme, message, &format!("↩ {yes}    esc 취소"));
@@ -3071,7 +3158,10 @@ impl ApplicationHandler<UserEvent> for App {
                         return;
                     }
                     // 팔레트·찾기 막대가 열려 있으면 확정 글은 거기로
-                    if let Some((q, sel)) = self.w.palette.as_mut() {
+                    if let Some((_, t)) = self.w.title_prompt.as_mut() {
+                        t.push_str(&text);
+                        self.request_redraw();
+                    } else if let Some((q, sel)) = self.w.palette.as_mut() {
                         q.push_str(&text);
                         *sel = 0;
                         self.request_redraw();
@@ -3092,6 +3182,7 @@ impl ApplicationHandler<UserEvent> for App {
                 }
                 self.reset_blink();
                 if self.confirm_key(&event, event_loop)
+                    || self.title_key(&event)
                     || self.palette_key(&event, event_loop)
                     || self.search_key(&event)
                 {
@@ -3413,6 +3504,28 @@ impl ApplicationHandler<UserEvent> for App {
 mod tests {
     use super::*;
     use bt_term::search::SearchStatus;
+
+    #[test]
+    fn user_title_wins_over_program_title() {
+        assert_eq!(title_of(None, "vim", Some("zsh"), false), "vim");
+        assert_eq!(title_of(None, "", Some("zsh"), false), "zsh");
+        assert_eq!(title_of(None, "", None, false), "셸");
+        assert_eq!(
+            title_of(Some("빌드"), "vim", Some("zsh"), false),
+            "빌드",
+            "사람이 붙인 제목이 먼저"
+        );
+        assert_eq!(title_of(Some("빌드"), "vim", None, true), "🔔 빌드");
+        assert_eq!(
+            clean_user_title("  빌드\x1b[31m 서버 \n"),
+            Some("빌드 [31m 서버".into())
+        );
+        assert_eq!(clean_user_title("   "), None, "빈 글은 지우기");
+        assert_eq!(
+            clean_user_title(&"가".repeat(300)).map(|t| t.chars().count()),
+            Some(200)
+        );
+    }
 
     #[test]
     fn resize_overlay_skips_the_size_set_right_after_creation() {
