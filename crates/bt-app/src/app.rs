@@ -41,6 +41,8 @@ fn command_result(rec: &bt_term::CommandRecord) -> bt_core::proto::CommandResult
 
 /// 알림 띠가 보이는 시간
 const TOAST_FOR: Duration = Duration::from_millis(2500);
+/// 스크롤한 뒤 스크롤 막대를 보이는 시간
+const SCROLLBAR_FOR: Duration = Duration::from_millis(1200);
 
 /// 다른 스레드(PTY 읽기)가 창 스레드를 깨우는 사건
 #[derive(Debug, Clone)]
@@ -137,6 +139,9 @@ pub struct Pane {
     pub last_command: Option<bt_term::CommandRecord>,
     /// 진행 표시(OSC 9;4): (상태, 퍼센트, 받은 때). 15초 동안 새 소식이 없으면 지운다(Ghostty와 같다)
     pub progress: Option<(u8, u8, Instant)>,
+    /// 스크롤 막대: 마지막으로 본 스크롤 위치(맨 아래에서 올라간 줄 수)와 막대를 보일 때까지의 기한
+    scroll_seen: usize,
+    scrollbar_until: Option<Instant>,
 }
 
 impl Pane {
@@ -471,6 +476,8 @@ struct Win {
     active: usize,
     preedit: String,
     cursor_pos: PhysicalPosition<f64>,
+    /// 마우스가 오른쪽 끝(스크롤 막대 자리) 위에 있는 칸
+    gutter_hot: Option<u64>,
     selecting: bool,
     last_click: Option<(Instant, usize, usize, u8)>,
     scroll_accum: f64,
@@ -521,6 +528,7 @@ impl Win {
             active: 0,
             preedit: String::new(),
             cursor_pos: PhysicalPosition::new(0.0, 0.0),
+            gutter_hot: None,
             selecting: false,
             last_click: None,
             scroll_accum: 0.0,
@@ -721,6 +729,18 @@ impl App {
         g.layout.layout(area, self.divider_px())
     }
 
+    /// 마우스가 오른쪽 끝(스크롤 막대 자리) 위에 있는 칸
+    fn gutter_pane(&self) -> Option<u64> {
+        if self.config.scrollbar == bt_core::config::Scrollbar::Never {
+            return None;
+        }
+        let gutter = (bt_render::scrollbar::BAR_WIDTH as f64 * self.scale * 2.0).round() as u32;
+        let (x, y) = (self.w.cursor_pos.x, self.w.cursor_pos.y);
+        self.group_layout(self.w.active).into_iter().find_map(|(id, r)| {
+            bt_render::scrollbar::in_gutter(x, y, r.x, r.y, r.right(), r.bottom(), gutter).then_some(id)
+        })
+    }
+
     /// 칸의 바깥 사각형(보이지 않으면 없다)
     fn pane_rect(&self, id: u64) -> Option<Rect> {
         let gi = self.group_of(id)?;
@@ -781,14 +801,20 @@ impl App {
 
     /// 칸 하나를 고른다(그 칸의 탭으로 옮겨 간다). 크게 보기 중에 다른 칸을 고르면 크게 보기를 푼다
     fn focus_pane(&mut self, id: u64) {
+        self.focus_pane_keeping(id, false);
+    }
+
+    /// `focus_pane`. `keep_zoom`이면 크게 보던 중에도 풀지 않고 새 칸을 크게 본다(split-preserve-zoom = navigation)
+    fn focus_pane_keeping(&mut self, id: u64, keep_zoom: bool) {
         let Some(gi) = self.group_of(id) else { return };
         let before = self.focused_id();
         self.w.active = gi;
         let g = &mut self.w.tabs[gi];
-        let unzoom = g.zoomed && g.focus != id;
+        let changed = g.zoomed && g.focus != id;
         g.focus = id;
-        if unzoom {
-            g.zoomed = false;
+        if changed {
+            // 풀지 않아도 크게 보는 칸이 바뀌었으니 크기를 다시 맞춘다
+            g.zoomed = keep_zoom;
             self.resize_all();
         }
         self.focus_changed(before);
@@ -1059,6 +1085,8 @@ impl App {
                 cwd: None,
                 last_desktop: None,
                 progress: None,
+                scroll_seen: 0,
+                scrollbar_until: None,
                 running: None,
                 last_command: None,
             }),
@@ -2315,7 +2343,9 @@ impl App {
                     SplitTarget::Toward(d) => g.layout.neighbor(area, divider, g.focus, d),
                 });
                 if let Some(id) = next {
-                    self.focus_pane(id);
+                    let zoomed = self.w.tabs.get(self.w.active).is_some_and(|g| g.zoomed);
+                    let keep = self.config.split_preserve_zoom.keeps_zoom_on_goto(zoomed);
+                    self.focus_pane_keeping(id, keep);
                 }
             }
             Action::ResizeSplit(dir, points) => {
@@ -3183,8 +3213,32 @@ impl App {
                     inner: self.inner_rect(*outer),
                     screen: p.session.snapshot(),
                     focused: Some(*id) == focus,
-                    progress: p.live_progress(),
+                    progress: p.live_progress().filter(|_| self.config.progress_style),
                 })
+            })
+            .collect();
+        // 스크롤 막대: 스크롤 위치가 바뀌면 잠깐 보인다. 마우스가 오른쪽 끝 위에 있어도 보인다
+        let now_bar = Instant::now();
+        for v in &views {
+            if let Some(i) = self.pane_index(v.id) {
+                let p = &mut self.panes[i];
+                if p.scroll_seen != v.screen.display_offset {
+                    p.scroll_seen = v.screen.display_offset;
+                    p.scrollbar_until = Some(now_bar + SCROLLBAR_FOR);
+                }
+            }
+        }
+        let bars: Vec<(bool, bool)> = views
+            .iter()
+            .map(|v| {
+                let scrolling = self
+                    .pane_index(v.id)
+                    .is_some_and(|i| self.panes[i].scrollbar_until.is_some_and(|t| t > now_bar));
+                let hovering = self.w.gutter_hot == Some(v.id);
+                (
+                    self.config.scrollbar.shows(v.screen.history, scrolling, hovering),
+                    hovering,
+                )
             })
             .collect();
         let split = views.len() > 1;
@@ -3223,7 +3277,8 @@ impl App {
                         // 고른 칸의 진행 표시, 없으면 다른 칸의 것
                         progress: focused
                             .and_then(|p| p.live_progress())
-                            .or_else(|| panes.iter().find_map(|p| p.live_progress())),
+                            .or_else(|| panes.iter().find_map(|p| p.live_progress()))
+                            .filter(|_| self.config.progress_style),
                     }
                 })
                 .collect()
@@ -3363,6 +3418,7 @@ impl App {
                 || views.iter().any(|v| resize_overlays.contains(&v.id))
                 // kitty 그림은 칸 위에 겹쳐 그린다(#76)
                 || views.iter().any(|v| !v.screen.images.is_empty())
+                || bars.iter().any(|b| b.0)
                 || (single_tab && views.iter().any(|v| v.progress.is_some())),
             theme: (theme.background, theme.foreground),
             dim: (dim_alpha, dim_fill, divider_color),
@@ -3426,7 +3482,7 @@ impl App {
                     tabbar::draw(&mut canvas, fonts, &theme, &labels);
                 }
             }
-            for ((v, (cells, cursor, pre)), pad) in views.iter().zip(&drawn).zip(&pads) {
+            for (((v, (cells, cursor, pre)), pad), bar) in views.iter().zip(&drawn).zip(&pads).zip(&bars) {
                 let screen = &v.screen;
                 let grid_rect = Rect::new(
                     v.inner.x,
@@ -3567,6 +3623,21 @@ impl App {
                         v.outer,
                         self.config.resize_overlay_position,
                         &format!("{} × {}", screen.cols, screen.rows),
+                    );
+                }
+                if bar.0 {
+                    let width = (bt_render::scrollbar::BAR_WIDTH as f64 * self.scale).round() as u32;
+                    bt_render::scrollbar::draw(
+                        &mut canvas,
+                        v.outer.right() - width as i32 - self.scale.round().max(1.0) as i32,
+                        v.inner.y,
+                        screen.rows as u32 * m.height,
+                        width,
+                        screen.rows,
+                        screen.history,
+                        screen.display_offset,
+                        theme.foreground,
+                        if bar.1 { 170 } else { 110 },
                     );
                 }
                 // 탭 막대가 없으면 진행 막대를 칸 맨 위에 얇게(Ghostty와 같은 자리). 있으면 탭 줄에 보인다
@@ -4000,7 +4071,9 @@ impl ApplicationHandler<UserEvent> for App {
                         }
                     }
                     SessionEvent::Progress { state, percent } => {
-                        self.panes[idx].progress = (state != 0).then(|| (state, percent, Instant::now()));
+                        // progress-style = false면 조용히 버린다
+                        self.panes[idx].progress = tabbar::accept_progress(self.config.progress_style, state, percent)
+                            .map(|(s, p)| (s, p, Instant::now()));
                     }
                     SessionEvent::ClipboardStore(text) => {
                         // 프로그램이 OSC 52로 보낸 글(Claude Code의 /copy 등).
@@ -4218,6 +4291,11 @@ impl ApplicationHandler<UserEvent> for App {
                     }
                 }
                 self.update_hover();
+                let hot = self.gutter_pane();
+                if hot != self.w.gutter_hot {
+                    self.w.gutter_hot = hot;
+                    self.request_redraw();
+                }
                 // 마우스가 올라간 칸을 고른다(focus-follows-mouse, #126). 고르는 중에는 바꾸지 않는다
                 if self.config.focus_follows_mouse && !self.w.selecting {
                     if let Some(id) = self.pane_at(position).filter(|id| Some(*id) != self.focused_id()) {
@@ -4490,10 +4568,22 @@ impl ApplicationHandler<UserEvent> for App {
                 overlay_done = true;
             }
         }
+        // 스크롤 막대를 보이던 기한이 끝나면 지우고 다시 그린다
+        for p in &mut self.panes {
+            if p.scrollbar_until.is_some_and(|t| t <= now) {
+                p.scrollbar_until = None;
+                overlay_done = true;
+            }
+        }
         if overlay_done {
             self.request_redraw_all();
         }
-        let overlay_next = self.panes.iter().filter_map(|p| p.overlay_until).min();
+        let overlay_next = self
+            .panes
+            .iter()
+            .flat_map(|p| [p.overlay_until, p.scrollbar_until])
+            .flatten()
+            .min();
         // 퀵 창 움직임(#110): 프레임마다 자리를 옮기고, 끝나면 숨길 것은 숨긴다
         let mut animating = false;
         for w in std::iter::once(&mut self.w).chain(self.others.iter_mut()) {

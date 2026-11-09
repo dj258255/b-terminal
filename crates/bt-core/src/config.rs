@@ -464,6 +464,12 @@ pub struct Config {
     pub notify_on_command_finish_after: std::time::Duration,
     /// 프로그램의 데스크톱 알림(OSC 9·777)을 받는다(Ghostty `desktop-notifications`, 기본 켬)
     pub desktop_notifications: bool,
+    /// OSC 9;4 진행 표시를 그린다(Ghostty `progress-style`, 기본 켬). 끄면 조용히 버린다
+    pub progress_style: bool,
+    /// 스크롤 막대(Ghostty `scrollbar`, 기본 system)
+    pub scrollbar: Scrollbar,
+    /// 크게 보는 칸을 지키는 때(Ghostty `split-preserve-zoom`, 기본 아무 때도 아님)
+    pub split_preserve_zoom: SplitPreserveZoom,
     /// 앱 자신의 알림 띠(Ghostty `app-notifications`)
     pub app_notifications: AppNotifications,
     /// OSC 52로 프로그램이 클립보드에 쓰는 것을 허용(Ghostty 기본 allow)
@@ -601,6 +607,54 @@ impl FinishAction {
         }
         *self = next;
         true
+    }
+}
+
+/// `scrollbar`(Ghostty): 스크롤 막대를 보이는가
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Scrollbar {
+    /// 시스템 방식(기본): 스크롤하는 동안과 그 뒤 잠깐, 또는 마우스가 오른쪽 끝 위에 있을 때만 보인다
+    #[default]
+    System,
+    /// 그리지 않는다
+    Never,
+}
+
+impl Scrollbar {
+    /// 막대를 그리는가. `history`는 스크롤백 줄 수, `scrolling`은 방금 스크롤했다, `hovering`은 마우스가 오른쪽 끝 위에 있다
+    pub fn shows(self, history: usize, scrolling: bool, hovering: bool) -> bool {
+        match self {
+            Scrollbar::Never => false,
+            Scrollbar::System => history > 0 && (scrolling || hovering),
+        }
+    }
+}
+
+/// `split-preserve-zoom`(Ghostty): 크게 보는 칸을 언제 지키는가. 기본은 아무것도 지키지 않는다
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct SplitPreserveZoom {
+    /// `navigation`: 크게 보는 중에 `goto_split`으로 옮기면 풀지 않고 새 칸을 크게 본다
+    pub navigation: bool,
+}
+
+impl SplitPreserveZoom {
+    /// `navigation`·`no-navigation`·`true`·`false`를 지금 값 위에 얹는다. 모르는 이름이 있으면 아무것도 바꾸지 않고 거짓
+    pub fn apply(&mut self, v: &str) -> bool {
+        let mut next = *self;
+        for item in v.split(',').map(str::trim).filter(|i| !i.is_empty()) {
+            match item {
+                "true" | "navigation" => next.navigation = true,
+                "false" | "no-navigation" => next.navigation = false,
+                _ => return false,
+            }
+        }
+        *self = next;
+        true
+    }
+
+    /// `goto_split`으로 칸을 옮긴 뒤에도 크게 보기가 남는가. 크게 보던 중이 아니면 거짓
+    pub fn keeps_zoom_on_goto(self, zoomed: bool) -> bool {
+        zoomed && self.navigation
     }
 }
 
@@ -1036,6 +1090,9 @@ impl Default for Config {
             notify_on_command_finish_action: FinishAction::default(),
             notify_on_command_finish_after: std::time::Duration::from_secs(5),
             desktop_notifications: true,
+            progress_style: true,
+            scrollbar: Scrollbar::System,
+            split_preserve_zoom: SplitPreserveZoom::default(),
             app_notifications: AppNotifications::default(),
             unfocused_split_opacity: 0.7,
             unfocused_split_fill: None,
@@ -2175,6 +2232,20 @@ impl Config {
                 "false" => self.desktop_notifications = false,
                 _ => bad(warnings),
             },
+            "progress-style" => match parse_bool(v) {
+                Some(b) => self.progress_style = b,
+                None => bad(warnings),
+            },
+            "scrollbar" => match v {
+                "system" => self.scrollbar = Scrollbar::System,
+                "never" => self.scrollbar = Scrollbar::Never,
+                _ => bad(warnings),
+            },
+            "split-preserve-zoom" => {
+                if !self.split_preserve_zoom.apply(v) {
+                    bad(warnings)
+                }
+            }
             "app-notifications" => {
                 if !self.app_notifications.apply(v) {
                     bad(warnings)
@@ -2703,6 +2774,24 @@ impl Config {
             }
         });
         push("desktop-notifications", self.desktop_notifications.to_string());
+        push("progress-style", self.progress_style.to_string());
+        push(
+            "scrollbar",
+            match self.scrollbar {
+                Scrollbar::System => "system",
+                Scrollbar::Never => "never",
+            }
+            .into(),
+        );
+        push(
+            "split-preserve-zoom",
+            if self.split_preserve_zoom.navigation {
+                "navigation"
+            } else {
+                "no-navigation"
+            }
+            .into(),
+        );
         let n = self.app_notifications;
         push(
             "app-notifications",
@@ -2868,6 +2957,59 @@ fn parse_text(text: &str, origin: &Path) -> Vec<Entry> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn scrollbar_shows_by_mode_history_and_activity() {
+        // 스크롤백이 없으면 보일 것이 없다
+        assert!(!Scrollbar::System.shows(0, true, true));
+        // 스크롤했거나 마우스가 끝에 있으면 보인다
+        assert!(Scrollbar::System.shows(10, true, false));
+        assert!(Scrollbar::System.shows(10, false, true));
+        // 가만히 있으면 숨는다
+        assert!(!Scrollbar::System.shows(10, false, false));
+        // never는 언제나 그리지 않는다
+        assert!(!Scrollbar::Never.shows(10, true, true));
+    }
+
+    #[test]
+    fn split_preserve_zoom_keeps_only_when_navigation_and_zoomed() {
+        let on = SplitPreserveZoom { navigation: true };
+        assert!(on.keeps_zoom_on_goto(true));
+        assert!(!on.keeps_zoom_on_goto(false));
+        assert!(!SplitPreserveZoom::default().keeps_zoom_on_goto(true));
+    }
+
+    #[test]
+    fn scrollbar_progress_and_zoom_keys() {
+        let d = Config::default();
+        assert!(d.progress_style);
+        assert_eq!(d.scrollbar, Scrollbar::System);
+        assert!(!d.split_preserve_zoom.navigation);
+        let c = Config::from_text(
+            "progress-style = false\nscrollbar = never\nsplit-preserve-zoom = navigation\n",
+            true,
+        );
+        assert!(!c.progress_style);
+        assert_eq!(c.scrollbar, Scrollbar::Never);
+        assert!(c.split_preserve_zoom.navigation);
+        let r = c.render();
+        assert!(r.contains("progress-style = false"));
+        assert!(r.contains("scrollbar = never"));
+        assert!(r.contains("split-preserve-zoom = navigation"));
+        let c = Config::from_text(
+            "progress-style = x\nscrollbar = always\nsplit-preserve-zoom = foo\n",
+            true,
+        );
+        assert!(c.progress_style && c.scrollbar == Scrollbar::System && !c.split_preserve_zoom.navigation);
+        assert_eq!(c.warnings.len(), 3);
+        let mut z = SplitPreserveZoom::default();
+        assert!(z.apply("navigation"));
+        assert!(z.navigation);
+        assert!(z.apply("no-navigation"));
+        assert!(!z.navigation);
+        assert!(!z.apply("navigation,bogus"));
+        assert!(!z.navigation, "모르는 이름이 섞이면 아무것도 바꾸지 않는다");
+    }
 
     #[test]
     fn inherit_and_tab_keys() {
@@ -3938,6 +4080,34 @@ mod tests {
         let c = Config::from_text("desktop-notifications = maybe\n", true);
         assert!(c.desktop_notifications);
         assert_eq!(c.warnings.len(), 1);
+
+        let d = Config::default();
+        assert!(d.progress_style);
+        assert_eq!(d.scrollbar, Scrollbar::System);
+        assert!(!d.split_preserve_zoom.navigation);
+        let c = Config::from_text(
+            "progress-style = false\nscrollbar = never\nsplit-preserve-zoom = navigation\n",
+            true,
+        );
+        assert!(!c.progress_style);
+        assert_eq!(c.scrollbar, Scrollbar::Never);
+        assert!(c.split_preserve_zoom.navigation);
+        let r = c.render();
+        assert!(r.contains("progress-style = false"));
+        assert!(r.contains("scrollbar = never"));
+        assert!(r.contains("split-preserve-zoom = navigation"));
+        let c = Config::from_text(
+            "progress-style = x\nscrollbar = always\nsplit-preserve-zoom = foo\n",
+            true,
+        );
+        assert!(c.progress_style && c.scrollbar == Scrollbar::System && !c.split_preserve_zoom.navigation);
+        assert_eq!(c.warnings.len(), 3);
+        let mut z = SplitPreserveZoom::default();
+        assert!(z.apply("navigation"));
+        assert!(z.apply("no-navigation"));
+        assert!(!z.navigation);
+        assert!(!z.apply("navigation,bogus"));
+        assert!(!z.navigation, "모르는 이름이 섞이면 아무것도 바꾸지 않는다");
 
         let c = Config::from_text("app-notifications = no-clipboard-copy\n", true);
         assert_eq!(

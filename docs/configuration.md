@@ -125,6 +125,9 @@ config-file = ?~/.config/b-terminal/local   # ?가 붙으면 없어도 된다
 | `notify-on-command-finish-action` | `bell` `notify`(쉼표로, 앞에 `no-`면 끔), `true` `false` | `bell` | Ghostty 키. `bell`은 벨이 울린 것처럼(`bell-features`를 따름), `notify`는 데스크톱 알림 |
 | `notify-on-command-finish-after` | 기간(`5s`, `1m30s`) | `5s` | Ghostty 키. 명령이 이만큼 이상 걸려야 알립니다 |
 | `desktop-notifications` | `true` `false` | `true` | Ghostty 키. 프로그램의 OSC 9·777 데스크톱 알림을 받을지. `false`면 버립니다(명령 끝 알림과 `btctl notify`는 그대로) |
+| `progress-style` | `true` `false` | `true` | Ghostty 키. 프로그램의 OSC 9;4 진행 표시를 그릴지. `false`면 조용히 버립니다(탭 줄·칸 위 막대 모두 안 나옵니다) |
+| `scrollbar` | `system` `never` | `system` | Ghostty 키. `system`은 스크롤하는 동안과 그 뒤 1.2초 동안, 또는 마우스가 칸 오른쪽 끝 띠 위에 있을 때 오른쪽에 얇은 반투명 막대를 그립니다(스크롤백이 있을 때만). `never`는 그리지 않습니다. 막대를 끌어 스크롤하는 것은 아직 없고, 시스템 설정 "스크롤 막대 항상 보기"는 읽지 않습니다(읽으려면 unsafe가 필요해서) |
+| `split-preserve-zoom` | `navigation`, `no-navigation` | `no-navigation` | Ghostty 키(1.3). `navigation`이면 칸을 크게 보는 중에 `goto_split`으로 옮겨도 크게 보기를 풀지 않고 새 칸을 크게 봅니다. 마우스로 칸을 누르거나 새로 나누기·닫기는 여전히 풉니다 |
 | `app-notifications` | `clipboard-copy` `config-reload`(쉼표로, 앞에 `no-`면 끔), `true` `false` | `true` | Ghostty 키. 앱 자신의 알림 띠: 클립보드에 복사했을 때(OSC 52 쓰기·경로·링크 주소 복사), 설정을 다시 읽었을 때. 설정 경고가 있으면 `config-reload`를 꺼도 알립니다. Ghostty 문서는 GTK 전용이라고 하지만 b-terminal은 같은 띠를 macOS에서 씁니다 |
 | `bell-features` | `system` `attention` `title` `audio`(쉼표로, 앞에 `no-`면 끔), `true` `false` | `attention,title` | 프로그램이 벨(BEL)을 울리면: `title`은 보지 않는 칸의 탭·창 제목 앞에 🔔를 붙이고 그 칸을 보면 뗍니다. `attention`은 창이 앞에 없을 때 Dock 아이콘을 튀깁니다. `system`은 시스템 경고음입니다(0.1초에 한 번까지). `audio`는 `bell-audio-path`의 소리 파일을 재생합니다(macOS만, 보고 있어도 납니다. 앞 소리가 아직 나는 중이거나 0.1초 안이면 건너뜁니다). Ghostty의 `border`는 받지만 하는 일이 없습니다 |
 | `bell-audio-path` | 파일 경로 | 없음 | `bell-features`에 `audio`가 있을 때 재생할 소리 파일(macOS가 읽을 수 있는 wav·aiff·mp3 등). `~/`는 홈, 상대 경로는 설정 파일이 있는 폴더 기준입니다. 파일을 읽지 못하면 소리 없이 지나갑니다. 빈 값은 지움 |
