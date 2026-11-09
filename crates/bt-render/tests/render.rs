@@ -1156,3 +1156,213 @@ fn background_opacity_cells_makes_colored_cells_translucent() {
     assert_eq!(colored_on, 0x8064_3219, "옵션을 켜면 색 바탕 칸도 알파 128, 곱한 색");
     assert_eq!(plain_on, plain_off, "기본 바탕 칸은 달라지지 않는다");
 }
+
+// ---- #174: font-style*, font-codepoint-map, font-shaping-break, adjust-icon-height ----
+
+use bt_render::{CodepointFont, FontStyle, FontStyleName};
+
+/// 넣어 둔 JetBrains Mono가 기본 글꼴인 묶음(시스템 글꼴에 기대지 않는다)
+fn jb(config: FontConfig) -> Option<Fonts> {
+    let f = Fonts::new(&config).ok()?;
+    (f.family_name == "JetBrains Mono").then_some(f)
+}
+
+fn bitmap(f: &mut Fonts, c: char, s: FontStyle) -> Option<(usize, usize, Vec<u8>)> {
+    f.glyph(c, s).map(|g| (g.width, g.height, g.bitmap.clone()))
+}
+
+/// `font-shaping-break = no-cursor`면 커서 칸에서도 합자를 끊지 않는다(기본 `cursor`는 끊는다)
+#[test]
+fn no_cursor_shaping_break_keeps_ligature_under_cursor() {
+    let make = |brk| {
+        jb(FontConfig {
+            scale: 2.0,
+            shaping_break_cursor: brk,
+            ..FontConfig::default()
+        })
+    };
+    let (Some(mut keep), Some(mut broken)) = (make(false), make(true)) else {
+        return;
+    };
+    let plain = render(&mut broken, b"-", 6, 1, false);
+    // "->" 뒤에서 커서를 왼쪽으로 한 칸: 커서는 '>' 위
+    let broken_frame = render(&mut broken, b"->\x1b[D", 6, 1, true);
+    assert_eq!(
+        cell_diff(&broken_frame, &plain, 0, 0),
+        0,
+        "기본: 앞 칸은 합자가 아닌 '-'"
+    );
+    let keep_frame = render(&mut keep, b"->\x1b[D", 6, 1, true);
+    assert!(
+        cell_diff(&keep_frame, &plain, 0, 0) > 20,
+        "no-cursor: 앞 칸은 합자의 앞쪽 반이다"
+    );
+}
+
+/// `font-style-bold = false`는 굵은 꼴을 끄고 보통 꼴로 그린다
+#[test]
+fn disabled_font_style_draws_the_regular_face() {
+    let mut normal = jb(FontConfig::default()).unwrap();
+    let mut off = jb(FontConfig {
+        styles: [
+            FontStyleName::Default,
+            FontStyleName::Disabled,
+            FontStyleName::Disabled,
+            FontStyleName::Default,
+        ],
+        ..FontConfig::default()
+    })
+    .unwrap();
+    let regular = bitmap(&mut normal, 'a', FontStyle::Regular);
+    assert_ne!(
+        bitmap(&mut normal, 'a', FontStyle::Bold),
+        regular,
+        "기본: 굵은 꼴은 다르다"
+    );
+    assert_eq!(bitmap(&mut off, 'a', FontStyle::Bold), regular);
+    assert_eq!(bitmap(&mut off, 'a', FontStyle::Italic), regular);
+    // 끄지 않은 꼴은 그대로
+    assert_eq!(
+        bitmap(&mut off, 'a', FontStyle::BoldItalic),
+        bitmap(&mut normal, 'a', FontStyle::BoldItalic)
+    );
+}
+
+/// `font-style-bold = Italic`은 글꼴이 알리는 스타일 이름이 Italic인 꼴을 굵은 꼴 자리에 쓴다.
+/// 이름을 못 찾으면 알아서 고르던 꼴 그대로
+#[test]
+fn named_font_style_picks_the_face_by_its_style_name() {
+    let mut normal = jb(FontConfig::default()).unwrap();
+    let named = |name: &str| {
+        jb(FontConfig {
+            styles: [
+                FontStyleName::Default,
+                FontStyleName::Named(name.into()),
+                FontStyleName::Default,
+                FontStyleName::Default,
+            ],
+            ..FontConfig::default()
+        })
+        .unwrap()
+    };
+    let italic = bitmap(&mut normal, 'a', FontStyle::Italic);
+    let bold = bitmap(&mut normal, 'a', FontStyle::Bold);
+    assert_ne!(italic, bold);
+    assert_eq!(bitmap(&mut named("Italic"), 'a', FontStyle::Bold), italic);
+    assert_eq!(
+        bitmap(&mut named("italic"), 'a', FontStyle::Bold),
+        italic,
+        "대소문자는 가리지 않는다"
+    );
+    assert_eq!(bitmap(&mut named("No Such Style"), 'a', FontStyle::Bold), bold);
+}
+
+fn jb_with_map(codepoint_map: Vec<CodepointFont>) -> Fonts {
+    jb(FontConfig {
+        codepoint_map,
+        ..FontConfig::default()
+    })
+    .unwrap()
+}
+
+/// `font-codepoint-map`: 그 범위 글자는 정한 글꼴에서 찾고, 그 글꼴에 없으면 보통 차례로 찾는다
+#[test]
+fn codepoint_map_forces_a_font_for_a_range() {
+    let map = |family: &str| {
+        vec![CodepointFont {
+            start: 'A' as u32,
+            end: 'Z' as u32,
+            family: family.into(),
+        }]
+    };
+    let mut reference = jb(FontConfig::default()).unwrap();
+    let want = bitmap(&mut reference, 'A', FontStyle::Regular).expect("JetBrains Mono에 A가 있다");
+    // 기본 글꼴을 Nerd 기호 글꼴로 바꾸면 'A'는 다른 대체 글꼴(또는 없음)에서 나온다
+    let symbols = |codepoint_map| {
+        Fonts::new(&FontConfig {
+            family: Some("Symbols Nerd Font Mono".into()),
+            codepoint_map,
+            ..FontConfig::default()
+        })
+        .unwrap()
+    };
+    assert_ne!(
+        bitmap(&mut symbols(vec![]), 'A', FontStyle::Regular),
+        Some(want.clone())
+    );
+    let mut mapped = symbols(map("JetBrains Mono"));
+    assert_eq!(
+        bitmap(&mut mapped, 'A', FontStyle::Regular),
+        Some(want.clone()),
+        "범위 안: 정한 글꼴"
+    );
+    assert!(
+        !mapped.primary_has('A', FontStyle::Regular),
+        "정한 글꼴로 그리는 글자는 합자로 묶지 않는다"
+    );
+    // 범위 밖은 그대로
+    assert_eq!(
+        bitmap(&mut mapped, 'a', FontStyle::Regular),
+        bitmap(&mut symbols(vec![]), 'a', FontStyle::Regular)
+    );
+    // 정한 글꼴에 글자가 없거나 글꼴이 없으면 보통 차례로
+    let plain = bitmap(&mut reference, 'A', FontStyle::Regular);
+    assert_eq!(
+        bitmap(&mut jb_with_map(map("Symbols Nerd Font Mono")), 'A', FontStyle::Regular),
+        plain
+    );
+    assert_eq!(
+        bitmap(&mut jb_with_map(map("No Such Font Anywhere")), 'A', FontStyle::Regular),
+        plain
+    );
+    // 뒤에 쓴 것이 이긴다
+    let mut later = map("Symbols Nerd Font Mono");
+    later.extend(map("JetBrains Mono"));
+    assert_eq!(bitmap(&mut symbols(later), 'A', FontStyle::Regular), Some(want));
+}
+
+/// `adjust-icon-height`: 없으면 셀 높이, 있으면 Nerd 아이콘의 높이를 그만큼으로. 파워라인 도형은 건드리지 않는다
+#[test]
+fn icon_height_scales_nerd_icons_but_not_powerline() {
+    let make = |icon_height| {
+        Fonts::new(&FontConfig {
+            scale: 2.0,
+            adjust: MetricAdjust {
+                icon_height,
+                ..MetricAdjust::default()
+            },
+            ..FontConfig::default()
+        })
+        .unwrap()
+    };
+    let mut base = make(None);
+    let cell_h = base.metrics().height;
+    assert_eq!(base.metrics().icon_height, cell_h);
+    let mut zero = make(Some(Adjust::Percent(0.0)));
+    let mut small = make(Some(Adjust::Percent(-40.0)));
+    let mut big = make(Some(Adjust::Percent(50.0)));
+    assert_eq!(small.metrics().icon_height, (cell_h as f32 * 0.6).round() as u32);
+    let folder = '\u{f07c}';
+    let b = base.glyph(folder, FontStyle::Regular).unwrap();
+    let z = zero.glyph(folder, FontStyle::Regular).unwrap();
+    assert_eq!(
+        (z.width, z.height, &z.bitmap),
+        (b.width, b.height, &b.bitmap),
+        "0%는 보정 없음과 같다"
+    );
+    let s = small.glyph(folder, FontStyle::Regular).unwrap();
+    assert!(s.height < b.height * 3 / 4, "-40%: {} -> {}", b.height, s.height);
+    let g = big.glyph(folder, FontStyle::Regular).unwrap();
+    assert!(g.height >= b.height, "+50%: {} -> {}", b.height, g.height);
+    // 키울 때 칸 폭에서 멈춘다. 원래 이미 칸보다 넓은 아이콘은 더 넓어지지 않는다
+    assert!(
+        g.width as u32 <= big.metrics().width.max(b.width as u32),
+        "칸 폭을 넘지 않는다: {} > {}",
+        g.width,
+        big.metrics().width.max(b.width as u32)
+    );
+    // 파워라인(U+E0B0) 도형은 그대로
+    let p = base.glyph('\u{e0b0}', FontStyle::Regular).unwrap();
+    let ps = small.glyph('\u{e0b0}', FontStyle::Regular).unwrap();
+    assert_eq!((ps.width, ps.height, &ps.bitmap), (p.width, p.height, &p.bitmap));
+}

@@ -19,7 +19,7 @@ pub const DEFAULT_FAMILY: &str = "JetBrains Mono";
 const NERD_SYMBOLS: &str = "Symbols Nerd Font Mono";
 
 /// 셀 크기 보정
-pub use bt_core::config::Adjust;
+pub use bt_core::config::{Adjust, CodepointFont, FontStyleName};
 
 /// 셀 안 그림 자리·두께 보정(Ghostty `adjust-*`, #163). 값은 퍼센트 또는 픽셀
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
@@ -34,6 +34,8 @@ pub struct MetricAdjust {
     pub cursor_thickness: Option<Adjust>,
     pub cursor_height: Option<Adjust>,
     pub box_thickness: Option<Adjust>,
+    /// Nerd Font 아이콘 높이(`adjust-icon-height`, #174)
+    pub icon_height: Option<Adjust>,
 }
 
 /// 가변 글꼴 축 값(태그, 값)
@@ -65,6 +67,12 @@ pub struct FontConfig {
     pub fallbacks: Vec<String>,
     /// 다듬기에 줄 글꼴 기능(#96, `font-feature`). 없으면 글꼴의 기본(calt·liga 등이 켜짐)
     pub features: Vec<([u8; 4], u16)>,
+    /// 꼴마다 고를 글꼴 스타일 이름(#174, `font-style*`). 차례는 보통·굵게·기울임·굵은 기울임(`FontStyle as usize`)
+    pub styles: [FontStyleName; 4],
+    /// 글자 범위마다 정한 글꼴(#174, `font-codepoint-map`). 뒤에 있는 것이 이긴다
+    pub codepoint_map: Vec<CodepointFont>,
+    /// 커서 칸에서 다듬기를 끊는다(#174, `font-shaping-break = cursor`). Ghostty 기본은 켬
+    pub shaping_break_cursor: bool,
 }
 
 impl Default for FontConfig {
@@ -102,6 +110,9 @@ impl Default for FontConfig {
                 "Noto Sans Math".into(),
             ],
             features: Vec::new(),
+            styles: Default::default(),
+            codepoint_map: Vec::new(),
+            shaping_break_cursor: true,
         }
     }
 }
@@ -175,6 +186,8 @@ pub struct CellMetrics {
     pub cursor_hollow: u32,
     /// 상자 선 두께(`adjust-box-thickness`)
     pub box_thickness: u32,
+    /// Nerd Font 아이콘이 넘지 않을 높이(`adjust-icon-height`, #174). 보정이 없으면 셀 높이
+    pub icon_height: u32,
 }
 
 /// 글꼴 묶음과 글리프 캐시
@@ -201,6 +214,18 @@ pub struct Fonts {
     gid_cache: HashMap<(u16, FontStyle), Option<Rc<Glyph>>>,
     /// 꼴마다 적용할 가변 글꼴 축(#163). `font-variation`에 꼴별 값을 더한 것(기본 글꼴의 네 꼴에만 쓴다)
     variations: [Variations; 4],
+    /// 글자 범위마다 정한 글꼴(#174). 뒤에 있는 것이 먼저 이긴다
+    mapped: Vec<Mapped>,
+    /// 커서 칸에서 다듬기를 끊는가(#174)
+    shaping_break_cursor: bool,
+}
+
+/// `font-codepoint-map` 한 칸: 범위, 네 꼴의 글꼴, 넓은 글자 배율
+struct Mapped {
+    start: u32,
+    end: u32,
+    fonts: [Rc<Font>; 4],
+    wide_scale: f32,
 }
 
 /// 다듬은 묶음 캐시의 상한. 넘으면 비운다(화면에 보이는 글은 곧 다시 찬다)
@@ -379,6 +404,35 @@ fn load(db: &Database, family: &str, weight: Weight, style: Style) -> Option<Rc<
     font
 }
 
+/// 글꼴 이름이 `family`이고 글꼴이 알리는 스타일 이름(name 표의 subfamily)이 `style_name`인 꼴(#174, `font-style*`).
+/// 대소문자는 가리지 않는다. 없으면 없다
+fn load_named(db: &Database, family: &str, style_name: &str) -> Option<Rc<Font>> {
+    let key = (
+        format!("{}\0{}", family.to_ascii_lowercase(), style_name.to_ascii_lowercase()),
+        u16::MAX,
+        0,
+    );
+    if let Some(hit) = PARSED.with(|p| p.borrow().get(&key).cloned()) {
+        return hit;
+    }
+    let font = db
+        .faces()
+        .filter(|f| f.families.iter().any(|(n, _)| n.eq_ignore_ascii_case(family)))
+        .find_map(|f| parse_face(db, f.id).filter(|font| has_style_name(font, style_name)))
+        .map(Rc::new);
+    PARSED.with(|p| p.borrow_mut().insert(key, font.clone()));
+    font
+}
+
+/// 글꼴의 스타일 이름(name 표 2번과 17번) 가운데 `name`과 같은 것이 있는가
+fn has_style_name(font: &Font, name: &str) -> bool {
+    use swash::StringId;
+    font.font()
+        .localized_strings()
+        .filter(|s| matches!(s.id(), StringId::SubFamily | StringId::TypographicSubFamily))
+        .any(|s| s.chars().collect::<String>().trim().eq_ignore_ascii_case(name.trim()))
+}
+
 fn parse(db: &Database, family: &str, weight: Weight, style: Style) -> Option<Font> {
     let families = [Family::Name(family)];
     let id = db.query(&Query {
@@ -392,6 +446,11 @@ fn parse(db: &Database, family: &str, weight: Weight, style: Style) -> Option<Fo
     if !face.families.iter().any(|(n, _)| n.eq_ignore_ascii_case(family)) {
         return None;
     }
+    parse_face(db, id)
+}
+
+/// 얼굴 하나를 읽는다
+fn parse_face(db: &Database, id: fontdb::ID) -> Option<Font> {
     // 파일이면 그 꼴의 표만 읽는다(모음 파일 전체를 들지 않게, #65). 앱에 넣어 둔 글꼴은 이미 메모리에 있다
     let (source, index) = db.face_source(id)?;
     match source {
@@ -429,6 +488,11 @@ impl Fonts {
             .iter()
             .find_map(|n| load(db, n, Weight::NORMAL, Style::Normal).map(|f| (n.to_string(), f)))
             .ok_or_else(|| FontError::NotFound(names.join(", ")))?;
+        // 보통 꼴에 스타일 이름을 정했으면(#174, `font-style`) 그 이름의 꼴. 못 찾으면 그대로
+        let regular = match &config.styles[0] {
+            FontStyleName::Named(name) => load_named(db, &family, name).unwrap_or(regular),
+            _ => regular,
+        };
         // 꼴마다 따로 정한 글꼴이 있으면 그것, 없으면 기본 글꼴의 그 꼴, 그것도 없으면 Regular
         let pick = |own: &Option<String>, w, s| {
             own.as_deref()
@@ -436,9 +500,25 @@ impl Fonts {
                 .or_else(|| load(db, &family, w, s))
                 .unwrap_or_else(|| regular.clone())
         };
-        let bold = pick(&config.family_bold, Weight::BOLD, Style::Normal);
-        let italic = pick(&config.family_italic, Weight::NORMAL, Style::Italic);
-        let bold_italic = pick(&config.family_bold_italic, Weight::BOLD, Style::Italic);
+        // 꼴마다 정한 스타일 이름(#174): 이름이면 그 이름의 꼴(그 꼴의 글꼴, 없으면 기본 글꼴에서), 못 찾으면 위에서 고른 꼴.
+        // `false`면 그 꼴을 끄고 보통 꼴로 그린다(보통 꼴은 끌 수 없다)
+        let by_style = |i: usize, own: &Option<String>, w, s| match &config.styles[i] {
+            FontStyleName::Disabled => regular.clone(),
+            FontStyleName::Named(name) => {
+                load_named(db, own.as_deref().unwrap_or(&family), name).unwrap_or_else(|| pick(own, w, s))
+            }
+            FontStyleName::Default => pick(own, w, s),
+        };
+        let bold = by_style(1, &config.family_bold, Weight::BOLD, Style::Normal);
+        let italic = by_style(2, &config.family_italic, Weight::NORMAL, Style::Italic);
+        let bold_italic = by_style(3, &config.family_bold_italic, Weight::BOLD, Style::Italic);
+        let vars = |i: usize, own: &Variations| {
+            if config.styles[i] == FontStyleName::Disabled {
+                config.variation.clone()
+            } else {
+                merge_variations(&config.variation, own)
+            }
+        };
         let px = (config.size * config.scale).max(4.0);
         let metrics = cell_metrics(
             &regular,
@@ -463,6 +543,25 @@ impl Fonts {
                 }
             })
             .collect();
+        let mapped = config
+            .codepoint_map
+            .iter()
+            .filter_map(|m| {
+                let normal = load(db, &m.family, Weight::NORMAL, Style::Normal)?;
+                let face = |w, s| load(db, &m.family, w, s).unwrap_or_else(|| normal.clone());
+                Some(Mapped {
+                    start: m.start,
+                    end: m.end,
+                    wide_scale: wide_scale(&normal, px, metrics),
+                    fonts: [
+                        normal.clone(),
+                        face(Weight::BOLD, Style::Normal),
+                        face(Weight::NORMAL, Style::Italic),
+                        face(Weight::BOLD, Style::Italic),
+                    ],
+                })
+            })
+            .collect();
         Ok(Self {
             regular: [regular, bold, italic, bold_italic],
             fallbacks,
@@ -480,10 +579,12 @@ impl Fonts {
             gid_cache: HashMap::new(),
             variations: [
                 config.variation.clone(),
-                merge_variations(&config.variation, &config.variation_bold),
-                merge_variations(&config.variation, &config.variation_italic),
-                merge_variations(&config.variation, &config.variation_bold_italic),
+                vars(1, &config.variation_bold),
+                vars(2, &config.variation_italic),
+                vars(3, &config.variation_bold_italic),
             ],
+            mapped,
+            shaping_break_cursor: config.shaping_break_cursor,
         })
     }
 
@@ -507,8 +608,9 @@ impl Fonts {
     }
 
     fn rasterize(&self, ch: char, style: FontStyle) -> Option<Glyph> {
-        // 두 칸 이모지는 색 글꼴이 먼저(기본 글꼴의 흑백 모양보다)
-        if is_emoji(ch) {
+        let mapped = self.mapped_for(ch, style);
+        // 두 칸 이모지는 색 글꼴이 먼저(기본 글꼴의 흑백 모양보다). 글자 범위로 글꼴을 정했으면 그것이 먼저
+        if mapped.is_none() && is_emoji(ch) {
             let m = self.metrics;
             if let Some(g) = self.color_glyph(ch, m.width * 2, m.height) {
                 return Some(g);
@@ -516,7 +618,14 @@ impl Fonts {
         }
         let idx = style as usize;
         let primary = &self.regular[idx];
-        let (font, px, vars) = if primary.has(ch) {
+        let (font, px, vars) = if let Some(m) = mapped {
+            let wide = crate::text::char_cells(ch) == 2;
+            (
+                m.fonts[idx].clone(),
+                if wide { self.px * m.wide_scale } else { self.px },
+                &[][..],
+            )
+        } else if primary.has(ch) {
             (primary.clone(), self.px, &self.variations[idx][..])
         } else if self.regular[0].has(ch) {
             (self.regular[0].clone(), self.px, &self.variations[0][..])
@@ -532,22 +641,69 @@ impl Fonts {
             )
         };
         let mut ctx = self.context.borrow_mut();
-        let mut scaler = ctx.builder(font.font()).size(px).hint(false).variations(vars).build();
         let gid = font.glyph_id(ch);
-        let img = swash::scale::Render::new(&[swash::scale::Source::Outline]).render(&mut scaler, gid)?;
+        let mut render_at = |px: f32| {
+            let mut scaler = ctx.builder(font.font()).size(px).hint(false).variations(vars).build();
+            swash::scale::Render::new(&[swash::scale::Source::Outline]).render(&mut scaler, gid)
+        };
+        let img = render_at(px)?;
+        let (mut left, mut top) = (img.placement.left, img.placement.top);
+        let icon_k = self.icon_scale(ch);
+        let img = if icon_k == 1.0 {
+            img
+        } else {
+            // Nerd 아이콘 높이 보정(#174): 셀 높이 대신 보정한 높이에 맞춰 키우거나 줄이고, 원래 글리프의 가운데에 둔다.
+            // 키울 때는 칸 폭을 넘지 않게 멈춘다(그래서 모든 아이콘이 같은 비율로 커지지는 않는다)
+            let mut k = icon_k;
+            let mut big = render_at(px * k)?;
+            let slot = self.metrics.width * crate::text::char_cells(ch).max(1) as u32;
+            if k > 1.0 && big.placement.width > slot {
+                // 원래 크기가 이미 칸 폭을 채웠으면 더 키우지 않는다(원래보다 작아지지는 않는다)
+                k = (k * slot as f32 / big.placement.width as f32).max(1.0);
+                big = render_at(px * k)?;
+            }
+            let (w0, h0) = (img.placement.width as f32, img.placement.height as f32);
+            let (w1, h1) = (big.placement.width as f32, big.placement.height as f32);
+            left = (left as f32 + w0 / 2.0 - w1 / 2.0).round() as i32;
+            top = (top as f32 - h0 / 2.0 + h1 / 2.0).round() as i32;
+            big
+        };
         Some(Glyph {
             width: img.placement.width as usize,
             height: img.placement.height as usize,
-            left: img.placement.left,
-            top: img.placement.top,
+            left,
+            top,
             bitmap: img.data,
             color: None,
         })
     }
 
+    /// 글자 범위로 정한 글꼴(`font-codepoint-map`, #174). 뒤에 쓴 것이 먼저 이기고, 그 글꼴에 글자가 없으면 건너뛴다
+    fn mapped_for(&self, ch: char, style: FontStyle) -> Option<&Mapped> {
+        let c = ch as u32;
+        self.mapped
+            .iter()
+            .rev()
+            .find(|m| (m.start..=m.end).contains(&c) && m.fonts[style as usize].has(ch))
+    }
+
+    /// Nerd Font 아이콘에 곱할 크기 배율(`adjust-icon-height`, #174). 아이콘이 아니거나 보정이 없으면 1
+    fn icon_scale(&self, ch: char) -> f32 {
+        let m = self.metrics;
+        if !is_private_use(ch) || is_powerline(ch) || m.icon_height == m.height {
+            return 1.0;
+        }
+        m.icon_height as f32 / m.height as f32
+    }
+
+    /// 커서 칸에서 다듬기를 끊는가(`font-shaping-break = cursor`, #174)
+    pub fn breaks_shaping_at_cursor(&self) -> bool {
+        self.shaping_break_cursor
+    }
+
     /// 그 꼴의 기본 글꼴에 있는 글자인가(합자로 다듬을 수 있는 글자, #96)
     pub fn primary_has(&self, ch: char, style: FontStyle) -> bool {
-        self.regular[style as usize].has(ch)
+        self.regular[style as usize].has(ch) && self.mapped_for(ch, style).is_none()
     }
 
     /// 한 꼴의 글자 묶음을 다듬어(#96) 글자마다 바뀐 글리프 번호를 돌려준다. 0이면 그 글자는 그대로 그린다.
@@ -771,6 +927,11 @@ fn is_symbol_font(name: &str) -> bool {
     n.contains("nerd") || n.contains("symbols") || n.contains("powerline")
 }
 
+/// 파워라인 도형(U+E0B0~U+E0D7): 칸에 꽉 차게 그려야 해서 아이콘 높이 보정을 받지 않는다
+fn is_powerline(c: char) -> bool {
+    matches!(c as u32, 0xE0B0..=0xE0D7)
+}
+
 /// 유니코드 사설 영역(Nerd Font·Powerline 아이콘이 쓰는 자리)
 pub fn is_private_use(c: char) -> bool {
     matches!(c as u32, 0xE000..=0xF8FF | 0xF0000..=0xFFFFD | 0x100000..=0x10FFFD)
@@ -871,6 +1032,7 @@ fn cell_metrics(
         cursor_beam: thickness((stroke * 2).max(2), adj.cursor_thickness),
         cursor_hollow: thickness(stroke, adj.cursor_thickness),
         box_thickness: thickness(stroke, adj.box_thickness),
+        icon_height: adjusted(height as f32, adj.icon_height, scale).max(1) as u32,
     }
 }
 
