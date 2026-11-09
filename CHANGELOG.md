@@ -4,7 +4,7 @@
 
 ## [아직 릴리스하지 않음]
 
-- 보안 키보드 입력(macOS)을 채웁니다: 칸의 PTY가 줄 단위 입력이고 되울림이 꺼졌으면(암호 입력) 그 칸이 초점일 때 `EnableSecureEventInput`을 켜고, 앱이 뒤로 가면 끄고 앞으로 오면 다시 켭니다(켠 횟수와 끈 횟수를 맞춤, 호출이 실패하면 상태를 바꾸지 않음). 암호 입력 중에는 커서가 자물쇠가 됩니다(`macos-auto-secure-input`과 상관없이). `macos-auto-secure-input`(기본 `true`)과 `macos-secure-input-indication`(기본 `true`, 켜 있는 동안 창 오른쪽 위 자물쇠 표시)을 해석하고, `toggle_secure_input`(초점 칸 하나)과 앱 메뉴 `보안 키보드 입력`(앱 전체, 다음 실행에도 남김)을 더합니다. **기본 동작이 바뀝니다**: 암호를 치는 칸이 초점이면 보안 입력이 자동으로 켜지고 커서가 자물쇠가 되며, 이를 끄려면 `macos-auto-secure-input = false`입니다. 감지는 앱이 앞일 때 200ms마다 칸마다 `tcgetattr` 한 번이고 깨우는 비용은 재지 않았습니다. 판단·상태 기계·설정 해석·PTY의 termios 읽기는 테스트로 확인했고, 실제 창(`ioreg`로 보안 입력 켜짐, 자물쇠 커서·표시 모양)은 보지 않았습니다. #258
+- 보안 키보드 입력(macOS)을 채웁니다: 칸의 PTY가 줄 단위 입력이고 되울림이 꺼졌으면(암호 입력) 그 칸이 초점일 때 `EnableSecureEventInput`을 켜고, 앱이 뒤로 가면 끄고 앞으로 오면 다시 켭니다(켠 횟수와 끈 횟수를 맞춤, 호출이 실패하면 상태를 바꾸지 않음). 암호 입력 중에는 커서가 자물쇠가 됩니다(`macos-auto-secure-input`과 상관없이). `macos-auto-secure-input`(기본 `true`)과 `macos-secure-input-indication`(기본 `true`, 켜 있는 동안 창 오른쪽 위 자물쇠 표시)을 해석하고, `toggle_secure_input`(초점 칸 하나)과 앱 메뉴 `보안 키보드 입력`(앱 전체, 다음 실행에도 남김)을 더합니다. **기본 동작이 바뀝니다**: 암호를 치는 칸이 초점이면 보안 입력이 자동으로 켜지고 커서가 자물쇠가 되며, 이를 끄려면 `macos-auto-secure-input = false`입니다. 감지는 앱이 앞일 때 200ms마다 칸마다 `tcgetattr` 한 번이고 깨우는 비용은 재지 않았습니다. 판단·상태 기계·설정 해석·PTY의 termios 읽기는 테스트로 확인했습니다. 격리한 실제 창에서는 `stty -echo; read x` 동안 `ioreg`의 보안 입력 PID가 이 앱이 되고 Enter 뒤와 앱을 끈 뒤 사라지는 것, 자물쇠 커서와 표시(탭이 둘일 때 탭 줄 아래), `macos-auto-secure-input = false`에서 커서만 자물쇠인 것을 봤습니다. 메뉴·`toggle_secure_input`(키를 눌러야 함)과 다른 앱으로 갔다 오기는 보지 않았습니다. #258
 
 ## [0.18.0] - 2026-11-10
 
