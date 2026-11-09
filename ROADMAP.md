@@ -245,6 +245,26 @@ Ghostty 키 채우기 6. 추적 이슈 [#189](https://github.com/dj258255/b-term
 - 배포 스크립트(`ship.sh`)와 충돌 해결 스크립트를 세션 임시 폴더에만 두었더니, 세션이 이어질 때 폴더가 비어 대화 기록에서 되살려야 했습니다.
 - worktree를 일곱 개 한꺼번에 만들면 경합으로 하나가 실패할 수 있습니다(#194, 남은 브랜치를 지우고 다시 띄움).
 
+## 0.14.0 (2026-11-10)
+
+Ghostty 키 묶음 동작 채우기. 추적 이슈 [#205](https://github.com/dj258255/b-terminal/issues/205). 0.13과 같은 방식으로 진행했습니다. 에이전트 여섯이 각자 worktree에서 구현·커밋하고, 주 세션이 옮기고 검토·병합했습니다. 병합 시각(KST)은 추적 이슈를 연 00:55부터 마지막 병합 01:42까지입니다. 이번 판으로 Ghostty 동작 89개를 모두 받습니다(`cursor_key`는 Ghostty처럼 막음).
+
+| 이슈 | 내용 | 예상 | 실제 | PR | 주 세션이 한 것 |
+|---|---|---|---|---|---|
+| [#206](https://github.com/dj258255/b-terminal/issues/206) | 창·탭 동작 | 2~4시간 | 에이전트 약 6.5분(병합 01:29) | [#215](https://github.com/dj258255/b-terminal/pull/215) | 충돌 정리, 옮긴 뒤 깨진 컴파일(#207의 제목 막대 대상) 고침, 검토 에이전트, 실제 창(경고 없음) |
+| [#207](https://github.com/dj258255/b-terminal/issues/207) | 제목 동작 | 2~4시간 | 에이전트 약 5분(병합 01:04) | [#212](https://github.com/dj258255/b-terminal/pull/212) | diff 읽기, 실제 창(셸 통합 `title`을 끄고 프로그램 제목 경로) |
+| [#208](https://github.com/dj258255/b-terminal/issues/208) | 화면·찾기 동작 | 2~4시간 | 에이전트 약 7분(병합 01:25) | [#214](https://github.com/dj258255/b-terminal/pull/214) | 에이전트가 만든 `cursor_key` 문법을 빼고 Ghostty처럼 막음(테스트 먼저), 실제 창 |
+| [#209](https://github.com/dj258255/b-terminal/issues/209) | 토글 동작, 읽기 전용(보안 경계) | 2~4시간 | 에이전트 약 10.5분(병합 01:42) | [#217](https://github.com/dj258255/b-terminal/pull/217) | 검토에서 나온 시작 입력 스레드의 막 빈틈을 테스트 먼저 쓰고 고침, ADR-018 보충, 커밋 보안 리뷰, 실제 창 |
+| [#210](https://github.com/dj258255/b-terminal/issues/210) | 키 테이블 | 2~4시간 | 에이전트 약 7분(병합 01:33) | [#216](https://github.com/dj258255/b-terminal/pull/216) | 검토 에이전트 지적으로 8개 상한(Ghostty `Surface.zig`)을 테스트 먼저 쓰고 더함, 실제 창 |
+| [#211](https://github.com/dj258255/b-terminal/issues/211) | 받기만 하는 동작, `--config-default-files` | 2~4시간 | 에이전트 약 6분(병합 01:08) | [#213](https://github.com/dj258255/b-terminal/pull/213) | 격리 HOME에서 `--show-config`로 읽은 파일 확인 |
+
+이번에 배운 것:
+
+- 에이전트는 Ghostty에 없는 문법을 만들기도 합니다(`cursor_key:일반,응용`, #208). Ghostty가 설정에서 일부러 막은 동작이었습니다. 동작마다 `Binding.zig`의 주석과 해석 코드를 같이 대조해야 합니다.
+- 같은 enum(`Action`)과 같은 함수(`title_of`)를 여섯 브랜치가 고치면, 충돌은 글자로 풀려도 컴파일이 깨질 수 있습니다(#206이 #207의 새 타입을 몰랐음). 옮긴 뒤 빌드가 실패하면 rebase를 이어 가지 않도록 명령을 `&&`로 이어야 합니다(`;`로 이어 깨진 채 이어진 적이 있음).
+- "막는 곳은 한 곳"이라는 설계(ADR-018)도, 그 한 곳보다 먼저 생기는 길(칸을 만들기 전에 뜨는 시작 입력 스레드)은 놓칠 수 있습니다. 검토 에이전트가 찾았습니다.
+- Ghostty 동작 89개를 해석기에 실제로 넣어 보는 임시 테스트로 "모두 받는다"를 쟀습니다. 이름이 코드에 있는지 grep하는 것보다 정확합니다.
+
 ## 다음
 
 - 범수 님이 직접 해야 할 것: 키보드·마우스 확인(한글 2벌식 "안녕 하세요⏎", Claude Code의 Shift+Enter, Cmd-D·Cmd-F·Cmd-클릭·Cmd-N·Cmd-Shift-P, 메뉴, 창 닫기 단추, vim·htop, kitty icat·yazi, 투명 창), Developer ID 계정으로 `scripts/bundle-macos.sh --sign … --notarize … --dmg`
@@ -257,4 +277,5 @@ Ghostty 키 채우기 6. 추적 이슈 [#189](https://github.com/dj258255/b-term
 - 범수 님이 확인할 것(0.11): 탭을 닫고 5초 안에 ⌘Z, `notify-on-command-finish = unfocused`로 긴 명령 뒤 다른 앱으로, `bell-features = audio`와 `bell-audio-path`로 벨 소리, ⌘F 찾기 강조 색, 고른 뒤 키를 치면 고르기가 지워지는지
 - 범수 님이 확인할 것(0.12): `vt-window-resize-allowed = true`에서 `printf '\033[8;20;60t'`로 창 크기가 바뀌는지, `macos-non-native-fullscreen = true`에서 ⌃⌘F, `window-step-resize = true`에서 가장자리 끌기, 빨리 끝난 칸에서 아무 키나 눌러 닫기, `palette-generate = true`로 256색 표, tmux 안의 가족 이모지 뒤 커서 자리
 - 범수 님이 확인할 것(0.13): OSC 8 링크를 Cmd를 누른 채 올려 `link-previews = osc8`·`false`에서 주소 띠가 어떻게 나오는지, `seq 1 500` 뒤 휠로 올려 스크롤 막대가 나왔다 사라지는지, `key-remap = left_ctrl=super`와 `keybind = super+t=new_tab`으로 왼쪽 Ctrl-T(오른쪽 Ctrl-C는 그대로 SIGINT), `macos-icon = custom`과 `macos-custom-icon`으로 Dock 아이콘, `quick-terminal-space-behavior = remain`에서 Space 옮기기, `macos-titlebar-style = hidden`에서 창 위쪽 끌기, `font-thicken = true`의 두께
+- 범수 님이 확인할 것(0.14): `keybind = ctrl+alt+r=toggle_readonly`로 칸을 읽기 전용으로 한 뒤 타자·⌘V·`btctl send`가 막히고 제목에 🔒가 붙는지, `prompt_tab_title`의 입력 막대, `move_tab_to_new_window`, `toggle_visibility`, `toggle_background_opacity`(`background-opacity = 0.8`과 함께), `set_window_theme:light`, `keybind = ctrl+a>activate_key_table:nav`와 `nav/h=goto_split:left` 같은 키 테이블
 - 큰 일로 남긴 것: GPU(또는 IOSurface) 렌더러
