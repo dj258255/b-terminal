@@ -21,6 +21,31 @@ pub fn start_mode(maximize: bool, fullscreen: bool, quick: bool) -> StartMode {
     }
 }
 
+/// 전체 화면을 켜고 끄는 방식
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FullscreenKind {
+    /// 창 시스템의 전체 화면(새 Space)
+    Native,
+    /// 새 Space 없는 전체 화면(macOS 전용, `macos-non-native-fullscreen`)
+    Simple,
+}
+
+/// 설정과 운영체제로 전체 화면 방식을 정한다. macOS가 아니면 늘 Native
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub fn fullscreen_kind(kind: bt_core::config::NonNativeFullscreen, macos: bool) -> FullscreenKind {
+    if macos && kind != bt_core::config::NonNativeFullscreen::False {
+        FullscreenKind::Simple
+    } else {
+        FullscreenKind::Native
+    }
+}
+
+/// `window-step-resize`가 켜졌을 때 창 크기를 맞출 단위(물리 픽셀). 셀 크기를 모르면(0) 쓰지 않는다
+pub fn step_increments(enabled: bool, cell_w: u32, cell_h: u32) -> Option<(u32, u32)> {
+    (enabled && cell_w > 0 && cell_h > 0).then_some((cell_w, cell_h))
+}
+
 /// `window-position-x`·`-y`: 둘 다 있어야 쓴다(Ghostty와 같이 하나만 있으면 무시)
 pub fn configured_position(x: Option<i32>, y: Option<i32>) -> Option<(i32, i32)> {
     Some((x?, y?))
@@ -44,6 +69,28 @@ pub fn window_level(on: bool) -> winit::window::WindowLevel {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fullscreen_kind_by_setting_and_os() {
+        use bt_core::config::NonNativeFullscreen as N;
+        assert_eq!(fullscreen_kind(N::False, true), FullscreenKind::Native);
+        for k in [N::True, N::VisibleMenu, N::PaddedNotch] {
+            assert_eq!(fullscreen_kind(k, true), FullscreenKind::Simple, "{k:?}");
+            assert_eq!(
+                fullscreen_kind(k, false),
+                FullscreenKind::Native,
+                "macOS가 아니면 {k:?}도 Native"
+            );
+        }
+    }
+
+    #[test]
+    fn step_increments_only_when_on_and_cell_known() {
+        assert_eq!(step_increments(true, 9, 18), Some((9, 18)));
+        assert_eq!(step_increments(false, 9, 18), None);
+        assert_eq!(step_increments(true, 0, 18), None);
+        assert_eq!(step_increments(true, 9, 0), None);
+    }
 
     #[test]
     fn mode_priority_and_quick() {

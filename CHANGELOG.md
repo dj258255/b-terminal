@@ -4,6 +4,7 @@
 
 ## [아직 릴리스하지 않음]
 
+- macOS 창 키 추가: `macos-non-native-fullscreen`(새 Space 없는 전체 화면), `window-step-resize`, `macos-window-buttons`, `macos-hidden`. `window-subtitle`·`window-titlebar-*`는 받기만 한다 #179
 - 마우스 키 `mouse-reporting`·`mouse-shift-capture`·`middle-click-action`·`click-repeat-interval`을 Ghostty와 같은 뜻으로 받습니다. 두 번 누르기 기본 간격이 400ms에서 OS 값(macOS)·500ms로 바뀝니다 #175
 
 ## [0.11.0] - 2026-11-09
