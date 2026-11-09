@@ -17,6 +17,7 @@ mod split;
 mod startup;
 mod state;
 mod tabbar;
+mod undo;
 
 use bt_term::SpawnOptions;
 use winit::event_loop::EventLoop;

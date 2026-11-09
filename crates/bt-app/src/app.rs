@@ -18,9 +18,10 @@ use winit::window::{CursorIcon, Window, WindowId};
 use crate::keymap::{Action, Keymap, SplitTarget};
 use crate::keys;
 use crate::mouse;
-use crate::split::{Direction, Node, Rect};
+use crate::split::{Direction, Node, Rect, Slot};
 use crate::tabbar;
 use bt_core::config::NotifyOnFinish;
+use crate::undo::UndoStack;
 
 fn truncate_chars(s: &str, n: usize) -> String {
     if s.chars().count() <= n {
@@ -355,6 +356,37 @@ struct TabGroup {
     zoomed: bool,
 }
 
+/// 닫고 `undo-timeout` 동안 들고 있는 것(#164). 셸(Session)을 떨어뜨리지 않아 되살리면 그대로 이어진다
+enum Closed {
+    /// 분할의 칸 하나: 원래 트리 자리
+    Pane { pane: Box<Pane>, slot: Slot },
+    /// 탭 하나(칸 전부와 배치)
+    Tab {
+        panes: Vec<Pane>,
+        layout: Node,
+        index: usize,
+        focus: u64,
+        zoomed: bool,
+    },
+}
+
+impl Closed {
+    fn holds(&self, id: u64) -> bool {
+        match self {
+            Closed::Pane { pane, .. } => pane.id == id,
+            Closed::Tab { panes, .. } => panes.iter().any(|p| p.id == id),
+        }
+    }
+}
+
+/// 되살린 것을 다시 닫는 일(`redo`, #164): 되살린 칸 id
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Redo {
+    Pane(u64),
+    /// 탭의 칸 하나
+    Tab(u64),
+}
+
 /// btctl wait 하나: 칸, 기다리는 글, 답할 곳, 기한(#66)
 struct TextWaiter {
     pane: u64,
@@ -561,6 +593,9 @@ pub struct App {
     bg_image: Option<Arc<bt_render::background::BgImage>>,
     hotkey_registered: Vec<global_hotkey::hotkey::HotKey>,
     hotkey_actions: std::collections::HashMap<u32, Action>,
+    /// 닫고 들고 있는 칸·탭(`undo-timeout`, #164)과 되살린 것을 다시 닫는 일(`redo`)
+    undo: UndoStack<Closed>,
+    redo: UndoStack<Redo>,
 }
 
 impl App {
@@ -610,6 +645,8 @@ impl App {
             bg_image: None,
             hotkey_registered: Vec::new(),
             hotkey_actions: std::collections::HashMap::new(),
+            undo: UndoStack::default(),
+            redo: UndoStack::default(),
         }
     }
 
@@ -1466,7 +1503,7 @@ impl App {
         match pending {
             Pending::ClosePane(id) => {
                 if let Some(i) = self.pane_index(id) {
-                    self.close_pane(i, event_loop);
+                    self.close_pane(i, event_loop, true);
                 }
             }
             Pending::CloseTab(id) => {
@@ -1612,13 +1649,15 @@ impl App {
         true
     }
 
-    /// 칸 하나를 닫는다. 탭의 마지막 칸이면 탭이, 마지막 탭이면 앱이 닫힌다
-    fn close_pane(&mut self, index: usize, event_loop: &ActiveEventLoop) {
+    /// 칸 하나를 닫는다. 탭의 마지막 칸이면 탭이, 마지막 탭이면 앱이 닫힌다.
+    /// `undoable`이면 `undo-timeout` 동안 셸을 들고 있어 되살릴 수 있다(창이 비게 되면 들지 않는다)
+    fn close_pane(&mut self, index: usize, event_loop: &ActiveEventLoop, undoable: bool) {
         if index >= self.panes.len() {
             return;
         }
-        // Session을 떨어뜨리면 PTY가 닫히고 셸은 SIGHUP을 받는다
-        let id = self.panes.remove(index).id;
+        // Session을 떨어뜨리면 PTY가 닫히고 셸은 SIGHUP을 받는다. 들고 있으면 그때까지 떨어뜨리지 않는다
+        let pane = self.panes.remove(index);
+        let id = pane.id;
         self.fail_text_waiters(|w| w.pane == id, "글이 나오기 전에 칸이 닫혔습니다");
         if let Some((req_id, reply, _)) = self.run_waiters.remove(&id) {
             let _ = reply.send(bt_core::proto::Response::err(
@@ -1627,8 +1666,11 @@ impl App {
             ));
         }
         let before = self.focused_id();
+        let mut held = None;
         if let Some(gi) = self.group_of(id) {
             let g = &mut self.w.tabs[gi];
+            let slot = g.layout.slot_of(id);
+            let was = (g.zoomed, g.focus);
             let layout = std::mem::replace(&mut g.layout, Node::Leaf(id));
             match layout.remove(id) {
                 (Some(rest), next) => {
@@ -1637,12 +1679,23 @@ impl App {
                         g.zoomed = false;
                     }
                     g.layout = rest;
+                    held = slot.map(|slot| Closed::Pane {
+                        pane: Box::new(pane),
+                        slot,
+                    });
                 }
                 (None, _) => {
                     self.w.tabs.remove(gi);
                     if gi < self.w.active || self.w.active >= self.w.tabs.len() {
                         self.w.active = self.w.active.saturating_sub(1);
                     }
+                    held = Some(Closed::Tab {
+                        panes: vec![pane],
+                        layout: Node::Leaf(id),
+                        index: gi,
+                        focus: was.1,
+                        zoomed: was.0,
+                    });
                 }
             }
         }
@@ -1650,20 +1703,158 @@ impl App {
             self.close_current_window(event_loop);
             return;
         }
+        if let Some(h) = held.filter(|_| undoable) {
+            self.hold(h);
+        }
         self.focus_changed(before);
         self.clear_visible_unread();
         // 남은 칸이 빈자리를 채운다. 탭이 하나가 되면 탭 줄도 사라진다
         self.resize_all();
     }
 
-    /// 탭을 칸째 닫는다
+    /// 탭을 칸째 닫는다. 되살릴 수 있게 칸들을 들고 있는다(창의 마지막 탭이면 창이 닫히므로 들지 않는다)
     fn close_tab(&mut self, gi: usize, event_loop: &ActiveEventLoop) {
         let Some(g) = self.w.tabs.get(gi) else { return };
-        for id in g.layout.leaves() {
+        if self.w.tabs.len() <= 1 || self.config.undo_timeout.is_zero() {
+            for id in g.layout.leaves() {
+                if let Some(i) = self.pane_index(id) {
+                    self.close_pane(i, event_loop, false);
+                }
+            }
+            return;
+        }
+        let (layout, focus, zoomed) = (g.layout.clone(), g.focus, g.zoomed);
+        let before = self.focused_id();
+        self.w.tabs.remove(gi);
+        if gi < self.w.active || self.w.active >= self.w.tabs.len() {
+            self.w.active = self.w.active.saturating_sub(1);
+        }
+        let mut panes = Vec::new();
+        for id in layout.leaves() {
+            self.fail_text_waiters(|w| w.pane == id, "글이 나오기 전에 탭이 닫혔습니다");
+            if let Some((req_id, reply, _)) = self.run_waiters.remove(&id) {
+                let _ = reply.send(bt_core::proto::Response::err(
+                    req_id,
+                    "명령이 끝나기 전에 탭이 닫혔습니다",
+                ));
+            }
             if let Some(i) = self.pane_index(id) {
-                self.close_pane(i, event_loop);
+                panes.push(self.panes.remove(i));
             }
         }
+        self.hold(Closed::Tab {
+            panes,
+            layout,
+            index: gi,
+            focus,
+            zoomed,
+        });
+        self.focus_changed(before);
+        self.clear_visible_unread();
+        self.resize_all();
+    }
+
+    /// 닫은 것을 `undo-timeout` 동안 들고 있는다. 0이면 바로 떨어뜨린다
+    fn hold(&mut self, closed: Closed) {
+        let now = Instant::now();
+        // 기한이 지난 것은 이때 떨어뜨린다
+        drop(self.undo.expire(now));
+        // 넣지 못한(끈) 것은 여기서 떨어진다
+        let _ = self.undo.push(now, self.config.undo_timeout, closed);
+    }
+
+    /// 닫은 것을 되살린다(`undo`). 되살릴 것이 없으면 거짓
+    fn undo_close(&mut self) -> bool {
+        let now = Instant::now();
+        drop(self.undo.expire(now));
+        let Some(closed) = self.undo.pop(now) else { return false };
+        let redo = match closed {
+            Closed::Pane { pane, slot } => {
+                let id = pane.id;
+                match self.restore_pane(*pane, &slot) {
+                    Ok(()) => Redo::Pane(id),
+                    // 원래 자리의 이웃이 사라졌다: 새 탭 끝에 되살린다
+                    Err(pane) => {
+                        self.restore_tab(vec![*pane], Node::Leaf(id), usize::MAX, id, false);
+                        Redo::Tab(id)
+                    }
+                }
+            }
+            Closed::Tab {
+                panes,
+                layout,
+                index,
+                focus,
+                zoomed,
+            } => {
+                self.restore_tab(panes, layout, index, focus, zoomed);
+                Redo::Tab(focus)
+            }
+        };
+        let _ = self.redo.push(now, self.config.undo_timeout, redo);
+        self.request_redraw_all();
+        true
+    }
+
+    /// 분할의 칸을 원래 트리 자리에 되살린다. 이웃이 어느 창에도 없으면 칸을 돌려준다
+    fn restore_pane(&mut self, pane: Pane, slot: &Slot) -> Result<(), Box<Pane>> {
+        let id = pane.id;
+        if !self.switch_to_pane(slot.anchor) {
+            return Err(Box::new(pane));
+        }
+        let Some(gi) = self.group_of(slot.anchor) else {
+            return Err(Box::new(pane));
+        };
+        let before = self.focused_id();
+        let g = &mut self.w.tabs[gi];
+        if !g.layout.insert_at(slot, id) {
+            return Err(Box::new(pane));
+        }
+        g.focus = id;
+        g.zoomed = false;
+        self.w.active = gi;
+        self.panes.push(pane);
+        self.focus_changed(before);
+        self.clear_visible_unread();
+        self.resize_all();
+        Ok(())
+    }
+
+    /// 탭을 원래 탭 자리(`index`, 넘으면 맨 끝)에 되살린다
+    fn restore_tab(&mut self, panes: Vec<Pane>, layout: Node, index: usize, focus: u64, zoomed: bool) {
+        let before = self.focused_id();
+        let at = index.min(self.w.tabs.len());
+        self.w.tabs.insert(at, TabGroup { layout, focus, zoomed });
+        self.w.active = at;
+        self.panes.extend(panes);
+        self.focus_changed(before);
+        self.clear_visible_unread();
+        self.resize_all();
+    }
+
+    /// 되살린 것을 다시 닫는다(`redo`). 할 것이 없으면 거짓
+    fn redo_close(&mut self, event_loop: &ActiveEventLoop) -> bool {
+        let now = Instant::now();
+        drop(self.redo.expire(now));
+        let Some(redo) = self.redo.pop(now) else { return false };
+        match redo {
+            Redo::Pane(id) => {
+                if self.switch_to_pane(id) {
+                    self.request(Pending::ClosePane(id), event_loop);
+                }
+            }
+            Redo::Tab(id) => {
+                if self.switch_to_pane(id) {
+                    self.request(Pending::CloseTab(id), event_loop);
+                }
+            }
+        }
+        true
+    }
+
+    /// 들고 있던 칸의 셸이 스스로 끝났다: 되살릴 이유가 없으니 그 기록을 버린다
+    fn held_exited(&mut self, id: u64) -> bool {
+        !self.undo.remove_where(|c| c.holds(id)).is_empty()
     }
 
     fn active_pane(&self) -> Option<&Pane> {
@@ -1973,6 +2164,8 @@ impl App {
                 .is_some_and(|t| !t.is_empty()),
             Action::CopyUrl => self.link_under(self.w.cursor_pos).is_some(),
             Action::EndSearch => self.w.search.is_some(),
+            Action::Undo => self.undo.has_alive(Instant::now()),
+            Action::Redo => self.redo.has_alive(Instant::now()),
             _ => true,
         }
     }
@@ -2020,12 +2213,25 @@ impl App {
             }
             Action::CloseSurface => {
                 if let Some(id) = self.focused_id() {
+                    // 새로 닫으면 다시 하기(redo) 기록은 비운다
+                    drop(self.redo.clear());
                     self.request(Pending::ClosePane(id), event_loop);
                 }
             }
             Action::CloseTab => {
                 if let Some(id) = self.focused_id() {
+                    drop(self.redo.clear());
                     self.request(Pending::CloseTab(id), event_loop);
+                }
+            }
+            Action::Undo => {
+                if !self.undo_close() {
+                    self.toast("되살릴 것이 없습니다".into());
+                }
+            }
+            Action::Redo => {
+                if !self.redo_close(event_loop) {
+                    self.toast("다시 닫을 것이 없습니다".into());
                 }
             }
             Action::Quit => self.request(Pending::Quit, event_loop),
@@ -3559,6 +3765,10 @@ impl ApplicationHandler<UserEvent> for App {
                 // 그 칸이 든 창이 지금 창이 되게(보고 있음·안 읽음·다시 그리기를 그 창 기준으로)
                 self.switch_to_pane(id);
                 let Some(idx) = self.panes.iter().position(|t| t.id == id) else {
+                    // 들고 있던 칸의 셸이 스스로 끝났다
+                    if matches!(e, SessionEvent::Exited(_)) {
+                        self.held_exited(id);
+                    }
                     return;
                 };
                 match e {
@@ -3579,7 +3789,7 @@ impl ApplicationHandler<UserEvent> for App {
                     SessionEvent::Exited(code) => {
                         self.panes[idx].exited = Some(code);
                         // 셸이 끝나면 그 칸을 닫는다(Ghostty 기본과 같다)
-                        self.close_pane(idx, event_loop);
+                        self.close_pane(idx, event_loop, false);
                         return;
                     }
                     SessionEvent::Progress { state, percent } => {
@@ -4017,6 +4227,9 @@ impl ApplicationHandler<UserEvent> for App {
                 }
             }
         }
+        // 기한이 지난 닫은 칸·탭은 이때 떨어뜨린다(셸이 SIGHUP을 받는다, #164)
+        drop(self.undo.expire(now));
+        drop(self.redo.expire(now));
         // 크기 표시가 끝난 칸은 지우고 다시 그린다(#122)
         let mut overlay_done = false;
         for p in &mut self.panes {
@@ -4062,6 +4275,8 @@ impl ApplicationHandler<UserEvent> for App {
             .chain(blink_next)
             .chain(anim_next)
             .chain(overlay_next)
+            .chain(self.undo.next_deadline())
+            .chain(self.redo.next_deadline())
             .min();
         match deadline {
             Some(d) if d <= Instant::now() => {

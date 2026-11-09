@@ -308,6 +308,8 @@ pub struct Config {
     pub resize_overlay: ResizeOverlay,
     pub resize_overlay_position: OverlayPosition,
     pub resize_overlay_duration: std::time::Duration,
+    /// 닫은 탭·칸을 되살릴 수 있는 시간(Ghostty `undo-timeout`, #164). 0이면 되살리기를 끈다
+    pub undo_timeout: std::time::Duration,
     /// 글자색과 바탕의 최소 명암비(1~21, Ghostty `minimum-contrast`, #123). 1이면 끔
     pub minimum_contrast: f32,
     /// 분할에서 마우스가 올라간 칸을 고른다(Ghostty `focus-follows-mouse`, #126)
@@ -803,6 +805,7 @@ impl Default for Config {
             resize_overlay: ResizeOverlay::AfterFirst,
             resize_overlay_position: OverlayPosition::Center,
             resize_overlay_duration: std::time::Duration::from_millis(750),
+            undo_timeout: std::time::Duration::from_secs(5),
             minimum_contrast: 1.0,
             focus_follows_mouse: false,
             scroll_multiplier: (3.0, 1.0),
@@ -1698,6 +1701,10 @@ impl Config {
             },
             "resize-overlay-duration" => match parse_duration(v) {
                 Some(d) => self.resize_overlay_duration = d,
+                None => bad(warnings),
+            },
+            "undo-timeout" => match parse_duration(v) {
+                Some(d) => self.undo_timeout = d,
                 None => bad(warnings),
             },
             "minimum-contrast" => match v.parse::<f32>() {
@@ -2795,6 +2802,26 @@ mod tests {
                 .warnings
                 .len(),
             1
+        );
+    }
+
+    #[test]
+    fn undo_timeout_like_ghostty() {
+        use std::time::Duration;
+        assert_eq!(
+            Config::default().undo_timeout,
+            Duration::from_secs(5),
+            "Ghostty 기본 5초"
+        );
+        let c = Config::from_text("undo-timeout = 1m30s\n", true);
+        assert_eq!((c.undo_timeout, c.warnings.len()), (Duration::from_secs(90), 0));
+        let c = Config::from_text("undo-timeout = 0s\n", true);
+        assert_eq!((c.undo_timeout, c.warnings.len()), (Duration::ZERO, 0), "0이면 끈다");
+        let c = Config::from_text("undo-timeout = soon\n", true);
+        assert_eq!(
+            (c.undo_timeout, c.warnings.len()),
+            (Duration::from_secs(5), 1),
+            "틀리면 경고하고 기본"
         );
     }
 
