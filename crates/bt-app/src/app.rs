@@ -740,6 +740,8 @@ pub struct App {
     quit_deadline: Option<Instant>,
     /// `set_window_theme`으로 이번 실행 동안 고른 창 테마(#209). 없으면 설정의 `window-theme`. 설정을 다시 읽어도 남는다
     theme_override: Option<bt_core::config::WindowTheme>,
+    /// 지금 깔린 색 테마를 고른 시스템 모양(`theme = light:…,dark:…`, #221). 모양 사건이 창마다 와도 한 번만 처리하려고 든다
+    applied_dark: bool,
 }
 
 impl App {
@@ -795,6 +797,7 @@ impl App {
             redo: UndoStack::default(),
             quit_deadline: None,
             theme_override: None,
+            applied_dark: crate::system_is_dark(),
         }
     }
 
@@ -2959,6 +2962,7 @@ impl App {
             log::warn!("설정: {w}");
         }
         let mut next = next;
+        self.applied_dark = crate::system_is_dark();
         let (keymap, mut kw) = Keymap::build(&next.keybinds);
         kw.extend(crate::palette::user_warnings(&next.palette_entries));
         for w in &kw {
@@ -3007,6 +3011,25 @@ impl App {
                 format!("설정을 다시 읽었습니다(경고 {warn}개)")
             });
         }
+    }
+
+    /// 시스템 밝음·어두움이 바뀌면 `theme = light:…,dark:…`를 다시 골라 열린 모든 칸에 쓰고 창 모양을 맞춘다(#221).
+    /// 설정 파일은 다시 읽지 않는다. 판단은 `appearance::should_repick`
+    fn system_look_changed(&mut self, dark: bool) {
+        let forced = crate::appearance::window_theme_forced(crate::toggles::window_theme_mode(
+            self.config.window_theme,
+            self.theme_override,
+        ));
+        if !crate::appearance::should_repick(self.config.theme_split, forced, self.applied_dark, dark) {
+            return;
+        }
+        self.applied_dark = dark;
+        self.config.repick_theme(dark);
+        for t in &self.panes {
+            t.session.set_theme(self.config.theme.clone());
+        }
+        self.apply_window_look();
+        self.request_redraw_all();
     }
 
     /// 눌린 수정 키에 `key-remap`을 적용해 `mods`를 정한다(설정을 다시 읽을 때도 한다)
@@ -4861,6 +4884,7 @@ impl ApplicationHandler<UserEvent> for App {
                 self.resize_all();
             }
             WindowEvent::RedrawRequested => self.redraw(),
+            WindowEvent::ThemeChanged(theme) => self.system_look_changed(theme == winit::window::Theme::Dark),
             WindowEvent::ModifiersChanged(m) => {
                 self.raw_mods = keys::sided_mods(&m);
                 self.refresh_mods();

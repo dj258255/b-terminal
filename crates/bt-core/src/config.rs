@@ -629,6 +629,8 @@ pub struct Config {
     pub warnings: Vec<String>,
     /// 실제로 읽은 파일
     pub sources: Vec<PathBuf>,
+    /// 읽어 낸 설정 줄(시스템 모양이 바뀔 때 파일을 다시 읽지 않고 테마를 다시 고르려고 들고 있는다, #221)
+    pub entries: Vec<Entry>,
 }
 
 /// 명령 끝 알림을 언제 보낼까(Ghostty `notify-on-command-finish`)
@@ -1498,6 +1500,7 @@ impl Default for Config {
             selection_word_chars: DEFAULT_WORD_CHARS.into(),
             warnings: Vec::new(),
             sources: Vec::new(),
+            entries: Vec::new(),
         }
     }
 }
@@ -2312,7 +2315,29 @@ impl Config {
         cfg.apply_all(&entries, dark, &mut warnings);
         cfg.warnings = warnings;
         cfg.sources = sources;
+        cfg.entries = entries;
         cfg
+    }
+
+    /// 시스템이 어두워졌거나 밝아졌을 때 `theme = light:…,dark:…`를 다시 고른다(#221, Ghostty `changeConditionalState`).
+    /// 설정 파일은 다시 읽지 않고(테마 파일은 다시 읽는다) 처음 읽은 줄(`entries`)에 새 모양을 적용해, 설정을 다시 읽은 것과 같은 색을 얻는다.
+    /// 테마가 하나뿐이면 아무것도 하지 않는다. 색이 바뀌었으면 참
+    pub fn repick_theme(&mut self, dark: bool) -> bool {
+        if !self.theme_split {
+            return false;
+        }
+        let mut fresh = Config::default();
+        fresh.apply_all(&self.entries, dark, &mut Vec::new());
+        // 테마 파일이 정하는 색만 옮긴다. 다른 설정과 경고는 그대로 둔다
+        let changed = fresh.theme != self.theme
+            || fresh.palette_set != self.palette_set
+            || fresh.cursor_color_cell != self.cursor_color_cell
+            || fresh.cursor_text_cell != self.cursor_text_cell;
+        self.theme = fresh.theme;
+        self.palette_set = fresh.palette_set;
+        self.cursor_color_cell = fresh.cursor_color_cell;
+        self.cursor_text_cell = fresh.cursor_text_cell;
+        changed
     }
 
     /// 글로 된 설정을 읽는다(테스트와 `--show-config`)
@@ -2338,6 +2363,7 @@ impl Config {
             .collect();
         cfg.apply_all(&entries, dark, &mut warnings);
         cfg.warnings = warnings;
+        cfg.entries = entries;
         cfg
     }
 
@@ -5679,6 +5705,62 @@ mod tests {
             load_theme("../../etc/passwd").is_none(),
             "경로를 빠져나가는 이름은 받지 않는다"
         );
+    }
+
+    #[test]
+    fn repick_theme_matches_a_fresh_load() {
+        let dir = std::env::temp_dir().join(format!("bt-repick-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (l, d) = (dir.join("L"), dir.join("D"));
+        std::fs::write(
+            &l,
+            "background = #fffffe\nforeground = #000001\npalette = 2=#000003\ncursor-color = #111111\n",
+        )
+        .unwrap();
+        std::fs::write(&d, "background = #000001\nforeground = #fffffe\npalette = 2=#ffff03\n").unwrap();
+        let text = format!(
+            "theme = light:{},dark:{}\nforeground = #abcdef\npalette = 20=#050505\n",
+            l.display(),
+            d.display()
+        );
+        let mut c = Config::from_text(&text, true);
+        assert_eq!(c.theme.background, Rgb::new(0, 0, 1));
+        let light = Config::from_text(&text, false);
+        assert!(c.repick_theme(false), "밝은 쪽으로 바뀐다");
+        // 설정을 다시 읽은 것과 같은 결과
+        assert_eq!(
+            (&c.theme, &c.palette_set, c.cursor_color_cell, c.cursor_text_cell),
+            (
+                &light.theme,
+                &light.palette_set,
+                light.cursor_color_cell,
+                light.cursor_text_cell
+            )
+        );
+        assert_eq!(c.theme.background, Rgb::new(0xff, 0xff, 0xfe));
+        assert_eq!(
+            c.theme.foreground,
+            Rgb::new(0xab, 0xcd, 0xef),
+            "설정 색이 테마를 덮는다"
+        );
+        assert_eq!(c.theme.palette[2], Rgb::new(0, 0, 3));
+        assert_eq!(c.theme.cursor, Rgb::new(0x11, 0x11, 0x11));
+        assert!(c.palette_set.contains(&(20, Rgb::new(5, 5, 5))));
+        assert!(c.repick_theme(true), "다시 어두운 쪽");
+        assert_eq!(c.theme.background, Rgb::new(0, 0, 1));
+        assert_eq!(c.theme.palette[2], Rgb::new(0xff, 0xff, 3));
+        assert!(!c.repick_theme(true), "같은 모양이면 바뀐 것이 없다");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn repick_theme_does_nothing_for_a_single_theme() {
+        let mut c = Config::from_text("theme = nonexistent-a\nbackground = #123456\n", true);
+        let before = c.clone();
+        assert!(!c.repick_theme(false));
+        assert_eq!(c, before);
+        let mut c = Config::from_text("background = #123456\n", true);
+        assert!(!c.repick_theme(false));
     }
 
     #[test]
