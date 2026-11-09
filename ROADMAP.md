@@ -164,6 +164,26 @@ Ghostty 키 채우기. 추적 이슈 [#121](https://github.com/dj258255/b-termin
 - `sips -c`는 가운데를 기준으로 자른다. 위쪽을 보려면 전체 캡처를 본다(#136).
 - 스크립트로 문서 주석 바로 아래에 새 함수를 끼우면 주석이 새 함수에 붙는다(#135·#134). 끼울 자리는 주석 위로 잡는다.
 
+## 0.10.0 (2026-11-09)
+
+Ghostty 키 채우기 3. 추적 이슈 [#145](https://github.com/dj258255/b-terminal/issues/145). 범수 님 요청("멀티에이전트 여러개해서 구현 다해줘")으로 하위 이슈 여섯을 에이전트 여섯이 동시에 각자의 worktree에서 구현하고(커밋까지), 주 세션이 최신 main 위로 옮기고 검토·보완한 뒤 하나씩 병합했다. 에이전트는 각각 약 5~7분 걸렸다(작업 알림의 시간). 병합 시각(KST): 추적 이슈를 연 20:43부터 마지막 병합 21:10까지.
+
+| 이슈 | 내용 | 예상 | 실제 | PR | 주 세션이 고친 것 |
+|---|---|---|---|---|---|
+| [#147](https://github.com/dj258255/b-terminal/issues/147) | 맨 아래로 스크롤(`scroll-to-bottom`) | 2~3시간 | 에이전트 약 5분(병합 20:53) | [#152](https://github.com/dj258255/b-terminal/pull/152) | 없음 |
+| [#146](https://github.com/dj258255/b-terminal/issues/146) | 클립보드·오른쪽 클릭 키 | 2~3시간 | 에이전트 약 5분(병합 20:57) | [#153](https://github.com/dj258255/b-terminal/pull/153) | 기본값을 Ghostty 소스로 확인, 1.4 값 이름 받기 |
+| [#150](https://github.com/dj258255/b-terminal/issues/150) | 팔레트 사용자 항목 | 2~3시간 | 에이전트 약 6분(병합 20:59) | [#154](https://github.com/dj258255/b-terminal/pull/154) | 없음 |
+| [#148](https://github.com/dj258255/b-terminal/issues/148) | 시작 창 키 | 2~3시간 | 에이전트 약 6분(병합 21:03) | [#155](https://github.com/dj258255/b-terminal/pull/155) | macOS 창 자리를 보이는 영역 기준으로, 실제 창 확인 |
+| [#149](https://github.com/dj258255/b-terminal/issues/149) | 키 묶음 접두사·catch_all | 2~3시간 | 에이전트 약 7분(병합 21:06) | [#156](https://github.com/dj258255/b-terminal/pull/156) | Ghostty 소스 규칙 넷과 테스트 |
+| [#151](https://github.com/dj258255/b-terminal/issues/151) | 제목·색 보고(ADR-012) | 2~3시간 | 에이전트 약 6분(병합 21:10) | [#157](https://github.com/dj258255/b-terminal/pull/157) | 충돌 여섯 파일 풀기, 보안 검토 |
+
+이번에 배운 것:
+
+- 에이전트가 읽은 Ghostty 문서는 요약이거나 일부뿐이라 기본값·세부 규칙이 빠지곤 했다. Ghostty 소스의 `src/config/Config.zig`(설정과 키 묶음 설명, 기본값)를 받아 대조하면 확실하다. 여섯 중 셋을 이것으로 고쳤다.
+- 같은 파일 같은 자리에 여럿이 덧붙이면 병합 순서대로 충돌이 커진다(마지막 브랜치는 여섯 파일). 대부분 둘 다 남기면 되지만, 괄호를 사이에 두는 자리는 손으로 맞춰야 한다.
+- zsh에서는 `$B:path`의 `:p` 같은 꼴이 변수 꾸밈으로 읽혀 빈 값이 된다. `${B}:path`로 쓴다.
+- worktree에서 `gh pr merge --delete-branch`는 로컬 main으로 바꾸려다 실패하지만 원격 병합과 브랜치 지우기는 된다.
+
 ## 다음
 
 - 범수 님이 직접 해야 할 것: 키보드·마우스 확인(한글 2벌식 "안녕 하세요⏎", Claude Code의 Shift+Enter, Cmd-D·Cmd-F·Cmd-클릭·Cmd-N·Cmd-Shift-P, 메뉴, 창 닫기 단추, vim·htop, kitty icat·yazi, 투명 창), Developer ID 계정으로 `scripts/bundle-macos.sh --sign … --notarize … --dmg`
@@ -172,4 +192,5 @@ Ghostty 키 채우기. 추적 이슈 [#121](https://github.com/dj258255/b-termin
 - 범수 님이 확인할 것(0.7): `sleep 100` 중에 ⌘W → 확인 막대 → esc는 그대로·↩는 닫힘, 프롬프트에서 ⌘W는 바로 닫힘, ⌘Q도 같게. 셸에서 `cat` 중에 두 줄 글 ⌘V → 붙여넣기 확인 막대. `keybind = ctrl+a>n=new_window` 뒤 Ctrl-A·N → 새 창, Ctrl-A·X → `^A`와 `x`가 셸로. 다른 탭에서 `sleep 2; printf '\a'` → 탭 제목에 🔔
 - 범수 님이 확인할 것(0.8): 메뉴 "셸 › 제목 바꾸기…"로 탭 제목 붙이고 비우기, 팔레트 "스크롤백을 파일로 열기"와 앱을 끈 뒤 `$TMPDIR/b-terminal-$(id -u)/files`가 비었는지, `focus-follows-mouse = true`로 분할 칸 위를 마우스로 오가기, 단어 두 번 눌러 고르기(`;`·`$`에서 끊김), ⌃⌘F 전체 화면
 - 범수 님이 확인할 것(0.9): zsh 프롬프트에서 친 명령의 한 글자를 눌러 커서가 거기로 가는지, `adjust_selection`을 키에 묶어 고르기를 늘려 보기, 배경 그림을 투명 창(`background-opacity = 0.8`)과 함께 써 보기
+- 범수 님이 확인할 것(0.10): 고른 글 ⌘C 뒤 줄 끝 공백이 없는지, `right-click-action = copy-or-paste`, 팔레트 "창 항상 위", `keybind = ctrl+a>catch_all=ignore`와 `ctrl+a>n=new_window`, `scroll-to-bottom = output`으로 긴 출력 중 위로 스크롤
 - 큰 일로 남긴 것: GPU(또는 IOSurface) 렌더러, 글자 묶음 폭(mode 2027)
