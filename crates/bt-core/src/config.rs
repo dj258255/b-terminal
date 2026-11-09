@@ -266,6 +266,47 @@ pub enum MacWindowButtons {
     Hidden,
 }
 
+/// `window-decoration`(Ghostty): 창 꾸밈(제목 막대·테두리). macOS에서 `none`만 뜻이 다르고 나머지는 모두 기본 꾸밈이다
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum WindowDecoration {
+    #[default]
+    Auto,
+    Client,
+    Server,
+    None,
+}
+
+/// `macos-titlebar-style`(Ghostty): macOS 제목 막대 모양
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum MacTitlebarStyle {
+    Native,
+    /// Ghostty 릴리스 판의 기본
+    #[default]
+    Transparent,
+    /// b-terminal은 탭 막대를 직접 그리므로 `transparent`와 같게 동작한다
+    Tabs,
+    Hidden,
+}
+
+/// `window-theme`(Ghostty): 창 자체의 밝음·어두움
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum WindowTheme {
+    #[default]
+    Auto,
+    System,
+    Light,
+    Dark,
+    Ghostty,
+}
+
+/// `macos-titlebar-proxy-icon`(Ghostty): 제목 막대의 작업 폴더 아이콘
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum MacTitlebarProxyIcon {
+    #[default]
+    Visible,
+    Hidden,
+}
+
 /// `macos-hidden`(Ghostty): Dock과 앱 전환기에서 숨기는가
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum MacHidden {
@@ -382,6 +423,18 @@ pub struct Config {
     pub macos_window_buttons: MacWindowButtons,
     /// Dock·앱 전환기에서 숨김(Ghostty `macos-hidden`, #179)
     pub macos_hidden: MacHidden,
+    /// 창 꾸밈(Ghostty `window-decoration`, #192)
+    pub window_decoration: WindowDecoration,
+    /// macOS 제목 막대 모양(Ghostty `macos-titlebar-style`, #192). 새 창부터 적용
+    pub macos_titlebar_style: MacTitlebarStyle,
+    /// macOS 창 그림자(Ghostty `macos-window-shadow`, #192)
+    pub macos_window_shadow: bool,
+    /// 창의 밝음·어두움(Ghostty `window-theme`, #192)
+    pub window_theme: WindowTheme,
+    /// 제목 막대 폴더 아이콘(Ghostty `macos-titlebar-proxy-icon`, #192). 지금은 받기만 한다
+    pub macos_titlebar_proxy_icon: MacTitlebarProxyIcon,
+    /// `theme = light:…,dark:…`처럼 밝은·어두운 테마를 따로 정했는가(`window-theme = auto`가 system처럼 된다)
+    pub theme_split: bool,
     /// 첫 창 자리(Ghostty `window-position-x`·`-y`, #148). 둘 다 있어야 쓴다
     pub window_position_x: Option<i32>,
     pub window_position_y: Option<i32>,
@@ -1138,6 +1191,12 @@ impl Default for Config {
             non_native_fullscreen: NonNativeFullscreen::False,
             window_step_resize: false,
             macos_window_buttons: MacWindowButtons::Visible,
+            window_decoration: WindowDecoration::Auto,
+            macos_titlebar_style: MacTitlebarStyle::Transparent,
+            macos_window_shadow: true,
+            window_theme: WindowTheme::Auto,
+            macos_titlebar_proxy_icon: MacTitlebarProxyIcon::Visible,
+            theme_split: false,
             macos_hidden: MacHidden::Never,
             window_position_x: None,
             window_position_y: None,
@@ -2077,6 +2136,7 @@ impl Config {
         // 테마를 먼저 깔고, 그 위에 색 키를 덮는다(Ghostty와 같은 순서). 마지막 theme 값이 이긴다
         if let Some(theme) = entries.iter().rfind(|e| e.key == "theme") {
             if !theme.value.trim().is_empty() {
+                self.theme_split = is_split_theme(&theme.value);
                 let name = pick_theme_name(&theme.value, dark);
                 match load_theme(&name) {
                     Some(t) => {
@@ -2375,6 +2435,37 @@ impl Config {
             "macos-window-buttons" => match v {
                 "visible" => self.macos_window_buttons = MacWindowButtons::Visible,
                 "hidden" => self.macos_window_buttons = MacWindowButtons::Hidden,
+                _ => bad(warnings),
+            },
+            "window-decoration" => match v {
+                "auto" | "true" => self.window_decoration = WindowDecoration::Auto,
+                "client" => self.window_decoration = WindowDecoration::Client,
+                "server" => self.window_decoration = WindowDecoration::Server,
+                "none" | "false" => self.window_decoration = WindowDecoration::None,
+                _ => bad(warnings),
+            },
+            "macos-titlebar-style" => match v {
+                "native" => self.macos_titlebar_style = MacTitlebarStyle::Native,
+                "transparent" => self.macos_titlebar_style = MacTitlebarStyle::Transparent,
+                "tabs" => self.macos_titlebar_style = MacTitlebarStyle::Tabs,
+                "hidden" => self.macos_titlebar_style = MacTitlebarStyle::Hidden,
+                _ => bad(warnings),
+            },
+            "macos-window-shadow" => match parse_bool(v) {
+                Some(b) => self.macos_window_shadow = b,
+                None => bad(warnings),
+            },
+            "window-theme" => match v {
+                "auto" => self.window_theme = WindowTheme::Auto,
+                "system" => self.window_theme = WindowTheme::System,
+                "light" => self.window_theme = WindowTheme::Light,
+                "dark" => self.window_theme = WindowTheme::Dark,
+                "ghostty" => self.window_theme = WindowTheme::Ghostty,
+                _ => bad(warnings),
+            },
+            "macos-titlebar-proxy-icon" => match v {
+                "visible" => self.macos_titlebar_proxy_icon = MacTitlebarProxyIcon::Visible,
+                "hidden" => self.macos_titlebar_proxy_icon = MacTitlebarProxyIcon::Hidden,
                 _ => bad(warnings),
             },
             "macos-hidden" => match v {
@@ -3240,6 +3331,46 @@ impl Config {
         for src in &self.input {
             push("input", src.render());
         }
+        push(
+            "window-decoration",
+            match self.window_decoration {
+                WindowDecoration::Auto => "auto",
+                WindowDecoration::Client => "client",
+                WindowDecoration::Server => "server",
+                WindowDecoration::None => "none",
+            }
+            .into(),
+        );
+        push(
+            "macos-titlebar-style",
+            match self.macos_titlebar_style {
+                MacTitlebarStyle::Native => "native",
+                MacTitlebarStyle::Transparent => "transparent",
+                MacTitlebarStyle::Tabs => "tabs",
+                MacTitlebarStyle::Hidden => "hidden",
+            }
+            .into(),
+        );
+        push("macos-window-shadow", self.macos_window_shadow.to_string());
+        push(
+            "window-theme",
+            match self.window_theme {
+                WindowTheme::Auto => "auto",
+                WindowTheme::System => "system",
+                WindowTheme::Light => "light",
+                WindowTheme::Dark => "dark",
+                WindowTheme::Ghostty => "ghostty",
+            }
+            .into(),
+        );
+        push(
+            "macos-titlebar-proxy-icon",
+            match self.macos_titlebar_proxy_icon {
+                MacTitlebarProxyIcon::Visible => "visible",
+                MacTitlebarProxyIcon::Hidden => "hidden",
+            }
+            .into(),
+        );
         out.join("\n")
     }
 }
@@ -3248,16 +3379,11 @@ impl Config {
 const KNOWN_IGNORED: &[&str] = &[
     "background-blur",
     "background-blur-radius",
-    "window-decoration",
-    "window-theme",
     // GTK에서만 뜻이 있는 Ghostty 키(받기만 한다, #179)
     "window-subtitle",
     "window-titlebar-background",
     "window-titlebar-foreground",
-    "macos-titlebar-style",
-    "macos-titlebar-proxy-icon",
     "macos-icon",
-    "macos-window-shadow",
     "auto-update",
     "auto-update-channel",
     "gtk-titlebar",
@@ -3287,6 +3413,12 @@ fn named_color(v: &str) -> Option<Rgb> {
         "blue" => Rgb::new(0, 0, 255),
         _ => return None,
     })
+}
+
+/// `light:`와 `dark:`가 둘 다 있는 테마 값인가(시스템 모양을 따라 바뀐다)
+fn is_split_theme(v: &str) -> bool {
+    let has = |p: &str| v.split(',').any(|part| part.trim().starts_with(p));
+    has("light:") && has("dark:")
 }
 
 /// `light:A,dark:B`에서 고르고, 그냥 이름이면 그대로
@@ -3862,6 +3994,78 @@ mod tests {
         ] {
             assert_eq!(Config::from_text(&format!("{bad}\n"), true).warnings.len(), 1, "{bad}");
         }
+    }
+
+    #[test]
+    fn window_look_keys() {
+        let d = Config::default();
+        assert_eq!(d.window_decoration, WindowDecoration::Auto);
+        assert_eq!(d.macos_titlebar_style, MacTitlebarStyle::Transparent);
+        assert!(d.macos_window_shadow);
+        assert_eq!(d.window_theme, WindowTheme::Auto);
+        assert_eq!(d.macos_titlebar_proxy_icon, MacTitlebarProxyIcon::Visible);
+        assert!(!d.theme_split);
+        for (v, want) in [
+            ("auto", WindowDecoration::Auto),
+            ("true", WindowDecoration::Auto),
+            ("client", WindowDecoration::Client),
+            ("server", WindowDecoration::Server),
+            ("none", WindowDecoration::None),
+            ("false", WindowDecoration::None),
+        ] {
+            let c = Config::from_text(&format!("window-decoration = {v}\n"), true);
+            assert_eq!((c.window_decoration, c.warnings.len()), (want, 0), "{v}");
+        }
+        for (v, want) in [
+            ("native", MacTitlebarStyle::Native),
+            ("transparent", MacTitlebarStyle::Transparent),
+            ("tabs", MacTitlebarStyle::Tabs),
+            ("hidden", MacTitlebarStyle::Hidden),
+        ] {
+            let c = Config::from_text(&format!("macos-titlebar-style = {v}\n"), true);
+            assert_eq!((c.macos_titlebar_style, c.warnings.len()), (want, 0), "{v}");
+        }
+        for (v, want) in [
+            ("auto", WindowTheme::Auto),
+            ("system", WindowTheme::System),
+            ("light", WindowTheme::Light),
+            ("dark", WindowTheme::Dark),
+            ("ghostty", WindowTheme::Ghostty),
+        ] {
+            let c = Config::from_text(&format!("window-theme = {v}\n"), true);
+            assert_eq!((c.window_theme, c.warnings.len()), (want, 0), "{v}");
+        }
+        let c = Config::from_text(
+            "macos-window-shadow = false\nmacos-titlebar-proxy-icon = hidden\n",
+            true,
+        );
+        assert!(!c.macos_window_shadow);
+        assert_eq!(c.macos_titlebar_proxy_icon, MacTitlebarProxyIcon::Hidden);
+        assert!(c.warnings.is_empty());
+        for bad in [
+            "window-decoration = fancy",
+            "macos-titlebar-style = glass",
+            "macos-window-shadow = maybe",
+            "window-theme = blue",
+            "macos-titlebar-proxy-icon = gone",
+        ] {
+            assert_eq!(Config::from_text(&format!("{bad}\n"), true).warnings.len(), 1, "{bad}");
+        }
+        let r = Config::from_text("window-decoration = none\nmacos-titlebar-style = hidden\n", true).render();
+        assert!(
+            r.contains("window-decoration = none") && r.contains("macos-titlebar-style = hidden"),
+            "{r}"
+        );
+    }
+
+    #[test]
+    fn split_theme_is_detected() {
+        assert!(is_split_theme("light:GitHub Light Default,dark:GitHub Dark"));
+        assert!(is_split_theme(" dark:A , light:B"));
+        assert!(!is_split_theme("GitHub Dark"));
+        assert!(!is_split_theme("light:OnlyLight"));
+        assert!(Config::from_text("theme = light:nonexistent-a,dark:nonexistent-b\n", true).theme_split);
+        assert!(!Config::from_text("theme = nonexistent-a\n", true).theme_split);
     }
 
     #[test]

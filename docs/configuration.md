@@ -90,6 +90,11 @@ config-file = ?~/.config/b-terminal/local   # ?가 붙으면 없어도 된다
 | `macos-non-native-fullscreen` | `false` `true` `visible-menu` `padded-notch` | `false` | macOS에서 전체 화면을 새 Space 없이 합니다(winit simple fullscreen). 켜면 `toggle_fullscreen`과 `fullscreen`이 이 방식을 씁니다. 메뉴 막대와 Dock은 마우스를 대면 나타나는 자동 숨김입니다. `visible-menu`와 `padded-notch`는 `true`와 구분하지 못합니다(메뉴 막대를 늘 보이게 하거나 노치를 피하는 일은 안전한 API만으로는 못 합니다). 이미 전체 화면인 창은 끌 때까지 들어간 방식을 따릅니다. macOS 밖에서는 하는 일이 없습니다 |
 | `window-step-resize` | `true` `false` | `false` | 창 크기를 칸 크기 단위로 바꿉니다(`NSWindow` 내용 크기 증분). 끌어서 바꿀 때만 적용되고 여백·탭 줄 높이는 단위에 넣지 않아 끝 칸이 조금 어긋날 수 있습니다. 글꼴 크기를 바꾸면 다음 크기 변경 때 새 칸 크기로 맞춥니다 |
 | `macos-window-buttons` | `visible` `hidden` | `visible` | 제목 막대의 닫기·최소화·확대 단추를 숨깁니다. 새 창부터 적용합니다(퀵 터미널 창은 테두리가 없어 해당 없음) |
+| `window-decoration` | `auto` `client` `server` `none` `true` `false` | `auto` | `none`(또는 `false`)이면 제목 막대·테두리 없는 창을 만들고, 켜 둔 창도 설정을 다시 읽을 때 바뀝니다(퀵 터미널 창은 늘 테두리가 없음). `auto`·`client`·`server`(`true`)는 모두 기본 꾸밈입니다. 제목 막대만 감추고 틀은 두려면 `macos-titlebar-style = hidden`을 씁니다 |
+| `macos-titlebar-style` | `native` `transparent` `tabs` `hidden` | `transparent` | `native`는 보통 제목 막대, `transparent`는 제목 막대가 투명해 바탕색이 비치고 탭 줄·격자는 그 밑에서 시작합니다. `tabs`는 b-terminal이 탭 막대를 직접 그리므로 `transparent`와 같습니다(Ghostty의 제목 막대 속 탭 막대는 아님). `hidden`은 둥근 틀은 두고 제목 막대와 신호등 단추를 감춥니다(창 끌기는 되지 않을 수 있음). 새 창부터 적용합니다. 제목 막대 높이는 28pt로 가정한 재지 않은 값입니다 |
+| `macos-window-shadow` | `true` `false` | `true` | macOS 창 그림자. 설정을 다시 읽을 때 열린 창에도 적용합니다 |
+| `window-theme` | `auto` `system` `light` `dark` `ghostty` | `auto` | 창(제목 막대·신호등 단추)의 밝음·어두움. `auto`는 바탕색 밝기로 정하되(macOS에서는 `transparent`·`tabs`일 때만) `theme = light:…,dark:…`이면 `system`과 같습니다. `ghostty`는 Linux 전용 값이라 `auto`처럼 봅니다 |
+| `macos-titlebar-proxy-icon` | `visible` `hidden` | `visible` | 받기만 합니다. 제목 막대 폴더 아이콘은 `NSWindow`를 얻어야 해서(winit이 노출하지 않음) `unsafe`가 필요합니다 |
 | `macos-hidden` | `never` `always` | `never` | `always`면 Dock과 앱 전환기에서 앱을 숨깁니다(`NSApplication` 활성화 정책 Accessory). 다시 읽으면 바로 적용합니다. 메뉴 막대는 앱이 앞에 있을 때만 보입니다 |
 | `window-subtitle` | `false` `working-directory` | `false` | 받기만 합니다. Ghostty에서도 GTK 전용 키이고, macOS의 창 부제목은 winit이 노출하지 않아 safe로 정할 수 없습니다 |
 | `window-titlebar-background` `window-titlebar-foreground` | 색 | (없음) | 받기만 합니다. Ghostty에서도 GTK 앱 런타임 전용이고, macOS 제목 막대 색은 winit·objc2의 safe 함수로 정할 수 없습니다 |

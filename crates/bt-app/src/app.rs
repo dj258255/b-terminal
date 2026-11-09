@@ -464,6 +464,8 @@ struct PaneView {
 }
 
 struct Gfx {
+    /// 창을 만들 때 정해진 제목 막대 밑 비움 높이(논리 점, #192). 제목 막대 모양은 새 창에만 적용되므로 창마다 따로 든다
+    inset_points: f32,
     window: Rc<Window>,
     surface: softbuffer::Surface<Rc<Window>, Rc<Window>>,
     _context: softbuffer::Context<Rc<Window>>,
@@ -693,7 +695,7 @@ impl App {
     fn content_rect(&self) -> Rect {
         let Some(g) = &self.w.gfx else { return Rect::default() };
         let size = g.window.inner_size();
-        let top = self.tabbar_height();
+        let top = self.top_inset() + self.tabbar_height();
         Rect::new(0, top as i32, size.width, size.height.saturating_sub(top))
     }
 
@@ -782,6 +784,25 @@ impl App {
     /// 키 입력을 받는 칸인가
     fn is_focused(&self, idx: usize) -> bool {
         self.panes.get(idx).is_some_and(|p| Some(p.id) == self.focused_id())
+    }
+
+    /// 제목 막대 밑으로 콘텐츠가 들어가는 창에서 탭 줄·격자가 비켜야 할 위쪽 높이(픽셀, #192).
+    /// 전체 화면이거나 꾸밈을 껐으면 제목 막대가 없어 0
+    fn top_inset(&self) -> u32 {
+        let Some(g) = &self.w.gfx else { return 0 };
+        #[cfg(target_os = "macos")]
+        let simple = {
+            use winit::platform::macos::WindowExtMacOS;
+            g.window.simple_fullscreen()
+        };
+        #[cfg(not(target_os = "macos"))]
+        let simple = false;
+        crate::windeco::top_inset_px(
+            g.inset_points,
+            self.scale,
+            g.window.is_decorated(),
+            g.window.fullscreen().is_some() || simple,
+        )
     }
 
     /// 탭 줄 높이. 탭이 하나면 없다(Ghostty처럼)
@@ -2541,6 +2562,7 @@ impl App {
             }
         }
         self.config = next;
+        self.apply_window_look();
         apply_hidden_from_dock(self.config.macos_hidden);
         self.load_background();
         self.load_fonts();
@@ -2607,15 +2629,25 @@ impl App {
         softbuffer::set_transparent(transparent);
         // 실험 E4: BT_E4_NO_REUSE가 있으면 버퍼 다시 쓰기를 끈다(견주어 재려고)
         softbuffer::set_reuse_buffers(std::env::var_os("BT_E4_NO_REUSE").is_none());
+        // 창 모양(#192): window-decoration·macos-titlebar-style·macos-window-shadow·window-theme
+        let look = crate::windeco::window_look(
+            quick,
+            cfg!(target_os = "macos"),
+            self.config.window_decoration,
+            self.config.macos_titlebar_style,
+            self.config.macos_window_buttons == bt_core::config::MacWindowButtons::Hidden,
+            self.config.macos_window_shadow,
+        );
         let attrs = Window::default_attributes()
             .with_title("b-terminal")
             .with_inner_size(LogicalSize::new(1000.0, 680.0))
             .with_min_inner_size(LogicalSize::new(320.0, 200.0))
-            .with_transparent(transparent);
+            .with_transparent(transparent)
+            .with_decorations(look.decorations)
+            .with_theme(self.window_theme_choice());
         // 퀵 창은 테두리 없이 맨 위 층에, 보이지 않게 만든다. 자리를 잡고 보이는 일은 show_quick이 한다(#110)
         let attrs = if quick {
             attrs
-                .with_decorations(false)
                 .with_window_level(winit::window::WindowLevel::AlwaysOnTop)
                 .with_visible(false)
         } else {
@@ -2631,13 +2663,16 @@ impl App {
                 bt_core::config::OptionAsAlt::None => OptionAsAlt::None,
             })
         };
-        // macos-window-buttons = hidden: 새 창부터 신호등 단추를 숨긴다(퀵 창은 테두리가 없어 해당 없음, #179)
+        // 제목 막대 모양·그림자(#192). macos-window-buttons = hidden이면 신호등 단추도 숨긴다(#179, look에 들어 있다)
         #[cfg(target_os = "macos")]
-        let attrs = if !quick && self.config.macos_window_buttons == bt_core::config::MacWindowButtons::Hidden {
+        let attrs = {
             use winit::platform::macos::WindowAttributesExtMacOS;
-            attrs.with_titlebar_buttons_hidden(true)
-        } else {
             attrs
+                .with_titlebar_transparent(look.titlebar_transparent)
+                .with_fullsize_content_view(look.fullsize_content)
+                .with_titlebar_buttons_hidden(look.buttons_hidden)
+                .with_title_hidden(look.title_hidden)
+                .with_has_shadow(look.shadow)
         };
         let window = match event_loop.create_window(attrs) {
             Ok(w) => Rc::new(w),
@@ -2651,10 +2686,41 @@ impl App {
         let context = softbuffer::Context::new(window.clone()).ok()?;
         let surface = softbuffer::Surface::new(&context, window.clone()).ok()?;
         Some(Gfx {
+            inset_points: look.inset_points,
             window,
             surface,
             _context: context,
         })
+    }
+
+    /// 지금 설정과 바탕색으로 `window-theme`이 창에 강제할 모양(없으면 시스템을 따른다, #192)
+    fn window_theme_choice(&self) -> Option<winit::window::Theme> {
+        crate::windeco::window_theme(
+            self.config.window_theme,
+            self.config.macos_titlebar_style,
+            self.config.theme_split,
+            self.config.theme.background,
+            cfg!(target_os = "macos"),
+        )
+    }
+
+    /// 설정 다시 읽기에서 열려 있는 창에 바꿀 수 있는 창 모양을 적용한다(#192): 꾸밈 켬·끔, 그림자, 창 밝음·어두움.
+    /// 제목 막대 모양(`macos-titlebar-style`)은 새 창에만 적용한다(Ghostty와 같다). 퀵 창의 꾸밈은 늘 끈 채로 둔다
+    fn apply_window_look(&self) {
+        let theme = self.window_theme_choice();
+        let decorated = self.config.window_decoration != bt_core::config::WindowDecoration::None;
+        for w in std::iter::once(&self.w).chain(&self.others) {
+            let Some(g) = &w.gfx else { continue };
+            g.window.set_theme(theme);
+            if !w.quick {
+                g.window.set_decorations(decorated);
+            }
+            #[cfg(target_os = "macos")]
+            {
+                use winit::platform::macos::WindowExtMacOS;
+                g.window.set_has_shadow(self.config.macos_window_shadow);
+            }
+        }
     }
 
     /// 창의 전체 화면을 켜고 끈다. `macos-non-native-fullscreen`이 켜진 macOS는 새 Space 없는 전체 화면(winit simple fullscreen)을 쓴다.
@@ -2708,7 +2774,7 @@ impl App {
         let px = |pt: f32| (pt as f64 * self.scale).round() as u32;
         let (pad_w, pad_h) = (
             px(self.config.padding_x.0) + px(self.config.padding_x.1),
-            px(self.config.padding_y.0) + px(self.config.padding_y.1) + self.tabbar_height(),
+            px(self.config.padding_y.0) + px(self.config.padding_y.1) + self.top_inset() + self.tabbar_height(),
         );
         let size = pane.session.size();
         let max = match g.window.current_monitor() {
@@ -3210,6 +3276,7 @@ impl App {
     fn redraw(&mut self) {
         self.redraw_pending.store(false, Ordering::Release);
         let theme = self.config.theme.clone();
+        let top_inset = self.top_inset();
         let toast = self.w.toast.clone().filter(|(_, at)| at.elapsed() < TOAST_FOR);
         let confirm = self.w.confirm.as_ref().map(|c| (c.message.clone(), c.yes));
         let title_prompt = self.w.title_prompt.as_ref().map(|(_, t)| t.clone());
@@ -3499,7 +3566,7 @@ impl App {
                     .unwrap_or(theme.background);
                 canvas.clear(bg);
                 if !labels.is_empty() {
-                    tabbar::draw(&mut canvas, fonts, &theme, &labels);
+                    tabbar::draw(&mut canvas, fonts, &theme, &labels, top_inset as i32);
                 }
             }
             for (((v, (cells, cursor, pre)), pad), bar) in views.iter().zip(&drawn).zip(&pads).zip(&bars) {
@@ -4336,8 +4403,13 @@ impl ApplicationHandler<UserEvent> for App {
                 }
             }
             WindowEvent::MouseInput { state, button, .. } => {
+                // 제목 막대 자리(콘텐츠가 그 밑까지 들어간 창)는 칸이 아니다
+                let top_inset = self.top_inset();
+                if (self.w.cursor_pos.y as u32) < top_inset {
+                    return;
+                }
                 // 탭 줄을 누르면 그 탭으로
-                if (self.w.cursor_pos.y as u32) < self.tabbar_height() {
+                if (self.w.cursor_pos.y as u32) < top_inset + self.tabbar_height() {
                     if state == ElementState::Pressed && button == MouseButton::Left {
                         let width = self.w.gfx.as_ref().map(|g| g.window.inner_size().width).unwrap_or(0);
                         let hit = self

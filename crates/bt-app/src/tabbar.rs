@@ -60,7 +60,8 @@ fn slots(fonts: &Fonts, width: u32, count: usize) -> Vec<(i32, u32)> {
     (0..count).map(|i| (i as i32 * w as i32, w)).collect()
 }
 
-pub fn draw(canvas: &mut Canvas, fonts: &mut Fonts, theme: &Theme, tabs: &[TabLabel]) {
+/// 탭 줄을 `top`(창 위에서 내려온 픽셀)부터 그린다. 제목 막대 밑으로 콘텐츠가 들어가는 창에서는 `top`이 제목 막대 높이다(#192)
+pub fn draw(canvas: &mut Canvas, fonts: &mut Fonts, theme: &Theme, tabs: &[TabLabel], top: i32) {
     let m = fonts.metrics();
     let h = height_px(fonts);
     let bar = theme.background.mix(theme.foreground, 0.06);
@@ -68,20 +69,20 @@ pub fn draw(canvas: &mut Canvas, fonts: &mut Fonts, theme: &Theme, tabs: &[TabLa
     let border = theme.background.mix(theme.foreground, 0.16);
     let text = theme.foreground;
     let dim = theme.foreground.mix(theme.background, 0.45);
-    canvas.fill_rect(0, 0, canvas.width, h, bar);
-    canvas.fill_rect(0, h as i32 - 1, canvas.width, 1, border);
+    canvas.fill_rect(0, top, canvas.width, h, bar);
+    canvas.fill_rect(0, top + h as i32 - 1, canvas.width, 1, border);
     let cw = m.width as i32;
     for (tab, (x, w)) in tabs.iter().zip(slots(fonts, canvas.width, tabs.len())) {
         if tab.active {
-            canvas.fill_rect(x, 0, w, h, active_bg);
+            canvas.fill_rect(x, top, w, h, active_bg);
         }
-        canvas.fill_rect(x + w as i32 - 1, m.height as i32 / 4, 1, h - m.height / 2, border);
+        canvas.fill_rect(x + w as i32 - 1, top + m.height as i32 / 4, 1, h - m.height / 2, border);
         // 가운데 맞춘 제목. 안 읽음 점 자리를 남긴다
         let max_cells = ((w as i32 / cw) - 4).max(1) as usize;
         let title = truncate(&tab.title, max_cells);
         let tw = cw * text_cells(&title) as i32;
         let tx = x + (w as i32 - tw) / 2;
-        let ty = (h as i32 - m.height as i32) / 2;
+        let ty = top + (h as i32 - m.height as i32) / 2;
         draw_text(
             canvas,
             fonts,
@@ -96,14 +97,14 @@ pub fn draw(canvas: &mut Canvas, fonts: &mut Fonts, theme: &Theme, tabs: &[TabLa
                 canvas,
                 theme,
                 x,
-                h as i32 - (m.stroke * 3) as i32 - 1,
+                top + h as i32 - (m.stroke * 3) as i32 - 1,
                 w,
                 p,
                 m.stroke * 3,
             );
         }
         if tab.unread {
-            dot(canvas, x + cw, h as i32 / 2, (cw / 3).max(2), theme.palette[3]);
+            dot(canvas, x + cw, top + h as i32 / 2, (cw / 3).max(2), theme.palette[3]);
         }
     }
 }
@@ -439,6 +440,31 @@ mod tests {
         assert_eq!(accept_progress(true, 0, 0), None, "상태 0은 지움");
         assert_eq!(accept_progress(false, 1, 40), None);
         assert_eq!(accept_progress(false, 3, 0), None);
+    }
+
+    #[test]
+    fn tab_bar_starts_below_the_top_offset() {
+        let Ok(mut fonts) = Fonts::new(&bt_render::FontConfig::default()) else {
+            return;
+        };
+        let theme = Theme::ghostty_default();
+        let (w, h) = (300u32, 200u32);
+        let mut buf = vec![0u32; (w * h) as usize];
+        let mut c = Canvas::new(&mut buf, w, h);
+        c.clear(theme.background);
+        let tabs = [TabLabel {
+            title: "a".into(),
+            active: false,
+            unread: false,
+            progress: None,
+        }];
+        let top = 40;
+        draw(&mut c, &mut fonts, &theme, &tabs, top);
+        let bar = theme.background.mix(theme.foreground, 0.06).to_u32();
+        let at = |y: u32| buf[(y * w + 5) as usize] & 0xFF_FFFF;
+        // 제목 막대 자리는 그대로, 그 밑부터 탭 줄 색
+        assert_ne!(at(top as u32 - 1), bar);
+        assert_eq!(at(top as u32 + 1), bar);
     }
 
     #[test]
