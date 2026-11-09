@@ -4,12 +4,27 @@
 
 ## [아직 릴리스하지 않음]
 
-- 키 묶음 동작 `toggle_background_opacity`(창마다 바탕 투명도를 설정값과 불투명 사이에서, `background-opacity`가 1 이상이면 하는 일 없음), `toggle_mouse_reporting`(칸의 마우스 보고 켬·끔), `toggle_readonly`(칸을 읽기 전용으로: 키·IME·붙여넣기·마우스·초점·`text:`·`btctl send`/`run`이 PTY에 가지 않고, 고르기·복사·스크롤은 그대로, 닫을 때는 늘 묻고, 탭 제목 앞에 🔒), `set_window_theme:config|system|light|dark`(이번 실행 동안의 창 테마, 설정을 다시 읽어도 남음), `open_config`(설정 파일을 기본 편집기로)를 받습니다. 기본 동작은 그대로이고(키를 묶어야 동작합니다), 읽기 전용은 입력 경로를 바꾸는 보안 경계입니다(ADR-018). 판단은 테스트로 확인했고 실제 창에서는 보지 않았습니다. #209
-- 키 테이블(Ghostty 1.3): `keybind = 이름/트리거=동작`, `이름/`(비우기), `activate_key_table:이름`, `activate_key_table_once:이름`, `deactivate_key_table`, `deactivate_all_key_tables`, `end_key_sequence`. 키를 찾는 순서는 맨 위 테이블부터 기본 묶음까지이고 키 이어 누르기와 함께 동작합니다. 새 동작이라 기본 동작은 그대로입니다. 판단은 테스트로 확인했고 실제 창에서는 보지 않았습니다. 켜진 테이블을 화면에 보이지는 않습니다. #210
-- 창·탭 동작(Ghostty): `close_window`·`close_all_windows`(닫기 확인을 거침), `goto_window:previous|next`, `move_tab:N`(끝을 넘으면 돌아감), `move_tab_to_new_window`(탭이 하나면 아무것도 안 함), `reset_window_size`, `toggle_window_decorations`, `toggle_visibility`(macOS)와 팔레트 항목을 더했습니다. 기본 동작은 그대로입니다. 판단 부분(돌아가기·창 고르기·크기·숨김 계획)과 해석은 테스트로 확인했고, 실제 창에서는 아직 보지 않았습니다. `close_all_windows`는 Ghostty 문서가 효과 없다고 한 동작이지만 b-terminal은 닫습니다. #206
-- 화면·찾기 동작 6개(Ghostty 키 묶음): `reset`(VT의 RIS), `scroll_to_row:N`(스크롤백 맨 위가 0), `scroll_to_selection`, `search:글`(빈 글이면 찾기만 취소, 막대는 둠), `search_selection`, `set_font_size:N`(6~72pt). `cursor_key`는 Ghostty처럼 설정에 쓸 수 없다고 경고합니다. 기본 묶음은 그대로입니다. 판단·해석은 테스트로 확인했고 실제 창에서는 보지 않았습니다. #208
-- 키 묶음 동작 `check_for_updates`, `inspector:toggle|show|hide`, `show_gtk_inspector`, `show_on_screen_keyboard`, `toggle_tab_overview`, `toggle_secure_input`, `crash:main|io|render`를 `keybind`에 써도 경고가 나지 않습니다(받기만 하고 키를 먹으며 하는 일은 없음. 이유는 docs/configuration.md). 명령줄 `--config-default-files=false`를 더해 기본 설정 파일(b-terminal·Ghostty)을 읽지 않고 `--config-file`만 읽습니다. 기본 동작은 그대로이고, 판단·해석은 테스트로 확인했으나 실제 창에서는 보지 않았습니다. #211
-- 제목 동작(Ghostty): `prompt_tab_title`·`prompt_window_title`(입력 막대로 묻기), `set_tab_title:글`·`set_window_title:글`(빈 글이면 덮어쓴 제목을 지움), `copy_title_to_clipboard`(지금 칸의 터미널 제목을 복사, 제목이 비면 하지 않음). 제목은 제어 문자를 지우고 200자로 자릅니다. 순서는 탭 줄·탭: 탭 제목 → 칸 제목(사람이 붙인 것 → 프로그램이 정한 것), 창 제목: 설정 `title` → 창 제목 → 지금 탭 제목. 메뉴 "셸"에 탭·창 제목 항목과 팔레트 항목을 더했습니다. 판단은 테스트로 확인했고 실제 창에서는 보지 않았습니다 #207
+## [0.14.0] - 2026-11-10
+
+Ghostty 키 묶음 동작 채우기. 0.13까지 Ghostty 동작 89개 중 37개를 몰랐던 것(`keybind`에 쓰면 경고)을 여섯 묶음으로 채웠습니다: 창·탭, 제목, 화면·찾기, 토글(읽기 전용 포함), 키 테이블, 받기만 하는 동작과 `--config-default-files`. 이제 Ghostty 동작 89개를 모두 받습니다(`cursor_key`는 Ghostty처럼 설정에서 막음, 89개 이름을 해석기에 넣어 잼). 하위 이슈마다 에이전트 하나가 구현하고, 주 세션이 Ghostty 소스와 대조·검토·병합했습니다. 추적 이슈 #205.
+
+- 창·탭 동작(Ghostty): `close_window`·`close_all_windows`(닫기 확인을 거침), `goto_window:previous|next`, `move_tab:N`(끝을 넘으면 돌아감), `move_tab_to_new_window`(탭이 하나면 아무것도 안 함), `reset_window_size`, `toggle_window_decorations`, `toggle_visibility`(macOS)와 팔레트 항목을 더했습니다. 기본 동작은 그대로입니다. 판단 부분(돌아가기·창 고르기·크기·숨김 계획)과 해석은 테스트로 확인했고, 실제 창에서는 여덟 동작을 키에 묶어 경고 없이 뜨는 것만 봤습니다(눌러 보지 않음). `close_all_windows`는 Ghostty 문서가 효과 없다고 한 동작이지만 b-terminal은 닫습니다. #206
+- 제목 동작(Ghostty): `prompt_tab_title`·`prompt_window_title`(입력 막대로 묻기), `set_tab_title:글`·`set_window_title:글`(빈 글이면 덮어쓴 제목을 지움), `copy_title_to_clipboard`(지금 칸의 터미널 제목을 복사, 제목이 비면 하지 않음). 제목은 제어 문자를 지우고 200자로 자릅니다. 순서는 탭 줄·탭: 탭 제목 → 칸 제목(사람이 붙인 것 → 프로그램이 정한 것), 창 제목: 설정 `title` → 창 제목 → 지금 탭 제목. 메뉴 "셸"에 탭·창 제목 항목과 팔레트 항목을 더했습니다. 판단은 테스트로 확인했고, 실제 창에서는 덮어쓴 제목이 없을 때 기존 제목 경로가 그대로인 것만 봤습니다. #207
+- 화면·찾기 동작 6개(Ghostty 키 묶음): `reset`(VT의 RIS), `scroll_to_row:N`(스크롤백 맨 위가 0), `scroll_to_selection`, `search:글`(빈 글이면 찾기만 취소, 막대는 둠), `search_selection`, `set_font_size:N`(6~72pt). `cursor_key`는 Ghostty처럼 설정에 쓸 수 없다고 경고합니다. 기본 묶음은 그대로입니다. 판단·해석은 테스트로 확인했고, 실제 창에서는 키에 묶어 `cursor_key` 경고 하나만 나는 것을 봤습니다(눌러 보지 않음). #208
+- 키 묶음 동작 `toggle_background_opacity`(창마다 바탕 투명도를 설정값과 불투명 사이에서, `background-opacity`가 1 이상이면 하는 일 없음), `toggle_mouse_reporting`(칸의 마우스 보고 켬·끔), `toggle_readonly`(칸을 읽기 전용으로: 키·IME·붙여넣기·마우스·초점·`text:`·`btctl send`/`run`이 PTY에 가지 않고, 고르기·복사·스크롤은 그대로, 닫을 때는 늘 묻고, 탭 제목 앞에 🔒), `set_window_theme:config|system|light|dark`(이번 실행 동안의 창 테마, 설정을 다시 읽어도 남음), `open_config`(설정 파일을 기본 편집기로)를 받습니다. 기본 동작은 그대로이고(키를 묶어야 동작합니다), 읽기 전용은 입력 경로를 바꾸는 보안 경계입니다(ADR-018). 쓰는 도중 읽기 전용을 켜면 칸을 띄울 때의 시작 입력(`input`)도 남은 부분을 버립니다. 판단은 테스트로 확인했고, 실제 창에서는 다섯 동작을 키에 묶어 경고 없이 뜨는 것만 봤습니다(읽기 전용은 키로만 켤 수 있어 실창에서 켜 보지 않음). #209
+- 키 테이블(Ghostty 1.3): `keybind = 이름/트리거=동작`, `이름/`(비우기), `activate_key_table:이름`, `activate_key_table_once:이름`, `deactivate_key_table`, `deactivate_all_key_tables`, `end_key_sequence`. 키를 찾는 순서는 맨 위 테이블부터 기본 묶음까지이고 키 이어 누르기와 함께 동작합니다. 새 동작이라 기본 동작은 그대로입니다. 한 번에 켤 수 있는 테이블은 Ghostty처럼 8개까지입니다. 판단은 테스트로 확인했고, 실제 창에서는 테이블 줄을 넣어 경고 없이 뜨는 것만 봤습니다(눌러 보지 않음). 켜진 테이블을 화면에 보이지는 않습니다. #210
+- 키 묶음 동작 `check_for_updates`, `inspector:toggle|show|hide`, `show_gtk_inspector`, `show_on_screen_keyboard`, `toggle_tab_overview`, `toggle_secure_input`, `crash:main|io|render`를 `keybind`에 써도 경고가 나지 않습니다(받기만 하고 키를 먹으며 하는 일은 없음. 이유는 docs/configuration.md). 명령줄 `--config-default-files=false`를 더해 기본 설정 파일(b-terminal·Ghostty)을 읽지 않고 `--config-file`만 읽습니다. 기본 동작은 그대로이고, 판단·해석은 테스트로 확인했고, 실제 실행에서는 `--show-config`의 읽은 파일 목록과 받기만 동작 세 줄이 경고 없이 받아지는 것을 봤습니다(눌러 보지 않음). #211
+
+### 알려진 한계
+
+- 기본 동작은 바뀌지 않았습니다. 새 동작은 모두 `keybind`에 묶어야 동작합니다.
+- Ghostty와 다른 것:
+  - `close_all_windows`는 Ghostty 문서상 효과가 없지만 b-terminal은 모든 창을 닫습니다(닫기 확인을 거침).
+  - `cursor_key`는 Ghostty처럼 설정에 쓸 수 없습니다(경고하고 묶지 않음).
+  - 읽기 전용 칸은 `btctl send`·`run`도 받지 않습니다. `btctl`로 읽기 전용을 켜고 끄지는 못합니다(ADR-018).
+- 켜진 키 테이블을 화면에 보이지 않습니다.
+- 받기만 하는 동작(`check_for_updates`, `inspector`, `toggle_secure_input` 등)은 키를 먹을 뿐 하는 일이 없습니다.
+- 실제 창에서 보지 않은 것(테스트로만 확인): 모든 새 동작을 실제 키로 누르기(키 입력 흉내는 다른 앱에 들어갈 수 있어서). 🔒 표시, 읽기 전용에서 입력이 막히는 모습, 창 옮기기·숨기기, 투명도·창 테마 전환, 제목 입력 막대.
 
 ## [0.13.0] - 2026-11-10
 
