@@ -5,6 +5,7 @@
 ## [아직 릴리스하지 않음]
 
 - 명령줄 `+show-config`가 `--changes-only`(Ghostty처럼 기본 true)와 `--docs`를, `+list-themes`가 `--path`와 `--color=dark|light|all`을 받습니다. **기본 동작이 바뀝니다**: `+show-config`는 이제 기본과 다른 키만 보이고, 전부 보려면 `--changes-only=false`를 줍니다. `--docs`의 설명은 `+explain-config`와 같은 문서 표에서 옵니다. `--path`는 사용자 테마만 경로가 있고 넣어 둔 테마는 경로 없이 `(resources)`만 보입니다. 판단은 테스트로, 동작은 임시 HOME에서 직접 돌려 확인했고 창은 띄우지 않았습니다. #240
+- `background-blur`(옛 이름 `background-blur-radius`)를 받아 macOS에서 투명 창(`background-opacity` < 1) 뒤를 흐립니다. `false`·`true`(20)·0~255 정수(세기가 그대로 반지름)이고, 잘못된 값은 경고합니다. 창을 만들 때(퀵 터미널 포함)와 설정을 다시 읽을 때(끄기 포함) 적용하고, `background-opacity`가 1 이상이면 걸지 않습니다. macOS 26 유리 값은 받기만 하고 `true`로 봅니다. 기본(`false`)은 그대로입니다. 판단은 테스트로 확인했고 실제 창에서는 아직 보지 않았습니다. #238
 
 ## [0.16.0] - 2026-11-10
 

@@ -1808,6 +1808,15 @@ impl WindowExtMacOS for WindowDelegate {
         self.window().setHasShadow(has_shadow)
     }
 
+    // b-terminal(#238): set_blur는 반지름이 80으로 고정이라 반지름을 받는 것을 더했다
+    #[inline]
+    fn set_blur_radius(&self, radius: i64) {
+        let window_number = unsafe { self.window().windowNumber() };
+        unsafe {
+            ffi::CGSSetWindowBackgroundBlurRadius(ffi::CGSMainConnectionID(), window_number, radius);
+        }
+    }
+
     #[inline]
     fn set_tabbing_identifier(&self, identifier: &str) {
         self.window().setTabbingIdentifier(&NSString::from_str(identifier))

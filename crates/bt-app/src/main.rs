@@ -3,6 +3,7 @@
 mod app;
 mod appearance;
 mod bell_sound;
+mod blur;
 mod cliact;
 mod cliinfo;
 mod control;

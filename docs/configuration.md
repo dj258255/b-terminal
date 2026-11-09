@@ -189,6 +189,7 @@ config-file = ?~/.config/b-terminal/local   # ?가 붙으면 없어도 된다
 | `quick-terminal-space-behavior` | `move` `remain` | `move` | Space(데스크톱)를 옮길 때 퀵 터미널이 따라오는가(`move`: 지금 Space로 따라옴, `remain`: 처음 연 Space에 남음). 퀵 창이 포커스를 받을 때 `NSWindow.collectionBehavior`를 정합니다(macOS). 실제 창에서는 아직 확인하지 않았습니다 |
 | `window-save-state` | `default` `always` `never` | `default` | 앱을 끌 때(Cmd-Q) 창 크기·자리, 탭, 분할(비율), 칸의 작업 폴더, 사람이 붙인 탭·창·칸 제목(`set_tab_title`·`set_window_title`·`set_surface_title`과 `prompt_*`)을 적어 두고 다음에 켤 때 새 셸로 되살립니다. 프로그램이 OSC로 정한 제목, 돌던 프로그램, 화면 내용은 되살리지 않습니다. 제목이 없던 옛 상태 파일도 읽고, 읽은 제목은 제어 문자를 지우고 200자로 자릅니다. 마지막 창을 닫아 꺼진 경우와 `-e`·`--cwd`로 띄운 경우는 되살리지 않습니다 |
 | `background-opacity` | `0`~`1` | `1` | 기본 바탕색 칸으로 창 뒤가 비칩니다(글자·색 칸은 불투명). 새 창부터 따릅니다 |
+| `background-blur` | `false` / `true` / `0`~`255` | `false` | macOS만. `background-opacity`가 1보다 작을 때 창 뒤를 흐립니다. `true`는 20, 정수는 세기이고 그대로 흐림 반지름이 됩니다(Ghostty와 같음). 높을수록 흐리지만 너무 높으면 어색하게 그려질 수 있습니다. `background-opacity`가 1 이상이면 흐림이 보이지 않아 창에 걸지 않습니다. 새 창과 설정을 다시 읽을 때 따르고 끄기(`false`·`0`)도 다시 읽을 때 적용됩니다. 퀵 터미널 창도 같습니다. macOS 26 유리 값 `macos-glass-regular`·`macos-glass-clear`는 받되 유리 효과는 없고 `true`(20)로 봅니다. 옛 이름 `background-blur-radius`도 같은 키로 받습니다 |
 | `background-opacity-cells` | `true` / `false` | `false` | Ghostty 1.2 값. 켜면 `background-opacity`를 색이 있는 바탕 칸(프로그램이 바탕색을 칠한 칸)에도 적용합니다. 끄면 기본 바탕색 칸만 비칩니다. 고른 영역·커서·탭 막대는 그대로입니다 |
 | `link-url` | `true` / `false` | `true` | 화면 글의 URL을 Cmd(Linux는 Ctrl)를 누른 채 위에 있으면 링크로 찾습니다. `false`면 글의 URL은 링크가 아닙니다. OSC 8 링크는 `link-osc8`이 따로 정합니다 |
 | `link-osc8` | `true` / `false` | `true` | Ghostty 1.4 키. `false`면 OSC 8 하이퍼링크를 강조·주소 띠·복사·열기 모두 하지 않고 보통 글로 둡니다 |
@@ -209,11 +210,10 @@ config-file = ?~/.config/b-terminal/local   # ?가 붙으면 없어도 된다
 
 ### 받기만 하고 쓰지 않는 Ghostty 키
 
-경고 없이 넘깁니다: `background-blur`, `auto-update`, `gtk-titlebar` 등. 그 밖의 키는 경고합니다. 값은 확인하지 않고 그대로 넘깁니다. 0.13(#196)에서 더한 것과 이유:
+경고 없이 넘깁니다: `auto-update`, `gtk-titlebar` 등. 그 밖의 키는 경고합니다. 값은 확인하지 않고 그대로 넘깁니다. 0.13(#196)에서 더한 것과 이유:
 
 | 키 | 이유 |
 |---|---|
-| `background-blur` `background-blur-radius` | 창 뒤 흐림은 비공개 API(`CGSSetWindowBackgroundBlurRadius`)를 불러야 하고 unsafe가 필요합니다 |
 | `macos-auto-secure-input` `macos-secure-input-indication` | 보안 입력(`EnableSecureEventInput`)은 Carbon 함수를 직접 불러야 해 unsafe가 필요합니다 |
 | `macos-applescript` `macos-shortcuts` | AppleScript 사전과 단축어(App Intents)는 앱 꾸러미와 Objective-C 클래스 정의가 필요한데 지금 b-terminal에는 그 기능이 없습니다 |
 | `macos-dock-drop-behavior` | Dock 아이콘에 파일·폴더를 놓으면 앱 델리게이트의 `application:openURLs:`가 불리는데 winit 0.30은 그 이벤트를 주지 않습니다. 창에 놓은 파일(`DroppedFile`)만 옵니다 |

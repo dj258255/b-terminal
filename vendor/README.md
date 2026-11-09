@@ -8,6 +8,7 @@
 - 연결: 루트 `Cargo.toml`의 `[patch.crates-io]`.
 - 고친 곳: `src/platform_impl/macos/view.rs`의 `insert_text`와 `do_command_by_selector` 두 군데. `b-terminal 패치`로 찾을 수 있습니다.
 - 고친 곳(#110): `src/platform_impl/macos/window.rs`의 `WinitWindow`에 `constrainFrameRect:toScreen:`를 더했습니다. 테두리 없는 창(퀵 터미널)은 macOS가 메뉴 막대 아래로 밀어 넣지 않고 준 자리 그대로 둡니다. 제목 막대가 있는 창은 원래대로(부모 클래스의 것)입니다. 이것이 없으면 위쪽 퀵 터미널이 화면 위쪽 바깥에서 시작하지 못해 미끄러지는 움직임이 보이지 않습니다(실제로 `y=39`에 붙박였음).
+- 고친 곳(#238): `src/platform/macos.rs`의 `WindowExtMacOS::set_blur_radius(i64)`와 `src/platform_impl/macos/window_delegate.rs`의 `WindowExtMacOS` 구현 안의 같은 이름 함수. 기존 `Window::set_blur(bool)`은 반지름을 80으로 고정해 그대로 두고, 반지름을 받는 것을 더했습니다(`CGSSetWindowBackgroundBlurRadius`에 그대로 넘김). `b-terminal(#238)`로 찾을 수 있습니다. 이유: Ghostty `background-blur`는 0 이상 정수(세기)를 그대로 반지름으로 씁니다. 되돌릴 조건: winit이 반지름을 받는 공개 함수를 내면 지우고 그것을 씁니다.
 
 ### 왜
 
