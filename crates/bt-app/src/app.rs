@@ -1069,7 +1069,7 @@ impl App {
             crate::shellint::apply(&mut options, dir, &self.config.shell_integration);
         }
         options.term = self.config.term.clone();
-        // 설정의 env는 b-terminal이 넣은 변수(BT_SOCKET·BT_TAB_ID·셸 통합) 뒤에 붙여 이긴다(Ghostty처럼, ADR-017)
+        // 설정의 env는 b-terminal이 넣은 변수(BT_SOCKET·BT_TAB_ID·셸 통합) 뒤에 붙여 이긴다(Ghostty처럼, ADR-016)
         options.env.extend(self.config.env.iter().cloned());
         // 시작 입력: 읽지 못하거나 상한을 넘으면 경고하고 하나도 보내지 않는다. 모든 새 칸에 보낸다
         match bt_core::config::resolve_input(&self.config.input) {

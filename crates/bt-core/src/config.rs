@@ -519,7 +519,7 @@ pub struct Config {
     pub osc_color_report_format: OscColorReportFormat,
     /// ENQ(0x05)를 받으면 PTY로 돌려보낼 글(Ghostty `enquiry-response`, 기본 빈 값 = 답하지 않음, #176)
     pub enquiry_response: String,
-    /// `term`: 칸의 TERM 값. Ghostty 기본은 `xterm-ghostty`지만 그 terminfo가 없어 `xterm-256color`를 지킨다(ADR-017, #190)
+    /// `term`: 칸의 TERM 값. Ghostty 기본은 `xterm-ghostty`지만 그 terminfo가 없어 `xterm-256color`를 지킨다(ADR-016, #190)
     pub term: String,
     /// `env`: 칸을 띄울 때 환경에 더할 변수. 쓴 차례대로 풀어 둔 결과다(#190)
     pub env: Vec<(String, String)>,
@@ -1300,11 +1300,11 @@ fn render_palette_entry(p: &PaletteEntryConf) -> String {
     )
 }
 
-/// `term`의 기본. Ghostty는 `xterm-ghostty`지만 b-terminal에는 그 terminfo가 없어 지금 값을 지킨다(ADR-017)
+/// `term`의 기본. Ghostty는 `xterm-ghostty`지만 b-terminal에는 그 terminfo가 없어 지금 값을 지킨다(ADR-016)
 pub const DEFAULT_TERM: &str = "xterm-256color";
 
 /// `input` 전체 크기 상한(바이트). Ghostty는 `path:` 파일 하나를 10MB까지 읽는다. b-terminal은 `raw:`와 파일을 합친
-/// 전체에 같은 값을 건다(ADR-017)
+/// 전체에 같은 값을 건다(ADR-016)
 pub const INPUT_LIMIT_BYTES: usize = 10 * 1024 * 1024;
 
 /// `input` 하나: 쓴 글(`raw:`) 또는 읽을 파일(`path:`)
