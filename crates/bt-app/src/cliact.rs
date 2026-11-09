@@ -51,6 +51,19 @@ const ACTIONS: &[(&str, &str)] = &[
     ("edit-config", "설정 파일을 $VISUAL 또는 $EDITOR로 엽니다"),
 ];
 
+/// `cliinfo`가 맡는 동작(도움말에만 보인다. 실행은 `run_unknown`이 넘긴다)
+const INFO_ACTIONS: &[(&str, &str)] = &[
+    ("list-keybinds", "키 묶음을 보입니다 (--default)"),
+    ("list-actions", "키 묶음에 쓸 수 있는 동작 이름을 보입니다"),
+    ("list-fonts", "글꼴 집안과 모양을 보입니다 (--family, --bold, --italic)"),
+    ("show-face", "글자마다 그릴 글꼴을 보입니다 (--string, --cp)"),
+    ("list-colors", "X11 색 이름과 값을 보입니다"),
+    (
+        "explain-config",
+        "설정 키의 값·기본·설명을 보입니다 (<키>, --option, --keybind)",
+    ),
+];
+
 /// 인자에서 `+동작`을 찾는다. Ghostty처럼 자리는 가리지 않고(`-e` 뒤는 프로그램의 인자라 보지 않는다),
 /// 둘 이상이면 오류다. 돌려주는 것은 (이름, 동작 인자들: `+동작`만 뺀 나머지)
 pub fn detect(args: &[String]) -> Result<Option<(String, Vec<String>)>, String> {
@@ -106,7 +119,10 @@ pub fn run(
 }
 
 /// 이 모듈이 모르는 동작 이름이 오는 단 한 곳. 다른 모듈의 동작은 여기서 이어 받는다
-fn run_unknown(name: &str, _args: &[String], io: &mut Io) -> i32 {
+fn run_unknown(name: &str, args: &[String], io: &mut Io) -> i32 {
+    if let Some(code) = crate::cliinfo::run(name, args) {
+        return code;
+    }
     let _ = writeln!(io.err, "모르는 동작: +{name}\n동작 목록은 `b-terminal +help`로 봅니다.");
     1
 }
@@ -117,7 +133,7 @@ fn help(io: &mut Io) -> i32 {
         io.out,
         "+동작 없이 부르면 터미널 창을 엽니다(`b-terminal --help`).\n\n쓸 수 있는 동작:"
     );
-    for (n, d) in ACTIONS {
+    for (n, d) in ACTIONS.iter().chain(INFO_ACTIONS) {
         let _ = writeln!(io.out, "  +{n:<16} {d}");
     }
     let _ = writeln!(io.out, "\n동작마다 `+<동작> --help`로 설명을 봅니다.");
@@ -499,6 +515,25 @@ mod tests {
         let (code, out, _, _) = go("validate-config", &["--help"], &env(&d));
         assert_eq!(code, 0);
         assert!(out.contains("+validate-config"), "{out}");
+    }
+
+    #[test]
+    fn info_actions_are_reached_and_listed() {
+        let d = tmpdir("info");
+        // cliinfo의 동작은 run_unknown을 거쳐 그쪽에서 돈다(모르는 동작의 1이 아니다)
+        let (code, _, err, _) = go("list-actions", &[], &env(&d));
+        assert_eq!(code, 0, "{err}");
+        assert!(!err.contains("모르는 동작"), "{err}");
+        let (code, _, _, _) = go("help", &[], &env(&d));
+        assert_eq!(code, 0);
+        let (_, out, _, _) = go("help", &[], &env(&d));
+        for (n, _) in INFO_ACTIONS {
+            assert!(out.contains(&format!("+{n}")), "{n}: {out}");
+        }
+        // 정말 모르는 이름은 그대로 1
+        let (code, _, err, _) = go("nope", &[], &env(&d));
+        assert_eq!(code, 1);
+        assert!(err.contains("모르는 동작"), "{err}");
     }
 
     #[test]
