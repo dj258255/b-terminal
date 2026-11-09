@@ -125,6 +125,12 @@ pub struct Config {
     pub confirm_close: ConfirmClose,
     /// 퀵 터미널의 자리·크기·화면·자동 숨김·움직임(Ghostty `quick-terminal-*`, #110)
     pub quick: QuickTerminal,
+    /// 배경 그림(Ghostty `background-image`·`-opacity`·`-position`·`-fit`·`-repeat`, #134)
+    pub background_image: Option<PathBuf>,
+    pub background_image_opacity: f32,
+    pub background_image_position: BgPosition,
+    pub background_image_fit: BgFit,
+    pub background_image_repeat: bool,
     /// 프롬프트를 눌러 커서 옮기기(Ghostty `cursor-click-to-move`, #137)
     pub cursor_click_to_move: bool,
     /// 남는 자리를 네 변에 고르게(Ghostty `window-padding-balance`, #136)
@@ -183,6 +189,33 @@ impl BellFeatures {
         *self = next;
         true
     }
+}
+
+/// 배경 그림 맞추기(Ghostty `background-image-fit`)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BgFit {
+    /// 잘리지 않게 다 보이도록
+    Contain,
+    /// 빈 곳 없이 덮도록(넘치는 쪽은 잘림)
+    Cover,
+    /// 영역에 맞춰 늘림(비율 무시)
+    Stretch,
+    /// 원래 크기
+    None,
+}
+
+/// 배경 그림 자리(Ghostty `background-image-position`)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BgPosition {
+    TopLeft,
+    TopCenter,
+    TopRight,
+    CenterLeft,
+    Center,
+    CenterRight,
+    BottomLeft,
+    BottomCenter,
+    BottomRight,
 }
 
 /// 여백 색(Ghostty `window-padding-color`)
@@ -453,6 +486,11 @@ impl Default for Config {
             bell_features: BellFeatures::default(),
             confirm_close: ConfirmClose::True,
             quick: QuickTerminal::default(),
+            background_image: None,
+            background_image_opacity: 1.0,
+            background_image_position: BgPosition::Center,
+            background_image_fit: BgFit::Contain,
+            background_image_repeat: false,
             cursor_click_to_move: true,
             padding_balance: false,
             padding_color: PaddingColor::Background,
@@ -920,6 +958,41 @@ impl Config {
                 "never" => self.window_save_state = false,
                 _ => bad(warnings),
             },
+            // 상대 경로는 그 설정 파일의 폴더 기준(working-directory와 같게)
+            "background-image" => {
+                self.background_image =
+                    (!v.is_empty()).then(|| expand_home(v, e.file.parent().unwrap_or(Path::new("."))));
+            }
+            "background-image-opacity" => match v.parse::<f32>() {
+                Ok(o) if o.is_finite() && o >= 0.0 => self.background_image_opacity = o,
+                _ => bad(warnings),
+            },
+            "background-image-position" => {
+                use BgPosition::*;
+                match v {
+                    "top-left" => self.background_image_position = TopLeft,
+                    "top-center" => self.background_image_position = TopCenter,
+                    "top-right" => self.background_image_position = TopRight,
+                    "center-left" => self.background_image_position = CenterLeft,
+                    "center" => self.background_image_position = Center,
+                    "center-right" => self.background_image_position = CenterRight,
+                    "bottom-left" => self.background_image_position = BottomLeft,
+                    "bottom-center" => self.background_image_position = BottomCenter,
+                    "bottom-right" => self.background_image_position = BottomRight,
+                    _ => bad(warnings),
+                }
+            }
+            "background-image-fit" => match v {
+                "contain" => self.background_image_fit = BgFit::Contain,
+                "cover" => self.background_image_fit = BgFit::Cover,
+                "stretch" => self.background_image_fit = BgFit::Stretch,
+                "none" => self.background_image_fit = BgFit::None,
+                _ => bad(warnings),
+            },
+            "background-image-repeat" => match parse_bool(v) {
+                Some(b) => self.background_image_repeat = b,
+                None => bad(warnings),
+            },
             "cursor-click-to-move" => match parse_bool(v) {
                 Some(b) => self.cursor_click_to_move = b,
                 None => bad(warnings),
@@ -1355,6 +1428,57 @@ mod tests {
         assert!(!Config::from_text("window-save-state = never\n", true).window_save_state);
         assert!(Config::from_text("window-save-state = always\n", true).window_save_state);
         assert_eq!(Config::from_text("window-save-state = maybe\n", true).warnings.len(), 1);
+    }
+
+    #[test]
+    fn background_image_keys_like_ghostty() {
+        let d = Config::default();
+        assert_eq!(d.background_image, None);
+        assert_eq!(
+            (
+                d.background_image_opacity,
+                d.background_image_position,
+                d.background_image_fit,
+                d.background_image_repeat
+            ),
+            (1.0, BgPosition::Center, BgFit::Contain, false)
+        );
+        let c = Config::from_text(
+            "background-image = /tmp/a.png\nbackground-image-opacity = 1.5\nbackground-image-position = bottom-right\nbackground-image-fit = cover\nbackground-image-repeat = true\n",
+            true,
+        );
+        assert!(c.warnings.is_empty(), "{:?}", c.warnings);
+        assert_eq!(c.background_image, Some(PathBuf::from("/tmp/a.png")));
+        assert_eq!(
+            (
+                c.background_image_opacity,
+                c.background_image_position,
+                c.background_image_fit,
+                c.background_image_repeat
+            ),
+            (1.5, BgPosition::BottomRight, BgFit::Cover, true)
+        );
+        assert_eq!(
+            Config::from_text("background-image = \n", true).background_image,
+            None,
+            "빈 값은 지움"
+        );
+        assert!(
+            Config::from_text("background-image = ~/x.jpg\n", true)
+                .background_image
+                .is_some_and(|p| !p.starts_with("~")),
+            "~를 집 폴더로"
+        );
+        assert_eq!(
+            Config::from_text("background-image-fit = tile\n", true).warnings.len(),
+            1
+        );
+        assert_eq!(
+            Config::from_text("background-image-position = middle\n", true)
+                .warnings
+                .len(),
+            1
+        );
     }
 
     #[test]

@@ -320,9 +320,12 @@ dependencies = [
  "bt-term",
  "fontdb",
  "log",
+ "png 0.17.16",
  "swash",
  "thiserror 2.0.21",
  "unicode-width",
+ "zune-core",
+ "zune-jpeg",
 ]
 
 [[package]]
