@@ -98,6 +98,13 @@ pub struct SpawnOptions {
     pub clipboard_read: bool,
     /// 단어 고르기(두 번 누르기)의 경계 글자(설정 selection-word-chars, #126). 없으면 VT 엔진 기본
     pub word_chars: Option<String>,
+    /// 새 출력이 오면 맨 아래로 스크롤한다(설정 scroll-to-bottom의 output, #147)
+    pub scroll_on_output: bool,
+}
+
+/// 새 출력이 왔을 때 맨 아래로 스크롤해야 하는가(켜져 있고 위로 올라가 있을 때만)
+fn scroll_wanted(on: bool, display_offset: usize) -> bool {
+    on && display_offset != 0
 }
 
 /// 세션이 앱에 알리는 일. 읽기 스레드에서 불린다
@@ -273,6 +280,8 @@ pub struct Session {
     exited: Arc<Mutex<Option<Option<u32>>>>,
     /// 셸 통합 표지(OSC 133;A)를 한 번이라도 받았다
     integrated: Arc<std::sync::atomic::AtomicBool>,
+    /// 새 출력이 오면 맨 아래로 스크롤하는가(읽기 스레드가 본다)
+    scroll_on_output: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl Session {
@@ -412,6 +421,8 @@ impl Session {
         }));
         let integrated = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let thread_integrated = integrated.clone();
+        let scroll_on_output = Arc::new(std::sync::atomic::AtomicBool::new(options.scroll_on_output));
+        let thread_scroll_on_output = scroll_on_output.clone();
         let exited = Arc::new(Mutex::new(None));
 
         let thread_inner = inner.clone();
@@ -489,6 +500,13 @@ impl Session {
                                 push_capped(cap, rest);
                             }
                         }
+                        // 새 출력이 오면 맨 아래로(scroll-to-bottom의 output, #147)
+                        if thread_scroll_on_output.load(std::sync::atomic::Ordering::Relaxed) {
+                            let mut g = thread_inner.lock();
+                            if scroll_wanted(true, g.term.grid().display_offset()) {
+                                g.term.scroll_display(Scroll::Bottom);
+                            }
+                        }
                         for e in events {
                             sink(e);
                         }
@@ -512,6 +530,7 @@ impl Session {
             pid,
             exited,
             integrated,
+            scroll_on_output,
         })
     }
 
@@ -550,21 +569,32 @@ impl Session {
         *self.size.lock()
     }
 
-    /// PTY에 바이트를 쓴다. 쓰면 스크롤백을 보던 화면을 맨 아래로 돌린다
+    /// PTY에 바이트를 그대로 쓴다. 보던 자리는 건드리지 않는다(응답·초점 알림·마우스 보고 같은 것)
     pub fn write(&self, bytes: &[u8]) {
         if bytes.is_empty() {
             return;
-        }
-        {
-            let mut g = self.inner.lock();
-            if g.term.grid().display_offset() != 0 {
-                g.term.scroll_display(Scroll::Bottom);
-            }
         }
         let mut w = self.writer.lock();
         if let Err(e) = w.write_all(bytes).and_then(|_| w.flush()) {
             log::debug!("pty write failed: {e}");
         }
+    }
+
+    /// 사용자가 친 키·붙여넣기를 PTY에 쓴다. `scroll`이면 쓰기 전에 맨 아래로 돌린다
+    /// (설정 scroll-to-bottom의 keystroke, #147)
+    pub fn write_input(&self, bytes: &[u8], scroll: bool) {
+        if bytes.is_empty() {
+            return;
+        }
+        if scroll {
+            self.scroll_to_bottom();
+        }
+        self.write(bytes);
+    }
+
+    /// 새 출력이 오면 맨 아래로 스크롤할지 바꾼다(설정을 다시 읽을 때)
+    pub fn set_scroll_on_output(&self, on: bool) {
+        self.scroll_on_output.store(on, std::sync::atomic::Ordering::Relaxed);
     }
 
     pub fn resize(&self, size: GridSize) {

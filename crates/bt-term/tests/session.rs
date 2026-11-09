@@ -267,3 +267,58 @@ fn adjust_selection_moves_the_selection_end() {
     assert!(s.adjust_selection(BeginningOfLine));
     assert_eq!(s.selection_text().as_deref(), Some("abcdef\ng"));
 }
+
+/// #147: 스크롤백을 만든 뒤 위로 올려 두고, 셸이 새 출력을 내게 한다. 맨 아래로 돌아왔는지(display_offset 0) 돌려준다
+fn offset_after_new_output(scroll_on_output: bool) -> usize {
+    let (tx, rx) = channel();
+    let tx = std::sync::Mutex::new(tx);
+    let sink = Arc::new(move |e: SessionEvent| {
+        let _ = tx.lock().unwrap().send(e);
+    });
+    let script = "i=0; while [ $i -lt 30 ]; do printf 'row%s\\n' $i; i=$((i+1)); done; \
+                  read x; printf 'tail1\\ntail2\\ntail3\\n'; read y";
+    let opts = SpawnOptions {
+        program: Some("/bin/sh".into()),
+        args: vec!["-c".into(), script.into()],
+        cwd: Some(std::env::temp_dir()),
+        scroll_on_output,
+        ..Default::default()
+    };
+    let s = Session::spawn(opts, GridSize::new(40, 5), Theme::default(), sink).expect("spawn");
+    wait_until(&s, |t| t.contains("row29"));
+    s.scroll(10);
+    assert!(s.snapshot().display_offset > 0, "위로 올라가 있어야 한다");
+    // 스크롤 자리를 바꾸지 않는 쓰기(write)로 read를 풀어 새 출력을 낸다
+    s.write(b"\n");
+    // 새 출력이 읽기 스레드에서 처리될 때까지 기다린다
+    std::thread::sleep(Duration::from_millis(500));
+    let off = s.snapshot().display_offset;
+    s.write(b"\n");
+    let _ = wait_exit(&rx);
+    off
+}
+
+#[test]
+fn new_output_keeps_scroll_position_unless_scroll_on_output() {
+    assert!(
+        offset_after_new_output(false) > 0,
+        "output가 꺼져 있으면 보던 자리 그대로"
+    );
+    assert_eq!(offset_after_new_output(true), 0, "output가 켜져 있으면 맨 아래로");
+}
+
+#[test]
+fn write_input_scrolls_to_bottom_only_when_asked() {
+    let (s, _rx) = sh(
+        "i=0; while [ $i -lt 30 ]; do printf 'row%s\\n' $i; i=$((i+1)); done; read x",
+        GridSize::new(40, 5),
+    );
+    wait_until(&s, |t| t.contains("row29"));
+    s.scroll(10);
+    s.write_input(b"", true);
+    assert!(s.snapshot().display_offset > 0, "빈 입력은 아무것도 하지 않는다");
+    s.write_input(b"a", false);
+    assert!(s.snapshot().display_offset > 0, "scroll이 꺼져 있으면 그대로");
+    s.write_input(b"b", true);
+    assert_eq!(s.snapshot().display_offset, 0, "scroll이 켜져 있으면 맨 아래로");
+}
