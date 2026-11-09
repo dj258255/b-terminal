@@ -1391,6 +1391,18 @@ impl App {
         }
     }
 
+    /// 복사 명령(단축키·메뉴·오른쪽 클릭)으로 복사한다. `selection-clear-on-copy`가 켜져 있으면 복사한 뒤 고른 영역을 지운다.
+    /// `copy-on-select`의 자동 복사는 지우지 않는다(Ghostty)
+    fn copy_selection_command(&mut self) -> bool {
+        let copied = self.copy_selection();
+        if copied && clears_selection_after_copy(self.config.selection_clear_on_copy) {
+            if let Some(t) = self.active_pane() {
+                t.session.select_clear();
+            }
+        }
+        copied
+    }
+
     /// 마우스 보고 모드가 아닌 칸의 오른쪽 클릭(`right-click-action`). `context-menu`는 메뉴가 없어 하는 일이 없다
     fn right_click(&mut self) {
         let paste = |app: &mut Self| {
@@ -1403,10 +1415,10 @@ impl App {
             bt_core::config::RightClickAction::ContextMenu | bt_core::config::RightClickAction::Ignore => {}
             bt_core::config::RightClickAction::Paste => paste(self),
             bt_core::config::RightClickAction::Copy => {
-                self.copy_selection();
+                self.copy_selection_command();
             }
             bt_core::config::RightClickAction::CopyOrPaste => {
-                if !self.copy_selection() {
+                if !self.copy_selection_command() {
                     paste(self);
                 }
             }
@@ -1652,8 +1664,11 @@ impl App {
 
     fn write_active(&mut self, bytes: &[u8]) {
         let scroll = self.config.scroll_to_bottom.keystroke;
+        let clear = clears_selection_on_write(self.config.selection_clear_on_typing, bytes);
         if let Some(t) = self.active_pane() {
-            t.session.select_clear();
+            if clear {
+                t.session.select_clear();
+            }
             t.session.write_input(bytes, scroll);
         }
     }
@@ -1949,7 +1964,7 @@ impl App {
     fn handle_action(&mut self, action: Action, event_loop: &ActiveEventLoop) {
         match action {
             Action::Copy => {
-                self.copy_selection();
+                self.copy_selection_command();
             }
             // 찾기 막대가 열려 있으면 첫 줄을 찾을 글에 붙인다
             Action::Paste if self.w.search.is_some() => {
@@ -3340,36 +3355,45 @@ pub fn is_local_host(host: &str) -> bool {
     host.is_empty() || host == "localhost" || host == local || host.split('.').next() == Some(short.as_str())
 }
 
-/// 화면 값을 렌더러 셀로. 찾기에 맞은 칸은 여기서 색을 바꾼다(지금 것은 노랑 바탕, 나머지는 옅은 노랑)
+/// 칸에 바이트를 보낼 때 고른 영역을 지우나(Ghostty `selection-clear-on-typing`, #162).
+/// 끄더라도 Esc는 고른 영역을 지운다(Ghostty 문서: "pressing escape")
+fn clears_selection_on_write(clear_on_typing: bool, bytes: &[u8]) -> bool {
+    clear_on_typing || bytes == b"\x1b"
+}
+
+/// 복사한 뒤 고른 영역을 지우나(Ghostty `selection-clear-on-copy`, #162)
+fn clears_selection_after_copy(clear_on_copy: bool) -> bool {
+    clear_on_copy
+}
+
+/// 화면 값을 렌더러 셀로. 찾기에 맞은 칸은 여기서 색을 바꾼다(`search-*` 색, 지금 고른 곳은 `search-selected-*`)
 pub fn to_draw_cells(s: &Screen, theme: &bt_core::Theme) -> Vec<DrawCell> {
-    let yellow = theme.palette[3];
     let mut cells: Vec<DrawCell> = s
         .cells
         .iter()
-        .map(|c| DrawCell {
-            ch: c.ch,
-            fg: if c.flags.contains(CellFlags::MATCH_CURRENT) {
-                theme.background
-            } else {
-                c.fg
-            },
-            bg: if c.flags.contains(CellFlags::MATCH_CURRENT) {
-                yellow
+        .map(|c| {
+            let (fg, bg) = if c.flags.contains(CellFlags::MATCH_CURRENT) {
+                theme.search.pick(true, c.fg, c.bg)
             } else if c.flags.contains(CellFlags::MATCH) {
-                c.bg.mix(yellow, 0.4)
+                theme.search.pick(false, c.fg, c.bg)
             } else {
-                c.bg
-            },
-            bold: c.flags.contains(CellFlags::BOLD),
-            italic: c.flags.contains(CellFlags::ITALIC),
-            underline: c.flags.contains(CellFlags::UNDERLINE) || c.flags.contains(CellFlags::UNDERCURL),
-            strike: c.flags.contains(CellFlags::STRIKE),
-            wide: c.flags.contains(CellFlags::WIDE),
-            spacer: c.flags.contains(CellFlags::SPACER),
-            selected: c.flags.contains(CellFlags::SELECTED),
-            emoji: c.combining.contains(&'\u{fe0f}'),
-            cluster: None,
-            cluster_cells: 0,
+                (c.fg, c.bg)
+            };
+            DrawCell {
+                ch: c.ch,
+                fg,
+                bg,
+                bold: c.flags.contains(CellFlags::BOLD),
+                italic: c.flags.contains(CellFlags::ITALIC),
+                underline: c.flags.contains(CellFlags::UNDERLINE) || c.flags.contains(CellFlags::UNDERCURL),
+                strike: c.flags.contains(CellFlags::STRIKE),
+                wide: c.flags.contains(CellFlags::WIDE),
+                spacer: c.flags.contains(CellFlags::SPACER),
+                selected: c.flags.contains(CellFlags::SELECTED),
+                emoji: c.combining.contains(&'\u{fe0f}'),
+                cluster: None,
+                cluster_cells: 0,
+            }
         })
         .collect();
     // 이모지 묶음(ZWJ·피부색·국기, #87)
@@ -3645,6 +3669,17 @@ impl ApplicationHandler<UserEvent> for App {
             }
             WindowEvent::Ime(ime) => match ime {
                 Ime::Preedit(text, _) => {
+                    // 조합을 시작하면 고른 영역을 지운다(Ghostty `selection-clear-on-typing`: preedit 시작도 입력으로 본다)
+                    if self.config.selection_clear_on_typing
+                        && !text.is_empty()
+                        && self.w.preedit.is_empty()
+                        && self.w.search.is_none()
+                        && self.w.palette.is_none()
+                    {
+                        if let Some(t) = self.active_pane() {
+                            t.session.select_clear();
+                        }
+                    }
                     self.w.preedit = text;
                     self.request_redraw();
                 }
@@ -4048,6 +4083,63 @@ mod tests {
             (cell.0, cell.1)
         );
         assert_eq!(cursor_colors(Some(Background), None, theme, cell), (cell.1, theme.1));
+    }
+
+    #[test]
+    fn selection_is_cleared_by_typing_and_copy_only_when_asked() {
+        // 글을 칠 때: 기본(켬)은 지우고, 끄면 지우지 않되 Esc는 지운다
+        assert!(clears_selection_on_write(true, b"a"));
+        assert!(!clears_selection_on_write(false, b"a"));
+        assert!(!clears_selection_on_write(false, "한".as_bytes()));
+        assert!(
+            clears_selection_on_write(false, b"\x1b"),
+            "Esc는 설정과 상관없이 지운다"
+        );
+        assert!(!clears_selection_on_write(false, b"\x1b[A"), "방향키는 Esc가 아니다");
+        // 복사한 뒤: 기본(끔)은 남기고, 켜면 지운다
+        assert!(!clears_selection_after_copy(false));
+        assert!(clears_selection_after_copy(true));
+    }
+
+    #[test]
+    fn search_matches_use_search_colors_like_ghostty() {
+        use bt_core::Rgb;
+        use bt_core::theme::{SearchColor, SearchColors};
+        use bt_term::{Emulator, GridSize};
+        let mut theme = bt_core::Theme::default();
+        let mut e = Emulator::new(GridSize::new(4, 1), theme.clone());
+        e.feed(b"\x1b[31mabcd");
+        let mut s = e.snapshot();
+        s.cells[1].flags.insert(CellFlags::MATCH);
+        s.cells[2].flags.insert(CellFlags::MATCH | CellFlags::MATCH_CURRENT);
+        let red = theme.palette[1];
+
+        // 기본: 맞은 곳은 검정 글자 + 노랑 바탕, 지금 고른 곳은 검정 글자 + 살구색 바탕(바탕을 섞지 않고 바꾼다)
+        let cells = to_draw_cells(&s, &theme);
+        assert_eq!(
+            (cells[0].fg, cells[0].bg),
+            (red, theme.background),
+            "맞지 않은 칸은 그대로"
+        );
+        assert_eq!(
+            (cells[1].fg, cells[1].bg),
+            (Rgb::new(0, 0, 0), Rgb::new(0xff, 0xe0, 0x82))
+        );
+        assert_eq!(
+            (cells[2].fg, cells[2].bg),
+            (Rgb::new(0, 0, 0), Rgb::new(0xf2, 0xa5, 0x7e))
+        );
+
+        // 설정: cell-foreground·cell-background는 칸의 색을 따른다
+        theme.search = SearchColors {
+            foreground: SearchColor::CellBackground,
+            background: SearchColor::CellForeground,
+            selected_foreground: SearchColor::Rgb(Rgb::new(9, 9, 9)),
+            selected_background: SearchColor::Rgb(Rgb::new(1, 2, 3)),
+        };
+        let cells = to_draw_cells(&s, &theme);
+        assert_eq!((cells[1].fg, cells[1].bg), (theme.background, red));
+        assert_eq!((cells[2].fg, cells[2].bg), (Rgb::new(9, 9, 9), Rgb::new(1, 2, 3)));
     }
 
     #[test]

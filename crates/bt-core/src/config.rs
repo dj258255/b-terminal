@@ -9,7 +9,7 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::theme::{Rgb, Theme};
+use crate::theme::{Rgb, SearchColor, Theme};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CursorStyle {
@@ -192,6 +192,10 @@ pub struct Config {
     pub copy_on_select: CopyOnSelect,
     /// 클립보드로 복사하는 글의 줄 끝 공백·탭을 지운다(Ghostty `clipboard-trim-trailing-spaces`)
     pub clipboard_trim_trailing_spaces: bool,
+    /// 글을 칠 때 고른 영역을 지운다(Ghostty `selection-clear-on-typing`, 기본 켬, #162)
+    pub selection_clear_on_typing: bool,
+    /// 복사한 뒤 고른 영역을 지운다(Ghostty `selection-clear-on-copy`, 기본 끔, #162)
+    pub selection_clear_on_copy: bool,
     /// 오른쪽 클릭 동작(Ghostty `right-click-action`). 마우스 보고 모드의 프로그램에는 항상 클릭을 보낸다
     pub right_click_action: RightClickAction,
     /// 새 창·탭·분할이 고른 칸의 폴더를 이어받는가(Ghostty, 모두 기본 켬). 켜면 `working-directory`보다 앞선다
@@ -713,6 +717,8 @@ impl Default for Config {
             scrollback_lines: 10_000,
             copy_on_select: CopyOnSelect::True,
             clipboard_trim_trailing_spaces: true,
+            selection_clear_on_typing: true,
+            selection_clear_on_copy: false,
             right_click_action: RightClickAction::ContextMenu,
             window_inherit_working_directory: true,
             tab_inherit_working_directory: true,
@@ -1217,6 +1223,48 @@ impl Config {
                 }
             }
             "bold-is-bright" => t.bold_is_bright = parse_bool(v).unwrap_or(t.bold_is_bright),
+            // 색이면 굵은 기본 글자색을 그 색으로, `bright`면 굵은 0~7번 색을 밝은 색으로. 빈 값이면 기본(#162)
+            "bold-color" => {
+                if v.is_empty() {
+                    t.bold_color = None;
+                    t.bold_is_bright = false;
+                } else if v == "bright" {
+                    t.bold_color = None;
+                    t.bold_is_bright = true;
+                } else if let Some(c) = color() {
+                    t.bold_color = Some(c);
+                } else {
+                    warnings.push(format!(
+                        "{}:{}: bold-color 값을 읽지 못했습니다: {v}",
+                        e.file.display(),
+                        e.line
+                    ));
+                }
+            }
+            "faint-opacity" => match v.parse::<f32>() {
+                Ok(o) if o.is_finite() => t.faint_opacity = o.clamp(0.0, 1.0),
+                _ => warnings.push(format!(
+                    "{}:{}: faint-opacity 값을 읽지 못했습니다: {v}",
+                    e.file.display(),
+                    e.line
+                )),
+            },
+            "search-foreground" | "search-background" | "search-selected-foreground" | "search-selected-background" => {
+                match parse_search_color(v) {
+                    Some(c) => match e.key.as_str() {
+                        "search-foreground" => t.search.foreground = c,
+                        "search-background" => t.search.background = c,
+                        "search-selected-foreground" => t.search.selected_foreground = c,
+                        _ => t.search.selected_background = c,
+                    },
+                    None => warnings.push(format!(
+                        "{}:{}: {} 값을 읽지 못했습니다: {v}",
+                        e.file.display(),
+                        e.line,
+                        e.key
+                    )),
+                }
+            }
             _ => return false,
         }
         true
@@ -1348,6 +1396,14 @@ impl Config {
                 "primary" if cfg!(target_os = "macos") => self.copy_on_select = CopyOnSelect::False,
                 "primary" => self.copy_on_select = CopyOnSelect::True,
                 _ => bad(warnings),
+            },
+            "selection-clear-on-typing" => match parse_bool(v) {
+                Some(b) => self.selection_clear_on_typing = b,
+                None => bad(warnings),
+            },
+            "selection-clear-on-copy" => match parse_bool(v) {
+                Some(b) => self.selection_clear_on_copy = b,
+                None => bad(warnings),
             },
             "clipboard-trim-trailing-spaces" => match parse_bool(v) {
                 Some(b) => self.clipboard_trim_trailing_spaces = b,
@@ -1715,6 +1771,21 @@ impl Config {
             push("palette", format!("{i}={}", hex(*c)));
         }
         push("bold-is-bright", t.bold_is_bright.to_string());
+        if let Some(c) = t.bold_color {
+            push("bold-color", hex(c));
+        }
+        push("faint-opacity", format!("{}", t.faint_opacity));
+        let search = |c: SearchColor| match c {
+            SearchColor::Rgb(c) => hex(c),
+            SearchColor::CellForeground => "cell-foreground".to_string(),
+            SearchColor::CellBackground => "cell-background".to_string(),
+        };
+        push("search-foreground", search(t.search.foreground));
+        push("search-background", search(t.search.background));
+        push("search-selected-foreground", search(t.search.selected_foreground));
+        push("search-selected-background", search(t.search.selected_background));
+        push("selection-clear-on-typing", self.selection_clear_on_typing.to_string());
+        push("selection-clear-on-copy", self.selection_clear_on_copy.to_string());
         push(
             "cursor-style",
             match self.cursor_style {
@@ -1906,6 +1977,15 @@ fn hex(c: Rgb) -> String {
 }
 
 /// X11 색 이름 몇 개(Ghostty 테마가 가끔 쓴다)
+/// 찾기 강조 색 값: `#rrggbb`·이름 색·`cell-foreground`·`cell-background`(Ghostty `search-*`)
+fn parse_search_color(v: &str) -> Option<SearchColor> {
+    match v {
+        "cell-foreground" => Some(SearchColor::CellForeground),
+        "cell-background" => Some(SearchColor::CellBackground),
+        _ => Rgb::parse_hex(v).or_else(|| named_color(v)).map(SearchColor::Rgb),
+    }
+}
+
 fn named_color(v: &str) -> Option<Rgb> {
     Some(match v.to_ascii_lowercase().as_str() {
         "black" => Rgb::new(0, 0, 0),
@@ -2375,6 +2455,62 @@ mod tests {
             Config::from_text("window-padding-color = red\n", true).warnings.len(),
             1
         );
+    }
+
+    #[test]
+    fn selection_and_search_color_keys_like_ghostty() {
+        use crate::theme::SearchColor::{CellBackground, CellForeground, Rgb as C};
+        let d = Config::default();
+        assert!(d.selection_clear_on_typing);
+        assert!(!d.selection_clear_on_copy);
+        assert_eq!(d.theme.faint_opacity, 0.5);
+        assert_eq!((d.theme.bold_color, d.theme.bold_is_bright), (None, false));
+        let s = d.theme.search;
+        assert_eq!(s.foreground, C(Rgb::new(0, 0, 0)));
+        assert_eq!(s.background, C(Rgb::new(0xff, 0xe0, 0x82)));
+        assert_eq!(s.selected_foreground, C(Rgb::new(0, 0, 0)));
+        assert_eq!(s.selected_background, C(Rgb::new(0xf2, 0xa5, 0x7e)));
+
+        let c = Config::from_text(
+            "selection-clear-on-typing = false\nselection-clear-on-copy = true\n\
+             search-foreground = cell-foreground\nsearch-background = #102030\n\
+             search-selected-foreground = #ffffff\nsearch-selected-background = cell-background\n\
+             faint-opacity = 0.25\nbold-color = #ff8000\n",
+            true,
+        );
+        assert!(c.warnings.is_empty(), "{:?}", c.warnings);
+        assert!(!c.selection_clear_on_typing);
+        assert!(c.selection_clear_on_copy);
+        let s = c.theme.search;
+        assert_eq!(s.foreground, CellForeground);
+        assert_eq!(s.background, C(Rgb::new(0x10, 0x20, 0x30)));
+        assert_eq!(s.selected_foreground, C(Rgb::new(255, 255, 255)));
+        assert_eq!(s.selected_background, CellBackground);
+        assert_eq!(c.theme.faint_opacity, 0.25);
+        assert_eq!(c.theme.bold_color, Some(Rgb::new(0xff, 0x80, 0)));
+
+        // bold-color = bright: 굵은 0~7번을 밝은 색으로. 색을 따로 정하지 않는다
+        let c = Config::from_text("bold-color = #ff8000\nbold-color = bright\n", true);
+        assert!(c.warnings.is_empty(), "{:?}", c.warnings);
+        assert_eq!((c.theme.bold_color, c.theme.bold_is_bright), (None, true));
+        // 값을 비우면 기본으로
+        let c = Config::from_text("bold-color = bright\nbold-color =\n", true);
+        assert_eq!((c.theme.bold_color, c.theme.bold_is_bright), (None, false));
+        // faint-opacity는 0~1로 묶는다(Ghostty: 범위 밖은 가장 가까운 값)
+        assert_eq!(Config::from_text("faint-opacity = 7\n", true).theme.faint_opacity, 1.0);
+        assert_eq!(Config::from_text("faint-opacity = -1\n", true).theme.faint_opacity, 0.0);
+        // 읽을 수 없는 값은 경고하고 그대로
+        for bad in [
+            "faint-opacity = dim",
+            "search-background = nope",
+            "bold-color = nope",
+            "selection-clear-on-copy = x",
+        ] {
+            let c = Config::from_text(&format!("{bad}\n"), true);
+            assert_eq!(c.warnings.len(), 1, "{bad}: {:?}", c.warnings);
+        }
+        let c = Config::from_text("search-background = nope\n", true);
+        assert_eq!(c.theme.search, Config::default().theme.search);
     }
 
     #[test]

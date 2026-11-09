@@ -42,20 +42,28 @@ pub(crate) fn resolve(theme: &Theme, overrides: &Colors, color: Color) -> Rgb {
 
 /// 셀 하나의 전경·배경을 꾸밈까지 반영해 푼다
 pub(crate) fn cell_colors(theme: &Theme, overrides: &Colors, fg: Color, bg: Color, flags: Flags) -> (Rgb, Rgb) {
-    // 굵은 글자의 0~7번을 밝은 8~15번으로 올리는 것은 설정(bold-is-bright)을 따른다. Ghostty 기본은 끔
-    let fg = if !theme.bold_is_bright {
+    // 굵은 글자의 0~7번을 밝은 8~15번으로 올리는 것은 설정(bold-is-bright 또는 bold-color)을 따른다. Ghostty 기본은 끔.
+    // bold-color가 색이면 굵은 기본 글자색은 그 색이고, 나머지 0~7번은 밝은 색이다
+    let bold = flags.contains(Flags::BOLD);
+    let brighten = bold && (theme.bold_is_bright || theme.bold_color.is_some());
+    let bold_default = theme.bold_color.filter(|_| bold);
+    let fg = if !brighten {
         fg
     } else {
         match fg {
-            Color::Named(n) if flags.contains(Flags::BOLD) && (n as usize) < 8 => Color::Indexed(n as u8 + 8),
-            Color::Indexed(i) if flags.contains(Flags::BOLD) && i < 8 => Color::Indexed(i + 8),
+            Color::Named(n) if (n as usize) < 8 => Color::Indexed(n as u8 + 8),
+            Color::Indexed(i) if i < 8 => Color::Indexed(i + 8),
             other => other,
         }
     };
-    let mut fg_rgb = resolve(theme, overrides, fg);
+    let mut fg_rgb = match (bold_default, fg) {
+        (Some(c), Color::Named(NamedColor::Foreground)) => c,
+        _ => resolve(theme, overrides, fg),
+    };
     let mut bg_rgb = resolve(theme, overrides, bg);
     if flags.contains(Flags::DIM) {
-        fg_rgb = fg_rgb.mix(bg_rgb, 0.4);
+        // faint-opacity: 1이면 그대로, 0이면 바탕색
+        fg_rgb = fg_rgb.mix(bg_rgb, 1.0 - theme.faint_opacity);
     }
     if flags.contains(Flags::INVERSE) {
         std::mem::swap(&mut fg_rgb, &mut bg_rgb);
@@ -103,5 +111,63 @@ mod tests {
             Flags::BOLD,
         );
         assert_eq!(fg, t.palette[9]);
+    }
+
+    #[test]
+    fn faint_text_mixes_toward_the_background_by_faint_opacity() {
+        let o = Colors::default();
+        let (fg, bg) = (
+            Color::Named(NamedColor::Foreground),
+            Color::Named(NamedColor::Background),
+        );
+        let t = Theme::default();
+        // Ghostty 기본 faint-opacity 0.5: 글자색과 바탕색의 가운데
+        let (dim, _) = cell_colors(&t, &o, fg, bg, Flags::DIM);
+        assert_eq!(dim, t.foreground.mix(t.background, 0.5));
+        // 1이면 그대로, 0이면 바탕색과 같아 보이지 않는다
+        let full = Theme {
+            faint_opacity: 1.0,
+            ..Theme::default()
+        };
+        assert_eq!(cell_colors(&full, &o, fg, bg, Flags::DIM).0, t.foreground);
+        let none = Theme {
+            faint_opacity: 0.0,
+            ..Theme::default()
+        };
+        assert_eq!(cell_colors(&none, &o, fg, bg, Flags::DIM).0, t.background);
+        // 흐리지 않은 글자는 영향이 없다
+        assert_eq!(cell_colors(&none, &o, fg, bg, Flags::empty()).0, t.foreground);
+    }
+
+    #[test]
+    fn bold_color_replaces_default_bold_text_and_brightens_the_rest() {
+        let o = Colors::default();
+        let bg = Color::Named(NamedColor::Background);
+        let orange = Rgb::new(0xff, 0x80, 0);
+        let t = Theme {
+            bold_color: Some(orange),
+            ..Theme::default()
+        };
+        // 기본 글자색의 굵은 글자는 지정한 색
+        let fg = Color::Named(NamedColor::Foreground);
+        assert_eq!(cell_colors(&t, &o, fg, bg, Flags::BOLD).0, orange);
+        assert_eq!(
+            cell_colors(&t, &o, fg, bg, Flags::empty()).0,
+            t.foreground,
+            "굵지 않으면 그대로"
+        );
+        // 나머지 굵은 0~7번 색은 밝은 색(Ghostty: "the rest of the bold colors to bright")
+        let red = Color::Named(NamedColor::Red);
+        assert_eq!(cell_colors(&t, &o, red, bg, Flags::BOLD).0, t.palette[9]);
+        assert_eq!(cell_colors(&t, &o, Color::Indexed(2), bg, Flags::BOLD).0, t.palette[10]);
+        // 24비트 색은 건드리지 않는다
+        let spec = Color::Spec(VtRgb { r: 1, g: 2, b: 3 });
+        assert_eq!(cell_colors(&t, &o, spec, bg, Flags::BOLD).0, Rgb::new(1, 2, 3));
+        // 색 없이 bright만(bold-color = bright): 기본 글자색은 그대로
+        let b = Theme {
+            bold_is_bright: true,
+            ..Theme::default()
+        };
+        assert_eq!(cell_colors(&b, &o, fg, bg, Flags::BOLD).0, b.foreground);
     }
 }
