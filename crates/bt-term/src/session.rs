@@ -421,6 +421,8 @@ pub struct Session {
     scheme_light: Arc<std::sync::atomic::AtomicBool>,
     /// 프로그램이 OSC 22로 정한 마우스 포인터 모양의 번호(`MouseShape::to_code`, 0은 정한 것 없음)(#239)
     mouse_shape: Arc<std::sync::atomic::AtomicU8>,
+    /// 프로그램이 크기 알림(모드 2048)을 켜 두었는가(#264)
+    in_band_size: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl Session {
@@ -435,6 +437,11 @@ impl Session {
             let _ = w.write_all(scheme_report(light));
             let _ = w.flush();
         }
+    }
+
+    /// 프로그램이 크기 알림(모드 2048)을 켜 두었는가(#264)
+    pub fn in_band_size_reports(&self) -> bool {
+        self.in_band_size.load(std::sync::atomic::Ordering::Acquire)
     }
 
     /// 프로그램이 색 구성표 변경 알림(모드 2031)을 켜 두었는가
@@ -629,6 +636,10 @@ impl Session {
         let thread_mouse_shape = mouse_shape.clone();
         let thread_scheme_updates = scheme_updates.clone();
         let thread_scheme_light = scheme_light.clone();
+        let in_band_size = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let thread_in_band_size = in_band_size.clone();
+        let thread_size = size_cell.clone();
+        let da1_clipboard = options.clipboard_write;
         let thread_inner = inner.clone();
         let thread_exited = exited.clone();
         let thread_writer = writer.clone();
@@ -706,6 +717,7 @@ impl Session {
                                             xt_flags = xt_default;
                                             thread_kam_locked.store(false, std::sync::atomic::Ordering::Release);
                                             thread_scheme_updates.store(false, std::sync::atomic::Ordering::Release);
+                                            thread_in_band_size.store(false, std::sync::atomic::Ordering::Release);
                                             thread_mouse_shape.store(0, std::sync::atomic::Ordering::Release);
                                         }
                                     }
@@ -767,6 +779,42 @@ impl Session {
                                             let _ = w.flush();
                                         }
                                     }
+                                    // CSI 질의(#264, ADR-022): 답은 고정 바이트와 검사한 숫자뿐이다. 터미널의 답이라 읽기 전용 칸에서도 쓴다(ADR-018 결정 4)
+                                    Signal::Da1 => {
+                                        let reply = if da1_clipboard {
+                                            crate::csi_query::DA1_CLIPBOARD
+                                        } else {
+                                            crate::csi_query::DA1_PLAIN
+                                        };
+                                        write_reply(&thread_writer, reply.as_bytes());
+                                    }
+                                    Signal::Da2 => write_reply(&thread_writer, crate::csi_query::DA2.as_bytes()),
+                                    Signal::XtVersion => {
+                                        write_reply(&thread_writer, crate::csi_query::xtversion().as_bytes())
+                                    }
+                                    Signal::SizeReport(style) => {
+                                        let info = size_info(*thread_size.lock());
+                                        write_reply(
+                                            &thread_writer,
+                                            crate::csi_query::encode_size(style, info).as_bytes(),
+                                        );
+                                    }
+                                    // 모드 2048을 켜면 바로 한 번 보내고, 그 뒤로는 크기가 바뀔 때마다 `Session::resize`가 보낸다
+                                    Signal::InBandSizeReports(on) => {
+                                        thread_in_band_size.store(on, std::sync::atomic::Ordering::Release);
+                                        if on {
+                                            let info = size_info(*thread_size.lock());
+                                            let reply = crate::csi_query::encode_size(
+                                                crate::csi_query::SizeStyle::Mode2048,
+                                                info,
+                                            );
+                                            write_reply(&thread_writer, reply.as_bytes());
+                                        }
+                                    }
+                                    Signal::InBandSizeQuery => {
+                                        let on = thread_in_band_size.load(std::sync::atomic::Ordering::Acquire);
+                                        write_reply(&thread_writer, crate::csi_query::mode_2048_report(on).as_bytes());
+                                    }
                                     other => events.push(signal_event(other)),
                                 }
                             }
@@ -812,6 +860,7 @@ impl Session {
             scheme_updates,
             scheme_light,
             mouse_shape,
+            in_band_size,
         })
     }
 
@@ -931,6 +980,11 @@ impl Session {
         if let Err(e) = self.master.lock().resize(size.pty()) {
             log::debug!("pty resize failed: {e}");
         }
+        // 모드 2048: 크기가 바뀔 때마다 알린다(Ghostty termio/Termio.zig 550~595줄). 같은 크기는 위에서 이미 돌아갔다
+        if self.in_band_size.load(std::sync::atomic::Ordering::Acquire) {
+            let reply = crate::csi_query::encode_size(crate::csi_query::SizeStyle::Mode2048, size_info(size));
+            write_reply(&self.writer, reply.as_bytes());
+        }
     }
 
     /// 스크롤백을 줄 단위로 움직인다(양수는 위로)
@@ -955,6 +1009,7 @@ impl Session {
         }
         self.kam_locked.store(false, std::sync::atomic::Ordering::Release);
         self.scheme_updates.store(false, std::sync::atomic::Ordering::Release);
+        self.in_band_size.store(false, std::sync::atomic::Ordering::Release);
         self.mouse_shape.store(0, std::sync::atomic::Ordering::Release);
     }
 
@@ -1149,7 +1204,29 @@ fn signal_event(sig: Signal) -> SessionEvent {
         | Signal::XtChecksumReport(_)
         | Signal::XtChecksumExtension(_)
         | Signal::SoftReset
+        | Signal::Da1
+        | Signal::Da2
+        | Signal::XtVersion
+        | Signal::SizeReport(_)
+        | Signal::InBandSizeReports(_)
+        | Signal::InBandSizeQuery
         | Signal::WindowResize { .. } => SessionEvent::Output,
+    }
+}
+
+/// 터미널의 답을 PTY에 쓴다
+fn write_reply(writer: &Writer, bytes: &[u8]) {
+    let mut w = writer.lock();
+    let _ = w.write_all(bytes);
+    let _ = w.flush();
+}
+
+fn size_info(size: GridSize) -> crate::csi_query::SizeInfo {
+    crate::csi_query::SizeInfo {
+        rows: size.rows,
+        cols: size.cols,
+        cell_width: u32::from(size.cell_width),
+        cell_height: u32::from(size.cell_height),
     }
 }
 

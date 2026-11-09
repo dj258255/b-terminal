@@ -1095,3 +1095,89 @@ fn checksum_reply_reaches_a_readonly_pane() {
     // 터미널의 답이라 읽기 전용 칸에서도 막지 않는다(ADR-018 결정 4)
     assert_eq!(checksum_reply("abc", ABC_ROW, true, xt_on), dcs(1, ABC_DEC));
 }
+
+// ---- CSI 질의(#264): XTVERSION, DA1·DA2, CSI 16·19 t, 모드 2048 ----
+
+#[test]
+fn xtversion_answers_with_the_name_and_version() {
+    assert_eq!(
+        reply_to("\\033[>q", |_| {}),
+        hex_of(&format!("\x1bP>|b-terminal {}\x1b\\", env!("CARGO_PKG_VERSION")))
+    );
+}
+
+#[test]
+fn primary_device_attributes_follow_clipboard_write_and_are_answered_once() {
+    // 답이 하나뿐이어야 한다: VT 엔진의 옛 답(`?6c`)이 겹쳐 나오면 둘이 이어 붙는다
+    assert_eq!(reply_to("\\033[c", |_| {}), hex_of("\x1b[?62;22c"));
+    assert_eq!(
+        reply_to("\\033[c", |o| o.clipboard_write = true),
+        hex_of("\x1b[?62;22;52c")
+    );
+    assert_eq!(reply_to("\\033[0c", |_| {}), hex_of("\x1b[?62;22c"));
+}
+
+#[test]
+fn secondary_device_attributes_are_ghosttys_and_answered_once() {
+    assert_eq!(reply_to("\\033[>c", |_| {}), hex_of("\x1b[>1;10;0c"));
+    assert_eq!(reply_to("\\033[>0c", |_| {}), hex_of("\x1b[>1;10;0c"));
+}
+
+#[test]
+fn tertiary_device_attributes_get_no_answer() {
+    assert_eq!(reply_to("\\033[=c", |_| {}), "");
+}
+
+#[test]
+fn size_reports_cover_cell_and_screen_size_and_keep_the_old_two() {
+    // 80x10 칸, 칸 하나 8x16 픽셀
+    assert_eq!(reply_to("\\033[16t", |_| {}), hex_of("\x1b[6;16;8t"));
+    assert_eq!(reply_to("\\033[19t", |_| {}), hex_of("\x1b[9;10;80t"));
+    assert_eq!(reply_to("\\033[14t", |_| {}), hex_of("\x1b[4;160;640t"));
+    assert_eq!(reply_to("\\033[18t", |_| {}), hex_of("\x1b[8;10;80t"));
+    // 매개변수가 더 붙으면 답하지 않는다
+    assert_eq!(reply_to("\\033[16;1t", |_| {}), "");
+}
+
+#[test]
+fn decrqm_2048_says_reset_then_set() {
+    assert_eq!(reply_to("\\033[?2048$p", |_| {}), hex_of("\x1b[?2048;2$y"));
+    // 켜는 순간 크기를 한 번 보내고, 그 뒤 DECRQM은 켜짐이다
+    assert_eq!(
+        reply_to("\\033[?2048h\\033[?2048$p", |_| {}),
+        hex_of("\x1b[48;10;80;160;640t\x1b[?2048;1$y")
+    );
+    assert_eq!(
+        reply_to("\\033[?2048h\\033[?2048l\\033[?2048$p", |_| {}),
+        hex_of("\x1b[48;10;80;160;640t\x1b[?2048;2$y")
+    );
+}
+
+#[test]
+fn mode_2048_reports_each_size_change_but_not_when_off() {
+    let got = notified_after("\\033[?2048h", |s| {
+        s.resize(GridSize::new(100, 30));
+        s.resize(GridSize::new(100, 30)); // 같은 크기는 보고하지 않는다
+        s.resize(GridSize::new(90, 20));
+    });
+    // 16진수 줄이 80열을 넘어 화면에서 줄바꿈된다
+    let got = got.replace('\n', "");
+    assert_eq!(
+        got,
+        hex_of("\x1b[48;10;80;160;640t\x1b[48;30;100;480;800t\x1b[48;20;90;320;720t")
+    );
+    assert_eq!(notified_after("", |s| s.resize(GridSize::new(100, 30))), "");
+    let got = notified_after("\\033[?2048h\\033[?2048l", |s| s.resize(GridSize::new(100, 30)));
+    assert_eq!(got, hex_of("\x1b[48;10;80;160;640t"));
+}
+
+#[test]
+fn reset_turns_mode_2048_off() {
+    let got = notified_after("\\033[?2048h\\033c", |s| s.resize(GridSize::new(100, 30)));
+    assert_eq!(got, hex_of("\x1b[48;10;80;160;640t"));
+    let got = notified_after("\\033[?2048h", |s| {
+        s.reset();
+        s.resize(GridSize::new(100, 30));
+    });
+    assert_eq!(got, hex_of("\x1b[48;10;80;160;640t"));
+}

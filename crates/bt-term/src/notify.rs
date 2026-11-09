@@ -60,6 +60,18 @@ pub enum Signal {
     XtChecksumExtension(u8),
     /// 소프트 리셋(DECSTR, `CSI ! p`). 체크섬 계산법이 설정의 기본으로 돌아간다(#259)
     SoftReset,
+    /// DA1(`CSI c`). 세션이 설정(clipboard-write)을 보고 답한다(#264)
+    Da1,
+    /// DA2(`CSI > c`)(#264)
+    Da2,
+    /// XTVERSION(`CSI > q`)(#264)
+    XtVersion,
+    /// 크기 보고 질문(`CSI 16 t`, `CSI 19 t`). 14 t·18 t는 VT 엔진이 답한다(#264)
+    SizeReport(crate::csi_query::SizeStyle),
+    /// 크기 알림 모드(DEC 모드 2048)를 켜거나(`CSI ? 2048 h`) 껐다(`CSI ? 2048 l`)(#264)
+    InBandSizeReports(bool),
+    /// 모드 2048의 DECRQM(`CSI ? 2048 $ p`)(#264)
+    InBandSizeQuery,
 }
 
 /// OSC 22 이름의 길이 상한(바이트). 가장 긴 이름("bottom_right_corner")보다 넉넉하다
@@ -129,6 +141,8 @@ pub struct Scanner {
     csi_inter: Option<u8>,
     /// 중간 바이트가 둘 이상이거나, 중간 바이트 뒤에 매개변수가 오거나, `: < = >`가 끼었다: 중간 바이트로 읽는 신호도 아니다
     csi_bad: bool,
+    /// 이 CSI는 맨 앞 매개변수 자리에 `>` 하나만 끼었다(`CSI > q`·`CSI > c`를 알아보는 데 쓴다, #264)
+    csi_gt: bool,
 }
 
 /// CSI 매개변수를 모으는 상한. 이만큼 차면 잘린 것으로 보고 믿지 않는다
@@ -173,6 +187,7 @@ impl Scanner {
                     self.csi_taint = false;
                     self.csi_inter = None;
                     self.csi_bad = false;
+                    self.csi_gt = false;
                     St::Csi
                 }
                 // ENQ는 VT 엔진도 ESC 사이에서 실행한다
@@ -231,9 +246,19 @@ impl Scanner {
                         if let Some(sig) = csi_signal(b, &self.csi) {
                             out.push((i + 1, sig));
                         }
+                        if let Some(sig) = crate::csi_query::plain(b, &self.csi) {
+                            out.push((i + 1, sig));
+                        }
+                    } else if self.csi_gt && self.csi_inter.is_none() && self.csi.len() < MAX_CSI {
+                        if let Some(sig) = crate::csi_query::private_gt(b, &self.csi) {
+                            out.push((i + 1, sig));
+                        }
                     } else if let (Some(inter), false, true) = (self.csi_inter, self.csi_bad, self.csi.len() < MAX_CSI)
                     {
                         if let Some(sig) = csi_inter_signal(inter, b, &self.csi) {
+                            out.push((i + 1, sig));
+                        }
+                        if let Some(sig) = crate::csi_query::inter(inter, b, &self.csi) {
                             out.push((i + 1, sig));
                         }
                     }
@@ -259,6 +284,8 @@ impl Scanner {
                     St::Ground
                 }
                 (St::Csi, 0x20..=0x2f | 0x3a | 0x3c..=0x3e) => {
+                    // `>`가 맨 앞의 첫 표시일 때만 DA2·XTVERSION 후보. 뒤에 표시가 또 끼면 아니다
+                    self.csi_gt = !self.csi_taint && b == b'>' && self.csi.is_empty();
                     self.csi_taint = true;
                     if (0x20..=0x2f).contains(&b) && self.csi_inter.is_none() {
                         self.csi_inter = Some(b);

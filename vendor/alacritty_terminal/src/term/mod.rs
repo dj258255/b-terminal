@@ -1378,20 +1378,9 @@ impl<T: EventListener> Handler for Term<T> {
 
     #[inline]
     fn identify_terminal(&mut self, intermediate: Option<char>) {
-        match intermediate {
-            None => {
-                trace!("Reporting primary device attributes");
-                let text = String::from("\x1b[?6c");
-                self.event_proxy.send_event(Event::PtyWrite(text));
-            },
-            Some('>') => {
-                trace!("Reporting secondary device attributes");
-                let version = version_number(env!("CARGO_PKG_VERSION"));
-                let text = format!("\x1b[>0;{version};1c");
-                self.event_proxy.send_event(Event::PtyWrite(text));
-            },
-            _ => debug!("Unsupported device attributes intermediate"),
-        }
+        // b-terminal(#264): DA1·DA2는 bt-term의 스캐너가 Ghostty와 같은 값으로 답한다(설정 clipboard-write를 본다).
+        // 엔진이 따로 답하면 PTY에 답이 둘 나가므로 여기서는 답하지 않는다
+        let _ = intermediate;
     }
 
     #[inline]
@@ -2225,6 +2214,8 @@ impl<T: EventListener> Handler for Term<T> {
             PrivateMode::Unknown(GRAPHEME_CLUSTER_MODE) => {
                 self.mode.contains(TermMode::GRAPHEME_CLUSTER).into()
             },
+            // b-terminal(#264): 모드 2048(크기 알림)의 DECRQM은 bt-term의 스캐너가 답한다. 여기서 0을 답하면 답이 둘 나간다
+            PrivateMode::Unknown(2048) => return,
             PrivateMode::Unknown(_) => ModeState::NotSupported,
         };
 
@@ -2435,6 +2426,7 @@ impl From<bool> for ModeState {
 /// This returns the current terminal version as a unique number based on alacritty_terminal's
 /// semver version. The different versions are padded to ensure that a higher semver version will
 /// always report a higher version number.
+#[allow(dead_code)] // b-terminal(#264): DA2 답을 밖에서 하므로 쓰는 곳이 없다
 fn version_number(mut version: &str) -> usize {
     if let Some(separator) = version.rfind('-') {
         version = &version[..separator];
