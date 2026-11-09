@@ -93,7 +93,13 @@ config-file = ?~/.config/b-terminal/local   # ?가 붙으면 없어도 된다
 | `window-new-tab-position` | `current` `end` | `current` | 새 탭을 둘 자리. `current`는 지금 탭 바로 뒤, `end`는 맨 끝. 전에는 늘 맨 끝이었습니다 |
 | `window-show-tab-bar` | `auto` `always` `never` | `auto` | 탭 막대를 언제 보일지. `auto`는 탭이 둘 이상일 때만, `always`는 하나여도, `never`는 안 보임(탭은 키·팔레트로 다룸). 막대가 없는 동안 진행 막대는 칸 맨 위에 그립니다 |
 | `mouse-hide-while-typing` | `true` / `false` | `false` | |
-| `command` | 명령 | 로그인 셸 | `/bin/sh -c "exec <명령>"`으로 띄웁니다 |
+| `command` | 명령 | 로그인 셸 | `/bin/sh -c "exec <명령>"`으로 띄웁니다. 모든 새 칸에 쓰고, 첫 칸은 아래 `initial-command`가 이깁니다 |
+| `initial-command` | 명령 | 없음 | 앱을 켤 때 처음 만드는 칸에만 쓰는 명령(Ghostty와 같음, 형식은 `command`와 같음). 이후 칸은 `command`를 씁니다. 명령줄 `-e`가 있으면 `-e`가 이기고, 창 상태 복원(`window-save-state`)은 하지 않습니다 |
+| `wait-after-command` | `true` / `false` | `false` | 명령이 끝나도 칸을 닫지 않고 안내를 그린 채 남깁니다. 수정 키가 아닌 키를 아무거나 누르면 닫습니다. 스크립트·디버깅용입니다 |
+| `abnormal-command-exit-runtime` | 밀리초 정수 | `250` | 칸을 띄운 지 이 시간보다 짧게 끝나면 비정상으로 보고, `wait-after-command`가 꺼져 있어도 칸을 남겨 안내를 그립니다(명령을 못 찾았을 때 칸이 깜빡 사라지지 않게). Ghostty처럼 macOS는 어떤 종료 코드든, Linux는 0이 아닐 때만 봅니다. `0`이면 끕니다. `btctl new --command`로 띄운 칸에도 같습니다 |
+| `initial-window` | `true` / `false` | `true` | `false`면 켤 때 창을 만들지 않습니다. 앱은 메뉴 막대에 남고(Dock 아이콘을 눌러도 창이 열리지는 않습니다) 메뉴(새 창)·`btctl new`·전역 단축키(퀵 터미널)로 창을 엽니다. 명령줄 `-e`로 켠 경우는 창을 만듭니다. `window-save-state`로 되살리는 것도 하지 않습니다 |
+| `quit-after-last-window-closed` | `true` / `false` | macOS `false`, Linux `true` | 마지막 창을 닫으면 앱을 끝냅니다. macOS 기본이 `false`라 마지막 창을 닫아도 앱이 남고(메뉴로 새 창), ⌘Q로 끝냅니다. 명령줄 `-e`로 켜면 이 값을 `true`로 두고 `quit-after-last-window-closed-delay`는 지웁니다 |
+| `quit-after-last-window-closed-delay` | 기간(`30s`, `1m` 등) | 없음 | 위가 `true`일 때 마지막 창을 닫고 이만큼 기다렸다가 끝냅니다. 그 사이 창을 열면 취소합니다. 1초보다 짧으면 1초로 올립니다. 없으면 바로 끝냅니다. `initial-window = false`로 켠 뒤 창이 하나도 안 열려도 이 시간이 지나면 끝냅니다 |
 | `working-directory` | `home` `inherit` 경로 | `inherit` | 첫 창의 폴더. 새 창·탭·분할은 위의 `*-inherit-working-directory`가 켜져 있으면 지금 칸의 폴더를 이어받음 |
 | `title` | 글 | 셸이 보낸 제목 | 창 제목을 고정 |
 | `keybind` | `트리거=동작` | 아래 표 | 아래 "키 묶음" |
@@ -190,7 +196,7 @@ keybind = ctrl+a>ctrl+a=text:\x01     # 앞 키 자체를 보내고 싶을 때
 | 동작 | 하는 일 | macOS 기본 |
 |---|---|---|
 | `copy_to_clipboard` / `paste_from_clipboard` | 복사 / 붙여넣기 | `super+c` / `super+v` |
-| `new_window` | 새 창(마지막 창이 닫히면 앱이 끝남) | `super+n` |
+| `new_window` | 새 창(창이 하나도 없을 때도 열림. 마지막 창을 닫았을 때 앱이 끝나는지는 `quit-after-last-window-closed`) | `super+n` |
 | `new_tab` / `close_surface` / `close_tab` | 새 탭 / 칸 닫기(칸이 하나면 탭) / 탭을 칸째 닫기 | `super+t` / `super+w` / `super+alt+w` |
 | `goto_tab:N` / `last_tab` | N번째 / 마지막 탭 | `super+1`~`8` / `super+9` |
 | `next_tab` / `previous_tab` | 다음 / 앞 탭 | `super+shift+]` / `super+shift+[` |

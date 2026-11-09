@@ -311,6 +311,18 @@ pub struct Config {
     pub window_show_tab_bar: WindowShowTabBar,
     pub mouse_hide_while_typing: bool,
     pub command: Option<String>,
+    /// 첫 칸에만 쓰는 명령(Ghostty `initial-command`, #178). 없으면 `command`
+    pub initial_command: Option<String>,
+    /// 명령이 끝나도 칸을 남기고 키를 누르면 닫는다(Ghostty `wait-after-command`, 기본 끔)
+    pub wait_after_command: bool,
+    /// 이 밀리초보다 짧게 끝나면 비정상으로 본다(Ghostty `abnormal-command-exit-runtime`, 기본 250)
+    pub abnormal_command_exit_runtime: u32,
+    /// 첫 창을 띄울까(Ghostty `initial-window`, 기본 켬)
+    pub initial_window: bool,
+    /// 마지막 창이 닫히면 앱을 끝낼까(Ghostty `quit-after-last-window-closed`: Linux 켬, 그 밖에 끔)
+    pub quit_after_last_window_closed: bool,
+    /// 끝내기 전에 기다릴 시간(Ghostty `quit-after-last-window-closed-delay`, 기본 없음)
+    pub quit_after_last_window_closed_delay: Option<std::time::Duration>,
     pub working_directory: WorkingDirectory,
     /// 정해 둔 창 제목(셸이 보낸 제목보다 먼저)
     pub title: Option<String>,
@@ -861,6 +873,12 @@ impl Default for Config {
             window_show_tab_bar: WindowShowTabBar::Auto,
             mouse_hide_while_typing: false,
             command: None,
+            initial_command: None,
+            wait_after_command: false,
+            abnormal_command_exit_runtime: 250,
+            initial_window: true,
+            quit_after_last_window_closed: cfg!(target_os = "linux"),
+            quit_after_last_window_closed_delay: None,
             working_directory: WorkingDirectory::Inherit,
             title: None,
             keybinds: Vec::new(),
@@ -1251,6 +1269,12 @@ impl Config {
             SpawnKind::Tab => self.tab_inherit_working_directory,
             SpawnKind::Split => self.split_inherit_working_directory,
         }
+    }
+
+    /// 명령줄 `-e`로 띄웠을 때 Ghostty가 함께 바꾸는 것: 명령이 끝나면 앱도 끝난다
+    pub fn apply_cli_command(&mut self) {
+        self.quit_after_last_window_closed = true;
+        self.quit_after_last_window_closed_delay = None;
     }
 }
 
@@ -1744,6 +1768,28 @@ impl Config {
                 self.mouse_hide_while_typing = parse_bool(v).unwrap_or(self.mouse_hide_while_typing)
             }
             "command" => self.command = Some(v.to_string()).filter(|s| !s.is_empty()),
+            "initial-command" => self.initial_command = Some(v.to_string()).filter(|s| !s.is_empty()),
+            "wait-after-command" => match parse_bool(v) {
+                Some(b) => self.wait_after_command = b,
+                None => bad(warnings),
+            },
+            "abnormal-command-exit-runtime" => match v.parse::<u32>() {
+                Ok(n) => self.abnormal_command_exit_runtime = n,
+                Err(_) => bad(warnings),
+            },
+            "initial-window" => match parse_bool(v) {
+                Some(b) => self.initial_window = b,
+                None => bad(warnings),
+            },
+            "quit-after-last-window-closed" => match parse_bool(v) {
+                Some(b) => self.quit_after_last_window_closed = b,
+                None => bad(warnings),
+            },
+            "quit-after-last-window-closed-delay" if v.is_empty() => self.quit_after_last_window_closed_delay = None,
+            "quit-after-last-window-closed-delay" => match parse_duration(v) {
+                Some(d) => self.quit_after_last_window_closed_delay = Some(d),
+                None => bad(warnings),
+            },
             "working-directory" => {
                 self.working_directory = match v {
                     "" | "inherit" => WorkingDirectory::Inherit,
@@ -2199,6 +2245,30 @@ impl Config {
             .into(),
         );
         push("mouse-hide-while-typing", self.mouse_hide_while_typing.to_string());
+        if let Some(c) = &self.initial_command {
+            push("initial-command", c.clone());
+        }
+        push("wait-after-command", self.wait_after_command.to_string());
+        push(
+            "abnormal-command-exit-runtime",
+            self.abnormal_command_exit_runtime.to_string(),
+        );
+        push("initial-window", self.initial_window.to_string());
+        push(
+            "quit-after-last-window-closed",
+            self.quit_after_last_window_closed.to_string(),
+        );
+        if let Some(d) = self.quit_after_last_window_closed_delay {
+            let ms = d.as_millis();
+            push(
+                "quit-after-last-window-closed-delay",
+                if ms % 1000 == 0 {
+                    format!("{}s", ms / 1000)
+                } else {
+                    format!("{ms}ms")
+                },
+            );
+        }
         for k in &self.keybinds {
             push("keybind", k.clone());
         }
@@ -2302,7 +2372,6 @@ const KNOWN_IGNORED: &[&str] = &[
     "macos-titlebar-proxy-icon",
     "macos-icon",
     "macos-window-shadow",
-    "quit-after-last-window-closed",
     "shell-integration-features",
     "auto-update",
     "auto-update-channel",
@@ -3735,5 +3804,72 @@ mod tests {
         assert!(c.render().contains("font-feature = -liga"));
         let c = Config::from_text("font-feature = -calt\nfont-feature =\n", false);
         assert!(c.font_features.is_empty());
+    }
+
+    #[test]
+    fn command_lifecycle_defaults_like_ghostty() {
+        let d = Config::default();
+        assert_eq!(d.initial_command, None);
+        assert!(!d.wait_after_command);
+        assert_eq!(d.abnormal_command_exit_runtime, 250);
+        assert!(d.initial_window);
+        assert_eq!(d.quit_after_last_window_closed, cfg!(target_os = "linux"));
+        assert_eq!(d.quit_after_last_window_closed_delay, None);
+    }
+
+    #[test]
+    fn command_lifecycle_keys_parse_and_render() {
+        use std::time::Duration;
+        let c = Config::from_text(
+            "initial-command = htop -d 5\nwait-after-command = true\nabnormal-command-exit-runtime = 1000\n\
+             initial-window = false\nquit-after-last-window-closed = true\nquit-after-last-window-closed-delay = 1m30s\n",
+            true,
+        );
+        assert_eq!(c.warnings.len(), 0, "{:?}", c.warnings);
+        assert_eq!(c.initial_command.as_deref(), Some("htop -d 5"));
+        assert!(c.wait_after_command);
+        assert_eq!(c.abnormal_command_exit_runtime, 1000);
+        assert!(!c.initial_window);
+        assert!(c.quit_after_last_window_closed);
+        assert_eq!(c.quit_after_last_window_closed_delay, Some(Duration::from_secs(90)));
+        let r = c.render();
+        for line in [
+            "initial-command = htop -d 5",
+            "wait-after-command = true",
+            "abnormal-command-exit-runtime = 1000",
+            "initial-window = false",
+            "quit-after-last-window-closed = true",
+            "quit-after-last-window-closed-delay = 90s",
+        ] {
+            assert!(r.contains(line), "{line} 없음");
+        }
+        // 빈 값은 처음 상태로
+        let c = Config::from_text(
+            "initial-command = x\ninitial-command =\nquit-after-last-window-closed-delay = 5s\nquit-after-last-window-closed-delay =\n",
+            true,
+        );
+        assert_eq!(c.initial_command, None);
+        assert_eq!(c.quit_after_last_window_closed_delay, None);
+    }
+
+    #[test]
+    fn command_lifecycle_bad_values_warn() {
+        let c = Config::from_text(
+            "wait-after-command = maybe\nabnormal-command-exit-runtime = -5\ninitial-window = 1\nquit-after-last-window-closed-delay = soon\n",
+            true,
+        );
+        assert_eq!(c.warnings.len(), 4, "{:?}", c.warnings);
+        assert!(!c.wait_after_command && c.abnormal_command_exit_runtime == 250 && c.initial_window);
+    }
+
+    #[test]
+    fn dash_e_forces_quit_like_ghostty() {
+        let mut c = Config::from_text(
+            "quit-after-last-window-closed = false\nquit-after-last-window-closed-delay = 5s\n",
+            true,
+        );
+        c.apply_cli_command();
+        assert!(c.quit_after_last_window_closed);
+        assert_eq!(c.quit_after_last_window_closed_delay, None);
     }
 }

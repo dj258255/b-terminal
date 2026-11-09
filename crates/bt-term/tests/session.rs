@@ -407,6 +407,16 @@ fn title_report_on_replies_with_title() {
 }
 
 #[test]
+fn feed_local_draws_after_the_process_exited() {
+    // 명령이 끝난 칸에 안내를 그린다(wait-after-command, #178). PTY로는 가지 않는다
+    let (s, rx) = sh("printf 'bye\\n'; exit 2", GridSize::new(40, 10));
+    assert_eq!(wait_exit(&rx), Some(2));
+    s.feed_local("\r\n끝났습니다 (2)\r\n".as_bytes());
+    let text = s.snapshot().text();
+    assert!(text.contains("bye") && text.contains("끝났습니다 (2)"), "{text}");
+}
+
+#[test]
 fn title_report_strips_control_chars() {
     // 제목 안의 제어 문자(0x01, 0x7f)는 지우고 답한다
     let got = reply_to("\\033]2;a\\001b\\177c\\007\\033[21t", |o| o.title_report = true);

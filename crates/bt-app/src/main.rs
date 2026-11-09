@@ -7,6 +7,7 @@ mod desktop;
 mod dump;
 mod keymap;
 mod keys;
+mod lifecycle;
 mod menu;
 mod mouse;
 mod padding;
@@ -88,7 +89,7 @@ fn main() -> anyhow::Result<()> {
             return Ok(());
         }
     };
-    let config = bt_core::Config::load(cli.config_file.as_deref(), system_is_dark());
+    let mut config = bt_core::Config::load(cli.config_file.as_deref(), system_is_dark());
     if cli.show_config {
         for src in &config.sources {
             println!("# 읽은 파일: {}", src.display());
@@ -101,6 +102,10 @@ fn main() -> anyhow::Result<()> {
     }
     for w in &config.warnings {
         log::warn!("설정: {w}");
+    }
+    // `-e`로 띄우면 Ghostty처럼 명령이 끝날 때 앱도 끝난다(quit-after-last-window-closed를 켜고 delay를 지움)
+    if cli.first.program.is_some() {
+        config.apply_cli_command();
     }
     let event_loop = EventLoop::<app::UserEvent>::with_user_event().build()?;
     let mut app = app::App::new(config, cli.config_file.clone(), event_loop.create_proxy(), cli.first);

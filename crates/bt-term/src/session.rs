@@ -645,6 +645,13 @@ impl Session {
         }
     }
 
+    /// 바이트를 PTY가 아니라 화면에 바로 그린다(명령이 끝난 칸에 안내를 남길 때, #178)
+    pub fn feed_local(&self, bytes: &[u8]) {
+        let mut g = self.inner.lock();
+        let Inner { term, parser, .. } = &mut *g;
+        parser.advance(term, bytes);
+    }
+
     /// 사용자가 친 키·붙여넣기를 PTY에 쓴다. `scroll`이면 쓰기 전에 맨 아래로 돌린다
     /// (설정 scroll-to-bottom의 keystroke, #147)
     pub fn write_input(&self, bytes: &[u8], scroll: bool) {
