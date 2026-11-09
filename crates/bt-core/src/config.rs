@@ -117,6 +117,8 @@ pub struct Config {
     pub window_save_state: bool,
     /// 벨(BEL)이 울릴 때 할 일(Ghostty `bell-features`, #107)
     pub bell_features: BellFeatures,
+    /// 프로그램이 도는 칸을 닫기 전에 묻는가(Ghostty `confirm-close-surface`, #108)
+    pub confirm_close: ConfirmClose,
     pub warnings: Vec<String>,
     /// 실제로 읽은 파일
     pub sources: Vec<PathBuf>,
@@ -152,6 +154,17 @@ impl BellFeatures {
         *self = next;
         true
     }
+}
+
+/// 닫기 확인(Ghostty `confirm-close-surface`). 기본 `true`
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConfirmClose {
+    /// 묻지 않는다
+    False,
+    /// 프로그램이 돌 때만 묻는다(셸이 프롬프트에 있으면 묻지 않음)
+    True,
+    /// 셸이 살아 있으면 늘 묻는다
+    Always,
 }
 
 /// 벨이 울릴 때 할 일(Ghostty `bell-features`). Ghostty 기본은 attention·title
@@ -213,6 +226,7 @@ impl Default for Config {
             background_opacity: 1.0,
             window_save_state: true,
             bell_features: BellFeatures::default(),
+            confirm_close: ConfirmClose::True,
             warnings: Vec::new(),
             sources: Vec::new(),
         }
@@ -646,6 +660,12 @@ impl Config {
                 "never" => self.window_save_state = false,
                 _ => bad(warnings),
             },
+            "confirm-close-surface" => match v {
+                "true" => self.confirm_close = ConfirmClose::True,
+                "false" => self.confirm_close = ConfirmClose::False,
+                "always" => self.confirm_close = ConfirmClose::Always,
+                _ => bad(warnings),
+            },
             "bell-features" => {
                 if !self.bell_features.apply(v) {
                     bad(warnings)
@@ -768,6 +788,15 @@ impl Config {
             .filter(|n| !n.is_empty())
             .collect();
         push(
+            "confirm-close-surface",
+            match self.confirm_close {
+                ConfirmClose::False => "false",
+                ConfirmClose::True => "true",
+                ConfirmClose::Always => "always",
+            }
+            .into(),
+        );
+        push(
             "bell-features",
             if bell.is_empty() {
                 "false".into()
@@ -793,7 +822,6 @@ const KNOWN_IGNORED: &[&str] = &[
     "macos-titlebar-proxy-icon",
     "macos-icon",
     "macos-window-shadow",
-    "confirm-close-surface",
     "quit-after-last-window-closed",
     "shell-integration-features",
     "auto-update",
@@ -984,6 +1012,21 @@ mod tests {
         assert!(!Config::from_text("window-save-state = never\n", true).window_save_state);
         assert!(Config::from_text("window-save-state = always\n", true).window_save_state);
         assert_eq!(Config::from_text("window-save-state = maybe\n", true).warnings.len(), 1);
+    }
+
+    #[test]
+    fn confirm_close_surface_key() {
+        assert_eq!(Config::default().confirm_close, ConfirmClose::True, "Ghostty 기본");
+        assert_eq!(
+            Config::from_text("confirm-close-surface = always\n", true).confirm_close,
+            ConfirmClose::Always
+        );
+        let c = Config::from_text("confirm-close-surface = false\n", true);
+        assert_eq!(c.confirm_close, ConfirmClose::False);
+        assert!(c.warnings.is_empty(), "알려진 키로 받는다: {:?}", c.warnings);
+        assert!(c.render().contains("confirm-close-surface = false"));
+        let c = Config::from_text("confirm-close-surface = maybe\n", true);
+        assert_eq!((c.confirm_close, c.warnings.len()), (ConfirmClose::True, 1));
     }
 
     #[test]
