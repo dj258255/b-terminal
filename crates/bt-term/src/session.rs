@@ -388,9 +388,21 @@ pub struct Session {
     scroll_on_output: Arc<std::sync::atomic::AtomicBool>,
     /// 프로그램이 키보드를 잠갔다(KAM, vt-kam-allowed가 켜졌을 때만). 잠겨 있으면 사람의 입력을 PTY에 쓰지 않는다
     kam_locked: Arc<std::sync::atomic::AtomicBool>,
+    /// 사람이 칸을 읽기 전용으로 했다(`toggle_readonly`, ADR-018). 켜져 있으면 `write`가 아무것도 쓰지 않는다
+    readonly: std::sync::atomic::AtomicBool,
 }
 
 impl Session {
+    /// 이 칸이 읽기 전용인가
+    pub fn readonly(&self) -> bool {
+        self.readonly.load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    /// 칸을 읽기 전용으로 하거나 푼다
+    pub fn set_readonly(&self, on: bool) {
+        self.readonly.store(on, std::sync::atomic::Ordering::Release);
+    }
+
     /// 프로그램이 키보드 잠금(KAM)을 걸어 두었는가
     pub fn keyboard_locked(&self) -> bool {
         self.kam_locked.load(std::sync::atomic::Ordering::Acquire)
@@ -701,6 +713,7 @@ impl Session {
             integrated,
             scroll_on_output,
             kam_locked,
+            readonly: std::sync::atomic::AtomicBool::new(false),
         })
     }
 
@@ -740,8 +753,11 @@ impl Session {
     }
 
     /// PTY에 바이트를 그대로 쓴다. 보던 자리는 건드리지 않는다(응답·초점 알림·마우스 보고 같은 것)
+    /// 읽기 전용 칸(`toggle_readonly`)에는 아무것도 쓰지 않는다. 앱이 PTY에 쓰는 길은 모두 여기를 지나므로
+    /// (키·붙여넣기·IME·마우스·초점·`text:` 동작·`btctl send`) 막는 곳은 이 한 곳이다. 프로그램이 물은 것에 터미널이
+    /// 답하는 쓰기(DSR·DA·색 질문·창 크기)는 `Listener`가 따로 쓰므로 막지 않는다
     pub fn write(&self, bytes: &[u8]) {
-        if bytes.is_empty() {
+        if bytes.is_empty() || self.readonly() {
             return;
         }
         let mut w = self.writer.lock();
@@ -760,7 +776,7 @@ impl Session {
     /// 사용자가 친 키·붙여넣기를 PTY에 쓴다. `scroll`이면 쓰기 전에 맨 아래로 돌린다
     /// (설정 scroll-to-bottom의 keystroke, #147)
     pub fn write_input(&self, bytes: &[u8], scroll: bool) {
-        if bytes.is_empty() || self.keyboard_locked() {
+        if bytes.is_empty() || self.keyboard_locked() || self.readonly() {
             return;
         }
         if scroll {

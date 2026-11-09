@@ -4,6 +4,7 @@
 
 ## [아직 릴리스하지 않음]
 
+- 키 묶음 동작 `toggle_background_opacity`(창마다 바탕 투명도를 설정값과 불투명 사이에서, `background-opacity`가 1 이상이면 하는 일 없음), `toggle_mouse_reporting`(칸의 마우스 보고 켬·끔), `toggle_readonly`(칸을 읽기 전용으로: 키·IME·붙여넣기·마우스·초점·`text:`·`btctl send`/`run`이 PTY에 가지 않고, 고르기·복사·스크롤은 그대로, 닫을 때는 늘 묻고, 탭 제목 앞에 🔒), `set_window_theme:config|system|light|dark`(이번 실행 동안의 창 테마, 설정을 다시 읽어도 남음), `open_config`(설정 파일을 기본 편집기로)를 받습니다. 기본 동작은 그대로이고(키를 묶어야 동작합니다), 읽기 전용은 입력 경로를 바꾸는 보안 경계입니다(ADR-018). 판단은 테스트로 확인했고 실제 창에서는 보지 않았습니다. #209
 - 키 테이블(Ghostty 1.3): `keybind = 이름/트리거=동작`, `이름/`(비우기), `activate_key_table:이름`, `activate_key_table_once:이름`, `deactivate_key_table`, `deactivate_all_key_tables`, `end_key_sequence`. 키를 찾는 순서는 맨 위 테이블부터 기본 묶음까지이고 키 이어 누르기와 함께 동작합니다. 새 동작이라 기본 동작은 그대로입니다. 판단은 테스트로 확인했고 실제 창에서는 보지 않았습니다. 켜진 테이블을 화면에 보이지는 않습니다. #210
 - 창·탭 동작(Ghostty): `close_window`·`close_all_windows`(닫기 확인을 거침), `goto_window:previous|next`, `move_tab:N`(끝을 넘으면 돌아감), `move_tab_to_new_window`(탭이 하나면 아무것도 안 함), `reset_window_size`, `toggle_window_decorations`, `toggle_visibility`(macOS)와 팔레트 항목을 더했습니다. 기본 동작은 그대로입니다. 판단 부분(돌아가기·창 고르기·크기·숨김 계획)과 해석은 테스트로 확인했고, 실제 창에서는 아직 보지 않았습니다. `close_all_windows`는 Ghostty 문서가 효과 없다고 한 동작이지만 b-terminal은 닫습니다. #206
 - 화면·찾기 동작 6개(Ghostty 키 묶음): `reset`(VT의 RIS), `scroll_to_row:N`(스크롤백 맨 위가 0), `scroll_to_selection`, `search:글`(빈 글이면 찾기만 취소, 막대는 둠), `search_selection`, `set_font_size:N`(6~72pt). `cursor_key`는 Ghostty처럼 설정에 쓸 수 없다고 경고합니다. 기본 묶음은 그대로입니다. 판단·해석은 테스트로 확인했고 실제 창에서는 보지 않았습니다. #208

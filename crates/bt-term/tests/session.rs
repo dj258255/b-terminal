@@ -682,3 +682,41 @@ fn reset_is_ris_screen_scrollback_and_modes() {
     s.scroll(1000);
     assert!(!s.snapshot().text().contains("hello"), "스크롤백도 비었다");
 }
+
+// ---- 읽기 전용 칸(#209, ADR-018): 사람의 입력은 PTY에 한 바이트도 가지 않는다 ----
+
+#[test]
+fn readonly_pane_sends_no_input_to_the_pty() {
+    let (s, _rx) = sh(
+        "read line; printf 'got:%s\\n' \"$line\"; sleep 5",
+        GridSize::new(40, 10),
+    );
+    s.set_readonly(true);
+    assert!(s.readonly());
+    // 키·붙여넣기(write_input)와 마우스·초점·text: 동작(write)이 모두 막힌다
+    s.write_input("abc\r".as_bytes(), false);
+    s.write("def\r".as_bytes());
+    std::thread::sleep(Duration::from_millis(400));
+    let text = s.snapshot().text();
+    assert!(!text.contains("got:"), "읽기 전용인데 입력이 갔다:\n{text}");
+    assert!(
+        !text.contains("abc") && !text.contains("def"),
+        "tty 되울림도 없어야 한다(바이트가 가지 않았다는 증거):\n{text}"
+    );
+    // 풀면 다시 간다
+    s.set_readonly(false);
+    assert!(!s.readonly());
+    s.write("ghi\r".as_bytes());
+    wait_until(&s, |t| t.contains("got:ghi"));
+}
+
+#[test]
+fn readonly_pane_still_answers_terminal_queries() {
+    // 프로그램이 물은 것(DSR 5n)에 대한 터미널의 답은 사람의 입력이 아니다. 막으면 묻고 기다리는 프로그램이 멎는다
+    let (s, _rx) = sh(
+        "stty raw -echo; printf '\\033[5n'; dd bs=4 count=1 2>/dev/null | od -An -c; sleep 5",
+        GridSize::new(60, 10),
+    );
+    s.set_readonly(true);
+    wait_until(&s, |t| t.contains("033") && t.contains('n'));
+}

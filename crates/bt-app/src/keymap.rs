@@ -146,6 +146,16 @@ pub enum Action {
     DeactivateAllKeyTables,
     /// 진행 중인 키 순서를 끝내고 앞 키들만 프로그램에 보낸다(Ghostty `end_key_sequence`)
     EndKeySequence,
+    /// 지금 창의 바탕 투명도를 설정값과 불투명 사이에서 바꾼다(Ghostty `toggle_background_opacity`, #209)
+    ToggleBackgroundOpacity,
+    /// 지금 칸의 마우스 보고를 끄고 켠다(Ghostty `toggle_mouse_reporting`, #209)
+    ToggleMouseReporting,
+    /// 지금 칸을 읽기 전용으로 하거나 푼다(Ghostty `toggle_readonly`, #209, ADR-018)
+    ToggleReadonly,
+    /// 이번 실행 동안의 창 테마. `None`이면 설정의 `window-theme`으로 돌아간다(Ghostty `set_window_theme`, #209)
+    SetWindowTheme(Option<bt_core::config::WindowTheme>),
+    /// 설정 파일을 기본 편집기로 연다(Ghostty `open_config`, #209)
+    OpenConfig,
 }
 
 /// 파일로 쓸 글
@@ -455,6 +465,24 @@ pub fn parse_action(s: &str) -> Result<Option<Action>, String> {
         "deactivate_key_table" => Action::DeactivateKeyTable,
         "deactivate_all_key_tables" => Action::DeactivateAllKeyTables,
         "end_key_sequence" => Action::EndKeySequence,
+        "toggle_background_opacity" => Action::ToggleBackgroundOpacity,
+        "toggle_mouse_reporting" => Action::ToggleMouseReporting,
+        "toggle_readonly" => Action::ToggleReadonly,
+        "set_window_theme" => {
+            use bt_core::config::WindowTheme;
+            Action::SetWindowTheme(match arg.map(str::trim) {
+                Some("config") => None,
+                Some("system") => Some(WindowTheme::System),
+                Some("light") => Some(WindowTheme::Light),
+                Some("dark") => Some(WindowTheme::Dark),
+                _ => return Err("set_window_theme:config·system·light·dark".into()),
+            })
+        }
+        // new_window(GTK 전용)는 설정을 Linux와 나눠 쓰는 사람이 있어 받고 os_open처럼 한다
+        "open_config" => match arg.map(str::trim) {
+            None | Some("os_open") | Some("new_window") => Action::OpenConfig,
+            _ => return Err("open_config:os_open·new_window".into()),
+        },
         other => return Err(format!("b-terminal에 없는 동작입니다: {other}")),
     }))
 }
