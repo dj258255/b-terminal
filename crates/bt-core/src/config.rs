@@ -44,6 +44,18 @@ pub enum RightClickAction {
     Ignore,
 }
 
+/// 색 질의(OSC 4·10·11)에 답하는 꼴(Ghostty `osc-color-report-format`, #151)
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum OscColorReportFormat {
+    /// 답하지 않는다
+    None,
+    /// `rgb:RR/GG/BB`
+    Bit8,
+    /// `rgb:RRRR/GGGG/BBBB`(기본)
+    #[default]
+    Bit16,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OptionAsAlt {
     None,
@@ -184,6 +196,10 @@ pub struct Config {
     pub cursor_click_to_move: bool,
     /// 언제 맨 아래로 스크롤하는가(Ghostty `scroll-to-bottom`, #147). 기본 `keystroke, no-output`
     pub scroll_to_bottom: ScrollToBottom,
+    /// 창 제목 보고(CSI 21 t)에 답할지(Ghostty `title-report`, 기본 끔, #151)
+    pub title_report: bool,
+    /// 색 질의에 답하는 꼴(Ghostty `osc-color-report-format`, #151)
+    pub osc_color_report_format: OscColorReportFormat,
     /// 남는 자리를 네 변에 고르게(Ghostty `window-padding-balance`, #136)
     pub padding_balance: bool,
     /// 여백 색(Ghostty `window-padding-color`)
@@ -552,6 +568,8 @@ impl Default for Config {
             background_image_repeat: false,
             cursor_click_to_move: true,
             scroll_to_bottom: ScrollToBottom::default(),
+            title_report: false,
+            osc_color_report_format: OscColorReportFormat::Bit16,
             padding_balance: false,
             padding_color: PaddingColor::Background,
             cursor_opacity: 1.0,
@@ -1248,6 +1266,16 @@ impl Config {
                 Some(m) => self.scroll_to_bottom = m,
                 None => bad(warnings),
             },
+            "title-report" => match parse_bool(v) {
+                Some(b) => self.title_report = b,
+                None => bad(warnings),
+            },
+            "osc-color-report-format" => match v {
+                "none" => self.osc_color_report_format = OscColorReportFormat::None,
+                "8-bit" => self.osc_color_report_format = OscColorReportFormat::Bit8,
+                "16-bit" => self.osc_color_report_format = OscColorReportFormat::Bit16,
+                _ => bad(warnings),
+            },
             "cursor-click-to-move" => match parse_bool(v) {
                 Some(b) => self.cursor_click_to_move = b,
                 None => bad(warnings),
@@ -1891,6 +1919,25 @@ mod tests {
             let c = Config::from_text(&format!("scroll-to-bottom = {bad}\n"), true);
             assert_eq!((c.warnings.len(), c.scroll_to_bottom), (1, d), "{bad}");
         }
+    }
+
+    #[test]
+    fn report_keys_like_ghostty() {
+        let d = Config::default();
+        assert!(!d.title_report);
+        assert_eq!(d.osc_color_report_format, OscColorReportFormat::Bit16);
+        let c = Config::from_text("title-report = true\nosc-color-report-format = 8-bit\n", true);
+        assert!(c.title_report);
+        assert_eq!(c.osc_color_report_format, OscColorReportFormat::Bit8);
+        let c = Config::from_text("osc-color-report-format = none\n", true);
+        assert_eq!(c.osc_color_report_format, OscColorReportFormat::None);
+        assert_eq!(
+            Config::from_text("osc-color-report-format = 32-bit\n", true)
+                .warnings
+                .len(),
+            1
+        );
+        assert_eq!(Config::from_text("title-report = maybe\n", true).warnings.len(), 1);
     }
 
     #[test]

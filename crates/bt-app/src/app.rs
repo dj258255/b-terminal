@@ -852,6 +852,8 @@ impl App {
             clipboard_read: self.config.clipboard_read,
             word_chars: Some(self.config.selection_word_chars.clone()),
             scroll_on_output: self.config.scroll_to_bottom.output,
+            title_report: self.config.title_report,
+            osc_color_report_format: self.config.osc_color_report_format,
             ..options
         };
         // 칸 안의 btctl이 이 터미널과 이 칸을 찾게 한다

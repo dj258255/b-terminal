@@ -4,6 +4,7 @@
 
 ## [아직 릴리스하지 않음]
 
+- 제목·색 보고 키(Ghostty): `title-report`(기본 끔, CSI 21 t에 제목으로 답함)와 `osc-color-report-format`(`none`·`8-bit`·`16-bit`, 기본 `16-bit`). 제목 보고는 출력이 정한 제목이 셸 입력으로 돌아와 명령이 되는 길이라 기본으로 끕니다(ADR-012).
 - 키 묶음 접두사 `all:`·`unconsumed:`·`performable:`(겹쳐 쓰기 가능)와 `catch_all` 트리거, `ignore` 동작(Ghostty, #149): `performable:`은 동작을 할 수 없으면(고른 글이 없는데 copy 등) 키를 프로그램에 보내고, `all:`은 글 보내기를 모든 칸에 합니다. 앱 창에서는 확인하지 않았고 keymap 단위 테스트로 확인했습니다.
 - 시작 창 키(Ghostty): `maximize`·`fullscreen`으로 새 창을 최대화·전체 화면으로 띄우고, `window-position-x`·`-y`로 첫 창 자리를 정하며(둘 다 있어야 함, 복원한 창은 복원 자리가 이김), `toggle_maximize`·`toggle_window_float_on_top` 동작과 팔레트 항목을 더했습니다. 실제 창에서는 아직 확인하지 않았습니다(#148).
 - 팔레트 사용자 항목(`command-palette-entry`, Ghostty 1.2 문법, #150): `title:…,action:…,description:…`을 여러 줄 쌓아 명령 팔레트에 더하고, 빈 값은 기본 항목을 지웁니다. 설명으로도 찾습니다.

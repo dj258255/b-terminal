@@ -18,6 +18,7 @@ use alacritty_terminal::vte::ansi::{
     CursorShape as VtCursorShape, CursorStyle as VtCursorStyle, NamedColor, Processor, Rgb as VtRgb,
 };
 use bt_core::Theme;
+use bt_core::config::OscColorReportFormat;
 use parking_lot::Mutex;
 use portable_pty::{CommandBuilder, MasterPty, PtySize, native_pty_system};
 
@@ -100,6 +101,10 @@ pub struct SpawnOptions {
     pub word_chars: Option<String>,
     /// 새 출력이 오면 맨 아래로 스크롤한다(설정 scroll-to-bottom의 output, #147)
     pub scroll_on_output: bool,
+    /// CSI 21 t(창 제목 보고)에 답할지(설정 title-report, 기본 끔, #151)
+    pub title_report: bool,
+    /// 색 질의(OSC 4·10·11)에 답하는 꼴(설정 osc-color-report-format, #151)
+    pub osc_color_report_format: bt_core::config::OscColorReportFormat,
 }
 
 /// 새 출력이 왔을 때 맨 아래로 스크롤해야 하는가(켜져 있고 위로 올라가 있을 때만)
@@ -172,6 +177,40 @@ struct Listener {
     sink: EventSink,
     size: Arc<Mutex<GridSize>>,
     theme: Arc<Theme>,
+    /// 색 질의에 답하는 꼴(osc-color-report-format)
+    color_format: OscColorReportFormat,
+    /// 프로그램이 정한 지금 창 제목(CSI 21 t 보고용)
+    title: Arc<Mutex<String>>,
+}
+
+/// 엔진이 만든 색 답(`rgb:RRRR/GGGG/BBBB`)을 8비트 꼴(`rgb:RR/GG/BB`)로 줄인다. 16비트는 8비트 값을 되풀이한 것이라 앞 두 자리가 원래 값이다
+fn narrow_color_reply(reply: &str) -> String {
+    let Some(at) = reply.find("rgb:") else {
+        return reply.to_string();
+    };
+    let (head, rest) = reply.split_at(at + 4);
+    let mut out = String::from(head);
+
+    let mut run = 0;
+    for c in rest.chars() {
+        if c.is_ascii_hexdigit() && run < 4 {
+            if run < 2 {
+                out.push(c);
+            }
+            run += 1;
+        } else if c.is_ascii_hexdigit() {
+            out.push(c);
+        } else {
+            run = 0;
+            out.push(c);
+        }
+    }
+    out
+}
+
+/// 제목 보고에 넣을 제목: 제어 문자(C0·DEL·C1)를 지운다. 출력이 정한 제목이므로 답이 입력 안에서 명령이 되지 않게 한다
+fn sanitize_title(title: &str) -> String {
+    title.chars().filter(|c| !c.is_control()).collect()
 }
 
 impl EventListener for Listener {
@@ -182,8 +221,14 @@ impl EventListener for Listener {
                 let _ = w.write_all(text.as_bytes());
                 let _ = w.flush();
             }
-            VtEvent::Title(t) => (self.sink)(SessionEvent::Title(t)),
-            VtEvent::ResetTitle => (self.sink)(SessionEvent::Title(String::new())),
+            VtEvent::Title(t) => {
+                *self.title.lock() = t.clone();
+                (self.sink)(SessionEvent::Title(t))
+            }
+            VtEvent::ResetTitle => {
+                self.title.lock().clear();
+                (self.sink)(SessionEvent::Title(String::new()))
+            }
             VtEvent::Bell => (self.sink)(SessionEvent::Bell),
             VtEvent::TextAreaSizeRequest(format) => {
                 let reply = format(self.size.lock().window());
@@ -191,6 +236,9 @@ impl EventListener for Listener {
                 let _ = w.write_all(reply.as_bytes());
             }
             VtEvent::ColorRequest(index, format) => {
+                if self.color_format == OscColorReportFormat::None {
+                    return;
+                }
                 let theme = &self.theme;
                 let rgb = match index {
                     i if i < 256 => theme.indexed(i as u8),
@@ -198,11 +246,14 @@ impl EventListener for Listener {
                     i if i == NamedColor::Background as usize => theme.background,
                     _ => theme.cursor,
                 };
-                let reply = format(VtRgb {
+                let mut reply = format(VtRgb {
                     r: rgb.r,
                     g: rgb.g,
                     b: rgb.b,
                 });
+                if self.color_format == OscColorReportFormat::Bit8 {
+                    reply = narrow_color_reply(&reply);
+                }
                 let mut w = self.writer.lock();
                 let _ = w.write_all(reply.as_bytes());
             }
@@ -373,12 +424,15 @@ impl Session {
         let writer: Writer = Arc::new(Mutex::new(pair.master.take_writer()?));
 
         let theme = Arc::new(theme);
+        let title = Arc::new(Mutex::new(String::new()));
         let size_cell = Arc::new(Mutex::new(size));
         let listener = Listener {
             writer: writer.clone(),
             sink: sink.clone(),
             size: size_cell.clone(),
             theme: theme.clone(),
+            color_format: options.osc_color_report_format,
+            title: title.clone(),
         };
         let config = Config {
             scrolling_history: if options.scrollback == 0 {
@@ -428,6 +482,8 @@ impl Session {
         let thread_inner = inner.clone();
         let thread_exited = exited.clone();
         let thread_writer = writer.clone();
+        let thread_title = title.clone();
+        let title_report = options.title_report;
         std::thread::Builder::new().name("bt-pty-read".into()).spawn(move || {
             let mut buf = vec![0u8; 64 * 1024];
             let mut scanner = Scanner::default();
@@ -490,6 +546,15 @@ impl Session {
                                         }
                                     }
                                     Signal::Erase { visible, scrollback } => g.graphics_erase(visible, scrollback),
+                                    // 제목 보고는 title-report가 켜졌을 때만 답한다(ADR-012)
+                                    Signal::TitleReport => {
+                                        if title_report {
+                                            let reply = format!("\x1b]l{}\x1b\\", sanitize_title(&thread_title.lock()));
+                                            let mut w = thread_writer.lock();
+                                            let _ = w.write_all(reply.as_bytes());
+                                            let _ = w.flush();
+                                        }
+                                    }
                                     other => events.push(signal_event(other)),
                                 }
                             }
@@ -774,7 +839,11 @@ fn signal_event(sig: Signal) -> SessionEvent {
         Signal::Cwd { host, path } => SessionEvent::Cwd { host, path },
         Signal::Progress { state, percent } => SessionEvent::Progress { state, percent },
         // 셸 통합 표지와 그래픽은 읽기 스레드가 따로 다룬다
-        Signal::Prompt(_) | Signal::CommandLine(_) | Signal::Graphics(_) | Signal::Erase { .. } => SessionEvent::Output,
+        Signal::Prompt(_)
+        | Signal::CommandLine(_)
+        | Signal::Graphics(_)
+        | Signal::Erase { .. }
+        | Signal::TitleReport => SessionEvent::Output,
     }
 }
 

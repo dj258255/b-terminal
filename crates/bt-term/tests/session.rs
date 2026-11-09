@@ -322,3 +322,93 @@ fn write_input_scrolls_to_bottom_only_when_asked() {
     s.write_input(b"b", true);
     assert_eq!(s.snapshot().display_offset, 0, "scroll이 켜져 있으면 맨 아래로");
 }
+
+// ---- 제목·색 보고(#151) ----
+
+/// 질의를 찍고 PTY로 돌아온 바이트를 16진수로 화면에 적는 /bin/sh 스크립트. 답이 없으면 `R[]`
+fn query_script(query: &str) -> String {
+    format!(
+        "stty raw -echo min 0 time 5; printf '{query}'; sleep 0.3; \
+         r=$(dd bs=256 count=1 2>/dev/null | od -An -v -tx1 | tr -d ' \\n'); printf 'R[%s]\\n' \"$r\""
+    )
+}
+
+fn hex_of(s: &str) -> String {
+    s.bytes().map(|b| format!("{b:02x}")).collect()
+}
+
+/// 질의를 보내고 돌아온 답을 16진수 문자열로 받는다
+fn reply_to(query: &str, opts: impl FnOnce(&mut SpawnOptions)) -> String {
+    let (tx, rx) = channel();
+    let tx = std::sync::Mutex::new(tx);
+    let sink = Arc::new(move |e: SessionEvent| {
+        let _ = tx.lock().unwrap().send(e);
+    });
+    let mut o = SpawnOptions {
+        program: Some("/bin/sh".into()),
+        args: vec!["-c".into(), query_script(query)],
+        cwd: Some(std::env::temp_dir()),
+        ..Default::default()
+    };
+    opts(&mut o);
+    let s = Session::spawn(o, GridSize::new(80, 10), Theme::default(), sink).expect("spawn");
+    wait_exit(&rx);
+    let text = s.snapshot().text();
+    let start = text.find("R[").unwrap_or_else(|| panic!("답 줄이 없다:\n{text}")) + 2;
+    let end = text[start..].find(']').expect("닫는 ]") + start;
+    text[start..end].to_string()
+}
+
+fn bg_hex(fmt: &str) -> String {
+    let b = Theme::default().background;
+    let body = match fmt {
+        "16" => format!("{0:02x}{0:02x}/{1:02x}{1:02x}/{2:02x}{2:02x}", b.r, b.g, b.b),
+        _ => format!("{:02x}/{:02x}/{:02x}", b.r, b.g, b.b),
+    };
+    hex_of(&format!("\x1b]11;rgb:{body}\x07"))
+}
+
+#[test]
+fn osc_color_query_default_is_16_bit() {
+    assert_eq!(reply_to("\\033]11;?\\007", |_| {}), bg_hex("16"));
+}
+
+#[test]
+fn osc_color_query_8_bit() {
+    let got = reply_to("\\033]11;?\\007", |o| {
+        o.osc_color_report_format = bt_core::config::OscColorReportFormat::Bit8
+    });
+    assert_eq!(got, bg_hex("8"));
+}
+
+#[test]
+fn osc_color_query_none_gets_no_reply() {
+    let got = reply_to("\\033]11;?\\007", |o| {
+        o.osc_color_report_format = bt_core::config::OscColorReportFormat::None
+    });
+    assert_eq!(got, "");
+    // 팔레트(OSC 4)·글자색(OSC 10) 질의도 답하지 않는다
+    let got = reply_to("\\033]4;1;?\\007\\033]10;?\\007", |o| {
+        o.osc_color_report_format = bt_core::config::OscColorReportFormat::None
+    });
+    assert_eq!(got, "");
+}
+
+#[test]
+fn title_report_is_off_by_default() {
+    // 출력이 정한 제목이 셸 입력으로 돌아오면 명령이 될 수 있다
+    assert_eq!(reply_to("\\033]2;rm -rf x\\007\\033[21t", |_| {}), "");
+}
+
+#[test]
+fn title_report_on_replies_with_title() {
+    let got = reply_to("\\033]2;hello\\007\\033[21t", |o| o.title_report = true);
+    assert_eq!(got, hex_of("\x1b]lhello\x1b\\"));
+}
+
+#[test]
+fn title_report_strips_control_chars() {
+    // 제목 안의 제어 문자(0x01, 0x7f)는 지우고 답한다
+    let got = reply_to("\\033]2;a\\001b\\177c\\007\\033[21t", |o| o.title_report = true);
+    assert_eq!(got, hex_of("\x1b]labc\x1b\\"));
+}
