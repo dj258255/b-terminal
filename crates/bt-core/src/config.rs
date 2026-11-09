@@ -519,6 +519,12 @@ pub struct Config {
     pub osc_color_report_format: OscColorReportFormat,
     /// ENQ(0x05)를 받으면 PTY로 돌려보낼 글(Ghostty `enquiry-response`, 기본 빈 값 = 답하지 않음, #176)
     pub enquiry_response: String,
+    /// `term`: 칸의 TERM 값. Ghostty 기본은 `xterm-ghostty`지만 그 terminfo가 없어 `xterm-256color`를 지킨다(ADR-016, #190)
+    pub term: String,
+    /// `env`: 칸을 띄울 때 환경에 더할 변수. 쓴 차례대로 풀어 둔 결과다(#190)
+    pub env: Vec<(String, String)>,
+    /// `input`: 칸을 띄울 때 PTY에 보낼 데이터. 쓴 차례대로 이어 붙인다(#190)
+    pub input: Vec<InputSource>,
     /// 프로그램이 키보드 잠금 모드(KAM, `CSI 2 h`)로 사람의 키 입력을 막을 수 있는가(Ghostty `vt-kam-allowed`, 기본 끔, #176)
     pub vt_kam_allowed: bool,
     /// 프로그램이 `CSI 8 ; 행 ; 열 t`로 창 크기를 바꿀 수 있는가(Ghostty `vt-window-resize-allowed`, 기본 끔, #176)
@@ -1115,6 +1121,9 @@ impl Default for Config {
             title_report: false,
             osc_color_report_format: OscColorReportFormat::Bit16,
             enquiry_response: String::new(),
+            term: DEFAULT_TERM.to_string(),
+            env: Vec::new(),
+            input: Vec::new(),
             vt_kam_allowed: false,
             vt_window_resize_allowed: false,
             image_storage_limit: 320_000_000,
@@ -1289,6 +1298,183 @@ fn render_palette_entry(p: &PaletteEntryConf) -> String {
         q(&p.action),
         q(&p.description)
     )
+}
+
+/// `term`의 기본. Ghostty는 `xterm-ghostty`지만 b-terminal에는 그 terminfo가 없어 지금 값을 지킨다(ADR-016)
+pub const DEFAULT_TERM: &str = "xterm-256color";
+
+/// `input` 전체 크기 상한(바이트). Ghostty는 `path:` 파일 하나를 10MB까지 읽는다. b-terminal은 `raw:`와 파일을 합친
+/// 전체에 같은 값을 건다(ADR-016)
+pub const INPUT_LIMIT_BYTES: usize = 10 * 1024 * 1024;
+
+/// `input` 하나: 쓴 글(`raw:`) 또는 읽을 파일(`path:`)
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum InputSource {
+    Raw(Vec<u8>),
+    Path(PathBuf),
+}
+
+impl InputSource {
+    /// `--show-config`에 적을 글(다시 읽으면 같은 값이 된다)
+    fn render(&self) -> String {
+        match self {
+            InputSource::Path(p) => format!("path:{}", p.display()),
+            InputSource::Raw(b) => {
+                let mut s = String::from("raw:");
+                for (i, &c) in b.iter().enumerate() {
+                    match c {
+                        b'\\' => s.push_str("\\\\"),
+                        b'"' => s.push_str("\\\""),
+                        // 줄 끝의 공백은 설정을 읽을 때 잘리므로 적어 둔다
+                        b' ' if i + 1 == b.len() => s.push_str("\\x20"),
+                        0x20..=0x7e => s.push(c as char),
+                        _ => s.push_str(&format!("\\x{c:02x}")),
+                    }
+                }
+                s
+            }
+        }
+    }
+}
+
+/// `term`·환경 변수 값으로 쓸 수 있는 글인가: NUL과 제어 문자가 없어야 한다
+fn valid_env_value(v: &str) -> bool {
+    !v.chars().any(char::is_control)
+}
+
+/// `env` 한 줄을 풀어 맵(쓴 차례)에 반영한다(Ghostty `RepeatableStringMap`과 같은 뜻).
+/// 빈 값은 맵 전체를 비우고, `KEY=`는 그 키를 지우고, `KEY=VALUE`는 넣거나 덮는다.
+/// 덮어도 처음 자리를 지킨다. 키가 비었거나 `=`가 없거나 제어 문자가 있으면 오류
+pub fn apply_env(map: &mut Vec<(String, String)>, v: &str) -> Result<(), String> {
+    if v.is_empty() {
+        map.clear();
+        return Ok(());
+    }
+    let Some((k, val)) = v.split_once('=') else {
+        return Err(format!("`키=값` 꼴이 아닙니다: {v}"));
+    };
+    let (k, val) = (k.trim(), val.trim());
+    if k.is_empty() || !valid_env_value(k) || !valid_env_value(val) {
+        return Err(format!("키가 비었거나 제어 문자가 있습니다: {v:?}"));
+    }
+    let pos = map.iter().position(|(mk, _)| mk == k);
+    match (pos, val.is_empty()) {
+        (Some(i), true) => {
+            map.remove(i);
+        }
+        (Some(i), false) => map[i].1 = val.to_string(),
+        (None, true) => {}
+        (None, false) => map.push((k.to_string(), val.to_string())),
+    }
+    Ok(())
+}
+
+/// Zig 문자열 리터럴 이스케이프를 푼다: `\n \r \t \\ \' \"`, `\xNN`(바이트 하나), `\u{코드포인트}`(UTF-8).
+/// 그 밖의 `\`와 끝에 홀로 남은 `\`는 오류다. 이스케이프가 아닌 글자는 그대로 둔다
+pub fn parse_zig_string(s: &str) -> Result<Vec<u8>, String> {
+    let b = s.as_bytes();
+    let mut out = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] != b'\\' {
+            out.push(b[i]);
+            i += 1;
+            continue;
+        }
+        i += 1;
+        let Some(&c) = b.get(i) else {
+            return Err("끝에 홀로 남은 `\\`가 있습니다".into());
+        };
+        i += 1;
+        match c {
+            b'n' => out.push(b'\n'),
+            b'r' => out.push(b'\r'),
+            b't' => out.push(b'\t'),
+            b'\\' | b'\'' | b'"' => out.push(c),
+            b'x' => {
+                let hex = b.get(i..i + 2).and_then(|h| std::str::from_utf8(h).ok());
+                let n = hex.filter(|h| h.bytes().all(|c| c.is_ascii_hexdigit()));
+                let Some(n) = n.and_then(|h| u8::from_str_radix(h, 16).ok()) else {
+                    return Err("`\\x` 뒤에는 16진수 두 자리가 와야 합니다".into());
+                };
+                out.push(n);
+                i += 2;
+            }
+            b'u' => {
+                let Some(rest) = s.get(i..).and_then(|r| r.strip_prefix('{')) else {
+                    return Err("`\\u` 뒤에는 `{코드포인트}`가 와야 합니다".into());
+                };
+                let Some(end) = rest.find('}') else {
+                    return Err("`\\u{`가 닫히지 않았습니다".into());
+                };
+                let digits = &rest[..end];
+                let ch = (!digits.is_empty() && digits.bytes().all(|c| c.is_ascii_hexdigit()))
+                    .then(|| u32::from_str_radix(digits, 16).ok())
+                    .flatten()
+                    .and_then(char::from_u32);
+                let Some(ch) = ch else {
+                    return Err(format!("`\\u{{{digits}}}`는 글자가 아닙니다"));
+                };
+                let mut buf = [0u8; 4];
+                out.extend_from_slice(ch.encode_utf8(&mut buf).as_bytes());
+                i += 1 + end + 1;
+            }
+            _ => return Err(format!("모르는 이스케이프 `\\{}`입니다", c as char)),
+        }
+    }
+    Ok(out)
+}
+
+/// `input` 값 하나(`raw:…`, `path:…`, 접두사 없으면 `raw:`)를 푼다. `path:`의 상대 경로는 설정 파일의 폴더 기준이고
+/// 파일은 칸을 띄울 때 읽는다(없는 파일은 설정을 읽을 때 알 수 없다)
+pub fn parse_input(v: &str, base: &Path) -> Result<InputSource, String> {
+    if let Some(p) = v.strip_prefix("path:") {
+        if p.is_empty() {
+            return Err("path: 뒤에 경로가 없습니다".into());
+        }
+        return Ok(InputSource::Path(expand_home(p, base)));
+    }
+    let raw = v.strip_prefix("raw:").unwrap_or(v);
+    parse_zig_string(raw).map(InputSource::Raw)
+}
+
+/// `input` 목록을 PTY에 보낼 바이트로 만든다. 글(`raw:`)과 파일을 합친 전체가 `INPUT_LIMIT_BYTES`를 넘거나,
+/// 파일이 없거나 보통 파일이 아니거나(폴더·장치·파이프는 끝이 없거나 읽다 멈출 수 있다) 못 읽으면 오류이고, 이때는
+/// 하나도 보내지 않는다(Ghostty처럼)
+pub fn resolve_input(sources: &[InputSource]) -> Result<Vec<u8>, String> {
+    use std::io::Read;
+    let mut out: Vec<u8> = Vec::new();
+    for src in sources {
+        let room = INPUT_LIMIT_BYTES - out.len();
+        match src {
+            InputSource::Raw(b) => {
+                if b.len() > room {
+                    return Err(format!("input의 전체 크기가 상한 {INPUT_LIMIT_BYTES}바이트를 넘습니다"));
+                }
+                out.extend_from_slice(b);
+            }
+            InputSource::Path(p) => {
+                let show = p.display();
+                let meta = std::fs::metadata(p).map_err(|e| format!("{show}을 읽지 못했습니다: {e}"))?;
+                if !meta.is_file() {
+                    return Err(format!("{show}은 보통 파일이 아닙니다"));
+                }
+                if meta.len() > room as u64 {
+                    return Err(format!("{show}이 상한 {INPUT_LIMIT_BYTES}바이트를 넘습니다"));
+                }
+                let f = std::fs::File::open(p).map_err(|e| format!("{show}을 읽지 못했습니다: {e}"))?;
+                // 재는 사이에 커졌을 수 있으니 읽을 때도 한 바이트 넘게까지만 읽고 센다
+                let before = out.len();
+                f.take(room as u64 + 1)
+                    .read_to_end(&mut out)
+                    .map_err(|e| format!("{show}을 읽지 못했습니다: {e}"))?;
+                if out.len() - before > room {
+                    return Err(format!("{show}이 상한 {INPUT_LIMIT_BYTES}바이트를 넘습니다"));
+                }
+            }
+        }
+    }
+    Ok(out)
 }
 
 fn unquote(v: &str) -> &str {
@@ -2320,6 +2506,30 @@ impl Config {
                 None => bad(warnings),
             },
             "enquiry-response" => self.enquiry_response = v.to_string(),
+            "term" => {
+                if v.is_empty() {
+                    self.term = DEFAULT_TERM.to_string();
+                } else if valid_env_value(v) {
+                    self.term = v.to_string();
+                } else {
+                    bad(warnings)
+                }
+            }
+            "env" => {
+                if let Err(why) = apply_env(&mut self.env, v) {
+                    warnings.push(format!("{}:{}: env {why}", e.file.display(), e.line));
+                }
+            }
+            "input" => {
+                if v.is_empty() {
+                    self.input.clear();
+                } else {
+                    match parse_input(v, e.file.parent().unwrap_or(Path::new("."))) {
+                        Ok(src) => self.input.push(src),
+                        Err(why) => warnings.push(format!("{}:{}: input {why}", e.file.display(), e.line)),
+                    }
+                }
+            }
             "vt-kam-allowed" => match parse_bool(v) {
                 Some(b) => self.vt_kam_allowed = b,
                 None => bad(warnings),
@@ -2813,6 +3023,13 @@ impl Config {
             push("bell-audio-path", p.display().to_string());
         }
         push("bell-audio-volume", self.bell_audio_volume.to_string());
+        push("term", self.term.clone());
+        for (k, v) in &self.env {
+            push("env", format!("{k}={v}"));
+        }
+        for src in &self.input {
+            push("input", src.render());
+        }
         out.join("\n")
     }
 }
@@ -4691,5 +4908,178 @@ mod tests {
         c.apply_cli_command();
         assert!(c.quit_after_last_window_closed);
         assert_eq!(c.quit_after_last_window_closed_delay, None);
+    }
+
+    #[test]
+    fn term_defaults_to_xterm_256color_not_ghostty() {
+        assert_eq!(Config::default().term, "xterm-256color");
+        let c = Config::from_text("term = xterm-ghostty\n", true);
+        assert!(c.warnings.is_empty(), "{:?}", c.warnings);
+        assert_eq!(c.term, "xterm-ghostty");
+        // 빈 값은 기본으로 되돌린다
+        let c = Config::from_text("term = screen\nterm =\n", true);
+        assert_eq!(c.term, "xterm-256color");
+        // 제어 문자가 든 값은 경고하고 기본을 둔다
+        let c = Config::from_text("term = \"a\u{1b}b\"\n", true);
+        assert_eq!(c.term, "xterm-256color");
+        assert_eq!(c.warnings.len(), 1);
+        assert!(c.render().contains("term = xterm-256color"));
+    }
+
+    fn env_of(text: &str) -> (Vec<(String, String)>, usize) {
+        let c = Config::from_text(text, true);
+        (c.env, c.warnings.len())
+    }
+
+    fn kv(k: &str, v: &str) -> (String, String) {
+        (k.to_string(), v.to_string())
+    }
+
+    #[test]
+    fn env_collects_and_later_keys_win() {
+        assert_eq!(Config::default().env, vec![]);
+        let (env, w) = env_of("env = foo=bar\nenv = bar=baz\n");
+        assert_eq!((env, w), (vec![kv("foo", "bar"), kv("bar", "baz")], 0));
+        // 같은 키를 또 쓰면 덮는다(자리는 처음 그대로)
+        let (env, w) = env_of("env = foo=bar\nenv = bar=baz\nenv = foo=qux\n");
+        assert_eq!((env, w), (vec![kv("foo", "qux"), kv("bar", "baz")], 0));
+        // 값에 =가 있어도 첫 =에서 가른다. 앞뒤 공백은 자른다
+        let (env, _) = env_of("env = A = x=y\n");
+        assert_eq!(env, vec![kv("A", "x=y")]);
+    }
+
+    #[test]
+    fn env_empty_value_removes_key_and_empty_line_clears_map() {
+        let (env, w) = env_of("env = foo=bar\nenv = bar=baz\nenv = foo=\n");
+        assert_eq!((env, w), (vec![kv("bar", "baz")], 0));
+        let (env, w) = env_of("env = foo=bar\nenv = bar=baz\nenv =\nenv = x=1\n");
+        assert_eq!((env, w), (vec![kv("x", "1")], 0));
+    }
+
+    #[test]
+    fn env_bad_values_warn_and_are_skipped() {
+        for bad in ["env = novalue", "env = =x", "env = \"A=b\u{0}c\""] {
+            let (env, w) = env_of(&format!("env = ok=1\n{bad}\n"));
+            assert_eq!(env, vec![kv("ok", "1")], "{bad}");
+            assert_eq!(w, 1, "{bad}");
+        }
+    }
+
+    #[test]
+    fn env_renders_back_to_the_same_settings() {
+        let c = Config::from_text("env = A=1\nenv = B=two words\n", true);
+        let again = Config::from_text(&c.render(), true);
+        assert_eq!(again.env, c.env);
+    }
+
+    #[test]
+    fn zig_string_escapes_follow_zig_literals() {
+        assert_eq!(parse_zig_string("hi").unwrap(), b"hi");
+        assert_eq!(parse_zig_string("a\\nb\\r\\t\\\\\\'\\\"").unwrap(), b"a\nb\r\t\\'\"");
+        assert_eq!(parse_zig_string("\\x1b[2J\\xff").unwrap(), b"\x1b[2J\xff");
+        assert_eq!(parse_zig_string("\\u{1F600}한").unwrap(), "\u{1F600}한".as_bytes());
+        assert_eq!(parse_zig_string("\\u{41}").unwrap(), b"A");
+        for bad in [
+            "\\q",
+            "a\\",
+            "\\x4",
+            "\\xzz",
+            "\\u{d800}",
+            "\\u{110000}",
+            "\\u41",
+            "\\u{}",
+            "\\u{41",
+        ] {
+            assert!(parse_zig_string(bad).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn input_parses_raw_path_and_unprefixed() {
+        assert!(Config::default().input.is_empty());
+        let c = Config::from_text(
+            "input = raw:echo hi\\n\ninput = \"hello\"\ninput = path:/tmp/x.txt\ninput = raw:a=b\n",
+            true,
+        );
+        assert!(c.warnings.is_empty(), "{:?}", c.warnings);
+        assert_eq!(
+            c.input,
+            vec![
+                InputSource::Raw(b"echo hi\n".to_vec()),
+                InputSource::Raw(b"hello".to_vec()),
+                InputSource::Path(PathBuf::from("/tmp/x.txt")),
+                InputSource::Raw(b"a=b".to_vec()),
+            ]
+        );
+        // 빈 값은 목록을 비운다
+        let c = Config::from_text("input = a\ninput =\ninput = b\n", true);
+        assert_eq!(c.input, vec![InputSource::Raw(b"b".to_vec())]);
+        // 못 푸는 이스케이프·빈 path는 경고하고 그 줄만 건너뛴다
+        let c = Config::from_text("input = raw:\\q\ninput = path:\ninput = ok\n", true);
+        assert_eq!(c.input, vec![InputSource::Raw(b"ok".to_vec())]);
+        assert_eq!(c.warnings.len(), 2);
+    }
+
+    #[test]
+    fn input_renders_back_to_the_same_settings() {
+        let c = Config::from_text("input = raw:ls\\n\\x1b\\\\한\ninput = path:/tmp/a b.txt\n", true);
+        let again = Config::from_text(&c.render(), true);
+        assert!(again.warnings.is_empty(), "{:?}", again.warnings);
+        assert_eq!(again.input, c.input);
+    }
+
+    fn input_dir(name: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("bt-input-{}-{name}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    #[test]
+    fn input_relative_path_is_relative_to_the_config_file() {
+        let src = parse_input("path:data.txt", Path::new("/etc/bt")).unwrap();
+        assert_eq!(src, InputSource::Path(PathBuf::from("/etc/bt/data.txt")));
+    }
+
+    #[test]
+    fn resolve_input_joins_raw_and_files_in_order() {
+        let d = input_dir("join");
+        std::fs::write(d.join("a.txt"), "FILE").unwrap();
+        let out = resolve_input(&[
+            InputSource::Raw(b"one-".to_vec()),
+            InputSource::Path(d.join("a.txt")),
+            InputSource::Raw(b"-end".to_vec()),
+        ])
+        .unwrap();
+        assert_eq!(out, b"one-FILE-end");
+        assert_eq!(resolve_input(&[]).unwrap(), b"");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn resolve_input_refuses_missing_oversized_and_non_regular_files() {
+        let d = input_dir("refuse");
+        // 없는 파일 하나가 있으면 아무것도 보내지 않는다
+        let r = resolve_input(&[InputSource::Raw(b"x".to_vec()), InputSource::Path(d.join("none"))]);
+        assert!(r.is_err());
+        // 폴더는 읽지 않는다
+        assert!(resolve_input(&[InputSource::Path(d.clone())]).is_err());
+        // 장치 파일(끝이 없는 것)도 읽지 않는다
+        #[cfg(unix)]
+        assert!(resolve_input(&[InputSource::Path(PathBuf::from("/dev/zero"))]).is_err());
+        // 정확히 상한이면 되고, 한 바이트 넘으면 안 된다
+        let exact = d.join("exact.bin");
+        std::fs::write(&exact, vec![b'a'; INPUT_LIMIT_BYTES]).unwrap();
+        assert_eq!(
+            resolve_input(&[InputSource::Path(exact.clone())]).unwrap().len(),
+            INPUT_LIMIT_BYTES
+        );
+        let over = d.join("over.bin");
+        std::fs::write(&over, vec![b'a'; INPUT_LIMIT_BYTES + 1]).unwrap();
+        assert!(resolve_input(&[InputSource::Path(over)]).is_err());
+        // 전체 합이 넘어도 안 된다
+        assert!(resolve_input(&[InputSource::Path(exact), InputSource::Raw(b"x".to_vec())]).is_err());
+        assert!(resolve_input(&[InputSource::Raw(vec![b'a'; INPUT_LIMIT_BYTES + 1])]).is_err());
+        let _ = std::fs::remove_dir_all(&d);
     }
 }
