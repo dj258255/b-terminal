@@ -1357,11 +1357,12 @@ fn kitty_color_query_of_a_key_without_a_color_here_gets_only_the_prefix() {
 }
 
 #[test]
-fn kitty_color_reply_follows_osc_color_report_format_none_and_reaches_readonly_panes() {
+fn kitty_color_reply_ignores_osc_color_report_format_and_reaches_readonly_panes() {
     let q = format!("\\033]21;foreground=?{ST}");
-    let none = |o: &mut SpawnOptions| o.osc_color_report_format = bt_core::config::OscColorReportFormat::None;
-    assert_eq!(checksum_reply("", &q, false, none), "");
-    // 읽기 전용 칸에서도 터미널의 답은 막지 않는다(ADR-018 결정 4)
     let want = format!("\x1b]21;foreground={}\x1b\\", rgb8(Theme::default().foreground));
+    // Ghostty Config.zig: `none`은 OSC 4/10/11 질의에만 답하지 않는다. OSC 21은 그대로 답한다
+    let none = |o: &mut SpawnOptions| o.osc_color_report_format = bt_core::config::OscColorReportFormat::None;
+    assert_eq!(checksum_reply("", &q, false, none), hex_of(&want));
+    // 읽기 전용 칸에서도 터미널의 답은 막지 않는다(ADR-018 결정 4)
     assert_eq!(checksum_reply("", &q, true, |_| {}), hex_of(&want));
 }

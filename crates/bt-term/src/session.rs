@@ -658,7 +658,6 @@ impl Session {
         };
         let xt_report = options.vt_xt_checksum_report;
         let thread_theme = current_theme.clone();
-        let osc_color_format = options.osc_color_report_format;
         let xt_default = crate::xt_checksum::Flags::from_config(&options.vt_xt_checksum_extension);
         std::thread::Builder::new().name("bt-pty-read".into()).spawn(move || {
             let mut buf = vec![0u8; 64 * 1024];
@@ -845,13 +844,12 @@ impl Session {
                                         write_reply(&thread_writer, crate::csi_query::mode_2048_report(on).as_bytes());
                                     }
                                     // kitty 색 프로토콜(OSC 21): 설정·되돌리기는 OSC 4·10·11·12와 같은 자리(엔진의 바꾼 색)에 넣고,
-                                    // 질의의 답은 터미널의 답이라 읽기 전용 칸에서도 쓴다. osc-color-report-format이 none이면 답만 하지 않는다(#266)
+                                    // 질의의 답은 터미널의 답이라 읽기 전용 칸에서도 쓴다. osc-color-report-format은 보지 않는다
+                                    // (Ghostty Config.zig: `none`은 OSC 4/10/11 질의에만 해당, #266)
                                     Signal::KittyColor { requests, bel } => {
                                         let theme = thread_theme.lock().clone();
                                         let reply = crate::kitty_color::apply(&mut g.term, &theme, &requests, bel);
-                                        if let Some(reply) =
-                                            reply.filter(|_| osc_color_format != OscColorReportFormat::None)
-                                        {
+                                        if let Some(reply) = reply {
                                             let mut w = thread_writer.lock();
                                             let _ = w.write_all(&reply);
                                             let _ = w.flush();

@@ -130,52 +130,77 @@ pub fn parse(data: &str) -> Option<Vec<Request>> {
 /// X11 색 이름 표(`r g b 이름`). `+list-colors`와 같은 파일이다
 const X11_COLORS: &str = include_str!("../../bt-app/src/x11_colors.txt");
 
-/// 16진수 1~4자리를 0~255로 줄인다(자릿수만큼의 최댓값을 255로)
+/// 16진수 1~4자리를 0~255로 줄인다. 버림이다(Ghostty color.zig `fromHex`: 값*255/최댓값)
 fn scale_hex(digits: &str) -> Option<u8> {
     if digits.is_empty() || digits.len() > 4 || !digits.bytes().all(|b| b.is_ascii_hexdigit()) {
         return None;
     }
     let v = u32::from_str_radix(digits, 16).ok()?;
     let max = (1u32 << (4 * digits.len())) - 1;
-    Some(((v * 255 + max / 2) / max) as u8)
+    Some((v * 255 / max) as u8)
 }
 
-/// 색 글: `#rgb`·`#rrggbb`(칸당 1~4자리), `rgb:r/g/b`(칸당 1~4자리), `rgbi:r/g/b`(0~1 소수), X11 색 이름
+/// 0~1 소수를 0~255로. 부호(`+`·`-`)와 숫자, 소수점 하나만 받고 숫자가 하나는 있어야 한다. 버림이다
+/// (Ghostty fraction.zig `parse`, color.zig `fromIntensity`)
+fn scale_fraction(s: &str) -> Option<u8> {
+    let body = s.strip_prefix(['+', '-']).unwrap_or(s);
+    let digits = body.bytes().filter(u8::is_ascii_digit).count();
+    let dots = body.bytes().filter(|&b| b == b'.').count();
+    if digits == 0 || dots > 1 || digits + dots != body.len() {
+        return None;
+    }
+    let f: f64 = s.parse().ok()?;
+    (0.0..=1.0).contains(&f).then_some((f * 255.0) as u8)
+}
+
+/// 색 글(Ghostty color.zig `RGB.parse`): 앞뒤 빈칸·탭을 자르고, `#`과 16진수 3·6·9·12자리, X11 색 이름(대소문자와
+/// 빈칸 무시), `#` 없는 16진수 3·6자리, `rgb:r/g/b`(칸당 1~4자리), `rgbi:r/g/b`(0~1 소수) 순서로 본다
 pub fn parse_color(s: &str) -> Option<(u8, u8, u8)> {
-    if let Some(hex) = s.strip_prefix('#') {
+    let s = s.trim_matches([' ', '\t']);
+    if s.is_empty() {
+        return None;
+    }
+    let thirds = |hex: &str| -> Option<(u8, u8, u8)> {
         let n = hex.len();
         if n == 0 || n % 3 != 0 || n > 12 || !hex.is_ascii() {
             return None;
         }
         let w = n / 3;
-        return Some((
+        Some((
             scale_hex(&hex[..w])?,
             scale_hex(&hex[w..2 * w])?,
             scale_hex(&hex[2 * w..])?,
-        ));
+        ))
+    };
+    if let Some(hex) = s.strip_prefix('#') {
+        return thirds(hex);
     }
-    if let Some(rest) = s.strip_prefix("rgb:") {
-        let mut it = rest.split('/');
-        let c = (scale_hex(it.next()?)?, scale_hex(it.next()?)?, scale_hex(it.next()?)?);
-        return it.next().is_none().then_some(c);
-    }
-    if let Some(rest) = s.strip_prefix("rgbi:") {
-        let mut it = rest.split('/');
-        let mut one = || -> Option<u8> {
-            let f: f32 = it.next()?.parse().ok()?;
-            (f.is_finite() && (0.0..=1.0).contains(&f)).then(|| (f * 255.0).round() as u8)
-        };
-        let c = (one()?, one()?, one()?);
-        return it.next().is_none().then_some(c);
-    }
-    X11_COLORS.lines().find_map(|l| {
+    // rgb.txt의 빈칸 든 이름(106개)은 모두 빈칸을 뺀 이름과 같은 값이라, 빈칸을 빼고 찾는다
+    let squeezed: String = s.chars().filter(|&c| c != ' ').collect();
+    let named = X11_COLORS.lines().find_map(|l| {
         let mut f = l.split_whitespace();
         let (r, g, b, n) = (f.next()?, f.next()?, f.next()?, f.next()?);
-        if !n.eq_ignore_ascii_case(s) {
+        if !n.eq_ignore_ascii_case(&squeezed) {
             return None;
         }
         Some((r.parse().ok()?, g.parse().ok()?, b.parse().ok()?))
-    })
+    });
+    if named.is_some() {
+        return named;
+    }
+    if matches!(s.len(), 3 | 6) {
+        return thirds(s);
+    }
+    let (rest, scale): (&str, fn(&str) -> Option<u8>) = if let Some(r) = s.strip_prefix("rgbi:") {
+        (r, scale_fraction)
+    } else if let Some(r) = s.strip_prefix("rgb:") {
+        (r, scale_hex)
+    } else {
+        return None;
+    };
+    let mut it = rest.splitn(3, '/');
+    let (r, g, b) = (it.next()?, it.next()?, it.next()?);
+    Some((scale(r)?, scale(g)?, scale(b)?))
 }
 
 /// 지금 보이는 색: 프로그램이 바꾼 값이 있으면 그것, 없으면 테마. 칸이 따로 들고 있지 않은 색은 없다
@@ -307,6 +332,78 @@ mod tests {
         assert_eq!(parse(&over), None);
     }
 
+    /// Ghostty src/terminal/color.zig `test "RGB.parse"`(984~1033줄)와 `rejects digit separators`의 값을 그대로 옮겼다
+    #[test]
+    fn color_parse_matches_ghostty_tests() {
+        let ok: &[(&str, (u8, u8, u8))] = &[
+            ("rgbi:1.0/0/0", (255, 0, 0)),
+            ("rgb:7f/a0a0/0", (127, 160, 0)),
+            ("rgb:f/ff/fff", (255, 255, 255)),
+            ("#ffffff", (255, 255, 255)),
+            ("#fff", (255, 255, 255)),
+            ("#fffffffff", (255, 255, 255)),
+            ("#ffffffffffff", (255, 255, 255)),
+            ("#ff0010", (255, 0, 16)),
+            ("0A0B0C", (10, 11, 12)),
+            ("FFFFFF", (255, 255, 255)),
+            ("FFF", (255, 255, 255)),
+            ("#345", (51, 68, 85)),
+            (" #AABBCC   ", (170, 187, 204)),
+            ("black", (0, 0, 0)),
+            ("red", (255, 0, 0)),
+            ("green", (0, 255, 0)),
+            ("blue", (0, 0, 255)),
+            ("white", (255, 255, 255)),
+            ("LawnGreen", (124, 252, 0)),
+            ("medium spring green", (0, 250, 154)),
+            (" Forest Green ", (34, 139, 34)),
+            ("\tForestGreen\t", (34, 139, 34)),
+        ];
+        for (input, want) in ok {
+            assert_eq!(parse_color(input), Some(*want), "{input:?}");
+        }
+        for bad in [
+            "",
+            "  ",
+            "rgb;",
+            "rgb:",
+            ":a/a/a",
+            "a/a/a",
+            "rgb:a/a/a/",
+            "rgb:00000///",
+            "rgb:000/",
+            "rgbi:a/a/a",
+            "rgb:0.5/0.0/1.0",
+            "rgb:not/hex/zz",
+            "#",
+            "#ff",
+            "#ffff",
+            "#fffff",
+            "#gggggg",
+            "#12345",
+            "12345",
+            "nosuchcolor",
+            "rgb:f_f/0/0",
+            "#f_f000000",
+        ] {
+            assert_eq!(parse_color(bad), None, "{bad:?}");
+        }
+        // 16진수 칸은 버림으로 줄인다(Ghostty `fromHex`: 값*255/최댓값), 소수는 버림(`fromIntensity`)
+        assert_eq!(parse_color("rgb:8000/0/0"), Some((127, 0, 0)));
+        assert_eq!(parse_color("rgbi:0.5/+0.5/-0"), Some((127, 127, 0)));
+        assert_eq!(parse_color("rgbi:.5/1./0"), Some((127, 255, 0)));
+        for bad in [
+            "rgbi:inf/0/0",
+            "rgbi:1e0/0/0",
+            "rgbi:-0.5/0/0",
+            "rgbi:1.5/0/0",
+            "rgbi:./0/0",
+            "rgbi:NaN/0/0",
+        ] {
+            assert_eq!(parse_color(bad), None, "{bad:?}");
+        }
+    }
+
     #[test]
     fn color_formats() {
         assert_eq!(parse_color("#aabbcc"), Some((0xaa, 0xbb, 0xcc)));
@@ -315,7 +412,7 @@ mod tests {
         assert_eq!(parse_color("rgb:f/0/8"), Some((0xff, 0x00, 0x88)));
         assert_eq!(parse_color("rgb:ffff/8080/0000"), Some((0xff, 0x80, 0x00)));
         assert_eq!(parse_color("rgbi:1.0/1.0/1.0"), Some((255, 255, 255)));
-        assert_eq!(parse_color("rgbi:0/0.5/1"), Some((0, 128, 255)));
+        assert_eq!(parse_color("rgbi:0/0.5/1"), Some((0, 127, 255)));
         assert_eq!(parse_color("aliceblue"), Some((0xf0, 0xf8, 0xff)));
         assert_eq!(parse_color("AliceBlue"), Some((0xf0, 0xf8, 0xff)));
         for bad in [
