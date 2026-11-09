@@ -1365,8 +1365,10 @@ impl Fonts {
             return primary.advance(ch, self.px);
         }
         let pua = is_private_use(ch);
+        // 고정폭 제목 글꼴이면 터미널처럼 두 칸, 비례폭이면 대체 글꼴의 폭(두 칸이면 글자 사이가 벌어진다)
+        let monospace = (primary.advance('i', self.px) - primary.advance('M', self.px)).abs() < 0.5;
         match self.fallbacks.iter().find(|f| (!pua || f.pua) && f.font.has(ch)) {
-            Some(_) if cells == 2 => slot,
+            Some(_) if cells == 2 && monospace => slot,
             Some(fb) => fb.font.advance(ch, self.px),
             None => slot,
         }
@@ -1432,10 +1434,13 @@ mod title_font_tests {
         let Some(mut t) = s.title else { return };
         let (i, w) = (t.advance('i'), t.advance('W'));
         assert!(i > 0.0 && i < w, "i={i} W={w}");
-        // 글꼴에 없는 한글은 대체 글꼴에서 오고 두 칸을 나아간다
+        // 글꼴에 없는 한글은 대체 글꼴에서 온다. 비례폭 제목이면 두 칸이 아니라 그 글꼴의 폭을 나아가
+        // 글자 사이가 벌어지지 않고(실제 창에서 "안 녕"처럼 벌어졌다), 글리프보다 좁지는 않아 겹치지 않는다
         let cell = t.metrics().width as f32;
-        if t.glyph('한', FontStyle::Regular).is_some() {
-            assert!((t.advance('한') - 2.0 * cell).abs() < 0.5, "{}", t.advance('한'));
+        if let Some(g) = t.glyph('한', FontStyle::Regular) {
+            let a = t.advance('한');
+            assert!(a < 2.0 * cell - 0.5, "두 칸({})보다 좁아야 한다: {a}", 2.0 * cell);
+            assert!(a + 0.5 >= g.width as f32, "글리프 폭({})보다 넓어야 한다: {a}", g.width);
         }
     }
 }
