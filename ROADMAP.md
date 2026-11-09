@@ -299,6 +299,25 @@ Ghostty 명령줄 동작과 색 구성표 보고. 추적 이슈 [#229](https://g
 - 에이전트가 WebFetch 요약을 거쳐 옮긴 데이터(X11 색 676개)는 원본을 직접 받아 대조했습니다. 이번에는 다른 값이 없었지만, 요약기를 거친 값은 대조하기 전에는 믿지 않습니다.
 - 합치면서 실행 순서가 바뀌는 것(로거 초기화 앞뒤)은 테스트로는 잡히지 않았고, 실제로 명령을 돌려 출력에 로그 줄이 섞인 것을 보고 찾았습니다.
 
+## 0.17.0 (2026-11-10)
+
+Ghostty 받기만 하던 키와 시퀀스 채우기. 추적 이슈 [#237](https://github.com/dj258255/b-terminal/issues/237). 0.16과 같은 방식으로 진행했습니다. 에이전트 넷이 각자 worktree에서 구현·커밋하고, 주 세션이 옮기고 검토·병합했습니다. 병합 시각(KST)은 추적 이슈를 연 02:52부터 마지막 병합 06:33까지입니다. 03:10쯤부터 GitHub Actions 장애(부분 장애 뒤 큰 장애)로 CI가 돌지 않아, 규칙대로 병합을 멈췄다가 장애가 풀린 뒤 이어 갔습니다.
+
+| 이슈 | 내용 | 예상 | 실제 | PR | 주 세션이 한 것 |
+|---|---|---|---|---|---|
+| [#238](https://github.com/dj258255/b-terminal/issues/238) | `background-blur` | 2~4시간 | 에이전트 약 6분(병합 06:23) | [#243](https://github.com/dj258255/b-terminal/pull/243) | Ghostty `BackgroundBlur` 원본 대조, vendor diff 읽기, 실제 창(흐림 0·40·false 비교), 리눅스 clippy 실패 고침 |
+| [#239](https://github.com/dj258255/b-terminal/issues/239) | OSC 22 마우스 포인터 모양 | 2~4시간 | 에이전트 약 10분(병합 06:29) | [#246](https://github.com/dj258255/b-terminal/pull/246) | 이름 표 55개를 Ghostty 원본과 대조, 실제 창(시퀀스를 보내도 멀쩡함) |
+| [#240](https://github.com/dj258255/b-terminal/issues/240) | `+show-config`·`+list-themes` 인자 | 2~4시간 | 에이전트 약 5.5분(병합 03:02) | [#242](https://github.com/dj258255/b-terminal/pull/242) | 기본 출력이 바뀌는 근거(`changes-only` 기본 true)를 원본으로 확인, 격리 HOME으로 실제 실행 |
+| [#241](https://github.com/dj258255/b-terminal/issues/241) | `window-title-font-family` | 2~4시간 | 에이전트 약 10분(병합 06:33) | [#247](https://github.com/dj258255/b-terminal/pull/247) | 실제 창에서 한글이 벌어지는 것을 찾아 테스트 먼저 쓰고 고침, 없는 글꼴 경고 |
+| [#244](https://github.com/dj258255/b-terminal/issues/244) | 모드 2031 테스트가 흔들림(버그) | — | 주 세션 약 15분(병합 06:26) | [#245](https://github.com/dj258255/b-terminal/pull/245) | 부하 속 30번 반복으로 재현(4번 실패), 고친 뒤 0번 |
+
+이번에 배운 것:
+
+- 받기만 하던 이유("unsafe가 필요하다", 0.13)는 다시 볼 만했습니다. vendor한 winit에 이미 safe 함수가 있었습니다(#238).
+- 에이전트의 테스트가 모두 통과해도 실제 창에서만 보이는 것이 있었습니다. 비례폭 제목에서 한글 사이가 벌어진 것(#241)은 화면을 보고서야 찾았습니다.
+- 에이전트 실행 환경에서 curl과 HOME 지정이 막혀, 원본 대조와 격리 실행은 주 세션이 했습니다. 공통 지시에 "데이터는 curl로 원본"을 넣었지만 막히면 요약으로 돌아가므로, 주 세션이 대조하는 단계는 계속 필요합니다.
+- CI가 장애로 돌지 않을 때 기다리는 동안 로컬 일(흔들리는 테스트 재현·수정, 실제 창 확인)을 했습니다.
+
 ## 다음
 
 - 범수 님이 직접 해야 할 것: 키보드·마우스 확인(한글 2벌식 "안녕 하세요⏎", Claude Code의 Shift+Enter, Cmd-D·Cmd-F·Cmd-클릭·Cmd-N·Cmd-Shift-P, 메뉴, 창 닫기 단추, vim·htop, kitty icat·yazi, 투명 창), Developer ID 계정으로 `scripts/bundle-macos.sh --sign … --notarize … --dmg`
@@ -315,4 +334,6 @@ Ghostty 명령줄 동작과 색 구성표 보고. 추적 이슈 [#229](https://g
 - 범수 님이 확인할 것(0.15): `seq 1 500` 뒤 오른쪽 끝 막대를 끌고 빈 곳 누르기, `theme = light:GitHub Light Default,dark:GitHub Dark`로 시스템 설정의 모양을 바꿔 색이 바로 바뀌는지, `clipboard-write = ask`·`clipboard-read = ask`에서 막대가 뜰 때 Enter가 허용이 아닌지·`y`는 되는지, 탭 제목을 붙이고 ⌘Q 뒤 다시 켜서 되살아나는지
 - 범수 님이 정할 것(0.15): `clipboard-read` 기본을 Ghostty처럼 `ask`로 바꿀지(지금 `deny`)
 - 범수 님이 확인할 것(0.16): `theme = light:…,dark:…`에서 nvim을 켜고 시스템 모양을 바꿔 nvim 색이 따라오는지(모드 2031), `EDITOR="code -w" b-terminal +edit-config`, `b-terminal +list-keybinds`가 실제 설정의 키 묶음과 맞는지, `b-terminal +show-face --string="가😀"`가 창에 그려지는 글꼴과 같은지
+- 범수 님이 확인할 것(0.17): `background-opacity = 0.7`·`background-blur = 20`으로 퀵 터미널 뒤도 흐린지, nvim·tmux 같은 프로그램이 OSC 22로 포인터를 바꾸는지(`printf '\033]22;crosshair\033\\'` 뒤 마우스를 칸 위로), `window-title-font-family`로 여러 글꼴을 써 보기
+- 범수 님이 정할 것(0.17): `window-title-font-family`를 비울 때 Ghostty처럼 시스템 글꼴을 쓸지(지금 터미널 글꼴)
 - 큰 일로 남긴 것: GPU(또는 IOSurface) 렌더러
