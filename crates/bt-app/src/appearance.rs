@@ -15,9 +15,23 @@ pub fn should_repick(split: bool, forced: bool, applied_dark: bool, now_dark: bo
     split && !forced && applied_dark != now_dark
 }
 
+/// 시스템 모양 사건(`now_dark`)을 모드 2031이 켜진 칸에 알려야 하는가(#232). Ghostty처럼 테마가 하나뿐이어도 알리고,
+/// 창 테마가 고정이면 그 창은 시스템을 따르지 않으니 건너뛴다. `reported_dark`는 마지막으로 알린 모양
+pub fn should_report(forced: bool, reported_dark: bool, now_dark: bool) -> bool {
+    !forced && reported_dark != now_dark
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn report_ignores_theme_split_but_not_forced_or_same_look() {
+        assert!(should_report(false, true, false));
+        assert!(should_report(false, false, true));
+        assert!(!should_report(false, true, true), "같은 모양");
+        assert!(!should_report(true, true, false), "창 테마 고정");
+    }
 
     #[test]
     fn repicks_only_when_split_and_the_look_changed() {

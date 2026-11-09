@@ -69,7 +69,7 @@ config-file = ?~/.config/b-terminal/local   # ?가 붙으면 없어도 된다
 | `font-thicken-strength` | 0~255 | `255` | `font-thicken` 강도. Ghostty처럼 `0`도 두껍게 하는 가장 약한 값이고(끄는 값이 아님), `font-thicken = false`면 효과가 없습니다. 부풀리는 양은 `(0.015 + 0.05 × 강도/255) × 화면 배율`px입니다. 배율 2에서 JetBrains Mono 'a'의 먹이 `0`은 약 3%, `255`는 약 12.5% 늘었습니다(한 글자로 잰 값, macOS 두껍게 그리기와 견준 값 아님). 범위 밖이면 경고하고 앞 값을 둡니다 |
 | `font-shaping-break` | `cursor`, `no-cursor`, `true`, `false` | `cursor` | 합자를 끊는 자리. `cursor`는 커서 칸에서 합자를 풀어 보입니다. `no-cursor`면 커서 밑에서도 합자를 유지합니다 |
 | `adjust-icon-height` | `10%` 또는 포인트 | 없음 | Nerd Font 아이콘(사설 영역 글자, 파워라인 도형 U+E0B0~U+E0D7 제외)이 넘지 않을 높이를 셀 높이 기준으로 바꿉니다. 양수는 키우고 음수는 줄이며 원래 자리의 가운데에 둡니다. 키울 때는 칸 폭에서 멈추고, 이미 칸보다 넓은 아이콘은 더 키우지 않습니다(Ghostty의 아이콘 맞춤 표를 그대로 옮기지는 않았습니다) |
-| `theme` | 테마 이름, 절대 경로, `light:…,dark:…` | 없음 | 찾는 곳: `~/.config/b-terminal/themes`, 그다음 앱에 넣어 둔 905개([assets/themes-README.md](../assets/themes-README.md), `b-terminal --list-themes`). 이름은 띄어쓰기·대소문자를 무시합니다(`Tokyo Night` = `TokyoNight`)`light:…,dark:…`는 시스템이 밝음·어두움을 바꾸면 열려 있는 모든 창·칸에서 바로 다시 골라집니다(설정 파일은 다시 읽지 않고, 테마 파일만 다시 읽음). 테마가 하나뿐이면 아무 일도 없습니다 |
+| `theme` | 테마 이름, 절대 경로, `light:…,dark:…` | 없음 | 찾는 곳: `~/.config/b-terminal/themes`, 그다음 앱에 넣어 둔 905개([assets/themes-README.md](../assets/themes-README.md), `b-terminal --list-themes`). 이름은 띄어쓰기·대소문자를 무시합니다(`Tokyo Night` = `TokyoNight`)`light:…,dark:…`는 시스템이 밝음·어두움을 바꾸면 열려 있는 모든 창·칸에서 바로 다시 골라집니다(설정 파일은 다시 읽지 않고, 테마 파일만 다시 읽음). 테마가 하나뿐이면 색은 그대로입니다(모드 2031을 켠 칸에는 시스템 모양이 바뀌었다고 알립니다, 아래 "색 구성표 보고") |
 | `background` / `foreground` | `#rrggbb` | Ghostty 기본 | 테마 위에 덮습니다 |
 | `palette` | `N=#rrggbb`(0~255) | Ghostty 기본 | 16~255번은 xterm 표이고, `palette-generate`를 켜면 만든 색입니다. 직접 정한 번호가 늘 이깁니다 |
 | `cursor-color` / `cursor-text` | `#rrggbb`, `cell-foreground`, `cell-background` | 글자색 / 바탕색 | `cell-*`는 커서 칸의 글자색·바탕색을 씁니다(예: `cursor-color = cell-foreground`, `cursor-text = cell-background`면 칸을 뒤집은 모양) |
@@ -344,6 +344,15 @@ Ghostty 설정에 흔한 아래 동작은 `keybind`에 써도 경고가 나지 �
 | `crash:main` `io` `render` | 일부러 앱을 죽여 충돌 처리를 시험하는 디버그 동작입니다. 데이터를 잃을 수 있어 하지 않습니다 |
 
 설정 다시 읽기는 글꼴·색(이미 열린 탭 포함)·키 묶음(전역 단축키 포함)·여백·Option 키를 바꿉니다. 바깥에서 부르려면 `btctl reload-config`. 퀵 터미널은 `btctl quick`.
+
+## 색 구성표 보고
+
+설정 키는 없고, Ghostty처럼 프로그램(nvim 등)이 밝음·어두움을 알 수 있게 합니다.
+
+- `CSI ? 996 n`으로 지금 구성표를 묻습니다. 답은 `CSI ? 997 ; 1 n`(어두움) 또는 `CSI ? 997 ; 2 n`(밝음)입니다. 읽기 전용 칸에서도 답합니다.
+- DEC 모드 2031(`CSI ? 2031 h`로 켜고 `l`로 끔)을 켜 두면 구성표가 바뀔 때 같은 `CSI ? 997 ; 1|2 n`을 알립니다. 켠 직후에는 알리지 않고(물어서 알아야 함), 같은 값이 또 오면 다시 보내지 않으며, 초기화(RIS)는 모드를 끕니다.
+- 구성표는 테마 바탕색이 아니라 시스템 모양입니다(`theme = light:…,dark:…`가 없어도, 테마가 하나뿐이어도 시스템이 바뀌면 알립니다). `window-theme = light|dark`로 고정한 창은 그 값이 구성표이고 시스템 모양이 바뀌어도 알리지 않습니다. 새 칸은 지금 구성표로 시작합니다.
+- 알림은 열린 모든 칸 가운데 모드를 켠 칸에만 갑니다.
 
 ## 셸 통합
 

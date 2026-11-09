@@ -766,6 +766,8 @@ pub struct App {
     theme_override: Option<bt_core::config::WindowTheme>,
     /// 지금 깔린 색 테마를 고른 시스템 모양(`theme = light:…,dark:…`, #221). 모양 사건이 창마다 와도 한 번만 처리하려고 든다
     applied_dark: bool,
+    /// 칸에 마지막으로 알린 시스템 모양(`CSI ? 996 n`의 답, 모드 2031 알림, #232)
+    reported_dark: bool,
 }
 
 impl App {
@@ -822,6 +824,7 @@ impl App {
             quit_deadline: None,
             theme_override: None,
             applied_dark: crate::system_is_dark(),
+            reported_dark: crate::system_is_dark(),
         }
     }
 
@@ -1281,6 +1284,7 @@ impl App {
             vt_kam_allowed: self.config.vt_kam_allowed,
             vt_window_resize_allowed: self.config.vt_window_resize_allowed,
             image_storage_limit: Some(self.config.image_storage_limit),
+            color_scheme_light: !self.scheme_dark(),
             grapheme_width_method: self.config.grapheme_width_method,
             ..options
         };
@@ -3160,11 +3164,27 @@ impl App {
 
     /// 시스템 밝음·어두움이 바뀌면 `theme = light:…,dark:…`를 다시 골라 열린 모든 칸에 쓰고 창 모양을 맞춘다(#221).
     /// 설정 파일은 다시 읽지 않는다. 판단은 `appearance::should_repick`
+    /// 칸의 색 구성표(`CSI ? 996 n`의 답): 창 테마가 밝음·어두움으로 고정이면 그쪽, 아니면 시스템 모양(#232)
+    fn scheme_dark(&self) -> bool {
+        match crate::toggles::window_theme_mode(self.config.window_theme, self.theme_override) {
+            bt_core::config::WindowTheme::Light => false,
+            bt_core::config::WindowTheme::Dark => true,
+            _ => self.reported_dark,
+        }
+    }
+
     fn system_look_changed(&mut self, dark: bool) {
         let forced = crate::appearance::window_theme_forced(crate::toggles::window_theme_mode(
             self.config.window_theme,
             self.theme_override,
         ));
+        // 모드 2031이 켜진 칸에 알린다. 테마가 하나뿐이어도 알린다(Ghostty와 같다). 같은 값은 세션이 걸러 낸다
+        if crate::appearance::should_report(forced, self.reported_dark, dark) {
+            self.reported_dark = dark;
+            for t in &self.panes {
+                t.session.set_color_scheme(dark);
+            }
+        }
         if !crate::appearance::should_repick(self.config.theme_split, forced, self.applied_dark, dark) {
             return;
         }
