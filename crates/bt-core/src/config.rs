@@ -3331,6 +3331,12 @@ impl Config {
             push("font-synthetic-style", self.font_synthetic_style.render());
         }
         push("font-size", format!("{}", self.font_size));
+        // Ghostty는 `theme`도 한 키로 찍는다(테마가 정한 색은 색 키로 따로 나온다). 마지막 비지 않은 값이 이긴다
+        if let Some(theme) = self.entries.iter().rfind(|e| e.key == "theme") {
+            if !theme.value.trim().is_empty() {
+                push("theme", theme.value.trim().to_string());
+            }
+        }
         push("background", hex(t.background));
         push("foreground", hex(t.foreground));
         push("cursor-color", hex(t.cursor));
@@ -6313,5 +6319,25 @@ mod tests {
         assert!(resolve_input(&[InputSource::Path(exact), InputSource::Raw(b"x".to_vec())]).is_err());
         assert!(resolve_input(&[InputSource::Raw(vec![b'a'; INPUT_LIMIT_BYTES + 1])]).is_err());
         let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn render_prints_the_theme_value_as_written() {
+        // 못 찾는 테마라도 쓴 값 그대로(light:/dark: 꼴 포함). 값이 비면(초기화) 줄이 없다
+        let r = Config::from_text("theme = light:nonexistent-a,dark:nonexistent-b\n", true).render();
+        assert!(
+            r.lines().any(|l| l == "theme = light:nonexistent-a,dark:nonexistent-b"),
+            "{r}"
+        );
+        let r = Config::from_text("theme = nonexistent-a\ntheme = nonexistent-b\n", true).render();
+        assert!(
+            r.lines().any(|l| l == "theme = nonexistent-b") && !r.contains("nonexistent-a"),
+            "{r}"
+        );
+        let no_theme = |r: String| !r.lines().any(|l| l.starts_with("theme = "));
+        assert!(no_theme(
+            Config::from_text("theme = nonexistent-a\ntheme =\n", true).render()
+        ));
+        assert!(no_theme(Config::default().render()));
     }
 }
