@@ -273,6 +273,9 @@ keybind = ctrl+a>ctrl+a=text:\x01     # 앞 키 자체를 보내고 싶을 때
 | `reload_config` | 설정 다시 읽기 | `super+shift+comma` |
 | `quit` | 앱 끝내기(프로그램이 도는 칸이 있으면 묻습니다) | `super+q` |
 | `prompt_surface_title` / `set_surface_title:글` | 지금 칸의 제목을 입력 막대로 묻기 / 정하기. 사람이 붙인 제목은 프로그램이 정한 제목보다 먼저 보이고, 빈 글이면 지워져 프로그램 제목으로 돌아갑니다 | (없음, 메뉴 "셸 › 제목 바꾸기…"와 팔레트) |
+| `prompt_tab_title` / `set_tab_title:글` | 지금 탭의 제목을 입력 막대로 묻기 / 정하기. 탭 제목은 그 탭 칸들의 제목보다 먼저 보이고, 빈 글이면 지워져 칸 제목으로 돌아갑니다. 닫았다 `undo`하면 따라 돌아옵니다 | (없음, 메뉴 "셸 › 탭 제목 바꾸기…"와 팔레트) |
+| `prompt_window_title` / `set_window_title:글` | 지금 창의 제목을 입력 막대로 묻기 / 정하기. 설정 `title`이 있으면 그것이 먼저이고, 아니면 이 제목, 없으면 지금 탭 제목입니다. 빈 글이면 지웁니다. 탭 줄에는 영향이 없습니다 | (없음, 메뉴 "셸 › 창 제목 바꾸기…"와 팔레트) |
+| `copy_title_to_clipboard` | 지금 칸의 터미널 제목(사람이 붙인 것, 없으면 프로그램이 정한 것)을 클립보드로 복사합니다. 제목이 없거나 비면 하지 않습니다 | (없음, 팔레트) |
 | `write_scrollback_file:할일` / `write_screen_file:할일` / `write_selection_file:할일` | 스크롤백 전체 / 화면 / 고른 글을 파일로 쓰고, 할일이 `copy`면 경로를 클립보드에, `paste`면 칸에 붙여넣고, `open`이면 기본 앱으로 엽니다. 파일은 이 사용자 전용 임시 폴더에 두고 앱이 끝날 때 지웁니다. 고른 글이 없으면 아무것도 하지 않습니다 | (없음, 팔레트에 열기·복사) |
 | `adjust_selection:방향` | 고른 것의 끝점을 옮깁니다. 방향은 `left` `right`(줄 끝에서 앞·뒤 줄로) `up` `down` `page_up` `page_down` `home` `end` `beginning_of_line` `end_of_line`. 고른 것이 없으면 아무것도 하지 않습니다 | (없음) |
 | `copy_url_to_clipboard` | 마우스 아래 링크(화면의 URL·OSC 8) 주소를 클립보드에 | (없음) |

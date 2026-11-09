@@ -158,8 +158,13 @@ impl Pane {
 
     /// 탭 줄·창 제목에 쓸 이름: 사람이 붙인 제목 → 셸이 보낸 제목 → 전경 프로세스 이름. 보지 않은 벨이 있으면 앞에 🔔
     fn display_title(&self) -> String {
+        self.display_title_in(None)
+    }
+
+    /// 탭 제목을 덮어썼으면(`set_tab_title`, #207) 그것이 칸 제목보다 먼저다
+    fn display_title_in(&self, tab_override: Option<&str>) -> String {
         title_of(
-            self.user_title.as_deref(),
+            tab_override.or(self.user_title.as_deref()),
             &self.title,
             self.fg_name.as_deref(),
             self.bell,
@@ -200,6 +205,22 @@ fn clean_user_title(text: &str) -> Option<String> {
     let t: String = bt_core::proto::printable(text).trim().chars().take(200).collect();
     let t = t.trim_end().to_string();
     (!t.is_empty()).then_some(t)
+}
+
+/// 창 제목(#207): 설정 `title`(고정) → `set_window_title`로 덮어쓴 것 → 탭 제목
+fn window_title_of(config_title: Option<&str>, window_override: Option<&str>, tab_title: &str) -> String {
+    config_title
+        .filter(|t| !t.is_empty())
+        .or(window_override)
+        .unwrap_or(tab_title)
+        .to_string()
+}
+
+/// `copy_title_to_clipboard`가 복사할 글: 사람이 붙인 칸 제목 → 프로그램이 정한 제목. 둘 다 비면 없다
+fn title_to_copy(user: Option<&str>, program: &str) -> Option<String> {
+    let text = user.filter(|u| !u.is_empty()).unwrap_or(program);
+    let text = bt_core::proto::printable(text);
+    (!text.trim().is_empty()).then_some(text)
 }
 
 /// 칸을 만든 직후 이만큼은 크기 맞추기로 보고 크기 표시를 하지 않는다(`resize-overlay = after-first`, #122)
@@ -374,6 +395,28 @@ struct TabGroup {
     focus: u64,
     /// 고른 칸만 탭 전체에 크게 보인다(toggle_split_zoom)
     zoomed: bool,
+    /// `prompt_tab_title`·`set_tab_title`로 덮어쓴 탭 제목(#207). 칸 제목보다 먼저다
+    title: Option<String>,
+}
+
+/// 제목 입력 막대가 정할 곳(#207)
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum TitleTarget {
+    /// 그 칸(id)
+    Surface(u64),
+    /// 그 칸이 든 탭
+    Tab(u64),
+    Window,
+}
+
+impl TitleTarget {
+    fn label(self) -> &'static str {
+        match self {
+            TitleTarget::Surface(_) => "제목 › ",
+            TitleTarget::Tab(_) => "탭 제목 › ",
+            TitleTarget::Window => "창 제목 › ",
+        }
+    }
 }
 
 /// 닫고 `undo-timeout` 동안 들고 있는 것(#164). 셸(Session)을 떨어뜨리지 않아 되살리면 그대로 이어진다
@@ -387,6 +430,7 @@ enum Closed {
         index: usize,
         focus: u64,
         zoomed: bool,
+        title: Option<String>,
     },
 }
 
@@ -511,7 +555,9 @@ struct Win {
     /// 닫기·끝내기 확인 막대(#108)
     confirm: Option<Confirm>,
     /// 칸 제목 입력 막대(#124): 그 칸과 친 글
-    title_prompt: Option<(u64, String)>,
+    title_prompt: Option<(TitleTarget, String)>,
+    /// `set_window_title`로 덮어쓴 창 제목(#207). 설정 `title`이 있으면 그것이 먼저
+    window_title: Option<String>,
     /// 배경 그림 층(#134): (창 폭, 높이, 기본 바탕색)과 미리 합성한 픽셀
     backdrop: Option<((u32, u32, u32), Vec<u32>)>,
     /// 바뀐 것이 없어도 다음 그리기에서 창에 한 번 올린다(창이 다른 화면으로 옮겨 가면 그 화면의 색 공간으로, #97)
@@ -553,6 +599,7 @@ impl Win {
             keyseq: Default::default(),
             confirm: None,
             title_prompt: None,
+            window_title: None,
             backdrop: None,
             force_present: false,
             frame: Vec::new(),
@@ -1169,6 +1216,7 @@ impl App {
                 layout: Node::Leaf(id),
                 focus: id,
                 zoomed: false,
+                title: None,
             },
         );
         self.w.active = at;
@@ -1625,8 +1673,8 @@ impl App {
         match &event.logical_key {
             Key::Named(NamedKey::Escape) => self.w.title_prompt = None,
             Key::Named(NamedKey::Enter) => {
-                if let Some((pane, text)) = self.w.title_prompt.take() {
-                    self.set_user_title(pane, &text);
+                if let Some((target, text)) = self.w.title_prompt.take() {
+                    self.apply_title(target, &text);
                 }
             }
             Key::Named(NamedKey::Backspace) => {
@@ -1715,6 +1763,23 @@ impl App {
         }
     }
 
+    /// 제목을 정할 곳(칸·탭·창)에 글을 정한다. 빈 글이면 덮어쓴 것을 지운다(#207)
+    fn apply_title(&mut self, target: TitleTarget, text: &str) {
+        match target {
+            TitleTarget::Surface(pane) => self.set_user_title(pane, text),
+            TitleTarget::Tab(pane) => {
+                if let Some(gi) = self.group_of(pane) {
+                    self.w.tabs[gi].title = clean_user_title(text);
+                    self.request_redraw_all();
+                }
+            }
+            TitleTarget::Window => {
+                self.w.window_title = clean_user_title(text);
+                self.request_redraw_all();
+            }
+        }
+    }
+
     /// 칸에 사람이 붙인 제목을 정한다. 빈 글이면 지운다(프로그램이 정한 제목으로 돌아감)
     fn set_user_title(&mut self, pane: u64, text: &str) {
         if let Some(i) = self.pane_index(pane) {
@@ -1783,7 +1848,7 @@ impl App {
                     });
                 }
                 (None, _) => {
-                    self.w.tabs.remove(gi);
+                    let removed = self.w.tabs.remove(gi);
                     if gi < self.w.active || self.w.active >= self.w.tabs.len() {
                         self.w.active = self.w.active.saturating_sub(1);
                     }
@@ -1793,6 +1858,7 @@ impl App {
                         index: gi,
                         focus: was.1,
                         zoomed: was.0,
+                        title: removed.title,
                     });
                 }
             }
@@ -1821,7 +1887,7 @@ impl App {
             }
             return;
         }
-        let (layout, focus, zoomed) = (g.layout.clone(), g.focus, g.zoomed);
+        let (layout, focus, zoomed, title) = (g.layout.clone(), g.focus, g.zoomed, g.title.clone());
         let before = self.focused_id();
         self.w.tabs.remove(gi);
         if gi < self.w.active || self.w.active >= self.w.tabs.len() {
@@ -1846,6 +1912,7 @@ impl App {
             index: gi,
             focus,
             zoomed,
+            title,
         });
         self.focus_changed(before);
         self.clear_visible_unread();
@@ -1873,7 +1940,7 @@ impl App {
                     Ok(()) => Redo::Pane(id),
                     // 원래 자리의 이웃이 사라졌다: 새 탭 끝에 되살린다
                     Err(pane) => {
-                        self.restore_tab(vec![*pane], Node::Leaf(id), usize::MAX, id, false);
+                        self.restore_tab(vec![*pane], Node::Leaf(id), usize::MAX, id, false, None);
                         Redo::Tab(id)
                     }
                 }
@@ -1884,8 +1951,9 @@ impl App {
                 index,
                 focus,
                 zoomed,
+                title,
             } => {
-                self.restore_tab(panes, layout, index, focus, zoomed);
+                self.restore_tab(panes, layout, index, focus, zoomed, title);
                 Redo::Tab(focus)
             }
         };
@@ -1919,10 +1987,26 @@ impl App {
     }
 
     /// 탭을 원래 탭 자리(`index`, 넘으면 맨 끝)에 되살린다
-    fn restore_tab(&mut self, panes: Vec<Pane>, layout: Node, index: usize, focus: u64, zoomed: bool) {
+    fn restore_tab(
+        &mut self,
+        panes: Vec<Pane>,
+        layout: Node,
+        index: usize,
+        focus: u64,
+        zoomed: bool,
+        title: Option<String>,
+    ) {
         let before = self.focused_id();
         let at = index.min(self.w.tabs.len());
-        self.w.tabs.insert(at, TabGroup { layout, focus, zoomed });
+        self.w.tabs.insert(
+            at,
+            TabGroup {
+                layout,
+                focus,
+                zoomed,
+                title,
+            },
+        );
         self.w.active = at;
         self.panes.extend(panes);
         self.focus_changed(before);
@@ -2372,7 +2456,38 @@ impl App {
                 if let Some(p) = self.active_pane() {
                     let (id, now) = (p.id, p.user_title.clone().unwrap_or_default());
                     self.w.palette = None;
-                    self.w.title_prompt = Some((id, now));
+                    self.w.title_prompt = Some((TitleTarget::Surface(id), now));
+                }
+            }
+            Action::PromptTabTitle => {
+                if let Some(g) = self.w.tabs.get(self.w.active) {
+                    let (id, now) = (g.focus, g.title.clone().unwrap_or_default());
+                    self.w.palette = None;
+                    self.w.title_prompt = Some((TitleTarget::Tab(id), now));
+                }
+            }
+            Action::PromptWindowTitle => {
+                let now = self.w.window_title.clone().unwrap_or_default();
+                self.w.palette = None;
+                self.w.title_prompt = Some((TitleTarget::Window, now));
+            }
+            Action::SetTabTitle(text) => {
+                if let Some(id) = self.focused_id() {
+                    self.apply_title(TitleTarget::Tab(id), &text);
+                }
+            }
+            Action::SetWindowTitle(text) => self.apply_title(TitleTarget::Window, &text),
+            Action::CopyTitle => {
+                let text = self
+                    .active_pane()
+                    .and_then(|p| title_to_copy(p.user_title.as_deref(), &p.title));
+                if let Some(text) = text {
+                    if let Some(cb) = self.clipboard.as_mut() {
+                        let _ = cb.set_text(text.clone());
+                    }
+                    if self.config.app_notifications.clipboard_copy {
+                        self.toast(format!("제목을 복사했습니다: {text}"));
+                    }
                 }
             }
             Action::SetSurfaceTitle(text) => {
@@ -3134,6 +3249,7 @@ impl App {
                     layout,
                     focus,
                     zoomed: st.zoomed && leaves.len() > 1,
+                    title: None,
                 });
                 restored = true;
             }
@@ -3291,7 +3407,11 @@ impl App {
         let top_inset = self.top_inset();
         let toast = self.w.toast.clone().filter(|(_, at)| at.elapsed() < TOAST_FOR);
         let confirm = self.w.confirm.as_ref().map(|c| (c.message.clone(), c.yes));
-        let title_prompt = self.w.title_prompt.as_ref().map(|(_, t)| t.clone());
+        let title_prompt = self
+            .w
+            .title_prompt
+            .as_ref()
+            .map(|(target, t)| (target.label(), t.clone()));
         let now_overlay = Instant::now();
         let resize_overlays: Vec<u64> = self
             .panes
@@ -3370,7 +3490,9 @@ impl App {
                         .collect();
                     let focused = panes.iter().find(|p| p.id == g.focus);
                     tabbar::TabLabel {
-                        title: focused.map(|p| p.display_title()).unwrap_or_default(),
+                        title: focused
+                            .map(|p| p.display_title_in(g.title.as_deref()))
+                            .unwrap_or_default(),
                         active: gi == self.w.active,
                         unread: panes.iter().any(|p| p.unread),
                         // 고른 칸의 진행 표시, 없으면 다른 칸의 것
@@ -3382,11 +3504,11 @@ impl App {
                 })
                 .collect()
         };
-        let title = self
+        let tab_title = self
             .active_pane()
-            .map(|t| t.display_title())
+            .map(|t| t.display_title_in(self.w.tabs.get(self.w.active).and_then(|g| g.title.as_deref())))
             .unwrap_or_else(|| "b-terminal".into());
-        let title = self.config.title.clone().unwrap_or(title);
+        let title = window_title_of(self.config.title.as_deref(), self.w.window_title.as_deref(), &tab_title);
         let preedit = self.w.preedit.clone();
         let hover = self.w.hover.clone();
         let link_previews = self.config.link_previews;
@@ -3759,12 +3881,12 @@ impl App {
                 if let Some((text, _)) = &toast {
                     crate::tabbar::draw_toast(&mut canvas, fonts, &theme, text);
                 }
-                if let Some(text) = &title_prompt {
+                if let Some((label, text)) = &title_prompt {
                     tabbar::draw_prompt(
                         &mut canvas,
                         fonts,
                         &theme,
-                        "제목 › ",
+                        label,
                         &format!("{text}{preedit}"),
                         "↩ 정하기    esc 취소    비우고 ↩면 프로그램이 정한 제목으로",
                     );
@@ -4878,6 +5000,35 @@ mod tests {
         assert_eq!(
             clean_user_title(&"가".repeat(300)).map(|t| t.chars().count()),
             Some(200)
+        );
+    }
+
+    #[test]
+    fn title_precedence_window_and_tab() {
+        // 창 제목: 설정 title > 창 덮어쓰기 > 탭 제목
+        assert_eq!(window_title_of(Some("고정"), Some("창"), "탭"), "고정");
+        assert_eq!(window_title_of(None, Some("창"), "탭"), "창");
+        assert_eq!(window_title_of(None, None, "탭"), "탭");
+        // 탭 제목을 덮어쓰면 칸 제목(사람이 붙인 것·프로그램이 정한 것)보다 먼저
+        assert_eq!(title_of(Some("탭"), "vim", Some("zsh"), false), "탭");
+        assert_eq!(title_of(None, "vim", Some("zsh"), false), "vim");
+    }
+
+    #[test]
+    fn copy_title_text_is_decided_purely() {
+        assert_eq!(title_to_copy(None, "vim"), Some("vim".into()));
+        assert_eq!(
+            title_to_copy(Some("빌드"), "vim"),
+            Some("빌드".into()),
+            "사람이 붙인 제목이 먼저"
+        );
+        assert_eq!(title_to_copy(None, ""), None, "제목이 없으면 하지 않는다");
+        assert_eq!(title_to_copy(Some(""), ""), None);
+        assert_eq!(title_to_copy(None, "  \t"), None, "공백뿐이면 비었다");
+        assert_eq!(
+            title_to_copy(None, "a\x1b[31mb"),
+            Some("a [31mb".into()),
+            "제어 문자를 지운다"
         );
     }
 
