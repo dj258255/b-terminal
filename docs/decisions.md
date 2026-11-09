@@ -26,6 +26,7 @@
 - [ADR-021 DECRQCRA 체크섬 보고는 기본 꺼짐이고, 켜도 터미널이 가진 화면만 답하며 계산은 Ghostty와 같다](#adr-021-decrqcra-체크섬-보고는-기본-꺼짐이고-켜도-터미널이-가진-화면만-답하며-계산은-ghostty와-같다)
 - [ADR-022 CSI 질의는 고정 바이트와 검사한 숫자로만 늘 답하고, DA는 Ghostty 값으로 바꾸며 엔진의 옛 답은 끈다](#adr-022-csi-질의는-고정-바이트와-검사한-숫자로만-늘-답하고-da는-ghostty-값으로-바꾸며-엔진의-옛-답은-끈다)
 - [ADR-023 DCS 질의(DECRQSS·XTGETTCAP)는 터미널 상태와 고정 목록으로만 답하고, 요청 글은 답에 넣지 않는다](#adr-023-dcs-질의decrqssxtgettcap는-터미널-상태와-고정-목록으로만-답하고-요청-글은-답에-넣지-않는다)
+- [ADR-024 kitty 색 프로토콜(OSC 21)은 엔진이 바꾼 색 칸에 설정하고, 답은 알아본 키를 우리 이름으로 다시 적는다](#adr-024-kitty-색-프로토콜osc-21은-엔진이-바꾼-색-칸에-설정하고-답은-알아본-키를-우리-이름으로-다시-적는다)
 
 ## ADR-001 VT 엔진은 alacritty_terminal로 시작하고, bt-term 밖으로 엔진 타입을 내보내지 않는다
 
@@ -643,3 +644,28 @@ macOS의 Carbon `EnableSecureEventInput`은 켜 있는 동안 키 입력이 다�
 - DECRQSS SGR은 alacritty 커서 템플릿(`grid.cursor.template`)에서 읽는다. 깜박임(5)과 윗줄(53)은 격자에 없어 답에 빠진다. 밑줄 색은 있으면 `58`로 답한다(Ghostty 테스트 값에는 없다). 새 칸의 DECSCUSR는 설정의 `cursor-style`이 아니라 alacritty 기본(깜박이지 않는 블록, `2`)을 답한다.
 - 프로그램이 `DCS 0 + r`을 기다리면 모르는 이름에 시간 초과가 날 수 있다(Ghostty와 같다).
 - 테스트: Ghostty `dcs.zig` 테스트 값(DECRQSS 응답 인코딩, 큰 응답, 이름 해석, 대소문자 섞임, 여러 이름, 잘못된 값), 스캐너 단위 테스트, `/bin/sh`와 `printf`로 띄운 PTY 통합 테스트. 격리한 실제 창에서 셸이 `/dev/tty`에 질의를 쓰고 `dd`로 답을 읽어, DECRQSS 네 갈래와 XTGETTCAP(한 이름, 여러 이름, 끝 표시를 끼운 이름)의 답이 테스트와 같은 것을 한 번 봤다.
+
+## ADR-024 kitty 색 프로토콜(OSC 21)은 엔진이 바꾼 색 칸에 설정하고, 답은 알아본 키를 우리 이름으로 다시 적는다
+
+상태: 채택
+관련: [#266](https://github.com/dj258255/b-terminal/issues/266), ADR-012, ADR-018
+
+### 맥락
+- OSC 21(kitty 색 프로토콜)은 `키=?`(질의), `키=색`(설정), `키=`(되돌리기)를 `;`로 이어 한 번에 보낸다. 키는 `foreground`·`background`·`cursor`·`cursor_text`·`selection_foreground`·`selection_background`·`visual_bell`·`second_transparent_background`와 팔레트 0~255다.
+- 질의의 답은 PTY로 돌아가 프로그램의 입력이 된다. 요청 글이 답에 그대로 들어가면 출력이 입력을 만드는 길이 된다(제목 보고, ADR-012와 같은 종류).
+- Ghostty(`osc/parsers/kitty_color.zig`, `kitty/color.zig`, `stream_handler.zig` 1862~1952줄)는 foreground·background·cursor와 팔레트만 터미널 색으로 들고, 나머지 키는 받아도 무시한다.
+
+### 결정
+1. 해석은 `crates/bt-term/src/kitty_color.rs`. 항목은 `;`로 나누고 `키=값`에서 값 앞뒤 공백만 자른다. 키를 모르거나(밑줄·부호·256 이상 포함) 색이 틀린 항목은 그 항목만 버리고, 한 요청의 항목이 `(255+8)*2 = 526`개를 넘으면 요청 전체를 버린다(Ghostty 상한). 스캐너의 OSC 길이 상한 8KiB가 먼저 걸려 실제로는 그보다 짧은 요청이 한계다.
+2. 설정·되돌리기는 OSC 4·10·11·12가 쓰는 엔진의 바꾼 색 칸(alacritty `Term`의 colors, 그리는 쪽이 읽는 곳)에 같은 함수(`set_color`·`reset_color`)로 넣는다. 설정을 다시 읽어도 이 칸은 그대로고(테마만 바뀐다), 초기화(RIS)와 소프트 리셋(DECSTR)은 팔레트만 되돌린다(Ghostty `Terminal.zig`의 `fullReset`·`softReset`). 이 되돌림은 OSC 4로 바꾼 팔레트에도 적용되어 전에는 RIS 뒤에도 남던 것이 바뀐다.
+3. 답은 한 번에 모아 `ESC ] 21 ; 키=rgb:rr/gg/bb ; … 끝맺음`이다. 끝맺음은 요청의 것(BEL이면 BEL, ST면 `ESC \`). 앞 항목을 적용한 뒤의 값으로 답한다. 색은 늘 8비트(Ghostty와 같다).
+4. **답에는 요청의 글을 넣지 않는다.** 알아본 키를 코드의 이름 표로 다시 적고(팔레트는 `u8`을 10진수로 다시 적어 `02`가 `2`가 된다), 색은 `u8` 세 개를 16진수로 적는다. 제어 문자가 든 키는 알아보지 못해 버려진다.
+5. 칸이 색을 들고 있지 않은 키(`selection_*`, `cursor_text`, `visual_bell`, `second_transparent_background`)는 설정·되돌리기를 무시한다. 질의에는 Ghostty 원문대로 그 키를 빼고 답한다: 이 키들만 물으면 `ESC ] 21 끝맺음`만 간다(Ghostty는 첫 질의 항목에서 접두사를 쓴 뒤 색을 찾기 때문이다).
+6. 답은 읽기 전용 칸(ADR-018 결정 4)에서도 막지 않는다. `osc-color-report-format = none`이면 OSC 21 질의에도 답하지 않는다(설정·되돌리기는 한다). Ghostty는 이 설정을 OSC 21에 쓰지 않는다. 답을 끄려는 사용자의 뜻을 따르는 쪽이 안전해 다르게 했다.
+7. 색 글 형식: `#rgb`(칸당 1~4자리)·`rgb:r/g/b`(칸당 1~4자리)·`rgbi:r/g/b`(0~1 소수)·X11 색 이름(`+list-colors`와 같은 표). Ghostty의 `RGB.parse` 원문은 받아 둔 자료에 없어 같은 형식을 따랐다고 확인하지는 못했다.
+
+### 결과
+- 찍힌 글이 터미널 색 세 가지와 팔레트를 바꾸거나 읽을 수 있다. 읽은 값은 숫자 세 개뿐이고 요청의 글은 돌아오지 않는다.
+- 프로그램이 바꾼 색은 OSC 4·10·11처럼 그 칸에 남는다.
+- 기존 OSC 4·10·11·12 질의의 답은 아직 테마 색으로 답한다(엔진이 바꾼 값을 보지 않는다). OSC 21 질의는 바꾼 값을 본다. 둘이 다르다는 것은 이 변경에서 고치지 않았다.
+- PTY 통합 테스트(`/bin/sh`와 `printf`)와 단위 테스트로 확인했다. 실제 창은 보지 않았다.

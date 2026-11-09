@@ -1258,3 +1258,110 @@ fn reset_turns_mode_2048_off() {
     });
     assert_eq!(got, hex_of("\x1b[48;10;80;160;640t"));
 }
+
+// ---- kitty 색 프로토콜(OSC 21, #266) ----
+
+fn rgb8(c: bt_core::Rgb) -> String {
+    format!("rgb:{:02x}/{:02x}/{:02x}", c.r, c.g, c.b)
+}
+
+/// printf 인자에 쓰는 ST(ESC \)
+const ST: &str = "\\033\\\\";
+
+/// `checksum_reply`와 같다. 칸 너비에서 꺾인 줄바꿈은 지운다
+fn kitty_reply(setup: &str, query: &str, readonly: bool, opts: impl FnOnce(&mut SpawnOptions)) -> String {
+    checksum_reply(setup, query, readonly, opts).replace('\n', "")
+}
+
+#[test]
+fn kitty_color_query_answers_with_8_bit_rgb_and_the_request_terminator() {
+    let t = Theme::default();
+    let q = format!("\\033]21;foreground=?;background=?;cursor=?;1=?{ST}");
+    let want = format!(
+        "\x1b]21;foreground={};background={};cursor={};1={}\x1b\\",
+        rgb8(t.foreground),
+        rgb8(t.background),
+        rgb8(t.cursor),
+        rgb8(t.palette[1])
+    );
+    assert_eq!(kitty_reply("", &q, false, |_| {}), hex_of(&want));
+    // BEL로 물으면 BEL로 답한다
+    let want = format!("\x1b]21;foreground={}\x07", rgb8(t.foreground));
+    assert_eq!(
+        checksum_reply("", "\\033]21;foreground=?\\007", false, |_| {}),
+        hex_of(&want)
+    );
+}
+
+#[test]
+fn kitty_color_set_then_query_then_reset_goes_back_to_the_theme() {
+    let t = Theme::default();
+    let set = format!("\\033]21;background=#102030;4=rgb:11/22/33;cursor=aliceblue{ST}");
+    let ask = format!("\\033]21;background=?;4=?;cursor=?{ST}");
+    let want = "\x1b]21;background=rgb:10/20/30;4=rgb:11/22/33;cursor=rgb:f0/f8/ff\x1b\\";
+    assert_eq!(kitty_reply(&set, &ask, false, |_| {}), hex_of(want));
+    // 값을 비우면 테마 색으로 돌아간다
+    let reset = format!("\\033]21;background=;4=;cursor={ST}");
+    let want = format!(
+        "\x1b]21;background={};4={};cursor={}\x1b\\",
+        rgb8(t.background),
+        rgb8(t.palette[4]),
+        rgb8(t.cursor)
+    );
+    assert_eq!(
+        kitty_reply(&format!("{set}{reset}"), &ask, false, |_| {}),
+        hex_of(&want)
+    );
+}
+
+#[test]
+fn kitty_color_palette_goes_back_on_ris_but_background_stays() {
+    let t = Theme::default();
+    let set = format!("\\033]21;5=#010203;background=#102030{ST}\\033c");
+    let ask = format!("\\033]21;5=?;background=?{ST}");
+    let want = format!("\x1b]21;5={};background=rgb:10/20/30\x1b\\", rgb8(t.palette[5]));
+    assert_eq!(kitty_reply(&set, &ask, false, |_| {}), hex_of(&want));
+}
+
+#[test]
+fn kitty_color_set_changes_the_drawn_background() {
+    let (s, _rx) = sh(
+        "printf '\\033]21;background=#ff0000\\033\\\\'; sleep 2",
+        GridSize::new(20, 4),
+    );
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while s.snapshot().background != bt_core::Rgb::new(255, 0, 0) {
+        assert!(Instant::now() < deadline, "바탕이 바뀌지 않았다");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+#[test]
+fn kitty_color_reply_never_echoes_request_text() {
+    let t = Theme::default();
+    // 모르는 키(제어 문자 포함)는 버려지고 답에 들어가지 않는다. 팔레트 번호는 우리가 다시 적는다("02" -> "2")
+    let q = format!("\\033]21;x\\001=?;02=?;foreground=?{ST}");
+    let want = format!(
+        "\x1b]21;2={};foreground={}\x1b\\",
+        rgb8(t.palette[2]),
+        rgb8(t.foreground)
+    );
+    assert_eq!(kitty_reply("", &q, false, |_| {}), hex_of(&want));
+}
+
+#[test]
+fn kitty_color_query_of_a_key_without_a_color_here_gets_only_the_prefix() {
+    // Ghostty(stream_handler.zig kittyColorReport)처럼 selection_*·cursor_text·visual_bell은 값 없이 접두사와 끝맺음만 답한다
+    let q = format!("\\033]21;selection_background=?;visual_bell=?{ST}");
+    assert_eq!(checksum_reply("", &q, false, |_| {}), hex_of("\x1b]21\x1b\\"));
+}
+
+#[test]
+fn kitty_color_reply_follows_osc_color_report_format_none_and_reaches_readonly_panes() {
+    let q = format!("\\033]21;foreground=?{ST}");
+    let none = |o: &mut SpawnOptions| o.osc_color_report_format = bt_core::config::OscColorReportFormat::None;
+    assert_eq!(checksum_reply("", &q, false, none), "");
+    // 읽기 전용 칸에서도 터미널의 답은 막지 않는다(ADR-018 결정 4)
+    let want = format!("\x1b]21;foreground={}\x1b\\", rgb8(Theme::default().foreground));
+    assert_eq!(checksum_reply("", &q, true, |_| {}), hex_of(&want));
+}

@@ -404,7 +404,7 @@ pub struct Session {
     writer: Writer,
     master: Mutex<Box<dyn MasterPty + Send>>,
     size: Arc<Mutex<GridSize>>,
-    theme: Mutex<Arc<Theme>>,
+    theme: Arc<Mutex<Arc<Theme>>>,
     pid: Option<u32>,
     exited: Arc<Mutex<Option<Option<u32>>>>,
     /// 셸 통합 표지(OSC 133;A)를 한 번이라도 받았다
@@ -568,6 +568,8 @@ impl Session {
         }
 
         let theme = Arc::new(theme);
+        // 읽기 스레드(OSC 21 질의)도 설정을 다시 읽은 뒤의 테마를 본다
+        let current_theme = Arc::new(Mutex::new(theme.clone()));
         let title = Arc::new(Mutex::new(String::new()));
         let size_cell = Arc::new(Mutex::new(size));
         let listener = Listener {
@@ -655,6 +657,8 @@ impl Session {
             options.term.clone()
         };
         let xt_report = options.vt_xt_checksum_report;
+        let thread_theme = current_theme.clone();
+        let osc_color_format = options.osc_color_report_format;
         let xt_default = crate::xt_checksum::Flags::from_config(&options.vt_xt_checksum_extension);
         std::thread::Builder::new().name("bt-pty-read".into()).spawn(move || {
             let mut buf = vec![0u8; 64 * 1024];
@@ -720,6 +724,7 @@ impl Session {
                                         g.graphics_erase(visible, scrollback);
                                         // 초기화(RIS)는 키보드 잠금도 푼다
                                         if visible && scrollback {
+                                            crate::kitty_color::reset_palette(&mut g.term);
                                             xt_flags = xt_default;
                                             thread_kam_locked.store(false, std::sync::atomic::Ordering::Release);
                                             thread_scheme_updates.store(false, std::sync::atomic::Ordering::Release);
@@ -747,7 +752,10 @@ impl Session {
                                             xt_flags = crate::xt_checksum::Flags::from_bits(bits as u16);
                                         }
                                     }
-                                    Signal::SoftReset => xt_flags = xt_default,
+                                    Signal::SoftReset => {
+                                        xt_flags = xt_default;
+                                        crate::kitty_color::reset_palette(&mut g.term);
+                                    }
                                     // DCS 질의(DECRQSS, XTGETTCAP): 터미널의 상태와 정해진 목록에서 만든 답이고 요청 글은 들어가지 않는다.
                                     // 터미널의 답이라 읽기 전용 칸에서도 쓴다(ADR-018 결정 4, ADR-023)
                                     Signal::DcsQuery(query) => {
@@ -836,6 +844,19 @@ impl Session {
                                         let on = thread_in_band_size.load(std::sync::atomic::Ordering::Acquire);
                                         write_reply(&thread_writer, crate::csi_query::mode_2048_report(on).as_bytes());
                                     }
+                                    // kitty 색 프로토콜(OSC 21): 설정·되돌리기는 OSC 4·10·11·12와 같은 자리(엔진의 바꾼 색)에 넣고,
+                                    // 질의의 답은 터미널의 답이라 읽기 전용 칸에서도 쓴다. osc-color-report-format이 none이면 답만 하지 않는다(#266)
+                                    Signal::KittyColor { requests, bel } => {
+                                        let theme = thread_theme.lock().clone();
+                                        let reply = crate::kitty_color::apply(&mut g.term, &theme, &requests, bel);
+                                        if let Some(reply) =
+                                            reply.filter(|_| osc_color_format != OscColorReportFormat::None)
+                                        {
+                                            let mut w = thread_writer.lock();
+                                            let _ = w.write_all(&reply);
+                                            let _ = w.flush();
+                                        }
+                                    }
                                     other => events.push(signal_event(other)),
                                 }
                             }
@@ -871,7 +892,7 @@ impl Session {
             writer,
             master: Mutex::new(pair.master),
             size: size_cell,
-            theme: Mutex::new(theme),
+            theme: current_theme,
             pid,
             exited,
             integrated,
@@ -1232,6 +1253,7 @@ fn signal_event(sig: Signal) -> SessionEvent {
         | Signal::InBandSizeReports(_)
         | Signal::InBandSizeQuery
         | Signal::DcsQuery(_)
+        | Signal::KittyColor { .. }
         | Signal::WindowResize { .. } => SessionEvent::Output,
     }
 }
@@ -1671,7 +1693,18 @@ impl Emulator {
                         self.replies.extend(r);
                     }
                 }
-                Signal::Erase { visible, scrollback } => self.graphics.erase(*visible, *scrollback),
+                Signal::Erase { visible, scrollback } => {
+                    self.graphics.erase(*visible, *scrollback);
+                    if *visible && *scrollback {
+                        crate::kitty_color::reset_palette(&mut self.term);
+                    }
+                }
+                Signal::SoftReset => crate::kitty_color::reset_palette(&mut self.term),
+                Signal::KittyColor { requests, bel } => {
+                    if let Some(r) = crate::kitty_color::apply(&mut self.term, &self.theme, requests, *bel) {
+                        self.replies.extend(r);
+                    }
+                }
                 _ => {}
             }
             notes.push(sig);
