@@ -434,7 +434,22 @@ fn record_symbol_used_by_claude_code_is_a_monochrome_glyph() {
     assert!(g.width > 0);
 }
 
-/// #67: U+FE0F가 붙은 ❤️는 그 칸(VT 엔진이 정한 한 칸) 안에 색으로 그린다. 옆 칸은 덮지 않는다
+/// #180: 글자 묶음 폭(기본)에서 ❤️는 VT 엔진이 두 칸으로 정하고, 색 하트가 그 두 칸 안에 들어간다
+#[test]
+fn variation_selector_16_fills_two_cells_with_cluster_width() {
+    let Some(mut f) = fonts(2.0) else { return };
+    if !f.has_color_emoji() {
+        eprintln!("건너뜀: 색 이모지 글꼴이 없다");
+        return;
+    }
+    let fr = render(&mut f, "\u{2764}\u{fe0f} a".as_bytes(), 6, 1, false);
+    let bg = Theme::default().background;
+    assert!(ink(&fr, 0, 0, 2, bg) > 100, "하트가 두 칸에");
+    assert_eq!(ink(&fr, 2, 0, 1, bg), 0, "하트 뒤 공백 칸은 비어 있다");
+    assert!(ink(&fr, 3, 0, 1, bg) > 0, "a는 네 번째 칸");
+}
+
+/// #67: U+FE0F가 붙은 ❤️는 그 칸(글자별 폭에서는 VT 엔진이 정한 한 칸) 안에 색으로 그린다. 옆 칸은 덮지 않는다
 #[test]
 fn variation_selector_16_draws_a_color_emoji_inside_its_cell() {
     let Some(mut f) = fonts(2.0) else { return };
@@ -442,7 +457,7 @@ fn variation_selector_16_draws_a_color_emoji_inside_its_cell() {
         eprintln!("건너뜀: 색 이모지 글꼴이 없다");
         return;
     }
-    let fr = render(&mut f, "\u{2764}\u{fe0f} a".as_bytes(), 6, 1, false);
+    let fr = render(&mut f, "\x1b[?2027l\u{2764}\u{fe0f} a".as_bytes(), 6, 1, false);
     let mut red = 0;
     for y in 0..fr.ch {
         for x in 0..fr.cw {
@@ -460,8 +475,9 @@ fn variation_selector_16_draws_a_color_emoji_inside_its_cell() {
     );
 }
 
-/// #87: 피부색 👍🏽(VT 엔진에서 두 칸씩 네 칸)과 ZWJ 가족 👨‍👩‍👧(여섯 칸)을 한 글리프로, 묶음 칸 가운데에 그린다.
-/// 글자마다 그리면 맨 앞·맨 뒤 칸에도 그림이 있다
+/// #87·#180: 피부색 👍🏽과 ZWJ 가족 👨‍👩‍👧을 한 글리프로, 묶음 칸 가운데에 그린다.
+/// 글자 묶음 폭(mode 2027, 기본)에서는 엔진이 묶음을 두 칸에 담고, 끄면 글자마다 칸을 차지한다(네 칸·여섯 칸).
+/// 글자마다 그리면 묶음 칸 밖에도 그림이 있다
 #[test]
 fn emoji_clusters_draw_as_one_glyph_centered() {
     let Some(mut f) = fonts(2.0) else { return };
@@ -470,20 +486,23 @@ fn emoji_clusters_draw_as_one_glyph_centered() {
         return;
     }
     let bg = Theme::default().background;
-    let fr = render(&mut f, "\u{1f44d}\u{1f3fd}".as_bytes(), 10, 1, false);
+    let tone = "\u{1f44d}\u{1f3fd}";
+    let family = "\u{1f468}\u{200d}\u{1f469}\u{200d}\u{1f467}";
+    // 묶음 폭(기본): 둘 다 두 칸에 한 글리프, 그 뒤 칸은 빔
+    for text in [tone, family] {
+        let fr = render(&mut f, text.as_bytes(), 10, 1, false);
+        assert!(ink(&fr, 0, 0, 2, bg) > 100, "두 칸에 한 글리프");
+        assert_eq!(ink(&fr, 2, 0, 8, bg), 0, "묶음 뒤 칸은 빔");
+    }
+    // 글자별 폭(mode 2027 끔): 피부색 네 칸, 가족 여섯 칸의 가운데에
+    let fr = render(&mut f, format!("\x1b[?2027l{tone}").as_bytes(), 10, 1, false);
     assert_eq!(
         ink(&fr, 0, 0, 1, bg) + ink(&fr, 3, 0, 1, bg),
         0,
         "맨 앞·맨 뒤 칸은 비고"
     );
     assert!(ink(&fr, 1, 0, 2, bg) > 100, "가운데 두 칸에 한 글리프");
-    let fr = render(
-        &mut f,
-        "\u{1f468}\u{200d}\u{1f469}\u{200d}\u{1f467}".as_bytes(),
-        10,
-        1,
-        false,
-    );
+    let fr = render(&mut f, format!("\x1b[?2027l{family}").as_bytes(), 10, 1, false);
     assert_eq!(
         ink(&fr, 0, 0, 1, bg) + ink(&fr, 5, 0, 1, bg),
         0,

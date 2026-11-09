@@ -1,5 +1,8 @@
-//! 이모지 묶음 찾기(#87). VT 엔진은 ZWJ(U+200D)를 앞 칸의 결합 문자로 두고, 그 뒤 이모지와 피부색 수식자,
-//! 국기의 지역 표시 글자를 각자의 칸에 둔다. 한 줄의 칸들에서 한 글리프로 그릴 묶음을 찾는다(칸 폭은 엔진 그대로)
+//! 이모지 묶음 찾기(#87). 한 줄의 칸들에서 한 글리프로 그릴 묶음을 찾는다(칸 폭은 엔진 그대로).
+//! - 글자 묶음 폭(mode 2027, #180)이 켜져 있으면 VT 엔진이 묶음을 한 칸(넓으면 두 칸)에 담아 주므로,
+//!   첫 칸의 결합 문자에 ZWJ·피부색·지역 표시 글자·이모지가 들어 있는 칸 하나가 곧 묶음이다.
+//! - 꺼져 있으면 엔진은 ZWJ(U+200D)를 앞 칸의 결합 문자로 두고, 그 뒤 이모지와 피부색 수식자,
+//!   국기의 지역 표시 글자를 각자의 칸에 둔다. 칸들을 이어 묶음을 찾는다.
 
 /// 칸 하나(묶음을 찾는 데 필요한 것만)
 #[derive(Debug, Clone, Copy)]
@@ -53,7 +56,12 @@ pub fn find_clusters(row: &[ClusterCell]) -> Vec<Cluster> {
         }
         // 마지막 글자의 뒤 칸까지
         let end = next_glyph(last + 1).unwrap_or(row.len());
-        if parts > 1 {
+        // 엔진이 이미 한 칸에 담은 묶음(mode 2027)
+        let packed = row[start]
+            .combining
+            .iter()
+            .any(|&c| c == ZWJ || is_skin_tone(c) || is_regional(c) || (c as u32) >= 0x1F000);
+        if parts > 1 || packed {
             out.push((start, (end - start) as u16, text));
         }
         i = end;
@@ -117,6 +125,38 @@ mod tests {
             })
             .collect();
         find_clusters(&view)
+    }
+
+    /// 엔진이 묶음을 한 칸(과 뒤 칸)에 담아 준 줄(mode 2027): 칸 폭이 곧 묶음 폭
+    #[test]
+    fn finds_clusters_packed_by_the_engine() {
+        let cell = |ch: char, comb: &'static [char], spacer: bool| ClusterCell {
+            ch,
+            combining: comb,
+            spacer,
+        };
+        let family: &[char] = &[ZWJ, '👩', ZWJ, '👧'];
+        let row = [
+            cell('x', &[], false),
+            cell('👨', family, false),
+            cell(' ', &[], true),
+            cell('🇰', &['🇷'], false),
+            cell(' ', &[], true),
+            cell('👍', &['🏽'], false),
+            cell(' ', &[], true),
+            // 하트 + U+FE0F는 칸 하나가 이모지 글리프로 그리므로(`emoji`) 묶음이 아니다
+            cell('❤', &['\u{fe0f}'], false),
+            cell(' ', &[], true),
+            cell('e', &['\u{301}'], false),
+        ];
+        assert_eq!(
+            find_clusters(&row),
+            vec![
+                (1, 2, "👨\u{200d}👩\u{200d}👧".into()),
+                (3, 2, "🇰🇷".into()),
+                (5, 2, "👍🏽".into()),
+            ]
+        );
     }
 
     #[test]

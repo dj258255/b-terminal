@@ -113,6 +113,8 @@ pub struct SpawnOptions {
     pub vt_window_resize_allowed: bool,
     /// kitty 그림 저장 바이트 상한(설정 image-storage-limit). 없으면 기본(320000000), 0이면 그림을 쓰지 않는다
     pub image_storage_limit: Option<u32>,
+    /// 글자 묶음 폭을 세는 방식(설정 grapheme-width-method, #180). `Unicode`면 mode 2027이 처음부터 켜져 있다
+    pub grapheme_width_method: bt_core::config::GraphemeWidthMethod,
 }
 
 /// 창 크기 바꾸기 요청(CSI 8 ; 행 ; 열 t)이 가리키는 칸 수를 정한다. 인자와 결과는 모두 (열, 행)이다. 0은 그 쪽을 그대로 두고,
@@ -475,6 +477,7 @@ impl Session {
             },
             // Claude Code 등이 Shift+Enter를 받으려고 켠다(#41)
             kitty_keyboard: true,
+            grapheme_cluster: options.grapheme_width_method == bt_core::config::GraphemeWidthMethod::Unicode,
             default_cursor_style: VtCursorStyle {
                 shape: match options.cursor_shape {
                     Some(CursorShape::Beam) => VtCursorShape::Beam,

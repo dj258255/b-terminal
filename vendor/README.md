@@ -35,3 +35,21 @@ macOS 백엔드는 그림을 기기 RGB 색 공간으로 Core Animation에 넘�
 ### 되돌릴 조건
 
 softbuffer가 색 공간을 고를 수 있게 되거나, GPU 렌더러로 바꿔 softbuffer를 쓰지 않게 되면 지웁니다.
+
+## alacritty_terminal 0.26.0
+
+- 원본: crates.io `alacritty_terminal 0.26.0`(Apache-2.0, `vendor/alacritty_terminal/LICENSE-APACHE`). 테스트(`tests/`, 참조 그림 46MB)는 뺐습니다.
+- 연결: 루트 `Cargo.toml`의 `[patch.crates-io]`. 새 크레이트는 없습니다. `Cargo.toml`에 `unicode-segmentation = "1"`을 직접 의존성으로 더했고(잠금 파일에 이미 1.13.3이 있었음) `[[test]]`를 지웠습니다.
+- 고친 곳(#180, ADR-014): `src/term/mod.rs` 한 파일, 더한 줄 118·지운 줄 2. `b-terminal 패치(#180)`로 찾을 수 있습니다.
+  - `TermMode::GRAPHEME_CLUSTER`(DECSET 2027)와 `Config::grapheme_cluster`(처음 값, 기본 켬). 모드 켜기·끄기·DECRQM은 vte가 이름 없는 모드로 넘기는 2027을 `set_private_mode`·`unset_private_mode`·`report_private_mode`가 받게 했습니다.
+  - `Handler::input`이 글자를 찍기 전에 `join_grapheme`을 부릅니다. 방금 찍은 칸(`grapheme_anchor`, 커서가 그 자리 그대로일 때만)의 글과 새 글자를 합쳐 `unicode-segmentation`이 한 묶음으로 보면 새 칸 없이 그 칸의 결합 문자로 잇습니다. 좁은 글자에 U+FE0F가 붙어 두 칸(`unicode-width`의 문자열 폭)이 되면 뒤 칸을 채웁니다. 지역 표시 글자(국기)는 한 글자로도 두 칸으로 셉니다.
+  - 칸 내용을 바꾸는 `scroll_*_relative`·`insert_blank`·`erase_chars`·`delete_chars`·`clear_line`·`clear_screen`·`swap_alt`·`reset_state`는 `grapheme_anchor`를 지웁니다.
+
+### 왜
+
+alacritty_terminal은 글자마다 `unicode-width`로 폭을 세고, 폭 0인 글자만 앞 칸에 붙입니다. 그래서 ZWJ 가족은 6칸, 피부색은 4칸을 차지해 Ghostty(`grapheme-width-method = unicode`)와 어긋나고 프로그램이 mode 2027로 묶음 폭을 요청해도 받지 못합니다. 엔진 바깥(바이트를 바꾸는 방식)에서는 줄바꿈·커서·지우기와 섞여 안전하게 할 수 없었습니다.
+
+### 되돌릴 조건
+
+alacritty_terminal이 글자 묶음 폭(mode 2027)을 지원하는 판을 내면 패치를 지우고 그 판으로 올립니다. 올릴 때는 `tests/grapheme.rs`(bt-term)가 그대로 통과해야 합니다. 새 판으로 올릴 때마다 이 패치를 새 `mod.rs`에 다시 얹어야 하므로, 판이 바뀌면 `diff`로 먼저 확인합니다.
+
