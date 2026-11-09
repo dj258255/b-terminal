@@ -72,6 +72,8 @@ pub enum Signal {
     InBandSizeReports(bool),
     /// 모드 2048의 DECRQM(`CSI ? 2048 $ p`)(#264)
     InBandSizeQuery,
+    /// DCS 질의(DECRQSS, XTGETTCAP). 세션이 그 자리의 상태로 답한다(#265)
+    DcsQuery(crate::dcs::Query),
 }
 
 /// OSC 22 이름의 길이 상한(바이트). 가장 긴 이름("bottom_right_corner")보다 넉넉하다
@@ -122,7 +124,23 @@ enum St {
     ApcEsc,
     /// CSI(`ESC [`) 안: 화면 지우기(ED)와 제목 보고(CSI 21 t)만 알아본다
     Csi,
+    /// DCS(`ESC P`)의 머리: 매개변수·중간 바이트를 지나 끝 바이트까지(#265)
+    DcsHdr,
+    /// DCS 본문: DECRQSS·XTGETTCAP이면 모으고, 아니면 ST까지 흘려보낸다
+    DcsBody,
+    /// DCS 안에서 ESC를 봤다(다음이 `\`면 끝)
+    DcsEsc,
 }
+
+/// 우리가 답하는 DCS의 종류
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DcsKind {
+    Decrqss,
+    XtGetTcap,
+}
+
+/// DCS 머리를 모으는 상한. 머리는 `$q`나 `+q` 몇 글자뿐이라 넘으면 우리 모양이 아니다
+const MAX_DCS_HEADER: usize = 16;
 
 /// 조각난 바이트를 이어 가며 신호를 찾는다
 #[derive(Debug, Default)]
@@ -143,6 +161,12 @@ pub struct Scanner {
     csi_bad: bool,
     /// 이 CSI는 맨 앞 매개변수 자리에 `>` 하나만 끼었다(`CSI > q`·`CSI > c`를 알아보는 데 쓴다, #264)
     csi_gt: bool,
+    /// DCS 질의의 머리(`ESC P` 뒤 끝 문자까지)와 본문 바이트(#265). OSC·APC와 따로 둔다
+    dcs: Vec<u8>,
+    /// 지금 DCS가 우리가 답하는 것이면 그 종류. 아니면 ST까지 버린다
+    dcs_kind: Option<DcsKind>,
+    /// 본문이 상한을 넘어 버리는 중(DECRQSS는 두 바이트, XTGETTCAP은 `MAX_XTGETTCAP`)
+    dcs_over: bool,
 }
 
 /// CSI 매개변수를 모으는 상한. 이만큼 차면 잘린 것으로 보고 믿지 않는다
@@ -189,6 +213,82 @@ impl Scanner {
                     self.csi_bad = false;
                     self.csi_gt = false;
                     St::Csi
+                }
+                (St::Esc, b'P') => {
+                    self.dcs.clear();
+                    self.dcs_kind = None;
+                    self.dcs_over = false;
+                    St::DcsHdr
+                }
+                (St::DcsHdr, 0x1b) => St::DcsEsc,
+                (St::DcsHdr | St::DcsBody, 0x18 | 0x1a) => {
+                    self.dcs = Vec::new();
+                    self.dcs_kind = None;
+                    St::Ground
+                }
+                (St::DcsHdr, 0x20..=0x3f) => {
+                    if self.dcs.len() >= MAX_DCS_HEADER {
+                        self.dcs_over = true;
+                    } else {
+                        self.dcs.push(b);
+                    }
+                    St::DcsHdr
+                }
+                (St::DcsHdr, 0x40..=0x7e) => {
+                    // 중간 바이트가 `$` 하나나 `+` 하나이고 끝 바이트가 `q`일 때만 우리 것이다. 매개변수는 Ghostty처럼 보지 않는다
+                    let inter: Vec<u8> = self.dcs.iter().copied().filter(|c| (0x20..=0x2f).contains(c)).collect();
+                    self.dcs_kind = match (self.dcs_over, inter.as_slice(), b) {
+                        (false, b"$", b'q') => Some(DcsKind::Decrqss),
+                        (false, b"+", b'q') => Some(DcsKind::XtGetTcap),
+                        _ => None,
+                    };
+                    self.dcs.clear();
+                    self.dcs_over = false;
+                    St::DcsBody
+                }
+                (St::DcsHdr, _) => St::DcsHdr,
+                (St::DcsBody, 0x1b) => St::DcsEsc,
+                (St::DcsBody, b) => {
+                    if let Some(kind) = self.dcs_kind.filter(|_| !self.dcs_over) {
+                        let cap = match kind {
+                            DcsKind::Decrqss => 2,
+                            DcsKind::XtGetTcap => crate::dcs::MAX_XTGETTCAP,
+                        };
+                        if self.dcs.len() >= cap {
+                            // 상한은 모으기 전에 본다. 넘으면 이 DCS는 답하지 않는다
+                            self.dcs = Vec::new();
+                            self.dcs_over = true;
+                        } else {
+                            self.dcs.push(b);
+                        }
+                    }
+                    St::DcsBody
+                }
+                (St::DcsEsc, b'\\') => {
+                    let body = std::mem::take(&mut self.dcs);
+                    let kind = self.dcs_kind.take();
+                    if !self.dcs_over {
+                        match kind {
+                            Some(DcsKind::Decrqss) => {
+                                if let Some(d) = crate::dcs::parse_decrqss(&body) {
+                                    out.push((i + 1, Signal::DcsQuery(crate::dcs::Query::Decrqss(d))));
+                                }
+                            }
+                            Some(DcsKind::XtGetTcap) => {
+                                out.push((i + 1, Signal::DcsQuery(crate::dcs::Query::XtGetTcap(body))));
+                            }
+                            None => {}
+                        }
+                    }
+                    St::Ground
+                }
+                // tmux 패스스루 안의 ESC는 두 번 쓴다: 겹친 ESC는 아직 DCS 안이다
+                (St::DcsEsc, 0x1b) => St::DcsEsc,
+                // DCS 안의 ESC 뒤가 \가 아니면 끊긴 것이다
+                (St::DcsEsc, _) => {
+                    self.dcs = Vec::new();
+                    self.dcs_kind = None;
+                    St::Ground
                 }
                 // ENQ는 VT 엔진도 ESC 사이에서 실행한다
                 (St::Esc, 0x05) => {
@@ -912,3 +1012,7 @@ mod tests {
         assert_eq!(s.feed(b"\x1b]9;ok\x07"), vec![n("", "ok")]);
     }
 }
+
+#[cfg(test)]
+#[path = "notify_dcs_tests.rs"]
+mod dcs_tests;

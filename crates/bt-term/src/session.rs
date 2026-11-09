@@ -648,6 +648,12 @@ impl Session {
         let enquiry_response = options.enquiry_response.clone();
         let vt_kam_allowed = options.vt_kam_allowed;
         let vt_window_resize_allowed = options.vt_window_resize_allowed;
+        // XTGETTCAP의 TN은 자식에게 준 TERM과 같은 값이다(#265)
+        let dcs_tn = if options.term.is_empty() {
+            "xterm-256color".to_string()
+        } else {
+            options.term.clone()
+        };
         let xt_report = options.vt_xt_checksum_report;
         let xt_default = crate::xt_checksum::Flags::from_config(&options.vt_xt_checksum_extension);
         std::thread::Builder::new().name("bt-pty-read".into()).spawn(move || {
@@ -742,6 +748,21 @@ impl Session {
                                         }
                                     }
                                     Signal::SoftReset => xt_flags = xt_default,
+                                    // DCS 질의(DECRQSS, XTGETTCAP): 터미널의 상태와 정해진 목록에서 만든 답이고 요청 글은 들어가지 않는다.
+                                    // 터미널의 답이라 읽기 전용 칸에서도 쓴다(ADR-018 결정 4, ADR-023)
+                                    Signal::DcsQuery(query) => {
+                                        let reply = match query {
+                                            crate::dcs::Query::Decrqss(d) => crate::dcs::encode_decrqss(d, &g.term),
+                                            crate::dcs::Query::XtGetTcap(body) => {
+                                                crate::dcs::xtgettcap_reply(&body, &dcs_tn)
+                                            }
+                                        };
+                                        if !reply.is_empty() {
+                                            let mut w = thread_writer.lock();
+                                            let _ = w.write_all(&reply);
+                                            let _ = w.flush();
+                                        }
+                                    }
                                     Signal::ColorSchemeUpdates(on) => {
                                         thread_scheme_updates.store(on, std::sync::atomic::Ordering::Release);
                                     }
@@ -1210,6 +1231,7 @@ fn signal_event(sig: Signal) -> SessionEvent {
         | Signal::SizeReport(_)
         | Signal::InBandSizeReports(_)
         | Signal::InBandSizeQuery
+        | Signal::DcsQuery(_)
         | Signal::WindowResize { .. } => SessionEvent::Output,
     }
 }

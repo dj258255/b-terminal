@@ -25,6 +25,7 @@
 - [ADR-020 보안 키보드 입력은 PTY의 termios로 암호 입력을 추측하고, 상태 한 곳이 켠 횟수와 끈 횟수를 맞춘다](#adr-020-보안-키보드-입력은-pty의-termios로-암호-입력을-추측하고-상태-한-곳이-켠-횟수와-끈-횟수를-맞춘다)
 - [ADR-021 DECRQCRA 체크섬 보고는 기본 꺼짐이고, 켜도 터미널이 가진 화면만 답하며 계산은 Ghostty와 같다](#adr-021-decrqcra-체크섬-보고는-기본-꺼짐이고-켜도-터미널이-가진-화면만-답하며-계산은-ghostty와-같다)
 - [ADR-022 CSI 질의는 고정 바이트와 검사한 숫자로만 늘 답하고, DA는 Ghostty 값으로 바꾸며 엔진의 옛 답은 끈다](#adr-022-csi-질의는-고정-바이트와-검사한-숫자로만-늘-답하고-da는-ghostty-값으로-바꾸며-엔진의-옛-답은-끈다)
+- [ADR-023 DCS 질의(DECRQSS·XTGETTCAP)는 터미널 상태와 고정 목록으로만 답하고, 요청 글은 답에 넣지 않는다](#adr-023-dcs-질의decrqssxtgettcap는-터미널-상태와-고정-목록으로만-답하고-요청-글은-답에-넣지-않는다)
 
 ## ADR-001 VT 엔진은 alacritty_terminal로 시작하고, bt-term 밖으로 엔진 타입을 내보내지 않는다
 
@@ -615,3 +616,30 @@ macOS의 Carbon `EnableSecureEventInput`은 켜 있는 동안 키 입력이 다�
 ### 결과
 - 단위 테스트(스캐너 모양, Ghostty 테스트 값)와 `/bin/sh`·`printf` PTY 통합 테스트(답이 하나인지, 설정에 따른 DA1, 크기 바뀜마다 2048 보고, RIS)로 확인했다. 실제 창에서는 질의마다 답이 한 번 오는 것과 2048을 켤 때의 보고를 봤다. 창 크기를 바꿀 때의 보고와 vim이 DA2로 무엇을 판단하는지는 보지 않았다.
 - 모드 2048은 사용자가 창 크기를 바꿀 때만 입력을 만든다. 비용(창 크기를 끌 때 쓰는 바이트 수)은 재지 않았다.
+## ADR-023 DCS 질의(DECRQSS·XTGETTCAP)는 터미널 상태와 고정 목록으로만 답하고, 요청 글은 답에 넣지 않는다
+
+상태: 채택
+
+### 배경
+- DECRQSS(`DCS $ q 요청 ST`)는 터미널의 현재 설정(SGR, 커서 모양 DECSCUSR, 스크롤 영역 DECSTBM, 좌우 여백 DECSLRM)을 묻고, XTGETTCAP(`DCS + q 16진수이름;… ST`)은 terminfo 능력을 묻는다. 둘 다 터미널에 찍힌 글이 터미널을 시켜 PTY 입력으로 바이트를 쓰게 하는 길이다(ENQ, 제목 보고, DECRQCRA와 같은 종류). 전에는 답하지 않았고 Ghostty는 답한다(`src/terminal/dcs.zig`, `stream_handler.zig` 496~512줄).
+- 되돌려 보내는 답에 요청의 바이트가 섞이면 그 바이트가 셸 입력이 된다(되돌려 넣은 요청이 셸 명령으로 실행된 사례가 여러 터미널에 있었다고 한다. 이번에 사례를 따로 확인하지는 않았다).
+
+### 결정
+1. 답은 설정 없이 늘 켠다. Ghostty에도 설정이 없다. 답은 터미널이 가진 상태(커서 속성·모양·스크롤 영역)와 코드에 박은 목록에서 만든 숫자·16진수뿐이다.
+2. **DECRQSS 답에는 요청 글이 들어가지 않는다.** 요청은 `m`, `r`, `s`, ` q`(공백 다음 q) 넷만 알아보고 그 밖의 한두 바이트는 `DCS 0 $ r ST`(모르는 설정), 세 바이트 이상은 Ghostty처럼 잘못된 명령으로 보아 답하지 않는다. SGR은 `DCS 1 $ r 0;…m ST`, DECSCUSR는 `Ps SP q`(1~6), DECSTBM은 `위;아래 r`(1부터, 둘 다 포함), DECSLRM은 alacritty에 좌우 여백이 없어 늘 `DCS 0 $ r ST`다.
+3. **XTGETTCAP 답의 이름은 요청에서 온 글이 아니다.** 요청 이름(16진수, 대소문자 무관)을 목록의 이름을 16진수로 바꾼 것과 비교해 같을 때만 그 목록의 이름과 값을 16진수로 만들어 답한다. 모르는 이름은 되돌려 넣지도 않고 Ghostty처럼 답도 하지 않는다(`DCS 0 + r`을 보내지 않는다). 형식은 이름마다 `DCS 1 + r 이름16진=값16진 ST`, 값 없는 불리언은 `DCS 1 + r 이름16진 ST`다(Ghostty `terminfo/Source.zig`의 원문으로 확인했다).
+4. 스캐너(`notify.rs`)가 OSC·APC와 따로 DCS를 모은다. 머리(매개변수·중간 바이트)는 열여섯 바이트까지, 중간 바이트가 `$`나 `+` 하나이고 끝 바이트가 `q`일 때만 본문을 모은다. 본문 상한은 모으기 전에 본다: DECRQSS 두 바이트, XTGETTCAP `MAX_XTGETTCAP`(4096바이트, Ghostty는 1MiB). 넘으면 그 DCS는 버리고 답하지 않는다. 한 요청에서 답하는 이름은 64개까지다(되풀이해 묻는 증폭을 막는다). 다른 DCS(sixel, tmux 패스스루 등)는 ST까지 흘려보내고 건드리지 않는다. tmux 패스스루 안의 겹친 ESC 때문에 안의 질의를 우리 것으로 읽지 않는다.
+5. 답은 읽기 전용 칸에서도 막지 않는다(ADR-018 결정 4).
+
+### XTGETTCAP 목록(b-terminal이 실제로 하는 것만)
+- 답한다: `TN`(TERM 값, 기본 `xterm-256color`), `Co`·`colors`(256), `RGB`(8), `Tc`, `am`, `xenl`, `bce`, `AX`, `Smulx`, `Ss`, `Se`, `Ms`, `Sync`, `BD`·`BE`·`PS`·`PE`(괄호 붙여넣기), `XM`·`xm`(SGR 마우스), `fe`·`fd`·`kxIN`·`kxOUT`(초점 보고), `E3`(스크롤백 지우기).
+- `TN`은 자식에게 준 TERM(`term` 설정, 기본 `xterm-256color`)과 같은 값이다. Ghostty는 자기 terminfo의 첫 이름(`xterm-ghostty`)을 답해 TERM과 맞는다. TERM이 `xterm-256color`인데 `b-terminal`이라고 답하면 앱이 TN으로 능력 목록을 고르다가 둘이 어긋나므로 TERM과 맞췄다.
+- 답한다(#264가 XTVERSION·DA2에 답하게 된 뒤 주 세션이 더함): `XR`·`xr`·`RV`·`rv`(값은 Ghostty terminfo 그대로).
+- 뺀다: `Su`·`Setulc`(밑줄 색: 격자는 색을 들고 있지만 그리지 않는다), `Smol`·`Rmol`(윗줄: 격자에 없다), `Enmg`·`Dsmg`·`Clmg`·`Cmg`(DECSLRM: 없다), `fullkbd`(kitty 키보드 프로토콜의 모든 단계를 확인하지 않았다), `cols`·`lines`·`it`·`pairs`(크기·정적 값은 terminfo 파일의 일이다), `kcuu1` 같은 키 능력(키는 설정으로 바뀐다), 나머지 `bold`·`cup` 등 정적 문자열 능력(`xterm-256color` terminfo 파일이 답한다. Ghostty의 목록은 자기 terminfo 전체다).
+- `Smulx`는 `4:3`(물결)만 그려지고 점선·이중선은 보통 밑줄로 그려진다. `Ms`는 `clipboard-write`가 `deny`여도 답한다(능력은 있고 허용은 별개다).
+
+### 결과
+- 기본 동작이 바뀐다: `DCS $ q`와 `DCS + q`에 답한다(전에는 답이 없었다).
+- DECRQSS SGR은 alacritty 커서 템플릿(`grid.cursor.template`)에서 읽는다. 깜박임(5)과 윗줄(53)은 격자에 없어 답에 빠진다. 밑줄 색은 있으면 `58`로 답한다(Ghostty 테스트 값에는 없다). 새 칸의 DECSCUSR는 설정의 `cursor-style`이 아니라 alacritty 기본(깜박이지 않는 블록, `2`)을 답한다.
+- 프로그램이 `DCS 0 + r`을 기다리면 모르는 이름에 시간 초과가 날 수 있다(Ghostty와 같다).
+- 테스트: Ghostty `dcs.zig` 테스트 값(DECRQSS 응답 인코딩, 큰 응답, 이름 해석, 대소문자 섞임, 여러 이름, 잘못된 값), 스캐너 단위 테스트, `/bin/sh`와 `printf`로 띄운 PTY 통합 테스트. 격리한 실제 창에서 셸이 `/dev/tty`에 질의를 쓰고 `dd`로 답을 읽어, DECRQSS 네 갈래와 XTGETTCAP(한 이름, 여러 이름, 끝 표시를 끼운 이름)의 답이 테스트와 같은 것을 한 번 봤다.
