@@ -135,6 +135,7 @@ keybind = ctrl+a>ctrl+a=text:\x01     # 앞 키 자체를 보내고 싶을 때
 | `select_all` | 보이는 화면 모두 고르기 | `super+a` |
 | `reload_config` | 설정 다시 읽기 | `super+shift+comma` |
 | `quit` | 앱 끝내기(프로그램이 도는 칸이 있으면 묻습니다) | `super+q` |
+| `prompt_surface_title` / `set_surface_title:글` | 지금 칸의 제목을 입력 막대로 묻기 / 정하기. 사람이 붙인 제목은 프로그램이 정한 제목보다 먼저 보이고, 빈 글이면 지워져 프로그램 제목으로 돌아갑니다 | (없음, 메뉴 "셸 › 제목 바꾸기…"와 팔레트) |
 | `toggle_quick_terminal` | 퀵 터미널(화면 가장자리에서 미끄러져 나오는 창) 보이기·숨기기. 자리·크기·화면·움직임은 `quick-terminal-*` 설정. 창 상태 복원에서 빠집니다 | (없음, `global:`로 묶으세요) |
 | `text:글` / `csi:…` / `esc:…` | 글·이스케이프 보내기 | |
 | `unbind` | 그 트리거 지우기 | |
