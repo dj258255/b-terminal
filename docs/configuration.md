@@ -49,6 +49,12 @@ config-file = ?~/.config/b-terminal/local   # ?가 붙으면 없어도 된다
 | `osc-color-report-format` | `none` `8-bit` `16-bit` | `16-bit` | 프로그램이 색을 묻는 질의(OSC 4·10·11)에 답하는 꼴. `none`은 답하지 않고, `8-bit`는 `rgb:RR/GG/BB`, `16-bit`는 `rgb:RRRR/GGGG/BBBB`입니다. 새로 연 칸부터 적용 |
 | `selection-background` / `selection-foreground` | `#rrggbb` | 색 뒤집기 | |
 | `bold-is-bright` | `true` / `false` | `false` | Ghostty 기본과 같게 끔 |
+| `bold-color` | `#rrggbb`, `bright` | 없음 | 굵은 글자의 색(Ghostty 1.2). 색을 주면 굵은 기본 글자색이 그 색이 되고, 나머지 굵은 0~7번 색은 밝은 8~15번 색이 됩니다. `bright`는 색 없이 굵은 0~7번 색만 밝게 올립니다(`bold-is-bright = true`와 같음). 값을 비우면 기본 |
+| `faint-opacity` | `0`~`1` | `0.5` | 흐린 글자(SGR 2)의 불투명도(Ghostty 1.2). 1이면 그대로, 0이면 바탕에 묻혀 보이지 않습니다. 범위 밖은 가까운 값으로 묶습니다. 전에는 0.6 고정이었습니다 |
+| `search-background` / `search-foreground` | `#rrggbb`, `cell-foreground`, `cell-background` | `#ffe082` / `#000000` | 찾기에 맞은 칸의 바탕·글자색(지금 고른 곳 말고 나머지). `cell-*`는 그 칸의 글자색·바탕색 |
+| `search-selected-background` / `search-selected-foreground` | `#rrggbb`, `cell-foreground`, `cell-background` | `#f2a57e` / `#000000` | 지금 고른 맞은 곳(Enter로 옮겨 다니는 것)의 바탕·글자색 |
+| `selection-clear-on-typing` | `true` / `false` | `true` | 글을 치면 고른 영역을 지웁니다(IME 조합을 시작할 때도). 끄면 지우지 않지만 Esc는 지웁니다. 붙여넣기는 이 값과 상관없이 지웁니다 |
+| `selection-clear-on-copy` | `true` / `false` | `false` | 복사 명령(단축키·메뉴·`right-click-action`의 복사)으로 복사한 뒤 고른 영역을 지웁니다. `copy-on-select`의 자동 복사는 지우지 않습니다 |
 | `cursor-style` | `block` `bar` `underline` `block_hollow` | `block` | 프로그램이 바꾸면 그쪽이 이깁니다 |
 | `cursor-style-blink` | `true` / `false` | 끔 | 0.6초마다 깜빡입니다. 프로그램이 DECSCUSR(`ESC[1 q` 등)로 바꾸면 그쪽을 따르고, 키를 치는 동안과 창을 보지 않을 때는 깜빡이지 않습니다 |
 | `window-padding-x` / `window-padding-y` | `2` 또는 `왼,오른`(`위,아래`) | `2` | 포인트 |

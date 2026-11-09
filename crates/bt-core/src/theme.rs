@@ -75,8 +75,62 @@ impl Rgb {
     }
 }
 
+/// 찾기 강조에 쓰는 색 하나(Ghostty `search-*`의 값). 색이거나 칸의 글자색·바탕색을 따른다
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SearchColor {
+    Rgb(Rgb),
+    /// `cell-foreground`: 칸의 글자색
+    CellForeground,
+    /// `cell-background`: 칸의 바탕색
+    CellBackground,
+}
+
+impl SearchColor {
+    /// 칸의 글자색·바탕색이 주어졌을 때 실제 색
+    pub fn resolve(self, cell_fg: Rgb, cell_bg: Rgb) -> Rgb {
+        match self {
+            SearchColor::Rgb(c) => c,
+            SearchColor::CellForeground => cell_fg,
+            SearchColor::CellBackground => cell_bg,
+        }
+    }
+}
+
+/// 찾기에 맞은 칸의 색(Ghostty `search-foreground`·`search-background`·`search-selected-*`).
+/// 기본은 Ghostty처럼 검정 글자에 노란 바탕(맞은 곳), 검정 글자에 살구색 바탕(지금 고른 곳)
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SearchColors {
+    pub foreground: SearchColor,
+    pub background: SearchColor,
+    pub selected_foreground: SearchColor,
+    pub selected_background: SearchColor,
+}
+
+impl Default for SearchColors {
+    fn default() -> Self {
+        Self {
+            foreground: SearchColor::Rgb(Rgb::new(0, 0, 0)),
+            background: SearchColor::Rgb(Rgb::new(0xff, 0xe0, 0x82)),
+            selected_foreground: SearchColor::Rgb(Rgb::new(0, 0, 0)),
+            selected_background: SearchColor::Rgb(Rgb::new(0xf2, 0xa5, 0x7e)),
+        }
+    }
+}
+
+impl SearchColors {
+    /// 찾기에 맞은 칸의 (글자색, 바탕색). `current`면 지금 고른 맞은 곳
+    pub fn pick(&self, current: bool, cell_fg: Rgb, cell_bg: Rgb) -> (Rgb, Rgb) {
+        let (fg, bg) = if current {
+            (self.selected_foreground, self.selected_background)
+        } else {
+            (self.foreground, self.background)
+        };
+        (fg.resolve(cell_fg, cell_bg), bg.resolve(cell_fg, cell_bg))
+    }
+}
+
 /// 터미널 색 테마
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Theme {
     pub foreground: Rgb,
     pub background: Rgb,
@@ -90,6 +144,12 @@ pub struct Theme {
     pub palette: [Rgb; 16],
     /// 굵은 글자의 0~7번 색을 밝은 8~15번으로 올린다(Ghostty 기본은 끔)
     pub bold_is_bright: bool,
+    /// 굵은 기본 글자색(Ghostty `bold-color`의 색 값). 있으면 나머지 굵은 0~7번 색은 밝은 색으로 올린다
+    pub bold_color: Option<Rgb>,
+    /// 흐린(faint, SGR 2) 글자의 불투명도(0~1, Ghostty `faint-opacity`)
+    pub faint_opacity: f32,
+    /// 찾기에 맞은 칸의 색
+    pub search: SearchColors,
 }
 
 impl Default for Theme {
@@ -129,6 +189,9 @@ impl Theme {
                 Rgb::new(0xea, 0xea, 0xea),
             ],
             bold_is_bright: false,
+            bold_color: None,
+            faint_opacity: 0.5,
+            search: SearchColors::default(),
         }
     }
 }
@@ -174,6 +237,22 @@ mod tests {
         // 이미 충분하거나 min이 1이면 그대로
         assert_eq!(navy.contrasted(white, 3.0), navy);
         assert_eq!(navy.contrasted(bg, 1.0), navy);
+    }
+
+    #[test]
+    fn search_colors_default_and_cell_colors_like_ghostty() {
+        let (cfg, cbg) = (Rgb::new(10, 20, 30), Rgb::new(200, 100, 50));
+        let d = SearchColors::default();
+        assert_eq!(d.pick(false, cfg, cbg), (Rgb::new(0, 0, 0), Rgb::new(0xff, 0xe0, 0x82)));
+        assert_eq!(d.pick(true, cfg, cbg), (Rgb::new(0, 0, 0), Rgb::new(0xf2, 0xa5, 0x7e)));
+        let s = SearchColors {
+            foreground: SearchColor::CellBackground,
+            background: SearchColor::CellForeground,
+            selected_foreground: SearchColor::CellForeground,
+            selected_background: SearchColor::Rgb(Rgb::new(1, 2, 3)),
+        };
+        assert_eq!(s.pick(false, cfg, cbg), (cbg, cfg));
+        assert_eq!(s.pick(true, cfg, cbg), (cfg, Rgb::new(1, 2, 3)));
     }
 
     #[test]

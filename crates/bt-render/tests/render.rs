@@ -681,3 +681,108 @@ fn half_transparent_block_cursor_mixes_with_the_cell() {
         "{half:?}"
     );
 }
+
+/// 주어진 테마로 바이트를 그린다. `edit`로 칸을 고친 뒤(찾기 강조 등) 그린다
+fn paint_theme(f: &mut Fonts, theme: &Theme, bytes: &[u8], edit: impl FnOnce(&mut Vec<DrawCell>)) -> Frame {
+    let mut e = Emulator::new(GridSize::new(4, 1), theme.clone());
+    e.feed(bytes);
+    let s = e.snapshot();
+    let mut dc = cells(&s);
+    edit(&mut dc);
+    let m = f.metrics();
+    let (w, h) = (m.width * 4, m.height);
+    let mut buf = vec![0u32; (w * h) as usize];
+    let view = GridView {
+        cols: s.cols,
+        rows: s.rows,
+        cells: &dc,
+        cursor: None,
+        selection_bg: theme.selection_background,
+        selection_fg: theme.selection_foreground,
+        preedit: None,
+        min_contrast: 1.0,
+    };
+    let mut c = Canvas::new(&mut buf, w, h);
+    c.clear(s.background);
+    draw_grid(&mut c, f, 0, 0, &view);
+    Frame {
+        buf,
+        w,
+        h,
+        cw: m.width,
+        ch: m.height,
+    }
+}
+
+/// 첫 두 칸에서 가장 밝은 픽셀의 밝기 합
+fn brightest(fr: &Frame) -> u32 {
+    (0..fr.ch)
+        .flat_map(|y| (0..fr.cw * 2).map(move |x| (x, y)))
+        .map(|(x, y)| {
+            let p = Rgb::from_u32(fr.buf[(y * fr.w + x) as usize]);
+            p.r as u32 + p.g as u32 + p.b as u32
+        })
+        .max()
+        .unwrap_or(0)
+}
+
+/// #162: faint-opacity가 클수록 흐린(SGR 2) 글자가 또렷하고, 0이면 바탕에 묻힌다
+#[test]
+fn faint_opacity_controls_how_visible_faint_text_is() {
+    let Some(mut f) = fonts(1.0) else { return };
+    let at = |f: &mut Fonts, o: f32| {
+        let t = Theme {
+            faint_opacity: o,
+            ..Theme::default()
+        };
+        brightest(&paint_theme(f, &t, b"\x1b[2mHH", |_| {}))
+    };
+    let (full, half, none) = (at(&mut f, 1.0), at(&mut f, 0.5), at(&mut f, 0.0));
+    let bg = Theme::default().background;
+    assert!(full > 600, "불투명 1: 흰 글자 그대로 {full}");
+    assert!(full > half && half > none, "{full} > {half} > {none}");
+    assert!(
+        none <= bg.r as u32 + bg.g as u32 + bg.b as u32 + 3,
+        "0이면 바탕과 같아 보이지 않는다: {none}"
+    );
+}
+
+/// #162: bold-color가 있으면 굵은 기본 글자는 그 색, 없으면 흰색 그대로
+#[test]
+fn bold_color_paints_bold_text_with_that_color() {
+    let Some(mut f) = fonts(1.0) else { return };
+    let orange = |fr: &Frame| {
+        (0..fr.ch)
+            .flat_map(|y| (0..fr.cw * 2).map(move |x| (x, y)))
+            .any(|(x, y)| {
+                let p = Rgb::from_u32(fr.buf[(y * fr.w + x) as usize]);
+                p.r > 200 && p.g > 100 && p.g < 160 && p.b < 40
+            })
+    };
+    let plain = paint_theme(&mut f, &Theme::default(), b"\x1b[1mHH", |_| {});
+    assert!(!orange(&plain), "bold-color 없이는 흰 글자");
+    let t = Theme {
+        bold_color: Some(Rgb::new(0xff, 0x80, 0)),
+        ..Theme::default()
+    };
+    let colored = paint_theme(&mut f, &t, b"\x1b[1mHH", |_| {});
+    assert!(orange(&colored), "굵은 글자가 주황");
+}
+
+/// #162: 찾기에 맞은 칸의 바탕은 search-background / search-selected-background로 칠해진다
+#[test]
+fn search_match_background_is_painted_with_search_colors() {
+    let Some(mut f) = fonts(1.0) else { return };
+    let t = Theme::default();
+    let fr = paint_theme(&mut f, &t, b"HHHH", |dc| {
+        for (i, current) in [(0usize, false), (1, true)] {
+            let (fg, bg) = t.search.pick(current, dc[i].fg, dc[i].bg);
+            dc[i].fg = fg;
+            dc[i].bg = bg;
+        }
+    });
+    let corner = |col: u32| Rgb::from_u32(fr.buf[(col * fr.cw) as usize]);
+    assert_eq!(corner(0), Rgb::new(0xff, 0xe0, 0x82), "맞은 곳");
+    assert_eq!(corner(1), Rgb::new(0xf2, 0xa5, 0x7e), "지금 고른 곳");
+    assert_eq!(corner(2), t.background, "맞지 않은 칸");
+}
