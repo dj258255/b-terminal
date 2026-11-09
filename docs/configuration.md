@@ -79,7 +79,12 @@ config-file = ?~/.config/b-terminal/local   # ?가 붙으면 없어도 된다
 | `clipboard-write` | `allow` / `deny` | `allow` | 프로그램이 OSC 52로 클립보드에 쓰기(AI CLI의 `/copy`). 보고 있는 창의 고른 칸(화면을 나눴으면 키 입력을 받는 칸)에서 온 것만 받습니다 |
 | `clipboard-read` | `allow` / `deny` / `ask` | `deny` | 프로그램이 OSC 52로 클립보드 읽기. `ask`는 아직 묻는 창이 없어 `deny`로 봅니다 |
 | `shell-integration` | `detect` `none` `zsh` `bash` | `detect` | 탭의 셸에 셸 통합을 싣습니다(아래 "셸 통합") |
-| `notify-command-seconds` | 초 | `10` | b-terminal 키. 셸 통합으로 안 명령이 이만큼 넘게 걸려 끝나면 창을 보지 않을 때 알림. `0`이면 끔 |
+| `notify-command-seconds` | 초 | `10` | b-terminal 키(옛 키). 셸 통합으로 안 명령이 이만큼 넘게 걸려 끝나면 창을 보지 않을 때 데스크톱 알림. `0`이면 끔. `notify-on-command-finish`를 적으면 무시합니다 |
+| `notify-on-command-finish` | `never` `unfocused` `always` | 적지 않음 | Ghostty 키. 명령이 끝났을 때 알릴 때. `unfocused`는 그 칸을 보고 있지 않을 때만. 적으면 아래 두 키를 따르고 `notify-command-seconds`는 무시합니다. 적지 않으면 옛 `notify-command-seconds` 동작(10초 넘게, 창을 보지 않을 때 데스크톱 알림만)입니다. Ghostty 기본은 `never`인데 b-terminal은 이미 있던 동작을 지키려고 이렇게 둡니다. 셸 통합(OSC 133)이 있어야 합니다 |
+| `notify-on-command-finish-action` | `bell` `notify`(쉼표로, 앞에 `no-`면 끔), `true` `false` | `bell` | Ghostty 키. `bell`은 벨이 울린 것처럼(`bell-features`를 따름), `notify`는 데스크톱 알림 |
+| `notify-on-command-finish-after` | 기간(`5s`, `1m30s`) | `5s` | Ghostty 키. 명령이 이만큼 이상 걸려야 알립니다 |
+| `desktop-notifications` | `true` `false` | `true` | Ghostty 키. 프로그램의 OSC 9·777 데스크톱 알림을 받을지. `false`면 버립니다(명령 끝 알림과 `btctl notify`는 그대로) |
+| `app-notifications` | `clipboard-copy` `config-reload`(쉼표로, 앞에 `no-`면 끔), `true` `false` | `true` | Ghostty 키. 앱 자신의 알림 띠: 클립보드에 복사했을 때(OSC 52 쓰기·경로·링크 주소 복사), 설정을 다시 읽었을 때. 설정 경고가 있으면 `config-reload`를 꺼도 알립니다. Ghostty 문서는 GTK 전용이라고 하지만 b-terminal은 같은 띠를 macOS에서 씁니다 |
 | `bell-features` | `system` `attention` `title` `audio`(쉼표로, 앞에 `no-`면 끔), `true` `false` | `attention,title` | 프로그램이 벨(BEL)을 울리면: `title`은 보지 않는 칸의 탭·창 제목 앞에 🔔를 붙이고 그 칸을 보면 뗍니다. `attention`은 창이 앞에 없을 때 Dock 아이콘을 튀깁니다. `system`은 시스템 경고음입니다(0.1초에 한 번까지). `audio`는 `bell-audio-path`의 소리 파일을 재생합니다(macOS만, 보고 있어도 납니다. 앞 소리가 아직 나는 중이거나 0.1초 안이면 건너뜁니다). Ghostty의 `border`는 받지만 하는 일이 없습니다 |
 | `bell-audio-path` | 파일 경로 | 없음 | `bell-features`에 `audio`가 있을 때 재생할 소리 파일(macOS가 읽을 수 있는 wav·aiff·mp3 등). `~/`는 홈, 상대 경로는 설정 파일이 있는 폴더 기준입니다. 파일을 읽지 못하면 소리 없이 지나갑니다. 빈 값은 지움 |
 | `bell-audio-volume` | 0.0~1.0 | `0.5` | `audio`로 재생할 크기(시스템 볼륨 대비). 범위 밖은 0.0~1.0으로 자릅니다 |
@@ -196,7 +201,7 @@ keybind = ctrl+a>ctrl+a=text:\x01     # 앞 키 자체를 보내고 싶을 때
 탭에서 띄우는 zsh·bash에 셸 통합을 자동으로 싣습니다(Ghostty와 같은 방식, 사용자 설정은 그대로 읽힘. [assets/shell-integration](../assets/shell-integration/README.md)). 셸이 명령의 시작·끝·종료 코드(OSC 133)와 명령 글(OSC 633;E)을 알려 주면 터미널이 이렇게 씁니다.
 
 - Cmd-↑ / Cmd-↓: 앞·뒤 프롬프트로 스크롤
-- 창을 보지 않을 때 10초(`notify-command-seconds`) 넘게 걸린 명령이 끝나면 데스크톱 알림. 실패하면 "명령이 실패했습니다"
+- 기본은 창을 보지 않을 때 10초(`notify-command-seconds`) 넘게 걸린 명령이 끝나면 데스크톱 알림. 실패하면 "명령이 실패했습니다". `notify-on-command-finish`를 적으면 Ghostty처럼 그 키들(`-action`, `-after`)을 따릅니다
 - `btctl run -- <명령>`: 그 탭에서 명령을 돌리고 끝날 때까지 기다려 출력을 찍고 그 종료 코드로 끝납니다. 에이전트가 다른 탭을 도구로 쓰는 길입니다. `btctl last`는 마지막으로 끝난 명령
 
 fish·elvish는 아직 스크립트가 없습니다. 끄려면 `shell-integration = none`.
