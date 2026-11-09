@@ -15,6 +15,21 @@ b-terminal은 Ghostty와 같은 문법으로 설정합니다. Ghostty를 깔지 
 
 `b-terminal --show-config`는 읽은 파일, 경고, 지금 적용된 값을 Ghostty 문법으로 보입니다.
 
+## 명령줄 동작 `+동작`
+
+`b-terminal +동작 [인자]`는 창을 띄우지 않고 일을 하고 끝납니다(Ghostty의 `ghostty +동작`). `+`로 시작하는 인자가 동작이고 자리는 가리지 않지만(`-e` 뒤는 프로그램의 인자), 동작은 하나만 줄 수 있습니다. 모르는 동작은 오류(종료 코드 1)입니다. `+help`가 목록을, `+동작 --help`가 그 동작의 설명을 보입니다. 기존 `--` 인자는 그대로입니다.
+
+| 동작 | 하는 일 |
+|---|---|
+| `+version` | `b-terminal <버전>` 한 줄(`--version`과 같음). Ghostty처럼 빌드 정보를 늘어놓지는 않습니다 |
+| `+help` | 동작 목록 |
+| `+show-config` | `--show-config`와 같은 출력. `--config-file`, `--config-default-files`를 받고, `--default`는 파일을 읽지 않은 기본값을 보입니다. Ghostty의 `--changes-only`·`--docs`는 아직 받지 않습니다 |
+| `+list-themes` | `이름 (resources)`(넣어 둔 것)·`이름 (user)`(`~/.config/b-terminal/themes`)를 이름순으로 한 줄씩. 사용자 테마가 이름이 같으면 이깁니다. `--plain`은 받기만 하고(늘 목록), `--path`·`--color`는 아직 받지 않습니다 |
+| `+validate-config` | 설정을 읽어 경고를 한 줄씩 표준 출력에 보이고, 경고가 있으면 종료 코드 1, 없으면 0. `--config-file`, `--config-default-files`와 함께 씁니다. `--config-file`로 준 파일이 없으면 오류(1)입니다 |
+| `+edit-config` | `~/.config/b-terminal/config`(없으면 주석 한 줄로 만들고)를 `$VISUAL`(없거나 비면 `$EDITOR`)로 열고 편집기가 끝나길 기다려 그 종료 코드를 따릅니다. 편집기 값은 셸을 거치지 않고 빈칸·따옴표로 갈라 인자 배열로 넘깁니다(`code -w`는 됩니다. 셸 문법인 `;`·`$(…)`·`~`·환경 변수 풀이는 되지 않습니다). 둘 다 없으면 오류(1)입니다 |
+
+Linux 전용인 `+new-window`·`+ssh-cache`·`+crash-report`·`+boo`는 두지 않습니다.
+
 ## 문법
 
 ```
