@@ -265,6 +265,24 @@ Ghostty 키 묶음 동작 채우기. 추적 이슈 [#205](https://github.com/dj2
 - "막는 곳은 한 곳"이라는 설계(ADR-018)도, 그 한 곳보다 먼저 생기는 길(칸을 만들기 전에 뜨는 시작 입력 스레드)은 놓칠 수 있습니다. 검토 에이전트가 찾았습니다.
 - Ghostty 동작 89개를 해석기에 실제로 넣어 보는 임시 테스트로 "모두 받는다"를 쟀습니다. 이름이 코드에 있는지 grep하는 것보다 정확합니다.
 
+## 0.15.0 (2026-11-10)
+
+Ghostty 동작 맞추기. 추적 이슈 [#219](https://github.com/dj258255/b-terminal/issues/219). 0.14와 같은 방식으로 진행했습니다. 에이전트 넷이 각자 worktree에서 구현·커밋하고, 주 세션이 옮기고 검토·병합했습니다. 병합 시각(KST)은 추적 이슈를 연 01:51부터 마지막 병합 02:13까지입니다.
+
+| 이슈 | 내용 | 예상 | 실제 | PR | 주 세션이 한 것 |
+|---|---|---|---|---|---|
+| [#220](https://github.com/dj258255/b-terminal/issues/220) | OSC 52 클립보드 `ask`(보안 경계) | 2~4시간 | 에이전트 약 7분(병합 02:13) | [#227](https://github.com/dj258255/b-terminal/pull/227) | 옮긴 뒤 깨진 컴파일(#223의 `binds_to`) 고침, 보안 관점 diff 읽기, ADR-019 보충, 커밋 보안 리뷰, 실제 창(쓰기 막대, 두 번째 요청 거절) |
+| [#221](https://github.com/dj258255/b-terminal/issues/221) | 시스템 밝음·어두움 따라가기 | 2~4시간 | 에이전트 약 6분(병합 02:08) | [#226](https://github.com/dj258255/b-terminal/pull/226) | diff 읽기, 실제 창(밝은 시스템에서 밝은 테마) |
+| [#222](https://github.com/dj258255/b-terminal/issues/222) | 스크롤 막대 끌기·누르기 | 2~4시간 | 에이전트 약 6분(병합 02:04) | [#225](https://github.com/dj258255/b-terminal/pull/225) | diff 읽기, 실제 창(경고 없음) |
+| [#223](https://github.com/dj258255/b-terminal/issues/223) | 창 상태의 제목, 탭 옮긴 뒤 초점 보고·막대 | 2~4시간 | 에이전트 약 4.5분(병합 02:01) | [#224](https://github.com/dj258255/b-terminal/pull/224) | `CloseTab` 값이 칸 id인지 확인, 실제 창(제목을 넣은 상태 파일로 복원) |
+
+이번에 배운 것:
+
+- 실제 창 확인의 범위를 넓히는 방법: 상태 파일을 손으로 써서 띄우면, 키를 누르지 않고도 복원 경로를 볼 수 있었습니다(#223). 출력이 띄우는 막대는 `btctl send`로 프로그램 출력을 만들어 볼 수 있었습니다(#220).
+- 범수 님의 시스템 설정(밝음·어두움)이나 클립보드를 바꿔야 보이는 것은 보지 않았습니다. 사람이 확인할 목록으로 넘깁니다.
+- 앞서 병합한 PR이 열거형에 쓰는 함수(`Pending::binds_to`)를 더하면, 뒤에 병합하는 PR의 새 갈래가 컴파일을 깨뜨립니다(#220). 0.14(#206)와 같은 꼴이었습니다. 옮긴 뒤 빌드를 먼저 확인하는 순서를 지켜 바로 잡았습니다.
+- 에이전트가 이슈 지시와 다르게 한 것(#223 초점 보고: "I와 O 한 번씩" 대신 상태가 바뀔 때만)은 근거가 맞으면 받아들이고 PR에 적었습니다.
+
 ## 다음
 
 - 범수 님이 직접 해야 할 것: 키보드·마우스 확인(한글 2벌식 "안녕 하세요⏎", Claude Code의 Shift+Enter, Cmd-D·Cmd-F·Cmd-클릭·Cmd-N·Cmd-Shift-P, 메뉴, 창 닫기 단추, vim·htop, kitty icat·yazi, 투명 창), Developer ID 계정으로 `scripts/bundle-macos.sh --sign … --notarize … --dmg`
@@ -278,4 +296,6 @@ Ghostty 키 묶음 동작 채우기. 추적 이슈 [#205](https://github.com/dj2
 - 범수 님이 확인할 것(0.12): `vt-window-resize-allowed = true`에서 `printf '\033[8;20;60t'`로 창 크기가 바뀌는지, `macos-non-native-fullscreen = true`에서 ⌃⌘F, `window-step-resize = true`에서 가장자리 끌기, 빨리 끝난 칸에서 아무 키나 눌러 닫기, `palette-generate = true`로 256색 표, tmux 안의 가족 이모지 뒤 커서 자리
 - 범수 님이 확인할 것(0.13): OSC 8 링크를 Cmd를 누른 채 올려 `link-previews = osc8`·`false`에서 주소 띠가 어떻게 나오는지, `seq 1 500` 뒤 휠로 올려 스크롤 막대가 나왔다 사라지는지, `key-remap = left_ctrl=super`와 `keybind = super+t=new_tab`으로 왼쪽 Ctrl-T(오른쪽 Ctrl-C는 그대로 SIGINT), `macos-icon = custom`과 `macos-custom-icon`으로 Dock 아이콘, `quick-terminal-space-behavior = remain`에서 Space 옮기기, `macos-titlebar-style = hidden`에서 창 위쪽 끌기, `font-thicken = true`의 두께
 - 범수 님이 확인할 것(0.14): `keybind = ctrl+alt+r=toggle_readonly`로 칸을 읽기 전용으로 한 뒤 타자·⌘V·`btctl send`가 막히고 제목에 🔒가 붙는지, `prompt_tab_title`의 입력 막대, `move_tab_to_new_window`, `toggle_visibility`, `toggle_background_opacity`(`background-opacity = 0.8`과 함께), `set_window_theme:light`, `keybind = ctrl+a>activate_key_table:nav`와 `nav/h=goto_split:left` 같은 키 테이블
+- 범수 님이 확인할 것(0.15): `seq 1 500` 뒤 오른쪽 끝 막대를 끌고 빈 곳 누르기, `theme = light:GitHub Light Default,dark:GitHub Dark`로 시스템 설정의 모양을 바꿔 색이 바로 바뀌는지, `clipboard-write = ask`·`clipboard-read = ask`에서 막대가 뜰 때 Enter가 허용이 아닌지·`y`는 되는지, 탭 제목을 붙이고 ⌘Q 뒤 다시 켜서 되살아나는지
+- 범수 님이 정할 것(0.15): `clipboard-read` 기본을 Ghostty처럼 `ask`로 바꿀지(지금 `deny`)
 - 큰 일로 남긴 것: GPU(또는 IOSurface) 렌더러
