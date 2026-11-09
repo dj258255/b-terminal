@@ -22,6 +22,7 @@ pub fn start_mode(maximize: bool, fullscreen: bool, quick: bool) -> StartMode {
 }
 
 /// 전체 화면을 켜고 끄는 방식
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FullscreenKind {
     /// 창 시스템의 전체 화면(새 Space)
@@ -31,6 +32,7 @@ pub enum FullscreenKind {
 }
 
 /// 설정과 운영체제로 전체 화면 방식을 정한다. macOS가 아니면 늘 Native
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub fn fullscreen_kind(kind: bt_core::config::NonNativeFullscreen, macos: bool) -> FullscreenKind {
     if macos && kind != bt_core::config::NonNativeFullscreen::False {
         FullscreenKind::Simple
