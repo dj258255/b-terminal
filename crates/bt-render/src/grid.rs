@@ -41,6 +41,8 @@ pub struct DrawCursor {
     pub wide: bool,
     pub color: Rgb,
     pub text_color: Rgb,
+    /// 불투명도(0~1, Ghostty `cursor-opacity`, #135). 1보다 작으면 칸 위에 섞는다
+    pub opacity: f32,
 }
 
 /// 그릴 격자 하나
@@ -308,30 +310,46 @@ fn draw_cursor(
 ) {
     let span = if cur.wide { 2 } else { 1 };
     let w = m.width * span;
+    // 불투명도(#135): 1이면 칠하고, 아니면 칸 위에 섞는다
+    let alpha = (cur.opacity.clamp(0.0, 1.0) * 255.0).round() as u8;
+    let paint = |canvas: &mut Canvas, x: i32, y: i32, rw: u32, rh: u32| {
+        if alpha == 255 {
+            canvas.fill_rect(x, y, rw, rh, cur.color);
+        } else {
+            canvas.blend_rect(x, y, rw, rh, cur.color, alpha);
+        }
+    };
     match cur.style {
         CursorStyle::Block => {
-            canvas.fill_rect(px, py, w, m.height, cur.color);
-            draw_cell_text(
+            paint(canvas, px, py, w, m.height);
+            // 반투명이면 커서 위 글자도 칸 글자색과 커서 글자색 사이로
+            let text = if alpha == 255 {
+                cur.text_color
+            } else {
+                cell.fg.mix(cur.text_color, cur.opacity)
+            };
+            draw_cell_text(canvas, fonts, m, px, py, span, cell.ch, text, cell.bold, cell.italic);
+        }
+        CursorStyle::Hollow => {
+            let t = m.stroke;
+            paint(canvas, px, py, w, t);
+            paint(canvas, px, py + m.height as i32 - t as i32, w, t);
+            paint(canvas, px, py + t as i32, t, m.height.saturating_sub(2 * t));
+            paint(
                 canvas,
-                fonts,
-                m,
-                px,
-                py,
-                span,
-                cell.ch,
-                cur.text_color,
-                cell.bold,
-                cell.italic,
+                px + w as i32 - t as i32,
+                py + t as i32,
+                t,
+                m.height.saturating_sub(2 * t),
             );
         }
-        CursorStyle::Hollow => canvas.stroke_rect(px, py, w, m.height, m.stroke, cur.color),
-        CursorStyle::Beam => canvas.fill_rect(px, py, (m.stroke * 2).max(2), m.height, cur.color),
-        CursorStyle::Underline => canvas.fill_rect(
+        CursorStyle::Beam => paint(canvas, px, py, (m.stroke * 2).max(2), m.height),
+        CursorStyle::Underline => paint(
+            canvas,
             px,
             py + m.height as i32 - (m.stroke * 2) as i32,
             w,
             m.stroke * 2,
-            cur.color,
         ),
     }
 }
