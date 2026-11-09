@@ -21,6 +21,8 @@ pub struct WindowLook {
     pub fullsize_content: bool,
     /// 신호등 단추를 숨긴다
     pub buttons_hidden: bool,
+    /// 제목 막대의 창 제목 글을 숨긴다(hidden 모양에서 제목이 콘텐츠 위에 겹치지 않게)
+    pub title_hidden: bool,
     pub shadow: bool,
     /// 콘텐츠가 제목 막대에 가리지 않으려고 비워 둘 위쪽 높이(논리 점). 창을 만든 때 정해진다
     pub inset_points: f32,
@@ -43,6 +45,7 @@ pub fn window_look(
         titlebar_transparent: false,
         fullsize_content: false,
         buttons_hidden: false,
+        title_hidden: false,
         shadow,
         inset_points: 0.0,
     };
@@ -63,6 +66,7 @@ pub fn window_look(
             look.titlebar_transparent = true;
             look.fullsize_content = true;
             look.buttons_hidden = true;
+            look.title_hidden = true;
         }
     }
     look
@@ -117,6 +121,7 @@ mod tests {
         let l = look(WindowDecoration::Auto, MacTitlebarStyle::Transparent);
         assert!(l.decorations && l.titlebar_transparent && l.fullsize_content && l.shadow);
         assert!(!l.buttons_hidden);
+        assert!(!l.title_hidden, "transparent는 제목을 보인다(Ghostty와 같다)");
         assert_eq!(l.inset_points, TITLEBAR_POINTS);
     }
 
@@ -139,6 +144,7 @@ mod tests {
     fn hidden_keeps_frame_but_hides_bar_and_buttons() {
         let l = look(WindowDecoration::Auto, MacTitlebarStyle::Hidden);
         assert!(l.decorations && l.titlebar_transparent && l.fullsize_content && l.buttons_hidden);
+        assert!(l.title_hidden, "제목 글이 콘텐츠 첫 줄 위에 겹치지 않게 숨긴다");
         // 제목 막대가 안 보이니 콘텐츠를 비우지 않는다
         assert_eq!(l.inset_points, 0.0);
     }

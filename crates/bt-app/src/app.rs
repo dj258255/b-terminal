@@ -2671,6 +2671,7 @@ impl App {
                 .with_titlebar_transparent(look.titlebar_transparent)
                 .with_fullsize_content_view(look.fullsize_content)
                 .with_titlebar_buttons_hidden(look.buttons_hidden)
+                .with_title_hidden(look.title_hidden)
                 .with_has_shadow(look.shadow)
         };
         let window = match event_loop.create_window(attrs) {
