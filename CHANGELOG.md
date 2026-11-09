@@ -4,6 +4,7 @@
 
 ## [아직 릴리스하지 않음]
 
+- 소리 벨(Ghostty 키): `bell-features`의 `audio`가 `bell-audio-path` 소리 파일을 `bell-audio-volume`(0.0~1.0, 기본 0.5)으로 재생합니다(macOS `NSSound`, 앞 소리가 나는 중이거나 0.1초 안이면 건너뜀). 이전에는 `audio`를 받기만 했습니다. 실제 소리는 아직 들어 보지 않았고 해석·판단만 테스트로 확인했습니다. #165
 - 이어받기·탭 키(Ghostty): `window-`·`tab-`·`split-inherit-working-directory`(새 창·탭·분할이 폴더를 이어받을지, 기본 켬이고 이제 `working-directory`가 `home`·경로여도 이어받음), `window-new-tab-position`(`current` 기본은 지금 탭 바로 뒤라 새 탭 자리가 전의 맨 끝에서 달라짐, `end`), `window-show-tab-bar`(`auto` 기본·`always`·`never`), `window-inherit-font-size`(글자 크기가 앱 전체 하나라 값만 받음). 실제 창에서는 아직 확인하지 않았습니다. #160
 
 ## [0.10.0] - 2026-11-09

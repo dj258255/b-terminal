@@ -242,6 +242,10 @@ pub struct Config {
     pub window_save_state: bool,
     /// 벨(BEL)이 울릴 때 할 일(Ghostty `bell-features`, #107)
     pub bell_features: BellFeatures,
+    /// 벨 소리 파일(Ghostty `bell-audio-path`, #165). 빈 값이면 없음
+    pub bell_audio_path: Option<PathBuf>,
+    /// 벨 소리 크기 0.0~1.0(Ghostty `bell-audio-volume`, 기본 0.5)
+    pub bell_audio_volume: f32,
     /// 프로그램이 도는 칸을 닫기 전에 묻는가(Ghostty `confirm-close-surface`, #108)
     pub confirm_close: ConfirmClose,
     /// 퀵 터미널의 자리·크기·화면·자동 숨김·움직임(Ghostty `quick-terminal-*`, #110)
@@ -303,13 +307,15 @@ impl BellFeatures {
                         system: all,
                         attention: all,
                         title: all,
+                        audio: all,
                     };
                 }
                 "system" => next.system = on,
                 "attention" => next.attention = on,
                 "title" => next.title = on,
-                // Ghostty에 있지만 b-terminal은 하지 않는다(소리 파일, 테두리 깜빡임)
-                "audio" | "border" => {}
+                "audio" => next.audio = on,
+                // Ghostty에 있지만 b-terminal은 하지 않는다(테두리 깜빡임)
+                "border" => {}
                 _ => return false,
             }
         }
@@ -559,6 +565,8 @@ pub struct BellFeatures {
     pub attention: bool,
     /// 벨이 울린 칸의 제목 앞에 🔔를 붙이고, 그 칸을 보면 뗀다
     pub title: bool,
+    /// `bell-audio-path`의 소리 파일을 재생한다(#165)
+    pub audio: bool,
 }
 
 impl Default for BellFeatures {
@@ -567,6 +575,7 @@ impl Default for BellFeatures {
             system: false,
             attention: true,
             title: true,
+            audio: false,
         }
     }
 }
@@ -625,6 +634,8 @@ impl Default for Config {
             background_opacity: 1.0,
             window_save_state: true,
             bell_features: BellFeatures::default(),
+            bell_audio_path: None,
+            bell_audio_volume: 0.5,
             confirm_close: ConfirmClose::True,
             quick: QuickTerminal::default(),
             background_image: None,
@@ -1475,6 +1486,16 @@ impl Config {
                     bad(warnings)
                 }
             }
+            // 상대 경로는 그 설정 파일의 폴더 기준(background-image와 같게). 빈 값은 지움
+            "bell-audio-path" => {
+                self.bell_audio_path =
+                    (!v.is_empty()).then(|| expand_home(v, e.file.parent().unwrap_or(Path::new("."))));
+            }
+            // Ghostty처럼 0.0(무음)~1.0(최대). 범위 밖은 자른다
+            "bell-audio-volume" => match v.parse::<f32>() {
+                Ok(o) if o.is_finite() => self.bell_audio_volume = o.clamp(0.0, 1.0),
+                _ => bad(warnings),
+            },
             "background-opacity" => match v.parse::<f32>() {
                 Ok(o) if o.is_finite() => self.background_opacity = o.clamp(0.0, 1.0),
                 _ => bad(warnings),
@@ -1645,11 +1666,16 @@ impl Config {
             push("command-palette-entry", render_palette_entry(p));
         }
         let b = self.bell_features;
-        let bell: Vec<&str> = [(b.system, "system"), (b.attention, "attention"), (b.title, "title")]
-            .into_iter()
-            .map(|(on, name)| if on { name } else { "" })
-            .filter(|n| !n.is_empty())
-            .collect();
+        let bell: Vec<&str> = [
+            (b.system, "system"),
+            (b.attention, "attention"),
+            (b.title, "title"),
+            (b.audio, "audio"),
+        ]
+        .into_iter()
+        .map(|(on, name)| if on { name } else { "" })
+        .filter(|n| !n.is_empty())
+        .collect();
         push("clipboard-paste-protection", self.paste_protection.to_string());
         push("clipboard-paste-bracketed-safe", self.paste_bracketed_safe.to_string());
         push(
@@ -1669,6 +1695,10 @@ impl Config {
                 bell.join(",")
             },
         );
+        if let Some(p) = &self.bell_audio_path {
+            push("bell-audio-path", p.display().to_string());
+        }
+        push("bell-audio-volume", self.bell_audio_volume.to_string());
         out.join("\n")
     }
 }
@@ -2350,7 +2380,8 @@ mod tests {
             BellFeatures {
                 system: true,
                 attention: true,
-                title: false
+                title: false,
+                audio: false
             },
             "적지 않은 것은 그대로"
         );
@@ -2361,13 +2392,30 @@ mod tests {
             BellFeatures {
                 system: false,
                 attention: false,
-                title: true
+                title: true,
+                audio: false
             }
         );
-        // audio·border는 Ghostty 이름이라 받지만 하는 일은 없다
+        // audio는 소리 파일 재생(#165), border는 받지만 하는 일이 없다
         let c = Config::from_text("bell-features = audio, no-border\n", true);
         assert!(c.warnings.is_empty(), "{:?}", c.warnings);
-        assert_eq!(c.bell_features, BellFeatures::default());
+        assert_eq!(
+            c.bell_features,
+            BellFeatures {
+                audio: true,
+                ..BellFeatures::default()
+            }
+        );
+        assert!(
+            c.render().contains("bell-features = attention,title,audio"),
+            "{}",
+            c.render()
+        );
+        // true는 audio까지 모두 켠다, false는 모두 끈다
+        let all = Config::from_text("bell-features = true\n", true).bell_features;
+        assert!(all.system && all.audio && all.attention && all.title);
+        let c = Config::from_text("bell-features = audio\nbell-features = no-audio\n", true);
+        assert!(!c.bell_features.audio);
         // 모르는 이름이 섞이면 줄 전체를 버리고 경고
         let c = Config::from_text("bell-features = no-attention,chime\n", true);
         assert_eq!(c.bell_features, BellFeatures::default());
@@ -2376,6 +2424,48 @@ mod tests {
             Config::from_text("bell-features = system\n", true)
                 .render()
                 .contains("bell-features = system,attention,title")
+        );
+    }
+
+    #[test]
+    fn bell_audio_keys_like_ghostty() {
+        let d = Config::default();
+        assert_eq!((d.bell_audio_path.clone(), d.bell_audio_volume), (None, 0.5));
+        let c = Config::from_text("bell-audio-path = /tmp/b.wav\nbell-audio-volume = 0.25\n", true);
+        assert!(c.warnings.is_empty(), "{:?}", c.warnings);
+        assert_eq!(c.bell_audio_path, Some(PathBuf::from("/tmp/b.wav")));
+        assert_eq!(c.bell_audio_volume, 0.25);
+        // ~/는 홈, 상대 경로는 설정 파일 폴더 기준(background-image와 같음)
+        let p = Config::from_text("bell-audio-path = ~/b.wav\n", true)
+            .bell_audio_path
+            .unwrap();
+        assert!(p.is_absolute() || std::env::var_os("HOME").is_none(), "{p:?}");
+        assert!(p.ends_with("b.wav") && !p.to_string_lossy().contains('~'), "{p:?}");
+        let rel = Config::from_text("bell-audio-path = sounds/b.wav\n", true)
+            .bell_audio_path
+            .unwrap();
+        assert!(rel.ends_with("sounds/b.wav"), "{rel:?}");
+        // 빈 값은 지움
+        let c = Config::from_text("bell-audio-path = /tmp/b.wav\nbell-audio-path =\n", true);
+        assert_eq!(c.bell_audio_path, None);
+        // 볼륨은 0~1로 자른다. 숫자가 아니면 경고하고 그대로
+        assert_eq!(
+            Config::from_text("bell-audio-volume = 3\n", true).bell_audio_volume,
+            1.0
+        );
+        assert_eq!(
+            Config::from_text("bell-audio-volume = -1\n", true).bell_audio_volume,
+            0.0
+        );
+        for bad in ["loud", "nan", "inf"] {
+            let c = Config::from_text(&format!("bell-audio-volume = {bad}\n"), true);
+            assert_eq!(c.warnings.len(), 1, "{bad}");
+            assert_eq!(c.bell_audio_volume, 0.5, "{bad}");
+        }
+        let r = Config::from_text("bell-audio-path = /tmp/b.wav\nbell-audio-volume = 0.25\n", true).render();
+        assert!(
+            r.contains("bell-audio-path = /tmp/b.wav") && r.contains("bell-audio-volume = 0.25"),
+            "{r}"
         );
     }
 

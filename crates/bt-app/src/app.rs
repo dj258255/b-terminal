@@ -264,15 +264,30 @@ struct BellResponse {
     attention: bool,
     /// 시스템 경고음
     beep: bool,
+    /// `bell-audio-path`의 소리 파일 재생(#165)
+    audio: bool,
 }
 
-/// `watching`: 창이 앞에 있고 그 칸이 보인다. `window_focused`: 그 칸의 창이 앞에 있다
-fn bell_response(f: bt_core::config::BellFeatures, watching: bool, window_focused: bool) -> BellResponse {
+/// `watching`: 창이 앞에 있고 그 칸이 보인다. `window_focused`: 그 칸의 창이 앞에 있다.
+/// `has_audio_file`: `bell-audio-path`가 정해져 있다(없으면 `audio`를 켜도 재생할 것이 없다)
+fn bell_response(
+    f: bt_core::config::BellFeatures,
+    has_audio_file: bool,
+    watching: bool,
+    window_focused: bool,
+) -> BellResponse {
     BellResponse {
         title: f.title && !watching,
         attention: f.attention && !window_focused,
         beep: f.system,
+        audio: f.audio && has_audio_file,
     }
+}
+
+/// 벨 소리(경고음·소리 파일)를 지금 낼지: 앞 소리에서 `since_last`가 지났고(`None`은 처음),
+/// 소리 파일이 아직 나고 있지 않아야 한다(#165). 쏟아지는 벨이 소리를 겹쳐 쌓지 않게 한다
+fn bell_sound_due(since_last: Option<Duration>, still_playing: bool) -> bool {
+    !still_playing && since_last.is_none_or(|d| d >= Duration::from_millis(100))
 }
 
 /// 탭 줄의 탭 하나: 칸들을 나눈 트리와 고른 칸(#35)
@@ -461,6 +476,10 @@ pub struct App {
     shell_integration_dir: Option<std::path::PathBuf>,
     /// btctl run이 기다리는 탭: 탭 id → (요청 id, 답할 통로, 기한)
     run_waiters: std::collections::HashMap<u64, (u64, std::sync::mpsc::SyncSender<bt_core::proto::Response>, Instant)>,
+    /// 읽어 둔 벨 소리 파일(`bell-audio-path`, #165). 경로가 바뀌면 다시 읽는다
+    bell_sound: Option<crate::bell_sound::BellSound>,
+    /// 마지막으로 벨 소리 파일을 울린 때
+    last_bell_audio: Option<Instant>,
     /// btctl wait가 기다리는 글(#66)
     text_waiters: Vec<TextWaiter>,
     /// 메뉴 막대(살려 두어야 메뉴가 남는다)
@@ -528,6 +547,8 @@ impl App {
             last_focused: None,
             hotkeys: None,
             last_beep: None,
+            bell_sound: None,
+            last_bell_audio: None,
             written_files: Vec::new(),
             bg_image: None,
             hotkey_registered: Vec::new(),
@@ -745,7 +766,12 @@ impl App {
     /// 칸이 벨을 울렸다(`bell-features`, #107). 지금 창은 그 칸의 창이다(switch_to_pane 뒤)
     fn on_bell(&mut self, idx: usize) {
         let watching = self.w.focused && self.is_visible(idx);
-        let r = bell_response(self.config.bell_features, watching, self.w.focused);
+        let r = bell_response(
+            self.config.bell_features,
+            self.config.bell_audio_path.is_some(),
+            watching,
+            self.w.focused,
+        );
         if r.title && !self.panes[idx].bell {
             self.panes[idx].bell = true;
             self.request_redraw();
@@ -756,10 +782,34 @@ impl App {
                     .request_user_attention(Some(winit::window::UserAttentionType::Informational));
             }
         }
-        if r.beep && self.last_beep.is_none_or(|t| t.elapsed() >= Duration::from_millis(100)) {
+        if r.audio {
+            self.play_bell_audio();
+        }
+        if r.beep && bell_sound_due(self.last_beep.map(|t| t.elapsed()), false) {
             self.last_beep = Some(Instant::now());
             #[cfg(target_os = "macos")]
             objc2_app_kit::NSBeep();
+        }
+    }
+
+    /// 벨 소리 파일을 울린다(#165). 파일은 처음 울릴 때(또는 경로가 바뀌었을 때) 읽는다.
+    /// 읽지 못하면 조용히 지나간다. 앞 소리가 아직 나거나 0.1초 안이면 건너뛴다
+    fn play_bell_audio(&mut self) {
+        let Some(path) = self.config.bell_audio_path.clone() else {
+            return;
+        };
+        if self.bell_sound.as_ref().is_none_or(|s| s.path() != path) {
+            self.bell_sound = crate::bell_sound::BellSound::load(&path);
+            if self.bell_sound.is_none() {
+                log::warn!("bell-audio-path를 읽지 못했습니다: {}", path.display());
+            }
+        }
+        let Some(sound) = &self.bell_sound else {
+            return;
+        };
+        if bell_sound_due(self.last_bell_audio.map(|t| t.elapsed()), sound.is_playing()) {
+            self.last_bell_audio = Some(Instant::now());
+            sound.play(self.config.bell_audio_volume);
         }
     }
 
@@ -4019,32 +4069,35 @@ mod tests {
     fn bell_marks_title_only_when_not_watching_and_bounces_only_when_unfocused() {
         use bt_core::config::BellFeatures;
         let d = BellFeatures::default();
-        let r = |f, watching, focused| bell_response(f, watching, focused);
+        let r = |f, file, watching, focused| bell_response(f, file, watching, focused);
         // 보고 있으면(창이 앞, 칸이 보임) 아무것도 하지 않는다(기본에 경고음 없음)
         assert_eq!(
-            r(d, true, true),
+            r(d, false, true, true),
             BellResponse {
                 title: false,
                 attention: false,
-                beep: false
+                beep: false,
+                audio: false
             }
         );
         // 같은 창의 다른 탭: 🔔만
         assert_eq!(
-            r(d, false, true),
+            r(d, false, false, true),
             BellResponse {
                 title: true,
                 attention: false,
-                beep: false
+                beep: false,
+                audio: false
             }
         );
         // 창이 뒤에 있으면 🔔와 Dock
         assert_eq!(
-            r(d, false, false),
+            r(d, false, false, false),
             BellResponse {
                 title: true,
                 attention: true,
-                beep: false
+                beep: false,
+                audio: false
             }
         );
         // 끈 것은 하지 않고, system은 보고 있어도 울린다
@@ -4052,16 +4105,50 @@ mod tests {
             system: true,
             attention: false,
             title: false,
+            audio: false,
         };
         assert_eq!(
-            r(f, true, true),
+            r(f, false, true, true),
             BellResponse {
                 title: false,
                 attention: false,
-                beep: true
+                beep: true,
+                audio: false
             }
         );
-        assert!(!r(f, false, false).attention);
+        assert!(!r(f, false, false, false).attention);
+    }
+
+    #[test]
+    fn bell_audio_plays_only_when_enabled_and_file_set_even_when_watching() {
+        use bt_core::config::BellFeatures;
+        let on = BellFeatures {
+            audio: true,
+            ..BellFeatures::default()
+        };
+        // 소리는 보고 있어도 난다(system과 같음)
+        assert!(bell_response(on, true, true, true).audio);
+        assert!(bell_response(on, true, false, false).audio);
+        // 파일이 없으면 켜도 재생할 것이 없다
+        assert!(!bell_response(on, false, true, true).audio);
+        // 끄면(기본) 파일이 있어도 재생하지 않는다
+        assert!(!bell_response(BellFeatures::default(), true, true, true).audio);
+        // 다른 반응은 audio와 무관하다
+        assert!(!bell_response(on, true, true, true).beep);
+    }
+
+    #[test]
+    fn bell_sound_is_throttled_by_interval_and_still_playing() {
+        let ms = Duration::from_millis;
+        // 처음이거나 간격이 지났고 앞 소리가 끝났으면 낸다
+        assert!(bell_sound_due(None, false));
+        assert!(bell_sound_due(Some(ms(100)), false));
+        // 0.1초 안에 또 울리면 건너뛴다(벨이 쏟아질 때)
+        assert!(!bell_sound_due(Some(ms(99)), false));
+        assert!(!bell_sound_due(Some(ms(0)), false));
+        // 앞 소리가 아직 나고 있으면 간격이 지났어도 겹치지 않는다
+        assert!(!bell_sound_due(Some(ms(5000)), true));
+        assert!(!bell_sound_due(None, true));
     }
 
     #[test]
