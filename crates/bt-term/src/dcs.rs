@@ -180,6 +180,11 @@ const CAPS: &[(&str, Val)] = &[
     ("kxIN", Val::Str("\\E[I")),
     ("kxOUT", Val::Str("\\E[O")),
     ("E3", Val::Str("\\E[3J")),
+    // DA2(CSI > c)와 XTVERSION(CSI > q)에 답한다(#264). 값은 Ghostty terminfo/ghostty.zig 140~145줄 그대로
+    ("RV", Val::Str("\\E[>c")),
+    ("rv", Val::Str("\\E\\\\[[0-9]+;[0-9]+;[0-9]+c")),
+    ("XR", Val::Str("\\E[>0q")),
+    ("xr", Val::Str("\\EP>\\\\|[ -~]+a\\E\\\\")),
 ];
 
 fn hex_upper(bytes: &[u8]) -> String {
@@ -426,11 +431,22 @@ mod tests {
     }
 
     #[test]
+    fn xtgettcap_answers_xtversion_and_da2_caps_like_ghostty() {
+        // XTVERSION(CSI > q)과 DA2(CSI > c)에 답하므로(#264) Ghostty terminfo의 RV·rv·XR·xr도 답한다.
+        // 값은 Ghostty terminfo/ghostty.zig 140~145줄, 변환은 Source.zig(`%`가 없으면 `\\E`를 ESC로)
+        assert_eq!(tcap(&hex("RV")), "\x1bP1+r5256=1B5B3E63\x1b\\");
+        assert_eq!(
+            tcap(&hex("rv")),
+            "\x1bP1+r7276=1B5C5C5B5B302D395D2B3B5B302D395D2B3B5B302D395D2B63\x1b\\"
+        );
+        assert_eq!(tcap(&hex("XR")), "\x1bP1+r5852=1B5B3E3071\x1b\\");
+        assert_eq!(tcap(&hex("xr")), "\x1bP1+r7872=1B503E5C5C7C5B202D7E5D2B611B5C5C\x1b\\");
+    }
+
+    #[test]
     fn xtgettcap_does_not_list_what_bterminal_cannot_do() {
-        // 윗줄(overline)·밑줄 색·DECSLRM 여백·XTVERSION·DA2는 이 이슈의 판에서 답하지 않는다
-        for name in [
-            "Smol", "Rmol", "Setulc", "Su", "Enmg", "Dsmg", "Cmg", "XR", "xr", "RV", "rv",
-        ] {
+        // 윗줄(overline)·밑줄 색·DECSLRM 여백은 없어서 답하지 않는다
+        for name in ["Smol", "Rmol", "Setulc", "Su", "Enmg", "Dsmg", "Cmg"] {
             assert_eq!(tcap(&hex(name)), "", "{name}");
         }
     }
