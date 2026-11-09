@@ -232,6 +232,9 @@ keybind = clear                       # 기본 묶음을 모두 지우기
 keybind = global:ctrl+backquote=toggle_quick_terminal  # 앱이 뒤에 있어도 듣는 전역 단축키
 keybind = ctrl+a>n=new_window         # 키 순서: ctrl+a를 누르고 n
 keybind = ctrl+a>ctrl+a=text:\x01     # 앞 키 자체를 보내고 싶을 때
+keybind = ctrl+b=activate_key_table:nav  # 키 테이블: ctrl+b를 누르면 nav 테이블을 켬
+keybind = nav/h=goto_split:left
+keybind = nav/escape=deactivate_key_table
 ```
 
 - 수식 키: `super`(cmd) `ctrl` `alt`(opt) `shift`. 키 이름은 Ghostty 이름: `a`~`z`, `digit_1`(또는 `1`), `equal`, `minus`, `comma`, `bracket_left`, `bracket_right`, `arrow_up`, `page_up`, `home`, `enter`, `f1` …
@@ -243,6 +246,14 @@ keybind = ctrl+a>ctrl+a=text:\x01     # 앞 키 자체를 보내고 싶을 때
   - `global:`은 위와 같고, 함께 쓴 다른 접두사는 받기만 하고 쓰지 않습니다.
 - `catch_all`: 다른 묶음에 걸리지 않은 모든 키에 맞는 트리거입니다(`catch_all=ignore`). `ctrl+catch_all`처럼 수식 키를 붙이면 그 수식 키가 같은 키에 맞고(없으면 수식 키가 붙은 키도 수식 없는 `catch_all`로 넘어감), 키 순서 안에서도 쓸 수 있습니다(`ctrl+a>catch_all=ignore`: `ctrl+a` 다음에 `n` 같은 묶인 키가 아닌 것을 누르면 아무 일도 없이 먹음). 정확히 묶인 키가 늘 먼저이고, `ctrl+a>n` 같은 순서가 있으면 `catch_all`이 있어도 `ctrl+a`는 순서의 앞 키입니다. 순서 중에 묶이지 않은 키가 `catch_all=ignore`에 맞으면 앞 키까지 순서 전체를 버립니다. 수식 키만 누른 것에는 맞지 않습니다.
 - `ignore`: 키를 먹고 아무것도 하지 않습니다(프로그램에도 보내지 않음).
+- 키 테이블(Ghostty 1.3과 같은 문법): `keybind = 이름/트리거=동작`은 `이름` 테이블에 묶습니다. 테이블은 `activate_key_table:이름`으로 켜기 전에는 쓰지 않습니다(복사 모드·vim 모드 같은 모달 입력용). 이름에는 `/` `=` `+` `>`를 쓸 수 없습니다. 이름 앞의 `/`는 `=` 앞에 있을 때만 나눔 자리라서 `ctrl+/=…`, `/=…`, `x=text:/a`는 그대로 키 묶음입니다. 테이블 안에서도 접두사(`performable:` 등), `catch_all`, 키 순서(`nav/g>g=scroll_to_top`)를 씁니다. `global:`은 테이블 안에서 경고하고 건너뜁니다. `이름/`(묶음 없이)는 그 테이블을 만들고 비웁니다. `keybind = clear`는 테이블도 지웁니다.
+  - 키를 찾는 순서는 맨 위 테이블 → 그 아래 테이블 → … → 기본 묶음입니다. 안쪽 테이블에 없는 키는 바깥으로 내려가므로 기본 묶음은 그대로 쓸 수 있고, 안쪽에서 `catch_all=ignore`로 막을 수 있습니다. 키 순서의 앞 키가 잡힌 층에서만 다음 키를 찾고, 순서가 깨져도 테이블은 켜진 채입니다(쌓은 키는 프로그램에 보냅니다).
+  - `activate_key_table:이름`: 테이블을 쌓습니다. 없는 테이블이거나 이미 맨 위 테이블이면 아무 일도 없습니다(없는 이름이면 로그에 남김). `A -> B -> A`는 되지만 `A -> B -> B`는 안 됩니다.
+  - `activate_key_table_once:이름`: 그 테이블의 묶음을 처음 쓰면(`catch_all` 포함) 저절로 빠집니다. 맨 위일 때만 빠지고, 맨 위가 아니면 맨 위가 될 때까지 그대로입니다. 테이블에 없어 기본 묶음으로 내려간 키는 쓴 것으로 치지 않습니다.
+  - `deactivate_key_table`: 맨 위 테이블 하나를 내립니다. `deactivate_all_key_tables`: 모두 내립니다.
+  - `end_key_sequence`: 진행 중인 키 순서를 끝내고, 이 키를 뺀 앞 키들만 프로그램에 보냅니다(`ctrl+w>escape=end_key_sequence`는 `^W`를 보내고 끝). 순서 밖에서는 키만 먹습니다.
+  - `performable:`을 붙인 테이블 동작은 할 수 있을 때만 키를 먹습니다(없는 테이블, 이미 맨 위인 테이블, 켜진 테이블이 없을 때의 내리기, 진행 중인 순서가 없을 때의 `end_key_sequence`는 할 수 없음).
+  - 지금 켜진 테이블을 화면에 보이지 않습니다. 설정을 다시 읽어 없어진 테이블은 켜져 있어도 건너뜁니다.
 - macOS가 아니면 기본 묶음의 `super`는 `ctrl+shift`로 바뀝니다.
 - `global:` 접두사를 붙이면 시스템 전역 단축키가 됩니다(Ghostty와 같은 문법). 다른 앱이 앞에 있어도 듣습니다. 기본 전역 묶음은 없습니다. 다른 앱이 이미 잡은 조합이면 경고를 남기고 건너뜁니다.
 

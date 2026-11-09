@@ -2705,6 +2705,17 @@ impl App {
                     t.session.write_input(text.as_bytes(), scroll);
                 }
             }
+            // 키 묶음에서 온 키 테이블 동작은 키 판단에서 이미 했다. 여기는 명령 팔레트(`command-palette-entry`)에서 오는 길이다
+            Action::ActivateKeyTable(_)
+            | Action::ActivateKeyTableOnce(_)
+            | Action::DeactivateKeyTable
+            | Action::DeactivateAllKeyTables
+            | Action::EndKeySequence => {
+                let (_, flush) = self.w.keyseq.apply_table_action(&self.keymap, &action);
+                if !flush.is_empty() {
+                    self.write_active(&flush);
+                }
+            }
             _ => {}
         }
         self.request_redraw();

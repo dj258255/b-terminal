@@ -136,6 +136,16 @@ pub enum Action {
     ToggleWindowDecorations,
     /// 모든 창을 숨기고 보인다(Ghostty `toggle_visibility`, macOS만)
     ToggleVisibility,
+    /// 이름 붙은 키 테이블을 쌓는다(Ghostty `activate_key_table`)
+    ActivateKeyTable(String),
+    /// 첫 묶음을 쓰면 저절로 빠지는 키 테이블을 쌓는다(Ghostty `activate_key_table_once`)
+    ActivateKeyTableOnce(String),
+    /// 맨 위 키 테이블 하나를 내린다(Ghostty `deactivate_key_table`)
+    DeactivateKeyTable,
+    /// 켜진 키 테이블을 모두 내린다(Ghostty `deactivate_all_key_tables`)
+    DeactivateAllKeyTables,
+    /// 진행 중인 키 순서를 끝내고 앞 키들만 프로그램에 보낸다(Ghostty `end_key_sequence`)
+    EndKeySequence,
 }
 
 /// 파일로 쓸 글
@@ -430,6 +440,21 @@ pub fn parse_action(s: &str) -> Result<Option<Action>, String> {
         "reset_window_size" => Action::ResetWindowSize,
         "toggle_window_decorations" => Action::ToggleWindowDecorations,
         "toggle_visibility" => Action::ToggleVisibility,
+        "activate_key_table" | "activate_key_table_once" => {
+            let n = arg
+                .map(str::trim)
+                .filter(|n| !n.is_empty())
+                .ok_or_else(|| format!("{name}:테이블 이름이 필요합니다"))?
+                .to_string();
+            if name == "activate_key_table" {
+                Action::ActivateKeyTable(n)
+            } else {
+                Action::ActivateKeyTableOnce(n)
+            }
+        }
+        "deactivate_key_table" => Action::DeactivateKeyTable,
+        "deactivate_all_key_tables" => Action::DeactivateAllKeyTables,
+        "end_key_sequence" => Action::EndKeySequence,
         other => return Err(format!("b-terminal에 없는 동작입니다: {other}")),
     }))
 }
@@ -481,6 +506,9 @@ pub struct Keymap {
     seqs: HashMap<Vec<Trigger>, Bound>,
     /// 전역 단축키(`keybind = global:…`, #95): 앱이 앞에 없어도 받는다
     pub global: Vec<(Trigger, Action)>,
+    /// 키 테이블(`keybind = 이름/트리거=동작`): 켜기 전에는 쓰지 않는 이름 붙은 묶음 모음.
+    /// 테이블 안의 `global`·`tables`는 쓰지 않는다
+    tables: HashMap<String, Keymap>,
 }
 
 /// 기본 묶음(Ghostty macOS 기본에서 b-terminal에 있는 것). 다른 OS는 super 대신 ctrl+shift
@@ -589,8 +617,26 @@ impl Keymap {
             if line == "clear" {
                 km.map.clear();
                 km.seqs.clear();
+                // Ghostty: clear는 키 테이블도 지운다
+                km.tables.clear();
                 continue;
             }
+            // 키 테이블(`이름/트리거=동작`, `이름/`): `=` 앞의 첫 `/`가 나눔 자리이고 이름에 `+` `>`가 없을 때만.
+            // `ctrl+/=…`, `/=…`, `x=text:/a`는 테이블이 아니다(Ghostty Config.zig)
+            let eq_at = line.find('=').unwrap_or(line.len());
+            let table = line[..eq_at]
+                .find('/')
+                .filter(|&i| i > 0 && !line[..i].contains(['+', '>']))
+                .map(|i| (line[..i].to_string(), &line[i + 1..]));
+            let line = match &table {
+                Some((name, "")) => {
+                    // 이름만 쓰면 테이블을 만들고 비운다
+                    km.tables.insert(name.clone(), Keymap::default());
+                    continue;
+                }
+                Some((_, rest)) => *rest,
+                None => line,
+            };
             // 접두사(Ghostty와 같다): `all:` `unconsumed:` `performable:` `global:`을 겹쳐 쓸 수 있다
             let mut flags = BindFlags::default();
             let mut is_global = false;
@@ -618,6 +664,10 @@ impl Keymap {
                 continue;
             };
             let (t, a) = (&line[..eq], &line[eq + 1..]);
+            if table.is_some() && is_global {
+                warnings.push(format!("keybind {line}: 키 테이블 안의 global:은 쓸 수 없습니다"));
+                continue;
+            }
             // global: 접두사: 전역 단축키로 따로 둔다(다른 접두사는 전역에서는 뜻이 없어 받기만 한다)
             if is_global {
                 match (parse_trigger(t), parse_action(a)) {
@@ -649,9 +699,13 @@ impl Keymap {
                 warnings.push(format!("keybind {line}: all: 묶음에는 키 순서(>)를 쓸 수 없습니다"));
                 continue;
             }
+            let target = match &table {
+                Some((name, _)) => km.tables.entry(name.clone()).or_default(),
+                None => &mut km,
+            };
             match parse_action(a) {
-                Ok(Some(act)) => km.bind(keys, act, flags),
-                Ok(None) => km.unbind(&keys),
+                Ok(Some(act)) => target.bind(keys, act, flags),
+                Ok(None) => target.unbind(&keys),
                 Err(e) => warnings.push(format!("keybind {line}: {e}")),
             }
         }
@@ -812,12 +866,32 @@ impl Keymap {
     }
 }
 
-/// 키를 하나씩 받아 키 순서를 맞춘다(#106). Ghostty처럼 시간 제한은 없고,
-/// 순서 중간에 묶이지 않은 키가 오면 그때까지 쌓은 키를 프로그램에 그대로 보낸다
+/// 켜진 키 테이블 하나
+#[derive(Debug, Clone, PartialEq)]
+struct ActiveTable {
+    name: String,
+    /// 그 테이블의 묶음을 처음 쓰면 저절로 빠진다
+    once: bool,
+}
+
+/// 키를 찾는 층: 기본 묶음, 또는 켜진 테이블(쌓인 자리)
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Layer {
+    Root,
+    Table(usize),
+}
+
+/// 키를 하나씩 받아 키 순서를 맞추고(#106) 켜진 키 테이블을 쥔다(#210).
+/// Ghostty처럼 시간 제한은 없고, 순서 중간에 묶이지 않은 키가 오면 그때까지 쌓은 키를 프로그램에 그대로 보낸다.
+/// 판단 순서: 맨 위 테이블 → … → 맨 아래 테이블 → 기본 묶음. 순서의 앞 키가 잡힌 층에서만 다음 키를 찾는다
 #[derive(Debug, Default)]
 pub struct Sequencer {
     /// 기다리는 앞 키들과, 누른 순간에 만든 PTY 바이트
     pending: Vec<(Trigger, Vec<u8>)>,
+    /// 앞 키가 잡힌 층(`pending`이 비어 있지 않을 때만 뜻이 있다)
+    pending_layer: Option<Layer>,
+    /// 켜진 키 테이블(뒤가 맨 위)
+    stack: Vec<ActiveTable>,
 }
 
 /// 키 하나를 받은 결과: PTY에 보낼 바이트(먼저)와 부를 동작(나중)
@@ -829,11 +903,87 @@ pub struct KeyOutcome {
     pub all: bool,
 }
 
+fn is_table_action(a: &Action) -> bool {
+    matches!(
+        a,
+        Action::ActivateKeyTable(_)
+            | Action::ActivateKeyTableOnce(_)
+            | Action::DeactivateKeyTable
+            | Action::DeactivateAllKeyTables
+            | Action::EndKeySequence
+    )
+}
+
 impl Sequencer {
+    /// 켜진 키 테이블 이름(바깥에서 안쪽 순)
+    #[cfg(test)]
+    pub fn stack_names(&self) -> Vec<&str> {
+        self.stack.iter().map(|t| t.name.as_str()).collect()
+    }
+
     /// 앞 키를 받고 다음 키를 기다리는 중인가
     #[cfg(test)]
     pub fn waiting(&self) -> bool {
         !self.pending.is_empty()
+    }
+
+    fn layer_map<'a>(&self, km: &'a Keymap, layer: Layer) -> Option<&'a Keymap> {
+        match layer {
+            Layer::Root => Some(km),
+            // 설정을 다시 읽어 없어진 테이블은 건너뛴다
+            Layer::Table(i) => self.stack.get(i).and_then(|t| km.tables.get(&t.name)),
+        }
+    }
+
+    /// 키들을 찾는다: 순서 중이면 앞 키가 잡힌 층에서만, 아니면 맨 위 테이블부터 기본 묶음까지
+    fn find<'a>(&self, km: &'a Keymap, keys: &[Trigger]) -> (Layer, Resolved<'a>) {
+        if !self.pending.is_empty() {
+            let layer = self.pending_layer.unwrap_or(Layer::Root);
+            let r = self.layer_map(km, layer).map_or(Resolved::None, |m| m.resolve(keys));
+            return (layer, r);
+        }
+        for i in (0..self.stack.len()).rev() {
+            if let Some(m) = self.layer_map(km, Layer::Table(i)) {
+                match m.resolve(keys) {
+                    Resolved::None => {}
+                    r => return (Layer::Table(i), r),
+                }
+            }
+        }
+        (Layer::Root, km.resolve(keys))
+    }
+
+    /// 키 테이블 동작을 한다. (했는가, 프로그램에 보낼 바이트).
+    /// 없는 테이블·이미 맨 위인 테이블을 켜기, 켜진 것이 없을 때 내리기는 하지 않은 것이다(Ghostty).
+    /// `end_key_sequence`는 진행 중인 순서의 앞 키들만 보내고 순서를 끝낸다
+    pub fn apply_table_action(&mut self, km: &Keymap, action: &Action) -> (bool, Vec<u8>) {
+        match action {
+            Action::ActivateKeyTable(name) | Action::ActivateKeyTableOnce(name) => {
+                if !km.tables.contains_key(name) {
+                    log::warn!("키 테이블 {name}이 없어 켜지 않았습니다");
+                    return (false, Vec::new());
+                }
+                if self.stack.last().is_some_and(|t| t.name == *name) {
+                    return (false, Vec::new());
+                }
+                self.stack.push(ActiveTable {
+                    name: name.clone(),
+                    once: matches!(action, Action::ActivateKeyTableOnce(_)),
+                });
+                (true, Vec::new())
+            }
+            Action::DeactivateKeyTable => (self.stack.pop().is_some(), Vec::new()),
+            Action::DeactivateAllKeyTables => {
+                let had = !self.stack.is_empty();
+                self.stack.clear();
+                (had, Vec::new())
+            }
+            Action::EndKeySequence => {
+                let sent: Vec<u8> = self.pending.drain(..).flat_map(|(_, b)| b).collect();
+                (true, sent)
+            }
+            _ => (false, Vec::new()),
+        }
     }
 
     /// 키 하나(`trigger`: 키 묶음 이름, 수식 키만이면 없다; `bytes`: 그 키가 PTY에 보낼 바이트)
@@ -854,24 +1004,43 @@ impl Sequencer {
             Some(t) => {
                 let mut keys: Vec<Trigger> = self.pending.iter().map(|(k, _)| k.clone()).collect();
                 keys.push(t.clone());
-                match km.resolve(&keys) {
+                let (layer, found) = self.find(km, &keys);
+                match found {
                     // all: 묶음에는 performable이 효과가 없다(Ghostty)
-                    Resolved::Action(b) if !b.flags.performable || b.flags.all || can(&b.action) => {
+                    Resolved::Action(b) if !b.flags.performable || b.flags.all || self.can_do(km, &b.action, can) => {
+                        // 맨 위 once 테이블의 묶음(catch_all 포함)을 썼으면 그 테이블은 빠진다.
+                        // 동작을 하기 전에 뺀다: 그 묶음이 다른 테이블을 켜도 그것을 빼지 않게
+                        if let Layer::Table(i) = layer {
+                            if i + 1 == self.stack.len() && self.stack[i].once {
+                                self.stack.pop();
+                            }
+                        }
+                        // end_key_sequence는 앞 키만 보내고 이 키는 버린다
+                        let mut send: Vec<u8> = Vec::new();
+                        if matches!(b.action, Action::EndKeySequence) {
+                            send = self.pending.drain(..).flat_map(|(_, b)| b).collect();
+                        }
                         self.pending.clear();
+                        let table_action = is_table_action(&b.action);
+                        if table_action {
+                            let _ = self.apply_table_action(km, &b.action);
+                        }
                         // unconsumed: 동작을 하고 이 키도 프로그램에 보낸다(앞서 쌓은 키는 이미 순서에 먹혔다).
                         // all: 묶음은 특정 칸에 묶이지 않아 늘 키를 먹는다(Ghostty)
-                        let send = if b.flags.unconsumed && !b.flags.all {
-                            bytes
-                        } else {
-                            Vec::new()
-                        };
+                        if b.flags.unconsumed && !b.flags.all {
+                            send.extend(bytes);
+                        }
                         return KeyOutcome {
                             send,
-                            action: Some(b.action.clone()),
+                            // 테이블 동작은 여기서 끝냈다
+                            action: (!table_action).then(|| b.action.clone()),
                             all: b.flags.all,
                         };
                     }
                     Resolved::Prefix => {
+                        if self.pending.is_empty() {
+                            self.pending_layer = Some(layer);
+                        }
                         self.pending.push((t.clone(), bytes));
                         return KeyOutcome::default();
                     }
@@ -892,15 +1061,18 @@ impl Sequencer {
         }
         // 순서 중 묶이지 않은 키가 catch_all=ignore에 맞으면 순서 전체를 버린다(Ghostty)
         if let Some(t) = &trigger {
-            if km
-                .wildcard(std::slice::from_ref(t))
+            let layer = self.pending_layer.unwrap_or(Layer::Root);
+            if self
+                .layer_map(km, layer)
+                .and_then(|m| m.wildcard(std::slice::from_ref(t)))
                 .is_some_and(|b| b.action == Action::Ignore)
             {
                 self.pending.clear();
                 return KeyOutcome::default();
             }
         }
-        // 순서가 깨졌다: 쌓은 키를 보내고, 이 키는 처음부터 다시 본다(새 순서의 앞 키일 수도 있다)
+        // 순서가 깨졌다: 쌓은 키를 보내고, 이 키는 처음부터 다시 본다(새 순서의 앞 키일 수도 있다).
+        // 켜진 키 테이블은 그대로 둔다
         let mut send: Vec<u8> = self.pending.drain(..).flat_map(|(_, b)| b).collect();
         let rest = self.feed_with(km, trigger, bytes, can);
         send.extend(rest.send);
@@ -908,6 +1080,18 @@ impl Sequencer {
             send,
             action: rest.action,
             all: rest.all,
+        }
+    }
+
+    /// `performable:` 묶음의 동작을 지금 할 수 있는가. 키 테이블 동작은 테이블 쌓임을 보고 정한다
+    fn can_do(&self, km: &Keymap, action: &Action, can: &mut dyn FnMut(&Action) -> bool) -> bool {
+        match action {
+            Action::ActivateKeyTable(n) | Action::ActivateKeyTableOnce(n) => {
+                km.tables.contains_key(n) && self.stack.last().is_none_or(|t| t.name != *n)
+            }
+            Action::DeactivateKeyTable | Action::DeactivateAllKeyTables => !self.stack.is_empty(),
+            Action::EndKeySequence => !self.pending.is_empty(),
+            a => can(a),
         }
     }
 }
@@ -1620,5 +1804,272 @@ mod tests {
             parse_action("set_window_title").unwrap(),
             Some(Action::SetWindowTitle(String::new()))
         );
+    }
+    // ---- 키 테이블(#210) ----
+
+    fn build_lines(lines: &[&str]) -> (Keymap, Vec<String>) {
+        let v: Vec<String> = lines.iter().map(|s| s.to_string()).collect();
+        Keymap::build(&v)
+    }
+
+    /// 키 하나를 먹이고 (보낸 바이트, 동작)을 돌려준다. 바이트는 키 이름 글자
+    fn press(sq: &mut Sequencer, km: &Keymap, k: &str) -> (Vec<u8>, Option<Action>) {
+        let b = k.as_bytes().to_vec();
+        let o = sq.feed_with(km, Some(trig(k)), b, &mut |_| true);
+        (o.send, o.action)
+    }
+
+    #[test]
+    fn table_actions_parse() {
+        assert_eq!(
+            parse_action("activate_key_table:nav").unwrap(),
+            Some(Action::ActivateKeyTable("nav".into()))
+        );
+        assert_eq!(
+            parse_action("activate_key_table_once:nav").unwrap(),
+            Some(Action::ActivateKeyTableOnce("nav".into()))
+        );
+        assert_eq!(
+            parse_action("deactivate_key_table").unwrap(),
+            Some(Action::DeactivateKeyTable)
+        );
+        assert_eq!(
+            parse_action("deactivate_all_key_tables").unwrap(),
+            Some(Action::DeactivateAllKeyTables)
+        );
+        assert_eq!(parse_action("end_key_sequence").unwrap(), Some(Action::EndKeySequence));
+        assert!(parse_action("activate_key_table").is_err());
+        assert!(parse_action("activate_key_table:").is_err());
+    }
+
+    #[test]
+    fn table_lines_go_to_their_table_and_slash_keys_still_work() {
+        let (km, w) = build_lines(&[
+            "foo/ctrl+a=new_window",
+            "foo/ctrl+b>n=new_tab",
+            "foo/catch_all=ignore",
+            "empty/",
+            "ctrl+/=text:slash",
+            "/=text:bare",
+            "x=text:/hello",
+            "ctrl+a>/=text:seq",
+        ]);
+        assert!(w.is_empty(), "{w:?}");
+        let foo = km.tables.get("foo").expect("foo");
+        assert_eq!(foo.lookup(&trig("ctrl+a")), Some(&Action::NewWindow));
+        assert_eq!(foo.sequence(&[trig("ctrl+b"), trig("n")]), Some(&Action::NewTab));
+        assert_eq!(foo.lookup(&trig("catch_all")), Some(&Action::Ignore));
+        assert!(
+            km.tables.get("empty").is_some_and(|t| t.map.is_empty()),
+            "`이름/`는 빈 테이블을 만든다"
+        );
+        assert_eq!(
+            km.lookup(&trig("ctrl+a")),
+            None,
+            "테이블 묶음은 기본 묶음에 새지 않는다"
+        );
+        assert_eq!(km.lookup(&trig("ctrl+/")), Some(&Action::Text("slash".into())));
+        assert_eq!(km.lookup(&trig("/")), Some(&Action::Text("bare".into())));
+        assert_eq!(km.lookup(&trig("x")), Some(&Action::Text("/hello".into())));
+        assert_eq!(km.tables.len(), 2);
+    }
+
+    #[test]
+    fn table_clear_syntax_and_global_clear() {
+        let (km, _) = build_lines(&["foo/a=new_tab", "foo/", "foo/b=new_tab"]);
+        let foo = &km.tables["foo"];
+        assert_eq!(foo.lookup(&trig("a")), None, "`foo/`는 테이블을 비운다");
+        assert_eq!(foo.lookup(&trig("b")), Some(&Action::NewTab));
+        let (km, _) = build_lines(&["foo/a=new_tab", "clear"]);
+        assert!(km.tables.is_empty(), "keybind = clear는 테이블도 지운다");
+        // 테이블 안의 global:은 경고, 모르는 동작도 경고, unbind는 테이블 안에서 듣는다
+        let (km, w) = build_lines(&["foo/a=new_tab", "foo/global:a=new_tab", "foo/a=unbind", "foo/b=nope"]);
+        assert_eq!(w.len(), 2, "{w:?}");
+        assert_eq!(km.tables["foo"].lookup(&trig("a")), None);
+    }
+
+    #[test]
+    fn activate_pushes_innermost_first_and_falls_through_to_default() {
+        let (km, w) = build_lines(&[
+            "ctrl+b=activate_key_table:nav",
+            "z=text:root-z",
+            "nav/h=text:left",
+            "nav/z=text:nav-z",
+            "nav/escape=deactivate_key_table",
+        ]);
+        assert!(w.is_empty(), "{w:?}");
+        let mut sq = Sequencer::default();
+        assert_eq!(
+            press(&mut sq, &km, "h"),
+            (b"h".to_vec(), None),
+            "켜기 전에는 테이블이 없다"
+        );
+        assert_eq!(press(&mut sq, &km, "ctrl+b"), (vec![], None), "켜는 키는 먹는다");
+        assert_eq!(press(&mut sq, &km, "h").1, Some(Action::Text("left".into())));
+        assert_eq!(
+            press(&mut sq, &km, "z").1,
+            Some(Action::Text("nav-z".into())),
+            "안쪽이 이긴다"
+        );
+        // 테이블에 없는 키는 기본 묶음으로 내려간다
+        assert_eq!(press(&mut sq, &km, "ctrl+b").1, None);
+        assert_eq!(press(&mut sq, &km, "escape").1, None);
+        assert_eq!(press(&mut sq, &km, "z").1, Some(Action::Text("root-z".into())));
+    }
+
+    #[test]
+    fn table_catch_all_shadows_the_default_set() {
+        let (km, _) = build_lines(&[
+            "ctrl+b=activate_key_table:modal",
+            "q=text:root-q",
+            "modal/catch_all=ignore",
+            "modal/escape=deactivate_key_table",
+        ]);
+        let mut sq = Sequencer::default();
+        press(&mut sq, &km, "ctrl+b");
+        assert_eq!(press(&mut sq, &km, "q"), (vec![], Some(Action::Ignore)));
+        press(&mut sq, &km, "escape");
+        assert_eq!(press(&mut sq, &km, "q").1, Some(Action::Text("root-q".into())));
+    }
+
+    #[test]
+    fn same_table_cannot_be_innermost_twice_but_may_repeat_in_the_stack() {
+        let (km, _) = build_lines(&[
+            "a/x=activate_key_table:a",
+            "a/y=activate_key_table:b",
+            "b/x=activate_key_table:a",
+            "a/q=text:in-a",
+            "start=activate_key_table:a",
+        ]);
+        let mut sq = Sequencer::default();
+        press(&mut sq, &km, "start");
+        press(&mut sq, &km, "x"); // 이미 맨 위: 무시
+        assert_eq!(sq.stack_names(), ["a"]);
+        press(&mut sq, &km, "y");
+        assert_eq!(sq.stack_names(), ["a", "b"]);
+        press(&mut sq, &km, "x"); // b 안의 x: a를 다시 쌓는다(A->B->A)
+        assert_eq!(sq.stack_names(), ["a", "b", "a"]);
+        press(&mut sq, &km, "q");
+        assert_eq!(sq.stack_names(), ["a", "b", "a"]);
+        assert!(sq.apply_table_action(&km, &Action::DeactivateKeyTable).0);
+        assert_eq!(sq.stack_names(), ["a", "b"]);
+        assert!(sq.apply_table_action(&km, &Action::DeactivateAllKeyTables).0);
+        assert!(sq.stack_names().is_empty());
+        assert!(
+            !sq.apply_table_action(&km, &Action::DeactivateAllKeyTables).0,
+            "켜진 것이 없으면 못 한 것"
+        );
+        assert!(!sq.apply_table_action(&km, &Action::DeactivateKeyTable).0);
+    }
+
+    #[test]
+    fn missing_table_is_ignored_and_performable_lets_the_key_through() {
+        let (km, _) = build_lines(&["f1=activate_key_table:nope", "performable:f2=activate_key_table:nope"]);
+        let mut sq = Sequencer::default();
+        assert_eq!(
+            press(&mut sq, &km, "f1"),
+            (vec![], None),
+            "없는 테이블: 무시하고 키는 먹는다"
+        );
+        assert!(sq.stack_names().is_empty());
+        assert_eq!(
+            press(&mut sq, &km, "f2"),
+            (b"f2".to_vec(), None),
+            "performable이면 키는 프로그램으로"
+        );
+    }
+
+    #[test]
+    fn once_table_pops_after_its_first_binding_including_catch_all() {
+        let (km, _) = build_lines(&[
+            "ctrl+b=activate_key_table_once:one",
+            "one/h=text:left",
+            "r=text:root-r",
+            "ctrl+c=activate_key_table_once:ca",
+            "ca/catch_all=text:any",
+        ]);
+        let mut sq = Sequencer::default();
+        press(&mut sq, &km, "ctrl+b");
+        assert_eq!(sq.stack_names(), ["one"]);
+        // 테이블에 없는 키(기본 묶음에서 잡힘)는 한 번 쓴 것으로 치지 않는다
+        assert_eq!(press(&mut sq, &km, "r").1, Some(Action::Text("root-r".into())));
+        assert_eq!(sq.stack_names(), ["one"]);
+        assert_eq!(press(&mut sq, &km, "h").1, Some(Action::Text("left".into())));
+        assert!(sq.stack_names().is_empty());
+        assert_eq!(press(&mut sq, &km, "h"), (b"h".to_vec(), None));
+        // catch_all도 한 번 쓴 것이다(Binding.zig 쪽 설명)
+        press(&mut sq, &km, "ctrl+c");
+        assert_eq!(press(&mut sq, &km, "k").1, Some(Action::Text("any".into())));
+        assert!(sq.stack_names().is_empty());
+    }
+
+    #[test]
+    fn once_table_below_another_waits_until_it_is_innermost() {
+        let (km, _) = build_lines(&[
+            "f1=activate_key_table_once:o",
+            "f2=activate_key_table:t",
+            "o/y=text:from-o",
+            "t/z=text:from-t",
+            "t/escape=deactivate_key_table",
+        ]);
+        let mut sq = Sequencer::default();
+        press(&mut sq, &km, "f1");
+        press(&mut sq, &km, "f2");
+        assert_eq!(sq.stack_names(), ["o", "t"]);
+        press(&mut sq, &km, "z");
+        assert_eq!(sq.stack_names(), ["o", "t"], "안쪽이 아닌 once는 건드리지 않는다");
+        press(&mut sq, &km, "escape");
+        assert_eq!(sq.stack_names(), ["o"]);
+        assert_eq!(press(&mut sq, &km, "y").1, Some(Action::Text("from-o".into())));
+        assert!(sq.stack_names().is_empty());
+    }
+
+    #[test]
+    fn key_sequences_work_inside_tables_and_a_bad_key_keeps_the_table() {
+        let (km, _) = build_lines(&["ctrl+b=activate_key_table:t", "t/ctrl+a>n=text:seq", "t/q=text:q-in-t"]);
+        let mut sq = Sequencer::default();
+        press(&mut sq, &km, "ctrl+b");
+        assert_eq!(press(&mut sq, &km, "ctrl+a"), (vec![], None), "앞 키는 기다린다");
+        assert_eq!(press(&mut sq, &km, "n").1, Some(Action::Text("seq".into())));
+        // 깨진 순서: 쌓은 키와 이 키를 보내고, 테이블은 그대로
+        press(&mut sq, &km, "ctrl+a");
+        assert_eq!(press(&mut sq, &km, "x"), (b"ctrl+ax".to_vec(), None));
+        assert_eq!(sq.stack_names(), ["t"]);
+        assert_eq!(press(&mut sq, &km, "q").1, Some(Action::Text("q-in-t".into())));
+    }
+
+    #[test]
+    fn sequence_prefix_is_resolved_in_the_layer_that_started_it() {
+        let (km, _) = build_lines(&["ctrl+b=activate_key_table:t", "t/g>g=text:top", "g>h=text:root-gh"]);
+        let mut sq = Sequencer::default();
+        press(&mut sq, &km, "ctrl+b");
+        // g는 테이블의 앞 키로 잡혔으니 기본 묶음의 g>h는 보지 않는다
+        assert_eq!(press(&mut sq, &km, "g"), (vec![], None));
+        assert_eq!(press(&mut sq, &km, "h"), (b"gh".to_vec(), None));
+    }
+
+    #[test]
+    fn end_key_sequence_flushes_only_the_prior_keys() {
+        let (km, _) = build_lines(&["ctrl+w>escape=end_key_sequence", "ctrl+w>n=new_window"]);
+        let mut sq = Sequencer::default();
+        assert_eq!(press(&mut sq, &km, "ctrl+w"), (vec![], None));
+        assert_eq!(
+            press(&mut sq, &km, "escape"),
+            (b"ctrl+w".to_vec(), None),
+            "앞 키만 보내고 escape는 버린다"
+        );
+        assert!(!sq.waiting());
+        // 순서 밖에서는 아무 일도 하지 않고 키만 먹는다
+        let (km, _) = build_lines(&["f1=end_key_sequence"]);
+        assert_eq!(press(&mut sq, &km, "f1"), (vec![], None));
+    }
+
+    #[test]
+    fn table_action_from_a_palette_uses_the_same_stack() {
+        let (km, _) = build_lines(&["t/a=new_tab"]);
+        let mut sq = Sequencer::default();
+        assert!(sq.apply_table_action(&km, &Action::ActivateKeyTable("t".into())).0);
+        assert_eq!(press(&mut sq, &km, "a").1, Some(Action::NewTab));
+        assert!(!sq.apply_table_action(&km, &Action::ActivateKeyTable("t".into())).0);
     }
 }
