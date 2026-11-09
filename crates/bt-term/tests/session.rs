@@ -856,14 +856,16 @@ fn wait_shape(s: &Session, want: Option<bt_term::MouseShape>) {
 fn osc22_sets_the_pane_mouse_shape_and_empty_name_or_ris_resets_it() {
     use bt_term::MouseShape as M;
     let (s, _rx) = sh(
-        "printf '\\033]22;crosshair\\033\\\\'; printf A; sleep 1; \
+        "read go; printf '\\033]22;crosshair\\033\\\\'; printf A; sleep 1; \
          printf '\\033]22;banana\\007'; printf B; sleep 1; \
          printf '\\033]22;\\007'; printf C; sleep 1; \
          printf '\\033]22;wait\\007'; printf D; sleep 1; \
          printf '\\033c'; printf E; sleep 5",
         GridSize::new(80, 10),
     );
+    // 셸은 줄 하나를 받기 전에는 아무것도 찍지 않는다: 처음 모양은 경쟁 없이 본다(#269)
     assert_eq!(s.mouse_shape(), None);
+    s.write(b"\n");
     wait_shape(&s, Some(M::Crosshair));
     // 모르는 이름은 모양을 바꾸지 않는다
     wait_until(&s, |t| t.contains('B'));
