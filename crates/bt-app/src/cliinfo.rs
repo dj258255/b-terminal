@@ -337,6 +337,31 @@ pub fn explain_option(doc: &str, name: &str) -> Option<String> {
     None
 }
 
+/// `+show-config --docs`: 설정 글(`키 = 값` 줄들)의 키마다 위에 설명 주석을 단다.
+/// 설명은 `+explain-config`와 같은 표·같은 파서에서 온다. 표에 없는 키는 그대로 두고,
+/// 같은 키가 여러 줄이어도 설명은 첫 줄 위에 한 번만 단다
+pub fn annotate_with_docs(text: &str) -> String {
+    annotate_with(text, CONFIG_DOC)
+}
+
+fn annotate_with(text: &str, doc: &str) -> String {
+    let mut seen: Vec<&str> = Vec::new();
+    let mut out = Vec::new();
+    for l in text.lines() {
+        if let Some((key, _)) = l.split_once(" = ") {
+            if !l.starts_with('#') && !seen.contains(&key) {
+                seen.push(key);
+                if let Some(t) = explain_option(doc, key) {
+                    out.push(String::new());
+                    out.extend(t.lines().map(|d| format!("# {}", d.trim())));
+                }
+            }
+        }
+        out.push(l.to_string());
+    }
+    out.join("\n")
+}
+
 /// 읽은 인자
 #[derive(Debug, Default)]
 pub struct Flags {
