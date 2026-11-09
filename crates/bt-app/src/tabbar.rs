@@ -328,9 +328,79 @@ pub fn draw_confirm(canvas: &mut Canvas, fonts: &mut Fonts, theme: &Theme, messa
     draw_text(canvas, fonts, x + cw * 2, y + pad + line_h as i32, hint, dim, false);
 }
 
+/// 크기 표시 띠(`w`×`h`)를 칸 안 어디에 둘지(#122). 가장자리에서 `margin`만큼 띄운다
+pub fn overlay_origin(
+    pos: bt_core::config::OverlayPosition,
+    pane: crate::split::Rect,
+    w: u32,
+    h: u32,
+    margin: i32,
+) -> (i32, i32) {
+    use bt_core::config::OverlayPosition::*;
+    let (left, right) = (pane.x + margin, pane.x + pane.w as i32 - w as i32 - margin);
+    let (top, bottom) = (pane.y + margin, pane.y + pane.h as i32 - h as i32 - margin);
+    let cx = pane.x + (pane.w as i32 - w as i32) / 2;
+    let cy = pane.y + (pane.h as i32 - h as i32) / 2;
+    match pos {
+        Center => (cx, cy),
+        TopLeft => (left, top),
+        TopCenter => (cx, top),
+        TopRight => (right, top),
+        BottomLeft => (left, bottom),
+        BottomCenter => (cx, bottom),
+        BottomRight => (right, bottom),
+    }
+}
+
+/// 크기 표시 띠(#122): 칸 안 `pos` 자리에 `80 × 24`
+pub fn draw_resize_overlay(
+    canvas: &mut Canvas,
+    fonts: &mut Fonts,
+    theme: &Theme,
+    pane: crate::split::Rect,
+    pos: bt_core::config::OverlayPosition,
+    text: &str,
+) {
+    let m = fonts.metrics();
+    let (w, h) = (m.width * (text_cells(text) as u32 + 2), m.height + m.height / 2);
+    if w > pane.w || h > pane.h {
+        return;
+    }
+    let (x, y) = overlay_origin(pos, pane, w, h, m.width as i32);
+    canvas.fill_rect(x, y, w, h, theme.background.mix(theme.foreground, 0.85));
+    draw_text(
+        canvas,
+        fonts,
+        x + m.width as i32,
+        y + (h as i32 - m.height as i32) / 2,
+        text,
+        theme.background,
+        false,
+    );
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn resize_overlay_sits_at_the_chosen_spot_inside_the_pane() {
+        use bt_core::config::OverlayPosition::*;
+        let pane = crate::split::Rect {
+            x: 100,
+            y: 50,
+            w: 400,
+            h: 300,
+        };
+        let at = |p| overlay_origin(p, pane, 80, 20, 10);
+        assert_eq!(at(Center), (260, 190));
+        assert_eq!(at(TopLeft), (110, 60));
+        assert_eq!(at(TopCenter), (260, 60));
+        assert_eq!(at(TopRight), (410, 60));
+        assert_eq!(at(BottomLeft), (110, 320));
+        assert_eq!(at(BottomCenter), (260, 320));
+        assert_eq!(at(BottomRight), (410, 320));
+    }
 
     #[test]
     fn confirm_bar_is_centered_with_warning_border_and_fits_long_text() {

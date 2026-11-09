@@ -125,6 +125,10 @@ pub struct Config {
     pub confirm_close: ConfirmClose,
     /// 퀵 터미널의 자리·크기·화면·자동 숨김·움직임(Ghostty `quick-terminal-*`, #110)
     pub quick: QuickTerminal,
+    /// 크기 표시(Ghostty `resize-overlay`·`-position`·`-duration`, #122)
+    pub resize_overlay: ResizeOverlay,
+    pub resize_overlay_position: OverlayPosition,
+    pub resize_overlay_duration: std::time::Duration,
     /// 글자색과 바탕의 최소 명암비(1~21, Ghostty `minimum-contrast`, #123). 1이면 끔
     pub minimum_contrast: f32,
     /// 분할에서 마우스가 올라간 칸을 고른다(Ghostty `focus-follows-mouse`, #126)
@@ -168,6 +172,61 @@ impl BellFeatures {
         *self = next;
         true
     }
+}
+
+/// 크기 표시를 언제 보이나(Ghostty `resize-overlay`)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResizeOverlay {
+    Always,
+    Never,
+    /// 칸을 만든 직후의 크기 맞추기는 빼고
+    AfterFirst,
+}
+
+/// 크기 표시 자리(Ghostty `resize-overlay-position`)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OverlayPosition {
+    Center,
+    TopLeft,
+    TopCenter,
+    TopRight,
+    BottomLeft,
+    BottomCenter,
+    BottomRight,
+}
+
+/// Ghostty 기간 문법: `750ms`, `1s`, `1h30m`. 숫자 뒤에 단위(y d h m s ms us µs ns)
+pub fn parse_duration(v: &str) -> Option<std::time::Duration> {
+    let s: String = v.chars().filter(|c| !c.is_whitespace()).collect();
+    if s.is_empty() {
+        return None;
+    }
+    let mut total: u128 = 0;
+    let mut rest = s.as_str();
+    while !rest.is_empty() {
+        let digits = rest.find(|c: char| !c.is_ascii_digit()).unwrap_or(rest.len());
+        if digits == 0 {
+            return None;
+        }
+        let n: u128 = rest[..digits].parse().ok()?;
+        rest = &rest[digits..];
+        let unit_len = rest.find(|c: char| c.is_ascii_digit()).unwrap_or(rest.len());
+        let (unit, tail) = rest.split_at(unit_len);
+        rest = tail;
+        let ns: u128 = match unit {
+            "y" => 365 * 86_400 * 1_000_000_000,
+            "d" => 86_400 * 1_000_000_000,
+            "h" => 3_600 * 1_000_000_000,
+            "m" => 60 * 1_000_000_000,
+            "s" => 1_000_000_000,
+            "ms" => 1_000_000,
+            "us" | "µs" => 1_000,
+            "ns" => 1,
+            _ => return None,
+        };
+        total = total.checked_add(n.checked_mul(ns)?)?;
+    }
+    Some(std::time::Duration::from_nanos(u64::try_from(total).ok()?))
 }
 
 /// Ghostty `selection-word-chars` 기본(공백 포함)
@@ -355,6 +414,9 @@ impl Default for Config {
             bell_features: BellFeatures::default(),
             confirm_close: ConfirmClose::True,
             quick: QuickTerminal::default(),
+            resize_overlay: ResizeOverlay::AfterFirst,
+            resize_overlay_position: OverlayPosition::Center,
+            resize_overlay_duration: std::time::Duration::from_millis(750),
             minimum_contrast: 1.0,
             focus_follows_mouse: false,
             scroll_multiplier: (3.0, 1.0),
@@ -800,6 +862,26 @@ impl Config {
                 "never" => self.window_save_state = false,
                 _ => bad(warnings),
             },
+            "resize-overlay" => match v {
+                "always" => self.resize_overlay = ResizeOverlay::Always,
+                "never" => self.resize_overlay = ResizeOverlay::Never,
+                "after-first" => self.resize_overlay = ResizeOverlay::AfterFirst,
+                _ => bad(warnings),
+            },
+            "resize-overlay-position" => match v {
+                "center" => self.resize_overlay_position = OverlayPosition::Center,
+                "top-left" => self.resize_overlay_position = OverlayPosition::TopLeft,
+                "top-center" => self.resize_overlay_position = OverlayPosition::TopCenter,
+                "top-right" => self.resize_overlay_position = OverlayPosition::TopRight,
+                "bottom-left" => self.resize_overlay_position = OverlayPosition::BottomLeft,
+                "bottom-center" => self.resize_overlay_position = OverlayPosition::BottomCenter,
+                "bottom-right" => self.resize_overlay_position = OverlayPosition::BottomRight,
+                _ => bad(warnings),
+            },
+            "resize-overlay-duration" => match parse_duration(v) {
+                Some(d) => self.resize_overlay_duration = d,
+                None => bad(warnings),
+            },
             "minimum-contrast" => match v.parse::<f32>() {
                 Ok(c) if c.is_finite() => self.minimum_contrast = c.clamp(1.0, 21.0),
                 _ => bad(warnings),
@@ -1015,7 +1097,6 @@ const KNOWN_IGNORED: &[&str] = &[
     "auto-update",
     "auto-update-channel",
     "link-url",
-    "resize-overlay",
     "gtk-titlebar",
     "gtk-single-instance",
 ];
@@ -1198,6 +1279,47 @@ mod tests {
         assert!(!Config::from_text("window-save-state = never\n", true).window_save_state);
         assert!(Config::from_text("window-save-state = always\n", true).window_save_state);
         assert_eq!(Config::from_text("window-save-state = maybe\n", true).warnings.len(), 1);
+    }
+
+    #[test]
+    fn resize_overlay_keys_and_durations_like_ghostty() {
+        use std::time::Duration;
+        let d = Config::default();
+        assert_eq!(d.resize_overlay, ResizeOverlay::AfterFirst);
+        assert_eq!(d.resize_overlay_position, OverlayPosition::Center);
+        assert_eq!(d.resize_overlay_duration, Duration::from_millis(750));
+        assert_eq!(parse_duration("750ms"), Some(Duration::from_millis(750)));
+        assert_eq!(parse_duration("1h30m"), Some(Duration::from_secs(5400)));
+        assert_eq!(
+            parse_duration("2s 500ms"),
+            Some(Duration::from_millis(2500)),
+            "사이 공백"
+        );
+        assert_eq!(parse_duration("10us"), Some(Duration::from_micros(10)));
+        assert_eq!(parse_duration("10µs"), Some(Duration::from_micros(10)));
+        assert_eq!(parse_duration("1d"), Some(Duration::from_secs(86_400)));
+        for bad in ["", "5", "ms", "1x", "1.5s", "-1s"] {
+            assert_eq!(parse_duration(bad), None, "{bad}");
+        }
+        let c = Config::from_text(
+            "resize-overlay = always\nresize-overlay-position = bottom-right\nresize-overlay-duration = 2s\n",
+            true,
+        );
+        assert!(c.warnings.is_empty(), "{:?}", c.warnings);
+        assert_eq!(
+            (c.resize_overlay, c.resize_overlay_position, c.resize_overlay_duration),
+            (
+                ResizeOverlay::Always,
+                OverlayPosition::BottomRight,
+                Duration::from_secs(2)
+            )
+        );
+        assert_eq!(
+            Config::from_text("resize-overlay-position = middle\n", true)
+                .warnings
+                .len(),
+            1
+        );
     }
 
     #[test]

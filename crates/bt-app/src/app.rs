@@ -94,6 +94,9 @@ pub struct Pane {
     pub unread: bool,
     /// 보지 않은 벨이 있다(`bell-features = title`, #107): 제목 앞에 🔔
     pub bell: bool,
+    /// 칸을 만든 때와 크기 표시를 지울 때(#122)
+    created: Instant,
+    overlay_until: Option<Instant>,
     /// 셸이 OSC 7로 알린 작업 폴더
     pub cwd: Option<std::path::PathBuf>,
     /// 마지막으로 데스크톱 알림을 띄운 때(탭마다 묶는다)
@@ -121,6 +124,19 @@ impl Pane {
             self.fg_name.clone().unwrap_or_else(|| "셸".into())
         };
         if self.bell { format!("🔔 {name}") } else { name }
+    }
+}
+
+/// 칸을 만든 직후 이만큼은 크기 맞추기로 보고 크기 표시를 하지 않는다(`resize-overlay = after-first`, #122)
+const RESIZE_OVERLAY_GRACE: Duration = Duration::from_millis(500);
+
+/// 이 크기 바뀜에 크기 표시를 보일지. `age`: 칸을 만든 뒤 지난 시간
+fn resize_overlay_due(mode: bt_core::config::ResizeOverlay, age: Duration) -> bool {
+    use bt_core::config::ResizeOverlay;
+    match mode {
+        ResizeOverlay::Always => true,
+        ResizeOverlay::Never => false,
+        ResizeOverlay::AfterFirst => age >= RESIZE_OVERLAY_GRACE,
     }
 }
 
@@ -799,6 +815,8 @@ impl App {
                 fg_pid: None,
                 unread: false,
                 bell: false,
+                created: Instant::now(),
+                overlay_until: None,
                 cwd: None,
                 last_desktop: None,
                 progress: None,
@@ -1325,7 +1343,15 @@ impl App {
             for (id, rect) in self.group_layout(gi) {
                 let size = self.grid_size_for(rect);
                 if let Some(i) = self.pane_index(id) {
-                    self.panes[i].session.resize(size);
+                    // 칸·줄 수가 바뀌면 크기 표시(resize-overlay, #122)
+                    let p = &mut self.panes[i];
+                    let old = p.session.size();
+                    if (old.cols, old.rows) != (size.cols, size.rows)
+                        && resize_overlay_due(self.config.resize_overlay, p.created.elapsed())
+                    {
+                        p.overlay_until = Some(Instant::now() + self.config.resize_overlay_duration);
+                    }
+                    p.session.resize(size);
                 }
             }
         }
@@ -2294,6 +2320,13 @@ impl App {
         let theme = self.config.theme.clone();
         let toast = self.w.toast.clone().filter(|(_, at)| at.elapsed() < TOAST_FOR);
         let confirm = self.w.confirm.as_ref().map(|c| (c.message.clone(), c.yes));
+        let now_overlay = Instant::now();
+        let resize_overlays: Vec<u64> = self
+            .panes
+            .iter()
+            .filter(|p| p.overlay_until.is_some_and(|t| t > now_overlay))
+            .map(|p| p.id)
+            .collect();
         let focus = self.focused_id();
         // 보이는 칸마다: 바깥 사각형, 격자 자리, 화면, 고른 칸인가, 진행 표시
         let layout = self.group_layout(self.w.active);
@@ -2450,6 +2483,7 @@ impl App {
                 || search.is_some()
                 || palette.is_some()
                 || confirm.is_some()
+                || views.iter().any(|v| resize_overlays.contains(&v.id))
                 // kitty 그림은 칸 위에 겹쳐 그린다(#76)
                 || views.iter().any(|v| !v.screen.images.is_empty())
                 || (single_tab && views.iter().any(|v| v.progress.is_some())),
@@ -2565,6 +2599,16 @@ impl App {
                         &format!("{query}{preedit}"),
                         status,
                         *missing,
+                    );
+                }
+                if resize_overlays.contains(&v.id) {
+                    tabbar::draw_resize_overlay(
+                        &mut canvas,
+                        fonts,
+                        &theme,
+                        v.outer,
+                        self.config.resize_overlay_position,
+                        &format!("{} × {}", screen.cols, screen.rows),
                     );
                 }
                 // 탭이 하나면 진행 막대를 칸 맨 위에 얇게(Ghostty와 같은 자리). 탭이 여럿이면 탭 줄에 보인다
@@ -3301,6 +3345,18 @@ impl ApplicationHandler<UserEvent> for App {
                 }
             }
         }
+        // 크기 표시가 끝난 칸은 지우고 다시 그린다(#122)
+        let mut overlay_done = false;
+        for p in &mut self.panes {
+            if p.overlay_until.is_some_and(|t| t <= now) {
+                p.overlay_until = None;
+                overlay_done = true;
+            }
+        }
+        if overlay_done {
+            self.request_redraw_all();
+        }
+        let overlay_next = self.panes.iter().filter_map(|p| p.overlay_until).min();
         // 퀵 창 움직임(#110): 프레임마다 자리를 옮기고, 끝나면 숨길 것은 숨긴다
         let mut animating = false;
         for w in std::iter::once(&mut self.w).chain(self.others.iter_mut()) {
@@ -3333,6 +3389,7 @@ impl ApplicationHandler<UserEvent> for App {
             .chain([self.next_poll])
             .chain(blink_next)
             .chain(anim_next)
+            .chain(overlay_next)
             .min();
         match deadline {
             Some(d) if d <= Instant::now() => {
@@ -3356,6 +3413,16 @@ impl ApplicationHandler<UserEvent> for App {
 mod tests {
     use super::*;
     use bt_term::search::SearchStatus;
+
+    #[test]
+    fn resize_overlay_skips_the_size_set_right_after_creation() {
+        use bt_core::config::ResizeOverlay::{AfterFirst, Always, Never};
+        let (early, late) = (Duration::from_millis(100), Duration::from_secs(3));
+        assert!(!resize_overlay_due(AfterFirst, early), "만든 직후 크기 맞추기");
+        assert!(resize_overlay_due(AfterFirst, late));
+        assert!(resize_overlay_due(Always, early));
+        assert!(!resize_overlay_due(Never, late));
+    }
 
     #[test]
     fn paste_prompt_counts_lines_and_strips_control_chars() {

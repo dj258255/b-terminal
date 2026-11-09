@@ -4,6 +4,8 @@
 
 ## [아직 릴리스하지 않음]
 
+- 크기 표시(`resize-overlay`·`-position`·`-duration`, Ghostty 키, 기본 `after-first`·`center`·`750ms`): 창이나 분할 칸의 크기가 바뀌면 칸 안에 `80 × 24`를 잠깐 보입니다.
+
 - 최소 명암비(`minimum-contrast`, Ghostty 키, 기본 `1`=끔): 바탕과 너무 비슷한 글자색을 흰색이나 검은색으로 그립니다. 켜면 화면 전체 다시 그리기가 약 0.6ms 늘었습니다(200×60 레티나, 한 번 잰 값).
 
 - 마우스·창의 작은 Ghostty 키: `focus-follows-mouse`(마우스가 올라간 칸 고르기), `mouse-scroll-multiplier`(휠 배율, 기본 3·트랙패드 1), `selection-word-chars`(두 번 눌러 고르는 단어의 경계 글자), `toggle_fullscreen` 동작(⌃⌘F), `scroll_page_lines`·`scroll_page_fractional` 동작.
