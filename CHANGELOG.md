@@ -4,6 +4,8 @@
 
 ## [아직 릴리스하지 않음]
 
+- 이어받기·탭 키(Ghostty): `window-`·`tab-`·`split-inherit-working-directory`(새 창·탭·분할이 폴더를 이어받을지, 기본 켬이고 이제 `working-directory`가 `home`·경로여도 이어받음), `window-new-tab-position`(`current` 기본은 지금 탭 바로 뒤라 새 탭 자리가 전의 맨 끝에서 달라짐, `end`), `window-show-tab-bar`(`auto` 기본·`always`·`never`), `window-inherit-font-size`(글자 크기가 앱 전체 하나라 값만 받음). 실제 창에서는 아직 확인하지 않았습니다. #160
+
 ## [0.10.0] - 2026-11-09
 
 Ghostty 키 채우기 3. 클립보드·오른쪽 클릭, 맨 아래로 스크롤, 시작 창, 키 묶음 접두사, 팔레트 사용자 항목, 제목·색 보고. 하위 이슈마다 에이전트 하나가 따로 구현하고 주 세션이 검토·병합했습니다. 추적 이슈 #145.

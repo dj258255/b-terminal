@@ -635,7 +635,7 @@ impl App {
     /// 탭 줄 높이. 탭이 하나면 없다(Ghostty처럼)
     fn tabbar_height(&self) -> u32 {
         match &self.fonts {
-            Some(f) if self.w.tabs.len() > 1 => tabbar::height_px(f),
+            Some(f) if self.config.window_show_tab_bar.visible(self.w.tabs.len()) => tabbar::height_px(f),
             _ => 0,
         }
     }
@@ -896,7 +896,9 @@ impl App {
     pub fn open_tab(&mut self, options: SpawnOptions) -> Option<u64> {
         // 탭이 하나에서 둘이 되면 탭 줄이 생긴다. 새 칸은 탭 줄을 뺀 크기로 띄운다
         let mut area = self.content_rect();
-        if self.w.tabs.len() == 1 {
+        let now = self.config.window_show_tab_bar.visible(self.w.tabs.len());
+        let next = self.config.window_show_tab_bar.visible(self.w.tabs.len() + 1);
+        if next && !now {
             let bar = self.fonts.as_ref().map(tabbar::height_px).unwrap_or(0);
             area.y += bar as i32;
             area.h = area.h.saturating_sub(bar);
@@ -906,12 +908,19 @@ impl App {
         let id = pane.id;
         self.panes.push(pane);
         let before = self.focused_id();
-        self.w.tabs.push(TabGroup {
-            layout: Node::Leaf(id),
-            focus: id,
-            zoomed: false,
-        });
-        self.w.active = self.w.tabs.len() - 1;
+        let at = self
+            .config
+            .window_new_tab_position
+            .insert_index(self.w.active, self.w.tabs.len());
+        self.w.tabs.insert(
+            at,
+            TabGroup {
+                layout: Node::Leaf(id),
+                focus: id,
+                zoomed: false,
+            },
+        );
+        self.w.active = at;
         self.focus_changed(before);
         self.resize_all();
         Some(id)
@@ -948,14 +957,15 @@ impl App {
         Some(new_id)
     }
 
-    /// 새 칸을 띄울 값: 설정을 따르되, 고른 칸의 폴더를 이어받는다
-    fn spawn_here(&self) -> SpawnOptions {
+    /// 새 칸을 띄울 값: 설정을 따르되, 길(창·탭·분할)별 키가 켜져 있으면 고른 칸의 폴더를 이어받는다
+    /// (Ghostty처럼 켜져 있으면 `working-directory`보다 앞선다)
+    fn spawn_here(&self, kind: bt_core::config::SpawnKind) -> SpawnOptions {
         // OSC 7로 알려진 폴더, 없으면 프로세스에게 묻는다
         let cwd = self
             .active_pane()
             .and_then(|t| t.cwd.clone().or_else(|| t.session.cwd()));
         let mut opts = self.default_spawn();
-        if cwd.is_some() && self.config.working_directory == bt_core::config::WorkingDirectory::Inherit {
+        if cwd.is_some() && self.config.inherits_cwd(kind) {
             opts.cwd = cwd;
         }
         opts
@@ -1862,14 +1872,14 @@ impl App {
             Action::FontReset => self.set_font_size(self.config.font_size),
             // 새 탭·새 칸은 고른 칸의 폴더에서 연다
             Action::NewTab => {
-                self.open_tab(self.spawn_here());
+                self.open_tab(self.spawn_here(bt_core::config::SpawnKind::Tab));
             }
             Action::NewWindow => {
-                let opts = self.spawn_here();
+                let opts = self.spawn_here(bt_core::config::SpawnKind::Window);
                 self.open_window(event_loop, opts);
             }
             Action::NewSplit(dir) => {
-                self.open_split(dir, self.spawn_here());
+                self.open_split(dir, self.spawn_here(bt_core::config::SpawnKind::Split));
             }
             Action::CloseSurface => {
                 if let Some(id) = self.focused_id() {
@@ -2688,7 +2698,8 @@ impl App {
         // 고르지 않은 칸은 바탕색으로 살짝 덮는다(Ghostty의 unfocused-split-opacity)
         let dim_alpha = ((1.0 - self.config.unfocused_split_opacity) * 255.0).round() as u8;
         let dim_fill = self.config.unfocused_split_fill.unwrap_or(theme.background);
-        let single_tab = self.w.tabs.len() == 1;
+        // 탭 막대가 없을 때(`window-show-tab-bar`): 진행 막대를 칸 위에 그린다
+        let single_tab = !self.config.window_show_tab_bar.visible(self.w.tabs.len());
         let labels: Vec<tabbar::TabLabel> = if single_tab {
             Vec::new()
         } else {
@@ -3051,7 +3062,7 @@ impl App {
                         &format!("{} × {}", screen.cols, screen.rows),
                     );
                 }
-                // 탭이 하나면 진행 막대를 칸 맨 위에 얇게(Ghostty와 같은 자리). 탭이 여럿이면 탭 줄에 보인다
+                // 탭 막대가 없으면 진행 막대를 칸 맨 위에 얇게(Ghostty와 같은 자리). 있으면 탭 줄에 보인다
                 if let (true, Some(p)) = (single_tab, v.progress) {
                     tabbar::draw_progress(&mut canvas, &theme, v.outer.x, v.outer.y, v.outer.w, p, m.stroke * 3);
                 }
