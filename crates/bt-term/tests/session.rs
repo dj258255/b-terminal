@@ -837,3 +837,49 @@ fn mode_2031_report_reaches_a_readonly_pane() {
     });
     assert_eq!(got, hex_of("\x1b[?997;2n"));
 }
+
+// ---- OSC 22 마우스 포인터 모양(#239) ----
+
+fn wait_shape(s: &Session, want: Option<bt_term::MouseShape>) {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while s.mouse_shape() != want {
+        assert!(
+            Instant::now() < deadline,
+            "모양이 {want:?}가 되지 않았다: {:?}",
+            s.mouse_shape()
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+#[test]
+fn osc22_sets_the_pane_mouse_shape_and_empty_name_or_ris_resets_it() {
+    use bt_term::MouseShape as M;
+    let (s, _rx) = sh(
+        "printf '\\033]22;crosshair\\033\\\\'; printf A; sleep 1; \
+         printf '\\033]22;banana\\007'; printf B; sleep 1; \
+         printf '\\033]22;\\007'; printf C; sleep 1; \
+         printf '\\033]22;wait\\007'; printf D; sleep 1; \
+         printf '\\033c'; printf E; sleep 5",
+        GridSize::new(80, 10),
+    );
+    assert_eq!(s.mouse_shape(), None);
+    wait_shape(&s, Some(M::Crosshair));
+    // 모르는 이름은 모양을 바꾸지 않는다
+    wait_until(&s, |t| t.contains('B'));
+    assert_eq!(s.mouse_shape(), Some(M::Crosshair));
+    // 빈 이름은 되돌린다
+    wait_shape(&s, None);
+    // 다시 정하고, 초기화(RIS)로 되돌린다
+    wait_shape(&s, Some(M::Wait));
+    wait_shape(&s, None);
+}
+
+#[test]
+fn session_reset_clears_the_mouse_shape() {
+    use bt_term::MouseShape as M;
+    let (s, _rx) = sh("printf '\\033]22;text\\007'; sleep 5", GridSize::new(80, 10));
+    wait_shape(&s, Some(M::Text));
+    s.reset();
+    assert_eq!(s.mouse_shape(), None);
+}
