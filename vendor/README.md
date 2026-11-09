@@ -46,6 +46,8 @@ softbuffer가 색 공간을 고를 수 있게 되거나, GPU 렌더러로 바꿔
   - `Handler::input`이 글자를 찍기 전에 `join_grapheme`을 부릅니다. 방금 찍은 칸(`grapheme_anchor`, 커서가 그 자리 그대로일 때만)의 글과 새 글자를 합쳐 `unicode-segmentation`이 한 묶음으로 보면 새 칸 없이 그 칸의 결합 문자로 잇습니다. 좁은 글자에 U+FE0F가 붙어 두 칸(`unicode-width`의 문자열 폭)이 되면 뒤 칸을 채웁니다. 지역 표시 글자(국기)는 한 글자로도 두 칸으로 셉니다.
   - 칸 내용을 바꾸는 `scroll_*_relative`·`insert_blank`·`erase_chars`·`delete_chars`·`clear_line`·`clear_screen`·`swap_alt`·`reset_state`는 `grapheme_anchor`를 지웁니다.
 
+- 더한 곳(#259, ADR-021): 같은 파일에 `Term::scroll_region()`(스크롤 영역 줄 범위를 읽는 getter) 여섯 줄. `b-terminal 패치(#259)`로 찾을 수 있습니다. DECRQCRA(체크섬 보고)가 원점 모드의 위 여백을 읽으려고 더했고, 필드는 그대로 비공개입니다. 되돌릴 조건: alacritty_terminal이 같은 getter를 내놓으면 지웁니다.
+
 ### 왜
 
 alacritty_terminal은 글자마다 `unicode-width`로 폭을 세고, 폭 0인 글자만 앞 칸에 붙입니다. 그래서 ZWJ 가족은 6칸, 피부색은 4칸을 차지해 Ghostty(`grapheme-width-method = unicode`)와 어긋나고 프로그램이 mode 2027로 묶음 폭을 요청해도 받지 못합니다. 엔진 바깥(바이트를 바꾸는 방식)에서는 줄바꿈·커서·지우기와 섞여 안전하게 할 수 없었습니다.

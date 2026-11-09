@@ -54,6 +54,12 @@ pub enum Signal {
     ColorSchemeUpdates(bool),
     /// 마우스 포인터 모양(OSC 22). `Some`은 그 모양을 정하고, `None`은 이름이 비어 있어 되돌린다(#239)
     MouseShape(Option<crate::mouse_shape::MouseShape>),
+    /// DECRQCRA(`CSI Pi ; Pg ; Pt ; Pl ; Pb ; Pr * y`): 화면 사각 영역의 체크섬을 묻는다. 세션이 설정(vt-xt-checksum-report)을 보고 답한다(#259)
+    XtChecksumReport(crate::xt_checksum::Request),
+    /// XTCHECKSUM(`CSI Ps # y`): 체크섬 계산법을 고른다. 아래 다섯 비트만 남긴다. 설정이 꺼져 있으면 세션이 무시한다(#259)
+    XtChecksumExtension(u8),
+    /// 소프트 리셋(DECSTR, `CSI ! p`). 체크섬 계산법이 설정의 기본으로 돌아간다(#259)
+    SoftReset,
 }
 
 /// OSC 22 이름의 길이 상한(바이트). 가장 긴 이름("bottom_right_corner")보다 넉넉하다
@@ -119,10 +125,14 @@ pub struct Scanner {
     csi: Vec<u8>,
     /// 이 CSI에 중간 바이트(0x20~0x2f)나 `: < = >`가 끼었다: 우리가 아는 모양이 아니다
     csi_taint: bool,
+    /// 이 CSI의 중간 바이트(0x20~0x2f)가 딱 하나이고 그 뒤로 매개변수가 오지 않았을 때 그 바이트: `* y`·`# y`·`! p`를 알아보는 데 쓴다(#259)
+    csi_inter: Option<u8>,
+    /// 중간 바이트가 둘 이상이거나, 중간 바이트 뒤에 매개변수가 오거나, `: < = >`가 끼었다: 중간 바이트로 읽는 신호도 아니다
+    csi_bad: bool,
 }
 
 /// CSI 매개변수를 모으는 상한. 이만큼 차면 잘린 것으로 보고 믿지 않는다
-const MAX_CSI: usize = 24;
+const MAX_CSI: usize = 40;
 
 /// APC 하나의 상한. kitty는 조각을 4096바이트로 보내지만 한 번에 보내는 도구도 있다
 const MAX_APC: usize = 8 * 1024 * 1024;
@@ -161,6 +171,8 @@ impl Scanner {
                 (St::Esc, b'[') => {
                     self.csi.clear();
                     self.csi_taint = false;
+                    self.csi_inter = None;
+                    self.csi_bad = false;
                     St::Csi
                 }
                 // ENQ는 VT 엔진도 ESC 사이에서 실행한다
@@ -200,6 +212,10 @@ impl Scanner {
                 // APC 안의 ESC 뒤가 \가 아니면 끊긴 것이다
                 (St::ApcEsc, _) => St::Ground,
                 (St::Csi, b'0'..=b'9' | b';' | b'?') => {
+                    // 중간 바이트 뒤의 매개변수는 VT 문법 밖이다
+                    if self.csi_inter.is_some() {
+                        self.csi_bad = true;
+                    }
                     if self.csi.len() < MAX_CSI {
                         self.csi.push(b);
                     }
@@ -213,6 +229,11 @@ impl Scanner {
                 (St::Csi, 0x40..=0x7e) => {
                     if !self.csi_taint && self.csi.len() < MAX_CSI {
                         if let Some(sig) = csi_signal(b, &self.csi) {
+                            out.push((i + 1, sig));
+                        }
+                    } else if let (Some(inter), false, true) = (self.csi_inter, self.csi_bad, self.csi.len() < MAX_CSI)
+                    {
+                        if let Some(sig) = csi_inter_signal(inter, b, &self.csi) {
                             out.push((i + 1, sig));
                         }
                     }
@@ -239,6 +260,11 @@ impl Scanner {
                 }
                 (St::Csi, 0x20..=0x2f | 0x3a | 0x3c..=0x3e) => {
                     self.csi_taint = true;
+                    if (0x20..=0x2f).contains(&b) && self.csi_inter.is_none() {
+                        self.csi_inter = Some(b);
+                    } else {
+                        self.csi_bad = true;
+                    }
                     St::Csi
                 }
                 (St::Csi, _) => St::Csi,
@@ -289,6 +315,36 @@ impl Scanner {
 fn csi_num(p: &str) -> u32 {
     p.bytes()
         .fold(0u32, |n, d| n.saturating_mul(10).saturating_add((d - b'0') as u32))
+}
+
+/// 중간 바이트가 하나 붙은 CSI(`ESC [ 매개변수 중간 끝`)에서 뽑는 신호: DECRQCRA(`* y`), XTCHECKSUM(`# y`), DECSTR(`! p`)(#259).
+/// 매개변수는 숫자와 `;`만 받는다
+fn csi_inter_signal(inter: u8, fin: u8, params: &[u8]) -> Option<Signal> {
+    if params.contains(&b'?') {
+        return None;
+    }
+    let text = std::str::from_utf8(params).ok()?;
+    // 매개변수가 하나도 없으면 빈 목록이고, 아니면 `;`로 나눈 개수가 매개변수 수다
+    let parts: Vec<&str> = if text.is_empty() {
+        Vec::new()
+    } else {
+        text.split(';').collect()
+    };
+    let num = |i: usize| csi_num(parts.get(i).copied().unwrap_or("")).min(u16::MAX as u32) as u16;
+    match (inter, fin) {
+        // 매개변수가 여섯보다 많으면 Ghostty처럼 잘못된 명령으로 버린다. 쪽 번호(둘째)는 무시한다
+        (b'*', b'y') if parts.len() <= 6 => Some(Signal::XtChecksumReport(crate::xt_checksum::Request {
+            id: num(0),
+            top: num(2),
+            left: num(3),
+            bottom: num(4),
+            right: num(5),
+        })),
+        // 하나보다 많으면 버리고, 없으면 0이다. 모르는 윗 비트는 버린다
+        (b'#', b'y') if parts.len() <= 1 => Some(Signal::XtChecksumExtension((num(0) & 0x1f) as u8)),
+        (b'!', b'p') if parts.is_empty() => Some(Signal::SoftReset),
+        _ => None,
+    }
 }
 
 /// 끝난 CSI(`ESC [ 매개변수 끝바이트`)에서 뽑는 신호: 제목 보고(21 t), 창 크기 요청(8 ; 행 ; 열 t), 키보드 잠금(2 h·l)
@@ -632,6 +688,105 @@ mod tests {
 
     fn notes(input: &[u8]) -> Vec<Signal> {
         Scanner::default().feed(input)
+    }
+
+    fn rq(id: u16, top: u16, left: u16, bottom: u16, right: u16) -> Signal {
+        Signal::XtChecksumReport(crate::xt_checksum::Request {
+            id,
+            top,
+            left,
+            bottom,
+            right,
+        })
+    }
+
+    #[test]
+    fn decrqcra_is_parsed_with_its_intermediate_byte() {
+        // 요청 번호, 쪽(무시), 위·왼쪽·아래·오른쪽
+        assert_eq!(notes(b"\x1b[1;1;1;1;1;3*y"), vec![rq(1, 1, 1, 1, 3)]);
+        assert_eq!(notes(b"\x1b[65535;9;2;3;4;5*y"), vec![rq(65535, 2, 3, 4, 5)]);
+        // 생략한 것은 0
+        assert_eq!(notes(b"\x1b[*y"), vec![rq(0, 0, 0, 0, 0)]);
+        assert_eq!(notes(b"\x1b[7*y"), vec![rq(7, 0, 0, 0, 0)]);
+        assert_eq!(notes(b"\x1b[7;;;2;;4*y"), vec![rq(7, 0, 2, 0, 4)]);
+        assert_eq!(
+            notes(b"\x1b[99999;1;1;1;1;1*y"),
+            vec![rq(u16::MAX, 1, 1, 1, 1)],
+            "넘치면 최댓값"
+        );
+        // 조각으로 와도 이어 읽는다
+        let mut sc = Scanner::default();
+        assert!(sc.feed(b"\x1b[3;1;1;2;").is_empty() && sc.feed(b"1;3").is_empty() && sc.feed(b"*").is_empty());
+        assert_eq!(sc.feed(b"y"), vec![rq(3, 1, 2, 1, 3)]);
+        // 신호가 끝난 자리는 마지막 바이트 바로 뒤다
+        let mut sc = Scanner::default();
+        assert_eq!(sc.feed_at(b"ab\x1b[1*yc"), vec![(7, rq(1, 0, 0, 0, 0))]);
+    }
+
+    #[test]
+    fn decrqcra_with_a_wrong_shape_is_no_signal() {
+        let none: Vec<Signal> = vec![];
+        // 매개변수가 여섯보다 많다
+        assert_eq!(notes(b"\x1b[1;1;1;1;1;3;4*y"), none);
+        // 비공개 표시, 부 매개변수, 다른 표지
+        assert_eq!(notes(b"\x1b[?1;1;1;1;1;3*y"), none);
+        assert_eq!(notes(b"\x1b[1;1:2;1;1;1;3*y"), none);
+        assert_eq!(notes(b"\x1b[<1*y\x1b[=1*y\x1b[>1*y"), none);
+        // 중간 바이트가 둘이거나 매개변수 뒤가 아니라 앞에 왔거나, 다른 중간 바이트
+        assert_eq!(notes(b"\x1b[1**y\x1b[1*#y\x1b[*1y\x1b[1 y\x1b[1$y\x1b[1+y"), none);
+        // 끝바이트가 다르다
+        assert_eq!(notes(b"\x1b[1*z\x1b[1*x\x1b[1*Y"), none);
+        // 너무 길어 잘렸으면 믿지 않는다
+        let long = format!("\x1b[{}*y", "1;".repeat(30));
+        assert_eq!(notes(long.as_bytes()), none);
+    }
+
+    #[test]
+    fn xtchecksum_is_parsed_and_keeps_only_five_bits() {
+        let x = |b| vec![Signal::XtChecksumExtension(b)];
+        assert_eq!(notes(b"\x1b[#y"), x(0));
+        assert_eq!(notes(b"\x1b[0#y"), x(0));
+        assert_eq!(notes(b"\x1b[1#y"), x(1));
+        assert_eq!(notes(b"\x1b[23#y"), x(23));
+        assert_eq!(notes(b"\x1b[33#y"), x(1), "윗 비트는 버린다");
+        assert_eq!(notes(b"\x1b[255#y"), x(31));
+        assert_eq!(
+            notes(b"\x1b[1;2#y\x1b[?1#y\x1b[1##y\x1b[1#z\x1b[#1y"),
+            vec![],
+            "다른 모양은 무시"
+        );
+    }
+
+    #[test]
+    fn decstr_is_a_soft_reset_signal() {
+        assert_eq!(notes(b"\x1b[!p"), vec![Signal::SoftReset]);
+        assert_eq!(notes(b"\x1b[0!p\x1b[?!p\x1b[!!p\x1b[!q"), vec![]);
+    }
+
+    #[test]
+    fn an_intermediate_byte_keeps_other_csi_from_being_read_as_signals() {
+        // 중간 바이트가 붙은 것은 21 t·8 t·2 h·? 996 n·? 2031 h와 다른 명령이다
+        let none: Vec<Signal> = vec![];
+        assert_eq!(
+            notes(b"\x1b[21*t\x1b[21#t\x1b[8;30;100*t\x1b[2*h\x1b[2#l\x1b[?996*n\x1b[?2031#h\x1b[?2031$h"),
+            none
+        );
+        // 그리고 체크섬 신호 곁의 다른 신호는 그대로 읽는다
+        assert_eq!(
+            notes(b"\x1b[21t\x1b[1;1;1;1;1;1*y\x1b[8;30;100t\x1b[2h\x1b[?996n\x1b[?2031h\x1b[1#y"),
+            vec![
+                Signal::TitleReport,
+                rq(1, 1, 1, 1, 1),
+                Signal::WindowResize { rows: 30, cols: 100 },
+                Signal::Kam(true),
+                Signal::ColorSchemeQuery,
+                Signal::ColorSchemeUpdates(true),
+                Signal::XtChecksumExtension(1),
+            ]
+        );
+        // 한 CSI의 중간 바이트 상태가 다음 CSI로 넘어가지 않는다
+        assert_eq!(notes(b"\x1b[1*\x1b[21t"), vec![Signal::TitleReport]);
+        assert_eq!(notes(b"\x1b[1*x\x1b[1;2;3;4;5;6y"), none);
     }
 
     fn n(title: &str, body: &str) -> Signal {
