@@ -848,6 +848,14 @@ impl Session {
         self.kam_locked.store(false, std::sync::atomic::Ordering::Release);
     }
 
+    /// 스크롤 막대를 그리고 누르는 데 쓰는 값: (보이는 줄 수, 스크롤백 줄 수, 맨 아래에서 올라간 줄 수).
+    /// 대체 화면은 스크롤백이 없어 0이다. 화면 전체를 풀지 않아 마우스 움직임마다 불러도 가볍다
+    pub fn scroll_metrics(&self) -> (usize, usize, usize) {
+        let g = self.inner.lock();
+        let grid = g.term.grid();
+        (g.term.screen_lines(), grid.history_size(), grid.display_offset())
+    }
+
     /// 스크롤백 맨 위를 0으로 센 절대 줄 `row`가 화면 맨 위에 오게 스크롤한다(Ghostty `scroll_to_row`).
     /// 맨 아래보다 아래거나 범위를 넘으면 맨 아래에서 멈춘다
     pub fn scroll_to_row(&self, row: usize) {

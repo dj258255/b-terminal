@@ -720,3 +720,18 @@ fn readonly_pane_still_answers_terminal_queries() {
     s.set_readonly(true);
     wait_until(&s, |t| t.contains("033") && t.contains('n'));
 }
+
+#[test]
+fn scroll_metrics_report_rows_history_and_offset_for_the_scrollbar() {
+    let s = long_output();
+    let (rows, history, offset) = s.scroll_metrics();
+    assert_eq!(rows, s.size().rows as usize);
+    assert!(history > 0, "스크롤백이 쌓였다");
+    assert_eq!(offset, 0, "맨 아래");
+    s.scroll_to_row(0);
+    assert_eq!(s.scroll_metrics().2, history, "맨 위는 offset == history");
+    // 막대가 쓰는 화면 맨 위 줄 = history - offset
+    s.scroll_to_row(10);
+    let (_, h, o) = s.scroll_metrics();
+    assert_eq!(h - o, 10);
+}
