@@ -540,7 +540,7 @@ pub struct Keymap {
 }
 
 /// 기본 묶음(Ghostty macOS 기본에서 b-terminal에 있는 것). 다른 OS는 super 대신 ctrl+shift
-fn defaults() -> Vec<(&'static str, &'static str)> {
+pub(crate) fn defaults() -> Vec<(&'static str, &'static str)> {
     let mut v = vec![
         ("super+c", "copy_to_clipboard"),
         ("super+v", "paste_from_clipboard"),

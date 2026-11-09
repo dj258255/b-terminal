@@ -78,7 +78,7 @@ pub enum UserEvent {
 pub type AppConfig = bt_core::Config;
 
 /// 설정의 글꼴 키를 렌더러 설정으로
-fn font_config(c: &AppConfig, size: f32, scale: f32) -> FontConfig {
+pub(crate) fn font_config(c: &AppConfig, size: f32, scale: f32) -> FontConfig {
     let defaults = FontConfig::default();
     // font-family를 여러 번 쓰면 첫째가 기본 글꼴, 나머지는 기본 대체 글꼴보다 앞에 둔다(Ghostty와 같다)
     let mut fallbacks: Vec<String> = c.font_family.iter().skip(1).cloned().collect();

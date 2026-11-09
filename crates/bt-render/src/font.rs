@@ -245,6 +245,8 @@ const SHAPE_CACHE_MAX: usize = 8192;
 
 /// 색 글꼴의 바이트와 모음 안의 자리. swash가 읽는다
 struct ColorFont {
+    /// 찾은 글꼴 이름(COLOR_EMOJI의 하나)
+    name: &'static str,
     data: ColorData,
     index: usize,
     context: std::cell::RefCell<swash::scale::ScaleContext>,
@@ -327,7 +329,7 @@ impl ColorData {
 }
 
 fn load_color_font(db: &Database) -> Option<ColorFont> {
-    COLOR_EMOJI.iter().find_map(|name| {
+    COLOR_EMOJI.iter().copied().find_map(|name| {
         let families = [Family::Name(name)];
         let id = db.query(&Query {
             families: &families,
@@ -343,6 +345,7 @@ fn load_color_font(db: &Database) -> Option<ColorFont> {
             fontdb::Source::Binary(data) | fontdb::Source::SharedFile(_, data) => ColorData::Shared(data),
         };
         Some(ColorFont {
+            name,
             data,
             index: index as usize,
             context: std::cell::RefCell::new(swash::scale::ScaleContext::new()),
@@ -1148,6 +1151,117 @@ fn cell_metrics(
         cursor_hollow: thickness(stroke, adj.cursor_thickness),
         box_thickness: thickness(stroke, adj.box_thickness),
         icon_height: adjusted(height as f32, adj.icon_height, scale).max(1) as u32,
+    }
+}
+
+/// 시스템 글꼴 얼굴 하나(`+list-fonts`용 요약)
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FaceEntry {
+    /// 글꼴 집안 이름
+    pub family: String,
+    /// 얼굴 이름(PostScript 이름, 없으면 집안 이름)
+    pub name: String,
+    pub monospaced: bool,
+    pub bold: bool,
+    pub italic: bool,
+}
+
+/// 시스템 글꼴과 넣어 둔 글꼴의 얼굴을 모두 모은다. 글꼴 파일을 읽지는 않고 목록만 본다
+pub fn list_system_faces() -> Vec<FaceEntry> {
+    let mut db = Database::new();
+    db.load_system_fonts();
+    for data in EMBEDDED {
+        db.load_font_data(data.to_vec());
+    }
+    db.faces()
+        .filter_map(|f| {
+            let family = f.families.first()?.0.clone();
+            Some(FaceEntry {
+                name: if f.post_script_name.is_empty() {
+                    family.clone()
+                } else {
+                    f.post_script_name.clone()
+                },
+                family,
+                monospaced: f.monospaced,
+                bold: f.weight.0 >= 600,
+                italic: f.style != Style::Normal,
+            })
+        })
+        .collect()
+}
+
+/// 글자 하나가 어디서 그려지는가(`+show-face`). `Fonts::rasterize`의 고르는 차례와 같다
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FaceSource {
+    /// 상자 선·블록 같은 직접 그리는 글자
+    Sprite,
+    /// 색 이모지 글꼴
+    ColorEmoji(String),
+    /// `font-codepoint-map`으로 정한 글꼴
+    Mapped(String),
+    /// 그 꼴의 기본 글꼴
+    Primary(String),
+    /// 그 꼴에 없어 보통 꼴의 기본 글꼴
+    PrimaryRegular(String),
+    /// 대체 글꼴
+    Fallback(String),
+    NotFound,
+}
+
+/// 얼굴 이름(name 표의 전체 이름, 없으면 집안 이름)
+fn face_name(font: &Font) -> String {
+    use swash::StringId;
+    let f = font.font();
+    let s = f.localized_strings();
+    [StringId::Full, StringId::Family]
+        .into_iter()
+        .find_map(|id| {
+            s.clone()
+                .find_by_id(id, Some("en"))
+                .or_else(|| s.clone().find_by_id(id, None))
+        })
+        .map(|n| n.to_string())
+        .unwrap_or_default()
+}
+
+impl Fonts {
+    /// 글자 `ch`를 어느 얼굴로 그리는지. 그리지는 않는다. `emoji_presentation`이 `Some(false)`면 색 이모지를 건너뛴다
+    pub fn face_source(&self, ch: char, style: FontStyle, emoji_presentation: Option<bool>) -> FaceSource {
+        let mut buf = vec![0u32; 32 * 64];
+        let mut canvas = crate::Canvas::new(&mut buf, 32, 64);
+        if crate::boxdraw::draw(&mut canvas, ch, 0, 0, 32, 64, 2, bt_core::Rgb::new(255, 255, 255)) {
+            return FaceSource::Sprite;
+        }
+        let mapped = self.mapped_for(ch, style);
+        let color_ok = emoji_presentation != Some(false);
+        if mapped.is_none() && color_ok && (is_emoji(ch) || emoji_presentation == Some(true)) {
+            if let Some(cf) = &self.emoji {
+                let covered = cf
+                    .data
+                    .bytes(cf.index, 2)
+                    .and_then(|b| b.font().map(|f| f.charmap().map(ch) != 0))
+                    .unwrap_or(false);
+                if covered {
+                    return FaceSource::ColorEmoji(cf.name.to_string());
+                }
+            }
+        }
+        let idx = style as usize;
+        if let Some(m) = mapped {
+            return FaceSource::Mapped(face_name(&m.fonts[idx]));
+        }
+        if self.regular[idx].has(ch) {
+            return FaceSource::Primary(face_name(&self.regular[idx]));
+        }
+        if self.regular[0].has(ch) {
+            return FaceSource::PrimaryRegular(face_name(&self.regular[0]));
+        }
+        let pua = is_private_use(ch);
+        match self.fallbacks.iter().find(|f| (!pua || f.pua) && f.font.has(ch)) {
+            Some(fb) => FaceSource::Fallback(face_name(&fb.font)),
+            None => FaceSource::NotFound,
+        }
     }
 }
 
