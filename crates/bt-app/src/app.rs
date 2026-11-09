@@ -1256,6 +1256,43 @@ impl App {
         self.request_redraw();
     }
 
+    /// 고른 글을 시스템 클립보드에 넣는다. `clipboard-trim-trailing-spaces`가 켜져 있으면 줄 끝 공백을 지운다.
+    /// 고른 글이 없으면 하지 않는다. 했으면 true
+    fn copy_selection(&mut self) -> bool {
+        let Some(mut text) = self.active_pane().and_then(|t| t.session.selection_text()) else {
+            return false;
+        };
+        if self.config.clipboard_trim_trailing_spaces {
+            text = bt_term::trim_trailing_spaces(&text);
+        }
+        match self.clipboard.as_mut() {
+            Some(cb) => cb.set_text(text).is_ok(),
+            None => false,
+        }
+    }
+
+    /// 마우스 보고 모드가 아닌 칸의 오른쪽 클릭(`right-click-action`). `context-menu`는 메뉴가 없어 하는 일이 없다
+    fn right_click(&mut self) {
+        let paste = |app: &mut Self| {
+            let text = app.clipboard.as_mut().and_then(|cb| cb.get_text().ok());
+            if let Some(text) = text.filter(|t| !t.is_empty()) {
+                app.paste(text);
+            }
+        };
+        match self.config.right_click_action {
+            bt_core::config::RightClickAction::ContextMenu | bt_core::config::RightClickAction::Ignore => {}
+            bt_core::config::RightClickAction::Paste => paste(self),
+            bt_core::config::RightClickAction::Copy => {
+                self.copy_selection();
+            }
+            bt_core::config::RightClickAction::CopyOrPaste => {
+                if !self.copy_selection() {
+                    paste(self);
+                }
+            }
+        }
+    }
+
     /// 클립보드 글을 고른 칸에 붙여넣는다. 괄호 붙여넣기를 쓰지 않는 프로그램에 줄바꿈이 든 글이면 먼저 묻는다(#109)
     fn paste(&mut self, text: String) {
         let Some(t) = self.active_pane() else { return };
@@ -1771,11 +1808,7 @@ impl App {
     fn handle_action(&mut self, action: Action, event_loop: &ActiveEventLoop) {
         match action {
             Action::Copy => {
-                if let Some(text) = self.active_pane().and_then(|t| t.session.selection_text()) {
-                    if let Some(cb) = self.clipboard.as_mut() {
-                        let _ = cb.set_text(text);
-                    }
-                }
+                self.copy_selection();
             }
             // 찾기 막대가 열려 있으면 첫 줄을 찾을 글에 붙인다
             Action::Paste if self.w.search.is_some() => {
@@ -3540,6 +3573,12 @@ impl ApplicationHandler<UserEvent> for App {
                     self.send_mouse(idx, mb, action);
                     return;
                 }
+                if button == MouseButton::Right {
+                    if state == ElementState::Pressed {
+                        self.right_click();
+                    }
+                    return;
+                }
                 if button != MouseButton::Left {
                     return;
                 }
@@ -3590,12 +3629,9 @@ impl ApplicationHandler<UserEvent> for App {
                             }
                         }
                         // copy-on-select(Ghostty 기본 켬): 고르기를 마치면 바로 클립보드로
-                        if self.config.copy_on_select {
-                            if let Some(text) = self.active_pane().and_then(|t| t.session.selection_text()) {
-                                if let Some(cb) = self.clipboard.as_mut() {
-                                    let _ = cb.set_text(text);
-                                }
-                            }
+                        // macOS에는 선택 클립보드가 없어 true·clipboard 모두 시스템 클립보드로 간다
+                        if self.config.copy_on_select.copies() {
+                            self.copy_selection();
                         }
                     }
                 }

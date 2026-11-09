@@ -19,6 +19,31 @@ pub enum CursorStyle {
     BlockHollow,
 }
 
+/// `copy-on-select`(Ghostty). macOS에는 선택 클립보드가 없어 `true`와 `clipboard`는 둘 다 시스템 클립보드로 복사한다
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CopyOnSelect {
+    False,
+    True,
+    Clipboard,
+}
+
+impl CopyOnSelect {
+    /// 고르기를 마칠 때 시스템 클립보드로 복사하는가
+    pub fn copies(self) -> bool {
+        self != CopyOnSelect::False
+    }
+}
+
+/// `right-click-action`(Ghostty). `ContextMenu`는 받기만 하고 하는 일이 없다(b-terminal에는 오른쪽 클릭 메뉴가 없다)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RightClickAction {
+    ContextMenu,
+    Paste,
+    Copy,
+    CopyOrPaste,
+    Ignore,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OptionAsAlt {
     None,
@@ -84,7 +109,11 @@ pub struct Config {
     pub window_height: Option<u16>,
     pub option_as_alt: OptionAsAlt,
     pub scrollback_lines: usize,
-    pub copy_on_select: bool,
+    pub copy_on_select: CopyOnSelect,
+    /// 클립보드로 복사하는 글의 줄 끝 공백·탭을 지운다(Ghostty `clipboard-trim-trailing-spaces`)
+    pub clipboard_trim_trailing_spaces: bool,
+    /// 오른쪽 클릭 동작(Ghostty `right-click-action`). 마우스 보고 모드의 프로그램에는 항상 클릭을 보낸다
+    pub right_click_action: RightClickAction,
     pub mouse_hide_while_typing: bool,
     pub command: Option<String>,
     pub working_directory: WorkingDirectory,
@@ -466,7 +495,9 @@ impl Default for Config {
             window_height: None,
             option_as_alt: OptionAsAlt::None,
             scrollback_lines: 10_000,
-            copy_on_select: true,
+            copy_on_select: CopyOnSelect::True,
+            clipboard_trim_trailing_spaces: true,
+            right_click_action: RightClickAction::ContextMenu,
             mouse_hide_while_typing: false,
             command: None,
             working_directory: WorkingDirectory::Inherit,
@@ -959,9 +990,25 @@ impl Config {
                 Ok(n) => self.scrollback_lines = n.clamp(0, 1_000_000),
                 Err(_) => bad(warnings),
             },
+            // Ghostty 1.4의 값 이름(none·primary·both)도 받는다. primary(선택 클립보드만)는 macOS에서 하는 일이 없다
             "copy-on-select" => match v {
-                "true" | "clipboard" => self.copy_on_select = true,
-                "false" => self.copy_on_select = false,
+                "true" => self.copy_on_select = CopyOnSelect::True,
+                "clipboard" | "both" => self.copy_on_select = CopyOnSelect::Clipboard,
+                "false" | "none" => self.copy_on_select = CopyOnSelect::False,
+                "primary" if cfg!(target_os = "macos") => self.copy_on_select = CopyOnSelect::False,
+                "primary" => self.copy_on_select = CopyOnSelect::True,
+                _ => bad(warnings),
+            },
+            "clipboard-trim-trailing-spaces" => match parse_bool(v) {
+                Some(b) => self.clipboard_trim_trailing_spaces = b,
+                None => bad(warnings),
+            },
+            "right-click-action" => match v {
+                "context-menu" => self.right_click_action = RightClickAction::ContextMenu,
+                "paste" => self.right_click_action = RightClickAction::Paste,
+                "copy" => self.right_click_action = RightClickAction::Copy,
+                "copy-or-paste" => self.right_click_action = RightClickAction::CopyOrPaste,
+                "ignore" => self.right_click_action = RightClickAction::Ignore,
                 _ => bad(warnings),
             },
             "mouse-hide-while-typing" => {
@@ -1254,7 +1301,30 @@ impl Config {
             .into(),
         );
         push("scrollback-lines", self.scrollback_lines.to_string());
-        push("copy-on-select", self.copy_on_select.to_string());
+        push(
+            "copy-on-select",
+            match self.copy_on_select {
+                CopyOnSelect::False => "false",
+                CopyOnSelect::True => "true",
+                CopyOnSelect::Clipboard => "clipboard",
+            }
+            .into(),
+        );
+        push(
+            "clipboard-trim-trailing-spaces",
+            self.clipboard_trim_trailing_spaces.to_string(),
+        );
+        push(
+            "right-click-action",
+            match self.right_click_action {
+                RightClickAction::ContextMenu => "context-menu",
+                RightClickAction::Paste => "paste",
+                RightClickAction::Copy => "copy",
+                RightClickAction::CopyOrPaste => "copy-or-paste",
+                RightClickAction::Ignore => "ignore",
+            }
+            .into(),
+        );
         push("mouse-hide-while-typing", self.mouse_hide_while_typing.to_string());
         for k in &self.keybinds {
             push("keybind", k.clone());
@@ -1417,6 +1487,59 @@ fn parse_text(text: &str, origin: &Path) -> Vec<Entry> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn clipboard_keys() {
+        let d = Config::default();
+        assert!(d.clipboard_trim_trailing_spaces);
+        assert_eq!(d.copy_on_select, CopyOnSelect::True);
+        assert_eq!(d.right_click_action, RightClickAction::ContextMenu);
+        let c = Config::from_text(
+            "clipboard-trim-trailing-spaces = false\ncopy-on-select = clipboard\nright-click-action = copy-or-paste\n",
+            true,
+        );
+        assert!(!c.clipboard_trim_trailing_spaces);
+        assert_eq!(c.copy_on_select, CopyOnSelect::Clipboard);
+        assert!(c.copy_on_select.copies());
+        assert_eq!(c.right_click_action, RightClickAction::CopyOrPaste);
+        assert!(c.warnings.is_empty(), "{:?}", c.warnings);
+        assert!(
+            !Config::from_text("copy-on-select = false\n", true)
+                .copy_on_select
+                .copies()
+        );
+        for (v, want) in [
+            ("context-menu", RightClickAction::ContextMenu),
+            ("paste", RightClickAction::Paste),
+            ("copy", RightClickAction::Copy),
+            ("ignore", RightClickAction::Ignore),
+        ] {
+            let c = Config::from_text(&format!("right-click-action = {v}\n"), true);
+            assert_eq!(c.right_click_action, want);
+        }
+        assert_eq!(Config::from_text("right-click-action = menu\n", true).warnings.len(), 1);
+        assert_eq!(Config::from_text("copy-on-select = maybe\n", true).warnings.len(), 1);
+        // Ghostty 1.4의 값 이름
+        assert_eq!(
+            Config::from_text("copy-on-select = none\n", true).copy_on_select,
+            CopyOnSelect::False
+        );
+        assert_eq!(
+            Config::from_text("copy-on-select = both\n", true).copy_on_select,
+            CopyOnSelect::Clipboard
+        );
+        assert!(
+            Config::from_text("copy-on-select = primary\n", true)
+                .warnings
+                .is_empty()
+        );
+        assert_eq!(
+            Config::from_text("clipboard-trim-trailing-spaces = x\n", true)
+                .warnings
+                .len(),
+            1
+        );
+    }
 
     #[test]
     fn defaults_match_ghostty() {
