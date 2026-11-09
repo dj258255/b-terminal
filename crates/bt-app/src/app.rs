@@ -382,6 +382,8 @@ struct Win {
     confirm: Option<Confirm>,
     /// 칸 제목 입력 막대(#124): 그 칸과 친 글
     title_prompt: Option<(u64, String)>,
+    /// 배경 그림 층(#134): (창 폭, 높이, 기본 바탕색)과 미리 합성한 픽셀
+    backdrop: Option<((u32, u32, u32), Vec<u32>)>,
     /// 바뀐 것이 없어도 다음 그리기에서 창에 한 번 올린다(창이 다른 화면으로 옮겨 가면 그 화면의 색 공간으로, #97)
     force_present: bool,
     /// 들고 있는 프레임과 그 내용(바뀐 줄만 다시 그리려고, #40)
@@ -419,6 +421,7 @@ impl Win {
             keyseq: Default::default(),
             confirm: None,
             title_prompt: None,
+            backdrop: None,
             force_present: false,
             frame: Vec::new(),
             last_frame: None,
@@ -475,6 +478,8 @@ pub struct App {
     last_beep: Option<Instant>,
     /// write_*_file로 쓴 파일들. 앱이 끝날 때 지운다(#125)
     written_files: Vec<std::path::PathBuf>,
+    /// 풀어 둔 배경 그림(background-image, #134)
+    bg_image: Option<Arc<bt_render::background::BgImage>>,
     hotkey_registered: Vec<global_hotkey::hotkey::HotKey>,
     hotkey_actions: std::collections::HashMap<u32, Action>,
 }
@@ -520,6 +525,7 @@ impl App {
             hotkeys: None,
             last_beep: None,
             written_files: Vec::new(),
+            bg_image: None,
             hotkey_registered: Vec::new(),
             hotkey_actions: std::collections::HashMap::new(),
         }
@@ -1958,6 +1964,29 @@ impl App {
     }
 
     /// 설정을 다시 읽어 글꼴·색·키 묶음·여백을 바꾼다. 이미 열린 탭에도 새 색을 쓴다
+    /// 배경 그림을 푼다(#134). 읽지 못하면 경고를 남기고 그림 없이 그린다. 창마다의 층은 다시 만든다
+    fn load_background(&mut self) {
+        self.bg_image = self
+            .config
+            .background_image
+            .as_ref()
+            .and_then(|p| match bt_render::background::load(p) {
+                Ok(img) => {
+                    log::info!("배경 그림: {} {}×{}", p.display(), img.width, img.height);
+                    Some(Arc::new(img))
+                }
+                Err(e) => {
+                    log::warn!("배경 그림을 읽지 못했습니다: {e}");
+                    self.config.warnings.push(format!("배경 그림을 읽지 못했습니다: {e}"));
+                    None
+                }
+            });
+        for w in std::iter::once(&mut self.w).chain(&mut self.others) {
+            w.backdrop = None;
+            w.last_frame = None;
+        }
+    }
+
     fn reload_config(&mut self) {
         let next = AppConfig::load(self.config_extra.as_deref(), crate::system_is_dark());
         for w in &next.warnings {
@@ -1992,6 +2021,7 @@ impl App {
             }
         }
         self.config = next;
+        self.load_background();
         self.load_fonts();
         self.for_each_window(|app| app.resize_all());
         self.register_hotkeys();
@@ -2713,8 +2743,37 @@ impl App {
             self.w.frame = vec![0; n];
         }
         let mut repainted_rows = 0;
+        // 배경 그림 층(#134): 창 크기·바탕색이 바뀌면 다시 합성한다
+        let key = (size.width, size.height, theme.background.to_u32());
+        match self.bg_image.as_ref() {
+            Some(img) if self.w.backdrop.as_ref().map(|b| b.0) != Some(key) => {
+                let bg_alpha = self.config.background_opacity.clamp(0.0, 1.0);
+                let a = (bg_alpha * 255.0).round() as u32;
+                let mul = |c: u8| (c as u32 * a + 127) / 255;
+                let bg = theme.background;
+                let base = (a << 24) | (mul(bg.r) << 16) | (mul(bg.g) << 8) | mul(bg.b);
+                // 1보다 크면 background-opacity보다 진하게(Ghostty와 같은 뜻)
+                let alpha = (self.config.background_image_opacity * bg_alpha).min(1.0);
+                let layer = bt_render::background::compose(
+                    img,
+                    size.width,
+                    size.height,
+                    self.config.background_image_fit,
+                    self.config.background_image_position,
+                    self.config.background_image_repeat,
+                    alpha,
+                    base,
+                );
+                self.w.backdrop = Some((key, layer));
+            }
+            Some(_) => {}
+            None => self.w.backdrop = None,
+        }
         {
             let mut canvas = Canvas::new(&mut self.w.frame, size.width, size.height);
+            if let Some((_, layer)) = &self.w.backdrop {
+                canvas.set_backdrop(theme.background, layer);
+            }
             // 투명 창(#78·#86): 기본 바탕색은 반투명으로 칠하고, 글자 가장자리는 그 위에 알파째 섞는다
             if self.config.background_opacity < 1.0 {
                 canvas.set_see_through(theme.background, (self.config.background_opacity * 255.0).round() as u8);
@@ -3111,6 +3170,7 @@ impl ApplicationHandler<UserEvent> for App {
             event_loop.exit();
             return;
         }
+        self.load_background();
         self.apply_initial_size();
         self.register_hotkeys();
         if self.shell_integration_dir.is_none() && self.config.shell_integration != "none" {

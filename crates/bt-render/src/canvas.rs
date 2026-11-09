@@ -14,6 +14,8 @@ pub struct Canvas<'a> {
     clip: (i32, i32),
     /// 투명 창: (기본 바탕색 RGB, 그 색으로 칠할 반투명 픽셀). 그 색을 칠하면 반투명으로 칠한다
     see_through: Option<(u32, u32)>,
+    /// 배경 그림 층(#134): (기본 바탕색 RGB, 화면 크기의 미리 합성한 픽셀). 그 색을 칠하면 층에서 베낀다
+    backdrop: Option<(u32, &'a [u32])>,
 }
 
 impl<'a> Canvas<'a> {
@@ -25,6 +27,7 @@ impl<'a> Canvas<'a> {
             height,
             clip: (0, height as i32),
             see_through: None,
+            backdrop: None,
         }
     }
 
@@ -34,6 +37,18 @@ impl<'a> Canvas<'a> {
         let mul = |c: u8| (c as u32 * a + 127) / 255;
         let px = (a << 24) | (mul(bg.r) << 16) | (mul(bg.g) << 8) | mul(bg.b);
         self.see_through = Some((bg.to_u32(), px));
+    }
+
+    /// 배경 그림 층(#134): 앞으로 `bg`를 칠하면 `layer`(화면 크기)의 같은 자리 픽셀을 베낀다. 크기가 맞지 않으면 쓰지 않는다
+    pub fn set_backdrop(&mut self, bg: Rgb, layer: &'a [u32]) {
+        if layer.len() >= (self.width * self.height) as usize {
+            self.backdrop = Some((bg.to_u32(), layer));
+        }
+    }
+
+    /// 이 색이 배경 그림 층으로 칠할 기본 바탕색이면 그 층
+    fn backdrop_for(&self, color: Rgb) -> Option<&'a [u32]> {
+        self.backdrop.filter(|(bg, _)| *bg == color.to_u32()).map(|(_, l)| l)
     }
 
     /// 칠할 픽셀 값: 보통은 불투명, 투명 창의 기본 바탕색이면 반투명
@@ -56,6 +71,10 @@ impl<'a> Canvas<'a> {
 
     pub fn clear(&mut self, color: Rgb) {
         let n = (self.width * self.height) as usize;
+        if let Some(layer) = self.backdrop_for(color) {
+            self.buf[..n].copy_from_slice(&layer[..n]);
+            return;
+        }
         let c = self.solid(color);
         self.buf[..n].fill(c);
     }
@@ -67,6 +86,14 @@ impl<'a> Canvas<'a> {
         let x1 = (x + w as i32).clamp(0, self.width as i32) as u32;
         let y1 = (y + h as i32).clamp(0, self.clip.1) as u32;
         if x0 >= x1 || y0 >= y1 {
+            return;
+        }
+        if let Some(layer) = self.backdrop_for(color) {
+            for row in y0..y1 {
+                let start = (row * self.width + x0) as usize;
+                let end = (row * self.width + x1) as usize;
+                self.buf[start..end].copy_from_slice(&layer[start..end]);
+            }
             return;
         }
         let c = self.solid(color);
@@ -228,6 +255,30 @@ mod tests {
         // 불투명 바탕(알파 ff) 위에 섞으면 알파는 ff 그대로
         assert_eq!(blend(0xff00_0000, Rgb::new(255, 255, 255), 128), 0xff80_8080);
         assert_eq!(blend(0xff12_3456, Rgb::new(1, 2, 3), 255), 0xff01_0203);
+    }
+
+    /// #134: 배경 그림 층이 있으면 기본 바탕색 칠하기만 층에서 베낀다
+    #[test]
+    fn backdrop_replaces_only_the_default_background() {
+        let (w, h) = (4u32, 2u32);
+        let layer: Vec<u32> = (0..w * h).map(|i| 0xff00_0000 | i).collect();
+        let mut buf = vec![0u32; (w * h) as usize];
+        let mut c = Canvas::new(&mut buf, w, h);
+        let bg = Rgb::new(10, 20, 30);
+        c.set_backdrop(bg, &layer);
+        c.clear(bg);
+        assert_eq!(c.buf, &layer[..], "기본 바탕은 층 그대로");
+        c.fill_rect(1, 1, 2, 1, Rgb::new(255, 0, 0));
+        assert_eq!(c.buf[5], 0xffff_0000, "다른 색은 그대로 칠한다");
+        c.fill_rect(0, 1, 4, 1, bg);
+        assert_eq!(&c.buf[4..8], &layer[4..8], "기본 바탕으로 다시 칠하면 층이 돌아온다");
+        // 크기가 맞지 않는 층은 쓰지 않는다
+        let small = vec![0xff12_3456u32; 3];
+        let mut buf2 = vec![0u32; (w * h) as usize];
+        let mut c2 = Canvas::new(&mut buf2, w, h);
+        c2.set_backdrop(bg, &small);
+        c2.clear(bg);
+        assert_eq!(c2.buf[0], 0xff00_0000 | bg.to_u32());
     }
 
     /// #86: 투명 창이면 기본 바탕색은 반투명(곱한 알파)으로 칠하고, 그 위의 글자 가장자리는 덮음 정도만큼 알파가 오른다

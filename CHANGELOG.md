@@ -4,6 +4,8 @@
 
 ## [아직 릴리스하지 않음]
 
+- 배경 그림(`background-image`·`-opacity`·`-position`·`-fit`·`-repeat`, Ghostty 키, PNG·JPEG): 기본 바탕색 칸과 여백에 그림을 깝니다. 창 크기가 바뀔 때마다 그림 층을 다시 합성합니다(3200×2100 창에서 약 17ms, 릴리스 빌드에서 잰 값).
+
 - 프롬프트를 눌러 커서 옮기기(`cursor-click-to-move`, Ghostty 키, 켬): 셸 통합이 있는 프롬프트에서 커서 줄을 누르면 그 자리로 커서가 갑니다.
 
 - 키보드로 고르기 늘리기(`adjust_selection`)와 링크 주소 복사(`copy_url_to_clipboard`), Ghostty 동작.
