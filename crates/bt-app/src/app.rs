@@ -1809,6 +1809,25 @@ impl App {
         self.focused_id().and_then(|id| self.pane_index(id))
     }
 
+    /// 이 동작을 지금 할 수 있는가(`performable:` 묶음이 키를 먹을지 정한다).
+    /// 고른 글이 있어야 하는 것, 클립보드 글이 있어야 하는 것, 마우스 아래 링크가 있어야 하는 것만 가린다
+    fn can_perform(&mut self, action: &Action) -> bool {
+        let has_selection = |s: &Self| s.active_pane().and_then(|t| t.session.selection_text()).is_some();
+        match action {
+            Action::Copy | Action::AdjustSelection(_) | Action::WriteFile(crate::keymap::FileSource::Selection, _) => {
+                has_selection(self)
+            }
+            Action::Paste => self
+                .clipboard
+                .as_mut()
+                .and_then(|cb| cb.get_text().ok())
+                .is_some_and(|t| !t.is_empty()),
+            Action::CopyUrl => self.link_under(self.w.cursor_pos).is_some(),
+            Action::EndSearch => self.w.search.is_some(),
+            _ => true,
+        }
+    }
+
     fn handle_action(&mut self, action: Action, event_loop: &ActiveEventLoop) {
         match action {
             Action::Copy => {
@@ -3542,7 +3561,12 @@ impl ApplicationHandler<UserEvent> for App {
                 let modes = self.active_pane().map(|t| t.session.modes()).unwrap_or_default();
                 let meta = self.config.option_as_alt != bt_core::config::OptionAsAlt::None;
                 let bytes = keys::encode(&event, self.mods, modes, meta);
-                let out = self.w.keyseq.feed(&self.keymap, trigger, bytes);
+                // performable: 묶음은 동작을 지금 할 수 있을 때만 키를 먹는다
+                let mut seq = std::mem::take(&mut self.w.keyseq);
+                let keymap = std::mem::take(&mut self.keymap);
+                let out = seq.feed_with(&keymap, trigger, bytes, &mut |a| self.can_perform(a));
+                self.keymap = keymap;
+                self.w.keyseq = seq;
                 if out.action.is_none() && self.config.mouse_hide_while_typing {
                     if let Some(g) = &self.w.gfx {
                         g.window.set_cursor_visible(false);
@@ -3552,7 +3576,16 @@ impl ApplicationHandler<UserEvent> for App {
                     self.write_active(&out.send);
                 }
                 if let Some(action) = out.action {
-                    self.handle_action(action, event_loop);
+                    match action {
+                        // all:은 글 보내기를 모든 칸에 한다. 다른 동작은 칸 하나의 일이 아니라 지금 칸·창에만 한다
+                        Action::Text(text) if out.all => {
+                            for p in &self.panes {
+                                p.session.write(text.as_bytes());
+                            }
+                            self.request_redraw();
+                        }
+                        action => self.handle_action(action, event_loop),
+                    }
                 }
             }
             WindowEvent::CursorMoved { position, .. } => {
