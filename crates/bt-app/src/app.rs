@@ -493,7 +493,8 @@ impl App {
     ) -> Self {
         let mut config = config;
         let font_size = config.font_size;
-        let (keymap, kw) = Keymap::build(&config.keybinds);
+        let (keymap, mut kw) = Keymap::build(&config.keybinds);
+        kw.extend(crate::palette::user_warnings(&config.palette_entries));
         for w in &kw {
             log::warn!("설정: {w}");
         }
@@ -1768,7 +1769,7 @@ impl App {
         if self.mods.super_key() || self.mods.control_key() {
             return false;
         }
-        let entries = crate::palette::entries();
+        let entries = crate::palette::entries(&self.config.palette_entries, !self.config.palette_defaults_cleared);
         let shown = crate::palette::filter(&entries, query);
         match &event.logical_key {
             Key::Named(NamedKey::Escape) => self.w.palette = None,
@@ -2029,7 +2030,8 @@ impl App {
             log::warn!("설정: {w}");
         }
         let mut next = next;
-        let (keymap, kw) = Keymap::build(&next.keybinds);
+        let (keymap, mut kw) = Keymap::build(&next.keybinds);
+        kw.extend(crate::palette::user_warnings(&next.palette_entries));
         for w in &kw {
             log::warn!("설정: {w}");
         }
@@ -2643,7 +2645,7 @@ impl App {
         let hover = self.w.hover.clone();
         // 명령 팔레트: (친 글, 보일 줄들(이름, 단축키), 고른 줄)
         let palette = self.w.palette.as_ref().map(|(q, sel)| {
-            let entries = crate::palette::entries();
+            let entries = crate::palette::entries(&self.config.palette_entries, !self.config.palette_defaults_cleared);
             let rows: Vec<(String, String)> = crate::palette::filter(&entries, q)
                 .into_iter()
                 .map(|i| {

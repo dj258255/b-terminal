@@ -84,6 +84,15 @@ pub enum WorkingDirectory {
     Path(PathBuf),
 }
 
+/// `command-palette-entry`(#150) 하나: 팔레트에 더할 사용자 항목. 동작 글은 앱이 키 묶음과 같은 해석기로 푼다
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PaletteEntryConf {
+    pub title: String,
+    /// Ghostty 동작 글(`new_tab`, `csi:0m` 꼴)
+    pub action: String,
+    pub description: String,
+}
+
 /// 읽어 낸 설정
 #[derive(Debug, Clone, PartialEq)]
 pub struct Config {
@@ -121,6 +130,10 @@ pub struct Config {
     pub title: Option<String>,
     /// `keybind = 트리거=동작`. 앱이 해석한다
     pub keybinds: Vec<String>,
+    /// `command-palette-entry`(#150): 사용자 항목. 쓴 차례대로 쌓인다
+    pub palette_entries: Vec<PaletteEntryConf>,
+    /// `command-palette-entry =`(빈 값)을 썼으면 기본 항목을 팔레트에서 뺀다
+    pub palette_defaults_cleared: bool,
     /// 셸이 마우스 모드를 켠 채 끝났을 때 셸로 돌아오면 끈다(#24)
     pub mouse_reset_on_shell: bool,
     /// 셸 통합: detect(기본)·none·zsh·bash
@@ -503,6 +516,8 @@ impl Default for Config {
             working_directory: WorkingDirectory::Inherit,
             title: None,
             keybinds: Vec::new(),
+            palette_entries: Vec::new(),
+            palette_defaults_cleared: false,
             mouse_reset_on_shell: true,
             clipboard_write: true,
             clipboard_read: false,
@@ -605,6 +620,94 @@ pub fn read_entries(path: &Path, depth: usize, warnings: &mut Vec<String>, sourc
         });
     }
     out
+}
+
+/// `command-palette-entry` 값(Ghostty 1.2 문법)을 푼다: `title:…,action:…,description:…`.
+/// 필드는 쉼표로 나누고 필드 사이 공백은 무시한다. 값에 쉼표가 있으면 큰따옴표로 감싼다
+/// (`\"`·`\\`·`\n`·`\t`·`\r` 이스케이프). `title`과 `action`은 꼭 있어야 하고 `description`은 고른 것이다.
+pub fn parse_palette_entry(v: &str) -> Result<PaletteEntryConf, String> {
+    let mut title = None;
+    let mut action = None;
+    let mut description = None;
+    let mut rest = v.trim_start();
+    while !rest.is_empty() {
+        let (name, after) = rest
+            .split_once(':')
+            .ok_or_else(|| format!("`이름:값` 꼴이 아닙니다: {rest}"))?;
+        let slot = match name.trim() {
+            "title" => &mut title,
+            "action" => &mut action,
+            "description" => &mut description,
+            other => return Err(format!("모르는 필드입니다: {other}")),
+        };
+        let after = after.trim_start();
+        let (value, tail) = if let Some(quoted) = after.strip_prefix('"') {
+            let (value, tail) = read_quoted(quoted)?;
+            // 닫는 따옴표 뒤에는 쉼표나 끝만 온다
+            let tail = tail.trim_start();
+            if !tail.is_empty() && !tail.starts_with(',') {
+                return Err("닫는 따옴표 뒤에 쉼표가 없습니다".into());
+            }
+            (value, tail.strip_prefix(',').unwrap_or(tail))
+        } else {
+            let (raw, tail) = after.split_once(',').unwrap_or((after, ""));
+            (raw.trim().to_string(), tail)
+        };
+        *slot = Some(value);
+        rest = tail.trim_start();
+    }
+    let title = title.filter(|t| !t.is_empty()).ok_or("title이 없습니다")?;
+    let action = action.filter(|t| !t.is_empty()).ok_or("action이 없습니다")?;
+    Ok(PaletteEntryConf {
+        title,
+        action,
+        description: description.unwrap_or_default(),
+    })
+}
+
+/// 여는 큰따옴표 뒤의 글에서 닫는 큰따옴표까지 읽는다. (푼 글, 닫는 따옴표 뒤 나머지)
+fn read_quoted(s: &str) -> Result<(String, &str), String> {
+    let mut out = String::new();
+    let mut chars = s.char_indices();
+    while let Some((i, c)) = chars.next() {
+        match c {
+            '"' => return Ok((out, &s[i + 1..])),
+            '\\' => match chars.next() {
+                Some((_, 'n')) => out.push('\n'),
+                Some((_, 't')) => out.push('\t'),
+                Some((_, 'r')) => out.push('\r'),
+                Some((_, c @ ('"' | '\\'))) => out.push(c),
+                _ => return Err("알 수 없는 이스케이프입니다".into()),
+            },
+            c => out.push(c),
+        }
+    }
+    Err("큰따옴표가 닫히지 않았습니다".into())
+}
+
+/// 설정 파일에 다시 쓸 글(모든 필드를 따옴표로 감싼다)
+fn render_palette_entry(p: &PaletteEntryConf) -> String {
+    let q = |s: &str| {
+        let mut o = String::from("\"");
+        for c in s.chars() {
+            match c {
+                '"' => o.push_str("\\\""),
+                '\\' => o.push_str("\\\\"),
+                '\n' => o.push_str("\\n"),
+                '\t' => o.push_str("\\t"),
+                '\r' => o.push_str("\\r"),
+                c => o.push(c),
+            }
+        }
+        o.push('"');
+        o
+    };
+    format!(
+        "title:{},action:{},description:{}",
+        q(&p.title),
+        q(&p.action),
+        q(&p.description)
+    )
 }
 
 fn unquote(v: &str) -> &str {
@@ -1024,6 +1127,21 @@ impl Config {
             }
             "title" => self.title = Some(v.to_string()).filter(|s| !s.is_empty()),
             "keybind" => self.keybinds.push(v.to_string()),
+            "command-palette-entry" => {
+                if v.is_empty() {
+                    self.palette_entries.clear();
+                    self.palette_defaults_cleared = true;
+                } else {
+                    match parse_palette_entry(v) {
+                        Ok(entry) => self.palette_entries.push(entry),
+                        Err(why) => warnings.push(format!(
+                            "{}:{}: command-palette-entry 값을 읽지 못했습니다: {why}",
+                            e.file.display(),
+                            e.line
+                        )),
+                    }
+                }
+            }
             "shell-integration" => match v {
                 "detect" | "none" | "zsh" | "bash" => self.shell_integration = v.to_string(),
                 // fish·elvish는 아직 스크립트가 없다
@@ -1328,6 +1446,12 @@ impl Config {
         push("mouse-hide-while-typing", self.mouse_hide_while_typing.to_string());
         for k in &self.keybinds {
             push("keybind", k.clone());
+        }
+        if self.palette_defaults_cleared {
+            push("command-palette-entry", String::new());
+        }
+        for p in &self.palette_entries {
+            push("command-palette-entry", render_palette_entry(p));
         }
         let b = self.bell_features;
         let bell: Vec<&str> = [(b.system, "system"), (b.attention, "attention"), (b.title, "title")]
@@ -2063,6 +2187,55 @@ mod tests {
             Rgb::new(0x1e, 0x1e, 0x2e),
             "대소문자를 무시하고 찾는다"
         );
+    }
+
+    /// #150: command-palette-entry(Ghostty 1.2 문법)
+    #[test]
+    fn palette_entry_parses_like_ghostty() {
+        let p = parse_palette_entry("title:Reset Font Style, action:csi:0m").unwrap();
+        assert_eq!(
+            (p.title.as_str(), p.action.as_str(), p.description.as_str()),
+            ("Reset Font Style", "csi:0m", "")
+        );
+        let p = parse_palette_entry("title:\"a, b\",action:\"text:x,y\\n\" , description : 설명").unwrap();
+        assert_eq!(p.title, "a, b");
+        assert_eq!(p.action, "text:x,y\n");
+        assert_eq!(p.description, "설명");
+        assert!(parse_palette_entry("title:t").is_err(), "동작이 없다");
+        assert!(parse_palette_entry("action:new_tab").is_err(), "이름이 없다");
+        assert!(parse_palette_entry("title:t,bogus:1,action:new_tab").is_err());
+        assert!(
+            parse_palette_entry("title:\"t,action:new_tab").is_err(),
+            "따옴표가 닫히지 않았다"
+        );
+        assert!(parse_palette_entry("t,action:new_tab").is_err());
+    }
+
+    #[test]
+    fn palette_entry_stacks_clears_and_warns() {
+        let c = Config::from_text(
+            "command-palette-entry = title:A,action:new_tab\ncommand-palette-entry = title:B,action:quit\ncommand-palette-entry = title:x\n",
+            false,
+        );
+        assert_eq!(c.palette_entries.len(), 2);
+        assert_eq!(c.palette_entries[1].title, "B");
+        assert!(!c.palette_defaults_cleared);
+        assert_eq!(c.warnings.len(), 1);
+        assert!(
+            c.render()
+                .contains("command-palette-entry = title:\"A\",action:\"new_tab\",description:\"\"")
+        );
+        // 빈 값: 기본 항목과 그 앞에 쌓인 것을 지운다. 뒤에 쓴 것은 남는다
+        let c = Config::from_text(
+            "command-palette-entry = title:A,action:new_tab\ncommand-palette-entry =\ncommand-palette-entry = title:B,action:quit\n",
+            false,
+        );
+        assert!(c.palette_defaults_cleared);
+        assert_eq!(c.palette_entries.len(), 1);
+        assert_eq!(c.palette_entries[0].title, "B");
+        let again = Config::from_text(&c.render(), false);
+        assert_eq!(again.palette_entries, c.palette_entries);
+        assert!(again.palette_defaults_cleared);
     }
 
     /// #96: font-feature(Ghostty 문법). 쌓이고, 같은 태그는 나중 값, 빈 값은 지움, 쉼표로 여럿

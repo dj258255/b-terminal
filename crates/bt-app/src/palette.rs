@@ -2,14 +2,17 @@
 //! 동작 목록과 거르기는 창과 상관없는 순수 함수라 여기서 테스트한다
 
 use crate::keymap::{Action, Keymap, Trigger, parse_action};
+use bt_core::PaletteEntryConf;
 
 /// 팔레트 항목 하나
 #[derive(Debug, Clone, PartialEq)]
 pub struct Entry {
     /// 보이는 이름
-    pub label: &'static str,
+    pub label: String,
     /// Ghostty 동작 이름(이것으로도 찾는다)
-    pub name: &'static str,
+    pub name: String,
+    /// 사용자 항목의 설명(`description:`). 이것으로도 찾는다. 기본 항목은 빈 글
+    pub description: String,
     pub command: Command,
 }
 
@@ -56,25 +59,54 @@ const ENTRIES: &[(&str, &str)] = &[
     ("b-terminal 종료", "quit"),
 ];
 
-/// 팔레트의 모든 항목(이름 차례)
-pub fn entries() -> Vec<Entry> {
-    let mut v: Vec<Entry> = ENTRIES
-        .iter()
-        .filter_map(|&(label, name)| {
+/// 팔레트의 모든 항목: 기본 항목(`keep_defaults`가 참일 때) 뒤에 사용자 항목(`command-palette-entry`, #150)
+/// 동작을 풀지 못하는 사용자 항목은 뺀다(경고는 `user_warnings`)
+pub fn entries(user: &[PaletteEntryConf], keep_defaults: bool) -> Vec<Entry> {
+    let mut v: Vec<Entry> = Vec::new();
+    if keep_defaults {
+        v.extend(ENTRIES.iter().filter_map(|&(label, name)| {
             let action = parse_action(name).ok()??;
             Some(Entry {
-                label,
-                name,
+                label: label.to_string(),
+                name: name.to_string(),
+                description: String::new(),
                 command: Command::Action(action),
             })
+        }));
+        v.push(Entry {
+            label: "설정 파일 열기".to_string(),
+            name: "open_config".to_string(),
+            description: String::new(),
+            command: Command::OpenSettings,
+        });
+    }
+    v.extend(user.iter().filter_map(|u| {
+        let action = parse_action(&u.action).ok()??;
+        Some(Entry {
+            label: u.title.clone(),
+            name: u.action.clone(),
+            description: u.description.clone(),
+            command: Command::Action(action),
         })
-        .collect();
-    v.push(Entry {
-        label: "설정 파일 열기",
-        name: "open_config",
-        command: Command::OpenSettings,
-    });
+    }));
     v
+}
+
+/// 사용자 항목 중 동작을 풀지 못하는 것의 경고(설정 경고 꼴)
+pub fn user_warnings(user: &[PaletteEntryConf]) -> Vec<String> {
+    user.iter()
+        .filter_map(|u| match parse_action(&u.action) {
+            Ok(Some(_)) => None,
+            Ok(None) => Some(format!(
+                "command-palette-entry `{}`: unbind는 팔레트 항목의 동작이 될 수 없습니다",
+                u.title
+            )),
+            Err(why) => Some(format!(
+                "command-palette-entry `{}`: 동작을 풀지 못했습니다: {why}",
+                u.title
+            )),
+        })
+        .collect()
 }
 
 /// 찾는 글에 맞는 항목들의 자리(점수 높은 차례). 빈 글이면 모두.
@@ -95,7 +127,7 @@ pub fn filter(entries: &[Entry], query: &str) -> Vec<usize> {
                 4
             } else if label.contains(&q) || compact.contains(&qn) {
                 3
-            } else if e.name.contains(&q) {
+            } else if e.name.contains(&q) || e.description.to_lowercase().contains(&q) {
                 2
             } else if subsequence(&compact, &qn) {
                 1
@@ -168,13 +200,18 @@ mod tests {
 
     #[test]
     fn every_entry_parses_to_a_command() {
-        assert_eq!(entries().len(), ENTRIES.len() + 1, "동작 글이 모두 풀린다");
+        assert_eq!(entries(&[], true).len(), ENTRIES.len() + 1, "동작 글이 모두 풀린다");
     }
 
     #[test]
     fn filter_ranks_prefix_then_substring_then_name_then_scattered() {
-        let e = entries();
-        let labels = |q: &str| filter(&e, q).into_iter().map(|i| e[i].label).collect::<Vec<_>>();
+        let e = entries(&[], true);
+        let labels = |q: &str| {
+            filter(&e, q)
+                .into_iter()
+                .map(|i| e[i].label.as_str())
+                .collect::<Vec<_>>()
+        };
         assert_eq!(labels("").len(), e.len());
         // "나누" → 오른쪽으로·아래로 나누기(들어 있음)
         assert_eq!(labels("나누"), vec!["오른쪽으로 나누기", "아래로 나누기"]);
@@ -205,5 +242,57 @@ mod tests {
             assert_eq!(shortcut(&km, &zoom), "⇧⌘X");
         }
         assert_eq!(shortcut(&km, &Command::OpenSettings), "");
+    }
+
+    fn conf(title: &str, action: &str, description: &str) -> PaletteEntryConf {
+        PaletteEntryConf {
+            title: title.into(),
+            action: action.into(),
+            description: description.into(),
+        }
+    }
+
+    #[test]
+    fn user_entries_follow_the_defaults() {
+        let user = [conf("내 탭", "new_tab", "")];
+        let e = entries(&user, true);
+        assert_eq!(e.len(), ENTRIES.len() + 2);
+        let last = e.last().unwrap();
+        assert_eq!(last.label, "내 탭");
+        assert_eq!(last.command, Command::Action(Action::NewTab));
+    }
+
+    #[test]
+    fn cleared_defaults_leave_only_user_entries() {
+        let user = [conf("내 탭", "new_tab", ""), conf("나가기", "quit", "")];
+        let e = entries(&user, false);
+        assert_eq!(
+            e.iter().map(|x| x.label.as_str()).collect::<Vec<_>>(),
+            vec!["내 탭", "나가기"]
+        );
+        assert!(entries(&[], false).is_empty());
+    }
+
+    #[test]
+    fn unparsable_user_entries_warn_and_are_skipped() {
+        let user = [
+            conf("좋음", "new_tab", ""),
+            conf("나쁨", "no_such_action", ""),
+            conf("풀기", "unbind", ""),
+        ];
+        assert_eq!(entries(&user, false).len(), 1);
+        let w = user_warnings(&user);
+        assert_eq!(w.len(), 2, "{w:?}");
+        assert!(w[0].contains("나쁨"));
+        assert!(w[1].contains("풀기"));
+    }
+
+    #[test]
+    fn description_is_searchable() {
+        let user = [conf("Reset Font Style", "reset_font_size", "Restore Defaults")];
+        let e = entries(&user, false);
+        assert_eq!(filter(&e, "defaults"), vec![0]);
+        assert_eq!(filter(&e, "reset"), vec![0]);
+        assert!(filter(&e, "nothing").is_empty());
     }
 }
