@@ -98,7 +98,7 @@ pub struct SpawnOptions {
     /// 프로그램이 DECSCUSR로 바꾸기 전의 커서 모양(설정 cursor-style)
     pub cursor_shape: Option<CursorShape>,
     pub cursor_blink: bool,
-    /// OSC 52 쓰기·읽기 허용(설정 clipboard-write·clipboard-read)
+    /// OSC 52 쓰기·읽기 사건을 앱에 넘길지(설정 clipboard-write·clipboard-read가 deny가 아님). 그중 allow·ask를 가르는 것은 앱이다(ADR-019)
     pub clipboard_write: bool,
     pub clipboard_read: bool,
     /// 단어 고르기(두 번 누르기)의 경계 글자(설정 selection-word-chars, #126). 없으면 VT 엔진 기본
@@ -311,7 +311,7 @@ impl EventListener for Listener {
             }
             // OSC 52 쓰기: 앱이 클립보드에 넣는다(설정 clipboard-write, SECURITY.md)
             VtEvent::ClipboardStore(_, text) => (self.sink)(SessionEvent::ClipboardStore(text)),
-            // OSC 52 읽기: 설정 clipboard-read = allow일 때만 엔진이 이 사건을 낸다. 앱이 클립보드를 읽어 답한다
+            // OSC 52 읽기: 설정 clipboard-read가 deny가 아닐 때만 엔진이 이 사건을 낸다(ask면 앱이 묻는다). 앱이 클립보드를 읽어 답한다
             VtEvent::ClipboardLoad(_, format) => (self.sink)(SessionEvent::ClipboardLoad(ClipboardReply(format))),
             _ => {}
         }

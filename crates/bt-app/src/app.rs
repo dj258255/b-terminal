@@ -320,6 +320,24 @@ enum Pending {
         pane: u64,
         text: String,
     },
+    /// 프로그램이 OSC 52로 클립보드를 읽으려 한다(`clipboard-read = ask`, #220). 막대에 보인 `text`를 그대로 이 칸에만 답한다
+    ClipboardRead {
+        pane: u64,
+        reply: bt_term::ClipboardReply,
+        text: String,
+    },
+    /// 프로그램이 OSC 52로 클립보드에 쓰려 한다(`clipboard-write = ask`, #220)
+    ClipboardWrite {
+        pane: u64,
+        text: String,
+    },
+}
+
+impl Pending {
+    /// 프로그램의 출력이 띄운 막대인가. 이런 막대는 Enter로 허용하지 않는다(ADR-019)
+    fn is_program_prompt(&self) -> bool {
+        matches!(self, Pending::ClipboardRead { .. } | Pending::ClipboardWrite { .. })
+    }
 }
 
 impl Pending {
@@ -339,6 +357,8 @@ struct Confirm {
     message: String,
     /// "닫기", "끝내기"
     yes: &'static str,
+    /// 막대를 띄운 때(클립보드 막대는 이로부터 잠깐 허용 키를 받지 않는다)
+    shown: Instant,
 }
 
 /// btctl new의 띄우기 값(#115): 키 묶음의 새 탭처럼 설정(`base`: command·working-directory)에서 시작하고,
@@ -1247,8 +1267,8 @@ impl App {
                 bt_core::config::CursorStyle::BlockHollow => CursorShape::HollowBlock,
             }),
             cursor_blink: self.config.cursor_blink.unwrap_or(false),
-            clipboard_write: self.config.clipboard_write,
-            clipboard_read: self.config.clipboard_read,
+            clipboard_write: self.config.clipboard_write.engine_enabled(),
+            clipboard_read: self.config.clipboard_read.engine_enabled(),
             word_chars: Some(self.config.selection_word_chars.clone()),
             scroll_on_output: self.config.scroll_to_bottom.output,
             title_report: self.config.title_report,
@@ -1659,7 +1679,7 @@ impl App {
             Pending::CloseWindow => self.w.tabs.iter().flat_map(|g| g.layout.leaves()).collect(),
             Pending::CloseAllWindows | Pending::Quit => self.panes.iter().map(|p| p.id).collect(),
             // 붙여넣기는 묻기로 정한 뒤에 ask로 온다
-            Pending::Paste { .. } => Vec::new(),
+            Pending::Paste { .. } | Pending::ClipboardRead { .. } | Pending::ClipboardWrite { .. } => Vec::new(),
         };
         let busy: Vec<u64> = ids.into_iter().filter(|&id| self.pane_needs_confirm(id)).collect();
         if busy.is_empty() {
@@ -1696,7 +1716,7 @@ impl App {
             Pending::CloseWindow => (format!("이 창에서 {which} 칸이 {n}개 있습니다. 창을 닫을까요?"), "닫기"),
             Pending::CloseAllWindows => (format!("{which} 칸이 {n}개 있습니다. 모든 창을 닫을까요?"), "닫기"),
             Pending::Quit => (format!("{which} 칸이 {n}개 있습니다. 끝낼까요?"), "끝내기"),
-            Pending::Paste { .. } => return,
+            Pending::Paste { .. } | Pending::ClipboardRead { .. } | Pending::ClipboardWrite { .. } => return,
         };
         self.ask(pending, message, yes);
     }
@@ -1704,7 +1724,12 @@ impl App {
     /// 확인 막대를 띄운다. 묻는 동안 팔레트는 닫는다
     fn ask(&mut self, pending: Pending, message: String, yes: &'static str) {
         self.w.palette = None;
-        self.w.confirm = Some(Confirm { pending, message, yes });
+        self.w.confirm = Some(Confirm {
+            pending,
+            message,
+            yes,
+            shown: Instant::now(),
+        });
         self.request_redraw();
     }
 
@@ -1788,6 +1813,108 @@ impl App {
         }
     }
 
+    /// 프로그램이 OSC 52로 보낸 글(Claude Code의 /copy 등). 보고 있는 창의 고른 칸에서 온 것만 받는다: 뒤쪽 탭이나 옆 칸에
+    /// 흘러간 출력이 몰래 클립보드를 바꿔 나중의 붙여넣기에 명령을 끼워 넣지 못하게(붙여넣기 하이재킹).
+    /// 크기는 고정 1MiB와 clipboard-write-limit-bytes 중 작은 쪽(ADR-013). ask면 이 판단을 지난 것만 막대로 묻는다(ADR-019)
+    fn on_clipboard_store(&mut self, idx: usize, text: String) {
+        use bt_core::clipboard::ClipVerdict;
+        let watching = self.w.focused && self.is_focused(idx);
+        let verdict = bt_core::clipboard::decide_write(
+            self.config.clipboard_write,
+            watching,
+            text.len(),
+            self.config.clipboard_write_limit_bytes,
+            self.w.confirm.is_some(),
+        );
+        match verdict {
+            ClipVerdict::Allow => self.store_clipboard(idx, text),
+            ClipVerdict::Ask => {
+                let id = self.panes[idx].id;
+                let message = bt_core::clipboard::write_prompt(&text);
+                self.ask(Pending::ClipboardWrite { pane: id, text }, message, "허용");
+            }
+            ClipVerdict::Deny => log::warn!(
+                "탭 {}: 클립보드 쓰기(OSC 52)를 버렸습니다({})",
+                self.panes[idx].id,
+                if !watching {
+                    "보고 있지 않은 탭"
+                } else if !bt_core::config::clipboard_write_allowed(text.len(), self.config.clipboard_write_limit_bytes)
+                {
+                    "크기가 상한을 넘음"
+                } else if self.config.clipboard_write == bt_core::clipboard::ClipboardAccess::Ask {
+                    "확인 막대가 이미 떠 있음"
+                } else {
+                    "clipboard-write = deny"
+                }
+            ),
+        }
+    }
+
+    /// 허용된 OSC 52 쓰기를 클립보드에 넣고 알림 띠로 보인다
+    fn store_clipboard(&mut self, idx: usize, text: String) {
+        if let Some(cb) = self.clipboard.as_mut() {
+            let _ = cb.set_text(text.clone());
+        }
+        let shown = bt_core::clipboard::clip_preview(&text, 40);
+        log::info!(
+            "탭 {}: 프로그램이 클립보드에 {}글자를 썼습니다",
+            self.panes[idx].id,
+            text.chars().count()
+        );
+        // 보고 있는 탭이라 안 읽음·데스크톱 알림으로는 보이지 않는다. 창 안 알림 띠로 늘 보인다
+        if self.config.app_notifications.clipboard_copy {
+            self.toast(format!("클립보드에 복사됨: {shown}"));
+        }
+    }
+
+    /// 프로그램이 OSC 52로 클립보드를 읽으려 한다. ask면 막대에 읽어 갈 글 앞부분을 보이고 묻는다(ADR-019)
+    fn on_clipboard_load(&mut self, idx: usize, reply: bt_term::ClipboardReply) {
+        use bt_core::clipboard::ClipVerdict;
+        let watching = self.w.focused && self.is_focused(idx);
+        let readonly = self.panes[idx].session.readonly();
+        let verdict =
+            bt_core::clipboard::decide_read(self.config.clipboard_read, watching, readonly, self.w.confirm.is_some());
+        let read = |app: &mut Self| {
+            app.clipboard
+                .as_mut()
+                .and_then(|cb| cb.get_text().ok())
+                .unwrap_or_default()
+        };
+        match verdict {
+            ClipVerdict::Allow => {
+                let text = read(self);
+                self.panes[idx].session.write(reply.format(&text).as_bytes());
+            }
+            ClipVerdict::Ask => {
+                // 막대에 보인 글을 그대로 보낸다(묻는 사이 클립보드가 바뀌어도 본 것과 간 것이 같다)
+                let text = read(self);
+                let id = self.panes[idx].id;
+                let message = bt_core::clipboard::read_prompt(&text);
+                self.ask(Pending::ClipboardRead { pane: id, reply, text }, message, "허용");
+            }
+            ClipVerdict::Deny => log::warn!("탭 {}: 클립보드 읽기(OSC 52)를 거절했습니다", self.panes[idx].id),
+        }
+    }
+
+    /// 허용된 읽기 답: 그 칸이 아직 있고, 보고 있는 칸이며, 읽기 전용이 아닐 때만 그 칸에 쓴다. 아니면 버린다
+    fn answer_clipboard_read(&mut self, pane: u64, reply: &bt_term::ClipboardReply, text: &str) {
+        let target = self
+            .pane_index(pane)
+            .filter(|&i| self.is_focused(i) && !self.panes[i].session.readonly());
+        match target {
+            Some(i) => self.panes[i].session.write(reply.format(text).as_bytes()),
+            None => log::warn!("탭 {pane}: 클립보드 읽기 답을 버렸습니다(칸이 닫혔거나 보고 있지 않거나 읽기 전용)"),
+        }
+    }
+
+    /// 허용된 쓰기: 그 칸이 아직 있고 보고 있는 칸일 때만 클립보드에 넣는다
+    fn answer_clipboard_write(&mut self, pane: u64, text: String) {
+        match self.pane_index(pane).filter(|&i| self.w.focused && self.is_focused(i)) {
+            Some(i) => self.store_clipboard(i, text),
+            None => log::warn!("탭 {pane}: 클립보드 쓰기를 버렸습니다(칸이 닫혔거나 보고 있지 않음)"),
+        }
+    }
+
     fn perform(&mut self, pending: Pending, event_loop: &ActiveEventLoop) {
         match pending {
             Pending::ClosePane(id) => {
@@ -1810,6 +1937,8 @@ impl App {
             // 끌 때 창 상태는 exiting에서 적는다
             Pending::Quit => event_loop.exit(),
             Pending::Paste { pane, text } => self.paste_into(pane, &text),
+            Pending::ClipboardRead { pane, reply, text } => self.answer_clipboard_read(pane, &reply, &text),
+            Pending::ClipboardWrite { pane, text } => self.answer_clipboard_write(pane, text),
         }
     }
 
@@ -1946,12 +2075,24 @@ impl App {
             return false;
         }
         let plain = !(self.mods.super_key() || self.mods.control_key() || self.mods.alt_key());
-        let yes = match &event.logical_key {
-            Key::Named(NamedKey::Enter) => Some(true),
-            Key::Named(NamedKey::Escape) => Some(false),
-            Key::Character(c) if plain && c.eq_ignore_ascii_case("y") => Some(true),
-            Key::Character(c) if plain && c.eq_ignore_ascii_case("n") => Some(false),
-            _ => None,
+        let yes = if self.w.confirm.as_ref().is_some_and(|c| c.pending.is_program_prompt()) {
+            // 프로그램의 출력이 띄운 막대: Enter는 허용이 아니다. y는 막대가 뜬 지 잠깐 뒤에만(ADR-019)
+            let shown_for = self.w.confirm.as_ref().map_or(Duration::ZERO, |c| c.shown.elapsed());
+            let key = match &event.logical_key {
+                Key::Named(NamedKey::Enter) => Some(bt_core::clipboard::AnswerKey::Enter),
+                Key::Named(NamedKey::Escape) => Some(bt_core::clipboard::AnswerKey::Escape),
+                Key::Character(c) => c.chars().next().map(bt_core::clipboard::AnswerKey::Char),
+                _ => None,
+            };
+            key.and_then(|k| bt_core::clipboard::clipboard_answer(k, plain, event.repeat, shown_for))
+        } else {
+            match &event.logical_key {
+                Key::Named(NamedKey::Enter) => Some(true),
+                Key::Named(NamedKey::Escape) => Some(false),
+                Key::Character(c) if plain && c.eq_ignore_ascii_case("y") => Some(true),
+                Key::Character(c) if plain && c.eq_ignore_ascii_case("n") => Some(false),
+                _ => None,
+            }
         };
         if let Some(yes) = yes {
             let c = self.w.confirm.take();
@@ -2526,7 +2667,7 @@ impl App {
         if on {
             // 쓰다 만 조합 글자와 이 칸에 걸린 붙여넣기 확인은 더는 갈 곳이 없다
             self.w.preedit.clear();
-            if matches!(&self.w.confirm, Some(c) if matches!(&c.pending, Pending::Paste { pane, .. } if *pane == self.panes[i].id))
+            if matches!(&self.w.confirm, Some(c) if matches!(&c.pending, Pending::Paste { pane, .. } | Pending::ClipboardRead { pane, .. } if *pane == self.panes[i].id))
             {
                 self.w.confirm = None;
             }
@@ -3913,7 +4054,11 @@ impl App {
         let theme = self.config.theme.clone();
         let top_inset = self.top_inset();
         let toast = self.w.toast.clone().filter(|(_, at)| at.elapsed() < TOAST_FOR);
-        let confirm = self.w.confirm.as_ref().map(|c| (c.message.clone(), c.yes));
+        let confirm = self
+            .w
+            .confirm
+            .as_ref()
+            .map(|c| (c.message.clone(), c.yes, c.pending.is_program_prompt()));
         let title_prompt = self
             .w
             .title_prompt
@@ -4399,8 +4544,13 @@ impl App {
                         "↩ 정하기    esc 취소    비우고 ↩면 프로그램이 정한 제목으로",
                     );
                 }
-                if let Some((message, yes)) = &confirm {
-                    tabbar::draw_confirm(&mut canvas, fonts, &theme, message, &format!("↩ {yes}    esc 취소"));
+                if let Some((message, yes, from_program)) = &confirm {
+                    let hint = if *from_program {
+                        format!("y {yes}    n·esc 거절")
+                    } else {
+                        format!("↩ {yes}    esc 취소")
+                    };
+                    tabbar::draw_confirm(&mut canvas, fonts, &theme, message, &hint);
                 }
             }
         }
@@ -4805,51 +4955,8 @@ impl ApplicationHandler<UserEvent> for App {
                         self.panes[idx].progress = tabbar::accept_progress(self.config.progress_style, state, percent)
                             .map(|(s, p)| (s, p, Instant::now()));
                     }
-                    SessionEvent::ClipboardStore(text) => {
-                        // 프로그램이 OSC 52로 보낸 글(Claude Code의 /copy 등).
-                        // 보고 있는 창의 고른 칸에서 온 것만 받는다: 뒤쪽 탭이나 옆 칸에 흘러간 출력이 몰래 클립보드를 바꿔
-                        // 나중의 붙여넣기에 명령을 끼워 넣지 못하게(붙여넣기 하이재킹). 받으면 알림으로 보인다
-                        let watching = self.w.focused && self.is_focused(idx);
-                        // 한 번에 쓸 수 있는 크기: 고정 1MiB와 clipboard-write-limit-bytes 중 작은 쪽(ADR-013)
-                        let fits = bt_core::config::clipboard_write_allowed(
-                            text.len(),
-                            self.config.clipboard_write_limit_bytes,
-                        );
-                        if watching && fits {
-                            if let Some(cb) = self.clipboard.as_mut() {
-                                let _ = cb.set_text(text.clone());
-                            }
-                            let shown: String = bt_core::proto::printable(&text).chars().take(40).collect();
-                            log::info!(
-                                "탭 {}: 프로그램이 클립보드에 {}글자를 썼습니다",
-                                self.panes[idx].id,
-                                text.chars().count()
-                            );
-                            // 보고 있는 탭이라 안 읽음·데스크톱 알림으로는 보이지 않는다. 창 안 알림 띠로 늘 보인다
-                            if self.config.app_notifications.clipboard_copy {
-                                self.toast(format!("클립보드에 복사됨: {shown}"));
-                            }
-                        } else {
-                            log::warn!(
-                                "탭 {}: 클립보드 쓰기(OSC 52)를 버렸습니다({})",
-                                self.panes[idx].id,
-                                if fits {
-                                    "보고 있지 않은 탭"
-                                } else {
-                                    "크기가 상한을 넘음"
-                                }
-                            );
-                        }
-                    }
-                    SessionEvent::ClipboardLoad(reply) => {
-                        // clipboard-read = allow일 때만 엔진이 이 사건을 낸다
-                        let text = self
-                            .clipboard
-                            .as_mut()
-                            .and_then(|cb| cb.get_text().ok())
-                            .unwrap_or_default();
-                        self.panes[idx].session.write(reply.format(&text).as_bytes());
-                    }
+                    SessionEvent::ClipboardStore(text) => self.on_clipboard_store(idx, text),
+                    SessionEvent::ClipboardLoad(reply) => self.on_clipboard_load(idx, reply),
                     SessionEvent::CommandStarted(cmd) => self.panes[idx].running = Some((cmd, Instant::now())),
                     SessionEvent::CommandFinished(rec) => self.on_command_finished(idx, rec),
                     SessionEvent::Bell => self.on_bell(idx),
