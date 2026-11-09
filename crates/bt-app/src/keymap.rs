@@ -68,6 +68,12 @@ pub enum Action {
     SelectAll,
     /// 앞(-1)·뒤(+1) 프롬프트로(셸 통합)
     JumpToPrompt(i32),
+    /// 전체 화면 켜고 끄기(Ghostty `toggle_fullscreen`, #126)
+    ToggleFullscreen,
+    /// 줄 단위 스크롤: 양수면 아래로(Ghostty `scroll_page_lines`)
+    ScrollLines(i32),
+    /// 화면의 몇 분의 일 스크롤: 양수면 아래로(Ghostty `scroll_page_fractional`)
+    ScrollFraction(f32),
     /// 앱을 끝낸다(Ghostty `quit`, ⌘Q). 프로그램이 도는 칸이 있으면 묻는다(#108)
     Quit,
     /// `text:…`: 글을 그대로 PTY에 보낸다(`\n`, `\x1b` 같은 이스케이프를 푼다)
@@ -242,6 +248,16 @@ pub fn parse_action(s: &str) -> Result<Option<Action>, String> {
         "clear_screen" => Action::ClearScreen,
         "reload_config" => Action::ReloadConfig,
         "quit" => Action::Quit,
+        "toggle_fullscreen" => Action::ToggleFullscreen,
+        "scroll_page_lines" => Action::ScrollLines(
+            arg.and_then(|a| a.trim().parse().ok())
+                .ok_or("scroll_page_lines:줄 수(양수면 아래로)")?,
+        ),
+        "scroll_page_fractional" => Action::ScrollFraction(
+            arg.and_then(|a| a.trim().parse::<f32>().ok())
+                .filter(|f| f.is_finite())
+                .ok_or("scroll_page_fractional:화면의 몇 분의 일(양수면 아래로)")?,
+        ),
         "select_all" => Action::SelectAll,
         "jump_to_prompt" => Action::JumpToPrompt(arg.and_then(|a| a.trim().parse().ok()).unwrap_or(-1)),
         "text" => Action::Text(unescape(arg.unwrap_or(""))),
@@ -300,6 +316,7 @@ fn defaults() -> Vec<(&'static str, &'static str)> {
         ("super+a", "select_all"),
         ("super+shift+comma", "reload_config"),
         ("super+q", "quit"),
+        ("super+ctrl+f", "toggle_fullscreen"),
         ("super+home", "scroll_to_top"),
         ("super+end", "scroll_to_bottom"),
         ("super+page_up", "scroll_page_up"),
@@ -606,7 +623,21 @@ mod tests {
         assert!(parse_action("navigate_search:sideways").is_err());
         assert!(parse_action("resize_split:left").is_err());
         assert!(parse_action("new_split:diagonal").is_err());
-        assert!(parse_action("toggle_fullscreen").is_err());
+        assert_eq!(
+            parse_action("toggle_fullscreen").unwrap(),
+            Some(Action::ToggleFullscreen)
+        );
+        assert_eq!(
+            parse_action("scroll_page_lines:-3").unwrap(),
+            Some(Action::ScrollLines(-3))
+        );
+        assert_eq!(
+            parse_action("scroll_page_fractional:0.5").unwrap(),
+            Some(Action::ScrollFraction(0.5))
+        );
+        assert!(parse_action("scroll_page_lines").is_err(), "줄 수가 있어야 한다");
+        assert!(parse_action("scroll_page_fractional:x").is_err());
+        assert!(parse_action("toggle_window_decorations").is_err());
         assert!(parse_action("goto_tab:0").is_err());
     }
 

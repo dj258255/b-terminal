@@ -67,6 +67,9 @@ config-file = ?~/.config/b-terminal/local   # ?가 붙으면 없어도 된다
 | `clipboard-paste-protection` | `true` `false` | `true` | 괄호 붙여넣기를 쓰지 않는 프로그램에 줄바꿈(LF·CR)이 든 글을 붙여넣으면 먼저 묻습니다(줄바꿈이 바로 Enter가 되어 보지 못한 명령이 돌 수 있어서). ↩·`y` 붙여넣기, esc·`n` 버리기 |
 | `clipboard-paste-bracketed-safe` | `true` `false` | `true` | 괄호 붙여넣기 모드의 붙여넣기는 안전으로 봅니다. `false`면 그때도 줄바꿈이 있으면 묻습니다 |
 | `confirm-close-surface` | `true` `false` `always` | `true` | 칸·탭·창을 닫거나 끝낼 때(⌘W, ⌥⌘W, 창 닫기 단추, ⌘Q) 프로그램이 도는 칸이 있으면 창 위쪽에 확인 막대를 띄웁니다. ↩·`y`면 닫고 esc·`n`이면 그만둡니다. 셸 통합이 있으면 명령이 도는 중인지로, 없으면 전경 프로세스가 셸 자신인지로 봅니다. `always`는 셸이 살아 있으면 늘 묻습니다. Dock 메뉴나 로그아웃으로 끝낼 때는 묻지 못합니다 |
+| `focus-follows-mouse` | `true` `false` | `false` | 화면을 나눴을 때 마우스가 올라간 칸을 고릅니다(끌어 고르는 중에는 바꾸지 않음) |
+| `mouse-scroll-multiplier` | 수, `discrete:수`, `precision:수`(쉼표로 둘) | `discrete:3,precision:1` | 휠 배율. `discrete`는 줄 단위 기기(마우스 휠), `precision`은 픽셀 단위 기기(트랙패드). 접두 없는 수는 둘 다. 0.01~10000 |
+| `selection-word-chars` | 글자들(`\t`·`\\` 풂) | `` \t'"│`\|:;,()[]{}<>$``(맨 앞 공백 포함) | 두 번 눌러 단어를 고를 때 끊는 글자. 공백을 넣으려면 큰따옴표로 감쌉니다 |
 | `quick-terminal-position` | `top` `bottom` `left` `right` `center` | `top` | 퀵 터미널이 붙는 가장자리. 메뉴 막대와 Dock을 뺀 영역에 놓습니다 |
 | `quick-terminal-size` | `40%`, `300px`, 둘을 쉼표로(`50%,800px`) | `40%` | 첫 값은 주축(위·아래면 높이, 왼쪽·오른쪽·가운데면 폭), 둘째 값은 다른 축(없으면 위·아래·왼쪽·오른쪽은 끝까지, 가운데는 첫 값과 같게). 단위가 없으면 잘못된 값입니다. px는 화면의 점 단위입니다 |
 | `quick-terminal-screen` | `main` `mouse` `macos-menu-bar` | `main` | 퀵 터미널이 뜨는 화면: 앞에 있는 창의 화면, 마우스가 있는 화면, 메뉴 막대가 있는 화면 |
@@ -119,6 +122,8 @@ keybind = ctrl+a>ctrl+a=text:\x01     # 앞 키 자체를 보내고 싶을 때
 | `scroll_page_up` / `scroll_page_down` | 스크롤백 한 쪽 | `shift+page_up` `super+page_up` / 아래도 같음 |
 | `jump_to_prompt:-1` / `jump_to_prompt:1` | 앞·뒤 프롬프트로(셸 통합) | `super+arrow_up` / `super+arrow_down` |
 | `scroll_to_top` / `scroll_to_bottom` | 맨 위 / 맨 아래 | `shift+home` `super+home` / `shift+end` `super+end` |
+| `scroll_page_lines:N` / `scroll_page_fractional:F` | N줄 / 화면의 F배만큼 스크롤(양수면 아래로, 음수면 위로) | (없음) |
+| `toggle_fullscreen` | 전체 화면 켜고 끄기 | `super+ctrl+f` |
 | `start_search` / `end_search` | 찾기 막대 열기 / 닫기. 막대에서 글을 치면 바로 찾고, Enter는 위로·Shift-Enter는 아래로, Esc로 닫습니다 | `super+f` / (Esc) |
 | `navigate_search:next` / `navigate_search:previous` | 위(오래된 쪽) / 아래 맞은 곳으로 | `super+g` / `super+shift+g` |
 | `toggle_command_palette` | 명령 팔레트 열기·닫기 | `super+shift+p` |

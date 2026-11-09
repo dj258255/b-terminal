@@ -125,6 +125,12 @@ pub struct Config {
     pub confirm_close: ConfirmClose,
     /// 퀵 터미널의 자리·크기·화면·자동 숨김·움직임(Ghostty `quick-terminal-*`, #110)
     pub quick: QuickTerminal,
+    /// 분할에서 마우스가 올라간 칸을 고른다(Ghostty `focus-follows-mouse`, #126)
+    pub focus_follows_mouse: bool,
+    /// 마우스 휠 배율: (줄 단위 기기, 픽셀 단위 기기). Ghostty `mouse-scroll-multiplier` 기본 3·1
+    pub scroll_multiplier: (f64, f64),
+    /// 단어 고르기의 경계 글자(Ghostty `selection-word-chars`)
+    pub selection_word_chars: String,
     pub warnings: Vec<String>,
     /// 실제로 읽은 파일
     pub sources: Vec<PathBuf>,
@@ -160,6 +166,51 @@ impl BellFeatures {
         *self = next;
         true
     }
+}
+
+/// Ghostty `selection-word-chars` 기본(공백 포함)
+pub const DEFAULT_WORD_CHARS: &str = " \t'\"│`|:;,()[]{}<>$";
+
+/// `3`, `discrete:3`, `precision:1`, `precision:0.5,discrete:3`를 지금 값 위에 얹는다. 범위는 0.01~10000
+fn parse_scroll_multiplier(v: &str, cur: (f64, f64)) -> Option<(f64, f64)> {
+    let mut out = cur;
+    for part in v.split(',').map(str::trim) {
+        let (kind, num) = match part.split_once(':') {
+            Some((k, n)) => (Some(k.trim()), n.trim()),
+            None => (None, part),
+        };
+        let n: f64 = num.parse().ok().filter(|n: &f64| n.is_finite() && *n > 0.0)?;
+        let n = n.clamp(0.01, 10_000.0);
+        match kind {
+            None => out = (n, n),
+            Some("discrete") => out.0 = n,
+            Some("precision") => out.1 = n,
+            Some(_) => return None,
+        }
+    }
+    Some(out)
+}
+
+/// 설정 글의 `\t`·`\\`를 푼다(selection-word-chars)
+fn unescape_word_chars(v: &str) -> String {
+    let mut out = String::new();
+    let mut it = v.chars();
+    while let Some(c) = it.next() {
+        if c != '\\' {
+            out.push(c);
+            continue;
+        }
+        match it.next() {
+            Some('t') => out.push('\t'),
+            Some('\\') => out.push('\\'),
+            Some(other) => {
+                out.push('\\');
+                out.push(other);
+            }
+            None => out.push('\\'),
+        }
+    }
+    out
 }
 
 /// 퀵 터미널이 붙는 화면 가장자리(Ghostty `quick-terminal-position`)
@@ -302,6 +353,9 @@ impl Default for Config {
             bell_features: BellFeatures::default(),
             confirm_close: ConfirmClose::True,
             quick: QuickTerminal::default(),
+            focus_follows_mouse: false,
+            scroll_multiplier: (3.0, 1.0),
+            selection_word_chars: DEFAULT_WORD_CHARS.into(),
             warnings: Vec::new(),
             sources: Vec::new(),
         }
@@ -743,6 +797,16 @@ impl Config {
                 "never" => self.window_save_state = false,
                 _ => bad(warnings),
             },
+            "focus-follows-mouse" => match parse_bool(v) {
+                Some(b) => self.focus_follows_mouse = b,
+                None => bad(warnings),
+            },
+            "mouse-scroll-multiplier" => match parse_scroll_multiplier(v, self.scroll_multiplier) {
+                Some(m) => self.scroll_multiplier = m,
+                None => bad(warnings),
+            },
+            // 공백도 경계 글자라 다듬지 않은 값을 쓴다(큰따옴표는 이미 벗김)
+            "selection-word-chars" => self.selection_word_chars = unescape_word_chars(&e.value),
             "quick-terminal-position" => match v {
                 "top" => self.quick.position = QuickPosition::Top,
                 "bottom" => self.quick.position = QuickPosition::Bottom,
@@ -1128,6 +1192,29 @@ mod tests {
         assert!(!Config::from_text("window-save-state = never\n", true).window_save_state);
         assert!(Config::from_text("window-save-state = always\n", true).window_save_state);
         assert_eq!(Config::from_text("window-save-state = maybe\n", true).warnings.len(), 1);
+    }
+
+    #[test]
+    fn mouse_and_selection_keys_like_ghostty() {
+        let d = Config::default();
+        assert!(!d.focus_follows_mouse);
+        assert_eq!(d.scroll_multiplier, (3.0, 1.0));
+        assert!(d.selection_word_chars.starts_with(" \t'\""));
+        let c = Config::from_text("focus-follows-mouse = true\nmouse-scroll-multiplier = 2\n", true);
+        assert!(c.focus_follows_mouse);
+        assert_eq!(c.scroll_multiplier, (2.0, 2.0), "접두 없는 값은 둘 다");
+        let c = Config::from_text("mouse-scroll-multiplier = precision:0.5\n", true);
+        assert_eq!(c.scroll_multiplier, (3.0, 0.5), "적지 않은 쪽은 그대로");
+        let c = Config::from_text("mouse-scroll-multiplier = discrete:5, precision:2\n", true);
+        assert_eq!(c.scroll_multiplier, (5.0, 2.0));
+        let c = Config::from_text("mouse-scroll-multiplier = 99999\n", true);
+        assert_eq!(c.scroll_multiplier, (10000.0, 10000.0), "상한으로 자름");
+        for bad in ["abc", "fast:3", "precision:", "-1"] {
+            let c = Config::from_text(&format!("mouse-scroll-multiplier = {bad}\n"), true);
+            assert_eq!((c.warnings.len(), c.scroll_multiplier), (1, (3.0, 1.0)), "{bad}");
+        }
+        let c = Config::from_text("selection-word-chars = \" \\t:\\\\\"\n", true);
+        assert_eq!(c.selection_word_chars, " \t:\\", "따옴표를 벗기고 \\t·\\\\를 푼다");
     }
 
     #[test]

@@ -4,6 +4,8 @@
 
 ## [아직 릴리스하지 않음]
 
+- 마우스·창의 작은 Ghostty 키: `focus-follows-mouse`(마우스가 올라간 칸 고르기), `mouse-scroll-multiplier`(휠 배율, 기본 3·트랙패드 1), `selection-word-chars`(두 번 눌러 고르는 단어의 경계 글자), `toggle_fullscreen` 동작(⌃⌘F), `scroll_page_lines`·`scroll_page_fractional` 동작.
+
 ## [0.7.0] - 2026-11-09
 
 확인과 알림. 실수로 잃는 것을 막는 확인(닫기 확인, 붙여넣기 보호), 놓치지 않게 하는 벨, 키 순서, 퀵 터미널의 자리·움직임. 추적 이슈 #105.

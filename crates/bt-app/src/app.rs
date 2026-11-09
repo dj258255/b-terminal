@@ -776,6 +776,7 @@ impl App {
             cursor_blink: self.config.cursor_blink.unwrap_or(false),
             clipboard_write: self.config.clipboard_write,
             clipboard_read: self.config.clipboard_read,
+            word_chars: Some(self.config.selection_word_chars.clone()),
             ..options
         };
         // 칸 안의 btctl이 이 터미널과 이 칸을 찾게 한다
@@ -1693,6 +1694,24 @@ impl App {
                     } else {
                         -(rows - 1)
                     });
+                }
+            }
+            Action::ScrollLines(n) => {
+                if let Some(t) = self.active_pane() {
+                    t.session.scroll(-n);
+                }
+            }
+            Action::ScrollFraction(f) => {
+                if let Some(t) = self.active_pane() {
+                    let rows = t.session.size().rows as f32;
+                    t.session.scroll(-(rows * f).round() as i32);
+                }
+            }
+            Action::ToggleFullscreen => {
+                if let Some(g) = &self.w.gfx {
+                    let on = g.window.fullscreen().is_some();
+                    g.window
+                        .set_fullscreen((!on).then_some(winit::window::Fullscreen::Borderless(None)));
                 }
             }
             Action::ScrollTop => {
@@ -3059,6 +3078,12 @@ impl ApplicationHandler<UserEvent> for App {
                     }
                 }
                 self.update_hover();
+                // 마우스가 올라간 칸을 고른다(focus-follows-mouse, #126). 고르는 중에는 바꾸지 않는다
+                if self.config.focus_follows_mouse && !self.w.selecting {
+                    if let Some(id) = self.pane_at(position).filter(|id| Some(*id) != self.focused_id()) {
+                        self.focus_pane(id);
+                    }
+                }
                 let Some(idx) = self.active_index() else { return };
                 if self.w.selecting {
                     if let Some((c, r)) = self.cell_in(idx, position) {
@@ -3173,11 +3198,13 @@ impl ApplicationHandler<UserEvent> for App {
                 }
             }
             WindowEvent::MouseWheel { delta, .. } => {
+                // 휠 배율(mouse-scroll-multiplier, #126): 줄 단위 기기(마우스 휠)와 픽셀 단위 기기(트랙패드)
+                let (discrete, precision) = self.config.scroll_multiplier;
                 let lines = match delta {
-                    MouseScrollDelta::LineDelta(_, y) => y as f64 * 3.0,
+                    MouseScrollDelta::LineDelta(_, y) => y as f64 * discrete,
                     MouseScrollDelta::PixelDelta(p) => {
                         let ch = self.fonts.as_ref().map(|f| f.metrics().height as f64).unwrap_or(16.0);
-                        p.y / ch
+                        p.y / ch * precision
                     }
                 };
                 self.w.scroll_accum += lines;
