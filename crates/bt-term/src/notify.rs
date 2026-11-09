@@ -37,6 +37,8 @@ pub enum Signal {
         visible: bool,
         scrollback: bool,
     },
+    /// 창 제목 보고 질의(CSI 21 t). VT 엔진은 답하지 않으므로 세션이 설정(title-report)을 보고 답한다(#151)
+    TitleReport,
 }
 
 /// 셸 통합 표지. <https://gitlab.freedesktop.org/Per_Bothner/specifications/blob/master/proposals/semantic-prompts.md>
@@ -71,7 +73,7 @@ enum St {
     /// APC(`ESC _`) 안
     Apc,
     ApcEsc,
-    /// CSI(`ESC [`) 안: 화면 지우기(ED)만 알아본다
+    /// CSI(`ESC [`) 안: 화면 지우기(ED)와 제목 보고(CSI 21 t)만 알아본다
     Csi,
 }
 
@@ -161,6 +163,9 @@ impl Scanner {
                 }
                 (St::Csi, 0x1b) => St::Esc,
                 (St::Csi, 0x40..=0x7e) => {
+                    if b == b't' && self.csi.as_slice() == b"21" {
+                        out.push((i + 1, Signal::TitleReport));
+                    }
                     if b == b'J' {
                         match self.csi.as_slice() {
                             b"2" => out.push((
