@@ -248,3 +248,22 @@ fn prompt_rows_are_the_visible_prompt_marks() {
     wait_until(&s, |t| t.contains("file"));
     assert_eq!(s.prompt_rows(), vec![1, 3]);
 }
+
+/// #138: 고른 것의 끝점을 키보드로 옮긴다(adjust_selection). 고른 것이 없으면 아무것도 안 한다
+#[test]
+fn adjust_selection_moves_the_selection_end() {
+    use bt_term::SelectionAdjust::*;
+    let (s, rx) = sh("printf 'abcdef\\nghijkl\\n'", GridSize::new(20, 5));
+    wait_exit(&rx);
+    wait_until(&s, |t| t.contains("ghijkl"));
+    assert!(!s.adjust_selection(Right), "고른 것이 없으면 거짓");
+    s.select_start(0, 0, bt_term::SelectKind::Simple);
+    s.select_update(1, 0);
+    assert_eq!(s.selection_text().as_deref(), Some("ab"));
+    assert!(s.adjust_selection(Right));
+    assert_eq!(s.selection_text().as_deref(), Some("abc"));
+    assert!(s.adjust_selection(Down));
+    assert_eq!(s.selection_text().as_deref(), Some("abcdef\nghi"));
+    assert!(s.adjust_selection(BeginningOfLine));
+    assert_eq!(s.selection_text().as_deref(), Some("abcdef\ng"));
+}

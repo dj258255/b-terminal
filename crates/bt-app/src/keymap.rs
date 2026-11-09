@@ -68,6 +68,10 @@ pub enum Action {
     SelectAll,
     /// 앞(-1)·뒤(+1) 프롬프트로(셸 통합)
     JumpToPrompt(i32),
+    /// 고른 것의 끝점을 옮긴다(Ghostty `adjust_selection`, #138)
+    AdjustSelection(bt_term::SelectionAdjust),
+    /// 마우스 아래 링크 주소를 클립보드에(Ghostty `copy_url_to_clipboard`)
+    CopyUrl,
     /// 칸의 글을 파일로 쓰고 그 경로를 어떻게 할지(Ghostty `write_scrollback_file` 등, #125)
     WriteFile(FileSource, FileThen),
     /// 입력 막대로 지금 칸의 제목을 묻는다(Ghostty `prompt_surface_title`, #124)
@@ -272,6 +276,28 @@ pub fn parse_action(s: &str) -> Result<Option<Action>, String> {
         "quit" => Action::Quit,
         "toggle_fullscreen" => Action::ToggleFullscreen,
         "prompt_surface_title" => Action::PromptSurfaceTitle,
+        "copy_url_to_clipboard" => Action::CopyUrl,
+        "adjust_selection" => {
+            use bt_term::SelectionAdjust::*;
+            Action::AdjustSelection(match arg.map(str::trim) {
+                Some("left") => Left,
+                Some("right") => Right,
+                Some("up") => Up,
+                Some("down") => Down,
+                Some("page_up") => PageUp,
+                Some("page_down") => PageDown,
+                Some("home") => Home,
+                Some("end") => End,
+                Some("beginning_of_line") => BeginningOfLine,
+                Some("end_of_line") => EndOfLine,
+                _ => {
+                    return Err(
+                        "adjust_selection:left·right·up·down·page_up·page_down·home·end·beginning_of_line·end_of_line"
+                            .into(),
+                    );
+                }
+            })
+        }
         "write_scrollback_file" | "write_screen_file" | "write_selection_file" => {
             let source = match name {
                 "write_scrollback_file" => FileSource::Scrollback,
@@ -683,6 +709,17 @@ mod tests {
         );
         assert!(parse_action("write_screen_file").is_err(), "할 일이 있어야 한다");
         assert!(parse_action("write_screen_file:mail").is_err());
+        assert_eq!(
+            parse_action("adjust_selection:end_of_line").unwrap(),
+            Some(Action::AdjustSelection(bt_term::SelectionAdjust::EndOfLine))
+        );
+        assert_eq!(
+            parse_action("adjust_selection:page_up").unwrap(),
+            Some(Action::AdjustSelection(bt_term::SelectionAdjust::PageUp))
+        );
+        assert!(parse_action("adjust_selection").is_err());
+        assert!(parse_action("adjust_selection:sideways").is_err());
+        assert_eq!(parse_action("copy_url_to_clipboard").unwrap(), Some(Action::CopyUrl));
         assert_eq!(
             parse_action("set_surface_title:빌드 서버").unwrap(),
             Some(Action::SetSurfaceTitle("빌드 서버".into()))

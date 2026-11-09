@@ -219,6 +219,8 @@ struct Inner {
     graphics: crate::graphics::Graphics,
     /// 셀 크기(px). 그림을 칸에 맞출 때 쓴다
     cell: (u32, u32),
+    /// 고르기의 움직이는 끝점(#138 adjust_selection). 고르기를 시작·늘이면 바뀐다
+    sel_end: Option<Point>,
 }
 
 /// 프롬프트를 기억하는 상한(오래된 것부터 버린다)
@@ -406,6 +408,7 @@ impl Session {
             search: None,
             graphics: Default::default(),
             cell: (size.cell_width.max(1) as u32, size.cell_height.max(1) as u32),
+            sel_end: None,
         }));
         let integrated = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let thread_integrated = integrated.clone();
@@ -678,6 +681,7 @@ impl Session {
             SelectKind::Line => SelectionType::Lines,
         };
         g.term.selection = Some(Selection::new(ty, point, Side::Left));
+        g.sel_end = Some(point);
     }
 
     pub fn select_update(&self, col: usize, row: usize) {
@@ -686,10 +690,31 @@ impl Session {
         if let Some(sel) = g.term.selection.as_mut() {
             sel.update(point, Side::Right);
         }
+        g.sel_end = Some(point);
+    }
+
+    /// 고른 것의 끝점을 키보드로 옮긴다(Ghostty `adjust_selection`, #138). 고른 것이 없으면 아무것도 안 하고 거짓.
+    /// 옮긴 끝점이 화면 밖이면 그 줄이 보이게 스크롤한다
+    pub fn adjust_selection(&self, adj: SelectionAdjust) -> bool {
+        let mut g = self.inner.lock();
+        let Some(end) = g.sel_end.filter(|_| g.term.selection.is_some()) else {
+            return false;
+        };
+        let (cols, page) = (g.term.columns(), g.term.screen_lines());
+        let (top, bottom) = (g.term.topmost_line(), g.term.bottommost_line());
+        let next = adjusted_point(end, adj, cols, top, bottom, page);
+        if let Some(sel) = g.term.selection.as_mut() {
+            sel.update(next, Side::Right);
+        }
+        g.sel_end = Some(next);
+        g.term.scroll_to_point(next);
+        true
     }
 
     pub fn select_clear(&self) {
-        self.inner.lock().term.selection = None;
+        let mut g = self.inner.lock();
+        g.term.selection = None;
+        g.sel_end = None;
     }
 
     pub fn selection_text(&self) -> Option<String> {
@@ -740,6 +765,47 @@ pub enum SelectKind {
 
 fn dirs_home() -> Option<PathBuf> {
     std::env::var_os("HOME").map(PathBuf::from)
+}
+
+/// 고른 것의 끝점을 옮기는 방향(Ghostty `adjust_selection`의 인자)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SelectionAdjust {
+    Left,
+    Right,
+    Up,
+    Down,
+    PageUp,
+    PageDown,
+    /// 화면(스크롤백 포함) 맨 위 왼쪽
+    Home,
+    /// 맨 아래 오른쪽
+    End,
+    BeginningOfLine,
+    EndOfLine,
+}
+
+/// 끝점 `p`를 옮긴 자리. `top`·`bottom`은 스크롤백 맨 위·화면 맨 아래 줄, `page`는 화면 줄 수.
+/// 왼쪽·오른쪽은 줄 끝에서 앞·뒤 줄로 넘어가고, 모든 결과는 범위 안으로 붙인다
+fn adjusted_point(p: Point, adj: SelectionAdjust, cols: usize, top: Line, bottom: Line, page: usize) -> Point {
+    use SelectionAdjust::*;
+    let last = Column(cols.saturating_sub(1));
+    let line = |l: i32| Line(l.clamp(top.0, bottom.0));
+    match adj {
+        Left if p.column.0 > 0 => Point::new(p.line, p.column - 1),
+        Left if p.line > top => Point::new(p.line - 1, last),
+        Left => p,
+        Right if p.column < last => Point::new(p.line, p.column + 1),
+        Right if p.line < bottom => Point::new(p.line + 1, Column(0)),
+        Right => p,
+        Up => Point::new(line(p.line.0 - 1), p.column),
+        Down => Point::new(line(p.line.0 + 1), p.column),
+        PageUp => Point::new(line(p.line.0 - page as i32), p.column),
+        PageDown => Point::new(line(p.line.0 + page as i32), p.column),
+        Home => Point::new(top, Column(0)),
+        End => Point::new(bottom, last),
+        BeginningOfLine => Point::new(p.line, Column(0)),
+        EndOfLine => Point::new(p.line, last),
+    }
 }
 
 fn viewport_point<T>(term: &Term<T>, col: usize, row: usize) -> Point {
@@ -1146,5 +1212,31 @@ impl Emulator {
 
     pub fn tail_text(&self, lines: usize) -> String {
         tail_text(&self.term, lines)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn adjusted_point_moves_and_wraps_like_ghostty() {
+        use SelectionAdjust::*;
+        let (top, bottom) = (Line(-5), Line(9));
+        let at = |l: i32, c: usize| Point::new(Line(l), Column(c));
+        let adj = |p, a| adjusted_point(p, a, 10, top, bottom, 10);
+        assert_eq!(adj(at(2, 3), Right), at(2, 4));
+        assert_eq!(adj(at(2, 9), Right), at(3, 0), "줄 끝에서 다음 줄로");
+        assert_eq!(adj(at(2, 0), Left), at(1, 9), "줄 처음에서 앞 줄 끝으로");
+        assert_eq!(adj(at(9, 9), Right), at(9, 9), "맨 끝에서는 그대로");
+        assert_eq!(adj(at(-5, 0), Left), at(-5, 0));
+        assert_eq!(adj(at(2, 3), Up), at(1, 3));
+        assert_eq!(adj(at(9, 3), Down), at(9, 3));
+        assert_eq!(adj(at(2, 3), PageUp), at(-5, 3), "스크롤백 맨 위에서 멈춤");
+        assert_eq!(adj(at(-4, 3), PageDown), at(6, 3));
+        assert_eq!(adj(at(2, 3), Home), at(-5, 0));
+        assert_eq!(adj(at(2, 3), End), at(9, 9));
+        assert_eq!(adj(at(2, 3), BeginningOfLine), at(2, 0));
+        assert_eq!(adj(at(2, 3), EndOfLine), at(2, 9));
     }
 }
