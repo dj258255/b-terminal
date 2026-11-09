@@ -56,7 +56,7 @@ config-file = ?~/.config/b-terminal/local   # ?가 붙으면 없어도 된다
 | `macos-option-as-alt` | `true` `false` `left` `right` | `false` | Ghostty 기본과 같게 끔 |
 | `scrollback-limit` | 바이트 | 1000만 | Ghostty 값. 줄 하나를 약 1KB로 보고 줄 수로 바꿉니다(100~20만 줄) |
 | `scrollback-lines` | 줄 수 | | b-terminal 키. 줄 수로 바로 |
-| `copy-on-select` | `true` `false` `clipboard` | `true` | 고르기를 마치면 클립보드로. macOS에는 선택 클립보드가 없어 `true`와 `clipboard`는 같고(둘 다 시스템 클립보드), `false`면 복사하지 않습니다 |
+| `copy-on-select` | `true` `false` `clipboard`(Ghostty 1.4 이름 `none` `primary` `both`도 받음) | `true` | 고르기를 마치면 클립보드로. macOS에는 선택 클립보드가 없어 `true`·`clipboard`·`both`는 같고(시스템 클립보드), `false`·`none`·`primary`면 복사하지 않습니다. Ghostty 1.4(아직 나오지 않은 판)는 macOS 기본을 `none`으로 바꿨지만, b-terminal은 지금 나온 판의 기본(켬)을 따릅니다 |
 | `clipboard-trim-trailing-spaces` | `true` / `false` | `true` | 복사하는 글(⌘C·`copy_to_clipboard`·고르면 복사)의 줄 끝 공백과 탭을 지웁니다. 줄 가운데 공백은 그대로이고, 프로그램이 OSC 52로 쓰는 글에는 적용하지 않습니다 |
 | `right-click-action` | `context-menu` `paste` `copy` `copy-or-paste` `ignore` | `context-menu` | 오른쪽 클릭 동작. `copy-or-paste`는 고른 글이 있으면 복사, 없으면 붙여넣기(붙여넣기 보호를 거칩니다). `context-menu`는 값만 받고 하는 일이 없습니다(메뉴가 없음). 마우스 보고 모드의 프로그램에는 이 키와 상관없이 클릭을 보냅니다 |
 | `mouse-hide-while-typing` | `true` / `false` | `false` | |

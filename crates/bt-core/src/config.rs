@@ -990,10 +990,13 @@ impl Config {
                 Ok(n) => self.scrollback_lines = n.clamp(0, 1_000_000),
                 Err(_) => bad(warnings),
             },
+            // Ghostty 1.4의 값 이름(none·primary·both)도 받는다. primary(선택 클립보드만)는 macOS에서 하는 일이 없다
             "copy-on-select" => match v {
                 "true" => self.copy_on_select = CopyOnSelect::True,
-                "clipboard" => self.copy_on_select = CopyOnSelect::Clipboard,
-                "false" => self.copy_on_select = CopyOnSelect::False,
+                "clipboard" | "both" => self.copy_on_select = CopyOnSelect::Clipboard,
+                "false" | "none" => self.copy_on_select = CopyOnSelect::False,
+                "primary" if cfg!(target_os = "macos") => self.copy_on_select = CopyOnSelect::False,
+                "primary" => self.copy_on_select = CopyOnSelect::True,
                 _ => bad(warnings),
             },
             "clipboard-trim-trailing-spaces" => match parse_bool(v) {
@@ -1516,6 +1519,20 @@ mod tests {
         }
         assert_eq!(Config::from_text("right-click-action = menu\n", true).warnings.len(), 1);
         assert_eq!(Config::from_text("copy-on-select = maybe\n", true).warnings.len(), 1);
+        // Ghostty 1.4의 값 이름
+        assert_eq!(
+            Config::from_text("copy-on-select = none\n", true).copy_on_select,
+            CopyOnSelect::False
+        );
+        assert_eq!(
+            Config::from_text("copy-on-select = both\n", true).copy_on_select,
+            CopyOnSelect::Clipboard
+        );
+        assert!(
+            Config::from_text("copy-on-select = primary\n", true)
+                .warnings
+                .is_empty()
+        );
         assert_eq!(
             Config::from_text("clipboard-trim-trailing-spaces = x\n", true)
                 .warnings
