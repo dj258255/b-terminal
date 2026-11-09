@@ -42,8 +42,14 @@ impl Env {
 const ACTIONS: &[(&str, &str)] = &[
     ("version", "버전을 보입니다"),
     ("help", "이 도움말을 보입니다"),
-    ("show-config", "지금 적용된 설정을 보입니다 (--default: 기본값)"),
-    ("list-themes", "테마 이름과 자리를 보입니다 (--plain)"),
+    (
+        "show-config",
+        "기본과 다른 설정을 보입니다 (--default, --changes-only=false, --docs)",
+    ),
+    (
+        "list-themes",
+        "테마 이름과 자리를 보입니다 (--path, --color=dark|light, --plain)",
+    ),
     (
         "validate-config",
         "설정 파일을 검사합니다 (--config-file, --config-default-files)",
@@ -161,6 +167,23 @@ struct LoadArgs {
     default_files: bool,
     /// `+show-config --default`
     defaults_only: bool,
+    /// `+show-config --changes-only`(Ghostty 기본 true)
+    changes_only: bool,
+    /// `+show-config --docs`
+    docs: bool,
+}
+
+/// `--이름`, `--이름=true`, `--이름=false`를 읽는다. 이 인자가 아니면 `None`
+fn bool_arg(a: &str, name: &str) -> Option<Result<bool, String>> {
+    if a == format!("--{name}") {
+        return Some(Ok(true));
+    }
+    let v = a.strip_prefix(&format!("--{name}="))?;
+    Some(match v {
+        "true" => Ok(true),
+        "false" => Ok(false),
+        x => Err(format!("--{name}는 true나 false여야 합니다: {x}")),
+    })
 }
 
 /// 인자 하나를 `LoadArgs`에 읽는다. 읽었으면 `Ok(true)`, 이 인자가 아니면 `Ok(false)`
@@ -183,60 +206,144 @@ fn take_load_arg(a: &str, it: &mut std::slice::Iter<String>, out: &mut LoadArgs)
 fn show_config(args: &[String], env: &Env, io: &mut Io) -> i32 {
     let mut la = LoadArgs {
         default_files: true,
+        changes_only: true,
         ..LoadArgs::default()
     };
     let mut it = args.iter();
     while let Some(a) = it.next() {
-        match take_load_arg(a, &mut it, &mut la) {
-            Ok(true) => {}
-            Ok(false) if a == "--default" => la.defaults_only = true,
-            Ok(false) => return unsupported("show-config", a, io),
-            Err(e) => {
-                let _ = writeln!(io.err, "+show-config: {e}");
-                return 1;
+        let parsed = match take_load_arg(a, &mut it, &mut la) {
+            Ok(true) => Ok(()),
+            Ok(false) => {
+                if let Some(r) = bool_arg(a, "default") {
+                    r.map(|v| la.defaults_only = v)
+                } else if let Some(r) = bool_arg(a, "changes-only") {
+                    r.map(|v| la.changes_only = v)
+                } else if let Some(r) = bool_arg(a, "docs") {
+                    r.map(|v| la.docs = v)
+                } else {
+                    return unsupported("show-config", a, io);
+                }
             }
+            Err(e) => Err(e),
+        };
+        if let Err(e) = parsed {
+            let _ = writeln!(io.err, "+show-config: {e}");
+            return 1;
         }
     }
-    if la.defaults_only {
-        let _ = writeln!(io.out, "{}", bt_core::Config::default().render());
-        return 0;
+    let default_text = bt_core::Config::default().render();
+    let (mut text, config) = if la.defaults_only {
+        (default_text, None)
+    } else {
+        let config = bt_core::Config::load_with(la.config_file.as_deref(), env.dark, la.default_files);
+        let mut text = config.render();
+        // Ghostty처럼 기본과 같은 줄은 빼고 다른 키만 남긴다(`--default`에는 효과가 없다)
+        if la.changes_only {
+            let defaults: std::collections::HashSet<&str> = default_text.lines().collect();
+            text = text
+                .lines()
+                .filter(|l| !defaults.contains(l))
+                .collect::<Vec<_>>()
+                .join("\n");
+        }
+        (text, Some(config))
+    };
+    if let Some(config) = &config {
+        for src in &config.sources {
+            let _ = writeln!(io.out, "# 읽은 파일: {}", src.display());
+        }
+        for w in &config.warnings {
+            let _ = writeln!(io.out, "# 경고: {w}");
+        }
     }
-    let config = bt_core::Config::load_with(la.config_file.as_deref(), env.dark, la.default_files);
-    for src in &config.sources {
-        let _ = writeln!(io.out, "# 읽은 파일: {}", src.display());
+    if la.docs {
+        text = crate::cliinfo::annotate_with_docs(&text);
     }
-    for w in &config.warnings {
-        let _ = writeln!(io.out, "# 경고: {w}");
+    if !text.is_empty() {
+        let _ = writeln!(io.out, "{text}");
     }
-    let _ = writeln!(io.out, "{}", config.render());
     0
 }
 
+/// 테마 배경색의 밝기(Ghostty `list-themes`와 같은 식: 0.2126 R + 0.7152 G + 0.0722 B, 0~1). 0.5보다 작으면 어둡다.
+/// 배경 줄이 없거나 `#rrggbb`가 아니면 읽지 못한 것이라 `None`
+fn background_luminance(theme_text: &str) -> Option<f64> {
+    let mut found = None;
+    for l in theme_text.lines() {
+        let Some((k, v)) = l.split_once('=') else { continue };
+        if k.trim() != "background" {
+            continue;
+        }
+        let h = v.trim().trim_start_matches('#');
+        if h.len() == 6 && h.chars().all(|c| c.is_ascii_hexdigit()) {
+            let c = |i: usize| f64::from(u8::from_str_radix(&h[i..i + 2], 16).unwrap_or(0)) / 255.0;
+            found = Some(0.2126 * c(0) + 0.7152 * c(2) + 0.0722 * c(4));
+        }
+    }
+    found
+}
+
 fn list_themes(args: &[String], env: &Env, io: &mut Io) -> i32 {
+    let (mut path, mut color) = (false, "all".to_string());
     for a in args {
-        if a != "--plain" {
+        if let Some(r) = bool_arg(a, "path") {
+            match r {
+                Ok(v) => path = v,
+                Err(e) => {
+                    let _ = writeln!(io.err, "+list-themes: {e}");
+                    return 1;
+                }
+            }
+        } else if let Some(v) = a.strip_prefix("--color=") {
+            if !matches!(v, "all" | "dark" | "light") {
+                let _ = writeln!(
+                    io.err,
+                    "+list-themes: --color는 all, dark, light 중 하나여야 합니다: {v}"
+                );
+                return 1;
+            }
+            color = v.to_string();
+        } else if a != "--plain" {
             return unsupported("list-themes", a, io);
         }
     }
-    // (이름, 자리). 같은 이름이면 사용자 것이 이긴다(설정이 테마를 찾는 순서와 같다)
-    let mut themes: Vec<(String, &str)> = Vec::new();
+    // (이름, 자리, 파일 경로(넣어 둔 테마는 없다)). 같은 이름이면 사용자 것이 이긴다(설정이 테마를 찾는 순서와 같다)
+    let mut themes: Vec<(String, &str, Option<PathBuf>)> = Vec::new();
     for dir in &env.theme_dirs {
         let Ok(rd) = std::fs::read_dir(dir) else { continue };
         for e in rd.flatten() {
             let name = e.file_name().to_string_lossy().into_owned();
-            if !name.starts_with('.') && e.path().is_file() && !themes.iter().any(|(n, _)| *n == name) {
-                themes.push((name, "user"));
+            if !name.starts_with('.') && e.path().is_file() && !themes.iter().any(|(n, ..)| *n == name) {
+                themes.push((name, "user", Some(e.path())));
             }
         }
     }
     for n in bt_core::config::bundled_theme_names() {
-        if !themes.iter().any(|(m, _)| m == n) {
-            themes.push((n.to_string(), "resources"));
+        if !themes.iter().any(|(m, ..)| m == n) {
+            themes.push((n.to_string(), "resources", None));
         }
     }
-    themes.sort_by_key(|(n, _)| n.to_lowercase());
-    for (n, loc) in themes {
-        let _ = writeln!(io.out, "{n} ({loc})");
+    themes.sort_by_key(|(n, ..)| n.to_lowercase());
+    for (n, loc, file) in themes {
+        if color != "all" {
+            let text = match &file {
+                Some(p) => std::fs::read_to_string(p).unwrap_or_default(),
+                None => bt_core::config::bundled_theme_text(&n).unwrap_or_default().to_string(),
+            };
+            // 배경을 읽지 못한 테마는 기본 배경(어두움)으로 친다
+            let dark = background_luminance(&text).is_none_or(|l| l < 0.5);
+            if dark != (color == "dark") {
+                continue;
+            }
+        }
+        match (&file, path) {
+            (Some(p), true) => {
+                let _ = writeln!(io.out, "{n} ({loc}) {}", p.display());
+            }
+            _ => {
+                let _ = writeln!(io.out, "{n} ({loc})");
+            }
+        }
     }
     0
 }
@@ -594,9 +701,114 @@ mod tests {
         assert_eq!(code, 0);
         assert!(!out.contains("font-size = 23"), "--default는 사용자 설정을 읽지 않는다");
         assert!(out.contains("font-size"), "{out}");
-        let (code, _, err, _) = go("show-config", &["--docs"], &env(&d));
-        assert_eq!(code, 1);
-        assert!(err.contains("--docs"), "{err}");
+    }
+
+    fn show(d: &Path, extra: &[&str]) -> (i32, String, String) {
+        let f = d.join("c");
+        std::fs::write(&f, "font-size = 23\n").unwrap();
+        let mut a = vec!["--config-default-files=false", "--config-file", f.to_str().unwrap()];
+        a.extend_from_slice(extra);
+        let (code, out, err, _) = go("show-config", &a, &env(d));
+        (code, out, err)
+    }
+
+    #[test]
+    fn show_config_changes_only_is_the_default_and_can_be_turned_off() {
+        let d = tmpdir("changes");
+        // 기본(Ghostty처럼 true): 기본과 다른 키만
+        let (code, out, err) = show(&d, &[]);
+        assert_eq!(code, 0, "{err}");
+        let keys: Vec<&str> = out.lines().filter(|l| !l.starts_with('#')).collect();
+        assert_eq!(keys, ["font-size = 23"], "{out}");
+        assert_eq!(show(&d, &["--changes-only"]).1, out);
+        assert_eq!(show(&d, &["--changes-only=true"]).1, out);
+        // false면 전부
+        let (code, all, _) = show(&d, &["--changes-only=false"]);
+        assert_eq!(code, 0);
+        assert!(all.contains("font-size = 23") && all.contains("background = "), "{all}");
+        assert!(all.lines().count() > 20);
+        // --default면 효과가 없다(기본값 전체)
+        let (_, def, _) = show(&d, &["--default"]);
+        assert!(
+            def.contains("background = ") && !def.contains("font-size = 23"),
+            "{def}"
+        );
+        // 잘못된 값
+        assert_eq!(show(&d, &["--changes-only=maybe"]).0, 1);
+    }
+
+    #[test]
+    fn show_config_docs_puts_the_table_row_above_each_key() {
+        let d = tmpdir("docs");
+        let (code, out, err) = show(&d, &["--docs"]);
+        assert_eq!(code, 0, "{err}");
+        let lines: Vec<&str> = out.lines().collect();
+        let at = lines.iter().position(|l| *l == "font-size = 23").expect(&out);
+        assert!(
+            lines[..at].iter().rev().take(3).any(|l| l.starts_with("# 값:")),
+            "{out}"
+        );
+        assert!(
+            lines[..at].iter().rev().take(3).any(|l| l.starts_with("# 기본:")),
+            "{out}"
+        );
+        assert!(
+            lines[..at]
+                .iter()
+                .rev()
+                .take(3)
+                .all(|l| l.is_empty() || l.starts_with("# ")),
+            "{out}"
+        );
+        // 설명 줄은 모두 주석이라 다시 읽어도 같은 설정이다
+        assert!(
+            out.lines()
+                .all(|l| l.is_empty() || l.starts_with("# ") || l.contains(" = ")),
+            "{out}"
+        );
+        // 같은 키가 여러 번 나와도 설명은 한 번
+        let (_, all, _) = show(&d, &["--changes-only=false", "--docs"]);
+        assert!(all.matches("# 기본:").count() > 5, "{all}");
+        assert_eq!(all.lines().filter(|l| *l == "# font-size").count(), 1, "{all}");
+        // --docs=false는 설명이 없다
+        assert!(!show(&d, &["--docs=false"]).1.contains("# 값:"));
+    }
+
+    #[test]
+    fn list_themes_path_and_color() {
+        let d = tmpdir("themes2");
+        std::fs::create_dir_all(d.join("themes")).unwrap();
+        std::fs::write(d.join("themes/Zlight"), "background = #ffffff\n").unwrap();
+        std::fs::write(d.join("themes/Zdark"), "background = #101010\n").unwrap();
+        let e = env(&d);
+        let (code, out, _, _) = go("list-themes", &["--path"], &e);
+        assert_eq!(code, 0);
+        let p = d.join("themes/Zlight");
+        assert!(
+            out.lines().any(|l| l == format!("Zlight (user) {}", p.display())),
+            "{}",
+            &out[out.len().saturating_sub(300)..]
+        );
+        // 넣어 둔 테마는 파일이 없어 경로를 붙이지 않는다
+        let first = bt_core::config::bundled_theme_names().next().unwrap();
+        assert!(out.lines().any(|l| l == format!("{first} (resources)")));
+        let names = |a: &[&str]| -> Vec<String> { go("list-themes", a, &e).1.lines().map(|l| l.to_string()).collect() };
+        let (all, dark, light) = (
+            names(&["--color=all"]),
+            names(&["--color=dark"]),
+            names(&["--color=light"]),
+        );
+        assert_eq!(all, names(&[]));
+        assert!(light.iter().any(|l| l.starts_with("Zlight (")) && !light.iter().any(|l| l.starts_with("Zdark (")));
+        assert!(dark.iter().any(|l| l.starts_with("Zdark (")) && !dark.iter().any(|l| l.starts_with("Zlight (")));
+        assert_eq!(
+            dark.len() + light.len(),
+            all.len(),
+            "어두운 것과 밝은 것이 전부를 나눈다"
+        );
+        assert!(!dark.is_empty() && !light.is_empty());
+        assert_eq!(go("list-themes", &["--color=x"], &e).0, 1);
+        assert_eq!(go("list-themes", &["--path", "--color=dark", "--plain"], &e).0, 0);
     }
 
     #[test]
@@ -621,7 +833,7 @@ mod tests {
         sorted.sort();
         assert_eq!(names, sorted, "이름순(대소문자 무시)");
         assert_eq!(go("list-themes", &["--plain"], &env(&d)).0, 0);
-        assert_eq!(go("list-themes", &["--color=dark"], &env(&d)).0, 1);
+        assert_eq!(go("list-themes", &["--bogus"], &env(&d)).0, 1);
     }
 
     #[test]

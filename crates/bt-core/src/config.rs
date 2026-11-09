@@ -2232,6 +2232,11 @@ pub fn bundled_theme_names() -> impl Iterator<Item = &'static str> {
     BUNDLED_THEMES.iter().map(|(n, _)| *n)
 }
 
+/// 넣어 둔 테마 파일의 글(없는 이름이면 `None`). `+list-themes --color`가 배경색을 읽는다(#240)
+pub fn bundled_theme_text(name: &str) -> Option<&'static str> {
+    BUNDLED_THEMES.iter().find(|(n, _)| *n == name).map(|(_, t)| *t)
+}
+
 impl Config {
     /// 이 길로 새 칸을 열 때 고른 칸의 폴더를 이어받는가
     pub fn inherits_cwd(&self, kind: SpawnKind) -> bool {

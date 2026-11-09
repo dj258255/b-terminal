@@ -23,8 +23,8 @@ b-terminal은 Ghostty와 같은 문법으로 설정합니다. Ghostty를 깔지 
 |---|---|
 | `+version` | `b-terminal <버전>` 한 줄(`--version`과 같음). Ghostty처럼 빌드 정보를 늘어놓지는 않습니다 |
 | `+help` | 동작 목록 |
-| `+show-config` | `--show-config`와 같은 출력. `--config-file`, `--config-default-files`를 받고, `--default`는 파일을 읽지 않은 기본값을 보입니다. Ghostty의 `--changes-only`·`--docs`는 아직 받지 않습니다 |
-| `+list-themes` | `이름 (resources)`(넣어 둔 것)·`이름 (user)`(`~/.config/b-terminal/themes`)를 이름순으로 한 줄씩. 사용자 테마가 이름이 같으면 이깁니다. `--plain`은 받기만 하고(늘 목록), `--path`·`--color`는 아직 받지 않습니다 |
+| `+show-config` `[--default] [--changes-only[=false]] [--docs]` | Ghostty처럼 **기본과 다른 키만** 보입니다(`--changes-only`는 기본 true, `--changes-only=false`면 `--show-config`처럼 전부. 기본과 같은 줄을 빼는 방식이라, 기본 묶음에서 지운 키는 드러나지 않습니다). `--default`는 파일을 읽지 않은 기본값 전체를 보이고 `--changes-only`는 거기에는 효과가 없습니다. `--docs`는 키 위에 이 문서 "지원하는 키" 표의 값·기본·메모를 `# ` 주석으로 답니다(`+explain-config`와 같은 표, 같은 키가 여러 줄이면 첫 줄 위에 한 번, 표에 없는 키는 설명 없이). `--config-file`, `--config-default-files`도 받습니다 |
+| `+list-themes` `[--path] [--color=all\|dark\|light] [--plain]` | `이름 (resources)`(넣어 둔 것)·`이름 (user)`(`~/.config/b-terminal/themes`)를 이름순으로 한 줄씩. 사용자 테마가 이름이 같으면 이깁니다. `--path`는 사용자 테마 줄 끝에 파일 경로를 붙입니다(`이름 (user) /경로`). 넣어 둔 테마는 파일이 없어 경로를 붙이지 않고 `이름 (resources)` 그대로입니다. `--color`는 배경색의 밝기(0.2126 R + 0.7152 G + 0.0722 B, 0.5 미만이면 어두움)로 거릅니다. 배경을 `#rrggbb`로 읽지 못한 테마는 어둡다고 칩니다. `--plain`은 받기만 합니다(늘 목록, 대화형 미리보기 없음) |
 | `+validate-config` | 설정을 읽어 경고를 한 줄씩 표준 출력에 보이고, 경고가 있으면 종료 코드 1, 없으면 0. `--config-file`, `--config-default-files`와 함께 씁니다. `--config-file`로 준 파일이 없으면 오류(1)입니다 |
 | `+edit-config` | `~/.config/b-terminal/config`(없으면 주석 한 줄로 만들고)를 `$VISUAL`(없거나 비면 `$EDITOR`)로 열고 편집기가 끝나길 기다려 그 종료 코드를 따릅니다. 편집기 값은 셸을 거치지 않고 빈칸·따옴표로 갈라 인자 배열로 넘깁니다(`code -w`는 됩니다. 셸 문법인 `;`·`$(…)`·`~`·환경 변수 풀이는 되지 않습니다). 둘 다 없으면 오류(1)입니다 |
 | `+list-keybinds` `[--default] [--docs] [--plain]` | 지금 쓰는 키 묶음 표를 `keybind = 트리거=동작` 줄로 보입니다(기본 묶음 위에 설정을 얹은 결과, `--default`면 기본만). 표는 늘 평문이라 `--plain`은 받기만 하고, 동작 설명이 없어 `--docs`도 받기만 합니다. |
