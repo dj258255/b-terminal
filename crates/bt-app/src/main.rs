@@ -3,6 +3,7 @@
 mod app;
 mod appearance;
 mod bell_sound;
+mod cliact;
 mod control;
 mod desktop;
 mod dump;
@@ -102,7 +103,12 @@ pub fn system_is_dark() -> bool {
 
 fn main() -> anyhow::Result<()> {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
-    let cli = match parse_args(std::env::args().skip(1)) {
+    // `+동작`(Ghostty의 `ghostty +동작`)은 창 없이 돌고 끝난다
+    let argv: Vec<String> = std::env::args().skip(1).collect();
+    if let Some(code) = cliact::try_run(&argv) {
+        std::process::exit(code);
+    }
+    let cli = match parse_args(argv.into_iter()) {
         Ok(o) => o,
         Err(msg) => {
             println!("{msg}");
