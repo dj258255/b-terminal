@@ -1,6 +1,7 @@
 //! b-terminal 창 앱
 
 mod app;
+mod appearance;
 mod bell_sound;
 mod control;
 mod desktop;
