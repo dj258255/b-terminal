@@ -116,6 +116,9 @@ fn font_config(c: &AppConfig, size: f32, scale: f32) -> FontConfig {
     }
 }
 
+/// 읽기 전용 칸에 `btctl send`·`run`을 보냈을 때의 거절 문구(ADR-018)
+const READONLY_REFUSAL: &str = "이 칸은 읽기 전용이라 입력을 받지 않습니다(btctl read·wait는 됩니다)";
+
 /// 칸 하나: 셸 하나와 그 상태. 제어 소켓의 "탭 id"(BT_TAB_ID)는 칸의 id다
 pub struct Pane {
     pub id: u64,
@@ -148,6 +151,8 @@ pub struct Pane {
     /// 스크롤 막대: 마지막으로 본 스크롤 위치(맨 아래에서 올라간 줄 수)와 막대를 보일 때까지의 기한
     scroll_seen: usize,
     scrollbar_until: Option<Instant>,
+    /// `toggle_mouse_reporting`로 이 칸에 정한 마우스 보고 켬·끔(#209). 없으면 `mouse-reporting` 설정을 따른다
+    mouse_reporting_over: Option<bool>,
 }
 
 impl Pane {
@@ -170,6 +175,7 @@ impl Pane {
             &self.title,
             self.fg_name.as_deref(),
             self.bell,
+            self.session.readonly(),
         )
     }
 }
@@ -191,7 +197,7 @@ fn cursor_colors(
 }
 
 /// 칸 제목(#124): 사람이 붙인 것 → 프로그램이 정한 것 → 전경 프로세스 이름 → "셸". 벨이 있으면 앞에 🔔
-fn title_of(user: Option<&str>, program: &str, fg: Option<&str>, bell: bool) -> String {
+fn title_of(user: Option<&str>, program: &str, fg: Option<&str>, bell: bool, readonly: bool) -> String {
     let name = if let Some(u) = user.filter(|u| !u.is_empty()) {
         u.to_string()
     } else if !program.is_empty() {
@@ -199,7 +205,13 @@ fn title_of(user: Option<&str>, program: &str, fg: Option<&str>, bell: bool) -> 
     } else {
         fg.unwrap_or("셸").to_string()
     };
-    if bell { format!("🔔 {name}") } else { name }
+    // 읽기 전용 표시는 벨 표시 뒤, 이름 앞(#209)
+    let lock = if readonly { "🔒 " } else { "" };
+    if bell {
+        format!("🔔 {lock}{name}")
+    } else {
+        format!("{lock}{name}")
+    }
 }
 
 /// 사람이 친 제목을 다듬는다: 제어 문자를 지우고 앞뒤 공백을 떼고 200자까지. 비면 없다
@@ -247,8 +259,13 @@ fn pane_busy(
     integrated: bool,
     running: bool,
     fg_is_shell: Option<bool>,
+    readonly: bool,
 ) -> bool {
     use bt_core::config::ConfirmClose;
+    // 읽기 전용 칸은 돌고 있는 프로그램이 없어도, 설정이 묻지 않기로 했어도 닫기 전에 늘 묻는다(Ghostty 주석, ADR-018)
+    if readonly {
+        return true;
+    }
     match mode {
         ConfirmClose::False => false,
         _ if exited => false,
@@ -586,6 +603,8 @@ struct Win {
     blink_on: bool,
     blink_next: Instant,
     blink_wanted: bool,
+    /// 이 창의 바탕이 `toggle_background_opacity`로 불투명해졌다(#209)
+    opaque: bool,
 }
 
 impl Win {
@@ -626,6 +645,7 @@ impl Win {
             blink_on: true,
             blink_next: Instant::now(),
             blink_wanted: false,
+            opaque: false,
         }
     }
 
@@ -694,6 +714,8 @@ pub struct App {
     redo: UndoStack<Redo>,
     /// 마지막 창이 닫힌 뒤 앱을 끝낼 때(`quit-after-last-window-closed-delay`, #178). 새 창이 열리면 지운다
     quit_deadline: Option<Instant>,
+    /// `set_window_theme`으로 이번 실행 동안 고른 창 테마(#209). 없으면 설정의 `window-theme`. 설정을 다시 읽어도 남는다
+    theme_override: Option<bt_core::config::WindowTheme>,
 }
 
 impl App {
@@ -748,6 +770,7 @@ impl App {
             undo: UndoStack::default(),
             redo: UndoStack::default(),
             quit_deadline: None,
+            theme_override: None,
         }
     }
 
@@ -1202,6 +1225,7 @@ impl App {
                 progress: None,
                 scroll_seen: 0,
                 scrollbar_until: None,
+                mouse_reporting_over: None,
                 running: None,
                 last_command: None,
             }),
@@ -1432,6 +1456,7 @@ impl App {
                 Err(r) => r,
             },
             Call::Send { tab, text } => match pick(self, tab) {
+                Ok(i) if self.panes[i].session.readonly() => Response::err(id, READONLY_REFUSAL),
                 Ok(i) => {
                     self.panes[i].session.write(text.as_bytes());
                     Response::ok(id, json!({}))
@@ -1472,6 +1497,7 @@ impl App {
                 command,
                 timeout_ms,
             } => match pick(self, tab) {
+                Ok(i) if self.panes[i].session.readonly() => Response::err(id, READONLY_REFUSAL),
                 Ok(i) => {
                     let t = &self.panes[i];
                     if !t.session.has_shell_integration() {
@@ -1537,6 +1563,7 @@ impl App {
             p.session.has_shell_integration(),
             p.running.is_some(),
             fg_is_shell,
+            p.session.readonly(),
         )
     }
 
@@ -1559,7 +1586,17 @@ impl App {
             return;
         }
         let n = busy.len();
+        // 읽기 전용 칸이 끼어 있으면 "프로그램이 돈다"고만 말하면 틀린다(#209)
+        let readonly = busy
+            .iter()
+            .any(|&id| self.pane_index(id).is_some_and(|i| self.panes[i].session.readonly()));
+        let which = if readonly {
+            "읽기 전용이거나 프로그램이 도는"
+        } else {
+            "프로그램이 도는"
+        };
         let (message, yes) = match &pending {
+            Pending::ClosePane(id) if readonly => ("이 칸은 읽기 전용입니다. 닫을까요?".to_string(), "닫기"),
             Pending::ClosePane(id) => {
                 let what = self
                     .pane_index(*id)
@@ -1574,19 +1611,10 @@ impl App {
                     .unwrap_or_else(|| "프로그램".into());
                 (format!("이 칸에서 {what}이(가) 돌고 있습니다. 닫을까요?"), "닫기")
             }
-            Pending::CloseTab(_) => (
-                format!("이 탭에서 프로그램이 도는 칸이 {n}개 있습니다. 탭을 닫을까요?"),
-                "닫기",
-            ),
-            Pending::CloseWindow => (
-                format!("이 창에서 프로그램이 도는 칸이 {n}개 있습니다. 창을 닫을까요?"),
-                "닫기",
-            ),
-            Pending::CloseAllWindows => (
-                format!("프로그램이 도는 칸이 {n}개 있습니다. 모든 창을 닫을까요?"),
-                "닫기",
-            ),
-            Pending::Quit => (format!("프로그램이 도는 칸이 {n}개 있습니다. 끝낼까요?"), "끝내기"),
+            Pending::CloseTab(_) => (format!("이 탭에서 {which} 칸이 {n}개 있습니다. 탭을 닫을까요?"), "닫기"),
+            Pending::CloseWindow => (format!("이 창에서 {which} 칸이 {n}개 있습니다. 창을 닫을까요?"), "닫기"),
+            Pending::CloseAllWindows => (format!("{which} 칸이 {n}개 있습니다. 모든 창을 닫을까요?"), "닫기"),
+            Pending::Quit => (format!("{which} 칸이 {n}개 있습니다. 끝낼까요?"), "끝내기"),
             Pending::Paste { .. } => return,
         };
         self.ask(pending, message, yes);
@@ -1653,6 +1681,10 @@ impl App {
     /// 클립보드 글을 고른 칸에 붙여넣는다. 괄호 붙여넣기를 쓰지 않는 프로그램에 줄바꿈이 든 글이면 먼저 묻는다(#109)
     fn paste(&mut self, text: String) {
         let Some(t) = self.active_pane() else { return };
+        // 읽기 전용 칸에는 붙여넣지 않는다. 확인 막대도 띄우지 않는다(#209)
+        if t.session.readonly() {
+            return;
+        }
         let (id, bracketed) = (t.id, t.session.modes().bracketed_paste);
         if !self.config.paste_protection || bt_term::paste_is_safe(&text, bracketed, self.config.paste_bracketed_safe) {
             self.paste_into(id, &text);
@@ -1664,7 +1696,11 @@ impl App {
 
     /// 그 칸의 지금 모드로 붙여넣기 바이트를 만들어 쓴다
     fn paste_into(&mut self, pane: u64, text: &str) {
-        if let Some(t) = self.pane_index(pane).map(|i| &self.panes[i]) {
+        if let Some(t) = self
+            .pane_index(pane)
+            .map(|i| &self.panes[i])
+            .filter(|t| !t.session.readonly())
+        {
             let bytes = bt_term::encode_paste(text, t.session.modes().bracketed_paste);
             t.session.select_clear();
             t.session.write_input(&bytes, self.config.scroll_to_bottom.keystroke);
@@ -1773,7 +1809,9 @@ impl App {
     /// 셸 통합이 있는 칸의 프롬프트에서, 커서 줄을 누르면 그 칸까지 ←·→를 보낸다(#137).
     /// 명령이 도는 중·대체 화면·스크롤해 올라가 있으면 하지 않는다
     fn click_to_move(&mut self, idx: usize, col: usize, row: usize) {
-        let Some(p) = self.panes.get(idx) else { return };
+        let Some(p) = self.panes.get(idx).filter(|p| !p.session.readonly()) else {
+            return;
+        };
         let modes = p.session.modes();
         if !p.session.has_shell_integration() || p.running.is_some() || modes.alt_screen {
             return;
@@ -2086,7 +2124,8 @@ impl App {
     fn write_active(&mut self, bytes: &[u8]) {
         let scroll = self.config.scroll_to_bottom.keystroke;
         let clear = clears_selection_on_write(self.config.selection_clear_on_typing, bytes);
-        if let Some(t) = self.active_pane() {
+        // 읽기 전용 칸: 쓰지 않으므로 고른 글도 지우지 않는다(복사할 수 있게, #209)
+        if let Some(t) = self.active_pane().filter(|t| !t.session.readonly()) {
             if clear {
                 t.session.select_clear();
             }
@@ -2339,11 +2378,86 @@ impl App {
     fn open_settings(&mut self) {
         match crate::menu::ensure_config_file() {
             Ok(path) => {
-                let _ = std::process::Command::new("open").arg("-t").arg(&path).spawn();
-                self.toast("설정을 고친 뒤 Cmd-Shift-, 로 다시 읽습니다".into());
+                // 셸을 거치지 않고 인자 배열로 연다(#209)
+                let argv = crate::toggles::config_open_argv(&path, cfg!(target_os = "macos"));
+                if let Some((program, args)) = argv.split_first() {
+                    match std::process::Command::new(program).args(args).spawn() {
+                        Ok(mut child) => {
+                            // 끝난 프로세스를 거둔다(기다리는 스레드가 따로 있어야 좀비가 남지 않는다)
+                            std::thread::spawn(move || {
+                                let _ = child.wait();
+                            });
+                            self.toast("설정을 고친 뒤 Cmd-Shift-, 로 다시 읽습니다".into());
+                        }
+                        Err(e) => self.toast(format!("설정 파일을 열지 못했습니다: {e}")),
+                    }
+                }
             }
-            Err(e) => log::warn!("설정 파일을 만들지 못했습니다: {e}"),
+            Err(e) => {
+                log::warn!("설정 파일을 만들지 못했습니다: {e}");
+                self.toast(format!("설정 파일을 만들지 못했습니다: {e}"));
+            }
         }
+    }
+
+    /// 지금 창의 바탕 투명도를 설정값과 불투명 사이에서 바꾼다(Ghostty `toggle_background_opacity`, #209).
+    /// `background-opacity`가 1 이상이면 아무것도 하지 않는다
+    fn toggle_background_opacity(&mut self) {
+        if !crate::toggles::can_toggle_opacity(self.config.background_opacity) {
+            return;
+        }
+        self.w.opaque = !self.w.opaque;
+        // 배경 그림 층과 앞 프레임은 옛 투명도로 만든 것이라 다시 만든다
+        self.w.backdrop = None;
+        self.w.last_frame = None;
+        self.toast(
+            if self.w.opaque {
+                "바탕 불투명"
+            } else {
+                "바탕 투명"
+            }
+            .into(),
+        );
+    }
+
+    /// 지금 칸의 마우스 보고를 끄고 켠다(Ghostty `toggle_mouse_reporting`, #209)
+    fn toggle_mouse_reporting(&mut self) {
+        let config = self.config.mouse_reporting;
+        let Some(i) = self.active_index() else { return };
+        let next = crate::toggles::toggled_mouse_reporting(config, self.panes[i].mouse_reporting_over);
+        self.panes[i].mouse_reporting_over = next;
+        let on = crate::toggles::mouse_reporting_on(config, next);
+        self.toast(
+            if on {
+                "마우스 보고 켬"
+            } else {
+                "마우스 보고 끔"
+            }
+            .into(),
+        );
+    }
+
+    /// 지금 칸을 읽기 전용으로 하거나 푼다(Ghostty `toggle_readonly`, #209, ADR-018)
+    fn toggle_readonly(&mut self) {
+        let Some(i) = self.active_index() else { return };
+        let on = !self.panes[i].session.readonly();
+        self.panes[i].session.set_readonly(on);
+        if on {
+            // 쓰다 만 조합 글자와 이 칸에 걸린 붙여넣기 확인은 더는 갈 곳이 없다
+            self.w.preedit.clear();
+            if matches!(&self.w.confirm, Some(c) if matches!(&c.pending, Pending::Paste { pane, .. } if *pane == self.panes[i].id))
+            {
+                self.w.confirm = None;
+            }
+        }
+        self.toast(
+            if on {
+                "읽기 전용: 이 칸에는 입력이 가지 않습니다"
+            } else {
+                "읽기 전용을 풀었습니다"
+            }
+            .into(),
+        );
     }
 
     /// 명령 팔레트가 열려 있으면 키를 받는다(Cmd·Ctrl 조합은 키 묶음에 맡긴다). 받았으면 참
@@ -2424,7 +2538,11 @@ impl App {
                     self.open_window(event_loop, opts);
                     return;
                 }
-                Action::Quit | Action::ToggleQuickTerminal | Action::ReloadConfig => {}
+                Action::Quit
+                | Action::ToggleQuickTerminal
+                | Action::ReloadConfig
+                | Action::SetWindowTheme(_)
+                | Action::OpenConfig => {}
                 _ => return,
             }
         }
@@ -2716,6 +2834,14 @@ impl App {
                     self.write_active(&flush);
                 }
             }
+            Action::ToggleBackgroundOpacity => self.toggle_background_opacity(),
+            Action::ToggleMouseReporting => self.toggle_mouse_reporting(),
+            Action::ToggleReadonly => self.toggle_readonly(),
+            Action::SetWindowTheme(theme) => {
+                self.theme_override = theme;
+                self.apply_window_look();
+            }
+            Action::OpenConfig => self.open_settings(),
             _ => {}
         }
         self.request_redraw();
@@ -2812,14 +2938,19 @@ impl App {
 
     /// 칸 idx의 프로그램이 마우스 보고를 켰으면 그 모드
     fn mouse_reporting(&self, idx: usize) -> Option<bt_term::Modes> {
-        let m = self.panes.get(idx)?.session.modes();
+        let pane = self.panes.get(idx)?;
+        // 읽기 전용 칸은 프로그램에 마우스를 보내지 않는다. 마우스는 고르기·스크롤에 쓴다(#209, ADR-018)
+        if pane.session.readonly() {
+            return None;
+        }
+        let m = pane.session.modes();
         // mouse-reporting을 끄면 보내지 않는다. Shift를 누르면 mouse-shift-capture가 true·always일 때만
         // 프로그램이 받고, 아니면 고르기를 한다(xterm 관례)
         (m.mouse_report || m.mouse_drag || m.mouse_motion)
             .then_some(m)
             .filter(|_| {
                 mouse::reports_to_program(
-                    self.config.mouse_reporting,
+                    crate::toggles::mouse_reporting_on(self.config.mouse_reporting, pane.mouse_reporting_over),
                     self.config.mouse_shift_capture,
                     self.mods.shift_key(),
                 )
@@ -2926,7 +3057,7 @@ impl App {
     /// 지금 설정과 바탕색으로 `window-theme`이 창에 강제할 모양(없으면 시스템을 따른다, #192)
     fn window_theme_choice(&self) -> Option<winit::window::Theme> {
         crate::windeco::window_theme(
-            self.config.window_theme,
+            crate::toggles::window_theme_mode(self.config.window_theme, self.theme_override),
             self.config.macos_titlebar_style,
             self.config.theme_split,
             self.config.theme.background,
@@ -3891,11 +4022,13 @@ impl App {
             self.w.frame = vec![0; n];
         }
         let mut repainted_rows = 0;
+        // 이 창이 지금 쓰는 바탕 불투명도(toggle_background_opacity로 불투명해졌으면 1, #209)
+        let opacity = crate::toggles::effective_opacity(self.config.background_opacity, self.w.opaque);
         // 배경 그림 층(#134): 창 크기·바탕색이 바뀌면 다시 합성한다
         let key = (size.width, size.height, theme.background.to_u32());
         match self.bg_image.as_ref() {
             Some(img) if self.w.backdrop.as_ref().map(|b| b.0) != Some(key) => {
-                let bg_alpha = self.config.background_opacity.clamp(0.0, 1.0);
+                let bg_alpha = opacity.clamp(0.0, 1.0);
                 let a = (bg_alpha * 255.0).round() as u32;
                 let mul = |c: u8| (c as u32 * a + 127) / 255;
                 let bg = theme.background;
@@ -3923,14 +4056,11 @@ impl App {
                 canvas.set_backdrop(theme.background, layer);
             }
             // 투명 창(#78·#86): 기본 바탕색은 반투명으로 칠하고, 글자 가장자리는 그 위에 알파째 섞는다
-            if self.config.background_opacity < 1.0 {
-                canvas.set_see_through(theme.background, (self.config.background_opacity * 255.0).round() as u8);
+            if opacity < 1.0 {
+                canvas.set_see_through(theme.background, (opacity * 255.0).round() as u8);
             }
             // background-opacity-cells(#177): 색 바탕 칸도 같은 알파로
-            canvas.set_cells_alpha(bt_render::cells_alpha(
-                self.config.background_opacity,
-                self.config.background_opacity_cells,
-            ));
+            canvas.set_cells_alpha(bt_render::cells_alpha(opacity, self.config.background_opacity_cells));
             if full {
                 let bg = views
                     .iter()
@@ -4652,6 +4782,14 @@ impl ApplicationHandler<UserEvent> for App {
             }
             WindowEvent::Ime(ime) => match ime {
                 Ime::Preedit(text, _) => {
+                    // 읽기 전용 칸에 쓸 글은 조합 중인 것도 보이지 않는다. 고른 글도 건드리지 않는다(#209)
+                    let overlay = self.w.search.is_some()
+                        || self.w.palette.is_some()
+                        || self.w.title_prompt.is_some()
+                        || self.w.confirm.is_some();
+                    if !overlay && self.active_pane().is_some_and(|t| t.session.readonly()) {
+                        return;
+                    }
                     // 조합을 시작하면 고른 영역을 지운다(Ghostty `selection-clear-on-typing`: preedit 시작도 입력으로 본다)
                     if self.config.selection_clear_on_typing
                         && !text.is_empty()
@@ -4954,7 +5092,7 @@ impl ApplicationHandler<UserEvent> for App {
                     for _ in 0..whole.unsigned_abs().min(10) {
                         self.send_mouse(idx, b, mouse::Action::Press);
                     }
-                } else if modes.alt_screen && modes.alternate_scroll {
+                } else if modes.alt_screen && modes.alternate_scroll && !self.panes[idx].session.readonly() {
                     // 대체 화면(less·vim)에서는 휠을 위·아래 화살표로 보낸다
                     let key = if whole > 0 {
                         bt_term::NamedKey::Up
@@ -5222,15 +5360,15 @@ mod tests {
 
     #[test]
     fn user_title_wins_over_program_title() {
-        assert_eq!(title_of(None, "vim", Some("zsh"), false), "vim");
-        assert_eq!(title_of(None, "", Some("zsh"), false), "zsh");
-        assert_eq!(title_of(None, "", None, false), "셸");
+        assert_eq!(title_of(None, "vim", Some("zsh"), false, false), "vim");
+        assert_eq!(title_of(None, "", Some("zsh"), false, false), "zsh");
+        assert_eq!(title_of(None, "", None, false, false), "셸");
         assert_eq!(
-            title_of(Some("빌드"), "vim", Some("zsh"), false),
+            title_of(Some("빌드"), "vim", Some("zsh"), false, false),
             "빌드",
             "사람이 붙인 제목이 먼저"
         );
-        assert_eq!(title_of(Some("빌드"), "vim", None, true), "🔔 빌드");
+        assert_eq!(title_of(Some("빌드"), "vim", None, true, false), "🔔 빌드");
         assert_eq!(
             clean_user_title("  빌드\x1b[31m 서버 \n"),
             Some("빌드 [31m 서버".into())
@@ -5249,8 +5387,8 @@ mod tests {
         assert_eq!(window_title_of(None, Some("창"), "탭"), "창");
         assert_eq!(window_title_of(None, None, "탭"), "탭");
         // 탭 제목을 덮어쓰면 칸 제목(사람이 붙인 것·프로그램이 정한 것)보다 먼저
-        assert_eq!(title_of(Some("탭"), "vim", Some("zsh"), false), "탭");
-        assert_eq!(title_of(None, "vim", Some("zsh"), false), "vim");
+        assert_eq!(title_of(Some("탭"), "vim", Some("zsh"), false, false), "탭");
+        assert_eq!(title_of(None, "vim", Some("zsh"), false, false), "vim");
     }
 
     #[test]
@@ -5292,24 +5430,43 @@ mod tests {
     }
 
     #[test]
+    fn readonly_panes_always_ask_before_closing() {
+        use bt_core::config::ConfirmClose::{Always, False, True};
+        // 프롬프트에서 쉬는 칸도, 셸이 이미 끝난 칸도, confirm-close-surface = false여도 읽기 전용이면 묻는다(Ghostty 주석: always)
+        assert!(pane_busy(True, false, true, false, Some(true), true));
+        assert!(pane_busy(True, true, true, false, None, true));
+        assert!(pane_busy(False, false, true, false, Some(true), true));
+        assert!(pane_busy(Always, false, true, false, Some(true), true));
+        // 읽기 전용이 아니면 그대로
+        assert!(!pane_busy(True, false, true, false, Some(true), false));
+    }
+
+    #[test]
+    fn readonly_marker_leads_the_title() {
+        assert_eq!(title_of(None, "vim", None, false, true), "🔒 vim");
+        assert_eq!(title_of(None, "vim", None, true, true), "🔔 🔒 vim");
+        assert_eq!(title_of(None, "vim", None, false, false), "vim");
+    }
+
+    #[test]
     fn busy_panes_need_confirm_like_ghostty() {
         use bt_core::config::ConfirmClose::{Always, False, True};
         // 셸 통합이 있으면 명령이 도는지만 본다
-        assert!(pane_busy(True, false, true, true, Some(true)));
+        assert!(pane_busy(True, false, true, true, Some(true), false));
         assert!(
-            !pane_busy(True, false, true, false, Some(false)),
+            !pane_busy(True, false, true, false, Some(false), false),
             "프롬프트에 있으면 묻지 않는다"
         );
         // 셸 통합이 없으면 전경 프로세스가 셸인지 본다. 모르면 묻는다
-        assert!(!pane_busy(True, false, false, false, Some(true)));
-        assert!(pane_busy(True, false, false, false, Some(false)));
-        assert!(pane_busy(True, false, false, false, None));
+        assert!(!pane_busy(True, false, false, false, Some(true), false));
+        assert!(pane_busy(True, false, false, false, Some(false), false));
+        assert!(pane_busy(True, false, false, false, None, false));
         // always는 프롬프트에서도, false는 언제나 묻지 않음
-        assert!(pane_busy(Always, false, true, false, Some(true)));
-        assert!(!pane_busy(False, false, true, true, Some(false)));
+        assert!(pane_busy(Always, false, true, false, Some(true), false));
+        assert!(!pane_busy(False, false, true, true, Some(false), false));
         // 셸이 이미 끝난 칸은 묻지 않는다
-        assert!(!pane_busy(Always, true, true, true, None));
-        assert!(!pane_busy(True, true, false, false, None));
+        assert!(!pane_busy(Always, true, true, true, None, false));
+        assert!(!pane_busy(True, true, false, false, None, false));
     }
 
     #[test]

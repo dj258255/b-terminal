@@ -300,6 +300,11 @@ keybind = nav/escape=deactivate_key_table
 | `adjust_selection:방향` | 고른 것의 끝점을 옮깁니다. 방향은 `left` `right`(줄 끝에서 앞·뒤 줄로) `up` `down` `page_up` `page_down` `home` `end` `beginning_of_line` `end_of_line`. 고른 것이 없으면 아무것도 하지 않습니다 | (없음) |
 | `copy_url_to_clipboard` | 마우스 아래 링크(화면의 URL·OSC 8) 주소를 클립보드에 | (없음) |
 | `toggle_quick_terminal` | 퀵 터미널(화면 가장자리에서 미끄러져 나오는 창) 보이기·숨기기. 자리·크기·화면·움직임은 `quick-terminal-*` 설정. 창 상태 복원에서 빠집니다 | (없음, `global:`로 묶으세요) |
+| `toggle_background_opacity` | 지금 창의 바탕 투명도를 `background-opacity`와 불투명 사이에서 바꿉니다. `background-opacity`가 1 이상이면 아무것도 하지 않습니다(창이 처음부터 불투명하게 만들어집니다). 창마다 따로이고 설정을 다시 읽어도 남습니다. 창 자체를 불투명으로 바꾸는 것이 아니라 바탕을 칠하는 알파만 바꿉니다 | (없음) |
+| `toggle_mouse_reporting` | 지금 칸의 마우스 보고(프로그램에 마우스 보내기)를 끄고 켭니다. 끄면 프로그램이 요청해도 보내지 않아 마우스로 늘 고르기를 할 수 있습니다. 처음 값은 `mouse-reporting`이고, 이 동작으로 정한 값은 그 칸에서 다시 바꿀 때까지 설정을 다시 읽어도 남습니다 | (없음) |
+| `toggle_readonly` | 지금 칸을 읽기 전용으로 하거나 풉니다. 읽기 전용 칸에는 키·IME 확정 글자·붙여넣기·마우스 보고·초점 보고·`text:`/`csi:`/`esc:`(`all:` 포함)·`btctl send`·`btctl run`이 모두 가지 않습니다(ADR-018). 고르기·복사·스크롤·키 묶음 동작은 그대로 되고, 칸을 닫거나 끝낼 때는 프로그램이 돌지 않아도 늘 묻습니다. 탭 제목 앞에 🔒가 붙습니다. 프로그램이 물은 것에 터미널이 답하는 바이트(커서 위치·색 질의 등)는 막지 않습니다 | (없음) |
+| `set_window_theme:config` `system` `light` `dark` | 이번 실행 동안의 창 테마. 설정 파일은 바꾸지 않고, 설정을 다시 읽어도 남으며, `config`면 설정의 `window-theme`으로 돌아갑니다. 모든 창에 적용됩니다. `window-theme = auto`처럼 바탕색을 따르는 일은 `config`일 때만 합니다 | (없음) |
+| `open_config` | 설정 파일(`~/.config/b-terminal/config`)을 기본 텍스트 편집기로 엽니다(macOS `open -t`, 셸을 거치지 않고 인자 배열로). 파일이 없으면 주석만 든 견본을 만들어 엽니다. `open_config:os_open`이 기본이고 `new_window`(Ghostty에서는 GTK 전용)는 받아서 같은 일을 합니다. 팔레트·메뉴의 "설정 파일 열기"와 같습니다 | (없음) |
 | `text:글` / `csi:…` / `esc:…` | 글·이스케이프 보내기 | |
 | `cursor_key` | Ghostty처럼 설정에 쓸 수 없습니다(Ghostty 안에서만 쓰는 동작). 쓰면 경고하고 묶지 않습니다 |
 | `reset` | 터미널 초기화(VT의 RIS와 같다): 화면·스크롤백·모드·고른 것을 비웁니다. 칸의 프로그램에는 아무것도 보내지 않으므로 셸은 Enter를 눌러야 새 프롬프트를 그립니다 | (없음) |

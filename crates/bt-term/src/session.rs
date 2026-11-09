@@ -198,20 +198,27 @@ type Writer = Arc<Mutex<Box<dyn Write + Send>>>;
 
 /// 시작 입력을 PTY에 쓴다. 아무도 읽지 않는 큰 입력이 칸 띄우기를 붙잡지 않게 다른 스레드에서 쓰고, 쓰는 동안
 /// 잠금을 오래 쥐지 않게 작은 덩어리로 나눈다(터미널의 응답이 막히지 않게). 쓰기가 실패하면(칸이 끝남) 멈춘다
-fn send_startup_input(writer: &Writer, data: Vec<u8>) {
+fn send_startup_input(writer: &Writer, data: Vec<u8>, readonly: Arc<std::sync::atomic::AtomicBool>) {
     let writer = writer.clone();
     let spawned = std::thread::Builder::new()
         .name("bt-startup-input".into())
-        .spawn(move || {
-            for chunk in data.chunks(1024) {
-                let mut w = writer.lock();
-                if w.write_all(chunk).and_then(|()| w.flush()).is_err() {
-                    break;
-                }
-            }
-        });
+        .spawn(move || write_startup_chunks(&writer, &data, &readonly));
     if let Err(e) = spawned {
         log::warn!("시작 입력을 쓸 스레드를 만들지 못했습니다: {e}");
+    }
+}
+
+/// 시작 입력을 1KiB 덩어리로 쓴다. 쓰는 도중 칸을 읽기 전용으로 하면(`toggle_readonly`, ADR-018) 남은 덩어리는 쓰지 않는다
+fn write_startup_chunks(writer: &Writer, data: &[u8], readonly: &std::sync::atomic::AtomicBool) {
+    for chunk in data.chunks(1024) {
+        if readonly.load(std::sync::atomic::Ordering::Acquire) {
+            log::info!("칸을 읽기 전용으로 해 남은 시작 입력을 쓰지 않았습니다");
+            break;
+        }
+        let mut w = writer.lock();
+        if w.write_all(chunk).and_then(|()| w.flush()).is_err() {
+            break;
+        }
     }
 }
 
@@ -388,9 +395,21 @@ pub struct Session {
     scroll_on_output: Arc<std::sync::atomic::AtomicBool>,
     /// 프로그램이 키보드를 잠갔다(KAM, vt-kam-allowed가 켜졌을 때만). 잠겨 있으면 사람의 입력을 PTY에 쓰지 않는다
     kam_locked: Arc<std::sync::atomic::AtomicBool>,
+    /// 사람이 칸을 읽기 전용으로 했다(`toggle_readonly`, ADR-018). 켜져 있으면 `write`가 아무것도 쓰지 않는다
+    readonly: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl Session {
+    /// 이 칸이 읽기 전용인가
+    pub fn readonly(&self) -> bool {
+        self.readonly.load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    /// 칸을 읽기 전용으로 하거나 푼다
+    pub fn set_readonly(&self, on: bool) {
+        self.readonly.store(on, std::sync::atomic::Ordering::Release);
+    }
+
     /// 프로그램이 키보드 잠금(KAM)을 걸어 두었는가
     pub fn keyboard_locked(&self) -> bool {
         self.kam_locked.load(std::sync::atomic::Ordering::Acquire)
@@ -489,8 +508,9 @@ impl Session {
         let pid = child.process_id();
         let mut reader = pair.master.try_clone_reader()?;
         let writer: Writer = Arc::new(Mutex::new(pair.master.take_writer()?));
+        let readonly = Arc::new(std::sync::atomic::AtomicBool::new(false));
         if !options.input.is_empty() {
-            send_startup_input(&writer, std::mem::take(&mut options.input));
+            send_startup_input(&writer, std::mem::take(&mut options.input), readonly.clone());
         }
 
         let theme = Arc::new(theme);
@@ -701,6 +721,7 @@ impl Session {
             integrated,
             scroll_on_output,
             kam_locked,
+            readonly,
         })
     }
 
@@ -740,8 +761,12 @@ impl Session {
     }
 
     /// PTY에 바이트를 그대로 쓴다. 보던 자리는 건드리지 않는다(응답·초점 알림·마우스 보고 같은 것)
+    /// 읽기 전용 칸(`toggle_readonly`)에는 아무것도 쓰지 않는다. 앱이 PTY에 쓰는 길은 모두 여기를 지나므로
+    /// (키·붙여넣기·IME·마우스·초점·`text:` 동작·`btctl send`) 막는 곳은 이 한 곳이다. 프로그램이 물은 것에 터미널이
+    /// 답하는 쓰기(DSR·DA·색 질문·창 크기)는 `Listener`가 따로 쓰므로 막지 않는다. OSC 52 클립보드 읽기의 답은
+    /// 앱이 클립보드를 읽어 이 함수로 쓰므로 읽기 전용이면 막힌다(클립보드 내용이 새지 않는 쪽)
     pub fn write(&self, bytes: &[u8]) {
-        if bytes.is_empty() {
+        if bytes.is_empty() || self.readonly() {
             return;
         }
         let mut w = self.writer.lock();
@@ -760,7 +785,7 @@ impl Session {
     /// 사용자가 친 키·붙여넣기를 PTY에 쓴다. `scroll`이면 쓰기 전에 맨 아래로 돌린다
     /// (설정 scroll-to-bottom의 keystroke, #147)
     pub fn write_input(&self, bytes: &[u8], scroll: bool) {
-        if bytes.is_empty() || self.keyboard_locked() {
+        if bytes.is_empty() || self.keyboard_locked() || self.readonly() {
             return;
         }
         if scroll {
@@ -1469,6 +1494,44 @@ impl Emulator {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 쓴 바이트를 모으고, 첫 덩어리를 받으면 칸을 읽기 전용으로 하는 가짜 PTY
+    struct LockAfterFirst {
+        got: Arc<Mutex<Vec<u8>>>,
+        readonly: Arc<std::sync::atomic::AtomicBool>,
+    }
+
+    impl Write for LockAfterFirst {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.got.lock().extend_from_slice(buf);
+            self.readonly.store(true, std::sync::atomic::Ordering::Release);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn startup_input_stops_once_readonly() {
+        let got = Arc::new(Mutex::new(Vec::new()));
+        let readonly = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let writer: Writer = Arc::new(Mutex::new(Box::new(LockAfterFirst {
+            got: got.clone(),
+            readonly: readonly.clone(),
+        })));
+        write_startup_chunks(&writer, &[b'x'; 4096], &readonly);
+        assert_eq!(got.lock().len(), 1024, "읽기 전용이 켜진 뒤의 덩어리는 쓰지 않는다");
+
+        // 처음부터 읽기 전용이면 아무것도 쓰지 않는다
+        let got2 = Arc::new(Mutex::new(Vec::new()));
+        let writer2: Writer = Arc::new(Mutex::new(Box::new(LockAfterFirst {
+            got: got2.clone(),
+            readonly: readonly.clone(),
+        })));
+        write_startup_chunks(&writer2, b"echo hi\n", &readonly);
+        assert!(got2.lock().is_empty());
+    }
 
     #[test]
     fn adjusted_point_moves_and_wraps_like_ghostty() {

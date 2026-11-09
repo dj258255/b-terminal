@@ -19,6 +19,7 @@ mod split;
 mod startup;
 mod state;
 mod tabbar;
+mod toggles;
 mod undo;
 mod winact;
 mod windeco;
