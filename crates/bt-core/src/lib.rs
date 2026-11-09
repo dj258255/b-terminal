@@ -4,5 +4,5 @@ pub mod config;
 pub mod proto;
 pub mod theme;
 
-pub use config::{Config, PaletteEntryConf};
+pub use config::{Config, LinkPreviews, PaletteEntryConf};
 pub use theme::{Rgb, Theme};

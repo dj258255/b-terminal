@@ -1971,7 +1971,11 @@ impl App {
             return None;
         }
         let (c, r) = self.cell_in(i, pos)?;
-        bt_term::links::link_at(&self.panes[i].session.snapshot(), c, r).map(|h| (id, h))
+        let opts = bt_term::links::LinkOptions {
+            url: self.config.link_url,
+            osc8: self.config.link_osc8,
+        };
+        bt_term::links::link_at_with(&self.panes[i].session.snapshot(), c, r, opts).map(|h| (id, h))
     }
 
     /// Cmd를 누른 동안 마우스 아래 링크를 다시 본다. 바뀌면 밑줄과 마우스 모양을 바꾼다
@@ -3231,6 +3235,7 @@ impl App {
         let title = self.config.title.clone().unwrap_or(title);
         let preedit = self.w.preedit.clone();
         let hover = self.w.hover.clone();
+        let link_previews = self.config.link_previews;
         // 명령 팔레트: (친 글, 보일 줄들(이름, 단축키), 고른 줄)
         let palette = self.w.palette.as_ref().map(|(q, sel)| {
             let entries = crate::palette::entries(&self.config.palette_entries, !self.config.palette_defaults_cleared);
@@ -3574,7 +3579,8 @@ impl App {
                     canvas.fill_rect(d.x, d.y, d.w, d.h, divider_color);
                 }
                 // 실제 주소를 창 왼쪽 아래에 보인다(OSC 8 링크는 보이는 글과 주소가 다를 수 있다)
-                if let Some((_, hit)) = &hover {
+                // `link-previews`가 끈 링크는 띠 없이 밑줄만 보인다
+                if let Some((_, hit)) = hover.as_ref().filter(|(_, h)| link_previews.shows(h.explicit)) {
                     tabbar::draw_link_hint(&mut canvas, fonts, &theme, &bt_core::proto::printable(&hit.url));
                 }
                 if let Some((q, rows, sel)) = &palette {

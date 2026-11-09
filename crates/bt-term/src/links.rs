@@ -102,8 +102,28 @@ fn wraps(screen: &Screen, row: usize) -> bool {
     screen.cols > 0 && screen.cell(screen.cols - 1, row).flags.contains(CellFlags::WRAPLINE)
 }
 
+/// 어떤 링크를 찾을지(`link-url`·`link-osc8`, Ghostty와 같은 뜻). 기본은 둘 다 켬
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LinkOptions {
+    /// 화면 글의 URL 자동 인식
+    pub url: bool,
+    /// 프로그램이 OSC 8로 단 링크
+    pub osc8: bool,
+}
+
+impl Default for LinkOptions {
+    fn default() -> Self {
+        LinkOptions { url: true, osc8: true }
+    }
+}
+
 /// (col, row) 칸의 링크. OSC 8 링크가 먼저, 없으면 접힌 줄을 이어 붙인 글에서 URL을 찾는다
 pub fn link_at(screen: &Screen, col: usize, row: usize) -> Option<LinkHit> {
+    link_at_with(screen, col, row, LinkOptions::default())
+}
+
+/// `link_at`에 찾을 종류를 정해 준다. 끈 종류는 없는 것처럼 지나간다(OSC 8을 끄면 그 칸은 보통 글)
+pub fn link_at_with(screen: &Screen, col: usize, row: usize, opts: LinkOptions) -> Option<LinkHit> {
     if col >= screen.cols || row >= screen.rows {
         return None;
     }
@@ -113,7 +133,8 @@ pub fn link_at(screen: &Screen, col: usize, row: usize) -> Option<LinkHit> {
     } else {
         col
     };
-    if let Some(id) = screen.cell(col, row).link {
+    let osc8_id = screen.cell(col, row).link.filter(|_| opts.osc8);
+    if let Some(id) = osc8_id {
         let url = screen.links.get(id as usize)?.clone();
         let mut spans = Vec::new();
         for r in 0..screen.rows {
@@ -135,6 +156,9 @@ pub fn link_at(screen: &Screen, col: usize, row: usize) -> Option<LinkHit> {
             spans,
             explicit: true,
         });
+    }
+    if !opts.url {
+        return None;
     }
     // 접힌 줄 묶음(논리 줄)의 처음과 끝
     let mut top = row;
@@ -452,6 +476,56 @@ mod tests {
                 end: 14
             }]
         );
+    }
+
+    #[test]
+    fn link_options_turn_each_kind_off() {
+        let mut s = screen(&["click here or https://shown.example"], 40, &[]);
+        s.links = vec!["https://real.example/".into()];
+        for c in 6..10 {
+            s.cells[c].link = Some(0);
+        }
+        let all = LinkOptions::default();
+        assert!(link_at_with(&s, 7, 0, all).unwrap().explicit);
+        assert!(!link_at_with(&s, 20, 0, all).unwrap().explicit);
+        let no_url = LinkOptions { url: false, ..all };
+        assert!(
+            link_at_with(&s, 7, 0, no_url).unwrap().explicit,
+            "link-url=false여도 OSC 8은 그대로"
+        );
+        assert_eq!(link_at_with(&s, 20, 0, no_url), None);
+        let no_osc8 = LinkOptions { osc8: false, ..all };
+        assert_eq!(
+            link_at_with(&s, 7, 0, no_osc8),
+            None,
+            "link-osc8=false면 OSC 8 칸은 보통 글"
+        );
+        assert!(
+            !link_at_with(&s, 20, 0, no_osc8).unwrap().explicit,
+            "화면 글의 URL은 그대로"
+        );
+        let none = LinkOptions {
+            url: false,
+            osc8: false,
+        };
+        assert_eq!(link_at_with(&s, 7, 0, none), None);
+        assert_eq!(link_at_with(&s, 20, 0, none), None);
+    }
+
+    #[test]
+    fn osc8_off_still_finds_url_text_under_the_link_cells() {
+        // OSC 8 링크의 글이 그대로 URL이면, 끈 뒤에는 글에서 찾은 링크로 다룬다(주소는 보이는 글 그대로)
+        let mut s = screen(&["https://shown.example"], 30, &[]);
+        s.links = vec!["https://real.example/".into()];
+        for c in 0..21 {
+            s.cells[c].link = Some(0);
+        }
+        let hit = link_at_with(&s, 3, 0, LinkOptions { url: true, osc8: false }).unwrap();
+        assert_eq!(
+            hit.url, "https://shown.example",
+            "숨은 주소(real.example)가 아니라 보이는 글"
+        );
+        assert!(!hit.explicit);
     }
 
     #[test]
