@@ -125,6 +125,10 @@ pub struct Config {
     pub confirm_close: ConfirmClose,
     /// 퀵 터미널의 자리·크기·화면·자동 숨김·움직임(Ghostty `quick-terminal-*`, #110)
     pub quick: QuickTerminal,
+    /// 남는 자리를 네 변에 고르게(Ghostty `window-padding-balance`, #136)
+    pub padding_balance: bool,
+    /// 여백 색(Ghostty `window-padding-color`)
+    pub padding_color: PaddingColor,
     /// 커서 불투명도(0~1, Ghostty `cursor-opacity`, #135)
     pub cursor_opacity: f32,
     /// 커서 색·커서 위 글자색을 칸 색에서(Ghostty `cursor-color = cell-foreground` 등). 없으면 테마 색
@@ -177,6 +181,17 @@ impl BellFeatures {
         *self = next;
         true
     }
+}
+
+/// 여백 색(Ghostty `window-padding-color`)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PaddingColor {
+    /// 기본 바탕색
+    Background,
+    /// 가장 가까운 칸의 바탕색(주 화면에서는 몇 가지 경우 위아래로 늘이지 않음)
+    Extend,
+    /// 따지지 않고 늘 늘인다
+    ExtendAlways,
 }
 
 /// 커서 색으로 쓸 칸의 색(Ghostty `cell-foreground`·`cell-background`)
@@ -436,6 +451,8 @@ impl Default for Config {
             bell_features: BellFeatures::default(),
             confirm_close: ConfirmClose::True,
             quick: QuickTerminal::default(),
+            padding_balance: false,
+            padding_color: PaddingColor::Background,
             cursor_opacity: 1.0,
             cursor_color_cell: None,
             cursor_text_cell: None,
@@ -900,6 +917,16 @@ impl Config {
                 "never" => self.window_save_state = false,
                 _ => bad(warnings),
             },
+            "window-padding-balance" => match parse_bool(v) {
+                Some(b) => self.padding_balance = b,
+                None => bad(warnings),
+            },
+            "window-padding-color" => match v {
+                "background" => self.padding_color = PaddingColor::Background,
+                "extend" => self.padding_color = PaddingColor::Extend,
+                "extend-always" => self.padding_color = PaddingColor::ExtendAlways,
+                _ => bad(warnings),
+            },
             "cursor-opacity" => match v.parse::<f32>() {
                 Ok(o) if o.is_finite() => self.cursor_opacity = o.clamp(0.0, 1.0),
                 _ => bad(warnings),
@@ -1321,6 +1348,22 @@ mod tests {
         assert!(!Config::from_text("window-save-state = never\n", true).window_save_state);
         assert!(Config::from_text("window-save-state = always\n", true).window_save_state);
         assert_eq!(Config::from_text("window-save-state = maybe\n", true).warnings.len(), 1);
+    }
+
+    #[test]
+    fn padding_keys_like_ghostty() {
+        let d = Config::default();
+        assert_eq!((d.padding_balance, d.padding_color), (false, PaddingColor::Background));
+        let c = Config::from_text(
+            "window-padding-balance = true\nwindow-padding-color = extend-always\n",
+            true,
+        );
+        assert!(c.warnings.is_empty(), "{:?}", c.warnings);
+        assert_eq!((c.padding_balance, c.padding_color), (true, PaddingColor::ExtendAlways));
+        assert_eq!(
+            Config::from_text("window-padding-color = red\n", true).warnings.len(),
+            1
+        );
     }
 
     #[test]
