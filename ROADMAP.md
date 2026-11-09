@@ -318,6 +318,20 @@ Ghostty 받기만 하던 키와 시퀀스 채우기. 추적 이슈 [#237](https:
 - 에이전트 실행 환경에서 curl과 HOME 지정이 막혀, 원본 대조와 격리 실행은 주 세션이 했습니다. 공통 지시에 "데이터는 curl로 원본"을 넣었지만 막히면 요약으로 돌아가므로, 주 세션이 대조하는 단계는 계속 필요합니다.
 - CI가 장애로 돌지 않을 때 기다리는 동안 로컬 일(흔들리는 테스트 재현·수정, 실제 창 확인)을 했습니다.
 
+## 0.18.0 (2026-11-10)
+
+0.17에서 남긴 것. 추적 이슈 [#249](https://github.com/dj258255/b-terminal/issues/249). 에이전트 셋이 각자 worktree에서 구현·커밋하고, 주 세션이 옮기고 검토·병합했습니다. 병합 시각(KST)은 추적 이슈를 연 06:39부터 마지막 병합 06:53까지입니다.
+
+| 이슈 | 내용 | 예상 | 실제 | PR | 주 세션이 한 것 |
+|---|---|---|---|---|---|
+| [#250](https://github.com/dj258255/b-terminal/issues/250) | 포인터: 마우스 보고 모드·Shift | 2~4시간 | 에이전트 약 6분(병합 06:53) | [#255](https://github.com/dj258255/b-terminal/pull/255) | PTY 읽기 스레드 변경 읽기, 실제 창(시퀀스) |
+| [#251](https://github.com/dj258255/b-terminal/issues/251) | `+show-config` theme 줄, 키 단위 비교 | 2~4시간 | 에이전트 약 5분(병합 06:50) | [#254](https://github.com/dj258255/b-terminal/pull/254) | 이름만 쓴 사용자 테마로 격리 HOME 실제 실행 |
+| [#252](https://github.com/dj258255/b-terminal/issues/252) | 비례폭 제목의 색 이모지 폭 | 2~4시간 | 에이전트 약 4분(병합 06:47) | [#253](https://github.com/dj258255/b-terminal/pull/253) | Ghostty 제목 크기 원본(`TerminalController.swift` 661줄) 대조, 실제 창 |
+
+이번에 배운 것:
+
+- 에이전트가 이슈 전제를 바로잡았습니다: b-terminal에는 사각 고르기가 없어 Alt 규칙을 넣지 않았고(#250), "`keybind = clear`가 숨는다"는 재현되지 않았습니다(#251). 이슈를 쓸 때 전제를 코드로 먼저 확인하면 좋습니다.
+
 ## 다음
 
 - 범수 님이 직접 해야 할 것: 키보드·마우스 확인(한글 2벌식 "안녕 하세요⏎", Claude Code의 Shift+Enter, Cmd-D·Cmd-F·Cmd-클릭·Cmd-N·Cmd-Shift-P, 메뉴, 창 닫기 단추, vim·htop, kitty icat·yazi, 투명 창), Developer ID 계정으로 `scripts/bundle-macos.sh --sign … --notarize … --dmg`
@@ -336,4 +350,6 @@ Ghostty 받기만 하던 키와 시퀀스 채우기. 추적 이슈 [#237](https:
 - 범수 님이 확인할 것(0.16): `theme = light:…,dark:…`에서 nvim을 켜고 시스템 모양을 바꿔 nvim 색이 따라오는지(모드 2031), `EDITOR="code -w" b-terminal +edit-config`, `b-terminal +list-keybinds`가 실제 설정의 키 묶음과 맞는지, `b-terminal +show-face --string="가😀"`가 창에 그려지는 글꼴과 같은지
 - 범수 님이 확인할 것(0.17): `background-opacity = 0.7`·`background-blur = 20`으로 퀵 터미널 뒤도 흐린지, nvim·tmux 같은 프로그램이 OSC 22로 포인터를 바꾸는지(`printf '\033]22;crosshair\033\\'` 뒤 마우스를 칸 위로), `window-title-font-family`로 여러 글꼴을 써 보기
 - 범수 님이 정할 것(0.17): `window-title-font-family`를 비울 때 Ghostty처럼 시스템 글꼴을 쓸지(지금 터미널 글꼴)
+- 범수 님이 확인할 것(0.18): 셸에서 마우스를 칸 위에 두고 Shift를 누르면 I자가 되는지, `printf '\033]22;progress\007'` 뒤 `printf '\033[?1000h'`로 모양이 화살표로 돌아오는지
+- 범수 님이 정할 것(0.18): OSC 22를 받기 전 기본 포인터를 Ghostty처럼 I자로 할지(지금 화살표)
 - 큰 일로 남긴 것: GPU(또는 IOSurface) 렌더러
