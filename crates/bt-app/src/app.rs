@@ -2200,9 +2200,26 @@ impl App {
             if let Some(pos) =
                 crate::startup::configured_position(self.config.window_position_x, self.config.window_position_y)
             {
-                // 주 화면 왼쪽 위에서 잰 점 좌표를 물리 픽셀로 바꿔 놓는다
-                let (origin, scale) = event_loop
-                    .primary_monitor()
+                let primary = event_loop.primary_monitor();
+                // macOS는 Ghostty처럼 보이는 화면 영역(메뉴 막대 아래)의 왼쪽 위가 기준이다(점 단위)
+                #[cfg(target_os = "macos")]
+                if let Some(m) = &primary {
+                    let sf = m.scale_factor();
+                    let screen = crate::quick::Rect {
+                        x: m.position().x as f64 / sf,
+                        y: m.position().y as f64 / sf,
+                        w: m.size().width as f64 / sf,
+                        h: m.size().height as f64 / sf,
+                    };
+                    let area = crate::quick::visible_area(screen, screen.h).unwrap_or(screen);
+                    g.window.set_outer_position(winit::dpi::LogicalPosition::new(
+                        area.x + pos.0 as f64,
+                        area.y + pos.1 as f64,
+                    ));
+                    return;
+                }
+                // 그 밖에는 주 화면 왼쪽 위에서 잰 점 좌표를 물리 픽셀로 바꿔 놓는다
+                let (origin, scale) = primary
                     .map(|m| ((m.position().x, m.position().y), m.scale_factor()))
                     .unwrap_or(((0, 0), self.scale));
                 let (x, y) = crate::startup::physical_position(pos, origin, scale);
