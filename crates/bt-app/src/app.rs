@@ -345,7 +345,11 @@ impl Pending {
     /// 창·앱 전체를 묻는 것(창 닫기·모두 닫기·끝내기)은 칸에 매이지 않는다
     fn binds_to(&self, leaves: &[u64]) -> bool {
         match self {
-            Pending::ClosePane(id) | Pending::CloseTab(id) | Pending::Paste { pane: id, .. } => leaves.contains(id),
+            Pending::ClosePane(id)
+            | Pending::CloseTab(id)
+            | Pending::Paste { pane: id, .. }
+            | Pending::ClipboardRead { pane: id, .. }
+            | Pending::ClipboardWrite { pane: id, .. } => leaves.contains(id),
             Pending::CloseWindow | Pending::CloseAllWindows | Pending::Quit => false,
         }
     }
@@ -5651,6 +5655,21 @@ mod tests {
             .binds_to(&moved)
         );
         // 창·앱 전체를 묻는 막대는 남는 창의 것이다
+        // 클립보드 물음도 그 칸에 매여 있다(#220)
+        assert!(
+            Pending::ClipboardWrite {
+                pane: 5,
+                text: "x".into()
+            }
+            .binds_to(&moved)
+        );
+        assert!(
+            !Pending::ClipboardWrite {
+                pane: 1,
+                text: "x".into()
+            }
+            .binds_to(&moved)
+        );
         assert!(!Pending::CloseWindow.binds_to(&moved));
         assert!(!Pending::CloseAllWindows.binds_to(&moved));
         assert!(!Pending::Quit.binds_to(&moved));
