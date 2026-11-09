@@ -146,6 +146,24 @@ Ghostty 키 채우기. 추적 이슈 [#121](https://github.com/dj258255/b-termin
 - 설정 해석기가 값을 다듬으면(`trim`) 공백 자체가 뜻인 값(`selection-word-chars`)이 망가진다(#126).
 - 커밋 보안 검토 기록 파일은 비워질 수 있다. 결과는 본 즉시 PR에 남긴다(#131).
 
+## 0.9.0 (2026-11-09)
+
+그림·커서·여백. 추적 이슈 [#133](https://github.com/dj258255/b-terminal/issues/133). 사람 없이 코딩 에이전트가 진행했다. 이슈마다 실제 시간은 재지 않았고 병합 시각(KST)만 적는다: 추적 이슈를 연 13:31부터 마지막 PR 병합 20:40까지(중간에 대화가 멈춘 시간 포함).
+
+| 이슈 | 내용 | 예상 | 실제 | PR | 상태 |
+|---|---|---|---|---|---|
+| [#135](https://github.com/dj258255/b-terminal/issues/135) | 커서 키(`cursor-opacity`, `cell-foreground`) | 2시간 | 재지 않음(병합 14:18) | [#139](https://github.com/dj258255/b-terminal/pull/139) | 끝 |
+| [#136](https://github.com/dj258255/b-terminal/issues/136) | 여백 키(`window-padding-balance`·`-color`) | 2~3시간 | 재지 않음(병합 14:25) | [#140](https://github.com/dj258255/b-terminal/pull/140) | 끝 |
+| [#138](https://github.com/dj258255/b-terminal/issues/138) | 키보드로 고르기 늘리기·링크 복사 | 2~3시간 | 재지 않음(병합 14:30) | [#141](https://github.com/dj258255/b-terminal/pull/141) | 끝(실제 키로는 해 보지 않음) |
+| [#137](https://github.com/dj258255/b-terminal/issues/137) | 프롬프트를 눌러 커서 옮기기 | 2~3시간 | 재지 않음(병합 20:31) | [#142](https://github.com/dj258255/b-terminal/pull/142) | 끝(실제 마우스로는 해 보지 않음) |
+| [#134](https://github.com/dj258255/b-terminal/issues/134) | 배경 그림(`background-image`) | 3~4시간 | 재지 않음(병합 20:40) | [#143](https://github.com/dj258255/b-terminal/pull/143) | 끝 |
+
+이번에 배운 것:
+
+- 캔버스에 "기본 바탕색을 칠할 때만 다른 픽셀"이라는 갈래 하나를 두면, 칸 바탕·여백·화면 지우기·바뀐 줄 다시 그리기가 한꺼번에 따라온다(투명 창 #86에 이어 배경 그림 #134).
+- `sips -c`는 가운데를 기준으로 자른다. 위쪽을 보려면 전체 캡처를 본다(#136).
+- 스크립트로 문서 주석 바로 아래에 새 함수를 끼우면 주석이 새 함수에 붙는다(#135·#134). 끼울 자리는 주석 위로 잡는다.
+
 ## 다음
 
 - 범수 님이 직접 해야 할 것: 키보드·마우스 확인(한글 2벌식 "안녕 하세요⏎", Claude Code의 Shift+Enter, Cmd-D·Cmd-F·Cmd-클릭·Cmd-N·Cmd-Shift-P, 메뉴, 창 닫기 단추, vim·htop, kitty icat·yazi, 투명 창), Developer ID 계정으로 `scripts/bundle-macos.sh --sign … --notarize … --dmg`
@@ -153,4 +171,5 @@ Ghostty 키 채우기. 추적 이슈 [#121](https://github.com/dj258255/b-termin
 - 범수 님이 확인할 것(0.6): 퀵 터미널을 실제 전역 단축키로(`keybind = global:ctrl+backquote=toggle_quick_terminal`), 외부 모니터로 창을 옮겼을 때 present 시간(`RUST_LOG=b_terminal=debug`)
 - 범수 님이 확인할 것(0.7): `sleep 100` 중에 ⌘W → 확인 막대 → esc는 그대로·↩는 닫힘, 프롬프트에서 ⌘W는 바로 닫힘, ⌘Q도 같게. 셸에서 `cat` 중에 두 줄 글 ⌘V → 붙여넣기 확인 막대. `keybind = ctrl+a>n=new_window` 뒤 Ctrl-A·N → 새 창, Ctrl-A·X → `^A`와 `x`가 셸로. 다른 탭에서 `sleep 2; printf '\a'` → 탭 제목에 🔔
 - 범수 님이 확인할 것(0.8): 메뉴 "셸 › 제목 바꾸기…"로 탭 제목 붙이고 비우기, 팔레트 "스크롤백을 파일로 열기"와 앱을 끈 뒤 `$TMPDIR/b-terminal-$(id -u)/files`가 비었는지, `focus-follows-mouse = true`로 분할 칸 위를 마우스로 오가기, 단어 두 번 눌러 고르기(`;`·`$`에서 끊김), ⌃⌘F 전체 화면
+- 범수 님이 확인할 것(0.9): zsh 프롬프트에서 친 명령의 한 글자를 눌러 커서가 거기로 가는지, `adjust_selection`을 키에 묶어 고르기를 늘려 보기, 배경 그림을 투명 창(`background-opacity = 0.8`)과 함께 써 보기
 - 큰 일로 남긴 것: GPU(또는 IOSurface) 렌더러, 글자 묶음 폭(mode 2027)

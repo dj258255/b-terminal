@@ -4,15 +4,22 @@
 
 ## [아직 릴리스하지 않음]
 
+## [0.9.0] - 2026-11-09
+
+그림·커서·여백. 배경 그림, 커서 키, 여백 키, 프롬프트를 눌러 커서 옮기기, 키보드로 고르기 늘리기·링크 복사. 추적 이슈 #133.
+
 - 배경 그림(`background-image`·`-opacity`·`-position`·`-fit`·`-repeat`, Ghostty 키, PNG·JPEG): 기본 바탕색 칸과 여백에 그림을 깝니다. 창 크기가 바뀔 때마다 그림 층을 다시 합성합니다(3200×2100 창에서 약 17ms, 릴리스 빌드에서 잰 값).
-
+- 커서 키(Ghostty): `cursor-opacity`(0~1)로 커서를 칸 위에 섞어 그리고, `cursor-color`·`cursor-text`에 `cell-foreground`·`cell-background`를 주면 커서 칸의 색을 씁니다.
+- 여백 키(Ghostty): `window-padding-balance`로 남는 자리를 네 변에 고르게 나누고, `window-padding-color = extend`로 여백을 가장자리 칸의 바탕색으로 칠합니다(vim 상태 줄 같은 색 줄이 창 끝까지 이어짐).
 - 프롬프트를 눌러 커서 옮기기(`cursor-click-to-move`, Ghostty 키, 켬): 셸 통합이 있는 프롬프트에서 커서 줄을 누르면 그 자리로 커서가 갑니다.
-
 - 키보드로 고르기 늘리기(`adjust_selection`)와 링크 주소 복사(`copy_url_to_clipboard`), Ghostty 동작.
 
-- 여백 키(Ghostty): `window-padding-balance`로 남는 자리를 네 변에 고르게 나누고, `window-padding-color = extend`로 여백을 가장자리 칸의 바탕색으로 칠합니다(vim 상태 줄 같은 색 줄이 창 끝까지 이어짐).
+### 알려진 한계
 
-- 커서 키(Ghostty): `cursor-opacity`(0~1)로 커서를 칸 위에 섞어 그리고, `cursor-color`·`cursor-text`에 `cell-foreground`·`cell-background`를 주면 커서 칸의 색을 씁니다.
+- 프롬프트 클릭으로 커서 옮기기, 키보드로 고르기 늘리기, 링크 복사는 키·마우스로 실제로 해 보지 않았고 테스트로만 확인했습니다. 실제 창에서 본 것은 배경 그림·커서 불투명도·여백 색입니다.
+- 배경 그림은 창 크기가 바뀔 때마다 층을 다시 합성합니다(3200×2100에서 약 17ms). 투명 창과 함께 쓰는 경우는 실제로 보지 않았습니다.
+- 프롬프트 클릭은 커서 줄 안에서만 옮깁니다(여러 줄 입력의 다른 줄로는 가지 않음).
+- `cursor-click-to-move`·`cursor-opacity`·여백 키의 기본값은 Ghostty 문서에서 확인하지 못했습니다.
 
 ## [0.8.0] - 2026-11-09
 
