@@ -881,6 +881,9 @@ enum Layer {
     Table(usize),
 }
 
+/// 한 번에 켜 둘 수 있는 키 테이블 수(Ghostty Surface.zig `max_active_key_tables`)
+const MAX_ACTIVE_TABLES: usize = 8;
+
 /// 키를 하나씩 받아 키 순서를 맞추고(#106) 켜진 키 테이블을 쥔다(#210).
 /// Ghostty처럼 시간 제한은 없고, 순서 중간에 묶이지 않은 키가 오면 그때까지 쌓은 키를 프로그램에 그대로 보낸다.
 /// 판단 순서: 맨 위 테이블 → … → 맨 아래 테이블 → 기본 묶음. 순서의 앞 키가 잡힌 층에서만 다음 키를 찾는다
@@ -964,6 +967,11 @@ impl Sequencer {
                     return (false, Vec::new());
                 }
                 if self.stack.last().is_some_and(|t| t.name == *name) {
+                    return (false, Vec::new());
+                }
+                // Ghostty처럼 8개까지만 쌓는다(서로 켜는 테이블을 번갈아 눌러도 끝없이 쌓이지 않게)
+                if self.stack.len() >= MAX_ACTIVE_TABLES {
+                    log::info!("키 테이블을 이미 {MAX_ACTIVE_TABLES}개 켜 두어 {name}을 켜지 않았습니다");
                     return (false, Vec::new());
                 }
                 self.stack.push(ActiveTable {
@@ -1930,6 +1938,25 @@ mod tests {
         assert_eq!(press(&mut sq, &km, "q"), (vec![], Some(Action::Ignore)));
         press(&mut sq, &km, "escape");
         assert_eq!(press(&mut sq, &km, "q").1, Some(Action::Text("root-q".into())));
+    }
+
+    #[test]
+    fn at_most_eight_tables_are_active_like_ghostty() {
+        // Ghostty Surface.zig `max_active_key_tables = 8`: 넘으면 켜지 않는다
+        let (km, _) = build_lines(&["a/x=ignore", "b/x=ignore"]);
+        let mut sq = Sequencer::default();
+        for i in 0..8 {
+            let name = if i % 2 == 0 { "a" } else { "b" };
+            assert!(
+                sq.apply_table_action(&km, &Action::ActivateKeyTable(name.into())).0,
+                "{i}"
+            );
+        }
+        assert!(
+            !sq.apply_table_action(&km, &Action::ActivateKeyTable("a".into())).0,
+            "아홉째는 켜지 않는다"
+        );
+        assert_eq!(sq.stack_names().len(), 8);
     }
 
     #[test]
