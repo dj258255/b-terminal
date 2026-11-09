@@ -153,3 +153,14 @@ fn decrqm_2027_reports_the_mode_state() {
     // 모르는 모드는 그대로 '지원 안 함'
     assert_eq!(reply_to("\\033[?2028$p", |_| {}), "\x1b[?2028;0$y");
 }
+
+/// 한 칸에 이어 붙이는 결합 문자에는 상한이 있다. 상한이 없으면 이어 붙일 때마다 묶음 전체를 다시 나눠
+/// 결합 문자 n개에 n² 일이 든다(찍힌 글 하나로 엔진을 붙잡을 수 있다)
+#[test]
+fn joining_stops_at_the_per_cell_cap() {
+    let long: String = std::iter::once("\u{1F468}")
+        .chain(std::iter::repeat_n("\u{200D}\u{1F469}", 20))
+        .collect();
+    let w = width_of("", &long, |_| {});
+    assert!(w > 2, "상한을 넘은 뒤의 이모지는 새 칸에 찍힌다: {w}칸");
+}

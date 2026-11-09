@@ -343,6 +343,9 @@ pub struct Term<T> {
     grapheme_anchor: Option<GraphemeAnchor>,
 }
 
+/// b-terminal 패치(#180): 한 칸의 결합 문자 목록에 이어 붙이는 글자 수 상한(join_grapheme)
+const MAX_GRAPHEME_JOIN: usize = 32;
+
 /// 방금 찍은 묶음의 첫 칸과, 그때 커서 자리. 커서가 그대로일 때만 이어 붙인다.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct GraphemeAnchor {
@@ -1075,6 +1078,11 @@ impl<T> Term<T> {
 
         let cell = &self.grid[anchor.base];
         if cell.c == ' ' || cell.flags.contains(Flags::WIDE_CHAR_SPACER) {
+            return false;
+        }
+        // b-terminal 패치(#180): 한 칸에 이어 붙이는 글자 수 상한. 이어 붙일 때마다 묶음 전체를 다시 나누므로,
+        // 상한이 없으면 결합 문자 n개에 n² 일이 든다(찍힌 글 하나로 엔진을 붙잡는다). 넘으면 원래 동작으로 돌아간다
+        if cell.zerowidth().map_or(0, |z| z.len()) >= MAX_GRAPHEME_JOIN {
             return false;
         }
         let mut text = String::with_capacity(16);

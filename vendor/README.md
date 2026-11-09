@@ -40,7 +40,7 @@ softbuffer가 색 공간을 고를 수 있게 되거나, GPU 렌더러로 바꿔
 
 - 원본: crates.io `alacritty_terminal 0.26.0`(Apache-2.0, `vendor/alacritty_terminal/LICENSE-APACHE`). 테스트(`tests/`, 참조 그림 46MB)는 뺐습니다.
 - 연결: 루트 `Cargo.toml`의 `[patch.crates-io]`. 새 크레이트는 없습니다. `Cargo.toml`에 `unicode-segmentation = "1"`을 직접 의존성으로 더했고(잠금 파일에 이미 1.13.3이 있었음) `[[test]]`를 지웠습니다.
-- 고친 곳(#180, ADR-014): `src/term/mod.rs` 한 파일, 더한 줄 118·지운 줄 2. `b-terminal 패치(#180)`로 찾을 수 있습니다.
+- 고친 곳(#180, ADR-014): `src/term/mod.rs` 한 파일, 더한 줄 125·지운 줄 2. `b-terminal 패치(#180)`로 찾을 수 있습니다.
   - `TermMode::GRAPHEME_CLUSTER`(DECSET 2027)와 `Config::grapheme_cluster`(처음 값, 기본 켬). 모드 켜기·끄기·DECRQM은 vte가 이름 없는 모드로 넘기는 2027을 `set_private_mode`·`unset_private_mode`·`report_private_mode`가 받게 했습니다.
   - `Handler::input`이 글자를 찍기 전에 `join_grapheme`을 부릅니다. 방금 찍은 칸(`grapheme_anchor`, 커서가 그 자리 그대로일 때만)의 글과 새 글자를 합쳐 `unicode-segmentation`이 한 묶음으로 보면 새 칸 없이 그 칸의 결합 문자로 잇습니다. 좁은 글자에 U+FE0F가 붙어 두 칸(`unicode-width`의 문자열 폭)이 되면 뒤 칸을 채웁니다. 지역 표시 글자(국기)는 한 글자로도 두 칸으로 셉니다.
   - 칸 내용을 바꾸는 `scroll_*_relative`·`insert_blank`·`erase_chars`·`delete_chars`·`clear_line`·`clear_screen`·`swap_alt`·`reset_state`는 `grapheme_anchor`를 지웁니다.
