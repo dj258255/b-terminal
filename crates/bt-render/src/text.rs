@@ -52,7 +52,12 @@ pub fn draw_text(canvas: &mut Canvas, fonts: &mut Fonts, x: i32, y: i32, s: &str
                 } else {
                     0
                 };
-                canvas.draw_glyph(px + offset, y + m.baseline as i32, &g, color);
+                // 색 글리프(이모지)는 bitmap이 비어 있다. 셀 격자처럼 RGBA로 그린다(#112)
+                if g.color.is_some() {
+                    canvas.draw_color_glyph(px + offset, y + m.baseline as i32, &g);
+                } else {
+                    canvas.draw_glyph(px + offset, y + m.baseline as i32, &g, color);
+                }
             }
         }
         px += (m.width * span) as i32;

@@ -101,6 +101,10 @@ impl<'a> Canvas<'a> {
 
     /// 글리프를 기준선 자리(x, baseline_y)에 덮는다
     pub fn draw_glyph(&mut self, x: i32, baseline_y: i32, glyph: &Glyph, color: Rgb) {
+        // 색 글리프는 bitmap이 비어 있다(draw_color_glyph로 그린다). 잘못 들어와도 죽지 않게(#112)
+        if glyph.bitmap.len() < glyph.width * glyph.height {
+            return;
+        }
         let gx = x + glyph.left;
         let gy = baseline_y - glyph.top;
         for row in 0..glyph.height {
