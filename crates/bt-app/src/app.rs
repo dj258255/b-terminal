@@ -124,6 +124,20 @@ impl Pane {
     }
 }
 
+/// btctl new의 띄우기 값(#115): 키 묶음의 새 탭처럼 설정(`base`: command·working-directory)에서 시작하고,
+/// 준 폴더·명령이 이긴다
+fn ctl_spawn(base: SpawnOptions, cwd: Option<std::path::PathBuf>, command: &[String]) -> SpawnOptions {
+    let mut opts = base;
+    if cwd.is_some() {
+        opts.cwd = cwd;
+    }
+    if let Some((prog, args)) = command.split_first() {
+        opts.program = Some(prog.clone());
+        opts.args = args.to_vec();
+    }
+    opts
+}
+
 /// 벨이 울렸을 때 할 일(#107)
 #[derive(Debug, PartialEq)]
 struct BellResponse {
@@ -888,14 +902,7 @@ impl App {
                 tab,
                 window,
             } => {
-                let mut opts = SpawnOptions {
-                    cwd: cwd.filter(|c| c.is_dir()),
-                    ..Default::default()
-                };
-                if let Some((prog, args)) = command.split_first() {
-                    opts.program = Some(prog.clone());
-                    opts.args = args.to_vec();
-                }
+                let opts = ctl_spawn(self.default_spawn(), cwd.filter(|c| c.is_dir()), &command);
                 if window {
                     return match self.open_window(event_loop, opts) {
                         Some(tab) => Response::ok(id, json!({ "tab": tab })),
@@ -2975,6 +2982,26 @@ impl ApplicationHandler<UserEvent> for App {
 mod tests {
     use super::*;
     use bt_term::search::SearchStatus;
+
+    #[test]
+    fn btctl_new_starts_from_config_and_given_values_win() {
+        let base = SpawnOptions {
+            program: Some("/bin/sh".into()),
+            args: vec!["-c".into(), "exec fish".into()],
+            cwd: Some("/home/me".into()),
+            ..Default::default()
+        };
+        // 아무것도 주지 않으면 설정(command·working-directory) 그대로
+        let o = ctl_spawn(base.clone(), None, &[]);
+        assert_eq!(o.program.as_deref(), Some("/bin/sh"));
+        assert_eq!(o.args, vec!["-c", "exec fish"]);
+        assert_eq!(o.cwd.as_deref(), Some(std::path::Path::new("/home/me")));
+        // 준 폴더·명령이 이긴다
+        let o = ctl_spawn(base, Some("/tmp".into()), &["htop".into(), "-d".into(), "5".into()]);
+        assert_eq!(o.program.as_deref(), Some("htop"));
+        assert_eq!(o.args, vec!["-d", "5"]);
+        assert_eq!(o.cwd.as_deref(), Some(std::path::Path::new("/tmp")));
+    }
 
     #[test]
     fn bell_marks_title_only_when_not_watching_and_bounces_only_when_unfocused() {
