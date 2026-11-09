@@ -50,6 +50,9 @@ const ENTRIES: &[(&str, &str)] = &[
     ("퀵 터미널", "toggle_quick_terminal"),
     ("전체 화면", "toggle_fullscreen"),
     ("제목 바꾸기", "prompt_surface_title"),
+    ("스크롤백을 파일로 열기", "write_scrollback_file:open"),
+    ("화면을 파일로 열기", "write_screen_file:open"),
+    ("스크롤백 파일 경로 복사", "write_scrollback_file:copy"),
     ("b-terminal 종료", "quit"),
 ];
 

@@ -3,6 +3,7 @@
 mod app;
 mod control;
 mod desktop;
+mod dump;
 mod keymap;
 mod keys;
 mod menu;

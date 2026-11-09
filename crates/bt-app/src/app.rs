@@ -457,6 +457,8 @@ pub struct App {
     hotkeys: Option<global_hotkey::GlobalHotKeyManager>,
     /// 마지막 경고음(벨이 몰려도 0.1초에 한 번만, #107)
     last_beep: Option<Instant>,
+    /// write_*_file로 쓴 파일들. 앱이 끝날 때 지운다(#125)
+    written_files: Vec<std::path::PathBuf>,
     hotkey_registered: Vec<global_hotkey::hotkey::HotKey>,
     hotkey_actions: std::collections::HashMap<u32, Action>,
 }
@@ -501,6 +503,7 @@ impl App {
             last_focused: None,
             hotkeys: None,
             last_beep: None,
+            written_files: Vec::new(),
             hotkey_registered: Vec::new(),
             hotkey_actions: std::collections::HashMap::new(),
         }
@@ -1295,6 +1298,48 @@ impl App {
         true
     }
 
+    /// 지금 칸의 글을 이 사용자 전용 폴더에 파일로 쓰고, 그 경로를 복사·붙여넣기·열기(#125)
+    fn write_file(&mut self, source: crate::keymap::FileSource, then: crate::keymap::FileThen) {
+        use crate::keymap::{FileSource, FileThen};
+        let Some(p) = self.active_pane() else { return };
+        let (id, kind, text) = match source {
+            // 스크롤백 상한보다 넉넉히: tail_text가 맨 위에서 멈춘다
+            FileSource::Scrollback => (p.id, "scrollback", p.session.tail_text(1_000_000)),
+            FileSource::Screen => (p.id, "screen", p.session.snapshot().text()),
+            FileSource::Selection => match p.session.selection_text().filter(|t| !t.is_empty()) {
+                Some(t) => (p.id, "selection", t),
+                // Ghostty처럼 고른 글이 없으면 아무것도 하지 않는다
+                None => return,
+            },
+        };
+        let path = match crate::dump::dir().and_then(|d| crate::dump::write(&d, kind, &text)) {
+            Ok(path) => path,
+            Err(e) => {
+                log::warn!("파일로 쓰지 못했습니다: {e}");
+                self.toast(format!("파일로 쓰지 못했습니다: {e}"));
+                return;
+            }
+        };
+        self.written_files.push(path.clone());
+        let shown = path.to_string_lossy().into_owned();
+        match then {
+            FileThen::Copy => {
+                if let Some(cb) = self.clipboard.as_mut() {
+                    let _ = cb.set_text(shown.clone());
+                }
+                self.toast(format!("경로를 복사했습니다: {shown}"));
+            }
+            FileThen::Paste => self.paste_into(id, &shown),
+            FileThen::Open => {
+                // 셸을 거치지 않고 인자로 넘긴다
+                let opener = if cfg!(target_os = "macos") { "open" } else { "xdg-open" };
+                if let Err(e) = std::process::Command::new(opener).arg(&path).spawn() {
+                    self.toast(format!("열지 못했습니다: {e}"));
+                }
+            }
+        }
+    }
+
     /// 칸에 사람이 붙인 제목을 정한다. 빈 글이면 지운다(프로그램이 정한 제목으로 돌아감)
     fn set_user_title(&mut self, pane: u64, text: &str) {
         if let Some(i) = self.pane_index(pane) {
@@ -1725,6 +1770,7 @@ impl App {
                 }
             }
             Action::Quit => self.request(Pending::Quit, event_loop),
+            Action::WriteFile(source, then) => self.write_file(source, then),
             Action::PromptSurfaceTitle => {
                 if let Some(p) = self.active_pane() {
                     let (id, now) = (p.id, p.user_title.clone().unwrap_or_default());
@@ -2966,6 +3012,10 @@ impl ApplicationHandler<UserEvent> for App {
     }
 
     fn exiting(&mut self, _event_loop: &ActiveEventLoop) {
+        // write_*_file로 쓴 파일은 화면 내용이라 남기지 않는다(#125)
+        for f in self.written_files.drain(..) {
+            let _ = std::fs::remove_file(f);
+        }
         // 끌 때 창 상태를 적는다(#94). 마지막 창을 닫고 꺼진 것이면 창이 없어 파일을 지운다
         if self.config.window_save_state {
             self.save_state();
