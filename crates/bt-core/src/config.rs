@@ -538,10 +538,10 @@ pub struct Config {
     pub split_preserve_zoom: SplitPreserveZoom,
     /// 앱 자신의 알림 띠(Ghostty `app-notifications`)
     pub app_notifications: AppNotifications,
-    /// OSC 52로 프로그램이 클립보드에 쓰는 것을 허용(Ghostty 기본 allow)
-    pub clipboard_write: bool,
-    /// OSC 52로 프로그램이 클립보드를 읽는 것을 허용(기본 금지. Ghostty 기본은 ask)
-    pub clipboard_read: bool,
+    /// OSC 52로 프로그램이 클립보드에 쓰는 것(Ghostty 기본 allow). ask는 창 안 확인 막대로 묻는다(#220)
+    pub clipboard_write: crate::clipboard::ClipboardAccess,
+    /// OSC 52로 프로그램이 클립보드를 읽는 것(기본 deny. Ghostty 기본은 ask라 다르다, ADR-019)
+    pub clipboard_read: crate::clipboard::ClipboardAccess,
     /// 위험해 보이는 붙여넣기(괄호 붙여넣기가 꺼진 프로그램에 줄바꿈)를 묻는다(Ghostty `clipboard-paste-protection`, #109)
     pub paste_protection: bool,
     /// 괄호 붙여넣기 모드의 붙여넣기는 안전으로 본다(Ghostty `clipboard-paste-bracketed-safe`)
@@ -1437,8 +1437,8 @@ impl Default for Config {
             palette_entries: Vec::new(),
             palette_defaults_cleared: false,
             mouse_reset_on_shell: true,
-            clipboard_write: true,
-            clipboard_read: false,
+            clipboard_write: crate::clipboard::ClipboardAccess::Allow,
+            clipboard_read: crate::clipboard::ClipboardAccess::Deny,
             paste_protection: true,
             paste_bracketed_safe: true,
             shell_integration: "detect".into(),
@@ -2974,16 +2974,13 @@ impl Config {
                     bad(warnings)
                 }
             }
-            "clipboard-write" => match v {
-                "allow" | "true" => self.clipboard_write = true,
-                "deny" | "false" => self.clipboard_write = false,
-                _ => bad(warnings),
+            "clipboard-write" => match crate::clipboard::ClipboardAccess::parse(v) {
+                Some(a) => self.clipboard_write = a,
+                None => bad(warnings),
             },
-            // ask는 아직 물을 창이 없어 금지로 본다
-            "clipboard-read" => match v {
-                "allow" | "true" => self.clipboard_read = true,
-                "deny" | "false" | "ask" => self.clipboard_read = false,
-                _ => bad(warnings),
+            "clipboard-read" => match crate::clipboard::ClipboardAccess::parse(v) {
+                Some(a) => self.clipboard_read = a,
+                None => bad(warnings),
             },
             "clipboard-paste-protection" => match parse_bool(v) {
                 Some(b) => self.paste_protection = b,
@@ -4622,6 +4619,20 @@ mod tests {
                 "{bad}"
             );
         }
+    }
+
+    #[test]
+    fn clipboard_access_keys_take_ask_and_keep_defaults() {
+        use crate::clipboard::ClipboardAccess::{Allow, Ask, Deny};
+        let d = Config::default();
+        assert_eq!((d.clipboard_read, d.clipboard_write), (Deny, Allow), "기본값은 그대로");
+        let c = Config::from_text("clipboard-read = ask\nclipboard-write = ask\n", true);
+        assert_eq!((c.clipboard_read, c.clipboard_write), (Ask, Ask));
+        let c = Config::from_text("clipboard-read = true\nclipboard-write = false\n", true);
+        assert_eq!((c.clipboard_read, c.clipboard_write), (Allow, Deny));
+        let c = Config::from_text("clipboard-write = maybe\n", true);
+        assert_eq!(c.clipboard_write, Allow);
+        assert_eq!(c.warnings.len(), 1, "{:?}", c.warnings);
     }
 
     #[test]

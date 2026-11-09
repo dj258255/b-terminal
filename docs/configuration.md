@@ -133,8 +133,8 @@ config-file = ?~/.config/b-terminal/local   # ?가 붙으면 없어도 된다
 | `command-palette-entry` | `title:…,action:…,description:…` | 기본 항목 | 명령 팔레트(Ghostty 1.2)에 항목을 더합니다. 여러 줄이 쌓이고, 빈 값(`command-palette-entry =`)은 기본 항목과 그 앞에 쓴 항목을 지웁니다. 아래 "팔레트 항목" |
 | `config-file` | 경로(`?` 붙이면 선택) | | 그 자리에서 읽어 넣음. 8단계까지 |
 | `import-ghostty` | `true` / `false` | `false` | b-terminal 키. Ghostty 설정을 옮겨 올 때 |
-| `clipboard-write` | `allow` / `deny` | `allow` | 프로그램이 OSC 52로 클립보드에 쓰기(AI CLI의 `/copy`). 보고 있는 창의 고른 칸(화면을 나눴으면 키 입력을 받는 칸)에서 온 것만 받습니다 |
-| `clipboard-read` | `allow` / `deny` / `ask` | `deny` | 프로그램이 OSC 52로 클립보드 읽기. `ask`는 아직 묻는 창이 없어 `deny`로 봅니다 |
+| `clipboard-write` | `allow` / `deny` / `ask` | `allow` | 프로그램이 OSC 52로 클립보드에 쓰기(AI CLI의 `/copy`). 보고 있는 창의 고른 칸(화면을 나눴으면 키 입력을 받는 칸)에서 온 것만 받습니다. `ask`는 쓸 글 앞부분을 창 안 막대로 보이고 묻습니다(`y` 허용, `n`·Esc 거절, Enter는 허용 아님) |
+| `clipboard-read` | `allow` / `deny` / `ask` | `deny` | 프로그램이 OSC 52로 클립보드 읽기. `ask`는 읽어 갈 글 앞부분을 창 안 막대로 보이고 묻습니다(`y` 허용, `n`·Esc 거절, Enter는 허용 아님). Ghostty 기본은 `ask`지만 b-terminal 기본은 `deny`입니다 |
 | `shell-integration` | `detect` `none` `zsh` `bash` | `detect` | 탭의 셸에 셸 통합을 싣습니다(아래 "셸 통합") |
 | `shell-integration-features` | `cursor` `sudo` `title` `ssh-env` `ssh-terminfo` `path`(쉼표로, 앞에 `no-`면 끔), `true` `false` | `cursor,title,path` | Ghostty 키. 셸 통합의 기능별 켜고 끄기. 적지 않은 기능은 기본값을 따르고, `true`·`false`는 모두 켜고 끕니다. 아래 "셸 통합 기능" |
 | `notify-command-seconds` | 초 | `10` | b-terminal 키(옛 키). 셸 통합으로 안 명령이 이만큼 넘게 걸려 끝나면 창을 보지 않을 때 데스크톱 알림. `0`이면 끔. `notify-on-command-finish`를 적으면 무시합니다 |
