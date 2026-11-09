@@ -19,6 +19,28 @@ pub enum CursorStyle {
     BlockHollow,
 }
 
+/// `link-previews`(Ghostty 1.2): 링크 위에 있을 때 실제 주소 띠를 언제 보일지
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LinkPreviews {
+    /// 찾은 모든 링크(기본)
+    True,
+    /// 보이지 않는다
+    False,
+    /// OSC 8 링크만(보이는 글과 주소가 다를 수 있는 것)
+    Osc8,
+}
+
+impl LinkPreviews {
+    /// 이 링크에 주소 띠를 보이는가. `explicit`는 OSC 8 링크
+    pub fn shows(self, explicit: bool) -> bool {
+        match self {
+            LinkPreviews::True => true,
+            LinkPreviews::False => false,
+            LinkPreviews::Osc8 => explicit,
+        }
+    }
+}
+
 /// `copy-on-select`(Ghostty). macOS에는 선택 클립보드가 없어 `true`와 `clipboard`는 둘 다 시스템 클립보드로 복사한다
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CopyOnSelect {
@@ -373,6 +395,12 @@ pub struct Config {
     pub palette_set: Vec<(u8, Rgb)>,
     /// `background-opacity-cells`(Ghostty 1.2, 기본 끔): 색이 있는 바탕 칸도 `background-opacity`로 비친다
     pub background_opacity_cells: bool,
+    /// `link-url`(기본 켬): 화면 글의 URL 자동 인식
+    pub link_url: bool,
+    /// `link-osc8`(Ghostty 1.4, 기본 켬): OSC 8 링크를 링크로 다룬다
+    pub link_osc8: bool,
+    /// `link-previews`(기본 true): Cmd를 누른 채 링크 위에 있을 때 주소 띠
+    pub link_previews: LinkPreviews,
     pub copy_on_select: CopyOnSelect,
     /// 클립보드로 복사하는 글의 줄 끝 공백·탭을 지운다(Ghostty `clipboard-trim-trailing-spaces`)
     pub clipboard_trim_trailing_spaces: bool,
@@ -966,6 +994,9 @@ impl Default for Config {
             palette_harmonious: false,
             palette_set: Vec::new(),
             background_opacity_cells: false,
+            link_url: true,
+            link_osc8: true,
+            link_previews: LinkPreviews::True,
             copy_on_select: CopyOnSelect::True,
             clipboard_trim_trailing_spaces: true,
             selection_clear_on_typing: true,
@@ -1959,6 +1990,27 @@ impl Config {
                 Some(b) => self.palette_harmonious = b,
                 None => bad(warnings),
             },
+            "link-url" => match parse_bool(v) {
+                Some(b) => self.link_url = b,
+                None => bad(warnings),
+            },
+            "link-osc8" => match parse_bool(v) {
+                Some(b) => self.link_osc8 = b,
+                None => bad(warnings),
+            },
+            "link-previews" => match v {
+                "true" => self.link_previews = LinkPreviews::True,
+                "false" => self.link_previews = LinkPreviews::False,
+                "osc8" => self.link_previews = LinkPreviews::Osc8,
+                _ => bad(warnings),
+            },
+            // Ghostty도 아직 이 키를 읽지 못한다(소스 주석: "TODO: This can't currently be set!").
+            // 정규식 링크는 만들지 않는다. 받은 줄은 알리고 넘긴다
+            "link" => warnings.push(format!(
+                "{}:{}: link는 Ghostty에서도 아직 쓸 수 없는 키라 무시합니다(정규식 링크 없음)",
+                e.file.display(),
+                e.line
+            )),
             "background-opacity-cells" => match parse_bool(v) {
                 Some(b) => self.background_opacity_cells = b,
                 None => bad(warnings),
@@ -2480,6 +2532,17 @@ impl Config {
         push("palette-generate", self.palette_generate.to_string());
         push("palette-harmonious", self.palette_harmonious.to_string());
         push("background-opacity-cells", self.background_opacity_cells.to_string());
+        push("link-url", self.link_url.to_string());
+        push("link-osc8", self.link_osc8.to_string());
+        push(
+            "link-previews",
+            match self.link_previews {
+                LinkPreviews::True => "true",
+                LinkPreviews::False => "false",
+                LinkPreviews::Osc8 => "osc8",
+            }
+            .to_string(),
+        );
         push(
             "copy-on-select",
             match self.copy_on_select {
@@ -2686,7 +2749,6 @@ const KNOWN_IGNORED: &[&str] = &[
     "shell-integration-features",
     "auto-update",
     "auto-update-channel",
-    "link-url",
     "gtk-titlebar",
     "gtk-single-instance",
 ];
@@ -4161,6 +4223,59 @@ mod tests {
         assert_eq!(r.scrollback_limit_lines, Some(321));
         assert!(r.palette_generate && r.palette_harmonious && r.background_opacity_cells);
         assert_eq!(r.theme.indexed(99), Rgb::new(10, 11, 12));
+    }
+
+    /// #191: link-url·link-osc8·link-previews·link
+    #[test]
+    fn link_keys() {
+        let d = Config::default();
+        assert!(d.link_url && d.link_osc8, "기본은 둘 다 켬");
+        assert_eq!(d.link_previews, LinkPreviews::True);
+        let c = Config::from_text("link-url = false\nlink-osc8 = false\nlink-previews = osc8\n", true);
+        assert!(!c.link_url && !c.link_osc8);
+        assert_eq!(c.link_previews, LinkPreviews::Osc8);
+        assert!(c.warnings.is_empty(), "{:?}", c.warnings);
+        assert_eq!(
+            Config::from_text("link-previews = false\n", true).link_previews,
+            LinkPreviews::False
+        );
+        // 잘못된 값은 경고하고 기본을 지킨다
+        for bad in ["link-url = maybe", "link-osc8 = 2", "link-previews = sometimes"] {
+            let c = Config::from_text(&format!("{bad}\n"), true);
+            assert_eq!(c.warnings.len(), 1, "{bad}");
+            assert!(
+                c.link_url && c.link_osc8 && c.link_previews == LinkPreviews::True,
+                "{bad}"
+            );
+        }
+        // 다시 읽어도 같다
+        let r = Config::from_text(&c.render(), true);
+        assert!(!r.link_url && !r.link_osc8);
+        assert_eq!(r.link_previews, LinkPreviews::Osc8);
+    }
+
+    /// #191: link는 Ghostty에서도 아직 쓸 수 없다(소스: "TODO: This can't currently be set!"). 받고, 안 된다고 알린다
+    #[test]
+    fn link_regex_key_is_accepted_but_not_applied() {
+        let c = Config::from_text("link = regex:https://x\n", true);
+        assert_eq!(c.warnings.len(), 1, "{:?}", c.warnings);
+        assert!(c.warnings[0].contains("link"), "{:?}", c.warnings);
+        assert!(
+            !c.warnings[0].contains("아직 모르는"),
+            "모르는 키가 아니다: {:?}",
+            c.warnings
+        );
+    }
+
+    #[test]
+    fn link_previews_decision() {
+        assert!(LinkPreviews::True.shows(true) && LinkPreviews::True.shows(false));
+        assert!(!LinkPreviews::False.shows(true) && !LinkPreviews::False.shows(false));
+        assert!(LinkPreviews::Osc8.shows(true));
+        assert!(
+            !LinkPreviews::Osc8.shows(false),
+            "화면 글의 URL은 글 자체가 주소라 띠를 보이지 않는다"
+        );
     }
 
     #[test]

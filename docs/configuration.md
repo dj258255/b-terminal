@@ -148,6 +148,10 @@ config-file = ?~/.config/b-terminal/local   # ?가 붙으면 없어도 된다
 | `window-save-state` | `default` `always` `never` | `default` | 앱을 끌 때(Cmd-Q) 창 크기·자리, 탭, 분할(비율), 칸의 작업 폴더를 적어 두고 다음에 켤 때 새 셸로 되살립니다. 돌던 프로그램·화면 내용은 되살리지 않습니다. 마지막 창을 닫아 꺼진 경우와 `-e`·`--cwd`로 띄운 경우는 되살리지 않습니다 |
 | `background-opacity` | `0`~`1` | `1` | 기본 바탕색 칸으로 창 뒤가 비칩니다(글자·색 칸은 불투명). 새 창부터 따릅니다 |
 | `background-opacity-cells` | `true` / `false` | `false` | Ghostty 1.2 값. 켜면 `background-opacity`를 색이 있는 바탕 칸(프로그램이 바탕색을 칠한 칸)에도 적용합니다. 끄면 기본 바탕색 칸만 비칩니다. 고른 영역·커서·탭 막대는 그대로입니다 |
+| `link-url` | `true` / `false` | `true` | 화면 글의 URL을 Cmd(Linux는 Ctrl)를 누른 채 위에 있으면 링크로 찾습니다. `false`면 글의 URL은 링크가 아닙니다. OSC 8 링크는 `link-osc8`이 따로 정합니다 |
+| `link-osc8` | `true` / `false` | `true` | Ghostty 1.4 키. `false`면 OSC 8 하이퍼링크를 강조·주소 띠·복사·열기 모두 하지 않고 보통 글로 둡니다 |
+| `link-previews` | `true` / `false` / `osc8` | `true` | Cmd를 누른 채 링크 위에 있을 때 창 왼쪽 아래에 실제 주소 띠를 보입니다. `false`면 띠가 없고(밑줄과 열기는 그대로), `osc8`이면 OSC 8 링크에만 보입니다. `false`는 열기 전에 주소를 보는 보장을 약하게 합니다(SECURITY.md) |
+| `link` | 정규식 | 없음 | Ghostty에서도 아직 쓸 수 없는 키입니다. 받기만 하고 경고를 남기며 링크를 더하지 않습니다 |
 | `palette-generate` | `true` / `false` | `false` | Ghostty 1.3 값. 16~255번 색을 기본 16색과 바탕·글자색에서 만듭니다(CIELAB 3선형 보간 6x6x6 정육면체와 회색 24단계). `palette = 100=#...`로 직접 정한 번호는 덮어쓰지 않습니다. 끄면 xterm 표 그대로입니다 |
 | `palette-harmonious` | `true` / `false` | `false` | Ghostty 1.3 값. `palette-generate`일 때, 밝은 테마(글자색이 바탕보다 어두움)에서 바탕·글자색을 맞바꾸지 않습니다. 기본(끔)은 맞바꿔서 16번이 어둡고 231번이 밝은 옛 순서를 지킵니다. 어두운 테마에서는 차이가 없습니다. `palette-generate`가 꺼져 있으면 아무 일도 하지 않습니다 |
 | `background-image` | PNG·JPEG 파일 경로(`~/`, 상대 경로는 설정 파일 폴더 기준), 빈 값이면 없음 | (없음) | 창 바탕에 그림을 깝니다. 기본 바탕색 칸과 여백에만 보이고, 색 바탕 칸은 그 색으로 덮습니다. 한 변 10000px·파일 64MiB까지 |
