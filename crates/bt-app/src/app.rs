@@ -15,6 +15,7 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoopProxy};
 use winit::keyboard::ModifiersState;
 use winit::window::{CursorIcon, Window, WindowId};
 
+use crate::icon;
 use crate::keymap::{Action, Keymap, SplitTarget};
 use crate::keys;
 use crate::mouse;
@@ -581,7 +582,10 @@ pub struct App {
     /// 모든 탭의 칸들(탭 순서와 상관없다)
     panes: Vec<Pane>,
     next_id: u64,
+    /// `key-remap`을 적용한 수정 키 상태(키 묶음·PTY 인코딩·마우스가 쓴다, #196)
     mods: ModifiersState,
+    /// 바꾸기 전, 좌우를 나눈 수정 키 상태
+    raw_mods: bt_core::config::SidedMods,
     clipboard: Option<arboard::Clipboard>,
     first: Option<SpawnOptions>,
     next_poll: Instant,
@@ -649,6 +653,7 @@ impl App {
             panes: Vec::new(),
             next_id: 1,
             mods: ModifiersState::empty(),
+            raw_mods: Default::default(),
             clipboard: arboard::Clipboard::new().ok(),
             first: Some(first),
             next_poll: Instant::now(),
@@ -2563,7 +2568,9 @@ impl App {
         }
         self.config = next;
         self.apply_window_look();
+        self.refresh_mods();
         apply_hidden_from_dock(self.config.macos_hidden);
+        icon::apply(self.config.macos_icon, self.config.macos_custom_icon.as_deref());
         self.load_background();
         self.load_fonts();
         self.for_each_window(|app| app.resize_all());
@@ -2578,6 +2585,11 @@ impl App {
                 format!("설정을 다시 읽었습니다(경고 {warn}개)")
             });
         }
+    }
+
+    /// 눌린 수정 키에 `key-remap`을 적용해 `mods`를 정한다(설정을 다시 읽을 때도 한다)
+    fn refresh_mods(&mut self) {
+        self.mods = keys::remapped_state(&self.config.key_remap, self.raw_mods);
     }
 
     /// 칸 idx의 프로그램이 마우스 보고를 켰으면 그 모드
@@ -3976,6 +3988,7 @@ impl ApplicationHandler<UserEvent> for App {
             self.menu = Some(menu);
         }
         apply_hidden_from_dock(self.config.macos_hidden);
+        icon::apply(self.config.macos_icon, self.config.macos_custom_icon.as_deref());
         self.load_fonts();
         if self.fonts.is_none() {
             event_loop.exit();
@@ -4242,7 +4255,8 @@ impl ApplicationHandler<UserEvent> for App {
             }
             WindowEvent::RedrawRequested => self.redraw(),
             WindowEvent::ModifiersChanged(m) => {
-                self.mods = m.state();
+                self.raw_mods = keys::sided_mods(&m);
+                self.refresh_mods();
                 self.update_hover();
             }
             WindowEvent::Focused(focused) => {
@@ -4259,6 +4273,10 @@ impl ApplicationHandler<UserEvent> for App {
                 }
                 if focused {
                     self.last_focused = Some(id);
+                }
+                // 퀵 터미널이 키 창이 되면 Space 동작을 정한다(quick-terminal-space-behavior, #196)
+                if focused && self.w.quick {
+                    crate::quick::apply_space_behavior(self.config.quick.space);
                 }
                 if focused {
                     // 창으로 돌아오면 보고 있던 탭의 안 읽음을 지운다
@@ -4342,7 +4360,7 @@ impl ApplicationHandler<UserEvent> for App {
                 let trigger = keys::trigger(&event, self.mods);
                 let modes = self.active_pane().map(|t| t.session.modes()).unwrap_or_default();
                 let meta = self.config.option_as_alt != bt_core::config::OptionAsAlt::None;
-                let bytes = keys::encode(&event, self.mods, modes, meta);
+                let bytes = keys::encode(&event, self.mods, keys::to_state(self.raw_mods), modes, meta);
                 // performable: 묶음은 동작을 지금 할 수 있을 때만 키를 먹는다
                 let mut seq = std::mem::take(&mut self.w.keyseq);
                 let keymap = std::mem::take(&mut self.keymap);

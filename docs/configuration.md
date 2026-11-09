@@ -100,6 +100,9 @@ config-file = ?~/.config/b-terminal/local   # ?가 붙으면 없어도 된다
 | `window-titlebar-background` `window-titlebar-foreground` | 색 | (없음) | 받기만 합니다. Ghostty에서도 GTK 앱 런타임 전용이고, macOS 제목 막대 색은 winit·objc2의 safe 함수로 정할 수 없습니다 |
 | `window-position-x` / `window-position-y` | 정수(점) | 없음 | 첫 창의 자리. 주 화면의 보이는 영역(macOS는 메뉴 막대 아래) 왼쪽 위에서 잰 값이고, 둘 다 있어야 쓰며 하나만 있으면 무시합니다(Ghostty와 같음). 창 상태 복원으로 되살린 창은 복원한 자리가 이깁니다 |
 | `macos-option-as-alt` | `true` `false` `left` `right` | `false` | Ghostty 기본과 같게 끔 |
+| `key-remap` | `from=to` (예 `ctrl=super`, `left_alt=right_ctrl`), 여러 번 쓸 수 있음 | 없음 | 앱 안에서만 수정 키를 바꿉니다. 이름은 `shift` `ctrl`/`control` `alt`/`option` `super`/`cmd`/`command`, 앞에 `left_`·`right_`를 붙이면 그쪽만입니다(좌우 없는 이름은 양쪽). 키 묶음 판단과 PTY로 보내는 인코딩이 모두 바뀐 키를 씁니다. 한 방향이고 이어서 바뀌지 않습니다(`ctrl=super`, `alt=ctrl`이면 Alt는 Ctrl이 될 뿐 Super가 아닙니다). 키보드 배치와 OS가 만드는 글자는 그대로라 `option+a`가 `å`를 만드는 것은 달라지지 않습니다. 메뉴 막대의 Cmd 단축키는 macOS가 먼저 처리해 바뀌지 않습니다. 좌우는 macOS의 winit이 장치별 비트로 알려 주는 것을 씁니다(그 밖의 OS는 좌우를 모르면 왼쪽으로 봅니다). 빈 값은 지금까지 쌓은 것을 지웁니다. `option-as-alt`는 진짜 Option 키에만 걸리고, 바꾸기로 생긴 Alt는 늘 Alt입니다 |
+| `macos-icon` | `official` `custom` `custom-style`, 내장 이름(`blueprint` `chalkboard` `microchip` `glass` `holographic` `paper` `retro` `xray`) | `official` | `custom`일 때만 `macos-custom-icon`의 그림으로 바꿉니다. 내장 이름과 `custom-style`은 b-terminal에 그 그림이 없어 받기만 합니다. `NSApplication.setApplicationIconImage`가 objc2에서 `unsafe`라 쓰지 못해 Dock 아이콘(`NSDockTile`)에만 올립니다. Cmd-Tab과 Finder의 아이콘은 그대로입니다. 실제 Dock에서는 아직 확인하지 않았습니다 |
+| `macos-custom-icon` | 그림 파일 경로(png·jpeg·icns) | 없음 | `macos-icon = custom`일 때 쓸 그림. `~/`는 홈, 상대 경로는 설정 파일이 있는 폴더 기준입니다(Ghostty의 `~/.config/ghostty/Ghostty.icns` 기본값은 없습니다). 읽지 못하면 로그에 경고하고 아이콘을 그대로 둡니다. 빈 값은 지움 |
 | `scrollback-limit-bytes` | 바이트, `unlimited` | 1000만 | Ghostty 1.4 이름. VT 엔진은 줄 수 상한만 있어 줄 하나를 약 1KB로 보고 줄 수로 바꿉니다(1000만이면 1만 줄, 100줄 이상). 옛 이름 `scrollback-limit`도 같은 뜻으로 받습니다. Ghostty 1.4 소스의 기본은 5000만이지만 스크롤백 압축과 함께 올린 값이라 따르지 않습니다 |
 | `scrollback-limit-lines` | 줄 수, `unlimited` | `unlimited` | Ghostty 1.4 값. 바이트 상한과 둘 다 있으면 먼저 닿는 쪽(작은 쪽)이 이깁니다. 둘 다 `unlimited`여도 100만 줄에서 멈춥니다 |
 | `scrollback-lines` | 줄 수 | | b-terminal 옛 키. 정확히 그 줄 수로 두고 바이트 상한은 풉니다(뒤에 쓴 `scrollback-limit-*`가 이김) |
@@ -160,6 +163,7 @@ config-file = ?~/.config/b-terminal/local   # ?가 붙으면 없어도 된다
 | `quick-terminal-screen` | `main` `mouse` `macos-menu-bar` | `main` | 퀵 터미널이 뜨는 화면: 앞에 있는 창의 화면, 마우스가 있는 화면, 메뉴 막대가 있는 화면 |
 | `quick-terminal-autohide` | `true` `false` | `true` | 포커스를 잃으면 숨습니다 |
 | `quick-terminal-animation-duration` | 초 | `0.2` | 들어오고 나가는 움직임의 길이. `0`이면 움직이지 않습니다. 가운데(`center`)는 움직이지 않습니다 |
+| `quick-terminal-space-behavior` | `move` `remain` | `move` | Space(데스크톱)를 옮길 때 퀵 터미널이 따라오는가(`move`: 지금 Space로 따라옴, `remain`: 처음 연 Space에 남음). 퀵 창이 포커스를 받을 때 `NSWindow.collectionBehavior`를 정합니다(macOS). 실제 창에서는 아직 확인하지 않았습니다 |
 | `window-save-state` | `default` `always` `never` | `default` | 앱을 끌 때(Cmd-Q) 창 크기·자리, 탭, 분할(비율), 칸의 작업 폴더를 적어 두고 다음에 켤 때 새 셸로 되살립니다. 돌던 프로그램·화면 내용은 되살리지 않습니다. 마지막 창을 닫아 꺼진 경우와 `-e`·`--cwd`로 띄운 경우는 되살리지 않습니다 |
 | `background-opacity` | `0`~`1` | `1` | 기본 바탕색 칸으로 창 뒤가 비칩니다(글자·색 칸은 불투명). 새 창부터 따릅니다 |
 | `background-opacity-cells` | `true` / `false` | `false` | Ghostty 1.2 값. 켜면 `background-opacity`를 색이 있는 바탕 칸(프로그램이 바탕색을 칠한 칸)에도 적용합니다. 끄면 기본 바탕색 칸만 비칩니다. 고른 영역·커서·탭 막대는 그대로입니다 |
@@ -182,7 +186,24 @@ config-file = ?~/.config/b-terminal/local   # ?가 붙으면 없어도 된다
 
 ### 받기만 하고 쓰지 않는 Ghostty 키
 
-경고 없이 넘깁니다: `background-blur`, `window-decoration`, `window-theme`, `macos-titlebar-style`, `macos-icon`, `confirm-close-surface`, `auto-update`, `minimum-contrast` 등. 그 밖의 키는 경고합니다.
+경고 없이 넘깁니다: `background-blur`, `auto-update`, `gtk-titlebar` 등. 그 밖의 키는 경고합니다. 값은 확인하지 않고 그대로 넘깁니다. 0.13(#196)에서 더한 것과 이유:
+
+| 키 | 이유 |
+|---|---|
+| `background-blur` `background-blur-radius` | 창 뒤 흐림은 비공개 API(`CGSSetWindowBackgroundBlurRadius`)를 불러야 하고 unsafe가 필요합니다 |
+| `macos-auto-secure-input` `macos-secure-input-indication` | 보안 입력(`EnableSecureEventInput`)은 Carbon 함수를 직접 불러야 해 unsafe가 필요합니다 |
+| `macos-applescript` `macos-shortcuts` | AppleScript 사전과 단축어(App Intents)는 앱 꾸러미와 Objective-C 클래스 정의가 필요한데 지금 b-terminal에는 그 기능이 없습니다 |
+| `macos-dock-drop-behavior` | Dock 아이콘에 파일·폴더를 놓으면 앱 델리게이트의 `application:openURLs:`가 불리는데 winit 0.30은 그 이벤트를 주지 않습니다. 창에 놓은 파일(`DroppedFile`)만 옵니다 |
+| `macos-icon-frame` `macos-icon-ghost-color` `macos-icon-screen-color` | `macos-icon = custom-style` 전용입니다. 그 그림 틀(유령·화면 그라데이션)이 b-terminal에 없습니다 |
+| `vt-xt-checksum-report` `vt-xt-checksum-extension` | DECRQCRA(화면 영역 체크섬 보고)는 구현하지 않았습니다. 프로그램이 칸 하나씩 체크섬을 물어 화면 전체(다른 프로그램의 출력 포함)를 읽어 갈 수 있는 길이라, 구현할 때는 기본을 끄고 ADR·SECURITY.md에 적어야 합니다. 구현하지 않으니 지금은 어떤 값을 줘도 체크섬 요청에 답하지 않습니다(Ghostty의 기본과 같습니다) |
+| `class` `x11-instance-name` `language` | GTK·X11 전용입니다 |
+| `gtk-custom-css` `gtk-horizontal-tab-scroll` `gtk-opengl-debug` `gtk-quick-terminal-layer` `gtk-quick-terminal-namespace` `gtk-tabs-inverted` `gtk-tabs-location` `gtk-titlebar-hide-when-maximized` `gtk-titlebar-style` `gtk-toolbar-style` `gtk-wide-tabs` | GTK 전용입니다(`gtk-titlebar`·`gtk-single-instance`는 앞서 받기만 하던 것) |
+| `linux-cgroup` `linux-cgroup-memory-limit` `linux-cgroup-processes-limit` `linux-cgroup-hard-fail` `async-backend` | 리눅스 전용입니다(cgroup, epoll·io_uring 고르기). macOS는 kqueue 하나입니다 |
+| `quick-terminal-keyboard-interactivity` | Wayland 레이어 셸 전용입니다 |
+| `custom-shader` `custom-shader-animation` `alpha-blending` `freetype-load-flags` `window-vsync` | Ghostty의 GPU 그리기(셰이더, 선형 알파, FreeType 옵션, vsync)에 대한 것입니다. b-terminal은 CPU로 그려 그 단계가 없습니다 |
+| `window-title-font-family` | 창·탭 제목 글꼴입니다. 탭 줄과 제목은 b-terminal이 터미널 글꼴로 직접 그려서 따로 고르지 않습니다 |
+| `scrollback-compression` | Ghostty 화면 엔진(페이지 메모리 압축)의 옵션입니다. b-terminal의 VT 엔진에는 그 단계가 없습니다 |
+| `drag-handle` | 마우스로 칸을 끌어 옮기는 손잡이입니다. b-terminal에는 그 기능이 없습니다 |
 
 ## 팔레트 항목
 

@@ -501,6 +501,12 @@ pub struct Config {
     pub working_directory: WorkingDirectory,
     /// 정해 둔 창 제목(셸이 보낸 제목보다 먼저)
     pub title: Option<String>,
+    /// `key-remap = from=to`(#196): 앱 안에서만 수정 키를 바꾼다. 쓴 차례대로 쌓인다
+    pub key_remap: Vec<KeyRemap>,
+    /// `macos-icon`(#196). 이름만 받고 `custom`일 때만 그림을 바꾼다
+    pub macos_icon: MacosIcon,
+    /// `macos-custom-icon`(#196): `macos-icon = custom`일 때 쓸 그림 파일. 빈 값이면 없음
+    pub macos_custom_icon: Option<PathBuf>,
     /// `keybind = 트리거=동작`. 앱이 해석한다
     pub keybinds: Vec<String>,
     /// `command-palette-entry`(#150): 사용자 항목. 쓴 차례대로 쌓인다
@@ -1084,6 +1090,17 @@ pub struct QuickTerminal {
     pub autohide: bool,
     /// 들어오고 나가는 움직임(초). 0이면 움직이지 않는다
     pub animation: f64,
+    /// Space(데스크톱)를 옮길 때 퀵 터미널이 따라오는가(Ghostty `quick-terminal-space-behavior`, #196)
+    pub space: QuickSpace,
+}
+
+/// Space를 옮길 때 퀵 터미널의 동작(Ghostty `quick-terminal-space-behavior`). 기본 `move`
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum QuickSpace {
+    /// 지금 Space로 따라온다
+    Move,
+    /// 처음 연 Space에만 남는다
+    Remain,
 }
 
 impl Default for QuickTerminal {
@@ -1095,7 +1112,185 @@ impl Default for QuickTerminal {
             screen: QuickScreen::Main,
             autohide: true,
             animation: 0.2,
+            space: QuickSpace::Move,
         }
+    }
+}
+
+/// 수정 키의 종류(Ghostty `key-remap`의 이름)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ModKind {
+    Shift,
+    Ctrl,
+    Alt,
+    Super,
+}
+
+/// 수정 키의 왼쪽·오른쪽
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ModSide {
+    Left,
+    Right,
+}
+
+/// `key-remap`의 한쪽: `ctrl`처럼 좌우 모두이거나 `left_ctrl`처럼 한쪽
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ModKey {
+    pub kind: ModKind,
+    pub side: Option<ModSide>,
+}
+
+impl ModKey {
+    /// Ghostty 이름: `shift`, `ctrl`/`control`, `alt`/`option`, `super`/`cmd`/`command`. 앞에 `left_`·`right_`
+    fn parse(s: &str) -> Option<Self> {
+        let (side, name) = if let Some(n) = s.strip_prefix("left_") {
+            (Some(ModSide::Left), n)
+        } else if let Some(n) = s.strip_prefix("right_") {
+            (Some(ModSide::Right), n)
+        } else {
+            (None, s)
+        };
+        let kind = match name {
+            "shift" => ModKind::Shift,
+            "ctrl" | "control" => ModKind::Ctrl,
+            "alt" | "option" => ModKind::Alt,
+            "super" | "cmd" | "command" => ModKind::Super,
+            _ => return None,
+        };
+        Some(Self { kind, side })
+    }
+}
+
+/// 지금 눌린 수정 키를 좌우 따로 적은 것(비트 8개)
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct SidedMods(u8);
+
+impl SidedMods {
+    fn bit(kind: ModKind, side: ModSide) -> u8 {
+        let k = match kind {
+            ModKind::Shift => 0,
+            ModKind::Ctrl => 1,
+            ModKind::Alt => 2,
+            ModKind::Super => 3,
+        };
+        1 << (k * 2 + usize::from(side == ModSide::Right))
+    }
+
+    /// 그 종류의 좌우 비트 모두
+    fn kind_mask(kind: ModKind) -> u8 {
+        Self::bit(kind, ModSide::Left) | Self::bit(kind, ModSide::Right)
+    }
+
+    pub fn with(mut self, kind: ModKind, side: ModSide) -> Self {
+        self.0 |= Self::bit(kind, side);
+        self
+    }
+
+    /// 어느 쪽이든 눌려 있는가
+    pub fn has(self, kind: ModKind) -> bool {
+        self.0 & Self::kind_mask(kind) != 0
+    }
+
+    pub fn has_side(self, kind: ModKind, side: ModSide) -> bool {
+        self.0 & Self::bit(kind, side) != 0
+    }
+}
+
+/// `key-remap = from=to` 하나(Ghostty와 같다)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct KeyRemap {
+    pub from: ModKey,
+    pub to: ModKey,
+}
+
+impl KeyRemap {
+    pub fn parse(v: &str) -> Option<Self> {
+        let (from, to) = v.split_once('=')?;
+        Some(Self {
+            from: ModKey::parse(from.trim())?,
+            to: ModKey::parse(to.trim())?,
+        })
+    }
+}
+
+impl std::fmt::Display for ModKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.side {
+            Some(ModSide::Left) => f.write_str("left_")?,
+            Some(ModSide::Right) => f.write_str("right_")?,
+            None => {}
+        }
+        f.write_str(match self.kind {
+            ModKind::Shift => "shift",
+            ModKind::Ctrl => "ctrl",
+            ModKind::Alt => "alt",
+            ModKind::Super => "super",
+        })
+    }
+}
+
+impl std::fmt::Display for KeyRemap {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}={}", self.from, self.to)
+    }
+}
+
+impl std::fmt::Display for MacosIcon {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Official => "official",
+            Self::Builtin => "(내장 그림 이름)",
+            Self::Custom => "custom",
+            Self::CustomStyle => "custom-style",
+        })
+    }
+}
+
+/// 누른 수정 키에 `key-remap`을 적용한다. 일치는 누른 그대로(바꾸기 전)로 보므로 이어서 바뀌지 않는다
+/// (`ctrl=super`와 `alt=ctrl`이면 Alt는 Ctrl이 될 뿐 Super가 되지 않는다). `ctrl`은 좌우 모두에,
+/// `left_ctrl`은 왼쪽에만 맞는다. 바뀐 키는 `to`의 종류로 눌린 것이 된다
+pub fn apply_key_remap(remaps: &[KeyRemap], pressed: SidedMods) -> SidedMods {
+    let mut out = pressed.0;
+    let mut add = 0u8;
+    for r in remaps {
+        let from = match r.from.side {
+            Some(side) => SidedMods::bit(r.from.kind, side),
+            None => SidedMods::kind_mask(r.from.kind),
+        };
+        let hit = pressed.0 & from;
+        if hit != 0 {
+            out &= !hit;
+            add |= SidedMods::bit(r.to.kind, r.to.side.unwrap_or(ModSide::Left));
+        }
+    }
+    // 지우는 일을 다 한 뒤에 더해야 서로 바꾸기(`ctrl=alt`, `alt=ctrl`)가 서로를 지우지 않는다
+    SidedMods(out | add)
+}
+
+/// `macos-icon` 값(Ghostty). 이름 그림은 b-terminal에 없어 `custom`만 그림을 바꾼다
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MacosIcon {
+    /// `official`: 앱에 들어 있는 그림(기본)
+    Official,
+    /// Ghostty의 다른 내장 그림 이름(`blueprint`, `chalkboard` 등): 받기만 한다
+    Builtin,
+    /// `custom`: `macos-custom-icon`의 파일
+    Custom,
+    /// `custom-style`: 받기만 한다
+    CustomStyle,
+}
+
+impl MacosIcon {
+    fn parse(v: &str) -> Option<Self> {
+        Some(match v {
+            "official" => Self::Official,
+            "blueprint" | "chalkboard" | "microchip" | "glass" | "holographic" | "paper" | "retro" | "xray" => {
+                Self::Builtin
+            }
+            "custom" => Self::Custom,
+            "custom-style" => Self::CustomStyle,
+            _ => return None,
+        })
     }
 }
 
@@ -1264,6 +1459,9 @@ impl Default for Config {
             bell_features: BellFeatures::default(),
             bell_audio_path: None,
             bell_audio_volume: 0.5,
+            key_remap: Vec::new(),
+            macos_icon: MacosIcon::Official,
+            macos_custom_icon: None,
             confirm_close: ConfirmClose::True,
             quick: QuickTerminal::default(),
             background_image: None,
@@ -2652,6 +2850,21 @@ impl Config {
             }
             "title" => self.title = Some(v.to_string()).filter(|s| !s.is_empty()),
             "keybind" => self.keybinds.push(v.to_string()),
+            // 빈 값은 지금까지 쌓은 것을 지운다(반복하는 다른 키와 같다)
+            "key-remap" if v.is_empty() => self.key_remap.clear(),
+            "key-remap" => match KeyRemap::parse(v) {
+                Some(r) => self.key_remap.push(r),
+                None => bad(warnings),
+            },
+            "macos-icon" => match MacosIcon::parse(v) {
+                Some(i) => self.macos_icon = i,
+                None => bad(warnings),
+            },
+            // 상대 경로는 그 설정 파일의 폴더 기준(bell-audio-path와 같게). 빈 값은 지움
+            "macos-custom-icon" => {
+                self.macos_custom_icon =
+                    (!v.is_empty()).then(|| expand_home(v, e.file.parent().unwrap_or(Path::new("."))));
+            }
             "command-palette-entry" => {
                 if v.is_empty() {
                     self.palette_entries.clear();
@@ -2935,6 +3148,11 @@ impl Config {
                 "main" => self.quick.screen = QuickScreen::Main,
                 "mouse" => self.quick.screen = QuickScreen::Mouse,
                 "macos-menu-bar" => self.quick.screen = QuickScreen::MenuBar,
+                _ => bad(warnings),
+            },
+            "quick-terminal-space-behavior" => match v {
+                "move" => self.quick.space = QuickSpace::Move,
+                "remain" => self.quick.space = QuickSpace::Remain,
                 _ => bad(warnings),
             },
             "quick-terminal-autohide" => match parse_bool(v) {
@@ -3371,6 +3589,21 @@ impl Config {
             }
             .into(),
         );
+        for r in &self.key_remap {
+            push("key-remap", r.to_string());
+        }
+        push("macos-icon", self.macos_icon.to_string());
+        if let Some(p) = &self.macos_custom_icon {
+            push("macos-custom-icon", p.display().to_string());
+        }
+        push(
+            "quick-terminal-space-behavior",
+            match self.quick.space {
+                QuickSpace::Move => "move",
+                QuickSpace::Remain => "remain",
+            }
+            .into(),
+        );
         out.join("\n")
     }
 }
@@ -3383,11 +3616,55 @@ const KNOWN_IGNORED: &[&str] = &[
     "window-subtitle",
     "window-titlebar-background",
     "window-titlebar-foreground",
-    "macos-icon",
     "auto-update",
     "auto-update-channel",
     "gtk-titlebar",
     "gtk-single-instance",
+    // 받기만 하는 키(#196). 이유는 docs/configuration.md "받기만 하고 쓰지 않는 Ghostty 키"
+    // Dock에 놓은 파일 동작: winit 0.30이 그 이벤트를 주지 않는다
+    "macos-dock-drop-behavior",
+    // 이름 그림이 없어 custom만 그린다. custom-style의 그림 설정도 쓸 곳이 없다
+    "macos-icon-frame",
+    "macos-icon-ghost-color",
+    "macos-icon-screen-color",
+    // DECRQCRA(화면 영역 체크섬 보고): 구현하지 않는다. 기본이 꺼짐이라 받기만 해도 그대로다
+    "vt-xt-checksum-report",
+    "vt-xt-checksum-extension",
+    // GTK·리눅스 전용
+    "class",
+    "x11-instance-name",
+    "language",
+    "gtk-custom-css",
+    "gtk-horizontal-tab-scroll",
+    "gtk-opengl-debug",
+    "gtk-quick-terminal-layer",
+    "gtk-quick-terminal-namespace",
+    "gtk-tabs-inverted",
+    "gtk-tabs-location",
+    "gtk-titlebar-hide-when-maximized",
+    "gtk-titlebar-style",
+    "gtk-toolbar-style",
+    "gtk-wide-tabs",
+    "linux-cgroup",
+    "linux-cgroup-memory-limit",
+    "linux-cgroup-processes-limit",
+    "linux-cgroup-hard-fail",
+    "async-backend",
+    "quick-terminal-keyboard-interactivity",
+    // 그리기·엔진 쪽(b-terminal의 그리기와 VT 엔진이 다르다)
+    "custom-shader",
+    "custom-shader-animation",
+    "alpha-blending",
+    "freetype-load-flags",
+    "window-vsync",
+    "window-title-font-family",
+    "scrollback-compression",
+    "drag-handle",
+    // unsafe나 시스템 연동(AppleScript·단축어·보안 입력)이 필요하다
+    "macos-applescript",
+    "macos-shortcuts",
+    "macos-auto-secure-input",
+    "macos-secure-input-indication",
 ];
 
 fn hex(c: Rgb) -> String {
@@ -4573,6 +4850,196 @@ mod tests {
             Config::from_text("quick-terminal-screen = left\n", true).warnings.len(),
             1
         );
+    }
+
+    #[test]
+    fn key_remap_parse_like_ghostty() {
+        let c = Config::from_text(
+            "key-remap = ctrl=super\nkey-remap = left_alt=right_ctrl\nkey-remap = option = cmd\nkey-remap = control=shift\n",
+            true,
+        );
+        assert!(c.warnings.is_empty(), "{:?}", c.warnings);
+        assert_eq!(c.key_remap.len(), 4);
+        let k = |kind, side| ModKey { kind, side };
+        assert_eq!(
+            c.key_remap[0],
+            KeyRemap {
+                from: k(ModKind::Ctrl, None),
+                to: k(ModKind::Super, None)
+            }
+        );
+        assert_eq!(
+            c.key_remap[1],
+            KeyRemap {
+                from: k(ModKind::Alt, Some(ModSide::Left)),
+                to: k(ModKind::Ctrl, Some(ModSide::Right))
+            }
+        );
+        assert_eq!(
+            c.key_remap[2],
+            KeyRemap {
+                from: k(ModKind::Alt, None),
+                to: k(ModKind::Super, None)
+            }
+        );
+        // 잘못된 것: 이름, = 없음, 키가 아닌 것, 한쪽만 비었음
+        for bad in [
+            "ctrl",
+            "ctrl=",
+            "=ctrl",
+            "ctrl=x",
+            "a=ctrl",
+            "left_=ctrl",
+            "up_ctrl=alt",
+            "ctrl=alt=shift",
+        ] {
+            let c = Config::from_text(&format!("key-remap = {bad}\n"), true);
+            assert_eq!(c.warnings.len(), 1, "{bad}");
+            assert!(c.key_remap.is_empty(), "{bad}");
+        }
+        // 빈 값은 지금까지 쌓은 것을 지운다
+        let c = Config::from_text("key-remap = ctrl=alt\nkey-remap =\nkey-remap = alt=ctrl\n", true);
+        assert_eq!(c.key_remap.len(), 1);
+        assert!(Config::default().key_remap.is_empty());
+        assert!(c.render().contains("key-remap = alt=ctrl"));
+    }
+
+    #[test]
+    fn key_remap_apply() {
+        use ModKind::*;
+        use ModSide::*;
+        let r = |s: &str| KeyRemap::parse(s).unwrap();
+        let held = |v: &[(ModKind, ModSide)]| v.iter().fold(SidedMods::default(), |m, (k, s)| m.with(*k, *s));
+        // 바꾸기가 없으면 그대로
+        let m = held(&[(Ctrl, Left), (Shift, Right)]);
+        assert_eq!(apply_key_remap(&[], m), m);
+        // ctrl=super: 왼쪽·오른쪽 Ctrl 모두 Super가 된다
+        let rs = [r("ctrl=super")];
+        for side in [Left, Right] {
+            let out = apply_key_remap(&rs, held(&[(Ctrl, side)]));
+            assert!(out.has(Super) && !out.has(Ctrl), "{side:?}");
+        }
+        // 한쪽 이름은 그쪽만: left_ctrl=super
+        let rs = [r("left_ctrl=super")];
+        let out = apply_key_remap(&rs, held(&[(Ctrl, Left)]));
+        assert!(out.has(Super) && !out.has(Ctrl));
+        let out = apply_key_remap(&rs, held(&[(Ctrl, Right)]));
+        assert!(out.has(Ctrl) && !out.has(Super), "오른쪽 Ctrl은 그대로");
+        // 한쪽만 바꾸고 다른 쪽이 같이 눌려 있으면 그 종류가 남는다
+        let out = apply_key_remap(&rs, held(&[(Ctrl, Left), (Ctrl, Right)]));
+        assert!(out.has(Ctrl) && out.has(Super));
+        // 한 방향: ctrl=super를 해도 Super는 Super
+        let rs = [r("ctrl=super")];
+        let out = apply_key_remap(&rs, held(&[(Super, Left)]));
+        assert!(out.has(Super) && !out.has(Ctrl));
+        // 이어서 바뀌지 않는다: ctrl=super, alt=ctrl이면 Alt는 Ctrl이 될 뿐 Super가 아니다
+        let rs = [r("ctrl=super"), r("alt=ctrl")];
+        let out = apply_key_remap(&rs, held(&[(Alt, Left)]));
+        assert!(out.has(Ctrl) && !out.has(Super) && !out.has(Alt));
+        // 서로 바꾸기: ctrl=alt, alt=ctrl
+        let rs = [r("ctrl=alt"), r("alt=ctrl")];
+        let out = apply_key_remap(&rs, held(&[(Ctrl, Left)]));
+        assert!(out.has(Alt) && !out.has(Ctrl));
+        let out = apply_key_remap(&rs, held(&[(Alt, Right)]));
+        assert!(out.has(Ctrl) && !out.has(Alt));
+        let out = apply_key_remap(&rs, held(&[(Alt, Right), (Ctrl, Left), (Shift, Left)]));
+        assert!(
+            out.has(Ctrl) && out.has(Alt) && out.has(Shift),
+            "둘 다 눌렀으면 둘 다 남는다"
+        );
+        // 눌리지 않은 키에는 아무 일도 없다
+        let out = apply_key_remap(&rs, held(&[(Shift, Left)]));
+        assert_eq!(out, held(&[(Shift, Left)]));
+    }
+
+    #[test]
+    fn macos_icon_and_receive_only_keys() {
+        let d = Config::default();
+        assert_eq!(d.macos_icon, MacosIcon::Official);
+        assert!(d.macos_custom_icon.is_none());
+        let c = Config::from_text("macos-icon = custom\nmacos-custom-icon = /tmp/i.icns\n", true);
+        assert!(c.warnings.is_empty(), "{:?}", c.warnings);
+        assert_eq!(c.macos_icon, MacosIcon::Custom);
+        assert_eq!(c.macos_custom_icon, Some(PathBuf::from("/tmp/i.icns")));
+        assert_eq!(
+            Config::from_text("macos-icon = blueprint\n", true).macos_icon,
+            MacosIcon::Builtin
+        );
+        assert_eq!(
+            Config::from_text("macos-icon = custom-style\n", true).macos_icon,
+            MacosIcon::CustomStyle
+        );
+        assert_eq!(Config::from_text("macos-icon = nope\n", true).warnings.len(), 1);
+        assert_eq!(
+            Config::from_text("macos-custom-icon = /a\nmacos-custom-icon =\n", true).macos_custom_icon,
+            None
+        );
+        // 받기만 하는 키는 경고하지 않는다
+        for k in [
+            "macos-icon-frame = chrome",
+            "macos-icon-ghost-color = #fff",
+            "macos-icon-screen-color = #000,#111",
+            "macos-dock-drop-behavior = new-window",
+            "vt-xt-checksum-report = true",
+            "vt-xt-checksum-extension = full",
+            "class = x",
+            "x11-instance-name = x",
+            "language = de",
+            "gtk-custom-css = a.css",
+            "gtk-horizontal-tab-scroll = true",
+            "gtk-opengl-debug = true",
+            "gtk-quick-terminal-layer = top",
+            "gtk-quick-terminal-namespace = q",
+            "gtk-tabs-inverted = true",
+            "gtk-tabs-location = bottom",
+            "gtk-titlebar-hide-when-maximized = true",
+            "gtk-titlebar-style = tabs",
+            "gtk-toolbar-style = flat",
+            "gtk-wide-tabs = false",
+            "linux-cgroup = never",
+            "linux-cgroup-memory-limit = 1",
+            "linux-cgroup-processes-limit = 1",
+            "linux-cgroup-hard-fail = true",
+            "custom-shader = a.glsl",
+            "custom-shader-animation = always",
+            "alpha-blending = linear",
+            "freetype-load-flags = light",
+            "window-vsync = false",
+            "async-backend = epoll",
+            "window-title-font-family = Menlo",
+            "quick-terminal-keyboard-interactivity = none",
+            "scrollback-compression = false",
+            "macos-applescript = false",
+            "macos-shortcuts = deny",
+            "macos-auto-secure-input = false",
+            "macos-secure-input-indication = false",
+            "drag-handle = never",
+            "background-blur = 20",
+        ] {
+            let c = Config::from_text(&format!("{k}\n"), true);
+            assert!(c.warnings.is_empty(), "{k}: {:?}", c.warnings);
+        }
+        assert_eq!(Config::from_text("no-such-key = 1\n", true).warnings.len(), 1);
+    }
+
+    #[test]
+    fn quick_terminal_space_behavior() {
+        assert_eq!(Config::default().quick.space, QuickSpace::Move);
+        assert_eq!(
+            Config::from_text("quick-terminal-space-behavior = remain\n", true)
+                .quick
+                .space,
+            QuickSpace::Remain
+        );
+        assert_eq!(
+            Config::from_text("quick-terminal-space-behavior = move\n", true)
+                .quick
+                .space,
+            QuickSpace::Move
+        );
+        let c = Config::from_text("quick-terminal-space-behavior = stay\n", true);
+        assert_eq!(c.warnings.len(), 1);
+        assert_eq!(c.quick.space, QuickSpace::Move);
     }
 
     #[test]
