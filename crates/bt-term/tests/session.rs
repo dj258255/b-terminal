@@ -236,3 +236,15 @@ fn word_selection_follows_selection_word_chars() {
     assert_eq!(pick(None).as_deref(), Some("foo"), "VT 엔진 기본은 :에서 끊는다");
     assert_eq!(pick(Some(" ")).as_deref(), Some("foo:bar"), "공백만 경계");
 }
+
+/// #136: 화면에 보이는 프롬프트 시작 줄(셸 통합 OSC 133;A)을 화면 맨 위 기준으로 돌려준다
+#[test]
+fn prompt_rows_are_the_visible_prompt_marks() {
+    let (s, rx) = sh(
+        "printf 'out 1\\n\\033]133;A\\007$ ls\\nfile\\n\\033]133;A\\007$ '",
+        GridSize::new(20, 6),
+    );
+    wait_exit(&rx);
+    wait_until(&s, |t| t.contains("file"));
+    assert_eq!(s.prompt_rows(), vec![1, 3]);
+}

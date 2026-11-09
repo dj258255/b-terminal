@@ -279,6 +279,20 @@ impl Session {
         self.integrated.load(std::sync::atomic::Ordering::Acquire)
     }
 
+    /// 지금 화면에 보이는 프롬프트 시작 줄들(화면 맨 위가 0, #136 여백 색)
+    pub fn prompt_rows(&self) -> Vec<usize> {
+        let g = self.inner.lock();
+        let history = g.term.grid().history_size() as i64;
+        let offset = g.term.grid().display_offset() as i64;
+        let top = history - offset;
+        let rows = g.term.screen_lines() as i64;
+        g.prompts
+            .iter()
+            .filter(|&&p| p >= top && p < top + rows)
+            .map(|&p| (p - top) as usize)
+            .collect()
+    }
+
     /// 앞(-1)·뒤(+1) 프롬프트로 스크롤한다. 옮겼으면 참
     pub fn jump_to_prompt(&self, dir: i32) -> bool {
         let mut g = self.inner.lock();

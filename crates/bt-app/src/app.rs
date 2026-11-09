@@ -552,12 +552,17 @@ impl App {
         let px = |pt: f32| (pt as f64 * self.scale).round() as i32;
         let (left, right) = (px(self.config.padding_x.0), px(self.config.padding_x.1));
         let (top, bottom) = (px(self.config.padding_y.0), px(self.config.padding_y.1));
-        Rect::new(
+        let inner = Rect::new(
             r.x + left,
             r.y + top,
             (r.w as i32 - left - right).max(0) as u32,
             (r.h as i32 - top - bottom).max(0) as u32,
-        )
+        );
+        // 남는 자리를 네 변에 고르게(window-padding-balance, #136)
+        match (&self.fonts, self.config.padding_balance) {
+            (Some(f), true) => crate::padding::balance(inner, f.metrics().width, f.metrics().height),
+            _ => inner,
+        }
     }
 
     /// 칸 사이 경계선 두께(픽셀)
@@ -2600,6 +2605,26 @@ impl App {
                 (cells, cursor, pre)
             })
             .collect();
+        // 여백 색(window-padding-color, #136): background가 아니면 칸마다 가장자리 칸의 색
+        let pads: Vec<Option<crate::padding::PadPaint>> = views
+            .iter()
+            .zip(&drawn)
+            .map(|(v, (cells, _, _))| {
+                if self.config.padding_color == bt_core::config::PaddingColor::Background {
+                    return None;
+                }
+                let p = self.pane_index(v.id).map(|i| &self.panes[i])?;
+                Some(crate::padding::pad_paint(
+                    self.config.padding_color,
+                    cells,
+                    v.screen.cols,
+                    v.screen.rows,
+                    v.screen.background,
+                    p.session.modes().alt_screen,
+                    &p.session.prompt_rows(),
+                ))
+            })
+            .collect();
         let Some(gfx) = self.w.gfx.as_mut() else { return };
         let Some(fonts) = self.fonts.as_mut() else { return };
         let size = gfx.window.inner_size();
@@ -2665,8 +2690,14 @@ impl App {
                     tabbar::draw(&mut canvas, fonts, &theme, &labels);
                 }
             }
-            for (v, (cells, cursor, pre)) in views.iter().zip(&drawn) {
+            for ((v, (cells, cursor, pre)), pad) in views.iter().zip(&drawn).zip(&pads) {
                 let screen = &v.screen;
+                let grid_rect = Rect::new(
+                    v.inner.x,
+                    v.inner.y,
+                    screen.cols as u32 * m.width,
+                    screen.rows as u32 * m.height,
+                );
                 let view = GridView {
                     cols: screen.cols,
                     rows: screen.rows,
@@ -2680,6 +2711,18 @@ impl App {
                 if full {
                     canvas.fill_rect(v.outer.x, v.outer.y, v.outer.w, v.outer.h, screen.background);
                     draw_grid(&mut canvas, fonts, v.inner.x, v.inner.y, &view);
+                    if let Some(p) = pad {
+                        crate::padding::paint(
+                            &mut canvas,
+                            v.outer,
+                            grid_rect,
+                            m.width,
+                            m.height,
+                            p,
+                            screen.background,
+                            None,
+                        );
+                    }
                     // kitty 그림: 놓인 칸에, 칸 수에 맞춰 늘리거나 원래 크기로. 격자 밖은 자른다
                     let grid_clip = (
                         v.inner.x,
@@ -2718,15 +2761,44 @@ impl App {
                         .last_frame
                         .as_ref()
                         .and_then(|f| f.panes.iter().find(|p| p.0 == v.id));
-                    let dirty = dirty_rows(screen.cols, screen.rows, cells, *cursor, pre, prev);
+                    let mut dirty = dirty_rows(screen.cols, screen.rows, cells, *cursor, pre, prev);
                     if !dirty.iter().any(|d| *d) {
                         continue;
                     }
+                    // 여백 색을 늘이는 중에 맨 위·맨 아래 줄이 바뀌면 위아래 띠까지 칸 전체를 다시 그린다(#136)
+                    let edge = pad.is_some()
+                        && (dirty.first().copied().unwrap_or(false) || dirty.last().copied().unwrap_or(false));
+                    if edge {
+                        dirty.iter_mut().for_each(|d| *d = true);
+                    }
                     repainted_rows += dirty.iter().filter(|d| **d).count();
                     let spans = draw_grid_rows(&mut canvas, fonts, v.inner.x, v.inner.y, &view, &dirty);
+                    if let Some(p) = pad {
+                        crate::padding::paint(
+                            &mut canvas,
+                            v.outer,
+                            grid_rect,
+                            m.width,
+                            m.height,
+                            p,
+                            screen.background,
+                            (!edge).then_some(&dirty[..]),
+                        );
+                    }
                     if split && !v.focused && dim_alpha > 0 {
-                        for (top, bottom) in spans {
-                            canvas.blend_rect(v.outer.x, top, v.outer.w, (bottom - top) as u32, dim_fill, dim_alpha);
+                        if edge {
+                            canvas.blend_rect(v.outer.x, v.outer.y, v.outer.w, v.outer.h, dim_fill, dim_alpha);
+                        } else {
+                            for (top, bottom) in spans {
+                                canvas.blend_rect(
+                                    v.outer.x,
+                                    top,
+                                    v.outer.w,
+                                    (bottom - top) as u32,
+                                    dim_fill,
+                                    dim_alpha,
+                                );
+                            }
                         }
                     }
                 }

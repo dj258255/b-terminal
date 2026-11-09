@@ -8,6 +8,7 @@ mod keymap;
 mod keys;
 mod menu;
 mod mouse;
+mod padding;
 mod palette;
 mod quick;
 mod shellint;
