@@ -4,6 +4,7 @@ mod app;
 mod appearance;
 mod bell_sound;
 mod cliact;
+mod cliinfo;
 mod control;
 mod desktop;
 mod dump;

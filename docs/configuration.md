@@ -27,6 +27,12 @@ b-terminal은 Ghostty와 같은 문법으로 설정합니다. Ghostty를 깔지 
 | `+list-themes` | `이름 (resources)`(넣어 둔 것)·`이름 (user)`(`~/.config/b-terminal/themes`)를 이름순으로 한 줄씩. 사용자 테마가 이름이 같으면 이깁니다. `--plain`은 받기만 하고(늘 목록), `--path`·`--color`는 아직 받지 않습니다 |
 | `+validate-config` | 설정을 읽어 경고를 한 줄씩 표준 출력에 보이고, 경고가 있으면 종료 코드 1, 없으면 0. `--config-file`, `--config-default-files`와 함께 씁니다. `--config-file`로 준 파일이 없으면 오류(1)입니다 |
 | `+edit-config` | `~/.config/b-terminal/config`(없으면 주석 한 줄로 만들고)를 `$VISUAL`(없거나 비면 `$EDITOR`)로 열고 편집기가 끝나길 기다려 그 종료 코드를 따릅니다. 편집기 값은 셸을 거치지 않고 빈칸·따옴표로 갈라 인자 배열로 넘깁니다(`code -w`는 됩니다. 셸 문법인 `;`·`$(…)`·`~`·환경 변수 풀이는 되지 않습니다). 둘 다 없으면 오류(1)입니다 |
+| `+list-keybinds` `[--default] [--docs] [--plain]` | 지금 쓰는 키 묶음 표를 `keybind = 트리거=동작` 줄로 보입니다(기본 묶음 위에 설정을 얹은 결과, `--default`면 기본만). 표는 늘 평문이라 `--plain`은 받기만 하고, 동작 설명이 없어 `--docs`도 받기만 합니다. |
+| `+list-actions` `[--docs] [--plain]` | 키 묶음이 받는 동작 이름을 한 줄에 하나씩. `--docs`(설명)는 받기만 합니다. |
+| `+list-fonts` `[--family=이름] [--style=이름] [--bold] [--italic]` | 시스템 글꼴과 넣어 둔 글꼴을 집안별로. `--family`가 없으면 고정폭 글꼴만 보입니다. 얼굴 이름은 PostScript 이름입니다. |
+| `+show-face` `--cp=번호 \| --string=글 [--style=regular\|bold\|italic\|bold_italic] [--presentation=text\|emoji]` | 글자가 어느 글꼴로 그려지는지(앱이 그릴 때의 대체 순서와 같고 설정 파일을 읽습니다). 번호는 10·`0x`·`0o`·`0b`진수. |
+| `+list-colors` `[--plain]` | X11 색 이름과 `#rrggbb`를 이름순으로(소문자). 설정의 색 값이 이 이름을 모두 받지는 않습니다. |
+| `+explain-config` `<키>` (또는 `--option=<키>`, `--keybind=<동작>`) | 이 문서의 "지원하는 키" 표에서 그 키의 값·기본·메모를 보입니다. 모르는 이름이면 `Unknown: '이름'.`과 종료 코드 1. |
 
 Linux 전용인 `+new-window`·`+ssh-cache`·`+crash-report`·`+boo`는 두지 않습니다.
 
