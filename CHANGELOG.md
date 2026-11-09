@@ -4,13 +4,35 @@
 
 ## [아직 릴리스하지 않음]
 
-- 글자 묶음 폭(Ghostty `grapheme-width-method`, mode 2027): 이모지 ZWJ 묶음(👨‍👩‍👧)·U+FE0F(❤️)·국기(🇰🇷)·피부색(👍🏽)이 이제 묶음 하나로 두 칸을 차지합니다(전에는 6·1·2·4칸으로 글자마다 셈). 기본은 Ghostty처럼 `unicode`이고 `legacy`면 옛 폭입니다. 프로그램은 DECSET/DECRST 2027로 바꾸고 DECRQM으로 물을 수 있습니다. 이를 위해 VT 엔진(alacritty_terminal 0.26)을 `vendor/`로 들여 고쳤습니다(ADR-014). 실제 창에서는 아직 확인하지 않았고 PTY 테스트로만 확인했습니다. #180
-- VT 제한 키(Ghostty): `enquiry-response`(ENQ에 돌려보낼 글, 기본 빈 값이라 전처럼 답하지 않음), `vt-kam-allowed`·`vt-window-resize-allowed`(프로그램의 키보드 잠금·창 크기 바꾸기 요청, 기본 끔이라 전처럼 무시), `image-storage-limit`(kitty 그림 저장 상한, **기본이 256MiB에서 320000000바이트로 늘어남**, `0`이면 그림 프로토콜을 쓰지 않음), `clipboard-write-limit-bytes`(클립보드 쓰기 상한, 기본 64MiB라 전의 OSC 52 1MiB 고정이 그대로 이김), `clipboard-codepoint-map`(복사할 때 글자 바꾸기). 창 크기 바꾸기는 실제 창에서 아직 확인하지 않았고 나머지는 PTY 테스트와 순수 함수 테스트로만 확인했습니다. #176
-- 글꼴 고르기 키(Ghostty): `font-codepoint-map`(`U+3000-U+9FFF=글꼴`, 여러 번 쓰면 쌓임), `font-style`·`-bold`·`-italic`·`-bold-italic`(스타일 이름으로 꼴 고르기, `false`면 그 꼴을 끄고 보통 꼴로), `font-shaping-break`(`no-cursor`면 커서 밑에서도 합자 유지), `adjust-icon-height`(Nerd Font 아이콘 높이). 기본 동작은 그대로입니다. 실제 창에서는 아직 확인하지 않았고 픽셀 테스트로만 확인했습니다. #174
-- 명령 실행·창 수명 키(Ghostty): `initial-command`(첫 칸만), `wait-after-command`(끝나도 칸을 남기고 아무 키나 누르면 닫음), `abnormal-command-exit-runtime`(기본 250ms, 이보다 짧게 끝나면 칸을 남기고 안내), `initial-window`, `quit-after-last-window-closed`, `-delay`. 기본 동작이 달라집니다: macOS에서 마지막 창을 닫아도 앱이 남고(Ghostty 기본, 메뉴·btctl·전역 단축키로 새 창), 너무 빨리 끝난 칸은 닫히지 않고 안내가 남습니다. 실제 창에서는 아직 확인하지 않았고 순수 함수·PTY 테스트로만 확인했습니다. #178
-- 스크롤백·팔레트 키(Ghostty): `scrollback-limit-bytes`(기본 1000만, 스크롤백 기본은 전과 같은 1만 줄), `scrollback-limit-lines`(먼저 닿는 쪽), `palette-generate`·`palette-harmonious`(16~255번 색 만들기, 기본 끔), `palette = 100=#...`(16번 이후), `background-opacity-cells`(색 바탕 칸도 비침, 기본 끔). 옛 `scrollback-limit`·`scrollback-lines`는 그대로 받습니다. 실제 창에서는 아직 확인하지 않았습니다. #177
-- macOS 창 키 추가: `macos-non-native-fullscreen`(새 Space 없는 전체 화면), `window-step-resize`, `macos-window-buttons`, `macos-hidden`. `window-subtitle`·`window-titlebar-*`는 받기만 한다 #179
+## [0.12.0] - 2026-11-09
+
+Ghostty 키 채우기 5. 글꼴 고르기, 마우스, VT 제한, 스크롤백·팔레트, 명령 실행·창 수명, macOS 창, 글자 묶음 폭(mode 2027). 0.11처럼 하위 이슈마다 에이전트 하나가 구현하고, 주 세션이 Ghostty 소스와 대조·검토·병합했습니다. 추적 이슈 #173.
+
+- 글꼴 고르기 키(Ghostty): `font-codepoint-map`(`U+3000-U+9FFF=글꼴`, 여러 번 쓰면 쌓임), `font-style`·`-bold`·`-italic`·`-bold-italic`(스타일 이름으로 꼴 고르기, `false`면 그 꼴을 끄고 보통 꼴로), `font-shaping-break`(`no-cursor`면 커서 밑에서도 합자 유지), `adjust-icon-height`(Nerd Font 아이콘 높이). 기본 동작은 그대로입니다. 실제 창에서는 `font-codepoint-map`(한글을 다른 글꼴로)과 `font-style-bold = false`만 확인했습니다. #174
 - 마우스 키 `mouse-reporting`·`mouse-shift-capture`·`middle-click-action`·`click-repeat-interval`을 Ghostty와 같은 뜻으로 받습니다. 두 번 누르기 기본 간격이 400ms에서 OS 값(macOS)·500ms로 바뀝니다 #175
+- VT 제한 키(Ghostty): `enquiry-response`(ENQ에 돌려보낼 글, 기본 빈 값이라 전처럼 답하지 않음), `vt-kam-allowed`·`vt-window-resize-allowed`(프로그램의 키보드 잠금·창 크기 바꾸기 요청, 기본 끔이라 전처럼 무시), `image-storage-limit`(kitty 그림 저장 상한, **기본이 256MiB에서 320000000바이트로 늘어남**, `0`이면 그림 프로토콜을 쓰지 않음), `clipboard-write-limit-bytes`(클립보드 쓰기 상한, 기본 64MiB라 전의 OSC 52 1MiB 고정이 그대로 이김), `clipboard-codepoint-map`(복사할 때 글자 바꾸기). 창 크기 바꾸기는 실제 창에서 아직 확인하지 않았고 나머지는 PTY 테스트와 순수 함수 테스트로만 확인했습니다. #176
+- 스크롤백·팔레트 키(Ghostty): `scrollback-limit-bytes`(기본 1000만, 스크롤백 기본은 전과 같은 1만 줄), `scrollback-limit-lines`(먼저 닿는 쪽), `palette-generate`·`palette-harmonious`(16~255번 색 만들기, 기본 끔), `palette = 100=#...`(16번 이후), `background-opacity-cells`(색 바탕 칸도 비침, 기본 끔). 옛 `scrollback-limit`·`scrollback-lines`는 그대로 받습니다. 실제 창에서는 아직 확인하지 않았습니다. #177
+- 명령 실행·창 수명 키(Ghostty): `initial-command`(첫 칸만), `wait-after-command`(끝나도 칸을 남기고 아무 키나 누르면 닫음), `abnormal-command-exit-runtime`(기본 250ms, 이보다 짧게 끝나면 칸을 남기고 안내), `initial-window`, `quit-after-last-window-closed`, `-delay`. 기본 동작이 달라집니다: macOS에서 마지막 창을 닫아도 앱이 남고(Ghostty 기본, 메뉴·btctl·전역 단축키로 새 창), 너무 빨리 끝난 칸은 닫히지 않고 안내가 남습니다. 실제 창에서는 마지막 창을 닫은 뒤 앱이 남고 `btctl new`로 창이 열리는 것, 빨리 끝난 칸의 안내를 확인했습니다. 키 입력이 필요한 것은 테스트로만 확인했습니다. #178
+- macOS 창 키 추가: `macos-non-native-fullscreen`(새 Space 없는 전체 화면), `window-step-resize`, `macos-window-buttons`, `macos-hidden`. `window-subtitle`·`window-titlebar-*`는 받기만 한다 #179
+- 글자 묶음 폭(Ghostty `grapheme-width-method`, mode 2027): 이모지 ZWJ 묶음(👨‍👩‍👧)·U+FE0F(❤️)·국기(🇰🇷)·피부색(👍🏽)이 이제 묶음 하나로 두 칸을 차지합니다(전에는 6·1·2·4칸으로 글자마다 셈). 기본은 Ghostty처럼 `unicode`이고 `legacy`면 옛 폭입니다. 프로그램은 DECSET/DECRST 2027로 바꾸고 DECRQM으로 물을 수 있습니다. 이를 위해 VT 엔진(alacritty_terminal 0.26)을 `vendor/`로 들여 고쳤습니다(ADR-014). 실제 창에서 네 묶음이 두 칸에 그려지고 `ESC[?2027l` 뒤 옛 폭으로 돌아가는 것을 확인했습니다. #180
+
+### 알려진 한계
+
+- 기본 동작이 바뀐 것:
+  - 이모지 묶음이 두 칸입니다(`grapheme-width-method = legacy`로 되돌림).
+  - macOS에서 마지막 창을 닫아도 앱이 남습니다(`quit-after-last-window-closed = true`로 되돌림).
+  - 250ms 안에 끝난 칸은 안내를 남깁니다(`abnormal-command-exit-runtime = 0`으로 끔).
+  - 두 번 누르기 간격이 OS 값입니다.
+  - 그림 저장 상한이 320000000바이트입니다.
+- 스크롤백 기본은 그대로 1만 줄입니다. Ghostty 1.4 소스의 50MB 기본은 스크롤백 압축과 함께 올린 값이라 따르지 않았습니다.
+- 실제 창에서 보지 않은 것(테스트로만 확인):
+  - 창 크기 바꾸기 요청(`vt-window-resize-allowed`)
+  - 비네이티브 전체 화면 키
+  - 칸 단위 크기 바꾸기
+  - 팔레트 만들기, 색 칸 투명도
+  - 커서 밑 합자(`font-shaping-break`)
+  - tmux·vim 안의 이모지 묶음
+- 글자 묶음 폭은 alacritty_terminal을 `vendor/`로 고쳐 씁니다. 엔진 판을 올릴 때마다 패치를 다시 얹어야 합니다. U+FE0E 좁히기, 결합 한글 자모, 인도계 묶음 폭은 하지 않습니다.
 
 ## [0.11.0] - 2026-11-09
 

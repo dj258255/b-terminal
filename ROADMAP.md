@@ -203,6 +203,27 @@ Ghostty 키 채우기 4. 추적 이슈 [#159](https://github.com/dj258255/b-term
 - 공유 임시 폴더(scratchpad)에서 에이전트끼리 같은 파일 이름(`app.rs.good`)을 써서 서로 덮어쓴 일이 있었다. 커밋에는 섞이지 않았지만, 에이전트마다 임시 파일 이름에 이슈 번호를 붙이게 해야 한다.
 - 기본값을 Ghostty와 맞추면 사용자 동작이 바뀌는 경우(알림 `never`)는 "적지 않음"을 따로 두어 지금 동작을 지키는 쪽이 낫다(#161).
 
+## 0.12.0 (2026-11-09)
+
+Ghostty 키 채우기 5. 추적 이슈 [#173](https://github.com/dj258255/b-terminal/issues/173). 0.11과 같은 방식으로 진행했습니다. 에이전트 일곱이 각자 worktree에서 구현·커밋하고, 주 세션이 옮기고 검토·병합했습니다. 병합 시각(KST)은 추적 이슈를 연 22:32부터 마지막 병합 23:12까지입니다.
+
+| 이슈 | 내용 | 예상 | 실제 | PR | 주 세션이 한 것 |
+|---|---|---|---|---|---|
+| [#174](https://github.com/dj258255/b-terminal/issues/174) | 글꼴 고르기 | 2~4시간 | 에이전트 시간 기록 없음(병합 23:01) | [#185](https://github.com/dj258255/b-terminal/pull/185) | 테스트 파일 합치기, 소스 대조, 실제 창 |
+| [#175](https://github.com/dj258255/b-terminal/issues/175) | 마우스 키 | 2~4시간 | 에이전트 시간 기록 없음(병합 22:41) | [#181](https://github.com/dj258255/b-terminal/pull/181) | 소스 대조 |
+| [#176](https://github.com/dj258255/b-terminal/issues/176) | VT 제한 키(보안 경계) | 2~4시간 | 에이전트 약 12분(병합 23:08) | [#186](https://github.com/dj258255/b-terminal/pull/186) | 보안 관점 diff 읽기, 비네이티브 전체 화면도 무시 조건에, 커밋 보안 리뷰 |
+| [#177](https://github.com/dj258255/b-terminal/issues/177) | 스크롤백·팔레트 | 2~4시간 | 에이전트 시간 기록 없음(병합 22:51) | [#183](https://github.com/dj258255/b-terminal/pull/183) | 스크롤백 기본을 릴리스된 값(10MB)으로 되돌림 |
+| [#178](https://github.com/dj258255/b-terminal/issues/178) | 명령 실행·창 수명 | 2~4시간 | 에이전트 시간 기록 없음(병합 22:58) | [#184](https://github.com/dj258255/b-terminal/pull/184) | 실제 창(마지막 창 닫기, 빨리 끝난 칸) |
+| [#179](https://github.com/dj258255/b-terminal/issues/179) | macOS 창 | 2~4시간 | 에이전트 약 5분(병합 22:49) | [#182](https://github.com/dj258255/b-terminal/pull/182) | 리눅스 clippy dead_code 고침, 실제 창 |
+| [#180](https://github.com/dj258255/b-terminal/issues/180) | 글자 묶음 폭(mode 2027) | 2~4시간 | 에이전트 약 11분(병합 23:12) | [#187](https://github.com/dj258255/b-terminal/pull/187) | 이어 붙이기 O(n²) 상한, vendor 원본 diff 대조, 실제 창 |
+
+이번에 배운 것:
+
+- Ghostty 소스의 미출시(1.4) 기본값을 그대로 옮기면 안 되는 경우가 있었습니다. 스크롤백 50MB는 같은 판에 들어간 스크롤백 압축을 전제로 한 값이었습니다(#177). 기본값은 릴리스된 판을 따르고, 이름만 1.4 것을 받는 원칙을 에이전트 지시에도 적어야 합니다.
+- 엔진을 고치는 패치(#180)는 커밋 보안 리뷰가 O(n²) 처리 시간을 잡았습니다. 결합 문자 2만 개에 3.1초가 걸렸습니다. 출력이 곧 공격 입력인 터미널에서는, 글자마다 도는 경로에 "앞 상태 전체를 다시 보는" 일이 있으면 상한을 함께 두어야 합니다.
+- 실창 확인을 격리(HOME, 소켓 폴더)해서 하려면 소켓 경로가 짧아야 합니다. 임시 폴더가 길면 SUN_LEN을 넘어 제어 소켓이 열리지 않습니다.
+- macOS 전용 코드에서만 쓰는 함수는 리눅스 CI에서 dead_code가 됩니다(#119에 이어 #182에서 또). 에이전트 지시에 `cfg_attr`을 미리 적어 둘 만합니다.
+
 ## 다음
 
 - 범수 님이 직접 해야 할 것: 키보드·마우스 확인(한글 2벌식 "안녕 하세요⏎", Claude Code의 Shift+Enter, Cmd-D·Cmd-F·Cmd-클릭·Cmd-N·Cmd-Shift-P, 메뉴, 창 닫기 단추, vim·htop, kitty icat·yazi, 투명 창), Developer ID 계정으로 `scripts/bundle-macos.sh --sign … --notarize … --dmg`
@@ -213,4 +234,5 @@ Ghostty 키 채우기 4. 추적 이슈 [#159](https://github.com/dj258255/b-term
 - 범수 님이 확인할 것(0.9): zsh 프롬프트에서 친 명령의 한 글자를 눌러 커서가 거기로 가는지, `adjust_selection`을 키에 묶어 고르기를 늘려 보기, 배경 그림을 투명 창(`background-opacity = 0.8`)과 함께 써 보기
 - 범수 님이 확인할 것(0.10): 고른 글 ⌘C 뒤 줄 끝 공백이 없는지, `right-click-action = copy-or-paste`, 팔레트 "창 항상 위", `keybind = ctrl+a>catch_all=ignore`와 `ctrl+a>n=new_window`, `scroll-to-bottom = output`으로 긴 출력 중 위로 스크롤
 - 범수 님이 확인할 것(0.11): 탭을 닫고 5초 안에 ⌘Z, `notify-on-command-finish = unfocused`로 긴 명령 뒤 다른 앱으로, `bell-features = audio`와 `bell-audio-path`로 벨 소리, ⌘F 찾기 강조 색, 고른 뒤 키를 치면 고르기가 지워지는지
-- 큰 일로 남긴 것: GPU(또는 IOSurface) 렌더러, 글자 묶음 폭(mode 2027)
+- 범수 님이 확인할 것(0.12): `vt-window-resize-allowed = true`에서 `printf '\033[8;20;60t'`로 창 크기가 바뀌는지, `macos-non-native-fullscreen = true`에서 ⌃⌘F, `window-step-resize = true`에서 가장자리 끌기, 빨리 끝난 칸에서 아무 키나 눌러 닫기, `palette-generate = true`로 256색 표, tmux 안의 가족 이모지 뒤 커서 자리
+- 큰 일로 남긴 것: GPU(또는 IOSurface) 렌더러
