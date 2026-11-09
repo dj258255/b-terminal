@@ -92,6 +92,8 @@ pub struct Pane {
     fg_pid: Option<i32>,
     /// 보지 않은 알림이 있다
     pub unread: bool,
+    /// 보지 않은 벨이 있다(`bell-features = title`, #107): 제목 앞에 🔔
+    pub bell: bool,
     /// 셸이 OSC 7로 알린 작업 폴더
     pub cwd: Option<std::path::PathBuf>,
     /// 마지막으로 데스크톱 알림을 띄운 때(탭마다 묶는다)
@@ -111,12 +113,34 @@ impl Pane {
             .map(|(s, p, _)| (s, p))
     }
 
-    /// 탭 줄·창 제목에 쓸 이름: 셸이 보낸 제목 → 전경 프로세스 이름
+    /// 탭 줄·창 제목에 쓸 이름: 셸이 보낸 제목 → 전경 프로세스 이름. 보지 않은 벨이 있으면 앞에 🔔
     fn display_title(&self) -> String {
-        if !self.title.is_empty() {
-            return self.title.clone();
-        }
-        self.fg_name.clone().unwrap_or_else(|| "셸".into())
+        let name = if !self.title.is_empty() {
+            self.title.clone()
+        } else {
+            self.fg_name.clone().unwrap_or_else(|| "셸".into())
+        };
+        if self.bell { format!("🔔 {name}") } else { name }
+    }
+}
+
+/// 벨이 울렸을 때 할 일(#107)
+#[derive(Debug, PartialEq)]
+struct BellResponse {
+    /// 칸 제목 앞에 🔔
+    title: bool,
+    /// Dock 아이콘 튀기기
+    attention: bool,
+    /// 시스템 경고음
+    beep: bool,
+}
+
+/// `watching`: 창이 앞에 있고 그 칸이 보인다. `window_focused`: 그 칸의 창이 앞에 있다
+fn bell_response(f: bt_core::config::BellFeatures, watching: bool, window_focused: bool) -> BellResponse {
+    BellResponse {
+        title: f.title && !watching,
+        attention: f.attention && !window_focused,
+        beep: f.system,
     }
 }
 
@@ -304,6 +328,8 @@ pub struct App {
     last_focused: Option<WindowId>,
     /// 전역 단축키(#95): 등록한 관리자와 단축키 번호 → 동작
     hotkeys: Option<global_hotkey::GlobalHotKeyManager>,
+    /// 마지막 경고음(벨이 몰려도 0.1초에 한 번만, #107)
+    last_beep: Option<Instant>,
     hotkey_registered: Vec<global_hotkey::hotkey::HotKey>,
     hotkey_actions: std::collections::HashMap<u32, Action>,
 }
@@ -347,6 +373,7 @@ impl App {
             others: Vec::new(),
             last_focused: None,
             hotkeys: None,
+            last_beep: None,
             hotkey_registered: Vec::new(),
             hotkey_actions: std::collections::HashMap::new(),
         }
@@ -499,11 +526,12 @@ impl App {
         }
     }
 
-    /// 보이는 칸들의 안 읽음을 지운다
+    /// 보이는 칸들의 안 읽음과 벨 표시를 지운다
     fn clear_visible_unread(&mut self) {
         for i in 0..self.panes.len() {
             if self.is_visible(i) {
                 self.panes[i].unread = false;
+                self.panes[i].bell = false;
             }
         }
     }
@@ -551,6 +579,27 @@ impl App {
             }
         }
         self.request_redraw();
+    }
+
+    /// 칸이 벨을 울렸다(`bell-features`, #107). 지금 창은 그 칸의 창이다(switch_to_pane 뒤)
+    fn on_bell(&mut self, idx: usize) {
+        let watching = self.w.focused && self.is_visible(idx);
+        let r = bell_response(self.config.bell_features, watching, self.w.focused);
+        if r.title && !self.panes[idx].bell {
+            self.panes[idx].bell = true;
+            self.request_redraw();
+        }
+        if r.attention {
+            if let Some(g) = &self.w.gfx {
+                g.window
+                    .request_user_attention(Some(winit::window::UserAttentionType::Informational));
+            }
+        }
+        if r.beep && self.last_beep.is_none_or(|t| t.elapsed() >= Duration::from_millis(100)) {
+            self.last_beep = Some(Instant::now());
+            #[cfg(target_os = "macos")]
+            objc2_app_kit::NSBeep();
+        }
     }
 
     /// 셸 통합이 알린 명령의 끝: btctl run에 답하고, 오래 걸린 명령이면(창을 보지 않을 때) 알린다
@@ -661,6 +710,7 @@ impl App {
                 fg_name: None,
                 fg_pid: None,
                 unread: false,
+                bell: false,
                 cwd: None,
                 last_desktop: None,
                 progress: None,
@@ -2560,7 +2610,8 @@ impl ApplicationHandler<UserEvent> for App {
                     }
                     SessionEvent::CommandStarted(cmd) => self.panes[idx].running = Some((cmd, Instant::now())),
                     SessionEvent::CommandFinished(rec) => self.on_command_finished(idx, rec),
-                    SessionEvent::Bell | SessionEvent::Output => {}
+                    SessionEvent::Bell => self.on_bell(idx),
+                    SessionEvent::Output => {}
                 }
                 self.request_redraw();
             }
@@ -2924,6 +2975,55 @@ impl ApplicationHandler<UserEvent> for App {
 mod tests {
     use super::*;
     use bt_term::search::SearchStatus;
+
+    #[test]
+    fn bell_marks_title_only_when_not_watching_and_bounces_only_when_unfocused() {
+        use bt_core::config::BellFeatures;
+        let d = BellFeatures::default();
+        let r = |f, watching, focused| bell_response(f, watching, focused);
+        // 보고 있으면(창이 앞, 칸이 보임) 아무것도 하지 않는다(기본에 경고음 없음)
+        assert_eq!(
+            r(d, true, true),
+            BellResponse {
+                title: false,
+                attention: false,
+                beep: false
+            }
+        );
+        // 같은 창의 다른 탭: 🔔만
+        assert_eq!(
+            r(d, false, true),
+            BellResponse {
+                title: true,
+                attention: false,
+                beep: false
+            }
+        );
+        // 창이 뒤에 있으면 🔔와 Dock
+        assert_eq!(
+            r(d, false, false),
+            BellResponse {
+                title: true,
+                attention: true,
+                beep: false
+            }
+        );
+        // 끈 것은 하지 않고, system은 보고 있어도 울린다
+        let f = BellFeatures {
+            system: true,
+            attention: false,
+            title: false,
+        };
+        assert_eq!(
+            r(f, true, true),
+            BellResponse {
+                title: false,
+                attention: false,
+                beep: true
+            }
+        );
+        assert!(!r(f, false, false).attention);
+    }
 
     #[test]
     fn dirty_rows_are_changed_rows_and_cursor_rows() {
