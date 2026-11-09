@@ -120,10 +120,10 @@ pub fn normalize_key(k: &str) -> String {
     }
 }
 
-/// `super+shift+t`를 읽는다. 키 순서(`a>b`)는 받지 않는다
+/// `super+shift+t`를 읽는다. 키 순서(`a>b`)는 `Keymap::build`가 `>`로 나눠 키마다 부른다
 pub fn parse_trigger(s: &str) -> Result<Trigger, String> {
     if s.contains('>') {
-        return Err(format!("키 순서는 아직 받지 않습니다: {s}"));
+        return Err(format!("키 하나에 `>`가 있습니다: {s}"));
     }
     let mut mods = Mods::default();
     // `super++`처럼 키 자체가 +인 경우: 마지막 +를 키로 떼어 낸다
@@ -252,6 +252,8 @@ pub fn parse_action(s: &str) -> Result<Option<Action>, String> {
 #[derive(Debug, Clone, Default)]
 pub struct Keymap {
     map: HashMap<Trigger, Action>,
+    /// 키 순서(`ctrl+a>n`, #106): 두 키 이상. 한 키짜리는 `map`에 둔다
+    seqs: HashMap<Vec<Trigger>, Action>,
     /// 전역 단축키(`keybind = global:…`, #95): 앱이 앞에 없어도 받는다
     pub global: Vec<(Trigger, Action)>,
 }
@@ -341,6 +343,7 @@ impl Keymap {
             let line = line.trim();
             if line == "clear" {
                 km.map.clear();
+                km.seqs.clear();
                 continue;
             }
             // 트리거에도 =가 올 수 있다(super+=). 마지막 =를 나눔 자리로 본다
@@ -368,20 +371,16 @@ impl Keymap {
                 }
                 _ => (t, a),
             };
-            let trig = match parse_trigger(t) {
-                Ok(tr) => tr,
+            let keys = match t.split('>').map(parse_trigger).collect::<Result<Vec<_>, _>>() {
+                Ok(k) => k,
                 Err(e) => {
                     warnings.push(format!("keybind {line}: {e}"));
                     continue;
                 }
             };
             match parse_action(a) {
-                Ok(Some(act)) => {
-                    km.map.insert(trig, act);
-                }
-                Ok(None) => {
-                    km.map.remove(&trig);
-                }
+                Ok(Some(act)) => km.bind(keys, act),
+                Ok(None) => km.unbind(&keys),
                 Err(e) => warnings.push(format!("keybind {line}: {e}")),
             }
         }
@@ -430,13 +429,113 @@ impl Keymap {
         Some(parts.join("+"))
     }
 
+    #[cfg(test)]
     pub fn lookup(&self, t: &Trigger) -> Option<&Action> {
         self.map.get(t)
+    }
+
+    /// 키(들)에 동작을 건다. 겹치는 묶음은 나중 것이 이긴다(Ghostty):
+    /// 순서의 앞 키에 걸린 한 키 묶음·짧은 순서, 이 키들로 시작하는 긴 순서를 지운다
+    fn bind(&mut self, keys: Vec<Trigger>, action: Action) {
+        let n = keys.len();
+        self.seqs
+            .retain(|k, _| !(k.len() < n && keys.starts_with(k) || k.len() > n && k.starts_with(&keys)));
+        if n == 1 {
+            self.map.insert(keys[0].clone(), action);
+        } else {
+            self.map.remove(&keys[0]);
+            self.seqs.insert(keys, action);
+        }
+    }
+
+    fn unbind(&mut self, keys: &[Trigger]) {
+        match keys {
+            [t] => {
+                self.map.remove(t);
+            }
+            _ => {
+                self.seqs.remove(keys);
+            }
+        }
+    }
+
+    /// 키들(한 키 이상)에 걸린 동작
+    fn sequence(&self, keys: &[Trigger]) -> Option<&Action> {
+        match keys {
+            [t] => self.map.get(t),
+            _ => self.seqs.get(keys),
+        }
+    }
+
+    /// 이 키들로 시작하는 더 긴 순서가 있는가
+    fn is_prefix(&self, keys: &[Trigger]) -> bool {
+        self.seqs.keys().any(|k| k.len() > keys.len() && k.starts_with(keys))
     }
 
     /// 이 동작에 걸린 트리거들(명령 팔레트가 단축키를 보일 때)
     pub fn triggers_for(&self, action: &Action) -> Vec<&Trigger> {
         self.map.iter().filter(|(_, a)| *a == action).map(|(t, _)| t).collect()
+    }
+}
+
+/// 키를 하나씩 받아 키 순서를 맞춘다(#106). Ghostty처럼 시간 제한은 없고,
+/// 순서 중간에 묶이지 않은 키가 오면 그때까지 쌓은 키를 프로그램에 그대로 보낸다
+#[derive(Debug, Default)]
+pub struct Sequencer {
+    /// 기다리는 앞 키들과, 누른 순간에 만든 PTY 바이트
+    pending: Vec<(Trigger, Vec<u8>)>,
+}
+
+/// 키 하나를 받은 결과: PTY에 보낼 바이트(먼저)와 부를 동작(나중)
+#[derive(Debug, Default, PartialEq)]
+pub struct KeyOutcome {
+    pub send: Vec<u8>,
+    pub action: Option<Action>,
+}
+
+impl Sequencer {
+    /// 앞 키를 받고 다음 키를 기다리는 중인가
+    #[cfg(test)]
+    pub fn waiting(&self) -> bool {
+        !self.pending.is_empty()
+    }
+
+    /// 키 하나(`trigger`: 키 묶음 이름, 수식 키만이면 없다; `bytes`: 그 키가 PTY에 보낼 바이트)
+    pub fn feed(&mut self, km: &Keymap, trigger: Option<Trigger>, bytes: Vec<u8>) -> KeyOutcome {
+        match &trigger {
+            Some(t) => {
+                let mut keys: Vec<Trigger> = self.pending.iter().map(|(k, _)| k.clone()).collect();
+                keys.push(t.clone());
+                if let Some(action) = km.sequence(&keys).cloned() {
+                    self.pending.clear();
+                    return KeyOutcome {
+                        send: Vec::new(),
+                        action: Some(action),
+                    };
+                }
+                if km.is_prefix(&keys) {
+                    self.pending.push((t.clone(), bytes));
+                    return KeyOutcome::default();
+                }
+            }
+            // 수식 키만 누른 것: 순서 중이어도 깨지 않는다
+            None if bytes.is_empty() => return KeyOutcome::default(),
+            None => {}
+        }
+        if self.pending.is_empty() {
+            return KeyOutcome {
+                send: bytes,
+                action: None,
+            };
+        }
+        // 순서가 깨졌다: 쌓은 키를 보내고, 이 키는 처음부터 다시 본다(새 순서의 앞 키일 수도 있다)
+        let mut send: Vec<u8> = self.pending.drain(..).flat_map(|(_, b)| b).collect();
+        let rest = self.feed(km, trigger, bytes);
+        send.extend(rest.send);
+        KeyOutcome {
+            send,
+            action: rest.action,
+        }
     }
 }
 
@@ -556,6 +655,91 @@ mod tests {
             Some("ctrl+Digit1")
         );
         assert_eq!(Keymap::hotkey_string(&trig("ctrl+page_up")), None);
+    }
+
+    #[test]
+    fn sequences_parse_and_replace_overlapping_binds() {
+        let (km, w) = Keymap::build(&[
+            "ctrl+a=new_tab".into(),
+            "ctrl+a>n=new_window".into(),
+            "ctrl+a>shift+x>c=close_surface".into(),
+            "ctrl+b>d=new_split:down".into(),
+            "ctrl+b>d=unbind".into(),
+            "ctrl+a>>n=new_tab".into(),
+        ]);
+        assert_eq!(w.len(), 1, "빈 키가 낀 순서는 경고: {w:?}");
+        assert_eq!(
+            km.lookup(&trig("ctrl+a")),
+            None,
+            "앞 키가 되면 한 키 묶음은 지운다(나중 것이 이김)"
+        );
+        assert_eq!(km.sequence(&[trig("ctrl+a"), trig("n")]), Some(&Action::NewWindow));
+        assert!(km.is_prefix(&[trig("ctrl+a")]));
+        assert!(km.is_prefix(&[trig("ctrl+a"), trig("shift+x")]));
+        assert!(!km.is_prefix(&[trig("ctrl+b")]), "unbind로 지운 순서는 앞 키도 아니다");
+        // 다시 한 키로 묶으면 그 키로 시작하는 순서를 지운다
+        let (km, _) = Keymap::build(&["ctrl+a>n=new_window".into(), "ctrl+a=new_tab".into()]);
+        assert_eq!(km.lookup(&trig("ctrl+a")), Some(&Action::NewTab));
+        assert!(!km.is_prefix(&[trig("ctrl+a")]));
+        // clear는 순서도 지운다
+        let (km, _) = Keymap::build(&["ctrl+a>n=new_window".into(), "clear".into()]);
+        assert!(!km.is_prefix(&[trig("ctrl+a")]));
+    }
+
+    #[test]
+    fn sequencer_waits_then_runs_or_flushes_like_ghostty() {
+        let (km, _) = Keymap::build(&["ctrl+a>n=new_window".into(), "ctrl+a>ctrl+a=text:A".into()]);
+        let mut sq = Sequencer::default();
+        let key = |s: &str| Some(trig(s));
+        // 앞 키: 보내지 않고 기다린다
+        assert_eq!(sq.feed(&km, key("ctrl+a"), vec![1]), KeyOutcome::default());
+        assert!(sq.waiting());
+        // 수식 키만 누른 것(바이트 없음)은 기다림을 깨지 않는다
+        assert_eq!(sq.feed(&km, None, vec![]), KeyOutcome::default());
+        assert!(sq.waiting());
+        assert_eq!(
+            sq.feed(&km, key("n"), b"n".to_vec()),
+            KeyOutcome {
+                send: vec![],
+                action: Some(Action::NewWindow)
+            }
+        );
+        assert!(!sq.waiting());
+        // 묶이지 않은 키: 쌓은 키와 이 키를 그대로 보낸다
+        sq.feed(&km, key("ctrl+a"), vec![1]);
+        assert_eq!(
+            sq.feed(&km, key("x"), b"x".to_vec()),
+            KeyOutcome {
+                send: vec![1, b'x'],
+                action: None
+            }
+        );
+        assert!(!sq.waiting());
+        // 앞 키를 두 번: 그 순서에 묶인 동작
+        sq.feed(&km, key("ctrl+a"), vec![1]);
+        assert_eq!(
+            sq.feed(&km, key("ctrl+a"), vec![1]).action,
+            Some(Action::Text("A".into()))
+        );
+        // 순서가 깨진 뒤 이 키는 처음부터 다시 본다: 기본 묶음이면 동작이 된다
+        if cfg!(target_os = "macos") {
+            sq.feed(&km, key("ctrl+a"), vec![1]);
+            assert_eq!(
+                sq.feed(&km, key("super+t"), vec![]),
+                KeyOutcome {
+                    send: vec![1],
+                    action: Some(Action::NewTab)
+                }
+            );
+        }
+        // 순서 밖에서는 늘 하던 대로
+        assert_eq!(
+            sq.feed(&km, key("q"), b"q".to_vec()),
+            KeyOutcome {
+                send: b"q".to_vec(),
+                action: None
+            }
+        );
     }
 
     #[test]

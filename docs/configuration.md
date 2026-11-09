@@ -85,10 +85,12 @@ keybind = super+t=unbind              # 기본 묶음 지우기
 keybind = ctrl+alt+g=text:git status\r # 글 보내기(\n \r \t \e \xHH)
 keybind = clear                       # 기본 묶음을 모두 지우기
 keybind = global:ctrl+backquote=toggle_quick_terminal  # 앱이 뒤에 있어도 듣는 전역 단축키
+keybind = ctrl+a>n=new_window         # 키 순서: ctrl+a를 누르고 n
+keybind = ctrl+a>ctrl+a=text:\x01     # 앞 키 자체를 보내고 싶을 때
 ```
 
 - 수식 키: `super`(cmd) `ctrl` `alt`(opt) `shift`. 키 이름은 Ghostty 이름: `a`~`z`, `digit_1`(또는 `1`), `equal`, `minus`, `comma`, `bracket_left`, `bracket_right`, `arrow_up`, `page_up`, `home`, `enter`, `f1` …
-- 키 순서(`ctrl+a>n`)와 분할 동작은 아직 받지 않습니다(경고).
+- 키 순서(`ctrl+a>n`, Ghostty와 같은 문법): 앞 키를 누르면 다음 키를 기다립니다. 시간 제한은 없습니다. 순서에 묶이지 않은 키를 누르면 그때까지 누른 키를 모두 프로그램에 그대로 보냅니다(`ctrl+a` `x` → `^A` `x`). 겹치는 묶음은 나중 것이 이깁니다(`ctrl+a=…` 뒤에 `ctrl+a>n=…`을 쓰면 `ctrl+a`는 앞 키가 됩니다). 명령 팔레트에는 키 순서를 보이지 않습니다. `catch_all`과 `performable:`은 받지 않습니다.
 - macOS가 아니면 기본 묶음의 `super`는 `ctrl+shift`로 바뀝니다.
 - `global:` 접두사를 붙이면 시스템 전역 단축키가 됩니다(Ghostty와 같은 문법). 다른 앱이 앞에 있어도 듣습니다. 기본 전역 묶음은 없습니다. 다른 앱이 이미 잡은 조합이면 경고를 남기고 건너뜁니다.
 
