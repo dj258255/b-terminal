@@ -133,6 +133,8 @@ pub struct Config {
     pub background_image_repeat: bool,
     /// 프롬프트를 눌러 커서 옮기기(Ghostty `cursor-click-to-move`, #137)
     pub cursor_click_to_move: bool,
+    /// 언제 맨 아래로 스크롤하는가(Ghostty `scroll-to-bottom`, #147). 기본 `keystroke, no-output`
+    pub scroll_to_bottom: ScrollToBottom,
     /// 남는 자리를 네 변에 고르게(Ghostty `window-padding-balance`, #136)
     pub padding_balance: bool,
     /// 여백 색(Ghostty `window-padding-color`)
@@ -492,6 +494,7 @@ impl Default for Config {
             background_image_fit: BgFit::Contain,
             background_image_repeat: false,
             cursor_click_to_move: true,
+            scroll_to_bottom: ScrollToBottom::default(),
             padding_balance: false,
             padding_color: PaddingColor::Background,
             cursor_opacity: 1.0,
@@ -604,6 +607,60 @@ pub fn parse_font_feature(s: &str) -> Option<([u8; 4], u16)> {
     };
     let tag: [u8; 4] = tag.as_bytes().try_into().ok()?;
     tag.iter().all(|b| b.is_ascii_graphic()).then_some((tag, val))
+}
+
+/// 맨 아래로 스크롤하는 때(Ghostty `scroll-to-bottom`, #147)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ScrollToBottom {
+    /// 키를 쳐서 PTY에 바이트를 보낼 때
+    pub keystroke: bool,
+    /// 새 출력이 올 때
+    pub output: bool,
+}
+
+impl Default for ScrollToBottom {
+    fn default() -> Self {
+        Self {
+            keystroke: true,
+            output: false,
+        }
+    }
+}
+
+impl ScrollToBottom {
+    /// 쉼표로 가른 목록(`keystroke`, `no-output` ...)이나 `true`/`false`. 기본값에서 시작해 차례로 덮는다.
+    /// 모르는 이름이 하나라도 있으면 없다
+    pub fn parse(v: &str) -> Option<Self> {
+        match v.trim() {
+            "true" => {
+                return Some(Self {
+                    keystroke: true,
+                    output: true,
+                });
+            }
+            "false" => {
+                return Some(Self {
+                    keystroke: false,
+                    output: false,
+                });
+            }
+            _ => {}
+        }
+        let mut out = Self::default();
+        for tok in v.split(',') {
+            let tok = tok.trim();
+            let (name, on) = match tok.strip_prefix("no-") {
+                Some(n) => (n, false),
+                None => (tok, true),
+            };
+            match name {
+                "keystroke" => out.keystroke = on,
+                "output" => out.output = on,
+                _ => return None,
+            }
+        }
+        Some(out)
+    }
 }
 
 fn parse_bool(v: &str) -> Option<bool> {
@@ -991,6 +1048,10 @@ impl Config {
             },
             "background-image-repeat" => match parse_bool(v) {
                 Some(b) => self.background_image_repeat = b,
+                None => bad(warnings),
+            },
+            "scroll-to-bottom" => match ScrollToBottom::parse(v) {
+                Some(m) => self.scroll_to_bottom = m,
                 None => bad(warnings),
             },
             "cursor-click-to-move" => match parse_bool(v) {
@@ -1479,6 +1540,64 @@ mod tests {
                 .len(),
             1
         );
+    }
+
+    #[test]
+    fn scroll_to_bottom_key() {
+        let d = Config::default().scroll_to_bottom;
+        assert_eq!(
+            (d.keystroke, d.output),
+            (true, false),
+            "Ghostty 기본은 keystroke, no-output"
+        );
+        let t = |s: &str| Config::from_text(&format!("scroll-to-bottom = {s}\n"), true).scroll_to_bottom;
+        assert_eq!(
+            t("keystroke, output"),
+            ScrollToBottom {
+                keystroke: true,
+                output: true
+            }
+        );
+        assert_eq!(
+            t("no-keystroke"),
+            ScrollToBottom {
+                keystroke: false,
+                output: false
+            }
+        );
+        assert_eq!(
+            t("output"),
+            ScrollToBottom {
+                keystroke: true,
+                output: true
+            },
+            "적지 않은 쪽은 기본"
+        );
+        assert_eq!(
+            t("no-keystroke,output"),
+            ScrollToBottom {
+                keystroke: false,
+                output: true
+            }
+        );
+        assert_eq!(
+            t("true"),
+            ScrollToBottom {
+                keystroke: true,
+                output: true
+            }
+        );
+        assert_eq!(
+            t("false"),
+            ScrollToBottom {
+                keystroke: false,
+                output: false
+            }
+        );
+        for bad in ["yes", "keystrokes", "no-", ""] {
+            let c = Config::from_text(&format!("scroll-to-bottom = {bad}\n"), true);
+            assert_eq!((c.warnings.len(), c.scroll_to_bottom), (1, d), "{bad}");
+        }
     }
 
     #[test]

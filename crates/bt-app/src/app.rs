@@ -847,6 +847,7 @@ impl App {
             clipboard_write: self.config.clipboard_write,
             clipboard_read: self.config.clipboard_read,
             word_chars: Some(self.config.selection_word_chars.clone()),
+            scroll_on_output: self.config.scroll_to_bottom.output,
             ..options
         };
         // 칸 안의 btctl이 이 터미널과 이 칸을 찾게 한다
@@ -1272,7 +1273,7 @@ impl App {
         if let Some(t) = self.pane_index(pane).map(|i| &self.panes[i]) {
             let bytes = bt_term::encode_paste(text, t.session.modes().bracketed_paste);
             t.session.select_clear();
-            t.session.write(&bytes);
+            t.session.write_input(&bytes, self.config.scroll_to_bottom.keystroke);
         }
     }
 
@@ -1491,9 +1492,10 @@ impl App {
     }
 
     fn write_active(&mut self, bytes: &[u8]) {
+        let scroll = self.config.scroll_to_bottom.keystroke;
         if let Some(t) = self.active_pane() {
             t.session.select_clear();
-            t.session.write(bytes);
+            t.session.write_input(bytes, scroll);
         }
     }
 
@@ -1954,8 +1956,9 @@ impl App {
                 }
             }
             Action::Text(text) => {
+                let scroll = self.config.scroll_to_bottom.keystroke;
                 if let Some(t) = self.active_pane() {
-                    t.session.write(text.as_bytes());
+                    t.session.write_input(text.as_bytes(), scroll);
                 }
             }
             _ => {}
@@ -2007,6 +2010,7 @@ impl App {
         self.font_size = next.font_size;
         for t in &self.panes {
             t.session.set_theme(next.theme.clone());
+            t.session.set_scroll_on_output(next.scroll_to_bottom.output);
         }
         #[cfg(target_os = "macos")]
         for w in std::iter::once(&self.w).chain(&self.others) {
