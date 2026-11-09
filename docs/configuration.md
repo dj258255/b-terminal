@@ -26,7 +26,7 @@ palette = 1=#f38ba8
 config-file = ?~/.config/b-terminal/local   # ?가 붙으면 없어도 된다
 ```
 
-- 값의 큰따옴표는 벗깁니다. 같은 키를 여러 번 쓰면 마지막 값이 이깁니다(`font-family`·`font-feature`·`palette`·`keybind`는 쌓입니다).
+- 값의 큰따옴표는 벗깁니다. 같은 키를 여러 번 쓰면 마지막 값이 이깁니다(`font-family`·`font-feature`·`palette`·`keybind`·`command-palette-entry`는 쌓입니다).
 - 모르는 키와 읽지 못한 값은 버리고 경고로 남깁니다. 앱 로그와 `--show-config`에 보입니다.
 
 ## 지원하는 키
@@ -64,6 +64,7 @@ config-file = ?~/.config/b-terminal/local   # ?가 붙으면 없어도 된다
 | `working-directory` | `home` `inherit` 경로 | `inherit` | 새 탭은 `inherit`일 때 지금 탭의 폴더 |
 | `title` | 글 | 셸이 보낸 제목 | 창 제목을 고정 |
 | `keybind` | `트리거=동작` | 아래 표 | 아래 "키 묶음" |
+| `command-palette-entry` | `title:…,action:…,description:…` | 기본 항목 | 명령 팔레트(Ghostty 1.2)에 항목을 더합니다. 여러 줄이 쌓이고, 빈 값(`command-palette-entry =`)은 기본 항목과 그 앞에 쓴 항목을 지웁니다. 아래 "팔레트 항목" |
 | `config-file` | 경로(`?` 붙이면 선택) | | 그 자리에서 읽어 넣음. 8단계까지 |
 | `import-ghostty` | `true` / `false` | `false` | b-terminal 키. Ghostty 설정을 옮겨 올 때 |
 | `clipboard-write` | `allow` / `deny` | `allow` | 프로그램이 OSC 52로 클립보드에 쓰기(AI CLI의 `/copy`). 보고 있는 창의 고른 칸(화면을 나눴으면 키 입력을 받는 칸)에서 온 것만 받습니다 |
@@ -102,6 +103,19 @@ config-file = ?~/.config/b-terminal/local   # ?가 붙으면 없어도 된다
 ### 받기만 하고 쓰지 않는 Ghostty 키
 
 경고 없이 넘깁니다: `font-feature`, `font-thicken`, `background-blur`, `window-decoration`, `window-theme`, `macos-titlebar-style`, `macos-icon`, `confirm-close-surface`, `auto-update`, `minimum-contrast` 등. 그 밖의 키는 경고합니다.
+
+## 팔레트 항목
+
+`command-palette-entry`는 Ghostty 1.2와 같은 문법입니다. `title`과 `action`은 꼭 있어야 하고 `description`은 고릅니다. 필드는 쉼표로 나누고 필드 사이 공백은 무시합니다. `action`은 `keybind`의 동작과 같은 글입니다. 값에 쉼표가 있으면 큰따옴표로 감쌉니다(`\"` `\\` `\n` `\t` 이스케이프).
+
+```
+command-palette-entry = title:Reset Font Style, action:reset_font_size
+command-palette-entry = title:"Git, 상태", action:"text:git status\r", description:셸에 보내기
+command-palette-entry =                # 기본 항목을 모두 지우기(이 줄 뒤에 쓴 항목만 남음)
+```
+
+- 사용자 항목은 기본 항목 뒤에 붙습니다. 팔레트에서는 `title`로 찾고, 동작 이름과 `description`으로도 찾습니다. 기본 항목의 이름은 바꾸지 않습니다.
+- 읽지 못하는 줄과 풀지 못하는 동작은 경고를 남기고 그 항목만 건너뜁니다. `unbind`는 항목의 동작이 될 수 없습니다.
 
 ## 키 묶음
 
