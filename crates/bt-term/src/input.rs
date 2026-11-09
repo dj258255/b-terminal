@@ -242,9 +242,45 @@ pub fn paste_is_safe(text: &str, bracketed: bool, bracketed_safe: bool) -> bool 
     (bracketed && bracketed_safe) || !text.contains(['\n', '\r'])
 }
 
+/// 복사하는 글의 줄 끝 공백·탭을 지운다(Ghostty `clipboard-trim-trailing-spaces`).
+/// 글자가 있는 줄의 끝 공백도, 공백뿐인 줄도 비운다. 줄 가운데 공백과 줄바꿈 자체는 그대로 둔다
+pub fn trim_trailing_spaces(text: &str) -> String {
+    text.split('\n')
+        .map(|line| {
+            // CRLF의 CR은 줄바꿈의 일부라 남기고, 그 앞의 공백·탭만 지운다
+            let (body, cr) = match line.strip_suffix('\r') {
+                Some(b) => (b, "\r"),
+                None => (line, ""),
+            };
+            format!("{}{cr}", body.trim_end_matches([' ', '\t']))
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn trim_trailing_spaces_per_line() {
+        assert_eq!(trim_trailing_spaces("ls -la   "), "ls -la");
+        assert_eq!(trim_trailing_spaces("a  \nb\t\t\nc"), "a\nb\nc");
+        assert_eq!(trim_trailing_spaces("a b   c  "), "a b   c", "가운데 공백은 그대로");
+        assert_eq!(
+            trim_trailing_spaces("a\n   \n\t\nb"),
+            "a\n\n\nb",
+            "공백뿐인 줄은 빈 줄이 된다"
+        );
+        assert_eq!(trim_trailing_spaces("a  \n"), "a\n", "끝 줄바꿈은 남긴다");
+        assert_eq!(
+            trim_trailing_spaces("a  \r\nb \r\n"),
+            "a\r\nb\r\n",
+            "CRLF의 CR은 남긴다"
+        );
+        assert_eq!(trim_trailing_spaces("  앞 공백 유지  한글  "), "  앞 공백 유지  한글");
+        assert_eq!(trim_trailing_spaces(""), "");
+    }
 
     #[test]
     fn paste_with_newlines_is_unsafe_unless_bracketed_like_ghostty() {
