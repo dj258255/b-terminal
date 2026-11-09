@@ -403,6 +403,8 @@ pub struct Session {
     scheme_updates: Arc<std::sync::atomic::AtomicBool>,
     /// 칸에 알린 지금 색 구성표가 밝음인가(#232)
     scheme_light: Arc<std::sync::atomic::AtomicBool>,
+    /// 프로그램이 OSC 22로 정한 마우스 포인터 모양의 번호(`MouseShape::to_code`, 0은 정한 것 없음)(#239)
+    mouse_shape: Arc<std::sync::atomic::AtomicU8>,
 }
 
 impl Session {
@@ -422,6 +424,11 @@ impl Session {
     /// 프로그램이 색 구성표 변경 알림(모드 2031)을 켜 두었는가
     pub fn color_scheme_updates(&self) -> bool {
         self.scheme_updates.load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    /// 프로그램이 OSC 22로 정한 마우스 포인터 모양. 정한 것이 없으면 `None`(#239)
+    pub fn mouse_shape(&self) -> Option<crate::MouseShape> {
+        crate::MouseShape::from_code(self.mouse_shape.load(std::sync::atomic::Ordering::Acquire))
     }
 
     /// 이 칸이 읽기 전용인가
@@ -602,6 +609,8 @@ impl Session {
         let scheme_updates = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let scheme_light = Arc::new(std::sync::atomic::AtomicBool::new(options.color_scheme_light));
 
+        let mouse_shape = Arc::new(std::sync::atomic::AtomicU8::new(0));
+        let thread_mouse_shape = mouse_shape.clone();
         let thread_scheme_updates = scheme_updates.clone();
         let thread_scheme_light = scheme_light.clone();
         let thread_inner = inner.clone();
@@ -679,7 +688,13 @@ impl Session {
                                         if visible && scrollback {
                                             thread_kam_locked.store(false, std::sync::atomic::Ordering::Release);
                                             thread_scheme_updates.store(false, std::sync::atomic::Ordering::Release);
+                                            thread_mouse_shape.store(0, std::sync::atomic::Ordering::Release);
                                         }
+                                    }
+                                    // 마우스 포인터 모양(OSC 22): 칸이 들고 있고, 보여 주는 일은 앱이 한다. 빈 이름은 되돌린다(#239)
+                                    Signal::MouseShape(shape) => {
+                                        let code = shape.map_or(0, |s| s.to_code());
+                                        thread_mouse_shape.store(code, std::sync::atomic::Ordering::Release);
                                     }
                                     Signal::ColorSchemeUpdates(on) => {
                                         thread_scheme_updates.store(on, std::sync::atomic::Ordering::Release);
@@ -763,6 +778,7 @@ impl Session {
             readonly,
             scheme_updates,
             scheme_light,
+            mouse_shape,
         })
     }
 
@@ -888,6 +904,7 @@ impl Session {
         }
         self.kam_locked.store(false, std::sync::atomic::Ordering::Release);
         self.scheme_updates.store(false, std::sync::atomic::Ordering::Release);
+        self.mouse_shape.store(0, std::sync::atomic::Ordering::Release);
     }
 
     /// 스크롤 막대를 그리고 누르는 데 쓰는 값: (보이는 줄 수, 스크롤백 줄 수, 맨 아래에서 올라간 줄 수).
@@ -1077,6 +1094,7 @@ fn signal_event(sig: Signal) -> SessionEvent {
         | Signal::Kam(_)
         | Signal::ColorSchemeQuery
         | Signal::ColorSchemeUpdates(_)
+        | Signal::MouseShape(_)
         | Signal::WindowResize { .. } => SessionEvent::Output,
     }
 }

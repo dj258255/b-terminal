@@ -17,6 +17,7 @@ mod menu;
 mod mouse;
 mod padding;
 mod palette;
+mod pointer;
 mod quick;
 mod shellint;
 mod split;

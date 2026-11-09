@@ -623,6 +623,8 @@ struct Win {
     search: Option<SearchBar>,
     /// 열린 명령 팔레트(#77): 친 글, 고른 줄
     palette: Option<(String, usize)>,
+    /// 창에 마지막으로 적용한 마우스 포인터 모양(#239). 같으면 다시 적용하지 않는다
+    pointer_icon: CursorIcon,
     /// 퀵 터미널 창(#95): 화면 위쪽에 떠서 전역 단축키로 보였다 숨는다. 창 상태 복원에서 뺀다
     quick: bool,
     /// 퀵 터미널을 보인 때. 직후의 포커스 잃음(앱이 앞으로 오기 전)은 숨기지 않는다
@@ -678,6 +680,7 @@ impl Win {
             link_click: false,
             search: None,
             palette: None,
+            pointer_icon: CursorIcon::Default,
             quick: false,
             quick_shown: None,
             quick_place: None,
@@ -2447,15 +2450,27 @@ impl App {
         if next == self.w.hover {
             return;
         }
-        if let Some(g) = &self.w.gfx {
-            g.window.set_cursor(if next.is_some() {
-                CursorIcon::Pointer
-            } else {
-                CursorIcon::Default
-            });
-        }
         self.w.hover = next;
+        self.refresh_pointer();
         self.request_redraw();
+    }
+
+    /// 창의 마우스 포인터 모양을 맞춘다(#239): 링크 위면 손가락, 아니면 마우스 아래 칸이 OSC 22로 정한 모양, 없으면 화살표
+    fn refresh_pointer(&mut self) {
+        let pos = self.w.cursor_pos;
+        let program = self.pane_at(pos).and_then(|id| {
+            if !self.inner_rect(self.pane_rect(id)?).contains(pos.x, pos.y) {
+                return None;
+            }
+            self.panes.get(self.pane_index(id)?)?.session.mouse_shape()
+        });
+        let icon = crate::pointer::decide(self.w.hover.is_some(), program);
+        if icon != self.w.pointer_icon {
+            if let Some(g) = &self.w.gfx {
+                g.window.set_cursor(icon);
+            }
+            self.w.pointer_icon = icon;
+        }
     }
 
     /// 링크를 연다: 열어도 되는 것(http·https, 이 컴퓨터의 파일)만
@@ -4079,6 +4094,8 @@ impl App {
 
     fn redraw(&mut self) {
         self.redraw_pending.store(false, Ordering::Release);
+        // OSC 22 모양이 바뀌었거나, 탭·칸이 바뀌어 마우스 아래 칸이 달라졌을 수 있다(#239)
+        self.refresh_pointer();
         let theme = self.config.theme.clone();
         let top_inset = self.top_inset();
         let toast = self.w.toast.clone().filter(|(_, at)| at.elapsed() < TOAST_FOR);
@@ -5174,6 +5191,7 @@ impl ApplicationHandler<UserEvent> for App {
                     }
                 }
                 self.update_hover();
+                self.refresh_pointer();
                 let hot = self.gutter_pane();
                 if hot != self.w.gutter_hot {
                     self.w.gutter_hot = hot;

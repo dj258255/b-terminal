@@ -52,6 +52,22 @@ pub enum Signal {
     ColorSchemeQuery,
     /// 색 구성표 변경 알림 모드(DEC 모드 2031)를 켜거나(`CSI ? 2031 h`) 껐다(`CSI ? 2031 l`)(#232)
     ColorSchemeUpdates(bool),
+    /// 마우스 포인터 모양(OSC 22). `Some`은 그 모양을 정하고, `None`은 이름이 비어 있어 되돌린다(#239)
+    MouseShape(Option<crate::mouse_shape::MouseShape>),
+}
+
+/// OSC 22 이름의 길이 상한(바이트). 가장 긴 이름("bottom_right_corner")보다 넉넉하다
+const MAX_SHAPE_NAME: usize = 64;
+
+/// `22;이름`의 이름을 신호로 바꾼다. 비어 있으면 되돌림, 모르거나 너무 길거나 제어 문자가 있으면 무시한다
+fn mouse_shape_signal(name: &str) -> Option<Signal> {
+    if name.is_empty() {
+        return Some(Signal::MouseShape(None));
+    }
+    if name.len() > MAX_SHAPE_NAME || name.chars().any(char::is_control) {
+        return None;
+    }
+    crate::mouse_shape::MouseShape::from_name(name).map(|s| Signal::MouseShape(Some(s)))
 }
 
 /// 셸 통합 표지. <https://gitlab.freedesktop.org/Per_Bothner/specifications/blob/master/proposals/semantic-prompts.md>
@@ -409,6 +425,7 @@ fn parse_osc(s: &str) -> Option<Signal> {
                 path: PathBuf::from(decoded),
             })
         }
+        "22" => mouse_shape_signal(rest),
         _ => None,
     }
 }
@@ -514,6 +531,55 @@ mod apc_tests {
         );
         // 매개변수가 너무 길어 잘렸으면 믿지 않는다
         assert_eq!(r(b"\x1b[8;1;2;3;4;5;6;7;8;9;100t"), vec![]);
+    }
+
+    fn notes(input: &[u8]) -> Vec<Signal> {
+        Scanner::default().feed(input)
+    }
+
+    #[test]
+    fn osc22_sets_the_mouse_shape_with_bel_or_st() {
+        use crate::mouse_shape::MouseShape as M;
+        assert_eq!(
+            notes(b"\x1b]22;crosshair\x07"),
+            vec![Signal::MouseShape(Some(M::Crosshair))]
+        );
+        assert_eq!(
+            notes(b"\x1b]22;pointer\x1b\\"),
+            vec![Signal::MouseShape(Some(M::Pointer))]
+        );
+        // xterm 별칭
+        assert_eq!(
+            notes(b"\x1b]22;left_ptr\x07"),
+            vec![Signal::MouseShape(Some(M::Default))]
+        );
+        // 읽기 조각 경계에서 잘려 와도 한 번만
+        let mut s = Scanner::default();
+        let mut got = Vec::new();
+        for ch in b"\x1b]22;text\x1b\\".chunks(2) {
+            got.extend(s.feed(ch));
+        }
+        assert_eq!(got, vec![Signal::MouseShape(Some(M::Text))]);
+    }
+
+    #[test]
+    fn osc22_empty_name_resets_and_unknown_or_hostile_names_are_ignored() {
+        assert_eq!(notes(b"\x1b]22;\x07"), vec![Signal::MouseShape(None)]);
+        assert_eq!(notes(b"\x1b]22;banana\x07"), vec![]);
+        assert_eq!(notes(b"\x1b]22;Pointer\x07"), vec![]);
+        // 제어 문자가 섞인 이름은 믿지 않는다(ESC는 OSC를 끊으므로 BEL 아닌 다른 제어 문자로)
+        assert_eq!(notes(b"\x1b]22;poi\x01nter\x07"), vec![]);
+        // 너무 긴 이름
+        let mut long = b"\x1b]22;".to_vec();
+        long.extend(std::iter::repeat_n(b'p', 500));
+        long.push(0x07);
+        assert_eq!(notes(&long), vec![]);
+        // 뒤따르는 정상 OSC는 받는다
+        long.extend_from_slice(b"\x1b]22;wait\x07");
+        assert_eq!(
+            notes(&long),
+            vec![Signal::MouseShape(Some(crate::mouse_shape::MouseShape::Wait))]
+        );
     }
 
     #[test]

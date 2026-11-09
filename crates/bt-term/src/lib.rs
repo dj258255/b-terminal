@@ -4,6 +4,7 @@ mod color;
 pub mod graphics;
 pub mod input;
 pub mod links;
+pub mod mouse_shape;
 pub mod notify;
 pub mod plain;
 pub mod process;
@@ -15,6 +16,7 @@ pub use input::{
     KittyFlags, Mods, NamedKey, encode_char_kitty, encode_named, encode_named_kitty, encode_paste, encode_text,
     paste_is_safe, trim_trailing_spaces,
 };
+pub use mouse_shape::MouseShape;
 pub use notify::{Notification, PromptMark, Signal};
 pub use process::Foreground;
 pub use screen::{Cell, CellFlags, Cursor, CursorShape, ImageView, Modes, Screen};

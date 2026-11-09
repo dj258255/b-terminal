@@ -360,6 +360,16 @@ Ghostty 설정에 흔한 아래 동작은 `keybind`에 써도 경고가 나지 �
 - 구성표는 테마 바탕색이 아니라 시스템 모양입니다(`theme = light:…,dark:…`가 없어도, 테마가 하나뿐이어도 시스템이 바뀌면 알립니다). `window-theme = light|dark`로 고정한 창은 그 값이 구성표이고 시스템 모양이 바뀌어도 알리지 않습니다. 새 칸은 지금 구성표로 시작합니다.
 - 알림은 열린 모든 칸 가운데 모드를 켠 칸에만 갑니다.
 
+## 마우스 포인터 모양(OSC 22)
+
+설정 키는 없고, Ghostty처럼 프로그램이 `OSC 22 ; 이름 BEL`(또는 `ST`)로 마우스 포인터 모양을 정합니다(예 `printf '\033]22;crosshair\033\\'`).
+
+- 이름은 Ghostty와 같습니다: W3C CSS cursor 이름(`pointer`, `text`, `crosshair`, `col-resize`, `zoom-in` 등 34가지)과 xterm·foot 별칭(`left_ptr`, `hand`, `xterm`, `watch`, `fleur` 등). 대소문자를 구분합니다. 모르는 이름과 64바이트가 넘거나 제어 문자가 든 이름은 무시하고 모양을 그대로 둡니다.
+- 이름이 비어 있으면(`OSC 22 ; BEL`) 정한 모양을 지웁니다. 초기화(RIS, `printf '\033c'`)와 "터미널 초기화" 동작도 지웁니다.
+- 모양은 칸마다 들고 있고, 마우스가 그 칸의 글 영역 위에 있을 때만 창 포인터에 적용합니다. 칸을 옮기거나 탭 줄·칸 사이 틈으로 나가면 그 칸의 모양을 쓰지 않습니다. 정한 모양이 없으면 지금까지처럼 화살표입니다.
+- Cmd(Linux는 Ctrl)를 누른 채 링크 위에 있을 때의 손가락 모양이 프로그램이 정한 모양보다 앞섭니다(Ghostty와 같습니다).
+- Ghostty와 다른 점: Ghostty는 기본 모양이 I자(`text`)이고 마우스 보고 모드를 켜고 끌 때 모양을 `default`·`text`로 되돌리며 Shift·Alt를 누르면 `text`·`crosshair`로 바꾸지만, b-terminal은 아직 이 셋을 하지 않습니다(기본은 화살표).
+
 ## 셸 통합
 
 탭에서 띄우는 zsh·bash에 셸 통합을 자동으로 싣습니다(Ghostty와 같은 방식, 사용자 설정은 그대로 읽힘. [assets/shell-integration](../assets/shell-integration/README.md)). 셸이 명령의 시작·끝·종료 코드(OSC 133)와 명령 글(OSC 633;E)을 알려 주면 터미널이 이렇게 씁니다.
