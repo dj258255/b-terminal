@@ -744,6 +744,12 @@ impl<T> Term<T> {
         &self.mode
     }
 
+    /// b-terminal 패치(#259): 스크롤 영역(DECSTBM)의 줄 범위. DECRQCRA가 원점 모드(DECOM)의 좌표를 풀 때 위 여백을 읽는다.
+    #[inline]
+    pub fn scroll_region(&self) -> &Range<Line> {
+        &self.scroll_region
+    }
+
     /// Swap primary and alternate screen buffer.
     pub fn swap_alt(&mut self) {
         self.grapheme_anchor = None;

@@ -121,6 +121,10 @@ pub struct SpawnOptions {
     pub color_scheme_light: bool,
     /// 글자 묶음 폭을 세는 방식(설정 grapheme-width-method, #180). `Unicode`면 mode 2027이 처음부터 켜져 있다
     pub grapheme_width_method: bt_core::config::GraphemeWidthMethod,
+    /// DECRQCRA(화면 영역 체크섬 묻기)에 답할지(설정 vt-xt-checksum-report, 기본 끔, #259). 꺼져 있으면 XTCHECKSUM도 무시한다
+    pub vt_xt_checksum_report: bool,
+    /// 체크섬 계산 방식의 기본(설정 vt-xt-checksum-extension, #259). 프로그램이 XTCHECKSUM으로 바꾼 것은 초기화(RIS·DECSTR)에서 이 값으로 돌아온다
+    pub vt_xt_checksum_extension: bt_core::config::XtChecksumExtension,
 }
 
 /// 창 크기 바꾸기 요청(CSI 8 ; 행 ; 열 t)이 가리키는 칸 수를 정한다. 인자와 결과는 모두 (열, 행)이다. 0은 그 쪽을 그대로 두고,
@@ -633,12 +637,16 @@ impl Session {
         let enquiry_response = options.enquiry_response.clone();
         let vt_kam_allowed = options.vt_kam_allowed;
         let vt_window_resize_allowed = options.vt_window_resize_allowed;
+        let xt_report = options.vt_xt_checksum_report;
+        let xt_default = crate::xt_checksum::Flags::from_config(&options.vt_xt_checksum_extension);
         std::thread::Builder::new().name("bt-pty-read".into()).spawn(move || {
             let mut buf = vec![0u8; 64 * 1024];
             let mut scanner = Scanner::default();
             // 셸 통합: C(실행)부터 D(끝)까지의 출력과 그 명령
             let mut capture: Option<(Vec<u8>, Instant)> = None;
             let mut pending_cmd: Option<String> = None;
+            // 지금 체크섬 계산 방식(XTCHECKSUM). 읽기 스레드만 쓴다
+            let mut xt_flags = xt_default;
             loop {
                 match reader.read(&mut buf) {
                     Ok(0) => break,
@@ -695,6 +703,7 @@ impl Session {
                                         g.graphics_erase(visible, scrollback);
                                         // 초기화(RIS)는 키보드 잠금도 푼다
                                         if visible && scrollback {
+                                            xt_flags = xt_default;
                                             thread_kam_locked.store(false, std::sync::atomic::Ordering::Release);
                                             thread_scheme_updates.store(false, std::sync::atomic::Ordering::Release);
                                             thread_mouse_shape.store(0, std::sync::atomic::Ordering::Release);
@@ -705,6 +714,22 @@ impl Session {
                                         let code = shape.map_or(0, |s| s.to_code());
                                         thread_mouse_shape.store(code, std::sync::atomic::Ordering::Release);
                                     }
+                                    // DECRQCRA: 설정이 켜졌을 때만 그 자리의 격자로 계산해 답한다(ADR-021). 터미널의 답이라 읽기 전용 칸에서도 쓴다(ADR-018 결정 4)
+                                    Signal::XtChecksumReport(req) => {
+                                        if xt_report {
+                                            let sum = crate::xt_checksum::compute(&g.term, req, xt_flags);
+                                            let mut w = thread_writer.lock();
+                                            let _ = w.write_all(&crate::xt_checksum::encode(req.id, sum));
+                                            let _ = w.flush();
+                                        }
+                                    }
+                                    // XTCHECKSUM: 보고가 꺼져 있으면 계산법도 바꾸지 않는다
+                                    Signal::XtChecksumExtension(bits) => {
+                                        if xt_report {
+                                            xt_flags = crate::xt_checksum::Flags::from_bits(bits as u16);
+                                        }
+                                    }
+                                    Signal::SoftReset => xt_flags = xt_default,
                                     Signal::ColorSchemeUpdates(on) => {
                                         thread_scheme_updates.store(on, std::sync::atomic::Ordering::Release);
                                     }
@@ -1121,6 +1146,9 @@ fn signal_event(sig: Signal) -> SessionEvent {
         | Signal::ColorSchemeQuery
         | Signal::ColorSchemeUpdates(_)
         | Signal::MouseShape(_)
+        | Signal::XtChecksumReport(_)
+        | Signal::XtChecksumExtension(_)
+        | Signal::SoftReset
         | Signal::WindowResize { .. } => SessionEvent::Output,
     }
 }

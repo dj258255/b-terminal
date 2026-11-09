@@ -939,3 +939,159 @@ fn password_input_follows_the_ptys_termios() {
     wait_until(&s, |t| t.contains("ab"));
     assert_eq!(s.password_input(), Some(false));
 }
+
+// ---- DECRQCRA 체크섬 보고(#259) ----
+
+/// 셸이 `setup`을 찍고 READY를 보인 뒤(`readonly`면 칸을 읽기 전용으로 하고 1초 뒤) `query`를 찍고, 돌아온 바이트를 16진수로 돌려준다.
+/// 답이 여러 번 따로 올 수 있어 한 바이트씩 읽다가 1.5초 동안 오는 것이 없으면 끝낸다(`dd bs=1 count=256`, #244)
+fn checksum_reply(setup: &str, query: &str, readonly: bool, opts: impl FnOnce(&mut SpawnOptions)) -> String {
+    let (tx, rx) = channel();
+    let tx = std::sync::Mutex::new(tx);
+    let sink = Arc::new(move |e: SessionEvent| {
+        let _ = tx.lock().unwrap().send(e);
+    });
+    let script = format!(
+        "stty raw -echo min 0 time 15; printf '{setup}'; printf READY; sleep 1; printf '{query}'; \
+         r=$(dd bs=1 count=256 2>/dev/null | od -An -v -tx1 | tr -d ' \\n'); printf 'R[%s]\\n' \"$r\""
+    );
+    let mut o = SpawnOptions {
+        program: Some("/bin/sh".into()),
+        args: vec!["-c".into(), script],
+        cwd: Some(std::env::temp_dir()),
+        ..Default::default()
+    };
+    opts(&mut o);
+    let s = Session::spawn(o, GridSize::new(80, 10), Theme::default(), sink).expect("spawn");
+    wait_until(&s, |t| t.contains("READY"));
+    if readonly {
+        s.set_readonly(true);
+    }
+    wait_exit(&rx);
+    let text = s.snapshot().text();
+    let start = text.find("R[").unwrap_or_else(|| panic!("답 줄이 없다:\n{text}")) + 2;
+    let end = text[start..].find(']').expect("닫는 ]") + start;
+    text[start..end].to_string()
+}
+
+fn xt_on(o: &mut SpawnOptions) {
+    o.vt_xt_checksum_report = true;
+}
+
+/// 첫 줄 `abc`(97+98+99=294)의 DEC 체크섬: 합을 뒤집어 0x10000 - 294 = 0xFEDA
+const ABC_DEC: &str = "FEDA";
+const ABC_ROW: &str = "\\033[1;1;1;1;1;3*y";
+
+fn dcs(id: u16, sum: &str) -> String {
+    hex_of(&format!("\x1bP{id}!~{sum}\x1b\\"))
+}
+
+#[test]
+fn checksum_report_is_off_by_default() {
+    // 한 칸씩 물어 화면 전체를 읽어 갈 수 있는 길이라 Ghostty처럼 기본이 꺼짐이다
+    assert_eq!(checksum_reply("abc", ABC_ROW, false, |_| {}), "");
+    // XTCHECKSUM도 무시하고, 켜지 않았으니 아무 답도 없다
+    assert_eq!(checksum_reply("abc\\033[1#y", ABC_ROW, false, |_| {}), "");
+}
+
+#[test]
+fn checksum_report_answers_with_the_dec_checksum_when_on() {
+    assert_eq!(checksum_reply("abc", ABC_ROW, false, xt_on), dcs(1, ABC_DEC));
+    // 요청 번호(첫째)는 그대로 돌려주고, 쪽 번호(둘째)는 무시한다. 좌표를 생략하면 화면 전체다
+    assert_eq!(
+        checksum_reply("abc", "\\033[7;9;1;1;1;3*y", false, xt_on),
+        dcs(7, ABC_DEC)
+    );
+    // (화면 첫 줄에는 READY도 있어 abcREADY = 667이다)
+    assert_eq!(
+        checksum_reply("abc", "\\033[2*y", false, xt_on),
+        dcs(2, &format!("{:04X}", 0x10000 - 667))
+    );
+    // 비어 있는 사각형은 0000
+    assert_eq!(
+        checksum_reply("abc", "\\033[3;1;1;3;1;2*y", false, xt_on),
+        dcs(3, "0000")
+    );
+    // 두 번 물으면 두 번 답한다
+    assert_eq!(
+        checksum_reply("abc", &format!("{ABC_ROW}{ABC_ROW}"), false, xt_on),
+        format!("{}{}", dcs(1, ABC_DEC), dcs(1, ABC_DEC))
+    );
+}
+
+#[test]
+fn xtchecksum_changes_the_variant_until_reset() {
+    // CSI 1 # y: 합을 뒤집지 않는다. 294 = 0x0126
+    assert_eq!(checksum_reply("abc\\033[1#y", ABC_ROW, false, xt_on), dcs(1, "0126"));
+    // CSI 0 # y와 CSI # y는 DEC 체크섬으로 돌린다
+    assert_eq!(
+        checksum_reply("abc\\033[1#y\\033[0#y", ABC_ROW, false, xt_on),
+        dcs(1, ABC_DEC)
+    );
+    assert_eq!(
+        checksum_reply("abc\\033[1#y\\033[#y", ABC_ROW, false, xt_on),
+        dcs(1, ABC_DEC)
+    );
+    // 소프트 리셋(DECSTR)은 화면을 지우지 않고 계산법을 설정의 기본으로 되돌린다
+    assert_eq!(
+        checksum_reply("abc\\033[1#y\\033[!p", ABC_ROW, false, xt_on),
+        dcs(1, ABC_DEC)
+    );
+    // 초기화(RIS)도 되돌린다(화면도 지워지므로 다시 찍는다)
+    assert_eq!(
+        checksum_reply("abc\\033[1#y\\033cabc", ABC_ROW, false, xt_on),
+        dcs(1, ABC_DEC)
+    );
+    // 모르는 윗 비트는 버린다: 33은 하위 다섯 비트로 1
+    assert_eq!(checksum_reply("abc\\033[33#y", ABC_ROW, false, xt_on), dcs(1, "0126"));
+}
+
+#[test]
+fn xt_checksum_extension_setting_is_the_variant_after_reset() {
+    // esctest의 `no-negate,no-attributes,no-trim,full`: 뒤집지 않고 속성도 안 더한다
+    let esctest = |o: &mut SpawnOptions| {
+        o.vt_xt_checksum_report = true;
+        o.vt_xt_checksum_extension = bt_core::config::XtChecksumExtension {
+            negate: false,
+            attributes: false,
+            trim: false,
+            undrawn: false,
+            full: true,
+        };
+    };
+    // 첫 줄은 abcREADY(667)이고, 빼지 않으니 나머지 72칸(쓰지 않은 칸)도 빈칸(32)으로 센다
+    let sum = format!("{:04X}", 667 + 72 * 32u32);
+    assert_eq!(
+        checksum_reply("abc", "\\033[1;1;1;1;1;80*y", false, esctest),
+        dcs(1, &sum)
+    );
+    // 프로그램이 DEC로 바꿨다가 소프트 리셋하면 설정의 값으로 돌아온다
+    assert_eq!(
+        checksum_reply("abc\\033[0#y\\033[!p", "\\033[1;1;1;1;1;3*y", false, esctest),
+        dcs(1, "0126")
+    );
+}
+
+#[test]
+fn checksum_counts_attributes_wide_chars_and_the_screen_position() {
+    // 굵게 a: 97 + 0x80 = 225, 뒤집어 0xFF1F
+    assert_eq!(
+        checksum_reply("\\033[1ma", "\\033[1;1;1;1;1;1*y", false, xt_on),
+        dcs(1, "FF1F")
+    );
+    // 둘째 줄의 b만 물으면 b만 센다
+    assert_eq!(
+        checksum_reply("a\\r\\nb", "\\033[1;1;2;1;2;1*y", false, xt_on),
+        dcs(1, &format!("{:04X}", 0x10000 - 98))
+    );
+    // 넓은 글자는 두 칸 모두 ESC(0x1B)로 센다
+    assert_eq!(
+        checksum_reply("\\346\\251\\213", "\\033[1;1;1;1;1;2*y", false, xt_on),
+        dcs(1, &format!("{:04X}", 0x10000 - 0x36))
+    );
+}
+
+#[test]
+fn checksum_reply_reaches_a_readonly_pane() {
+    // 터미널의 답이라 읽기 전용 칸에서도 막지 않는다(ADR-018 결정 4)
+    assert_eq!(checksum_reply("abc", ABC_ROW, true, xt_on), dcs(1, ABC_DEC));
+}

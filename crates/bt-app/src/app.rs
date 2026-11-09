@@ -1324,6 +1324,8 @@ impl App {
             enquiry_response: self.config.enquiry_response.clone(),
             vt_kam_allowed: self.config.vt_kam_allowed,
             vt_window_resize_allowed: self.config.vt_window_resize_allowed,
+            vt_xt_checksum_report: self.config.vt_xt_checksum_report,
+            vt_xt_checksum_extension: self.config.vt_xt_checksum_extension,
             image_storage_limit: Some(self.config.image_storage_limit),
             color_scheme_light: !self.scheme_dark(),
             grapheme_width_method: self.config.grapheme_width_method,

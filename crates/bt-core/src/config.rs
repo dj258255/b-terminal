@@ -639,6 +639,10 @@ pub struct Config {
     pub sources: Vec<PathBuf>,
     /// 읽어 낸 설정 줄(시스템 모양이 바뀔 때 파일을 다시 읽지 않고 테마를 다시 고르려고 들고 있는다, #221)
     pub entries: Vec<Entry>,
+    /// 프로그램이 `CSI Pi ; Pg ; Pt ; Pl ; Pb ; Pr * y`(DECRQCRA)로 화면 영역의 체크섬을 물으면 답한다(Ghostty `vt-xt-checksum-report`, 기본 끔, #259)
+    pub vt_xt_checksum_report: bool,
+    /// 체크섬을 계산하는 방식(Ghostty `vt-xt-checksum-extension`, #259)
+    pub vt_xt_checksum_extension: XtChecksumExtension,
 }
 
 /// 명령 끝 알림을 언제 보낼까(Ghostty `notify-on-command-finish`)
@@ -816,6 +820,82 @@ impl BellFeatures {
         }
         *self = next;
         true
+    }
+}
+
+/// DECRQCRA 체크섬을 어떻게 계산하는지(Ghostty `vt-xt-checksum-extension`, #259). 켜짐이 DEC 단말의 계산이고,
+/// 프로그램이 XTCHECKSUM으로 바꾼 것은 초기화(RIS·DECSTR)에서 이 값으로 돌아온다
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct XtChecksumExtension {
+    /// 합을 뒤집어 보고한다
+    pub negate: bool,
+    /// 칸마다 굵게·밑줄·반전·숨김·보호 표시를 더한다
+    pub attributes: bool,
+    /// 사각형 첫 칸이 아닌 일반 빈칸을 뺀다
+    pub trim: bool,
+    /// 쓴 적 없는 칸을 빈칸으로 센다
+    pub undrawn: bool,
+    /// DEC 8비트 값 대신 코드포인트 전체를 쓴다
+    pub full: bool,
+}
+
+impl Default for XtChecksumExtension {
+    fn default() -> Self {
+        Self {
+            negate: true,
+            attributes: true,
+            trim: true,
+            undrawn: false,
+            full: false,
+        }
+    }
+}
+
+impl XtChecksumExtension {
+    /// `no-negate,full` 같은 글을 지금 값 위에 얹는다. 모르는 이름이 있으면 아무것도 바꾸지 않고 거짓
+    pub fn apply(&mut self, v: &str) -> bool {
+        let mut next = *self;
+        for item in v.split(',').map(str::trim).filter(|i| !i.is_empty()) {
+            let (on, name) = match item.strip_prefix("no-") {
+                Some(n) => (false, n),
+                None => (true, item),
+            };
+            match name {
+                "true" | "false" if item == name => {
+                    let all = name == "true";
+                    next = Self {
+                        negate: all,
+                        attributes: all,
+                        trim: all,
+                        undrawn: all,
+                        full: all,
+                    };
+                }
+                "negate" => next.negate = on,
+                "attributes" => next.attributes = on,
+                "trim" => next.trim = on,
+                "undrawn" => next.undrawn = on,
+                "full" => next.full = on,
+                _ => return false,
+            }
+        }
+        *self = next;
+        true
+    }
+
+    /// 모든 항목을 `negate,attributes,trim,no-undrawn,no-full`처럼 적는다(Ghostty 묶음 값의 출력 모양)
+    pub fn to_list(&self) -> String {
+        [
+            (self.negate, "negate"),
+            (self.attributes, "attributes"),
+            (self.trim, "trim"),
+            (self.undrawn, "undrawn"),
+            (self.full, "full"),
+        ]
+        .into_iter()
+        .map(|(on, n)| if on { n.to_string() } else { format!("no-{n}") })
+        .collect::<Vec<_>>()
+        .join(",")
     }
 }
 
@@ -1513,6 +1593,8 @@ impl Default for Config {
             warnings: Vec::new(),
             sources: Vec::new(),
             entries: Vec::new(),
+            vt_xt_checksum_report: false,
+            vt_xt_checksum_extension: XtChecksumExtension::default(),
         }
     }
 }
@@ -3192,6 +3274,15 @@ impl Config {
             },
             // 공백도 경계 글자라 다듬지 않은 값을 쓴다(큰따옴표는 이미 벗김)
             "selection-word-chars" => self.selection_word_chars = unescape_word_chars(&e.value),
+            "vt-xt-checksum-report" => match parse_bool(v) {
+                Some(b) => self.vt_xt_checksum_report = b,
+                None => bad(warnings),
+            },
+            "vt-xt-checksum-extension" => {
+                if !self.vt_xt_checksum_extension.apply(v) {
+                    bad(warnings)
+                }
+            }
             "quick-terminal-position" => match v {
                 "top" => self.quick.position = QuickPosition::Top,
                 "bottom" => self.quick.position = QuickPosition::Bottom,
@@ -3697,6 +3788,8 @@ impl Config {
             }
             .into(),
         );
+        push("vt-xt-checksum-report", self.vt_xt_checksum_report.to_string());
+        push("vt-xt-checksum-extension", self.vt_xt_checksum_extension.to_list());
         out.join("\n")
     }
 }
@@ -3720,9 +3813,6 @@ const KNOWN_IGNORED: &[&str] = &[
     "macos-icon-frame",
     "macos-icon-ghost-color",
     "macos-icon-screen-color",
-    // DECRQCRA(화면 영역 체크섬 보고): 구현하지 않는다. 기본이 꺼짐이라 받기만 해도 그대로다
-    "vt-xt-checksum-report",
-    "vt-xt-checksum-extension",
     // GTK·리눅스 전용
     "class",
     "x11-instance-name",
@@ -4169,6 +4259,71 @@ mod tests {
             c.warnings
         );
         assert!(c.warnings[0].contains("what-is-this"));
+    }
+
+    /// #259: DECRQCRA 체크섬 보고는 Ghostty처럼 기본이 꺼짐이고, 계산 방식은 DEC 단말의 것이다
+    #[test]
+    fn xt_checksum_keys_like_ghostty() {
+        let d = Config::default();
+        assert!(!d.vt_xt_checksum_report);
+        assert_eq!(d.vt_xt_checksum_extension, XtChecksumExtension::default());
+        assert_eq!(
+            d.vt_xt_checksum_extension.to_list(),
+            "negate,attributes,trim,no-undrawn,no-full"
+        );
+        let c = Config::from_text(
+            "vt-xt-checksum-report = true\nvt-xt-checksum-extension = no-negate,no-attributes,no-trim,full\n",
+            true,
+        );
+        assert!(c.warnings.is_empty(), "{:?}", c.warnings);
+        assert!(c.vt_xt_checksum_report);
+        assert_eq!(
+            c.vt_xt_checksum_extension,
+            XtChecksumExtension {
+                negate: false,
+                attributes: false,
+                trim: false,
+                undrawn: false,
+                full: true
+            }
+        );
+        let out = c.render();
+        assert!(out.contains("vt-xt-checksum-report = true"), "{out}");
+        assert!(
+            out.contains("vt-xt-checksum-extension = no-negate,no-attributes,no-trim,no-undrawn,full"),
+            "{out}"
+        );
+        // 적지 않은 것은 그대로 두고, 뒤 줄이 앞 줄 위에 얹힌다
+        let c = Config::from_text(
+            "vt-xt-checksum-extension = undrawn\nvt-xt-checksum-extension = no-trim\n",
+            true,
+        );
+        assert_eq!(
+            c.vt_xt_checksum_extension,
+            XtChecksumExtension {
+                undrawn: true,
+                trim: false,
+                ..XtChecksumExtension::default()
+            }
+        );
+        assert!(
+            Config::from_text("vt-xt-checksum-extension = false\n", true).vt_xt_checksum_extension
+                == XtChecksumExtension {
+                    negate: false,
+                    attributes: false,
+                    trim: false,
+                    undrawn: false,
+                    full: false
+                }
+        );
+        // 모르는 이름이 섞이면 줄 전체를 버리고 경고, 나쁜 불리언도 경고
+        let c = Config::from_text(
+            "vt-xt-checksum-extension = no-negate,bogus\nvt-xt-checksum-report = maybe\n",
+            true,
+        );
+        assert_eq!(c.vt_xt_checksum_extension, XtChecksumExtension::default());
+        assert!(!c.vt_xt_checksum_report);
+        assert_eq!(c.warnings.len(), 2, "{:?}", c.warnings);
     }
 
     #[test]
@@ -5101,8 +5256,6 @@ mod tests {
             "macos-icon-ghost-color = #fff",
             "macos-icon-screen-color = #000,#111",
             "macos-dock-drop-behavior = new-window",
-            "vt-xt-checksum-report = true",
-            "vt-xt-checksum-extension = full",
             "class = x",
             "x11-instance-name = x",
             "language = de",
