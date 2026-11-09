@@ -166,7 +166,7 @@ config-file = ?~/.config/b-terminal/local   # ?가 붙으면 없어도 된다
 | `quick-terminal-autohide` | `true` `false` | `true` | 포커스를 잃으면 숨습니다 |
 | `quick-terminal-animation-duration` | 초 | `0.2` | 들어오고 나가는 움직임의 길이. `0`이면 움직이지 않습니다. 가운데(`center`)는 움직이지 않습니다 |
 | `quick-terminal-space-behavior` | `move` `remain` | `move` | Space(데스크톱)를 옮길 때 퀵 터미널이 따라오는가(`move`: 지금 Space로 따라옴, `remain`: 처음 연 Space에 남음). 퀵 창이 포커스를 받을 때 `NSWindow.collectionBehavior`를 정합니다(macOS). 실제 창에서는 아직 확인하지 않았습니다 |
-| `window-save-state` | `default` `always` `never` | `default` | 앱을 끌 때(Cmd-Q) 창 크기·자리, 탭, 분할(비율), 칸의 작업 폴더를 적어 두고 다음에 켤 때 새 셸로 되살립니다. 돌던 프로그램·화면 내용은 되살리지 않습니다. 마지막 창을 닫아 꺼진 경우와 `-e`·`--cwd`로 띄운 경우는 되살리지 않습니다 |
+| `window-save-state` | `default` `always` `never` | `default` | 앱을 끌 때(Cmd-Q) 창 크기·자리, 탭, 분할(비율), 칸의 작업 폴더, 사람이 붙인 탭·창·칸 제목(`set_tab_title`·`set_window_title`·`set_surface_title`과 `prompt_*`)을 적어 두고 다음에 켤 때 새 셸로 되살립니다. 프로그램이 OSC로 정한 제목, 돌던 프로그램, 화면 내용은 되살리지 않습니다. 제목이 없던 옛 상태 파일도 읽고, 읽은 제목은 제어 문자를 지우고 200자로 자릅니다. 마지막 창을 닫아 꺼진 경우와 `-e`·`--cwd`로 띄운 경우는 되살리지 않습니다 |
 | `background-opacity` | `0`~`1` | `1` | 기본 바탕색 칸으로 창 뒤가 비칩니다(글자·색 칸은 불투명). 새 창부터 따릅니다 |
 | `background-opacity-cells` | `true` / `false` | `false` | Ghostty 1.2 값. 켜면 `background-opacity`를 색이 있는 바탕 칸(프로그램이 바탕색을 칠한 칸)에도 적용합니다. 끄면 기본 바탕색 칸만 비칩니다. 고른 영역·커서·탭 막대는 그대로입니다 |
 | `link-url` | `true` / `false` | `true` | 화면 글의 URL을 Cmd(Linux는 Ctrl)를 누른 채 위에 있으면 링크로 찾습니다. `false`면 글의 URL은 링크가 아닙니다. OSC 8 링크는 `link-osc8`이 따로 정합니다 |
