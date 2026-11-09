@@ -115,9 +115,64 @@ pub struct Config {
     pub background_opacity: f32,
     /// 끌 때 창·탭·분할·폴더를 적어 두고 켤 때 되살린다(Ghostty `window-save-state`, #94). never면 끔
     pub window_save_state: bool,
+    /// 벨(BEL)이 울릴 때 할 일(Ghostty `bell-features`, #107)
+    pub bell_features: BellFeatures,
     pub warnings: Vec<String>,
     /// 실제로 읽은 파일
     pub sources: Vec<PathBuf>,
+}
+
+impl BellFeatures {
+    /// `system,no-title` 같은 글을 지금 값 위에 얹는다(Ghostty처럼 적지 않은 것은 그대로).
+    /// `true`·`false`는 모두 켜고 끈다. 하나라도 모르는 이름이면 아무것도 바꾸지 않고 거짓
+    pub fn apply(&mut self, v: &str) -> bool {
+        let mut next = *self;
+        for item in v.split(',').map(str::trim).filter(|i| !i.is_empty()) {
+            let (on, name) = match item.strip_prefix("no-") {
+                Some(n) => (false, n),
+                None => (true, item),
+            };
+            match name {
+                "true" | "false" if item == name => {
+                    let all = name == "true";
+                    next = BellFeatures {
+                        system: all,
+                        attention: all,
+                        title: all,
+                    };
+                }
+                "system" => next.system = on,
+                "attention" => next.attention = on,
+                "title" => next.title = on,
+                // Ghostty에 있지만 b-terminal은 하지 않는다(소리 파일, 테두리 깜빡임)
+                "audio" | "border" => {}
+                _ => return false,
+            }
+        }
+        *self = next;
+        true
+    }
+}
+
+/// 벨이 울릴 때 할 일(Ghostty `bell-features`). Ghostty 기본은 attention·title
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BellFeatures {
+    /// 시스템 경고음(macOS NSBeep)
+    pub system: bool,
+    /// 창이 앞에 없으면 주의를 끈다(Dock 아이콘 튀기기)
+    pub attention: bool,
+    /// 벨이 울린 칸의 제목 앞에 🔔를 붙이고, 그 칸을 보면 뗀다
+    pub title: bool,
+}
+
+impl Default for BellFeatures {
+    fn default() -> Self {
+        Self {
+            system: false,
+            attention: true,
+            title: true,
+        }
+    }
 }
 
 impl Default for Config {
@@ -157,6 +212,7 @@ impl Default for Config {
             colorspace_srgb: false,
             background_opacity: 1.0,
             window_save_state: true,
+            bell_features: BellFeatures::default(),
             warnings: Vec::new(),
             sources: Vec::new(),
         }
@@ -590,6 +646,11 @@ impl Config {
                 "never" => self.window_save_state = false,
                 _ => bad(warnings),
             },
+            "bell-features" => {
+                if !self.bell_features.apply(v) {
+                    bad(warnings)
+                }
+            }
             "background-opacity" => match v.parse::<f32>() {
                 Ok(o) if o.is_finite() => self.background_opacity = o.clamp(0.0, 1.0),
                 _ => bad(warnings),
@@ -700,6 +761,20 @@ impl Config {
         for k in &self.keybinds {
             push("keybind", k.clone());
         }
+        let b = self.bell_features;
+        let bell: Vec<&str> = [(b.system, "system"), (b.attention, "attention"), (b.title, "title")]
+            .into_iter()
+            .map(|(on, name)| if on { name } else { "" })
+            .filter(|n| !n.is_empty())
+            .collect();
+        push(
+            "bell-features",
+            if bell.is_empty() {
+                "false".into()
+            } else {
+                bell.join(",")
+            },
+        );
         out.join("\n")
     }
 }
@@ -909,6 +984,45 @@ mod tests {
         assert!(!Config::from_text("window-save-state = never\n", true).window_save_state);
         assert!(Config::from_text("window-save-state = always\n", true).window_save_state);
         assert_eq!(Config::from_text("window-save-state = maybe\n", true).warnings.len(), 1);
+    }
+
+    #[test]
+    fn bell_features_like_ghostty() {
+        let d = Config::default().bell_features;
+        assert!(d.attention && d.title && !d.system, "Ghostty 기본은 attention·title");
+        let c = Config::from_text("bell-features = system,no-title\n", true);
+        assert_eq!(
+            c.bell_features,
+            BellFeatures {
+                system: true,
+                attention: true,
+                title: false
+            },
+            "적지 않은 것은 그대로"
+        );
+        assert!(c.warnings.is_empty(), "{:?}", c.warnings);
+        let c = Config::from_text("bell-features = false\nbell-features = title\n", true);
+        assert_eq!(
+            c.bell_features,
+            BellFeatures {
+                system: false,
+                attention: false,
+                title: true
+            }
+        );
+        // audio·border는 Ghostty 이름이라 받지만 하는 일은 없다
+        let c = Config::from_text("bell-features = audio, no-border\n", true);
+        assert!(c.warnings.is_empty(), "{:?}", c.warnings);
+        assert_eq!(c.bell_features, BellFeatures::default());
+        // 모르는 이름이 섞이면 줄 전체를 버리고 경고
+        let c = Config::from_text("bell-features = no-attention,chime\n", true);
+        assert_eq!(c.bell_features, BellFeatures::default());
+        assert_eq!(c.warnings.len(), 1);
+        assert!(
+            Config::from_text("bell-features = system\n", true)
+                .render()
+                .contains("bell-features = system,attention,title")
+        );
     }
 
     #[test]
