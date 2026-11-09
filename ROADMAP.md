@@ -184,6 +184,25 @@ Ghostty 키 채우기 3. 추적 이슈 [#145](https://github.com/dj258255/b-term
 - zsh에서는 `$B:path`의 `:p` 같은 꼴이 변수 꾸밈으로 읽혀 빈 값이 된다. `${B}:path`로 쓴다.
 - worktree에서 `gh pr merge --delete-branch`는 로컬 main으로 바꾸려다 실패하지만 원격 병합과 브랜치 지우기는 된다.
 
+## 0.11.0 (2026-11-09)
+
+Ghostty 키 채우기 4. 추적 이슈 [#159](https://github.com/dj258255/b-terminal/issues/159). 0.10과 같은 방식(에이전트 여섯이 각자 worktree에서 구현·커밋, 주 세션이 옮기고 검토·병합). 이번에는 처음부터 Ghostty 소스 `Config.zig`를 에이전트에게 읽혔다. 병합 시각(KST): 추적 이슈를 연 21:36부터 마지막 병합 21:59까지.
+
+| 이슈 | 내용 | 예상 | 실제 | PR | 주 세션이 한 것 |
+|---|---|---|---|---|---|
+| [#160](https://github.com/dj258255/b-terminal/issues/160) | 창·탭 이어받기, 탭 막대 | 2~3시간 | 에이전트 약 4분(병합 21:45) | [#166](https://github.com/dj258255/b-terminal/pull/166) | 빠진 되돌림 확인, 실제 창 |
+| [#165](https://github.com/dj258255/b-terminal/issues/165) | 소리 벨 | 2~3시간 | 에이전트 약 5분(병합 21:48) | [#167](https://github.com/dj258255/b-terminal/pull/167) | 커밋 섞임 확인 |
+| [#161](https://github.com/dj258255/b-terminal/issues/161) | 명령 끝 알림 | 2~3시간 | 에이전트 약 6분(병합 21:50) | [#168](https://github.com/dj258255/b-terminal/pull/168) | 충돌(소리 벨과 같은 자리) |
+| [#162](https://github.com/dj258255/b-terminal/issues/162) | 선택·색 키 | 2~3시간 | 에이전트 약 7분(병합 21:53) | [#169](https://github.com/dj258255/b-terminal/pull/169) | 소스 대조, 실제 창 |
+| [#163](https://github.com/dj258255/b-terminal/issues/163) | 글꼴 미세 조정 | 2~3시간 | 에이전트 약 8분(병합 21:56) | [#170](https://github.com/dj258255/b-terminal/pull/170) | 테스트 파일 합치기, 실제 창 |
+| [#164](https://github.com/dj258255/b-terminal/issues/164) | 닫은 것 되살리기 | 2~3시간 | 에이전트 약 8분(병합 21:59) | [#171](https://github.com/dj258255/b-terminal/pull/171) | 기본 키를 소스와 대조 |
+
+이번에 배운 것:
+
+- 에이전트에게 처음부터 Ghostty 소스를 읽히니, 주 세션이 고쳐야 했던 규칙 차이가 0.10의 셋에서 0으로 줄었다.
+- 공유 임시 폴더(scratchpad)에서 에이전트끼리 같은 파일 이름(`app.rs.good`)을 써서 서로 덮어쓴 일이 있었다. 커밋에는 섞이지 않았지만, 에이전트마다 임시 파일 이름에 이슈 번호를 붙이게 해야 한다.
+- 기본값을 Ghostty와 맞추면 사용자 동작이 바뀌는 경우(알림 `never`)는 "적지 않음"을 따로 두어 지금 동작을 지키는 쪽이 낫다(#161).
+
 ## 다음
 
 - 범수 님이 직접 해야 할 것: 키보드·마우스 확인(한글 2벌식 "안녕 하세요⏎", Claude Code의 Shift+Enter, Cmd-D·Cmd-F·Cmd-클릭·Cmd-N·Cmd-Shift-P, 메뉴, 창 닫기 단추, vim·htop, kitty icat·yazi, 투명 창), Developer ID 계정으로 `scripts/bundle-macos.sh --sign … --notarize … --dmg`
@@ -193,4 +212,5 @@ Ghostty 키 채우기 3. 추적 이슈 [#145](https://github.com/dj258255/b-term
 - 범수 님이 확인할 것(0.8): 메뉴 "셸 › 제목 바꾸기…"로 탭 제목 붙이고 비우기, 팔레트 "스크롤백을 파일로 열기"와 앱을 끈 뒤 `$TMPDIR/b-terminal-$(id -u)/files`가 비었는지, `focus-follows-mouse = true`로 분할 칸 위를 마우스로 오가기, 단어 두 번 눌러 고르기(`;`·`$`에서 끊김), ⌃⌘F 전체 화면
 - 범수 님이 확인할 것(0.9): zsh 프롬프트에서 친 명령의 한 글자를 눌러 커서가 거기로 가는지, `adjust_selection`을 키에 묶어 고르기를 늘려 보기, 배경 그림을 투명 창(`background-opacity = 0.8`)과 함께 써 보기
 - 범수 님이 확인할 것(0.10): 고른 글 ⌘C 뒤 줄 끝 공백이 없는지, `right-click-action = copy-or-paste`, 팔레트 "창 항상 위", `keybind = ctrl+a>catch_all=ignore`와 `ctrl+a>n=new_window`, `scroll-to-bottom = output`으로 긴 출력 중 위로 스크롤
+- 범수 님이 확인할 것(0.11): 탭을 닫고 5초 안에 ⌘Z, `notify-on-command-finish = unfocused`로 긴 명령 뒤 다른 앱으로, `bell-features = audio`와 `bell-audio-path`로 벨 소리, ⌘F 찾기 강조 색, 고른 뒤 키를 치면 고르기가 지워지는지
 - 큰 일로 남긴 것: GPU(또는 IOSurface) 렌더러, 글자 묶음 폭(mode 2027)

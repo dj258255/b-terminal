@@ -4,12 +4,22 @@
 
 ## [아직 릴리스하지 않음]
 
-- 닫은 것 되살리기(Ghostty): `undo-timeout`(기본 `5s`, `0s`면 끔) 동안 직접 닫은 칸·탭의 셸을 끊지 않고 들고 있다가 `undo`(⌘Z, ⇧⌘T)로 원래 자리에 되살리고 `redo`(⇧⌘Z)로 다시 닫습니다. 되살릴 것이 없으면 ⌘Z는 전처럼 셸로 갑니다. 창 닫기·셸이 스스로 끝난 칸은 되살리지 않습니다. 실제 창에서는 아직 확인하지 않았습니다. #164
-- 글꼴 미세 조정 키(Ghostty): `adjust-underline-position`·`-thickness`, `adjust-strikethrough-position`·`-thickness`, `adjust-overline-position`·`-thickness`(윗줄 SGR 53은 아직 그리지 않아 키만 받음), `adjust-cursor-height`·`-thickness`, `adjust-font-baseline`, `adjust-box-thickness`와 가변 글꼴 축 `font-variation`·`-bold`·`-italic`·`-bold-italic`(예 `wght=500`). 실제 창에서는 아직 확인하지 않았고 픽셀 테스트로만 확인했습니다. #163
-- 선택·색 키(Ghostty): `selection-clear-on-typing`(기본 켬)·`selection-clear-on-copy`(기본 끔), 찾기 강조 색 `search-foreground`·`search-background`·`search-selected-foreground`·`search-selected-background`(`cell-foreground`·`cell-background` 포함), `bold-color`(색 또는 `bright`), `faint-opacity`(기본 0.5). 기본 동작이 바뀝니다: 찾기에 맞은 칸이 검정 글자에 노랑(#ffe082) 바탕, 지금 고른 곳이 살구색(#f2a57e) 바탕으로 칠해지고(전에는 팔레트 노랑을 섞은 색/팔레트 노랑), 흐린 글자가 전보다 조금 더 흐립니다(불투명도 0.6에서 0.5). 실제 창에서는 아직 확인하지 않았고 단위·픽셀 테스트로만 확인했습니다. #162
-- 명령 끝 알림과 알림 허용 키(Ghostty): `notify-on-command-finish`(`never`·`unfocused`·`always`), `-action`(`bell`·`notify`), `-after`(기간, 기본 5초), `desktop-notifications`(프로그램의 OSC 9·777 알림 허용, 켬), `app-notifications`(`clipboard-copy`·`config-reload`, 켬). `notify-on-command-finish`를 적지 않으면 옛 `notify-command-seconds` 동작 그대로입니다(기본 동작 변화 없음). 실제 창에서는 아직 확인하지 않았고 순수 함수 테스트로만 확인했습니다. #161
-- 소리 벨(Ghostty 키): `bell-features`의 `audio`가 `bell-audio-path` 소리 파일을 `bell-audio-volume`(0.0~1.0, 기본 0.5)으로 재생합니다(macOS `NSSound`, 앞 소리가 나는 중이거나 0.1초 안이면 건너뜀). 이전에는 `audio`를 받기만 했습니다. 실제 소리는 아직 들어 보지 않았고 해석·판단만 테스트로 확인했습니다. #165
+## [0.11.0] - 2026-11-09
+
+Ghostty 키 채우기 4. 창·탭 이어받기, 명령 끝 알림, 선택·색, 글꼴 미세 조정, 닫은 것 되살리기, 소리 벨. 0.10처럼 하위 이슈마다 에이전트 하나가 구현하고 주 세션이 Ghostty 소스와 대조·검토·병합했습니다. 추적 이슈 #159.
+
 - 이어받기·탭 키(Ghostty): `window-`·`tab-`·`split-inherit-working-directory`(새 창·탭·분할이 폴더를 이어받을지, 기본 켬이고 이제 `working-directory`가 `home`·경로여도 이어받음), `window-new-tab-position`(`current` 기본은 지금 탭 바로 뒤라 새 탭 자리가 전의 맨 끝에서 달라짐, `end`), `window-show-tab-bar`(`auto` 기본·`always`·`never`), `window-inherit-font-size`(글자 크기가 앱 전체 하나라 값만 받음). 실제 창에서는 아직 확인하지 않았습니다. #160
+- 명령 끝 알림과 알림 허용 키(Ghostty): `notify-on-command-finish`(`never`·`unfocused`·`always`), `-action`(`bell`·`notify`), `-after`(기간, 기본 5초), `desktop-notifications`(프로그램의 OSC 9·777 알림 허용, 켬), `app-notifications`(`clipboard-copy`·`config-reload`, 켬). `notify-on-command-finish`를 적지 않으면 옛 `notify-command-seconds` 동작 그대로입니다(기본 동작 변화 없음). 실제 창에서는 아직 확인하지 않았고 순수 함수 테스트로만 확인했습니다. #161
+- 선택·색 키(Ghostty): `selection-clear-on-typing`(기본 켬)·`selection-clear-on-copy`(기본 끔), 찾기 강조 색 `search-foreground`·`search-background`·`search-selected-foreground`·`search-selected-background`(`cell-foreground`·`cell-background` 포함), `bold-color`(색 또는 `bright`), `faint-opacity`(기본 0.5). 기본 동작이 바뀝니다: 찾기에 맞은 칸이 검정 글자에 노랑(#ffe082) 바탕, 지금 고른 곳이 살구색(#f2a57e) 바탕으로 칠해지고(전에는 팔레트 노랑을 섞은 색/팔레트 노랑), 흐린 글자가 전보다 조금 더 흐립니다(불투명도 0.6에서 0.5). 실제 창에서는 아직 확인하지 않았고 단위·픽셀 테스트로만 확인했습니다. #162
+- 글꼴 미세 조정 키(Ghostty): `adjust-underline-position`·`-thickness`, `adjust-strikethrough-position`·`-thickness`, `adjust-overline-position`·`-thickness`(윗줄 SGR 53은 아직 그리지 않아 키만 받음), `adjust-cursor-height`·`-thickness`, `adjust-font-baseline`, `adjust-box-thickness`와 가변 글꼴 축 `font-variation`·`-bold`·`-italic`·`-bold-italic`(예 `wght=500`). 실제 창에서는 아직 확인하지 않았고 픽셀 테스트로만 확인했습니다. #163
+- 닫은 것 되살리기(Ghostty): `undo-timeout`(기본 `5s`, `0s`면 끔) 동안 직접 닫은 칸·탭의 셸을 끊지 않고 들고 있다가 `undo`(⌘Z, ⇧⌘T)로 원래 자리에 되살리고 `redo`(⇧⌘Z)로 다시 닫습니다. 되살릴 것이 없으면 ⌘Z는 전처럼 셸로 갑니다. 창 닫기·셸이 스스로 끝난 칸은 되살리지 않습니다. 실제 창에서는 아직 확인하지 않았습니다. #164
+- 소리 벨(Ghostty 키): `bell-features`의 `audio`가 `bell-audio-path` 소리 파일을 `bell-audio-volume`(0.0~1.0, 기본 0.5)으로 재생합니다(macOS `NSSound`, 앞 소리가 나는 중이거나 0.1초 안이면 건너뜀). 이전에는 `audio`를 받기만 했습니다. 실제 소리는 아직 들어 보지 않았고 해석·판단만 테스트로 확인했습니다. #165
+
+### 알려진 한계
+
+- 실제 창에서 본 것은 탭 막대 보이기·새 탭 자리·굵은/흐린 글자·밑줄·상자 선·커서 미세 조정입니다. 되살리기(⌘Z), 명령 끝 알림, 소리 벨, 찾기 강조 색, 고르기 지우기는 키·소리·알림이 필요해 테스트로만 확인했습니다.
+- 기본 동작이 바뀐 것: 새 탭이 지금 탭 바로 뒤에 열립니다(`window-new-tab-position = current`). `working-directory = home`이어도 이어받기가 우선합니다. 찾기 강조 색과 흐린 글자(0.5)가 Ghostty 기본으로 바뀌었습니다. 닫은 칸의 셸은 5초 동안 더 삽니다(`undo-timeout`).
+- `window-inherit-font-size = false`는 동작하지 않습니다(글자 크기가 앱 전체 하나). 창 되살리기는 하지 않습니다. 윗줄(SGR 53)은 그리지 않습니다.
 
 ## [0.10.0] - 2026-11-09
 
