@@ -1254,8 +1254,9 @@ impl Config {
     }
 }
 
-/// `scrollback-limit-bytes` 기본(Ghostty 1.4: 50MB)
-pub const SCROLLBACK_BYTES_DEFAULT: u64 = 50_000_000;
+/// `scrollback-limit-bytes` 기본. 릴리스된 Ghostty(1.3까지)의 10MB를 따른다.
+/// 1.4 소스는 50MB로 올렸지만 스크롤백 압축과 함께이고, b-terminal에는 압축이 없다
+pub const SCROLLBACK_BYTES_DEFAULT: u64 = 10_000_000;
 /// 스크롤백 줄 수의 맨 위(두 상한이 모두 `unlimited`여도 이만큼에서 멈춘다)
 pub const SCROLLBACK_ROWS_MAX: usize = 1_000_000;
 
@@ -3436,13 +3437,13 @@ mod tests {
         assert_eq!(scrollback_rows(Some(u64::MAX), None), SCROLLBACK_ROWS_MAX);
     }
 
-    /// #177: scrollback-limit-bytes·-lines 해석. 기본은 Ghostty 1.4(50MB, 줄 무제한)
+    /// #177: scrollback-limit-bytes·-lines 해석. 기본은 10MB(릴리스된 Ghostty), 줄 무제한
     #[test]
     fn scrollback_limit_keys_parse_like_ghostty() {
         let d = Config::default();
-        assert_eq!(d.scrollback_limit_bytes, Some(50_000_000));
+        assert_eq!(d.scrollback_limit_bytes, Some(10_000_000));
         assert_eq!(d.scrollback_limit_lines, None);
-        assert_eq!(d.scrollback_lines, 50_000);
+        assert_eq!(d.scrollback_lines, 10_000);
 
         let c = Config::from_text(
             "scrollback-limit-bytes = 20000000\nscrollback-limit-lines = 5000\n",
@@ -3467,12 +3468,12 @@ mod tests {
         );
         assert_eq!(
             (c.scrollback_limit_bytes, c.scrollback_limit_lines),
-            (Some(50_000_000), None)
+            (Some(10_000_000), None)
         );
 
         let c = Config::from_text("scrollback-limit-lines = lots\nscrollback-limit-bytes = -1\n", true);
         assert_eq!(c.warnings.len(), 2, "{:?}", c.warnings);
-        assert_eq!(c.scrollback_lines, 50_000, "잘못된 값은 기본 그대로");
+        assert_eq!(c.scrollback_lines, 10_000, "잘못된 값은 기본 그대로");
     }
 
     /// #177: 옛 이름 scrollback-limit(Ghostty 1.4가 -bytes로 바꿈)과 b-terminal 키 scrollback-lines는 그대로 동작한다

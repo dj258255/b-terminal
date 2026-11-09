@@ -78,7 +78,7 @@ config-file = ?~/.config/b-terminal/local   # ?가 붙으면 없어도 된다
 | `window-titlebar-background` `window-titlebar-foreground` | 색 | (없음) | 받기만 합니다. Ghostty에서도 GTK 앱 런타임 전용이고, macOS 제목 막대 색은 winit·objc2의 safe 함수로 정할 수 없습니다 |
 | `window-position-x` / `window-position-y` | 정수(점) | 없음 | 첫 창의 자리. 주 화면의 보이는 영역(macOS는 메뉴 막대 아래) 왼쪽 위에서 잰 값이고, 둘 다 있어야 쓰며 하나만 있으면 무시합니다(Ghostty와 같음). 창 상태 복원으로 되살린 창은 복원한 자리가 이깁니다 |
 | `macos-option-as-alt` | `true` `false` `left` `right` | `false` | Ghostty 기본과 같게 끔 |
-| `scrollback-limit-bytes` | 바이트, `unlimited` | 5000만 | Ghostty 1.4 값. VT 엔진은 줄 수 상한만 있어 줄 하나를 약 1KB로 보고 줄 수로 바꿉니다(5000만이면 5만 줄, 100줄 이상). 옛 이름 `scrollback-limit`도 같은 뜻으로 받습니다. 전의 기본은 1000만(1만 줄)이었습니다 |
+| `scrollback-limit-bytes` | 바이트, `unlimited` | 1000만 | Ghostty 1.4 이름. VT 엔진은 줄 수 상한만 있어 줄 하나를 약 1KB로 보고 줄 수로 바꿉니다(1000만이면 1만 줄, 100줄 이상). 옛 이름 `scrollback-limit`도 같은 뜻으로 받습니다. Ghostty 1.4 소스의 기본은 5000만이지만 스크롤백 압축과 함께 올린 값이라 따르지 않습니다 |
 | `scrollback-limit-lines` | 줄 수, `unlimited` | `unlimited` | Ghostty 1.4 값. 바이트 상한과 둘 다 있으면 먼저 닿는 쪽(작은 쪽)이 이깁니다. 둘 다 `unlimited`여도 100만 줄에서 멈춥니다 |
 | `scrollback-lines` | 줄 수 | | b-terminal 옛 키. 정확히 그 줄 수로 두고 바이트 상한은 풉니다(뒤에 쓴 `scrollback-limit-*`가 이김) |
 | `copy-on-select` | `true` `false` `clipboard`(Ghostty 1.4 이름 `none` `primary` `both`도 받음) | `true` | 고르기를 마치면 클립보드로. macOS에는 선택 클립보드가 없어 `true`·`clipboard`·`both`는 같고(시스템 클립보드), `false`·`none`·`primary`면 복사하지 않습니다. Ghostty 1.4(아직 나오지 않은 판)는 macOS 기본을 `none`으로 바꿨지만, b-terminal은 지금 나온 판의 기본(켬)을 따릅니다 |
