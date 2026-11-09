@@ -883,3 +883,33 @@ fn session_reset_clears_the_mouse_shape() {
     s.reset();
     assert_eq!(s.mouse_shape(), None);
 }
+
+// ---- 마우스 보고 모드를 켜고 끌 때의 모양(#250) ----
+
+#[test]
+fn toggling_mouse_reporting_resets_the_program_shape_like_ghostty() {
+    use bt_term::MouseShape as M;
+    // Ghostty는 모드를 켜고 끌 때 모양을 default·text로 되돌린다(stream_handler.zig). b-terminal의 기본은 화살표라 둘 다 "정한 것 없음"
+    let (s, _rx) = sh(
+        "printf '\\033]22;crosshair\\007'; printf A; sleep 1; \
+         printf '\\033[?1000h'; printf B; sleep 1; \
+         printf '\\033]22;wait\\007'; printf C; sleep 1; \
+         printf '\\033[?1000l'; printf D; sleep 1; \
+         printf '\\033]22;help\\007'; printf '\\033[?1006h'; printf E; sleep 1; \
+         printf '\\033[?1002h\\033]22;move\\007'; printf F; sleep 5",
+        GridSize::new(80, 10),
+    );
+    wait_shape(&s, Some(M::Crosshair));
+    // 모드를 켜면 프로그램이 앞서 정한 모양이 사라진다
+    wait_shape(&s, None);
+    // 켠 뒤에 정한 모양은 남는다
+    wait_shape(&s, Some(M::Wait));
+    // 끄면 다시 사라진다
+    wait_shape(&s, None);
+    // 모양을 정한 뒤 마우스 보고가 아닌 모드(SGR 형식)를 켜는 것은 모양을 건드리지 않는다
+    wait_shape(&s, Some(M::Help));
+    wait_until(&s, |t| t.contains('E'));
+    assert_eq!(s.mouse_shape(), Some(M::Help));
+    // 같은 덩어리에서 모드를 켠 뒤 정한 모양은 남는다(모드가 먼저, 신호가 나중)
+    wait_shape(&s, Some(M::Move));
+}

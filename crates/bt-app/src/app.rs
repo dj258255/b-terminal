@@ -625,6 +625,8 @@ struct Win {
     palette: Option<(String, usize)>,
     /// 창에 마지막으로 적용한 마우스 포인터 모양(#239). 같으면 다시 적용하지 않는다
     pointer_icon: CursorIcon,
+    /// 입력 중 마우스 포인터를 숨긴 상태(#250). 숨긴 동안은 Shift가 모양을 바꾸지 않는다
+    pointer_hidden: bool,
     /// 퀵 터미널 창(#95): 화면 위쪽에 떠서 전역 단축키로 보였다 숨는다. 창 상태 복원에서 뺀다
     quick: bool,
     /// 퀵 터미널을 보인 때. 직후의 포커스 잃음(앱이 앞으로 오기 전)은 숨기지 않는다
@@ -681,6 +683,7 @@ impl Win {
             search: None,
             palette: None,
             pointer_icon: CursorIcon::Default,
+            pointer_hidden: false,
             quick: false,
             quick_shown: None,
             quick_place: None,
@@ -2475,13 +2478,19 @@ impl App {
     /// 창의 마우스 포인터 모양을 맞춘다(#239): 링크 위면 손가락, 아니면 마우스 아래 칸이 OSC 22로 정한 모양, 없으면 화살표
     fn refresh_pointer(&mut self) {
         let pos = self.w.cursor_pos;
-        let program = self.pane_at(pos).and_then(|id| {
-            if !self.inner_rect(self.pane_rect(id)?).contains(pos.x, pos.y) {
-                return None;
-            }
-            self.panes.get(self.pane_index(id)?)?.session.mouse_shape()
+        // 마우스가 글 영역 위에 있는 칸. 모양·Shift는 거기서만 일한다(#250)
+        let over = self.pane_at(pos).and_then(|id| {
+            let inside = self.inner_rect(self.pane_rect(id)?).contains(pos.x, pos.y);
+            inside.then(|| self.pane_index(id)).flatten()
         });
-        let icon = crate::pointer::decide(self.w.hover.is_some(), program);
+        let program = over.and_then(|i| self.panes.get(i)?.session.mouse_shape());
+        let icon = crate::pointer::decide(crate::pointer::PointerInput {
+            over_link: self.w.hover.is_some(),
+            program,
+            shift: over.is_some() && self.mods.shift_key(),
+            reports_to_program: over.is_some_and(|i| self.mouse_reporting(i).is_some()),
+            hidden: self.w.pointer_hidden,
+        });
         if icon != self.w.pointer_icon {
             if let Some(g) = &self.w.gfx {
                 g.window.set_cursor(icon);
@@ -5065,6 +5074,8 @@ impl ApplicationHandler<UserEvent> for App {
                 self.raw_mods = keys::sided_mods(&m);
                 self.refresh_mods();
                 self.update_hover();
+                // Shift를 누르고 떼면 모양이 바뀐다(#250). 링크 위가 그대로면 update_hover가 다시 정하지 않는다
+                self.refresh_pointer();
             }
             WindowEvent::Focused(focused) => {
                 let was_focused = self.w.focused;
@@ -5190,6 +5201,7 @@ impl ApplicationHandler<UserEvent> for App {
                     if let Some(g) = &self.w.gfx {
                         g.window.set_cursor_visible(false);
                     }
+                    self.w.pointer_hidden = true;
                 }
                 if !out.send.is_empty() {
                     self.write_active(&out.send);
@@ -5213,6 +5225,7 @@ impl ApplicationHandler<UserEvent> for App {
                     if let Some(g) = &self.w.gfx {
                         g.window.set_cursor_visible(true);
                     }
+                    self.w.pointer_hidden = false;
                 }
                 self.update_hover();
                 self.refresh_pointer();
