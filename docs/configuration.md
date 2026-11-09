@@ -135,7 +135,14 @@ keybind = ctrl+a>ctrl+a=text:\x01     # 앞 키 자체를 보내고 싶을 때
 ```
 
 - 수식 키: `super`(cmd) `ctrl` `alt`(opt) `shift`. 키 이름은 Ghostty 이름: `a`~`z`, `digit_1`(또는 `1`), `equal`, `minus`, `comma`, `bracket_left`, `bracket_right`, `arrow_up`, `page_up`, `home`, `enter`, `f1` …
-- 키 순서(`ctrl+a>n`, Ghostty와 같은 문법): 앞 키를 누르면 다음 키를 기다립니다. 시간 제한은 없습니다. 순서에 묶이지 않은 키를 누르면 그때까지 누른 키를 모두 프로그램에 그대로 보냅니다(`ctrl+a` `x` → `^A` `x`). 겹치는 묶음은 나중 것이 이깁니다(`ctrl+a=…` 뒤에 `ctrl+a>n=…`을 쓰면 `ctrl+a`는 앞 키가 됩니다). 명령 팔레트에는 키 순서를 보이지 않습니다. `catch_all`과 `performable:`은 받지 않습니다.
+- 키 순서(`ctrl+a>n`, Ghostty와 같은 문법): 앞 키를 누르면 다음 키를 기다립니다. 시간 제한은 없습니다. 순서에 묶이지 않은 키를 누르면 그때까지 누른 키를 모두 프로그램에 그대로 보냅니다(`ctrl+a` `x` → `^A` `x`). 겹치는 묶음은 나중 것이 이깁니다(`ctrl+a=…` 뒤에 `ctrl+a>n=…`을 쓰면 `ctrl+a`는 앞 키가 됩니다). 명령 팔레트에는 키 순서를 보이지 않습니다.
+- 접두사(Ghostty와 같은 문법, 겹쳐 쓸 수 있고 순서는 상관없음: `unconsumed:performable:ctrl+c=copy_to_clipboard`):
+  - `unconsumed:` 동작을 하고 그 키도 프로그램에 보냅니다(기본은 키를 먹음). 키 순서의 마지막 키에서는 그 키만 보내고, 앞 키는 이미 순서에 먹힌 것으로 봅니다.
+  - `performable:` 동작을 할 수 있을 때만 키를 먹습니다. 할 수 없으면 묶이지 않은 키처럼 프로그램에 보냅니다. 할 수 없는 때: `copy_to_clipboard`·`adjust_selection`·`write_selection_file`은 고른 글이 없을 때, `paste_from_clipboard`는 클립보드에 글이 없을 때, `copy_url_to_clipboard`는 마우스 아래 링크가 없을 때, `end_search`는 찾기 막대가 닫혀 있을 때. 다른 동작은 늘 할 수 있는 것으로 봅니다.
+  - `all:` 모든 칸에 겁니다. b-terminal에서는 `text:`·`csi:`·`esc:`만 열린 모든 칸에 보내고, 나머지 동작은 지금 칸·창에만 합니다. `all:` 묶음은 늘 키를 먹고(`unconsumed:`가 있어도), `performable:`은 효과가 없으며, 키 순서를 쓸 수 없습니다(Ghostty와 같음).
+  - `global:`은 위와 같고, 함께 쓴 다른 접두사는 받기만 하고 쓰지 않습니다.
+- `catch_all`: 다른 묶음에 걸리지 않은 모든 키에 맞는 트리거입니다(`catch_all=ignore`). `ctrl+catch_all`처럼 수식 키를 붙이면 그 수식 키가 같은 키에 맞고(없으면 수식 키가 붙은 키도 수식 없는 `catch_all`로 넘어감), 키 순서 안에서도 쓸 수 있습니다(`ctrl+a>catch_all=ignore`: `ctrl+a` 다음에 `n` 같은 묶인 키가 아닌 것을 누르면 아무 일도 없이 먹음). 정확히 묶인 키가 늘 먼저이고, `ctrl+a>n` 같은 순서가 있으면 `catch_all`이 있어도 `ctrl+a`는 순서의 앞 키입니다. 순서 중에 묶이지 않은 키가 `catch_all=ignore`에 맞으면 앞 키까지 순서 전체를 버립니다. 수식 키만 누른 것에는 맞지 않습니다.
+- `ignore`: 키를 먹고 아무것도 하지 않습니다(프로그램에도 보내지 않음).
 - macOS가 아니면 기본 묶음의 `super`는 `ctrl+shift`로 바뀝니다.
 - `global:` 접두사를 붙이면 시스템 전역 단축키가 됩니다(Ghostty와 같은 문법). 다른 앱이 앞에 있어도 듣습니다. 기본 전역 묶음은 없습니다. 다른 앱이 이미 잡은 조합이면 경고를 남기고 건너뜁니다.
 

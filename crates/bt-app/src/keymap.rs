@@ -90,6 +90,8 @@ pub enum Action {
     ScrollFraction(f32),
     /// 앱을 끝낸다(Ghostty `quit`, ⌘Q). 프로그램이 도는 칸이 있으면 묻는다(#108)
     Quit,
+    /// 키를 먹고 아무것도 하지 않는다(Ghostty `ignore`). 프로그램에도 보내지 않는다
+    Ignore,
     /// `text:…`: 글을 그대로 PTY에 보낸다(`\n`, `\x1b` 같은 이스케이프를 푼다)
     Text(String),
 }
@@ -330,6 +332,7 @@ pub fn parse_action(s: &str) -> Result<Option<Action>, String> {
         ),
         "select_all" => Action::SelectAll,
         "jump_to_prompt" => Action::JumpToPrompt(arg.and_then(|a| a.trim().parse().ok()).unwrap_or(-1)),
+        "ignore" => Action::Ignore,
         "text" => Action::Text(unescape(arg.unwrap_or(""))),
         "csi" => Action::Text(format!("\x1b[{}", arg.unwrap_or(""))),
         "esc" => Action::Text(format!("\x1b{}", arg.unwrap_or(""))),
@@ -337,12 +340,51 @@ pub fn parse_action(s: &str) -> Result<Option<Action>, String> {
     }))
 }
 
+/// 묶음 접두사가 만드는 성질(Ghostty `all:` `unconsumed:` `performable:`)
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct BindFlags {
+    /// 동작을 하고도 키를 프로그램에 보낸다
+    pub unconsumed: bool,
+    /// 동작을 할 수 있을 때만 키를 먹는다. 할 수 없으면 묶이지 않은 키처럼 프로그램에 보낸다
+    pub performable: bool,
+    /// 모든 칸에 건다
+    pub all: bool,
+}
+
+/// 묶음 하나: 동작과 접두사 성질
+#[derive(Debug, Clone, PartialEq)]
+struct Bound {
+    action: Action,
+    flags: BindFlags,
+}
+
+/// 트리거 이름 `catch_all`: 다른 묶음에 걸리지 않은 모든 키에 맞는다(Ghostty)
+const CATCH_ALL: &str = "catch_all";
+
+/// 묶인 트리거 `pat`이 실제로 눌린 키 `t`에 맞는가. `catch_all`은 수식 키가 같은 아무 키에 맞는다
+fn trigger_matches(pat: &Trigger, t: &Trigger) -> bool {
+    pat == t || (pat.key == CATCH_ALL && pat.mods == t.mods)
+}
+
+fn seq_matches(pat: &[Trigger], keys: &[Trigger]) -> bool {
+    pat.len() == keys.len() && pat.iter().zip(keys).all(|(p, k)| trigger_matches(p, k))
+}
+
+/// 키들을 찾은 결과
+enum Resolved<'a> {
+    /// 동작이 걸려 있다
+    Action(&'a Bound),
+    /// 더 긴 순서의 앞 키들이다
+    Prefix,
+    None,
+}
+
 /// 트리거 → 동작
 #[derive(Debug, Clone, Default)]
 pub struct Keymap {
-    map: HashMap<Trigger, Action>,
+    map: HashMap<Trigger, Bound>,
     /// 키 순서(`ctrl+a>n`, #106): 두 키 이상. 한 키짜리는 `map`에 둔다
-    seqs: HashMap<Vec<Trigger>, Action>,
+    seqs: HashMap<Vec<Trigger>, Bound>,
     /// 전역 단축키(`keybind = global:…`, #95): 앱이 앞에 없어도 받는다
     pub global: Vec<(Trigger, Action)>,
 }
@@ -427,7 +469,13 @@ impl Keymap {
                     trig.mods.ctrl = true;
                     trig.mods.shift = true;
                 }
-                km.map.insert(trig, act);
+                km.map.insert(
+                    trig,
+                    Bound {
+                        action: act,
+                        flags: BindFlags::default(),
+                    },
+                );
             }
         }
         for line in user {
@@ -437,14 +485,35 @@ impl Keymap {
                 km.seqs.clear();
                 continue;
             }
+            // 접두사(Ghostty와 같다): `all:` `unconsumed:` `performable:` `global:`을 겹쳐 쓸 수 있다
+            let mut flags = BindFlags::default();
+            let mut is_global = false;
+            let mut line = line;
+            loop {
+                if let Some(r) = line.strip_prefix("all:") {
+                    flags.all = true;
+                    line = r;
+                } else if let Some(r) = line.strip_prefix("unconsumed:") {
+                    flags.unconsumed = true;
+                    line = r;
+                } else if let Some(r) = line.strip_prefix("performable:") {
+                    flags.performable = true;
+                    line = r;
+                } else if let Some(r) = line.strip_prefix("global:") {
+                    is_global = true;
+                    line = r;
+                } else {
+                    break;
+                }
+            }
             // 트리거에도 =가 올 수 있다(super+=). 마지막 =를 나눔 자리로 본다
             let Some(eq) = line.rfind('=') else {
                 warnings.push(format!("keybind는 `트리거=동작` 꼴입니다: {line}"));
                 continue;
             };
             let (t, a) = (&line[..eq], &line[eq + 1..]);
-            // global: 접두사(Ghostty와 같다): 전역 단축키로 따로 둔다
-            if let Some(t) = t.strip_prefix("global:") {
+            // global: 접두사: 전역 단축키로 따로 둔다(다른 접두사는 전역에서는 뜻이 없어 받기만 한다)
+            if is_global {
                 match (parse_trigger(t), parse_action(a)) {
                     (Ok(trig), Ok(Some(act))) => {
                         km.global.retain(|(g, _)| *g != trig);
@@ -469,8 +538,13 @@ impl Keymap {
                     continue;
                 }
             };
+            // all: 묶음에는 키 순서를 쓸 수 없다(Ghostty)
+            if flags.all && keys.len() > 1 {
+                warnings.push(format!("keybind {line}: all: 묶음에는 키 순서(>)를 쓸 수 없습니다"));
+                continue;
+            }
             match parse_action(a) {
-                Ok(Some(act)) => km.bind(keys, act),
+                Ok(Some(act)) => km.bind(keys, act, flags),
                 Ok(None) => km.unbind(&keys),
                 Err(e) => warnings.push(format!("keybind {line}: {e}")),
             }
@@ -521,13 +595,19 @@ impl Keymap {
     }
 
     #[cfg(test)]
+    fn flags(&self, keys: &[Trigger]) -> Option<BindFlags> {
+        self.exact(keys).map(|b| b.flags)
+    }
+
+    #[cfg(test)]
     pub fn lookup(&self, t: &Trigger) -> Option<&Action> {
-        self.map.get(t)
+        self.map.get(t).map(|b| &b.action)
     }
 
     /// 키(들)에 동작을 건다. 겹치는 묶음은 나중 것이 이긴다(Ghostty):
     /// 순서의 앞 키에 걸린 한 키 묶음·짧은 순서, 이 키들로 시작하는 긴 순서를 지운다
-    fn bind(&mut self, keys: Vec<Trigger>, action: Action) {
+    fn bind(&mut self, keys: Vec<Trigger>, action: Action, flags: BindFlags) {
+        let action = Bound { action, flags };
         let n = keys.len();
         self.seqs
             .retain(|k, _| !(k.len() < n && keys.starts_with(k) || k.len() > n && k.starts_with(&keys)));
@@ -550,22 +630,79 @@ impl Keymap {
         }
     }
 
-    /// 키들(한 키 이상)에 걸린 동작
-    fn sequence(&self, keys: &[Trigger]) -> Option<&Action> {
+    /// 키들(한 키 이상)에 정확히 걸린 묶음(`catch_all`은 보지 않는다)
+    fn exact(&self, keys: &[Trigger]) -> Option<&Bound> {
         match keys {
             [t] => self.map.get(t),
             _ => self.seqs.get(keys),
         }
     }
 
-    /// 이 키들로 시작하는 더 긴 순서가 있는가
+    /// `catch_all`로 묶인 것 중 이 키들에 맞는 묶음
+    fn wildcard(&self, keys: &[Trigger]) -> Option<&Bound> {
+        match keys {
+            // 수식이 같은 catch_all을 먼저, 없고 수식이 있으면 수식 없는 catch_all로(Ghostty)
+            [t] => self
+                .map
+                .get(&Trigger {
+                    mods: t.mods,
+                    key: CATCH_ALL.into(),
+                })
+                .or_else(|| {
+                    (t.mods != Mods::default())
+                        .then(|| {
+                            self.map.get(&Trigger {
+                                mods: Mods::default(),
+                                key: CATCH_ALL.into(),
+                            })
+                        })
+                        .flatten()
+                }),
+            _ => self.seqs.iter().find(|(pat, _)| seq_matches(pat, keys)).map(|(_, b)| b),
+        }
+    }
+
+    /// 키들(한 키 이상)에 걸린 동작
+    #[cfg(test)]
+    fn sequence(&self, keys: &[Trigger]) -> Option<&Action> {
+        self.exact(keys).map(|b| &b.action)
+    }
+
+    /// 이 키들로 시작하는 더 긴 순서가 있는가(정확히 같은 키로)
+    #[cfg(test)]
     fn is_prefix(&self, keys: &[Trigger]) -> bool {
         self.seqs.keys().any(|k| k.len() > keys.len() && k.starts_with(keys))
     }
 
+    /// 눌린 키들을 찾는다. 순서: 정확한 묶음, 정확한 순서의 앞 키, `catch_all` 묶음, `catch_all`이 낀 순서의 앞 키.
+    /// 그래서 `ctrl+a>n`이 있으면 `catch_all`이 있어도 `ctrl+a`는 앞 키가 된다
+    fn resolve(&self, keys: &[Trigger]) -> Resolved<'_> {
+        if let Some(b) = self.exact(keys) {
+            return Resolved::Action(b);
+        }
+        if self.seqs.keys().any(|k| k.len() > keys.len() && k.starts_with(keys)) {
+            return Resolved::Prefix;
+        }
+        if let Some(b) = self.wildcard(keys) {
+            return Resolved::Action(b);
+        }
+        if self
+            .seqs
+            .keys()
+            .any(|k| k.len() > keys.len() && seq_matches(&k[..keys.len()], keys))
+        {
+            return Resolved::Prefix;
+        }
+        Resolved::None
+    }
+
     /// 이 동작에 걸린 트리거들(명령 팔레트가 단축키를 보일 때)
     pub fn triggers_for(&self, action: &Action) -> Vec<&Trigger> {
-        self.map.iter().filter(|(_, a)| *a == action).map(|(t, _)| t).collect()
+        self.map
+            .iter()
+            .filter(|(_, b)| b.action == *action)
+            .map(|(t, _)| t)
+            .collect()
     }
 }
 
@@ -582,6 +719,8 @@ pub struct Sequencer {
 pub struct KeyOutcome {
     pub send: Vec<u8>,
     pub action: Option<Action>,
+    /// `all:` 접두사가 붙은 묶음에서 나온 동작인가
+    pub all: bool,
 }
 
 impl Sequencer {
@@ -592,21 +731,46 @@ impl Sequencer {
     }
 
     /// 키 하나(`trigger`: 키 묶음 이름, 수식 키만이면 없다; `bytes`: 그 키가 PTY에 보낼 바이트)
+    #[cfg(test)]
     pub fn feed(&mut self, km: &Keymap, trigger: Option<Trigger>, bytes: Vec<u8>) -> KeyOutcome {
+        self.feed_with(km, trigger, bytes, &mut |_| true)
+    }
+
+    /// `feed`와 같고, `performable:` 묶음의 동작을 지금 할 수 있는지 `can`으로 묻는다
+    pub fn feed_with(
+        &mut self,
+        km: &Keymap,
+        trigger: Option<Trigger>,
+        bytes: Vec<u8>,
+        can: &mut dyn FnMut(&Action) -> bool,
+    ) -> KeyOutcome {
         match &trigger {
             Some(t) => {
                 let mut keys: Vec<Trigger> = self.pending.iter().map(|(k, _)| k.clone()).collect();
                 keys.push(t.clone());
-                if let Some(action) = km.sequence(&keys).cloned() {
-                    self.pending.clear();
-                    return KeyOutcome {
-                        send: Vec::new(),
-                        action: Some(action),
-                    };
-                }
-                if km.is_prefix(&keys) {
-                    self.pending.push((t.clone(), bytes));
-                    return KeyOutcome::default();
+                match km.resolve(&keys) {
+                    // all: 묶음에는 performable이 효과가 없다(Ghostty)
+                    Resolved::Action(b) if !b.flags.performable || b.flags.all || can(&b.action) => {
+                        self.pending.clear();
+                        // unconsumed: 동작을 하고 이 키도 프로그램에 보낸다(앞서 쌓은 키는 이미 순서에 먹혔다).
+                        // all: 묶음은 특정 칸에 묶이지 않아 늘 키를 먹는다(Ghostty)
+                        let send = if b.flags.unconsumed && !b.flags.all {
+                            bytes
+                        } else {
+                            Vec::new()
+                        };
+                        return KeyOutcome {
+                            send,
+                            action: Some(b.action.clone()),
+                            all: b.flags.all,
+                        };
+                    }
+                    Resolved::Prefix => {
+                        self.pending.push((t.clone(), bytes));
+                        return KeyOutcome::default();
+                    }
+                    // 묶이지 않았거나, performable인데 할 수 없다: 묶이지 않은 키로 본다
+                    _ => {}
                 }
             }
             // 수식 키만 누른 것: 순서 중이어도 깨지 않는다
@@ -617,15 +781,27 @@ impl Sequencer {
             return KeyOutcome {
                 send: bytes,
                 action: None,
+                all: false,
             };
+        }
+        // 순서 중 묶이지 않은 키가 catch_all=ignore에 맞으면 순서 전체를 버린다(Ghostty)
+        if let Some(t) = &trigger {
+            if km
+                .wildcard(std::slice::from_ref(t))
+                .is_some_and(|b| b.action == Action::Ignore)
+            {
+                self.pending.clear();
+                return KeyOutcome::default();
+            }
         }
         // 순서가 깨졌다: 쌓은 키를 보내고, 이 키는 처음부터 다시 본다(새 순서의 앞 키일 수도 있다)
         let mut send: Vec<u8> = self.pending.drain(..).flat_map(|(_, b)| b).collect();
-        let rest = self.feed(km, trigger, bytes);
+        let rest = self.feed_with(km, trigger, bytes, can);
         send.extend(rest.send);
         KeyOutcome {
             send,
             action: rest.action,
+            all: rest.all,
         }
     }
 }
@@ -855,7 +1031,8 @@ mod tests {
             sq.feed(&km, key("n"), b"n".to_vec()),
             KeyOutcome {
                 send: vec![],
-                action: Some(Action::NewWindow)
+                action: Some(Action::NewWindow),
+                ..Default::default()
             }
         );
         assert!(!sq.waiting());
@@ -865,7 +1042,8 @@ mod tests {
             sq.feed(&km, key("x"), b"x".to_vec()),
             KeyOutcome {
                 send: vec![1, b'x'],
-                action: None
+                action: None,
+                ..Default::default()
             }
         );
         assert!(!sq.waiting());
@@ -882,7 +1060,8 @@ mod tests {
                 sq.feed(&km, key("super+t"), vec![]),
                 KeyOutcome {
                     send: vec![1],
-                    action: Some(Action::NewTab)
+                    action: Some(Action::NewTab),
+                    ..Default::default()
                 }
             );
         }
@@ -891,9 +1070,249 @@ mod tests {
             sq.feed(&km, key("q"), b"q".to_vec()),
             KeyOutcome {
                 send: b"q".to_vec(),
-                action: None
+                action: None,
+                ..Default::default()
             }
         );
+    }
+
+    fn feed_all(sq: &mut Sequencer, km: &Keymap, k: &str, bytes: &[u8], can: bool) -> KeyOutcome {
+        sq.feed_with(km, Some(trig(k)), bytes.to_vec(), &mut |_| can)
+    }
+
+    #[test]
+    fn prefixes_are_parsed_and_stack_in_any_order() {
+        let (km, w) = Keymap::build(&[
+            "unconsumed:ctrl+alt+u=new_tab".into(),
+            "performable:ctrl+alt+p=copy_to_clipboard".into(),
+            "all:ctrl+alt+a=text:x".into(),
+            "unconsumed:performable:ctrl+alt+b=new_window".into(),
+            "performable:all:unconsumed:ctrl+alt+c=new_window".into(),
+            "ctrl+alt+d=new_tab".into(),
+            "unconsumed:ctrl+alt+e>n=new_tab".into(),
+            "global:unconsumed:ctrl+alt+g=toggle_quick_terminal".into(),
+            "nope:ctrl+alt+z=new_tab".into(),
+        ]);
+        let f = |k: &str| km.flags(&[trig(k)]);
+        assert_eq!(
+            f("ctrl+alt+u"),
+            Some(BindFlags {
+                unconsumed: true,
+                ..Default::default()
+            })
+        );
+        assert_eq!(
+            f("ctrl+alt+p"),
+            Some(BindFlags {
+                performable: true,
+                ..Default::default()
+            })
+        );
+        assert_eq!(
+            f("ctrl+alt+a"),
+            Some(BindFlags {
+                all: true,
+                ..Default::default()
+            })
+        );
+        assert_eq!(
+            f("ctrl+alt+b"),
+            Some(BindFlags {
+                unconsumed: true,
+                performable: true,
+                all: false
+            })
+        );
+        assert_eq!(
+            f("ctrl+alt+c"),
+            Some(BindFlags {
+                unconsumed: true,
+                performable: true,
+                all: true
+            })
+        );
+        assert_eq!(f("ctrl+alt+d"), Some(BindFlags::default()));
+        assert_eq!(
+            km.flags(&[trig("ctrl+alt+e"), trig("n")]),
+            Some(BindFlags {
+                unconsumed: true,
+                ..Default::default()
+            })
+        );
+        assert_eq!(km.global.len(), 1, "global:에 다른 접두사가 겹쳐도 전역 단축키");
+        assert_eq!(w.len(), 1, "모르는 접두사는 경고: {w:?}");
+        // 접두사를 붙인 unbind는 그 묶음을 지운다
+        let (km, _) = Keymap::build(&["ctrl+alt+d=new_tab".into(), "performable:ctrl+alt+d=unbind".into()]);
+        assert_eq!(km.lookup(&trig("ctrl+alt+d")), None);
+    }
+
+    #[test]
+    fn ignore_action_swallows_the_key() {
+        assert_eq!(parse_action("ignore").unwrap(), Some(Action::Ignore));
+        let (km, _) = Keymap::build(&["ctrl+alt+i=ignore".into()]);
+        let mut sq = Sequencer::default();
+        assert_eq!(
+            feed_all(&mut sq, &km, "ctrl+alt+i", b"i", true),
+            KeyOutcome {
+                action: Some(Action::Ignore),
+                ..Default::default()
+            }
+        );
+    }
+
+    #[test]
+    fn unconsumed_runs_the_action_and_also_sends_the_bytes() {
+        let (km, _) = Keymap::build(&["unconsumed:ctrl+alt+u=new_tab".into(), "ctrl+alt+k=new_tab".into()]);
+        let mut sq = Sequencer::default();
+        assert_eq!(
+            feed_all(&mut sq, &km, "ctrl+alt+u", b"U", true),
+            KeyOutcome {
+                send: b"U".to_vec(),
+                action: Some(Action::NewTab),
+                all: false
+            }
+        );
+        // 접두사 없는 묶음은 먹는다
+        assert_eq!(
+            feed_all(&mut sq, &km, "ctrl+alt+k", b"K", true),
+            KeyOutcome {
+                action: Some(Action::NewTab),
+                ..Default::default()
+            }
+        );
+    }
+
+    #[test]
+    fn performable_consumes_only_when_the_action_can_run() {
+        let (km, _) = Keymap::build(&["performable:ctrl+alt+c=copy_to_clipboard".into()]);
+        let mut sq = Sequencer::default();
+        assert_eq!(
+            feed_all(&mut sq, &km, "ctrl+alt+c", b"\x03", true),
+            KeyOutcome {
+                action: Some(Action::Copy),
+                ..Default::default()
+            },
+            "할 수 있으면 먹고 동작"
+        );
+        assert_eq!(
+            feed_all(&mut sq, &km, "ctrl+alt+c", b"\x03", false),
+            KeyOutcome {
+                send: b"\x03".to_vec(),
+                ..Default::default()
+            },
+            "할 수 없으면 묶이지 않은 키처럼 프로그램에 보낸다"
+        );
+        // unconsumed와 겹치면: 할 수 있을 때 동작도 하고 키도 보낸다
+        let (km, _) = Keymap::build(&["unconsumed:performable:ctrl+alt+c=copy_to_clipboard".into()]);
+        let out = feed_all(&mut sq, &km, "ctrl+alt+c", b"\x03", true);
+        assert_eq!((out.send, out.action), (b"\x03".to_vec(), Some(Action::Copy)));
+        let out = feed_all(&mut sq, &km, "ctrl+alt+c", b"\x03", false);
+        assert_eq!((out.send, out.action), (b"\x03".to_vec(), None));
+    }
+
+    #[test]
+    fn all_prefix_is_reported_in_the_outcome() {
+        let (km, _) = Keymap::build(&["all:ctrl+alt+a=text:x".into()]);
+        let mut sq = Sequencer::default();
+        let out = feed_all(&mut sq, &km, "ctrl+alt+a", b"a", true);
+        assert!(out.all);
+        assert_eq!(out.action, Some(Action::Text("x".into())));
+    }
+
+    #[test]
+    fn catch_all_matches_only_keys_with_no_other_bind() {
+        let (km, w) = Keymap::build(&["clear".into(), "a=new_tab".into(), "catch_all=ignore".into()]);
+        assert!(w.is_empty(), "{w:?}");
+        let mut sq = Sequencer::default();
+        assert_eq!(feed_all(&mut sq, &km, "a", b"a", true).action, Some(Action::NewTab));
+        let out = feed_all(&mut sq, &km, "b", b"b", true);
+        assert_eq!(
+            (out.send, out.action),
+            (vec![], Some(Action::Ignore)),
+            "묶이지 않은 키는 catch_all이 먹는다"
+        );
+        // 수식 키만 누른 것은 catch_all에 맞지 않는다
+        assert_eq!(sq.feed(&km, None, vec![]), KeyOutcome::default());
+        // 수식이 붙은 catch_all은 그 수식이 같은 키에만 맞는다
+        let (km, _) = Keymap::build(&["clear".into(), "ctrl+catch_all=ignore".into()]);
+        assert_eq!(
+            feed_all(&mut sq, &km, "ctrl+x", b"\x18", true).action,
+            Some(Action::Ignore)
+        );
+        let out = feed_all(&mut sq, &km, "x", b"x", true);
+        assert_eq!((out.send, out.action), (b"x".to_vec(), None));
+    }
+
+    #[test]
+    fn catch_all_inside_a_sequence() {
+        let (km, w) = Keymap::build(&[
+            "clear".into(),
+            "ctrl+a>n=new_window".into(),
+            "ctrl+a>catch_all=ignore".into(),
+        ]);
+        assert!(w.is_empty(), "{w:?}");
+        let mut sq = Sequencer::default();
+        assert_eq!(feed_all(&mut sq, &km, "ctrl+a", &[1], true), KeyOutcome::default());
+        assert!(sq.waiting());
+        // 정확히 묶인 키가 catch_all보다 먼저
+        assert_eq!(feed_all(&mut sq, &km, "n", b"n", true).action, Some(Action::NewWindow));
+        // 그 밖의 키는 catch_all: 앞 키도 이 키도 프로그램에 보내지 않는다
+        feed_all(&mut sq, &km, "ctrl+a", &[1], true);
+        assert_eq!(
+            feed_all(&mut sq, &km, "x", b"x", true),
+            KeyOutcome {
+                action: Some(Action::Ignore),
+                ..Default::default()
+            }
+        );
+        assert!(!sq.waiting());
+        // 순서 밖의 키는 묶이지 않았으니 그대로 간다
+        assert_eq!(feed_all(&mut sq, &km, "x", b"x", true).send, b"x".to_vec());
+    }
+
+    /// Ghostty 소스(Config.zig)의 설명과 맞춘 규칙들(주 세션이 더함)
+    #[test]
+    fn prefix_rules_follow_ghostty_source() {
+        let key = |s: &str| Some(trig(s));
+        // ctrl+catch_all이 없으면 수식 키 없는 catch_all로 넘어간다
+        let (km, _) = Keymap::build(&["clear".into(), "catch_all=ignore".into()]);
+        let mut sq = Sequencer::default();
+        assert_eq!(
+            sq.feed(&km, key("ctrl+x"), vec![24]).action,
+            Some(Action::Ignore),
+            "수식이 붙은 키도 수식 없는 catch_all에 맞는다"
+        );
+        // all: 묶음에는 키 순서를 쓸 수 없다(경고)
+        let (km, w) = Keymap::build(&["clear".into(), "all:ctrl+a>n=new_tab".into()]);
+        assert_eq!(w.len(), 1, "{w:?}");
+        assert!(km.seqs.is_empty());
+        // all: 묶음은 unconsumed가 있어도 키를 먹고, performable은 효과가 없다
+        let (km, _) = Keymap::build(&[
+            "clear".into(),
+            "all:unconsumed:performable:ctrl+u=copy_to_clipboard".into(),
+        ]);
+        let out = Sequencer::default().feed_with(&km, key("ctrl+u"), vec![21], &mut |_| false);
+        assert_eq!(out.action, Some(Action::Copy), "all:이면 performable을 보지 않는다");
+        assert!(out.send.is_empty(), "all:이면 unconsumed여도 키를 먹는다");
+        // 순서 중 묶이지 않은 키가 catch_all=ignore에 맞으면 순서 전체를 버린다
+        let (km, _) = Keymap::build(&["clear".into(), "catch_all=ignore".into(), "ctrl+a>n=new_window".into()]);
+        let mut sq = Sequencer::default();
+        sq.feed(&km, key("ctrl+a"), vec![1]);
+        assert_eq!(
+            sq.feed(&km, key("x"), b"x".to_vec()),
+            KeyOutcome::default(),
+            "앞 키(^A)도 보내지 않는다"
+        );
+        assert!(!sq.waiting());
+    }
+
+    #[test]
+    fn sequence_prefix_wins_over_a_single_catch_all() {
+        let (km, _) = Keymap::build(&["clear".into(), "catch_all=ignore".into(), "ctrl+a>n=new_window".into()]);
+        let mut sq = Sequencer::default();
+        feed_all(&mut sq, &km, "ctrl+a", &[1], true);
+        assert!(sq.waiting(), "ctrl+a는 순서의 앞 키이지 catch_all이 아니다");
+        assert_eq!(feed_all(&mut sq, &km, "n", b"n", true).action, Some(Action::NewWindow));
     }
 
     #[test]
