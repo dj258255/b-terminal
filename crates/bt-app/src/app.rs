@@ -3309,6 +3309,8 @@ impl App {
             }
         };
         window.set_ime_allowed(true);
+        // 창 뒤 흐림(#238). 퀵 터미널 창도 이 길로 만들어진다
+        crate::blur::apply(&window, self.config.background_blur, self.config.background_opacity);
         self.scale = window.scale_factor();
         let context = softbuffer::Context::new(window.clone()).ok()?;
         let surface = softbuffer::Surface::new(&context, window.clone()).ok()?;
@@ -3347,6 +3349,8 @@ impl App {
                 use winit::platform::macos::WindowExtMacOS;
                 g.window.set_has_shadow(self.config.macos_window_shadow);
             }
+            // 설정을 다시 읽을 때의 흐림 켜기·바꾸기·끄기(#238)
+            crate::blur::apply(&g.window, self.config.background_blur, self.config.background_opacity);
         }
     }
 

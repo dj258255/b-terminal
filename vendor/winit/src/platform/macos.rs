@@ -111,6 +111,9 @@ pub trait WindowExtMacOS {
     /// Sets whether or not the window has shadow.
     fn set_has_shadow(&self, has_shadow: bool);
 
+    /// Sets the blur radius behind a transparent window (0 turns it off). // b-terminal(#238)
+    fn set_blur_radius(&self, radius: i64);
+
     /// Group windows together by using the same tabbing identifier.
     ///
     /// <https://developer.apple.com/documentation/appkit/nswindow/1644704-tabbingidentifier>
@@ -191,6 +194,12 @@ impl WindowExtMacOS for Window {
     #[inline]
     fn set_has_shadow(&self, has_shadow: bool) {
         self.window.maybe_queue_on_main(move |w| w.set_has_shadow(has_shadow))
+    }
+
+    #[inline]
+    fn set_blur_radius(&self, radius: i64) {
+        // b-terminal(#238)
+        self.window.maybe_queue_on_main(move |w| w.set_blur_radius(radius))
     }
 
     #[inline]

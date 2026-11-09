@@ -557,6 +557,8 @@ pub struct Config {
     pub colorspace_srgb: bool,
     /// 바탕 불투명도(0~1, Ghostty `background-opacity`). 1보다 작으면 기본 바탕색 칸으로 창 뒤가 비친다(#78)
     pub background_opacity: f32,
+    /// 창 뒤를 흐리는 세기 0~255(Ghostty `background-blur`, #238). 0이면 끔. macOS는 이 값을 그대로 반지름으로 쓴다
+    pub background_blur: u8,
     /// 끌 때 창·탭·분할·폴더를 적어 두고 켤 때 되살린다(Ghostty `window-save-state`, #94). never면 끔
     pub window_save_state: bool,
     /// 벨(BEL)이 울릴 때 할 일(Ghostty `bell-features`, #107)
@@ -1457,6 +1459,7 @@ impl Default for Config {
             split_divider_color: None,
             colorspace_srgb: false,
             background_opacity: 1.0,
+            background_blur: 0,
             window_save_state: true,
             bell_features: BellFeatures::default(),
             bell_audio_path: None,
@@ -2173,6 +2176,18 @@ impl ScrollToBottom {
             }
         }
         Some(out)
+    }
+}
+
+/// `background-blur` 값 → 세기(#238). Ghostty `BackgroundBlur.parseCLI`와 같다: `true`=20, `false`=0,
+/// 0~255 정수(u8). 불리언은 Ghostty `parseBool`처럼 `1 t T true`·`0 f F false`. macOS 26 유리 값
+/// (`macos-glass-regular`·`macos-glass-clear`)은 b-terminal에 유리 효과가 없어 흐림 켬(20)으로 본다
+pub fn parse_background_blur(v: &str) -> Option<u8> {
+    match v.trim() {
+        "true" | "1" | "t" | "T" | "macos-glass-regular" | "macos-glass-clear" => Some(20),
+        "false" | "0" | "f" | "F" => Some(0),
+        n if !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()) => n.parse::<u8>().ok(),
+        _ => None,
     }
 }
 
@@ -3223,6 +3238,11 @@ impl Config {
                 Ok(o) if o.is_finite() => self.bell_audio_volume = o.clamp(0.0, 1.0),
                 _ => bad(warnings),
             },
+            // `background-blur-radius`는 Ghostty 1.1이 `background-blur`로 이름을 바꾼 옛 이름(#238)
+            "background-blur" | "background-blur-radius" => match parse_background_blur(v) {
+                Some(r) => self.background_blur = r,
+                None => bad(warnings),
+            },
             "background-opacity" => match v.parse::<f32>() {
                 Ok(o) if o.is_finite() => self.background_opacity = o.clamp(0.0, 1.0),
                 _ => bad(warnings),
@@ -3651,8 +3671,6 @@ impl Config {
 const KNOWN_IGNORED: &[&str] = &[
     // 명령줄 전용(`--config-default-files`). 파일 안에서는 Ghostty처럼 오류도 경고도 없이 아무 일도 하지 않는다(#211)
     "config-default-files",
-    "background-blur",
-    "background-blur-radius",
     // GTK에서만 뜻이 있는 Ghostty 키(받기만 한다, #179)
     "window-subtitle",
     "window-titlebar-background",
@@ -5665,6 +5683,34 @@ mod tests {
             !LinkPreviews::Osc8.shows(false),
             "화면 글의 URL은 글 자체가 주소라 띠를 보이지 않는다"
         );
+    }
+
+    #[test]
+    fn background_blur_values() {
+        let blur = |t: &str| Config::from_text(t, true);
+        assert_eq!(Config::default().background_blur, 0);
+        assert_eq!(blur("background-blur = true\n").background_blur, 20);
+        assert_eq!(blur("background-blur = false\n").background_blur, 0);
+        assert_eq!(blur("background-blur = 35\n").background_blur, 35);
+        assert_eq!(blur("background-blur = 0\n").background_blur, 0);
+        assert_eq!(blur("background-blur = 255\n").background_blur, 255);
+        // Ghostty parseBool: 1·t는 true(20), 0·f는 false
+        assert_eq!(blur("background-blur = 1\n").background_blur, 20);
+        assert_eq!(blur("background-blur = t\n").background_blur, 20);
+        // 유리 값은 흐림 켬으로 보고 경고하지 않는다
+        for g in ["macos-glass-regular", "macos-glass-clear"] {
+            let c = blur(&format!("background-blur = {g}\n"));
+            assert_eq!(c.background_blur, 20, "{g}");
+            assert!(c.warnings.is_empty(), "{g}: {:?}", c.warnings);
+        }
+        // 옛 이름
+        assert_eq!(blur("background-blur-radius = 12\n").background_blur, 12);
+        // 잘못된 값은 경고하고 이전 값을 지킨다
+        for bad in ["256", "-3", "abc", "True", "1.5", ""] {
+            let c = blur(&format!("background-blur = 9\nbackground-blur = {bad}\n"));
+            assert_eq!(c.warnings.len(), 1, "{bad}: {:?}", c.warnings);
+            assert_eq!(c.background_blur, 9, "{bad}");
+        }
     }
 
     #[test]
