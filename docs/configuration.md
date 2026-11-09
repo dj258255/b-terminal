@@ -123,6 +123,7 @@ config-file = ?~/.config/b-terminal/local   # ?가 붙으면 없어도 된다
 | `clipboard-write` | `allow` / `deny` | `allow` | 프로그램이 OSC 52로 클립보드에 쓰기(AI CLI의 `/copy`). 보고 있는 창의 고른 칸(화면을 나눴으면 키 입력을 받는 칸)에서 온 것만 받습니다 |
 | `clipboard-read` | `allow` / `deny` / `ask` | `deny` | 프로그램이 OSC 52로 클립보드 읽기. `ask`는 아직 묻는 창이 없어 `deny`로 봅니다 |
 | `shell-integration` | `detect` `none` `zsh` `bash` | `detect` | 탭의 셸에 셸 통합을 싣습니다(아래 "셸 통합") |
+| `shell-integration-features` | `cursor` `sudo` `title` `ssh-env` `ssh-terminfo` `path`(쉼표로, 앞에 `no-`면 끔), `true` `false` | `cursor,title,path` | Ghostty 키. 셸 통합의 기능별 켜고 끄기. 적지 않은 기능은 기본값을 따르고, `true`·`false`는 모두 켜고 끕니다. 아래 "셸 통합 기능" |
 | `notify-command-seconds` | 초 | `10` | b-terminal 키(옛 키). 셸 통합으로 안 명령이 이만큼 넘게 걸려 끝나면 창을 보지 않을 때 데스크톱 알림. `0`이면 끔. `notify-on-command-finish`를 적으면 무시합니다 |
 | `notify-on-command-finish` | `never` `unfocused` `always` | 적지 않음 | Ghostty 키. 명령이 끝났을 때 알릴 때. `unfocused`는 그 칸을 보고 있지 않을 때만. 적으면 아래 두 키를 따르고 `notify-command-seconds`는 무시합니다. 적지 않으면 옛 `notify-command-seconds` 동작(10초 넘게, 창을 보지 않을 때 데스크톱 알림만)입니다. Ghostty 기본은 `never`인데 b-terminal은 이미 있던 동작을 지키려고 이렇게 둡니다. 셸 통합(OSC 133)이 있어야 합니다 |
 | `notify-on-command-finish-action` | `bell` `notify`(쉼표로, 앞에 `no-`면 끔), `true` `false` | `bell` | Ghostty 키. `bell`은 벨이 울린 것처럼(`bell-features`를 따름), `notify`는 데스크톱 알림 |
@@ -261,3 +262,18 @@ keybind = ctrl+a>ctrl+a=text:\x01     # 앞 키 자체를 보내고 싶을 때
 - `btctl run -- <명령>`: 그 탭에서 명령을 돌리고 끝날 때까지 기다려 출력을 찍고 그 종료 코드로 끝납니다. 에이전트가 다른 탭을 도구로 쓰는 길입니다. `btctl last`는 마지막으로 끝난 명령
 
 fish·elvish는 아직 스크립트가 없습니다. 끄려면 `shell-integration = none`.
+
+### 셸 통합 기능
+
+`shell-integration-features`로 기능마다 켜고 끕니다(Ghostty와 같은 이름·기본·문법). 켜진 이름은 환경 변수 `BT_SHELL_FEATURES`(쉼표로 이은 글)로 셸 스크립트에 가고, 스크립트는 이름이 정확히 맞는지만 비교합니다(값을 eval하지 않습니다). 셸 통합이 없는 탭(`shell-integration = none`, 다른 셸, `command`를 준 탭)에서는 어느 기능도 일하지 않습니다.
+
+| 기능 | 기본 | 하는 일 |
+|---|---|---|
+| `cursor` | 켬 | 프롬프트에서 커서를 깜박이는 막대(`CSI 5 SP q`)로, 명령이 도는 동안은 원래 모양(`CSI 0 SP q`, `cursor-style`)으로. 끄면 `cursor-style`이 그대로 보입니다 |
+| `title` | 켬 | 프롬프트에서는 창 제목을 지금 폴더(`~` 줄임, 길면 `…/뒤 세 마디`)로, 명령이 도는 동안은 그 명령 글(200자까지)로 정합니다. 제어 문자는 공백으로 바꿉니다. 설정 `title`로 제목을 고정했으면 그 값이 먼저입니다 |
+| `path` | 켬 | b-terminal 실행 파일이 있는 폴더(`btctl`이 함께 있을 때만)를 첫 프롬프트에서 PATH **끝**에 한 번 더합니다. 이미 있으면 더하지 않습니다. 앱 묶음 밖에서 `btctl`을 바로 부르게 하려는 것입니다. Ghostty의 `path`와 같은 뜻입니다 |
+| `sudo` | 끔 | 받기만 합니다. Ghostty에서는 `sudo`가 terminfo(`TERMINFO`)를 지키게 감싸는 기능인데, b-terminal은 `TERM=xterm-256color`라 지킬 terminfo가 없어 하는 일이 없습니다 |
+| `ssh-env` | 끔 | 받기만 합니다. Ghostty에서는 TERM을 `xterm-ghostty`에서 `xterm-256color`로 바꾸고 `COLORTERM`·`TERM_PROGRAM` 등을 원격에 보내는 기능인데, b-terminal은 처음부터 `xterm-256color`라 바꿀 TERM이 없습니다. `ssh`를 감싸지 않습니다 |
+| `ssh-terminfo` | 끔 | 받기만 합니다. b-terminal은 자기 terminfo가 없고, 원격 호스트에 무엇을 설치하는 동작은 하지 않습니다 |
+
+`cursor`와 `title`은 zsh·bash 모두에서 `precmd`·`preexec`(bash는 `PROMPT_COMMAND`·DEBUG 덫) 훅으로 보냅니다. zsh의 `zle` 위젯(줄 편집 중 모양 바꾸기)은 쓰지 않아, 줄 편집 도중 프로그램이 모양을 바꾸면 다음 프롬프트까지 그대로입니다.

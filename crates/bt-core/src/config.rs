@@ -453,6 +453,8 @@ pub struct Config {
     pub mouse_reset_on_shell: bool,
     /// 셸 통합: detect(기본)·none·zsh·bash
     pub shell_integration: String,
+    /// 셸 통합 기능별 켜고 끄기(Ghostty `shell-integration-features`, #194)
+    pub shell_integration_features: ShellFeatures,
     /// 셸 통합으로 안 명령이 이만큼(초) 넘게 걸려 끝나면, 창을 보고 있지 않을 때 알린다. 0이면 끔
     pub notify_command_seconds: u64,
     /// 명령이 끝났을 때 알릴 때(Ghostty `notify-on-command-finish`, #161). 적지 않았으면 None:
@@ -740,6 +742,91 @@ impl BellFeatures {
         }
         *self = next;
         true
+    }
+}
+
+/// 셸 통합의 기능별 켜고 끄기(Ghostty `shell-integration-features`, #194).
+/// Ghostty 기본: cursor·title·path 켬, sudo·ssh-env·ssh-terminfo 끔
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ShellFeatures {
+    /// 프롬프트에서 커서를 막대로, 명령이 도는 동안은 원래대로
+    pub cursor: bool,
+    /// 받기만 한다. b-terminal은 TERM이 xterm-256color라 지킬 terminfo가 없다
+    pub sudo: bool,
+    /// 셸이 창 제목을 정한다(프롬프트에서는 폴더, 명령이 도는 동안은 명령)
+    pub title: bool,
+    /// 받기만 한다. TERM을 바꿀 일이 없다
+    pub ssh_env: bool,
+    /// 받기만 한다. 원격 호스트에 아무것도 설치하지 않는다
+    pub ssh_terminfo: bool,
+    /// b-terminal 실행 파일 폴더(btctl이 있는 곳)를 PATH 끝에 더한다
+    pub path: bool,
+}
+
+impl Default for ShellFeatures {
+    fn default() -> Self {
+        Self {
+            cursor: true,
+            sudo: false,
+            title: true,
+            ssh_env: false,
+            ssh_terminfo: false,
+            path: true,
+        }
+    }
+}
+
+impl ShellFeatures {
+    /// `no-cursor,sudo` 같은 글을 지금 값 위에 얹는다. `true`·`false`는 모두 켜고 끈다.
+    /// 하나라도 모르는 이름이면 아무것도 바꾸지 않고 거짓
+    pub fn apply(&mut self, v: &str) -> bool {
+        let mut next = *self;
+        for item in v.split(',').map(str::trim).filter(|i| !i.is_empty()) {
+            let (on, name) = match item.strip_prefix("no-") {
+                Some(n) => (false, n),
+                None => (true, item),
+            };
+            match name {
+                "true" | "false" if item == name => {
+                    let all = name == "true";
+                    next = ShellFeatures {
+                        cursor: all,
+                        sudo: all,
+                        title: all,
+                        ssh_env: all,
+                        ssh_terminfo: all,
+                        path: all,
+                    };
+                }
+                "cursor" => next.cursor = on,
+                "sudo" => next.sudo = on,
+                "title" => next.title = on,
+                "ssh-env" => next.ssh_env = on,
+                "ssh-terminfo" => next.ssh_terminfo = on,
+                "path" => next.path = on,
+                _ => return false,
+            }
+        }
+        *self = next;
+        true
+    }
+
+    /// 켜진 기능 이름을 쉼표로 이은 글. 셸 스크립트에는 환경 변수 `BT_SHELL_FEATURES`로 넘기고,
+    /// `--show-config`에도 쓴다(모두 꺼졌으면 빈 글이라 거기서는 `false`로 적는다)
+    pub fn to_list(&self) -> String {
+        let on: Vec<&str> = [
+            (self.cursor, "cursor"),
+            (self.sudo, "sudo"),
+            (self.title, "title"),
+            (self.ssh_env, "ssh-env"),
+            (self.ssh_terminfo, "ssh-terminfo"),
+            (self.path, "path"),
+        ]
+        .into_iter()
+        .filter(|(on, _)| *on)
+        .map(|(_, n)| n)
+        .collect();
+        on.join(",")
     }
 }
 
@@ -1091,6 +1178,7 @@ impl Default for Config {
             paste_protection: true,
             paste_bracketed_safe: true,
             shell_integration: "detect".into(),
+            shell_integration_features: ShellFeatures::default(),
             notify_command_seconds: 10,
             notify_on_command_finish: None,
             notify_on_command_finish_action: FinishAction::default(),
@@ -2394,6 +2482,11 @@ impl Config {
                 }
                 _ => bad(warnings),
             },
+            "shell-integration-features" => {
+                if !self.shell_integration_features.apply(v) {
+                    bad(warnings)
+                }
+            }
             "notify-command-seconds" => match v.parse::<u64>() {
                 Ok(n) => self.notify_command_seconds = n,
                 Err(_) => bad(warnings),
@@ -2944,6 +3037,11 @@ impl Config {
         .map(|(on, name)| if on { name } else { "" })
         .filter(|n| !n.is_empty())
         .collect();
+        let sf = self.shell_integration_features.to_list();
+        push(
+            "shell-integration-features",
+            if sf.is_empty() { "false".into() } else { sf },
+        );
         push("clipboard-paste-protection", self.paste_protection.to_string());
         push("clipboard-paste-bracketed-safe", self.paste_bracketed_safe.to_string());
         push(
@@ -3052,7 +3150,6 @@ const KNOWN_IGNORED: &[&str] = &[
     "macos-titlebar-proxy-icon",
     "macos-icon",
     "macos-window-shadow",
-    "shell-integration-features",
     "auto-update",
     "auto-update-channel",
     "gtk-titlebar",
@@ -4358,6 +4455,60 @@ mod tests {
         // 옛 키는 그대로 받는다
         let c = Config::from_text("notify-command-seconds = 30\n", true);
         assert_eq!(c.notify_command_seconds, 30);
+    }
+
+    #[test]
+    fn shell_integration_features_like_ghostty() {
+        let d = Config::default().shell_integration_features;
+        assert!(d.cursor && d.title && d.path, "Ghostty 기본은 cursor·title·path");
+        assert!(!d.sudo && !d.ssh_env && !d.ssh_terminfo);
+        assert_eq!(d.to_list(), "cursor,title,path");
+        let c = Config::from_text("shell-integration-features = no-cursor,sudo\n", true);
+        assert!(c.warnings.is_empty(), "{:?}", c.warnings);
+        assert_eq!(
+            c.shell_integration_features,
+            ShellFeatures {
+                cursor: false,
+                sudo: true,
+                ..ShellFeatures::default()
+            },
+            "적지 않은 것은 그대로"
+        );
+        assert_eq!(c.shell_integration_features.to_list(), "sudo,title,path");
+        assert!(
+            c.render().contains("shell-integration-features = sudo,title,path"),
+            "{}",
+            c.render()
+        );
+        let c = Config::from_text(
+            "shell-integration-features = false\nshell-integration-features = ssh-env, ssh-terminfo\n",
+            true,
+        );
+        assert_eq!(
+            c.shell_integration_features,
+            ShellFeatures {
+                cursor: false,
+                sudo: false,
+                title: false,
+                ssh_env: true,
+                ssh_terminfo: true,
+                path: false
+            }
+        );
+        let all = Config::from_text("shell-integration-features = true\n", true).shell_integration_features;
+        assert_eq!(all.to_list(), "cursor,sudo,title,ssh-env,ssh-terminfo,path");
+        let none = Config::from_text("shell-integration-features = false\n", true);
+        assert_eq!(none.shell_integration_features.to_list(), "");
+        assert!(none.render().contains("shell-integration-features = false"));
+        // 모르는 이름이 섞이면 줄 전체를 버리고 경고
+        let c = Config::from_text("shell-integration-features = no-cursor,chime\n", true);
+        assert_eq!(c.shell_integration_features, ShellFeatures::default());
+        assert_eq!(c.warnings.len(), 1);
+        assert!(
+            Config::from_text("shell-integration-features = sudo\n", true)
+                .warnings
+                .is_empty()
+        );
     }
 
     #[test]

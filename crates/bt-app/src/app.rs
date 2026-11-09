@@ -1066,7 +1066,16 @@ impl App {
         }
         options.env.push((bt_core::proto::ENV_TAB.into(), id.to_string()));
         if let Some(dir) = &self.shell_integration_dir {
-            crate::shellint::apply(&mut options, dir, &self.config.shell_integration);
+            let bin = std::env::current_exe()
+                .ok()
+                .and_then(|e| crate::shellint::bin_dir_of(&e));
+            crate::shellint::apply(
+                &mut options,
+                dir,
+                &self.config.shell_integration,
+                &self.config.shell_integration_features,
+                bin.as_deref(),
+            );
         }
         options.term = self.config.term.clone();
         // 설정의 env는 b-terminal이 넣은 변수(BT_SOCKET·BT_TAB_ID·셸 통합) 뒤에 붙여 이긴다(Ghostty처럼, ADR-016)
