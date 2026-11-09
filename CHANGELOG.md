@@ -4,13 +4,34 @@
 
 ## [아직 릴리스하지 않음]
 
-- `key-remap = ctrl=super`처럼 앱 안에서만 수정 키를 바꿉니다(좌우 구분 `left_ctrl` 가능, 키 묶음 판단과 PTY 인코딩 모두 바뀐 키 사용). `quick-terminal-space-behavior = move|remain`(기본 `move`: 퀵 터미널이 열린 Space를 따라옴 - 지금까지는 macOS 기본 동작이라 보던 Space에서 열면 원래 Space로 끌려갈 수 있었습니다). `macos-icon = custom`과 `macos-custom-icon`은 Dock 아이콘만 바꿉니다(`setApplicationIconImage`가 unsafe라 Cmd-Tab 아이콘은 그대로). `macos-dock-drop-behavior`, `vt-xt-checksum-*`(DECRQCRA는 구현하지 않음, 기본 끔 그대로), `macos-icon-frame`·`-ghost-color`·`-screen-color`와 GTK·리눅스·GPU 전용 키(`class`, `gtk-*`, `linux-cgroup*`, `custom-shader*`, `alpha-blending`, `freetype-load-flags`, `window-vsync`, `async-backend`, `window-title-font-family`, `quick-terminal-keyboard-interactivity`, `scrollback-compression`, `macos-applescript`, `macos-shortcuts`, `macos-auto-secure-input`, `macos-secure-input-indication`, `drag-handle`, `language` 등)는 경고 없이 받기만 합니다. 실제 창에서는 아직 확인하지 않았습니다 #196
-- 창 모양 키(Ghostty): `window-decoration`(`none`이면 제목 막대·테두리 없음), `macos-titlebar-style`(`native` `transparent` `tabs` `hidden`), `macos-window-shadow`, `window-theme`. `macos-titlebar-proxy-icon`은 받기만 합니다(safe API로 `NSWindow`를 얻을 수 없음). **기본 동작이 달라집니다: macOS 기본이 Ghostty 릴리스 판처럼 `transparent`라서 제목 막대가 투명해지고 탭 줄·격자가 그 밑에서 시작합니다**(전과 같게 하려면 `macos-titlebar-style = native`). 제목 막대 높이는 28pt로 가정했고 실제 창에서는 아직 확인하지 않았습니다. `tabs`는 `transparent`와 같게 동작합니다. 시스템 모양이 바뀔 때 `theme = light:…,dark:…`를 다시 고르는 일은 아직 없습니다(설정을 다시 읽을 때만 고름) #192
-- 글꼴 키 `font-feature`(따옴표·`on`/`off`·공백 값 문법 추가), `font-thicken`·`font-thicken-strength`(글자 두껍게, 윤곽을 부풀리는 근사), `font-synthetic-style`(없는 굵게·기울임 꼴 합성)을 Ghostty와 같은 키로 받습니다. **기본 동작이 바뀝니다: 굵은·기울임 꼴이 없는 글꼴은 이제 굵게는 윤곽을 부풀리고 기울임은 10도 비틀어 그립니다**(전에는 보통 꼴 그대로). 넣어 둔 JetBrains Mono와 굵은 꼴이 있는 글꼴은 그대로입니다. 전처럼 보려면 `font-synthetic-style = false`. 합성 정도와 두껍게 그리기 강도는 JetBrains Mono 한 글자로 재어 맞춘 값이고 macOS의 두껍게 그리기와 견주지 않았습니다. 실제 창에서는 아직 보지 않았습니다. #193
-- `shell-integration-features`(Ghostty 키)로 셸 통합 기능을 켜고 끕니다: `cursor`, `title`, `path`(기본 켬), `sudo`, `ssh-env`, `ssh-terminfo`(기본 끔), `true`/`false`/`no-이름` 문법. **기본 동작이 바뀝니다**: zsh·bash 탭의 프롬프트에서 커서가 깜박이는 막대가 되고(명령이 도는 동안은 원래 모양), 창 제목을 셸이 폴더·명령으로 정하며, 실행 파일 폴더(`btctl`이 있는 곳)가 PATH 끝에 더해집니다. 끄려면 `shell-integration-features = no-cursor,no-title,no-path`. `sudo`·`ssh-env`·`ssh-terminfo`는 b-terminal이 TERM을 `xterm-256color`로 쓰므로 받기만 하고 하는 일이 없습니다. 원격 호스트에는 아무것도 설치하지 않습니다. 셸 스크립트는 `zsh -f`·`bash --norc` 테스트로 확인했고, 실제 창에서는 보지 않았습니다. #194
-- 환경·시작 입력 키(Ghostty): `term`(기본은 **`xterm-256color` 그대로**, Ghostty의 `xterm-ghostty`는 terminfo가 없어 따르지 않음), `env = KEY=VALUE`(여러 번, `KEY=`는 지움, 빈 값은 전체 초기화, b-terminal이 넣는 변수와 겹치면 `env`가 이김), `input`(`raw:`·`path:`, 새 칸을 띄운 직후 PTY에 보냄, 합쳐서 10MiB 상한, 못 읽거나 넘으면 경고하고 보내지 않음). 기본 동작은 그대로입니다. PTY 테스트와 설정 해석 테스트로만 확인했고 실제 창에서는 아직 확인하지 않았습니다(ADR-016). #190
-- Ghostty 키 `scrollbar`(스크롤 중·뒤 잠깐·오른쪽 끝에 마우스를 올렸을 때 반투명 막대, `never`로 끔), `progress-style`(`false`면 OSC 9;4 진행 표시를 버림), `split-preserve-zoom = navigation`(크게 보는 중 `goto_split`이 크게 보기를 풀지 않음)을 받습니다. `scrollbar` 기본이 `system`이라 스크롤하면 막대가 새로 보입니다(나머지 둘은 기본 동작 그대로). 실제 창에서는 아직 보지 않았고, 막대 끌기와 시스템의 "스크롤 막대 항상 보기" 설정은 지원하지 않습니다 #195
+## [0.13.0] - 2026-11-10
+
+Ghostty 키 채우기 6. 환경·시작 입력, 링크, 창 모양, 글꼴 합성, 셸 통합 기능, 스크롤바·진행 표시, 수정 키 바꾸기와 플랫폼 전용 키. 0.12처럼 하위 이슈마다 에이전트 하나가 구현하고, 주 세션이 Ghostty 소스와 대조·검토·병합했습니다. 추적 이슈 #189.
+
+- 환경·시작 입력 키(Ghostty): `term`(기본은 **`xterm-256color` 그대로**, Ghostty의 `xterm-ghostty`는 terminfo가 없어 따르지 않음), `env = KEY=VALUE`(여러 번, `KEY=`는 지움, 빈 값은 전체 초기화, b-terminal이 넣는 변수와 겹치면 `env`가 이김), `input`(`raw:`·`path:`, 새 칸을 띄운 직후 PTY에 보냄, 합쳐서 10MiB 상한, 못 읽거나 넘으면 경고하고 보내지 않음). 기본 동작은 그대로입니다. 실제 창에서는 `env`와 `input = raw:`가 셸에 닿는 것을 봤고, `path:` 입력은 테스트로만 확인했습니다(ADR-016). #190
 - 링크 키 `link-url`·`link-osc8`·`link-previews`를 Ghostty와 같은 뜻·기본(모두 켬)으로 받습니다. `link-previews = false`는 주소 띠를 꺼서 열기 전에 실제 주소를 보는 보장을 약하게 합니다(`osc8`은 화면 글의 URL에만 띠를 뺍니다). `link`(정규식)는 Ghostty도 아직 쓸 수 없어 받고 경고만 합니다. 기본 동작은 그대로이고, 판단·해석은 테스트로 확인했으나 실제 창에서는 보지 않았습니다. #191
+- 창 모양 키(Ghostty): `window-decoration`(`none`이면 제목 막대·테두리 없음), `macos-titlebar-style`(`native` `transparent` `tabs` `hidden`), `macos-window-shadow`, `window-theme`. `macos-titlebar-proxy-icon`은 받기만 합니다(safe API로 `NSWindow`를 얻을 수 없음). **기본 동작이 달라집니다: macOS 기본이 Ghostty 릴리스 판처럼 `transparent`라서 제목 막대가 투명해지고 탭 줄·격자가 그 밑에서 시작합니다**(전과 같게 하려면 `macos-titlebar-style = native`). 제목 막대 높이는 28pt로 가정한 값입니다(실제 창에서 단추와 격자 사이를 눈으로만 봄). `hidden`은 단추와 함께 창 제목 글도 숨깁니다. `tabs`는 `transparent`와 같게 동작합니다. 시스템 모양이 바뀔 때 `theme = light:…,dark:…`를 다시 고르는 일은 아직 없습니다(설정을 다시 읽을 때만 고름) #192
+- 글꼴 키 `font-feature`(따옴표·`on`/`off`·공백 값 문법 추가), `font-thicken`·`font-thicken-strength`(글자 두껍게, 윤곽을 부풀리는 근사), `font-synthetic-style`(없는 굵게·기울임 꼴 합성)을 Ghostty와 같은 키로 받습니다. **기본 동작이 바뀝니다: 굵은·기울임 꼴이 없는 글꼴은 이제 굵게는 윤곽을 부풀리고 기울임은 10도 비틀어 그립니다**(전에는 보통 꼴 그대로). 넣어 둔 JetBrains Mono와 굵은 꼴이 있는 글꼴은 그대로입니다. 전처럼 보려면 `font-synthetic-style = false`. 합성 정도와 두껍게 그리기 강도는 JetBrains Mono 한 글자로 재어 맞춘 값이고 macOS의 두껍게 그리기와 견주지 않았습니다. 실제 창에서는 Monaco로 합성 켬·끔을 봤고, `font-thicken`은 보지 않았습니다. #193
+- `shell-integration-features`(Ghostty 키)로 셸 통합 기능을 켜고 끕니다: `cursor`, `title`, `path`(기본 켬), `sudo`, `ssh-env`, `ssh-terminfo`(기본 끔), `true`/`false`/`no-이름` 문법. **기본 동작이 바뀝니다**: zsh·bash 탭의 프롬프트에서 커서가 깜박이는 막대가 되고(명령이 도는 동안은 원래 모양), 창 제목을 셸이 폴더·명령으로 정하며, 실행 파일 폴더(`btctl`이 있는 곳)가 PATH 끝에 더해집니다. 끄려면 `shell-integration-features = no-cursor,no-title,no-path`. `sudo`·`ssh-env`·`ssh-terminfo`는 b-terminal이 TERM을 `xterm-256color`로 쓰므로 받기만 하고 하는 일이 없습니다. 원격 호스트에는 아무것도 설치하지 않습니다. 셸 스크립트는 `zsh -f`·`bash --norc` 테스트로 확인했고, 실제 창에서는 zsh 프롬프트의 막대 커서·폴더 제목·PATH를 봤습니다(bash와 명령 중 바뀜은 보지 않음). #194
+- Ghostty 키 `scrollbar`(스크롤 중·뒤 잠깐·오른쪽 끝에 마우스를 올렸을 때 반투명 막대, `never`로 끔), `progress-style`(`false`면 OSC 9;4 진행 표시를 버림), `split-preserve-zoom = navigation`(크게 보는 중 `goto_split`이 크게 보기를 풀지 않음)을 받습니다. `scrollbar` 기본이 `system`이라 스크롤하면 막대가 새로 보입니다(나머지 둘은 기본 동작 그대로). 실제 창에서는 진행 표시 켬·끔만 봤고 스크롤 막대는 보지 않았습니다. 막대 끌기와 시스템의 "스크롤 막대 항상 보기" 설정은 지원하지 않습니다 #195
+- `key-remap = ctrl=super`처럼 앱 안에서만 수정 키를 바꿉니다(좌우 구분 `left_ctrl` 가능, 키 묶음 판단과 PTY 인코딩 모두 바뀐 키 사용). `quick-terminal-space-behavior = move|remain`(기본 `move`: 퀵 터미널이 열린 Space를 따라옴 - 지금까지는 macOS 기본 동작이라 보던 Space에서 열면 원래 Space로 끌려갈 수 있었습니다). `macos-icon = custom`과 `macos-custom-icon`은 Dock 아이콘만 바꿉니다(`setApplicationIconImage`가 unsafe라 Cmd-Tab 아이콘은 그대로). `macos-dock-drop-behavior`, `vt-xt-checksum-*`(DECRQCRA는 구현하지 않음, 기본 끔 그대로), `macos-icon-frame`·`-ghost-color`·`-screen-color`와 GTK·리눅스·GPU 전용 키(`class`, `gtk-*`, `linux-cgroup*`, `custom-shader*`, `alpha-blending`, `freetype-load-flags`, `window-vsync`, `async-backend`, `window-title-font-family`, `quick-terminal-keyboard-interactivity`, `scrollback-compression`, `macos-applescript`, `macos-shortcuts`, `macos-auto-secure-input`, `macos-secure-input-indication`, `drag-handle`, `language` 등)는 경고 없이 받기만 합니다. 실제 창에서는 새 키들이 경고 없이 받아지는 것만 봤고, 키 바꾸기·Dock 아이콘·Space 동작은 보지 않았습니다 #196
+
+### 알려진 한계
+
+- 기본 동작이 바뀐 것:
+  - macOS 제목 막대가 `transparent`입니다(`macos-titlebar-style = native`로 되돌림).
+  - 스크롤하면 스크롤 막대가 잠깐 보입니다(`scrollbar = never`로 끔).
+  - zsh·bash 탭에서 프롬프트 커서가 막대가 되고, 셸이 창 제목을 정하고, PATH 끝에 실행 파일 폴더가 붙습니다(`shell-integration-features = no-cursor,no-title,no-path`).
+  - 굵은·기울임 꼴이 없는 글꼴은 합성해서 그립니다(`font-synthetic-style = false`).
+  - 퀵 터미널이 지금 Space로 따라옵니다(`quick-terminal-space-behavior = remain`).
+- `term` 기본은 `xterm-256color` 그대로입니다. Ghostty의 `xterm-ghostty`는 terminfo가 없어 따르지 않았습니다.
+- unsafe 없이 할 수 없어 받기만 하는 키: `macos-titlebar-proxy-icon`, `background-blur`, `macos-auto-secure-input`. Dock 아이콘은 Dock 타일만 바뀌고 Cmd-Tab 아이콘은 그대로입니다.
+- 실제 창에서 보지 않은 것(테스트로만 확인):
+  - 링크 키 셋(Cmd를 누른 채 마우스를 올려야 함)
+  - 스크롤 막대, 분할 확대 유지
+  - `font-thicken`
+  - `key-remap`을 실제 키로 누르기, Dock 아이콘, Space 동작
+  - `hidden` 제목 막대에서 창 끌기, 창 그림자, `window-theme`
 
 ## [0.12.0] - 2026-11-09
 

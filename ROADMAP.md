@@ -224,6 +224,27 @@ Ghostty 키 채우기 5. 추적 이슈 [#173](https://github.com/dj258255/b-term
 - 실창 확인을 격리(HOME, 소켓 폴더)해서 하려면 소켓 경로가 짧아야 합니다. 임시 폴더가 길면 SUN_LEN을 넘어 제어 소켓이 열리지 않습니다.
 - macOS 전용 코드에서만 쓰는 함수는 리눅스 CI에서 dead_code가 됩니다(#119에 이어 #182에서 또). 에이전트 지시에 `cfg_attr`을 미리 적어 둘 만합니다.
 
+## 0.13.0 (2026-11-10)
+
+Ghostty 키 채우기 6. 추적 이슈 [#189](https://github.com/dj258255/b-terminal/issues/189). 0.12와 같은 방식으로 진행했습니다. 에이전트 일곱이 각자 worktree에서 구현·커밋하고, 주 세션이 옮기고 검토·병합했습니다. 병합 시각(KST)은 추적 이슈를 연 11-09 23:27부터 마지막 병합 11-10 00:46까지입니다. 대화가 길어져 세션이 이어지는 사이에 마지막 두 PR(#202, #203)은 이어진 세션에서 확인·병합했습니다.
+
+| 이슈 | 내용 | 예상 | 실제 | PR | 주 세션이 한 것 |
+|---|---|---|---|---|---|
+| [#190](https://github.com/dj258255/b-terminal/issues/190) | 환경·시작 입력(`term`, `env`, `input`) | 2~4시간 | 에이전트 약 7분(병합 23:45) | [#199](https://github.com/dj258255/b-terminal/pull/199) | ADR 번호를 병합 순서로 옮김(016), decisions.md 합치기, 커밋 보안 리뷰, 실제 창 |
+| [#191](https://github.com/dj258255/b-terminal/issues/191) | 링크 키 | 2~4시간 | 에이전트 약 4분(병합 23:35) | [#197](https://github.com/dj258255/b-terminal/pull/197) | 소스 대조(실제 창은 Cmd를 누른 채 올려야 해서 못 봄) |
+| [#192](https://github.com/dj258255/b-terminal/issues/192) | 창 모양 | 2~4시간 | 에이전트 약 9분(병합 00:40) | [#202](https://github.com/dj258255/b-terminal/pull/202) | 실제 창에서 `hidden`의 제목 겹침을 찾아 테스트 먼저 쓰고 고침 |
+| [#193](https://github.com/dj258255/b-terminal/issues/193) | 글꼴 합성·두껍게 | 2~4시간 | 에이전트 약 9분(병합 23:55) | [#201](https://github.com/dj258255/b-terminal/pull/201) | 소스 대조, 실제 창(Monaco 합성 켬·끔) |
+| [#194](https://github.com/dj258255/b-terminal/issues/194) | 셸 통합 기능 | 2~4시간 | 에이전트 약 7분(병합 23:50) | [#200](https://github.com/dj258255/b-terminal/pull/200) | 스크립트 diff 읽기, ADR 번호 옮김(017), 커밋 보안 리뷰, 실제 창 |
+| [#195](https://github.com/dj258255/b-terminal/issues/195) | 스크롤바·진행 표시·분할 확대 | 2~4시간 | 에이전트 약 6분(병합 23:39) | [#198](https://github.com/dj258255/b-terminal/pull/198) | 소스 대조, 실제 창(진행 표시 켬·끔) |
+| [#196](https://github.com/dj258255/b-terminal/issues/196) | 수정 키 바꾸기, Space, Dock 아이콘, 플랫폼 전용 키 | 2~4시간 | 에이전트 약 10분(병합 00:46) | [#203](https://github.com/dj258255/b-terminal/pull/203) | 충돌 네 곳 정리, 받기만 목록에서 이미 구현된 키 빼기, 실제 창(경고 없음) |
+
+이번에 배운 것:
+
+- 에이전트는 창을 띄우지 않으므로, 화면에서만 보이는 문제는 주 세션의 실제 창 확인이 잡습니다. `hidden` 제목 막대에서 신호등 단추만 숨기고 창 제목 글은 남아 격자 첫 줄 위에 겹쳤습니다(#192). 단위 테스트는 "단추를 숨긴다"만 봤습니다.
+- 여러 브랜치가 같은 목록(`KNOWN_IGNORED`, 문서의 "경고 없이 넘기는 키")을 고치면, 나중에 병합하는 쪽이 이미 구현된 키를 다시 "받기만"으로 되돌릴 수 있습니다(#196 충돌). 목록과 해석 코드를 스크립트로 대조해 겹치는 키가 없는 것을 확인했습니다.
+- 배포 스크립트(`ship.sh`)와 충돌 해결 스크립트를 세션 임시 폴더에만 두었더니, 세션이 이어질 때 폴더가 비어 대화 기록에서 되살려야 했습니다.
+- worktree를 일곱 개 한꺼번에 만들면 경합으로 하나가 실패할 수 있습니다(#194, 남은 브랜치를 지우고 다시 띄움).
+
 ## 다음
 
 - 범수 님이 직접 해야 할 것: 키보드·마우스 확인(한글 2벌식 "안녕 하세요⏎", Claude Code의 Shift+Enter, Cmd-D·Cmd-F·Cmd-클릭·Cmd-N·Cmd-Shift-P, 메뉴, 창 닫기 단추, vim·htop, kitty icat·yazi, 투명 창), Developer ID 계정으로 `scripts/bundle-macos.sh --sign … --notarize … --dmg`
@@ -235,4 +256,5 @@ Ghostty 키 채우기 5. 추적 이슈 [#173](https://github.com/dj258255/b-term
 - 범수 님이 확인할 것(0.10): 고른 글 ⌘C 뒤 줄 끝 공백이 없는지, `right-click-action = copy-or-paste`, 팔레트 "창 항상 위", `keybind = ctrl+a>catch_all=ignore`와 `ctrl+a>n=new_window`, `scroll-to-bottom = output`으로 긴 출력 중 위로 스크롤
 - 범수 님이 확인할 것(0.11): 탭을 닫고 5초 안에 ⌘Z, `notify-on-command-finish = unfocused`로 긴 명령 뒤 다른 앱으로, `bell-features = audio`와 `bell-audio-path`로 벨 소리, ⌘F 찾기 강조 색, 고른 뒤 키를 치면 고르기가 지워지는지
 - 범수 님이 확인할 것(0.12): `vt-window-resize-allowed = true`에서 `printf '\033[8;20;60t'`로 창 크기가 바뀌는지, `macos-non-native-fullscreen = true`에서 ⌃⌘F, `window-step-resize = true`에서 가장자리 끌기, 빨리 끝난 칸에서 아무 키나 눌러 닫기, `palette-generate = true`로 256색 표, tmux 안의 가족 이모지 뒤 커서 자리
+- 범수 님이 확인할 것(0.13): OSC 8 링크를 Cmd를 누른 채 올려 `link-previews = osc8`·`false`에서 주소 띠가 어떻게 나오는지, `seq 1 500` 뒤 휠로 올려 스크롤 막대가 나왔다 사라지는지, `key-remap = left_ctrl=super`와 `keybind = super+t=new_tab`으로 왼쪽 Ctrl-T(오른쪽 Ctrl-C는 그대로 SIGINT), `macos-icon = custom`과 `macos-custom-icon`으로 Dock 아이콘, `quick-terminal-space-behavior = remain`에서 Space 옮기기, `macos-titlebar-style = hidden`에서 창 위쪽 끌기, `font-thicken = true`의 두께
 - 큰 일로 남긴 것: GPU(또는 IOSurface) 렌더러
