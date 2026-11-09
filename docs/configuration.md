@@ -45,6 +45,10 @@ config-file = ?~/.config/b-terminal/local   # ?가 붙으면 없어도 된다
 | `adjust-cursor-thickness` | `10%` 또는 포인트 | 없음 | 막대 커서와 속 빈 네모 커서의 선 두께. 밑줄 커서 두께는 바꾸지 않습니다 |
 | `adjust-box-thickness` | `10%` 또는 포인트 | 없음 | 상자 선(`─` `│` 등)의 선 두께 |
 | `font-variation` / `-bold` / `-italic` / `-bold-italic` | `축=값`(여러 번, 예 `wght=500`) | 없음 | 가변 글꼴의 축. 축 이름은 네 글자입니다. `font-variation`은 모든 꼴에, 나머지는 그 꼴에만 더합니다(같은 축이면 꼴별 값이 이김). 글꼴이 지원하지 않는 축이나 범위 밖 값은 글꼴이 알아서 무시하거나 자릅니다. 기본 글꼴의 네 꼴에만 적용하고 대체 글꼴에는 적용하지 않습니다. 칸 크기를 잴 때는 반영하지 않습니다. 빈 값이면 그 목록을 비웁니다 |
+| `font-style` / `-bold` / `-italic` / `-bold-italic` | 글꼴이 알리는 스타일 이름(예 `Heavy`), `false`, `default` | `default` | 그 꼴에 쓸 스타일을 이름으로 고릅니다(대소문자 무시). 찾는 글꼴은 그 꼴의 `font-family-*`, 없으면 기본 글꼴이고, 못 찾으면 `default`처럼 알아서 고릅니다. `false`는 그 꼴을 끄고 보통 꼴로 그립니다(`font-style = false`는 보통 꼴을 끌 수 없어 무시). b-terminal은 굵게·기울임을 합성하지 않아 `font-synthetic-style`은 받기만 합니다. 빈 값이면 `default` |
+| `font-codepoint-map` | `U+3000-U+9FFF=글꼴 이름`(여러 번, 한 글꼴에 여러 범위는 쉼표 `U+AC00,U+E0A0-U+E0B3=…`) | 없음 | 그 범위 글자를 정한 글꼴에서 먼저 찾습니다. 글자는 큰 `U+` 다음 16진수입니다. 여러 번 쓰면 쌓이고 겹치면 뒤에 쓴 것이 이깁니다. 정한 글꼴이 없거나 그 글자가 없으면 보통 차례로 찾고, 이 글자는 합자로 묶지 않습니다. 굵게·기울임은 그 글꼴의 해당 꼴을 씁니다. 읽지 못하는 줄은 경고하고 건너뜁니다. 빈 값이면 지움 |
+| `font-shaping-break` | `cursor`, `no-cursor`, `true`, `false` | `cursor` | 합자를 끊는 자리. `cursor`는 커서 칸에서 합자를 풀어 보입니다. `no-cursor`면 커서 밑에서도 합자를 유지합니다 |
+| `adjust-icon-height` | `10%` 또는 포인트 | 없음 | Nerd Font 아이콘(사설 영역 글자, 파워라인 도형 U+E0B0~U+E0D7 제외)이 넘지 않을 높이를 셀 높이 기준으로 바꿉니다. 양수는 키우고 음수는 줄이며 원래 자리의 가운데에 둡니다. 키울 때는 칸 폭에서 멈추고, 이미 칸보다 넓은 아이콘은 더 키우지 않습니다(Ghostty의 아이콘 맞춤 표를 그대로 옮기지는 않았습니다) |
 | `theme` | 테마 이름, 절대 경로, `light:…,dark:…` | 없음 | 찾는 곳: `~/.config/b-terminal/themes`, 그다음 앱에 넣어 둔 905개([assets/themes-README.md](../assets/themes-README.md), `b-terminal --list-themes`). 이름은 띄어쓰기·대소문자를 무시합니다(`Tokyo Night` = `TokyoNight`) |
 | `background` / `foreground` | `#rrggbb` | Ghostty 기본 | 테마 위에 덮습니다 |
 | `palette` | `N=#rrggbb`(0~255) | Ghostty 기본 | 16~255번은 xterm 표이고, `palette-generate`를 켜면 만든 색입니다. 직접 정한 번호가 늘 이깁니다 |

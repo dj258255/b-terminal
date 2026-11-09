@@ -244,6 +244,17 @@ pub struct Config {
     pub font_variation_bold: Vec<([u8; 4], f32)>,
     pub font_variation_italic: Vec<([u8; 4], f32)>,
     pub font_variation_bold_italic: Vec<([u8; 4], f32)>,
+    /// 꼴마다 고를 글꼴 스타일 이름(#174, Ghostty `font-style*`)
+    pub font_style: FontStyleName,
+    pub font_style_bold: FontStyleName,
+    pub font_style_italic: FontStyleName,
+    pub font_style_bold_italic: FontStyleName,
+    /// 글자 범위마다 정한 글꼴(#174, Ghostty `font-codepoint-map`). 뒤에 쓴 것이 앞의 것을 덮는다
+    pub font_codepoint_map: Vec<CodepointFont>,
+    /// 다듬기(합자)를 끊는 자리(#174, Ghostty `font-shaping-break`)
+    pub font_shaping_break: ShapingBreak,
+    /// Nerd Font 아이콘 높이 보정(#174, Ghostty `adjust-icon-height`)
+    pub adjust_icon_height: Option<Adjust>,
     pub theme: Theme,
     pub cursor_style: CursorStyle,
     pub cursor_blink: Option<bool>,
@@ -833,6 +844,13 @@ impl Default for Config {
             font_variation_bold: Vec::new(),
             font_variation_italic: Vec::new(),
             font_variation_bold_italic: Vec::new(),
+            font_style: FontStyleName::Default,
+            font_style_bold: FontStyleName::Default,
+            font_style_italic: FontStyleName::Default,
+            font_style_bold_italic: FontStyleName::Default,
+            font_codepoint_map: Vec::new(),
+            font_shaping_break: ShapingBreak::default(),
+            adjust_icon_height: None,
             theme: Theme::ghostty_default(),
             cursor_style: CursorStyle::Block,
             cursor_blink: None,
@@ -1104,6 +1122,147 @@ fn expand_home(p: &str, base: &Path) -> PathBuf {
 
 fn home() -> PathBuf {
     std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default()
+}
+
+/// `font-style*` 값(Ghostty `FontStyle`): `default`는 글꼴 찾기가 고른 그대로, `false`는 그 꼴을 끄고(보통 꼴로 그림),
+/// 그 밖의 글은 글꼴이 알리는 스타일 이름(예 "Iosevka Heavy"의 `Heavy`)
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum FontStyleName {
+    #[default]
+    Default,
+    Disabled,
+    Named(String),
+}
+
+impl FontStyleName {
+    pub fn parse(v: &str) -> Self {
+        match v {
+            "" | "default" => Self::Default,
+            "false" => Self::Disabled,
+            name => Self::Named(name.to_string()),
+        }
+    }
+}
+
+/// `font-codepoint-map` 한 칸: `start..=end` 글자는 `family` 글꼴로
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CodepointFont {
+    pub start: u32,
+    pub end: u32,
+    pub family: String,
+}
+
+/// `font-codepoint-map` 한 줄(`U+3000-U+9FFF,U+AC00=글꼴`)을 읽는다. 읽지 못하면 없음
+/// Ghostty와 같은 문법: 글자는 `U+` 다음 16진수(큰 `U`만), 범위는 `U+ABCD-U+DEF0`, 한 글꼴에 여러 범위는 쉼표.
+/// 글꼴 이름은 `font-family`와 같은 값이고 비어 있으면 안 된다
+pub fn parse_codepoint_map(s: &str) -> Option<Vec<CodepointFont>> {
+    let (key, family) = s.split_once('=')?;
+    let family = family.trim_matches([' ', '\t']);
+    if family.is_empty() {
+        return None;
+    }
+    let ranges = parse_codepoint_ranges(key.trim_matches([' ', '\t']))?;
+    Some(
+        ranges
+            .into_iter()
+            .map(|(start, end)| CodepointFont {
+                start,
+                end,
+                family: family.to_string(),
+            })
+            .collect(),
+    )
+}
+
+fn parse_codepoint_ranges(key: &str) -> Option<Vec<(u32, u32)>> {
+    let b = key.as_bytes();
+    let mut i = 0;
+    let ws = |i: &mut usize| {
+        while *i < b.len() && matches!(b[*i], b' ' | b'\t') {
+            *i += 1;
+        }
+    };
+    let codepoint = |i: &mut usize| -> Option<u32> {
+        if b.get(*i) != Some(&b'U') || b.get(*i + 1) != Some(&b'+') {
+            return None;
+        }
+        *i += 2;
+        let from = *i;
+        while *i < b.len() && b[*i].is_ascii_hexdigit() {
+            *i += 1;
+        }
+        u32::from_str_radix(key.get(from..*i)?, 16)
+            .ok()
+            .filter(|c| *c <= 0x10FFFF)
+    };
+    let mut out = Vec::new();
+    while i < b.len() {
+        let start = codepoint(&mut i)?;
+        ws(&mut i);
+        match b.get(i) {
+            None => out.push((start, start)),
+            Some(b',') => {
+                i += 1;
+                ws(&mut i);
+                if i >= b.len() {
+                    return None;
+                }
+                out.push((start, start));
+            }
+            Some(b'-') => {
+                i += 1;
+                ws(&mut i);
+                let end = codepoint(&mut i)?;
+                ws(&mut i);
+                match b.get(i) {
+                    None => {}
+                    Some(b',') => {
+                        i += 1;
+                        ws(&mut i);
+                    }
+                    Some(_) => return None,
+                }
+                if start > end {
+                    return None;
+                }
+                out.push((start, end));
+            }
+            Some(_) => return None,
+        }
+    }
+    (!out.is_empty()).then_some(out)
+}
+
+/// `font-shaping-break`(Ghostty): 다듬기를 끊는 자리. 지금은 `cursor`(커서 칸)뿐이고 기본 켬
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ShapingBreak {
+    pub cursor: bool,
+}
+
+impl Default for ShapingBreak {
+    fn default() -> Self {
+        Self { cursor: true }
+    }
+}
+
+impl ShapingBreak {
+    /// 읽지 못하면 아무것도 바꾸지 않고 거짓
+    pub fn parse(v: &str) -> Option<Self> {
+        // Ghostty처럼 기본값에서 시작해 적은 것만 바꾼다(앞서 쓴 값 위에 얹지 않는다)
+        let mut out = Self::default();
+        for item in v.split(',').map(str::trim).filter(|i| !i.is_empty()) {
+            let (on, name) = match item.strip_prefix("no-") {
+                Some(n) => (false, n),
+                None => (true, item),
+            };
+            match name {
+                "true" | "false" if item == name => out.cursor = name == "true",
+                "cursor" => out.cursor = on,
+                _ => return None,
+            }
+        }
+        Some(out)
+    }
 }
 
 /// `adjust-*` 값 하나를 읽어 둔다. 빈 값은 지우고, 읽지 못하면 `fail`을 부르고 안 정한 채로 둔다
@@ -1537,6 +1696,24 @@ impl Config {
                     }
                 }
             }
+            "font-codepoint-map" => {
+                if v.is_empty() {
+                    self.font_codepoint_map.clear();
+                } else if let Some(list) = parse_codepoint_map(v) {
+                    self.font_codepoint_map.extend(list);
+                } else {
+                    bad(warnings);
+                }
+            }
+            "font-style" => self.font_style = FontStyleName::parse(v),
+            "font-style-bold" => self.font_style_bold = FontStyleName::parse(v),
+            "font-style-italic" => self.font_style_italic = FontStyleName::parse(v),
+            "font-style-bold-italic" => self.font_style_bold_italic = FontStyleName::parse(v),
+            "font-shaping-break" => match ShapingBreak::parse(v) {
+                Some(b) => self.font_shaping_break = b,
+                None => bad(warnings),
+            },
+            "adjust-icon-height" => set_adjust(&mut self.adjust_icon_height, v, || bad(warnings)),
             "font-family-bold" => self.font_family_bold = Some(v.to_string()).filter(|s| !s.is_empty()),
             "font-family-italic" => self.font_family_italic = Some(v.to_string()).filter(|s| !s.is_empty()),
             "font-family-bold-italic" => self.font_family_bold_italic = Some(v.to_string()).filter(|s| !s.is_empty()),
@@ -2778,6 +2955,102 @@ mod tests {
         );
         assert_eq!(c.warnings.len(), 4, "{:?}", c.warnings);
         assert!(c.font_variation.is_empty(), "빈 값은 비움");
+    }
+
+    /// #174: `font-codepoint-map`은 `U+범위[,U+범위…]=글꼴`. 여러 번 쓰면 쌓이고, 잘못된 줄은 경고하고 건너뛴다
+    #[test]
+    fn font_codepoint_map_key() {
+        let cf = |start, end, family: &str| CodepointFont {
+            start,
+            end,
+            family: family.into(),
+        };
+        let c = Config::from_text(
+            "font-codepoint-map = U+3000-U+9FFF=Noto Sans CJK KR\n\
+             font-codepoint-map = U+E0A0,U+E0B0 - U+E0B3 = Symbols Nerd Font Mono\n\
+             font-codepoint-map = u+41-U+5a=Menlo\n\
+             font-codepoint-map = U+61-U+7a=Menlo\n",
+            true,
+        );
+        // 소문자 u는 Ghostty도 받지 않는다
+        assert_eq!(c.warnings.len(), 1, "{:?}", c.warnings);
+        assert_eq!(
+            c.font_codepoint_map,
+            vec![
+                cf(0x3000, 0x9FFF, "Noto Sans CJK KR"),
+                cf(0xE0A0, 0xE0A0, "Symbols Nerd Font Mono"),
+                cf(0xE0B0, 0xE0B3, "Symbols Nerd Font Mono"),
+                cf(0x61, 0x7a, "Menlo"),
+            ]
+        );
+        // 읽지 못하는 꼴: = 없음, U+ 없음, 거꾸로 된 범위, 끝에 남은 쉼표, 16진수 아님
+        for bad in [
+            "U+3000",
+            "3000=X",
+            "U+9-U+1=X",
+            "U+41,=X",
+            "U+4G=X",
+            "U+110000000=X",
+            "=X",
+        ] {
+            assert_eq!(parse_codepoint_map(bad), None, "{bad}");
+        }
+        // 빈 값은 지움
+        let c = Config::from_text("font-codepoint-map = U+41=Menlo\nfont-codepoint-map =\n", true);
+        assert!(c.warnings.is_empty(), "{:?}", c.warnings);
+        assert!(c.font_codepoint_map.is_empty());
+    }
+
+    /// #174: `font-style*`은 `default`·`false`·스타일 이름
+    #[test]
+    fn font_style_keys() {
+        let d = Config::default();
+        assert_eq!(d.font_style, FontStyleName::Default);
+        assert_eq!(d.font_style_bold, FontStyleName::Default);
+        let c = Config::from_text(
+            "font-style = Light\nfont-style-bold = false\nfont-style-italic = Heavy Italic\n\
+             font-style-bold-italic = default\n",
+            true,
+        );
+        assert!(c.warnings.is_empty(), "{:?}", c.warnings);
+        assert_eq!(c.font_style, FontStyleName::Named("Light".into()));
+        assert_eq!(c.font_style_bold, FontStyleName::Disabled);
+        assert_eq!(c.font_style_italic, FontStyleName::Named("Heavy Italic".into()));
+        assert_eq!(c.font_style_bold_italic, FontStyleName::Default);
+        // 빈 값은 default로 되돌린다
+        let c = Config::from_text("font-style-bold = false\nfont-style-bold =\n", true);
+        assert_eq!(c.font_style_bold, FontStyleName::Default);
+    }
+
+    /// #174: `font-shaping-break`는 기본 `cursor` 켬. `no-cursor`·`false`로 끄고, 모르는 이름은 경고하고 그대로
+    #[test]
+    fn font_shaping_break_key() {
+        assert!(Config::default().font_shaping_break.cursor);
+        for (text, want) in [
+            ("no-cursor", false),
+            ("false", false),
+            ("cursor", true),
+            ("true", true),
+            ("no-cursor,cursor", true),
+        ] {
+            let c = Config::from_text(&format!("font-shaping-break = {text}\n"), true);
+            assert!(c.warnings.is_empty(), "{text}: {:?}", c.warnings);
+            assert_eq!(c.font_shaping_break.cursor, want, "{text}");
+        }
+        let c = Config::from_text("font-shaping-break = no-cursor\nfont-shaping-break = word\n", true);
+        assert_eq!(c.warnings.len(), 1, "{:?}", c.warnings);
+        assert!(!c.font_shaping_break.cursor, "읽지 못한 줄은 앞 값을 그대로 둔다");
+    }
+
+    /// #174: `adjust-icon-height`는 다른 `adjust-*`처럼 `10%`·픽셀
+    #[test]
+    fn adjust_icon_height_key() {
+        let c = Config::from_text("adjust-icon-height = -15%\n", true);
+        assert!(c.warnings.is_empty(), "{:?}", c.warnings);
+        assert_eq!(c.adjust_icon_height, Some(Adjust::Percent(-15.0)));
+        let c = Config::from_text("adjust-icon-height = 3\nadjust-icon-height = tall\n", true);
+        assert_eq!(c.warnings.len(), 1, "{:?}", c.warnings);
+        assert_eq!(c.adjust_icon_height, None);
     }
 
     #[test]

@@ -244,6 +244,8 @@ fn draw_rows(
 /// (커서 밑의 합자는 풀어 보인다. Ghostty와 같다). 공백에서 끊으므로 같은 낱말은 캐시에서 꺼낸다
 fn ligatures(fonts: &mut Fonts, row: &[DrawCell], cursor_col: Option<usize>) -> Vec<u16> {
     let mut subs = vec![0u16; row.len()];
+    // `font-shaping-break`에서 `cursor`를 끄면 커서 칸도 묶음에 넣는다(#174)
+    let cursor_col = cursor_col.filter(|_| fonts.breaks_shaping_at_cursor());
     let mut text = String::new();
     let mut col = 0;
     while col < row.len() {

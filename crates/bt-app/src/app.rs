@@ -87,6 +87,7 @@ fn font_config(c: &AppConfig, size: f32, scale: f32) -> FontConfig {
             cursor_thickness: c.adjust_cursor_thickness,
             cursor_height: c.adjust_cursor_height,
             box_thickness: c.adjust_box_thickness,
+            icon_height: c.adjust_icon_height,
         },
         variation: c.font_variation.clone(),
         variation_bold: c.font_variation_bold.clone(),
@@ -96,6 +97,14 @@ fn font_config(c: &AppConfig, size: f32, scale: f32) -> FontConfig {
         scale,
         fallbacks,
         features: c.font_features.clone(),
+        styles: [
+            c.font_style.clone(),
+            c.font_style_bold.clone(),
+            c.font_style_italic.clone(),
+            c.font_style_bold_italic.clone(),
+        ],
+        codepoint_map: c.font_codepoint_map.clone(),
+        shaping_break_cursor: c.font_shaping_break.cursor,
     }
 }
 
