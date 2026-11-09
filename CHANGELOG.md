@@ -4,6 +4,7 @@
 
 ## [아직 릴리스하지 않음]
 
+- `shell-integration-features`(Ghostty 키)로 셸 통합 기능을 켜고 끕니다: `cursor`, `title`, `path`(기본 켬), `sudo`, `ssh-env`, `ssh-terminfo`(기본 끔), `true`/`false`/`no-이름` 문법. **기본 동작이 바뀝니다**: zsh·bash 탭의 프롬프트에서 커서가 깜박이는 막대가 되고(명령이 도는 동안은 원래 모양), 창 제목을 셸이 폴더·명령으로 정하며, 실행 파일 폴더(`btctl`이 있는 곳)가 PATH 끝에 더해집니다. 끄려면 `shell-integration-features = no-cursor,no-title,no-path`. `sudo`·`ssh-env`·`ssh-terminfo`는 b-terminal이 TERM을 `xterm-256color`로 쓰므로 받기만 하고 하는 일이 없습니다. 원격 호스트에는 아무것도 설치하지 않습니다. 셸 스크립트는 `zsh -f`·`bash --norc` 테스트로 확인했고, 실제 창에서는 보지 않았습니다. #194
 - 환경·시작 입력 키(Ghostty): `term`(기본은 **`xterm-256color` 그대로**, Ghostty의 `xterm-ghostty`는 terminfo가 없어 따르지 않음), `env = KEY=VALUE`(여러 번, `KEY=`는 지움, 빈 값은 전체 초기화, b-terminal이 넣는 변수와 겹치면 `env`가 이김), `input`(`raw:`·`path:`, 새 칸을 띄운 직후 PTY에 보냄, 합쳐서 10MiB 상한, 못 읽거나 넘으면 경고하고 보내지 않음). 기본 동작은 그대로입니다. PTY 테스트와 설정 해석 테스트로만 확인했고 실제 창에서는 아직 확인하지 않았습니다(ADR-016). #190
 - Ghostty 키 `scrollbar`(스크롤 중·뒤 잠깐·오른쪽 끝에 마우스를 올렸을 때 반투명 막대, `never`로 끔), `progress-style`(`false`면 OSC 9;4 진행 표시를 버림), `split-preserve-zoom = navigation`(크게 보는 중 `goto_split`이 크게 보기를 풀지 않음)을 받습니다. `scrollbar` 기본이 `system`이라 스크롤하면 막대가 새로 보입니다(나머지 둘은 기본 동작 그대로). 실제 창에서는 아직 보지 않았고, 막대 끌기와 시스템의 "스크롤 막대 항상 보기" 설정은 지원하지 않습니다 #195
 - 링크 키 `link-url`·`link-osc8`·`link-previews`를 Ghostty와 같은 뜻·기본(모두 켬)으로 받습니다. `link-previews = false`는 주소 띠를 꺼서 열기 전에 실제 주소를 보는 보장을 약하게 합니다(`osc8`은 화면 글의 URL에만 띠를 뺍니다). `link`(정규식)는 Ghostty도 아직 쓸 수 없어 받고 경고만 합니다. 기본 동작은 그대로이고, 판단·해석은 테스트로 확인했으나 실제 창에서는 보지 않았습니다. #191
