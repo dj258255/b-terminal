@@ -4,6 +4,8 @@
 
 ## [아직 릴리스하지 않음]
 
+- 닫기 확인(`confirm-close-surface`, Ghostty 키, 기본 `true`): 프로그램이 도는 칸을 ⌘W·⌥⌘W·창 닫기 단추·⌘Q로 닫으려 하면 창 위쪽 확인 막대로 묻습니다(↩ 닫기, esc 취소). ⌘Q는 이제 키 묶음의 `quit` 동작입니다.
+
 - 명령을 주지 않은 `btctl new`가 설정의 `command`·`working-directory`를 무시하고 로그인 셸로 띄우던 것을 고쳤습니다(Cmd-T와 같게).
 
 - 벨(`bell-features`, Ghostty 키, 기본 `attention,title`): 보지 않는 칸에서 벨이 울리면 탭 제목 앞에 🔔를 붙이고, 창이 앞에 없으면 Dock 아이콘을 튀깁니다. `system`을 켜면 경고음도 냅니다.

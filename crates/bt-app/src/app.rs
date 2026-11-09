@@ -124,6 +124,44 @@ impl Pane {
     }
 }
 
+/// 닫기 전에 물어야 할 만큼 바쁜 칸인가(#108). `integrated`: 셸 통합 표지를 받았다,
+/// `running`: 셸 통합이 알린 명령이 도는 중, `fg_is_shell`: 전경 프로세스가 셸 자신인가(모르면 없다)
+/// Ghostty는 셸 통합이 없으면 늘 묻는다. 여기서는 그때 전경 프로세스가 셸 자신이면 묻지 않는다(`/bin/sh` 칸이 늘 묻지 않게)
+fn pane_busy(
+    mode: bt_core::config::ConfirmClose,
+    exited: bool,
+    integrated: bool,
+    running: bool,
+    fg_is_shell: Option<bool>,
+) -> bool {
+    use bt_core::config::ConfirmClose;
+    match mode {
+        ConfirmClose::False => false,
+        _ if exited => false,
+        ConfirmClose::Always => true,
+        ConfirmClose::True if integrated => running,
+        ConfirmClose::True => fg_is_shell != Some(true),
+    }
+}
+
+/// 확인을 기다리는 일(#108)
+#[derive(Debug, Clone, PartialEq)]
+enum Pending {
+    ClosePane(u64),
+    /// 이 칸이 든 탭
+    CloseTab(u64),
+    CloseWindow,
+    Quit,
+}
+
+/// 창 위에 띄운 확인 막대: Enter·y면 한다, Esc·n이면 그만둔다
+struct Confirm {
+    pending: Pending,
+    message: String,
+    /// "닫기", "끝내기"
+    yes: &'static str,
+}
+
 /// btctl new의 띄우기 값(#115): 키 묶음의 새 탭처럼 설정(`base`: command·working-directory)에서 시작하고,
 /// 준 폴더·명령이 이긴다
 fn ctl_spawn(base: SpawnOptions, cwd: Option<std::path::PathBuf>, command: &[String]) -> SpawnOptions {
@@ -257,6 +295,8 @@ struct Win {
     quick_shown: Option<Instant>,
     /// 키 순서(`ctrl+a>n`)의 기다리는 앞 키들(#106)
     keyseq: crate::keymap::Sequencer,
+    /// 닫기·끝내기 확인 막대(#108)
+    confirm: Option<Confirm>,
     /// 바뀐 것이 없어도 다음 그리기에서 창에 한 번 올린다(창이 다른 화면으로 옮겨 가면 그 화면의 색 공간으로, #97)
     force_present: bool,
     /// 들고 있는 프레임과 그 내용(바뀐 줄만 다시 그리려고, #40)
@@ -290,6 +330,7 @@ impl Win {
             quick: false,
             quick_shown: None,
             keyseq: Default::default(),
+            confirm: None,
             force_present: false,
             frame: Vec::new(),
             last_frame: None,
@@ -1035,6 +1076,114 @@ impl App {
         }
     }
 
+    /// 이 칸을 닫기 전에 물어야 하는가(`confirm-close-surface`, #108)
+    fn pane_needs_confirm(&self, id: u64) -> bool {
+        let Some(p) = self.pane_index(id).map(|i| &self.panes[i]) else {
+            return false;
+        };
+        let fg_is_shell = match (p.session.foreground_pid(), p.session.pid()) {
+            (Some(fg), Some(sh)) => Some(fg == sh as i32),
+            _ => None,
+        };
+        pane_busy(
+            self.config.confirm_close,
+            p.exited.is_some(),
+            p.session.has_shell_integration(),
+            p.running.is_some(),
+            fg_is_shell,
+        )
+    }
+
+    /// 닫기·끝내기를 청한다. 프로그램이 도는 칸이 있으면 확인 막대를 띄우고, 없으면 바로 한다
+    fn request(&mut self, pending: Pending, event_loop: &ActiveEventLoop) {
+        let ids: Vec<u64> = match &pending {
+            Pending::ClosePane(id) => vec![*id],
+            Pending::CloseTab(id) => self
+                .group_of(*id)
+                .map(|gi| self.w.tabs[gi].layout.leaves())
+                .unwrap_or_default(),
+            Pending::CloseWindow => self.w.tabs.iter().flat_map(|g| g.layout.leaves()).collect(),
+            Pending::Quit => self.panes.iter().map(|p| p.id).collect(),
+        };
+        let busy: Vec<u64> = ids.into_iter().filter(|&id| self.pane_needs_confirm(id)).collect();
+        if busy.is_empty() {
+            self.perform(pending, event_loop);
+            return;
+        }
+        let n = busy.len();
+        let (message, yes) = match &pending {
+            Pending::ClosePane(id) => {
+                let what = self
+                    .pane_index(*id)
+                    .map(|i| &self.panes[i])
+                    .and_then(|p| {
+                        p.running
+                            .as_ref()
+                            .and_then(|r| r.0.clone())
+                            .or_else(|| p.fg_name.clone())
+                    })
+                    .map(|w| bt_render::truncate(&bt_core::proto::printable(&w), 40))
+                    .unwrap_or_else(|| "프로그램".into());
+                (format!("이 칸에서 {what}이(가) 돌고 있습니다. 닫을까요?"), "닫기")
+            }
+            Pending::CloseTab(_) => (
+                format!("이 탭에서 프로그램이 도는 칸이 {n}개 있습니다. 탭을 닫을까요?"),
+                "닫기",
+            ),
+            Pending::CloseWindow => (
+                format!("이 창에서 프로그램이 도는 칸이 {n}개 있습니다. 창을 닫을까요?"),
+                "닫기",
+            ),
+            Pending::Quit => (format!("프로그램이 도는 칸이 {n}개 있습니다. 끝낼까요?"), "끝내기"),
+        };
+        // 닫으려는 칸이 다른 창에 있어도 묻는 막대는 지금 창에
+        self.w.palette = None;
+        self.w.confirm = Some(Confirm { pending, message, yes });
+        self.request_redraw();
+    }
+
+    fn perform(&mut self, pending: Pending, event_loop: &ActiveEventLoop) {
+        match pending {
+            Pending::ClosePane(id) => {
+                if let Some(i) = self.pane_index(id) {
+                    self.close_pane(i, event_loop);
+                }
+            }
+            Pending::CloseTab(id) => {
+                if let Some(gi) = self.group_of(id) {
+                    self.close_tab(gi, event_loop);
+                }
+            }
+            Pending::CloseWindow => self.close_current_window(event_loop),
+            // 끌 때 창 상태는 exiting에서 적는다
+            Pending::Quit => event_loop.exit(),
+        }
+    }
+
+    /// 확인 막대가 떠 있으면 키를 모두 가로챈다: Enter·y는 하고, Esc·n은 그만둔다
+    fn confirm_key(&mut self, event: &winit::event::KeyEvent, event_loop: &ActiveEventLoop) -> bool {
+        use winit::keyboard::{Key, NamedKey};
+        if self.w.confirm.is_none() {
+            return false;
+        }
+        let plain = !(self.mods.super_key() || self.mods.control_key() || self.mods.alt_key());
+        let yes = match &event.logical_key {
+            Key::Named(NamedKey::Enter) => Some(true),
+            Key::Named(NamedKey::Escape) => Some(false),
+            Key::Character(c) if plain && c.eq_ignore_ascii_case("y") => Some(true),
+            Key::Character(c) if plain && c.eq_ignore_ascii_case("n") => Some(false),
+            _ => None,
+        };
+        if let Some(yes) = yes {
+            let c = self.w.confirm.take();
+            self.request_redraw();
+            if let (true, Some(c)) = (yes, c) {
+                self.perform(c.pending, event_loop);
+            }
+        }
+        true
+    }
+
     /// 칸 하나를 닫는다. 탭의 마지막 칸이면 탭이, 마지막 탭이면 앱이 닫힌다
     fn close_pane(&mut self, index: usize, event_loop: &ActiveEventLoop) {
         if index >= self.panes.len() {
@@ -1417,11 +1566,16 @@ impl App {
                 self.open_split(dir, self.spawn_here());
             }
             Action::CloseSurface => {
-                if let Some(i) = self.active_index() {
-                    self.close_pane(i, event_loop);
+                if let Some(id) = self.focused_id() {
+                    self.request(Pending::ClosePane(id), event_loop);
                 }
             }
-            Action::CloseTab => self.close_tab(self.w.active, event_loop),
+            Action::CloseTab => {
+                if let Some(id) = self.focused_id() {
+                    self.request(Pending::CloseTab(id), event_loop);
+                }
+            }
+            Action::Quit => self.request(Pending::Quit, event_loop),
             Action::GotoSplit(target) => {
                 let area = self.content_rect();
                 let divider = self.divider_px();
@@ -1964,6 +2118,7 @@ impl App {
         self.redraw_pending.store(false, Ordering::Release);
         let theme = self.config.theme.clone();
         let toast = self.w.toast.clone().filter(|(_, at)| at.elapsed() < TOAST_FOR);
+        let confirm = self.w.confirm.as_ref().map(|c| (c.message.clone(), c.yes));
         let focus = self.focused_id();
         // 보이는 칸마다: 바깥 사각형, 격자 자리, 화면, 고른 칸인가, 진행 표시
         let layout = self.group_layout(self.w.active);
@@ -2119,6 +2274,7 @@ impl App {
                 || hover.is_some()
                 || search.is_some()
                 || palette.is_some()
+                || confirm.is_some()
                 // kitty 그림은 칸 위에 겹쳐 그린다(#76)
                 || views.iter().any(|v| !v.screen.images.is_empty())
                 || (single_tab && views.iter().any(|v| v.progress.is_some())),
@@ -2253,6 +2409,9 @@ impl App {
                 }
                 if let Some((text, _)) = &toast {
                     crate::tabbar::draw_toast(&mut canvas, fonts, &theme, text);
+                }
+                if let Some((message, yes)) = &confirm {
+                    tabbar::draw_confirm(&mut canvas, fonts, &theme, message, &format!("↩ {yes}    esc 취소"));
                 }
             }
         }
@@ -2631,7 +2790,7 @@ impl ApplicationHandler<UserEvent> for App {
             return;
         }
         match event {
-            WindowEvent::CloseRequested => self.close_current_window(event_loop),
+            WindowEvent::CloseRequested => self.request(Pending::CloseWindow, event_loop),
             WindowEvent::Resized(_) => self.resize_all(),
             // 다른 화면으로 옮겨 갔을 수 있다. 다시 그리지 않고 올리기만 해 softbuffer가 그 화면의 색 공간을 고르게 한다(#97)
             WindowEvent::Moved(_) => {
@@ -2688,6 +2847,11 @@ impl ApplicationHandler<UserEvent> for App {
                 Ime::Commit(text) => {
                     self.w.preedit.clear();
                     self.reset_blink();
+                    // 확인 막대가 떠 있으면 글을 어디에도 보내지 않는다(Enter·Esc만 받는다)
+                    if self.w.confirm.is_some() {
+                        self.request_redraw();
+                        return;
+                    }
                     // 팔레트·찾기 막대가 열려 있으면 확정 글은 거기로
                     if let Some((q, sel)) = self.w.palette.as_mut() {
                         q.push_str(&text);
@@ -2709,7 +2873,10 @@ impl ApplicationHandler<UserEvent> for App {
                     return;
                 }
                 self.reset_blink();
-                if self.palette_key(&event, event_loop) || self.search_key(&event) {
+                if self.confirm_key(&event, event_loop)
+                    || self.palette_key(&event, event_loop)
+                    || self.search_key(&event)
+                {
                     return;
                 }
                 // 키 묶음(키 순서 포함, #106): 앞 키는 기다리고, 순서가 깨지면 쌓은 키를 그대로 보낸다
@@ -2982,6 +3149,27 @@ impl ApplicationHandler<UserEvent> for App {
 mod tests {
     use super::*;
     use bt_term::search::SearchStatus;
+
+    #[test]
+    fn busy_panes_need_confirm_like_ghostty() {
+        use bt_core::config::ConfirmClose::{Always, False, True};
+        // 셸 통합이 있으면 명령이 도는지만 본다
+        assert!(pane_busy(True, false, true, true, Some(true)));
+        assert!(
+            !pane_busy(True, false, true, false, Some(false)),
+            "프롬프트에 있으면 묻지 않는다"
+        );
+        // 셸 통합이 없으면 전경 프로세스가 셸인지 본다. 모르면 묻는다
+        assert!(!pane_busy(True, false, false, false, Some(true)));
+        assert!(pane_busy(True, false, false, false, Some(false)));
+        assert!(pane_busy(True, false, false, false, None));
+        // always는 프롬프트에서도, false는 언제나 묻지 않음
+        assert!(pane_busy(Always, false, true, false, Some(true)));
+        assert!(!pane_busy(False, false, true, true, Some(false)));
+        // 셸이 이미 끝난 칸은 묻지 않는다
+        assert!(!pane_busy(Always, true, true, true, None));
+        assert!(!pane_busy(True, true, false, false, None));
+    }
 
     #[test]
     fn btctl_new_starts_from_config_and_given_values_win() {

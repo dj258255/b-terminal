@@ -306,3 +306,55 @@ pub fn draw_palette(
         );
     }
 }
+
+/// 닫기·끝내기 확인 막대(#108)를 창 위쪽 가운데에 그린다: 묻는 글 한 줄, 그 아래 키 안내
+pub fn draw_confirm(canvas: &mut Canvas, fonts: &mut Fonts, theme: &Theme, message: &str, hint: &str) {
+    let m = fonts.metrics();
+    let cw = m.width as i32;
+    let line_h = m.height + m.height / 3;
+    let max_cells = ((canvas.width / m.width.max(1)) as usize).saturating_sub(4).max(10);
+    let message = truncate(message, max_cells.saturating_sub(4));
+    let cells = text_cells(&message).max(text_cells(hint)) + 4;
+    let w = cells.min(max_cells) as u32 * m.width;
+    let h = line_h * 2 + m.height / 2;
+    let x = (canvas.width as i32 - w as i32) / 2;
+    let y = m.height as i32;
+    canvas.fill_rect(x, y, w, h, theme.background.mix(theme.foreground, 0.08));
+    // 눈에 띄게 노란 테두리(경고)
+    canvas.stroke_rect(x, y, w, h, (m.stroke).max(1), theme.palette[3]);
+    let pad = (line_h as i32 - m.height as i32) / 2 + m.height as i32 / 4;
+    draw_text(canvas, fonts, x + cw * 2, y + pad, &message, theme.foreground, false);
+    let dim = theme.foreground.mix(theme.background, 0.4);
+    draw_text(canvas, fonts, x + cw * 2, y + pad + line_h as i32, hint, dim, false);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn confirm_bar_is_centered_with_warning_border_and_fits_long_text() {
+        let Ok(mut fonts) = Fonts::new(&bt_render::FontConfig::default()) else {
+            return;
+        };
+        let theme = Theme::ghostty_default();
+        let (w, h) = (800u32, 300u32);
+        let mut buf = vec![0u32; (w * h) as usize];
+        let mut c = Canvas::new(&mut buf, w, h);
+        c.clear(theme.background);
+        let long = "이 칸에서 ".to_string() + &"아주 긴 명령 ".repeat(40) + "😀이(가) 돌고 있습니다. 닫을까요?";
+        draw_confirm(&mut c, &mut fonts, &theme, &long, "↩ 닫기    esc 취소");
+        let m = fonts.metrics();
+        // 테두리(노랑)가 위쪽 가운데에 있고, 좌우 끝은 창 안에 들어온다
+        let row = m.height;
+        let border: Vec<u32> = (0..w).filter(|&x| c.pixel(x, row) == theme.palette[3]).collect();
+        assert!(!border.is_empty(), "노란 테두리");
+        let (l, r) = (border[0], *border.last().unwrap());
+        assert!(l > 0 && r < w - 1, "창 안: {l}..{r}");
+        assert!(
+            (l as i32 - (w - 1 - r) as i32).abs() <= 1,
+            "가운데: {l} / {}",
+            w - 1 - r
+        );
+    }
+}

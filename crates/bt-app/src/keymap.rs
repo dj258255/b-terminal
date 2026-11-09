@@ -68,6 +68,8 @@ pub enum Action {
     SelectAll,
     /// 앞(-1)·뒤(+1) 프롬프트로(셸 통합)
     JumpToPrompt(i32),
+    /// 앱을 끝낸다(Ghostty `quit`, ⌘Q). 프로그램이 도는 칸이 있으면 묻는다(#108)
+    Quit,
     /// `text:…`: 글을 그대로 PTY에 보낸다(`\n`, `\x1b` 같은 이스케이프를 푼다)
     Text(String),
 }
@@ -239,6 +241,7 @@ pub fn parse_action(s: &str) -> Result<Option<Action>, String> {
         "scroll_to_bottom" => Action::ScrollBottom,
         "clear_screen" => Action::ClearScreen,
         "reload_config" => Action::ReloadConfig,
+        "quit" => Action::Quit,
         "select_all" => Action::SelectAll,
         "jump_to_prompt" => Action::JumpToPrompt(arg.and_then(|a| a.trim().parse().ok()).unwrap_or(-1)),
         "text" => Action::Text(unescape(arg.unwrap_or(""))),
@@ -296,6 +299,7 @@ fn defaults() -> Vec<(&'static str, &'static str)> {
         ("super+k", "clear_screen"),
         ("super+a", "select_all"),
         ("super+shift+comma", "reload_config"),
+        ("super+q", "quit"),
         ("super+home", "scroll_to_top"),
         ("super+end", "scroll_to_bottom"),
         ("super+page_up", "scroll_page_up"),
@@ -588,6 +592,7 @@ mod tests {
             Some(Action::ResizeSplit(Direction::Left, 20))
         );
         assert_eq!(parse_action("close_surface").unwrap(), Some(Action::CloseSurface));
+        assert_eq!(parse_action("quit").unwrap(), Some(Action::Quit));
         assert_eq!(parse_action("start_search").unwrap(), Some(Action::StartSearch));
         assert_eq!(
             parse_action("new_window").unwrap(),
@@ -624,6 +629,11 @@ mod tests {
             assert_eq!(km.lookup(&sup("t")), None, "unbind로 기본 묶음을 지운다");
             assert_eq!(km.lookup(&sup("c")), Some(&Action::Copy), "건드리지 않은 기본은 남는다");
             assert_eq!(km.lookup(&trig("super+shift+n")), Some(&Action::NewTab));
+            assert_eq!(
+                km.lookup(&sup("q")),
+                Some(&Action::Quit),
+                "⌘Q도 키 묶음으로(닫기 확인을 거치게)"
+            );
         }
         assert_eq!(
             km.lookup(&trig("ctrl+alt+e")),

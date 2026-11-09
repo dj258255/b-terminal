@@ -31,6 +31,7 @@ pub fn action_for(id: &str) -> Option<MenuCommand> {
         "prompt_down" => MenuCommand::Action(Action::JumpToPrompt(1)),
         "next_tab" => MenuCommand::Action(Action::NextTab),
         "prev_tab" => MenuCommand::Action(Action::PrevTab),
+        "quit" => MenuCommand::Action(Action::Quit),
         _ => return None,
     })
 }
@@ -67,7 +68,8 @@ pub fn build() -> muda::Menu {
             &PredefinedMenuItem::hide_others(Some("기타 가리기")),
             &PredefinedMenuItem::show_all(Some("모두 보기")),
             &PredefinedMenuItem::separator(),
-            &PredefinedMenuItem::quit(Some("b-terminal 종료")),
+            // 미리 정한 종료 항목은 NSApp이 바로 끝내 닫기 확인을 건너뛴다. 우리 quit 동작으로(⌘Q는 키 묶음)
+            &item("quit", "b-terminal 종료"),
         ],
     );
     let shell = Submenu::with_items(
@@ -169,6 +171,7 @@ mod tests {
             action_for("split_down"),
             Some(MenuCommand::Action(Action::NewSplit(Some(Direction::Down))))
         );
+        assert_eq!(action_for("quit"), Some(MenuCommand::Action(Action::Quit)));
         assert_eq!(action_for("nope"), None);
     }
 }
