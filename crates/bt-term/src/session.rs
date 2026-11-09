@@ -105,6 +105,21 @@ pub struct SpawnOptions {
     pub title_report: bool,
     /// 색 질의(OSC 4·10·11)에 답하는 꼴(설정 osc-color-report-format, #151)
     pub osc_color_report_format: bt_core::config::OscColorReportFormat,
+    /// ENQ(0x05)에 돌려보낼 글(설정 enquiry-response, 빈 값은 답하지 않음, #176)
+    pub enquiry_response: String,
+    /// 프로그램의 키보드 잠금(KAM, CSI 2 h)을 받을지(설정 vt-kam-allowed, 기본 끔, #176)
+    pub vt_kam_allowed: bool,
+    /// 프로그램의 창 크기 바꾸기 요청(CSI 8 t)을 앱에 알릴지(설정 vt-window-resize-allowed, 기본 끔, #176)
+    pub vt_window_resize_allowed: bool,
+    /// kitty 그림 저장 바이트 상한(설정 image-storage-limit). 없으면 기본(320000000), 0이면 그림을 쓰지 않는다
+    pub image_storage_limit: Option<u32>,
+}
+
+/// 창 크기 바꾸기 요청(CSI 8 ; 행 ; 열 t)이 가리키는 칸 수를 정한다. 인자와 결과는 모두 (열, 행)이다. 0은 그 쪽을 그대로 두고,
+/// 40열 × 10행보다 작으면 그 크기로 올리고(프로그램이 창을 줄여 출력을 숨기지 못하게), 화면(`max`)보다 크면 줄인다
+pub fn window_resize_target(req: (u16, u16), cur: (u16, u16), max: (u16, u16)) -> (u16, u16) {
+    let pick = |req: u16, cur: u16, min: u16, max: u16| if req == 0 { cur } else { req.max(min) }.min(max);
+    (pick(req.0, cur.0, 40, max.0), pick(req.1, cur.1, 10, max.1))
 }
 
 /// 새 출력이 왔을 때 맨 아래로 스크롤해야 하는가(켜져 있고 위로 올라가 있을 때만)
@@ -138,6 +153,11 @@ pub enum SessionEvent {
     CommandStarted(Option<String>),
     /// 셸 통합: 명령이 끝났다(OSC 133;D). 출력과 종료 코드
     CommandFinished(CommandRecord),
+    /// 프로그램이 창 크기를 바꾸라고 요청했다(CSI 8 ; 행 ; 열 t, 설정 vt-window-resize-allowed가 켜졌을 때만). 0은 그 쪽을 그대로 둔다
+    WindowResize {
+        rows: u16,
+        cols: u16,
+    },
     /// 프로세스가 끝났다. 종료 코드를 모르면 없다
     Exited(Option<u32>),
 }
@@ -333,9 +353,16 @@ pub struct Session {
     integrated: Arc<std::sync::atomic::AtomicBool>,
     /// 새 출력이 오면 맨 아래로 스크롤하는가(읽기 스레드가 본다)
     scroll_on_output: Arc<std::sync::atomic::AtomicBool>,
+    /// 프로그램이 키보드를 잠갔다(KAM, vt-kam-allowed가 켜졌을 때만). 잠겨 있으면 사람의 입력을 PTY에 쓰지 않는다
+    kam_locked: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl Session {
+    /// 프로그램이 키보드 잠금(KAM)을 걸어 두었는가
+    pub fn keyboard_locked(&self) -> bool {
+        self.kam_locked.load(std::sync::atomic::Ordering::Acquire)
+    }
+
     /// 이 탭의 셸이 셸 통합 표지를 보내는가(btctl run·프롬프트 이동·끝난 명령 알림이 쓴다)
     pub fn has_shell_integration(&self) -> bool {
         self.integrated.load(std::sync::atomic::Ordering::Acquire)
@@ -469,7 +496,11 @@ impl Session {
             parser: Processor::new(),
             prompts: std::collections::VecDeque::new(),
             search: None,
-            graphics: Default::default(),
+            graphics: crate::graphics::Graphics::with_limit(
+                options
+                    .image_storage_limit
+                    .map_or(crate::graphics::DEFAULT_STORE, |n| n as usize),
+            ),
             cell: (size.cell_width.max(1) as u32, size.cell_height.max(1) as u32),
             sel_end: None,
         }));
@@ -477,6 +508,8 @@ impl Session {
         let thread_integrated = integrated.clone();
         let scroll_on_output = Arc::new(std::sync::atomic::AtomicBool::new(options.scroll_on_output));
         let thread_scroll_on_output = scroll_on_output.clone();
+        let kam_locked = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let thread_kam_locked = kam_locked.clone();
         let exited = Arc::new(Mutex::new(None));
 
         let thread_inner = inner.clone();
@@ -484,6 +517,9 @@ impl Session {
         let thread_writer = writer.clone();
         let thread_title = title.clone();
         let title_report = options.title_report;
+        let enquiry_response = options.enquiry_response.clone();
+        let vt_kam_allowed = options.vt_kam_allowed;
+        let vt_window_resize_allowed = options.vt_window_resize_allowed;
         std::thread::Builder::new().name("bt-pty-read".into()).spawn(move || {
             let mut buf = vec![0u8; 64 * 1024];
             let mut scanner = Scanner::default();
@@ -545,7 +581,31 @@ impl Session {
                                             let _ = w.flush();
                                         }
                                     }
-                                    Signal::Erase { visible, scrollback } => g.graphics_erase(visible, scrollback),
+                                    Signal::Erase { visible, scrollback } => {
+                                        g.graphics_erase(visible, scrollback);
+                                        // 초기화(RIS)는 키보드 잠금도 푼다
+                                        if visible && scrollback {
+                                            thread_kam_locked.store(false, std::sync::atomic::Ordering::Release);
+                                        }
+                                    }
+                                    // ENQ: 설정한 글이 있을 때만 답한다(ADR-013). 글은 사용자가 정한 것이다
+                                    Signal::Enquiry => {
+                                        if !enquiry_response.is_empty() {
+                                            let mut w = thread_writer.lock();
+                                            let _ = w.write_all(enquiry_response.as_bytes());
+                                            let _ = w.flush();
+                                        }
+                                    }
+                                    Signal::Kam(on) => {
+                                        if vt_kam_allowed {
+                                            thread_kam_locked.store(on, std::sync::atomic::Ordering::Release);
+                                        }
+                                    }
+                                    Signal::WindowResize { rows, cols } => {
+                                        if vt_window_resize_allowed {
+                                            events.push(SessionEvent::WindowResize { rows, cols });
+                                        }
+                                    }
                                     // 제목 보고는 title-report가 켜졌을 때만 답한다(ADR-012)
                                     Signal::TitleReport => {
                                         if title_report {
@@ -596,6 +656,7 @@ impl Session {
             exited,
             integrated,
             scroll_on_output,
+            kam_locked,
         })
     }
 
@@ -655,7 +716,7 @@ impl Session {
     /// 사용자가 친 키·붙여넣기를 PTY에 쓴다. `scroll`이면 쓰기 전에 맨 아래로 돌린다
     /// (설정 scroll-to-bottom의 keystroke, #147)
     pub fn write_input(&self, bytes: &[u8], scroll: bool) {
-        if bytes.is_empty() {
+        if bytes.is_empty() || self.keyboard_locked() {
             return;
         }
         if scroll {
@@ -850,7 +911,10 @@ fn signal_event(sig: Signal) -> SessionEvent {
         | Signal::CommandLine(_)
         | Signal::Graphics(_)
         | Signal::Erase { .. }
-        | Signal::TitleReport => SessionEvent::Output,
+        | Signal::TitleReport
+        | Signal::Enquiry
+        | Signal::Kam(_)
+        | Signal::WindowResize { .. } => SessionEvent::Output,
     }
 }
 
@@ -1344,5 +1408,27 @@ mod tests {
         assert_eq!(adj(at(2, 3), End), at(9, 9));
         assert_eq!(adj(at(2, 3), BeginningOfLine), at(2, 0));
         assert_eq!(adj(at(2, 3), EndOfLine), at(2, 9));
+    }
+}
+
+#[cfg(test)]
+mod resize_tests {
+    use super::window_resize_target;
+
+    #[test]
+    fn zero_keeps_current_and_small_sizes_are_raised() {
+        let cur = (120, 40);
+        let max = (300, 100);
+        assert_eq!(window_resize_target((100, 30), cur, max), (100, 30));
+        assert_eq!(window_resize_target((0, 30), cur, max), (120, 30));
+        assert_eq!(window_resize_target((100, 0), cur, max), (100, 40));
+        assert_eq!(window_resize_target((0, 0), cur, max), cur);
+        // 40열 × 10행 아래는 그 크기로 올린다
+        assert_eq!(window_resize_target((2, 1), cur, max), (40, 10));
+        assert_eq!(window_resize_target((39, 9), cur, max), (40, 10));
+        assert_eq!(window_resize_target((40, 10), cur, max), (40, 10));
+        // 화면보다 크면 줄인다
+        assert_eq!(window_resize_target((9999, 9999), cur, max), max);
+        assert_eq!(window_resize_target((301, 50), cur, max), (300, 50));
     }
 }

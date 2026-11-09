@@ -4,6 +4,7 @@
 
 ## [아직 릴리스하지 않음]
 
+- VT 제한 키(Ghostty): `enquiry-response`(ENQ에 돌려보낼 글, 기본 빈 값이라 전처럼 답하지 않음), `vt-kam-allowed`·`vt-window-resize-allowed`(프로그램의 키보드 잠금·창 크기 바꾸기 요청, 기본 끔이라 전처럼 무시), `image-storage-limit`(kitty 그림 저장 상한, **기본이 256MiB에서 320000000바이트로 늘어남**, `0`이면 그림 프로토콜을 쓰지 않음), `clipboard-write-limit-bytes`(클립보드 쓰기 상한, 기본 64MiB라 전의 OSC 52 1MiB 고정이 그대로 이김), `clipboard-codepoint-map`(복사할 때 글자 바꾸기). 창 크기 바꾸기는 실제 창에서 아직 확인하지 않았고 나머지는 PTY 테스트와 순수 함수 테스트로만 확인했습니다. #176
 - 글꼴 고르기 키(Ghostty): `font-codepoint-map`(`U+3000-U+9FFF=글꼴`, 여러 번 쓰면 쌓임), `font-style`·`-bold`·`-italic`·`-bold-italic`(스타일 이름으로 꼴 고르기, `false`면 그 꼴을 끄고 보통 꼴로), `font-shaping-break`(`no-cursor`면 커서 밑에서도 합자 유지), `adjust-icon-height`(Nerd Font 아이콘 높이). 기본 동작은 그대로입니다. 실제 창에서는 아직 확인하지 않았고 픽셀 테스트로만 확인했습니다. #174
 - 명령 실행·창 수명 키(Ghostty): `initial-command`(첫 칸만), `wait-after-command`(끝나도 칸을 남기고 아무 키나 누르면 닫음), `abnormal-command-exit-runtime`(기본 250ms, 이보다 짧게 끝나면 칸을 남기고 안내), `initial-window`, `quit-after-last-window-closed`, `-delay`. 기본 동작이 달라집니다: macOS에서 마지막 창을 닫아도 앱이 남고(Ghostty 기본, 메뉴·btctl·전역 단축키로 새 창), 너무 빨리 끝난 칸은 닫히지 않고 안내가 남습니다. 실제 창에서는 아직 확인하지 않았고 순수 함수·PTY 테스트로만 확인했습니다. #178
 - 스크롤백·팔레트 키(Ghostty): `scrollback-limit-bytes`(기본 1000만, 스크롤백 기본은 전과 같은 1만 줄), `scrollback-limit-lines`(먼저 닿는 쪽), `palette-generate`·`palette-harmonious`(16~255번 색 만들기, 기본 끔), `palette = 100=#...`(16번 이후), `background-opacity-cells`(색 바탕 칸도 비침, 기본 끔). 옛 `scrollback-limit`·`scrollback-lines`는 그대로 받습니다. 실제 창에서는 아직 확인하지 않았습니다. #177
