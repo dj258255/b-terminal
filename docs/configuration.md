@@ -64,9 +64,13 @@ config-file = ?~/.config/b-terminal/local   # ?가 붙으면 없어도 된다
 | `copy-on-select` | `true` `false` `clipboard`(Ghostty 1.4 이름 `none` `primary` `both`도 받음) | `true` | 고르기를 마치면 클립보드로. macOS에는 선택 클립보드가 없어 `true`·`clipboard`·`both`는 같고(시스템 클립보드), `false`·`none`·`primary`면 복사하지 않습니다. Ghostty 1.4(아직 나오지 않은 판)는 macOS 기본을 `none`으로 바꿨지만, b-terminal은 지금 나온 판의 기본(켬)을 따릅니다 |
 | `clipboard-trim-trailing-spaces` | `true` / `false` | `true` | 복사하는 글(⌘C·`copy_to_clipboard`·고르면 복사)의 줄 끝 공백과 탭을 지웁니다. 줄 가운데 공백은 그대로이고, 프로그램이 OSC 52로 쓰는 글에는 적용하지 않습니다 |
 | `right-click-action` | `context-menu` `paste` `copy` `copy-or-paste` `ignore` | `context-menu` | 오른쪽 클릭 동작. `copy-or-paste`는 고른 글이 있으면 복사, 없으면 붙여넣기(붙여넣기 보호를 거칩니다). `context-menu`는 값만 받고 하는 일이 없습니다(메뉴가 없음). 마우스 보고 모드의 프로그램에는 이 키와 상관없이 클릭을 보냅니다 |
+| `window-inherit-working-directory` / `tab-inherit-working-directory` / `split-inherit-working-directory` | `true` `false` | `true` | 새 창·탭·분할이 고른 칸의 작업 폴더를 이어받습니다(Ghostty와 같음). 켜져 있으면 `working-directory`보다 앞서고, 끄면 `working-directory`를 씁니다. 이어받을 폴더를 알 수 없으면 `working-directory`입니다. 전에는 `working-directory = inherit`일 때만 이어받았는데, 이제 `home`·경로여도 이어받습니다 |
+| `window-inherit-font-size` | `true` `false` | `true` | 값만 받고 하는 일이 없습니다. b-terminal은 글자 크기가 앱 전체 하나라 새 창은 늘 지금 크기(⌘+/⌘-로 바꾼 값)를 씁니다. `false`(새 창은 `font-size`로)를 지키려면 창마다 글자 크기를 두어야 해서 이번에는 하지 않았습니다 |
+| `window-new-tab-position` | `current` `end` | `current` | 새 탭을 둘 자리. `current`는 지금 탭 바로 뒤, `end`는 맨 끝. 전에는 늘 맨 끝이었습니다 |
+| `window-show-tab-bar` | `auto` `always` `never` | `auto` | 탭 막대를 언제 보일지. `auto`는 탭이 둘 이상일 때만, `always`는 하나여도, `never`는 안 보임(탭은 키·팔레트로 다룸). 막대가 없는 동안 진행 막대는 칸 맨 위에 그립니다 |
 | `mouse-hide-while-typing` | `true` / `false` | `false` | |
 | `command` | 명령 | 로그인 셸 | `/bin/sh -c "exec <명령>"`으로 띄웁니다 |
-| `working-directory` | `home` `inherit` 경로 | `inherit` | 새 탭은 `inherit`일 때 지금 탭의 폴더 |
+| `working-directory` | `home` `inherit` 경로 | `inherit` | 첫 창의 폴더. 새 창·탭·분할은 위의 `*-inherit-working-directory`가 켜져 있으면 지금 칸의 폴더를 이어받음 |
 | `title` | 글 | 셸이 보낸 제목 | 창 제목을 고정 |
 | `keybind` | `트리거=동작` | 아래 표 | 아래 "키 묶음" |
 | `command-palette-entry` | `title:…,action:…,description:…` | 기본 항목 | 명령 팔레트(Ghostty 1.2)에 항목을 더합니다. 여러 줄이 쌓이고, 빈 값(`command-palette-entry =`)은 기본 항목과 그 앞에 쓴 항목을 지웁니다. 아래 "팔레트 항목" |

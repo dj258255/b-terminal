@@ -44,6 +44,58 @@ pub enum RightClickAction {
     Ignore,
 }
 
+/// 새 칸을 어떤 길로 여는가. 폴더 이어받기 키(`*-inherit-working-directory`)를 가른다
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SpawnKind {
+    Window,
+    Tab,
+    Split,
+}
+
+/// `window-new-tab-position`(Ghostty): 새 탭을 둘 자리
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum WindowNewTabPosition {
+    /// 지금 탭 바로 뒤(기본)
+    #[default]
+    Current,
+    /// 탭 목록 맨 끝
+    End,
+}
+
+impl WindowNewTabPosition {
+    /// 탭이 `len`개이고 `active`번째를 보고 있을 때 새 탭을 끼울 자리
+    pub fn insert_index(self, active: usize, len: usize) -> usize {
+        match self {
+            WindowNewTabPosition::End => len,
+            WindowNewTabPosition::Current if len == 0 => 0,
+            WindowNewTabPosition::Current => (active + 1).min(len),
+        }
+    }
+}
+
+/// `window-show-tab-bar`(Ghostty): 탭 막대를 언제 보이는가
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum WindowShowTabBar {
+    /// 탭이 하나여도 보인다
+    Always,
+    /// 탭이 둘 이상일 때만(기본)
+    #[default]
+    Auto,
+    /// 보이지 않는다
+    Never,
+}
+
+impl WindowShowTabBar {
+    /// 탭이 `tab_count`개일 때 탭 막대를 그리는가
+    pub fn visible(self, tab_count: usize) -> bool {
+        match self {
+            WindowShowTabBar::Always => tab_count > 0,
+            WindowShowTabBar::Auto => tab_count > 1,
+            WindowShowTabBar::Never => false,
+        }
+    }
+}
+
 /// 색 질의(OSC 4·10·11)에 답하는 꼴(Ghostty `osc-color-report-format`, #151)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum OscColorReportFormat {
@@ -142,6 +194,14 @@ pub struct Config {
     pub clipboard_trim_trailing_spaces: bool,
     /// 오른쪽 클릭 동작(Ghostty `right-click-action`). 마우스 보고 모드의 프로그램에는 항상 클릭을 보낸다
     pub right_click_action: RightClickAction,
+    /// 새 창·탭·분할이 고른 칸의 폴더를 이어받는가(Ghostty, 모두 기본 켬). 켜면 `working-directory`보다 앞선다
+    pub window_inherit_working_directory: bool,
+    pub tab_inherit_working_directory: bool,
+    pub split_inherit_working_directory: bool,
+    /// 받기만 한다. 글자 크기가 앱 전체 하나라 새 창은 늘 지금 크기를 쓴다(docs/configuration.md)
+    pub window_inherit_font_size: bool,
+    pub window_new_tab_position: WindowNewTabPosition,
+    pub window_show_tab_bar: WindowShowTabBar,
     pub mouse_hide_while_typing: bool,
     pub command: Option<String>,
     pub working_directory: WorkingDirectory,
@@ -538,6 +598,12 @@ impl Default for Config {
             copy_on_select: CopyOnSelect::True,
             clipboard_trim_trailing_spaces: true,
             right_click_action: RightClickAction::ContextMenu,
+            window_inherit_working_directory: true,
+            tab_inherit_working_directory: true,
+            split_inherit_working_directory: true,
+            window_inherit_font_size: true,
+            window_new_tab_position: WindowNewTabPosition::Current,
+            window_show_tab_bar: WindowShowTabBar::Auto,
             mouse_hide_while_typing: false,
             command: None,
             working_directory: WorkingDirectory::Inherit,
@@ -883,6 +949,17 @@ pub fn bundled_theme_names() -> impl Iterator<Item = &'static str> {
 }
 
 impl Config {
+    /// 이 길로 새 칸을 열 때 고른 칸의 폴더를 이어받는가
+    pub fn inherits_cwd(&self, kind: SpawnKind) -> bool {
+        match kind {
+            SpawnKind::Window => self.window_inherit_working_directory,
+            SpawnKind::Tab => self.tab_inherit_working_directory,
+            SpawnKind::Split => self.split_inherit_working_directory,
+        }
+    }
+}
+
+impl Config {
     /// 기본값 → Ghostty 설정 → b-terminal 설정 → 덧붙인 파일 순서로 읽는다. `dark`는 `theme = light:…,dark:…`에서 고를 쪽
     pub fn load(extra: Option<&Path>, dark: bool) -> Self {
         let mut cfg = Config::default();
@@ -1159,6 +1236,33 @@ impl Config {
                 "copy" => self.right_click_action = RightClickAction::Copy,
                 "copy-or-paste" => self.right_click_action = RightClickAction::CopyOrPaste,
                 "ignore" => self.right_click_action = RightClickAction::Ignore,
+                _ => bad(warnings),
+            },
+            "window-inherit-working-directory" => match parse_bool(v) {
+                Some(b) => self.window_inherit_working_directory = b,
+                None => bad(warnings),
+            },
+            "tab-inherit-working-directory" => match parse_bool(v) {
+                Some(b) => self.tab_inherit_working_directory = b,
+                None => bad(warnings),
+            },
+            "split-inherit-working-directory" => match parse_bool(v) {
+                Some(b) => self.split_inherit_working_directory = b,
+                None => bad(warnings),
+            },
+            "window-inherit-font-size" => match parse_bool(v) {
+                Some(b) => self.window_inherit_font_size = b,
+                None => bad(warnings),
+            },
+            "window-new-tab-position" => match v {
+                "current" => self.window_new_tab_position = WindowNewTabPosition::Current,
+                "end" => self.window_new_tab_position = WindowNewTabPosition::End,
+                _ => bad(warnings),
+            },
+            "window-show-tab-bar" => match v {
+                "always" => self.window_show_tab_bar = WindowShowTabBar::Always,
+                "auto" => self.window_show_tab_bar = WindowShowTabBar::Auto,
+                "never" => self.window_show_tab_bar = WindowShowTabBar::Never,
                 _ => bad(warnings),
             },
             "mouse-hide-while-typing" => {
@@ -1500,6 +1604,36 @@ impl Config {
             }
             .into(),
         );
+        push(
+            "window-inherit-working-directory",
+            self.window_inherit_working_directory.to_string(),
+        );
+        push(
+            "tab-inherit-working-directory",
+            self.tab_inherit_working_directory.to_string(),
+        );
+        push(
+            "split-inherit-working-directory",
+            self.split_inherit_working_directory.to_string(),
+        );
+        push("window-inherit-font-size", self.window_inherit_font_size.to_string());
+        push(
+            "window-new-tab-position",
+            match self.window_new_tab_position {
+                WindowNewTabPosition::Current => "current",
+                WindowNewTabPosition::End => "end",
+            }
+            .into(),
+        );
+        push(
+            "window-show-tab-bar",
+            match self.window_show_tab_bar {
+                WindowShowTabBar::Always => "always",
+                WindowShowTabBar::Auto => "auto",
+                WindowShowTabBar::Never => "never",
+            }
+            .into(),
+        );
         push("mouse-hide-while-typing", self.mouse_hide_while_typing.to_string());
         for k in &self.keybinds {
             push("keybind", k.clone());
@@ -1668,6 +1802,78 @@ fn parse_text(text: &str, origin: &Path) -> Vec<Entry> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn inherit_and_tab_keys() {
+        let d = Config::default();
+        assert!(d.window_inherit_working_directory && d.tab_inherit_working_directory);
+        assert!(d.split_inherit_working_directory && d.window_inherit_font_size);
+        assert_eq!(d.window_new_tab_position, WindowNewTabPosition::Current);
+        assert_eq!(d.window_show_tab_bar, WindowShowTabBar::Auto);
+        let c = Config::from_text(
+            "window-inherit-working-directory = false\ntab-inherit-working-directory = false\nsplit-inherit-working-directory = false\nwindow-inherit-font-size = false\nwindow-new-tab-position = end\nwindow-show-tab-bar = always\n",
+            true,
+        );
+        assert!(c.warnings.is_empty(), "{:?}", c.warnings);
+        assert!(!c.window_inherit_working_directory && !c.tab_inherit_working_directory);
+        assert!(!c.split_inherit_working_directory && !c.window_inherit_font_size);
+        assert_eq!(c.window_new_tab_position, WindowNewTabPosition::End);
+        assert_eq!(c.window_show_tab_bar, WindowShowTabBar::Always);
+        assert_eq!(
+            Config::from_text("window-show-tab-bar = never\n", true).window_show_tab_bar,
+            WindowShowTabBar::Never
+        );
+        assert_eq!(
+            Config::from_text("window-show-tab-bar = hidden\n", true).warnings.len(),
+            1
+        );
+        assert_eq!(
+            Config::from_text("window-new-tab-position = start\n", true)
+                .warnings
+                .len(),
+            1
+        );
+        assert_eq!(
+            Config::from_text("tab-inherit-working-directory = x\n", true)
+                .warnings
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn inherit_cwd_per_kind() {
+        let mut c = Config::default();
+        assert!(
+            c.inherits_cwd(SpawnKind::Window) && c.inherits_cwd(SpawnKind::Tab) && c.inherits_cwd(SpawnKind::Split)
+        );
+        c.tab_inherit_working_directory = false;
+        assert!(!c.inherits_cwd(SpawnKind::Tab));
+        assert!(c.inherits_cwd(SpawnKind::Window) && c.inherits_cwd(SpawnKind::Split));
+        c.window_inherit_working_directory = false;
+        c.split_inherit_working_directory = false;
+        assert!(!c.inherits_cwd(SpawnKind::Window) && !c.inherits_cwd(SpawnKind::Split));
+    }
+
+    #[test]
+    fn new_tab_position_index() {
+        use WindowNewTabPosition::{Current, End};
+        assert_eq!(Current.insert_index(0, 3), 1);
+        assert_eq!(Current.insert_index(1, 3), 2);
+        assert_eq!(Current.insert_index(2, 3), 3);
+        assert_eq!(Current.insert_index(0, 0), 0);
+        assert_eq!(End.insert_index(0, 3), 3);
+        assert_eq!(End.insert_index(2, 3), 3);
+        assert_eq!(End.insert_index(0, 0), 0);
+    }
+
+    #[test]
+    fn tab_bar_visibility() {
+        use WindowShowTabBar::{Always, Auto, Never};
+        assert!(!Auto.visible(1) && Auto.visible(2));
+        assert!(Always.visible(1) && Always.visible(5));
+        assert!(!Never.visible(1) && !Never.visible(5));
+    }
 
     #[test]
     fn clipboard_keys() {
