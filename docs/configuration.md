@@ -53,6 +53,9 @@ config-file = ?~/.config/b-terminal/local   # ?가 붙으면 없어도 된다
 | `window-padding-balance` | `true` `false` | `false` | 창 크기가 칸 크기로 나누어떨어지지 않아 남는 자리를 네 변에 고르게 나눕니다(끄면 오른쪽·아래에 몰림) |
 | `window-padding-color` | `background` `extend` `extend-always` | `background` | 여백 색. `extend`는 가장 가까운 칸의 바탕색으로 늘이되, 주 화면에서 가장 가까운 줄에 기본 바탕색 칸·프롬프트·powerline 꼭 맞춤 글자가 있으면 위아래로는 늘이지 않습니다(Ghostty와 같은 규칙). `extend-always`는 따지지 않고 늘입니다 |
 | `window-width` / `window-height` | 셀 수 | 없음 | 둘 다 있을 때 처음 창 크기 |
+| `maximize` | `true` `false` | `false` | 새 창을 최대화로 띄웁니다(Ghostty처럼 첫 창만이 아니라 새 창 모두. 탭·분할·퀵 터미널 창은 해당 없음). 창 상태 복원으로 되살린 창은 복원한 크기가 이깁니다 |
+| `fullscreen` | `true` `false` | `false` | 새 창을 전체 화면으로 띄웁니다. `maximize`와 같이 켜면 전체 화면이 이깁니다. Ghostty의 `non-native*` 값도 받지만 모두 같은 전체 화면입니다. 퀵 터미널 창과 되살린 창에는 적용하지 않습니다 |
+| `window-position-x` / `window-position-y` | 정수(점) | 없음 | 첫 창의 자리. 주 화면의 보이는 영역(macOS는 메뉴 막대 아래) 왼쪽 위에서 잰 값이고, 둘 다 있어야 쓰며 하나만 있으면 무시합니다(Ghostty와 같음). 창 상태 복원으로 되살린 창은 복원한 자리가 이깁니다 |
 | `macos-option-as-alt` | `true` `false` `left` `right` | `false` | Ghostty 기본과 같게 끔 |
 | `scrollback-limit` | 바이트 | 1000만 | Ghostty 값. 줄 하나를 약 1KB로 보고 줄 수로 바꿉니다(100~20만 줄) |
 | `scrollback-lines` | 줄 수 | | b-terminal 키. 줄 수로 바로 |
@@ -154,6 +157,8 @@ keybind = ctrl+a>ctrl+a=text:\x01     # 앞 키 자체를 보내고 싶을 때
 | `scroll_to_top` / `scroll_to_bottom` | 맨 위 / 맨 아래 | `shift+home` `super+home` / `shift+end` `super+end` |
 | `scroll_page_lines:N` / `scroll_page_fractional:F` | N줄 / 화면의 F배만큼 스크롤(양수면 아래로, 음수면 위로) | (없음) |
 | `toggle_fullscreen` | 전체 화면 켜고 끄기 | `super+ctrl+f` |
+| `toggle_maximize` | 지금 창 최대화 켜고 끄기(Ghostty와 같이 기본 키 없음) | (없음) |
+| `toggle_window_float_on_top` | 지금 창을 다른 창 위에 항상 띄우기 켜고 끄기(Ghostty는 macOS만 구현) | (없음) |
 | `start_search` / `end_search` | 찾기 막대 열기 / 닫기. 막대에서 글을 치면 바로 찾고, Enter는 위로·Shift-Enter는 아래로, Esc로 닫습니다 | `super+f` / (Esc) |
 | `navigate_search:next` / `navigate_search:previous` | 위(오래된 쪽) / 아래 맞은 곳으로 | `super+g` / `super+shift+g` |
 | `toggle_command_palette` | 명령 팔레트 열기·닫기 | `super+shift+p` |

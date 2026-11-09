@@ -349,6 +349,8 @@ struct Gfx {
 /// 창 하나의 상태(#36). 칸(셸)은 모든 창이 App에서 함께 든다
 struct Win {
     gfx: Option<Gfx>,
+    /// 항상 위에 띄우는 중(`toggle_window_float_on_top`, #148)
+    float_on_top: bool,
     tabs: Vec<TabGroup>,
     /// 보고 있는 탭(tabs의 자리)
     active: usize,
@@ -399,6 +401,7 @@ impl Win {
     fn new() -> Self {
         Self {
             gfx: None,
+            float_on_top: false,
             tabs: Vec::new(),
             active: 0,
             preedit: String::new(),
@@ -1964,6 +1967,18 @@ impl App {
                         .set_fullscreen((!on).then_some(winit::window::Fullscreen::Borderless(None)));
                 }
             }
+            Action::ToggleMaximize => {
+                if let Some(g) = &self.w.gfx {
+                    g.window.set_maximized(!g.window.is_maximized());
+                }
+            }
+            Action::ToggleFloatOnTop => {
+                if let Some(g) = &self.w.gfx {
+                    self.w.float_on_top = !self.w.float_on_top;
+                    g.window
+                        .set_window_level(crate::startup::window_level(self.w.float_on_top));
+                }
+            }
             Action::ScrollTop => {
                 if let Some(t) = self.active_pane() {
                     t.session.scroll(i32::MAX / 2);
@@ -2166,6 +2181,49 @@ impl App {
                 let w = m.width * cols as u32 + px(self.config.padding_x.0) + px(self.config.padding_x.1);
                 let h = m.height * rows as u32 + px(self.config.padding_y.0) + px(self.config.padding_y.1);
                 let _ = g.window.request_inner_size(PhysicalSize::new(w, h));
+            }
+        }
+    }
+
+    /// 설정의 maximize·fullscreen을 지금 창에 적용한다(#148). 퀵 창과 되살린 창에는 부르지 않는다.
+    /// `first`면 window-position-x·y도 적용한다(첫 창만)
+    fn apply_start_window(&self, event_loop: &ActiveEventLoop, first: bool) {
+        let Some(g) = &self.w.gfx else { return };
+        match crate::startup::start_mode(self.config.maximize, self.config.fullscreen, false) {
+            crate::startup::StartMode::Normal => {}
+            crate::startup::StartMode::Maximized => g.window.set_maximized(true),
+            crate::startup::StartMode::Fullscreen => g
+                .window
+                .set_fullscreen(Some(winit::window::Fullscreen::Borderless(None))),
+        }
+        if first {
+            if let Some(pos) =
+                crate::startup::configured_position(self.config.window_position_x, self.config.window_position_y)
+            {
+                let primary = event_loop.primary_monitor();
+                // macOS는 Ghostty처럼 보이는 화면 영역(메뉴 막대 아래)의 왼쪽 위가 기준이다(점 단위)
+                #[cfg(target_os = "macos")]
+                if let Some(m) = &primary {
+                    let sf = m.scale_factor();
+                    let screen = crate::quick::Rect {
+                        x: m.position().x as f64 / sf,
+                        y: m.position().y as f64 / sf,
+                        w: m.size().width as f64 / sf,
+                        h: m.size().height as f64 / sf,
+                    };
+                    let area = crate::quick::visible_area(screen, screen.h).unwrap_or(screen);
+                    g.window.set_outer_position(winit::dpi::LogicalPosition::new(
+                        area.x + pos.0 as f64,
+                        area.y + pos.1 as f64,
+                    ));
+                    return;
+                }
+                // 그 밖에는 주 화면 왼쪽 위에서 잰 점 좌표를 물리 픽셀로 바꿔 놓는다
+                let (origin, scale) = primary
+                    .map(|m| ((m.position().x, m.position().y), m.scale_factor()))
+                    .unwrap_or(((0, 0), self.scale));
+                let (x, y) = crate::startup::physical_position(pos, origin, scale);
+                g.window.set_outer_position(PhysicalPosition::new(x, y));
             }
         }
     }
@@ -2484,6 +2542,7 @@ impl App {
         self.last_focused = Some(id);
         if !quick {
             self.apply_initial_size();
+            self.apply_start_window(event_loop, false);
         }
         let tab = self.open_tab(options);
         if tab.is_none() {
@@ -3237,6 +3296,8 @@ impl ApplicationHandler<UserEvent> for App {
             {
                 return;
             }
+            // 되살린 창은 복원한 크기·자리가 이기므로 여기(복원하지 않는 경우)에서만 적용한다
+            self.apply_start_window(event_loop, true);
             if first.program.is_none() {
                 let d = self.default_spawn();
                 first.program = d.program;
