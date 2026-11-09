@@ -1350,23 +1350,29 @@ impl Fonts {
     }
 
     /// 글자 하나가 나아가는 폭(px). 제목처럼 셀 격자 밖에 그릴 때 쓴다. 그리는 글리프가 어느 글꼴에서 오는지를 따른다:
-    /// 색 이모지와 대체 글꼴의 넓은 글자는 두 칸 폭(글리프를 그 폭에 맞춰 그리므로), 그 밖에는 글꼴이 정한 advance
+    /// 고정폭 제목에서 색 이모지와 대체 글꼴의 넓은 글자는 두 칸 폭. 비례폭 제목에서는 색 이모지는 그려지는 글리프 폭,
+    /// 대체 글꼴의 글자는 그 글꼴의 advance. 그 밖에는 글꼴이 정한 advance
     pub fn advance(&mut self, ch: char) -> f32 {
         let cells = crate::text::char_cells(ch);
         if cells == 0 {
             return 0.0;
         }
         let slot = (self.metrics.width * cells as u32) as f32;
-        if is_emoji(ch) && self.glyph(ch, FontStyle::Regular).is_some_and(|g| g.color.is_some()) {
-            return slot;
+        let primary_adv = |s: &Self, c: char| s.regular[0].advance(c, s.px);
+        // 고정폭 제목 글꼴이면 터미널처럼 두 칸, 비례폭이면 그려지는 글리프(대체 글꼴)의 폭을 따른다
+        // (두 칸이면 글자 사이가 벌어진다)
+        let monospace = (primary_adv(self, 'i') - primary_adv(self, 'M')).abs() < 0.5;
+        if is_emoji(ch) {
+            if let Some(g) = self.glyph(ch, FontStyle::Regular).filter(|g| g.color.is_some()) {
+                // 색 글리프는 두 칸 × 줄 높이 안으로 줄어 그려진다. 비례폭이면 그 폭만큼만 나아가 앞뒤 여백이 넓지 않다
+                return if monospace { slot } else { g.width as f32 };
+            }
         }
         let primary = &self.regular[0];
         if primary.has(ch) {
             return primary.advance(ch, self.px);
         }
         let pua = is_private_use(ch);
-        // 고정폭 제목 글꼴이면 터미널처럼 두 칸, 비례폭이면 대체 글꼴의 폭(두 칸이면 글자 사이가 벌어진다)
-        let monospace = (primary.advance('i', self.px) - primary.advance('M', self.px)).abs() < 0.5;
         match self.fallbacks.iter().find(|f| (!pua || f.pua) && f.font.has(ch)) {
             Some(_) if cells == 2 && monospace => slot,
             Some(fb) => fb.font.advance(ch, self.px),
@@ -1441,6 +1447,38 @@ mod title_font_tests {
             let a = t.advance('한');
             assert!(a < 2.0 * cell - 0.5, "두 칸({})보다 좁아야 한다: {a}", 2.0 * cell);
             assert!(a + 0.5 >= g.width as f32, "글리프 폭({})보다 넓어야 한다: {a}", g.width);
+        }
+    }
+
+    #[test]
+    fn proportional_title_color_emoji_advances_by_glyph_width() {
+        // 비례폭 제목에서 색 이모지는 두 칸 폭이 아니라 그려지는 글리프 폭만큼 나아간다(#252). 고정폭이면 두 칸
+        let Ok(s) = Fonts::new_with_title(&FontConfig::default(), Some("Helvetica")) else {
+            return;
+        };
+        let Some(mut t) = s.title else { return };
+        let Some(g) = t.glyph('😀', FontStyle::Regular) else {
+            return;
+        };
+        if g.color.is_none() {
+            return;
+        }
+        let a = t.advance('😀');
+        let slot = 2.0 * t.metrics().width as f32;
+        assert!(
+            a + 0.5 >= g.width as f32,
+            "글리프 폭({})보다 좁으면 겹친다: {a}",
+            g.width
+        );
+        assert!(
+            a <= g.width as f32 + 0.5,
+            "글리프 폭({})보다 넓으면 여백이 생긴다: {a} (두 칸 {slot})",
+            g.width
+        );
+        // 고정폭(터미널 글꼴) 경로는 그대로 두 칸
+        let mut f = Fonts::new(&FontConfig::default()).unwrap();
+        if f.glyph('😀', FontStyle::Regular).is_some_and(|g| g.color.is_some()) {
+            assert_eq!(f.advance('😀'), 2.0 * f.metrics().width as f32);
         }
     }
 }
