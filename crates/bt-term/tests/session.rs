@@ -607,3 +607,78 @@ fn big_startup_input_does_not_block_spawn() {
     let (_s, _rx) = sh_with("sleep 3", |o| o.input = vec![b'a'; 1 << 20]);
     assert!(t.elapsed() < Duration::from_secs(2), "{:?}", t.elapsed());
 }
+
+/// 100줄을 찍고 끝나는 칸(5줄 화면): 스크롤백이 쌓인다
+fn long_output() -> Session {
+    let (s, rx) = sh(
+        "i=1; while [ $i -le 60 ]; do printf 'L%d\\n' $i; i=$((i+1)); done",
+        GridSize::new(20, 5),
+    );
+    wait_exit(&rx);
+    wait_until(&s, |t| t.contains("L60"));
+    s
+}
+
+fn top_row(s: &Session) -> String {
+    s.snapshot().row_text(0)
+}
+
+#[test]
+fn scroll_to_row_counts_from_the_top_of_the_scrollback() {
+    let s = long_output();
+    s.scroll_to_row(0);
+    assert_eq!(top_row(&s), "L1", "0은 스크롤백 맨 위");
+    s.scroll_to_row(10);
+    assert_eq!(top_row(&s), "L11");
+    s.scroll_to_row(0);
+    s.scroll_to_row(30);
+    assert_eq!(top_row(&s), "L31", "위에서 아래로도 간다");
+    s.scroll_to_row(1_000_000);
+    assert!(s.snapshot().text().contains("L60"), "범위를 넘으면 맨 아래");
+}
+
+#[test]
+fn scroll_to_selection_shows_the_selection_and_does_nothing_without_one() {
+    let s = long_output();
+    s.scroll(1000);
+    assert_eq!(top_row(&s), "L1");
+    assert!(!s.scroll_to_selection(), "고른 것이 없으면 거짓");
+    assert_eq!(top_row(&s), "L1", "고른 것이 없으면 움직이지 않는다");
+
+    s.scroll_to_row(26);
+    assert_eq!(top_row(&s), "L27");
+    s.select_start(0, 0, bt_term::SelectKind::Simple);
+    s.select_update(2, 0);
+    s.scroll(1000);
+    assert_eq!(top_row(&s), "L1");
+    assert!(s.scroll_to_selection());
+    assert_eq!(top_row(&s), "L27", "고른 줄이 화면 맨 위에 온다");
+
+    // 이미 보이면 움직이지 않는다
+    s.scroll(1);
+    let before = top_row(&s);
+    assert!(s.scroll_to_selection());
+    assert_eq!(top_row(&s), before);
+}
+
+#[test]
+fn reset_is_ris_screen_scrollback_and_modes() {
+    let (s, rx) = sh(
+        "printf '\\033[?1h\\033[31mhello\\n\\n\\n\\n\\n\\n\\n'",
+        GridSize::new(20, 5),
+    );
+    wait_exit(&rx);
+    assert!(s.modes().app_cursor, "전제: 커서 키 모드가 켜져 있다");
+    s.scroll(1000);
+    assert_eq!(top_row(&s), "hello", "전제: hello가 스크롤백에 있다");
+    s.scroll_to_bottom();
+    s.select_start(0, 0, bt_term::SelectKind::Simple);
+    s.reset();
+    let screen = s.snapshot();
+    assert!(!screen.text().contains("hello"), "화면이 비었다");
+    assert_eq!((screen.cursor.col, screen.cursor.row), (0, 0), "커서가 맨 위로");
+    assert!(!s.modes().app_cursor, "모드가 기본으로");
+    assert_eq!(s.selection_text(), None, "고른 것이 풀렸다");
+    s.scroll(1000);
+    assert!(!s.snapshot().text().contains("hello"), "스크롤백도 비었다");
+}

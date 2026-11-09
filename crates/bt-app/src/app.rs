@@ -498,6 +498,17 @@ fn search_status_text(query: &str, status: Option<bt_term::search::SearchStatus>
     }
 }
 
+/// 찾기 막대에 넣을 글: 첫 줄만, 제어 문자를 지우고, 256자까지
+fn search_text(raw: &str) -> String {
+    raw.lines()
+        .next()
+        .unwrap_or("")
+        .chars()
+        .filter(|c| !c.is_control())
+        .take(256)
+        .collect()
+}
+
 /// 그릴 칸 하나(다시 그릴 때 잠깐 쓴다)
 struct PaneView {
     id: u64,
@@ -2186,6 +2197,30 @@ impl App {
         self.request_redraw();
     }
 
+    /// 찾을 글을 정해 찾기를 시작한다(`search:글`·`search_selection`). 막대가 없으면 열고, 있으면 글을 바꾼다.
+    /// 빈 글이면 찾기만 취소하고 막대는 닫지 않는다(Ghostty). 막대가 없는데 빈 글이면 아무것도 하지 않는다
+    fn search_with(&mut self, raw: &str) {
+        let text = search_text(raw);
+        if text.is_empty() && self.w.search.is_none() {
+            return;
+        }
+        let Some(id) = self.focused_id() else { return };
+        if self.w.search.as_ref().is_some_and(|s| s.pane != id) {
+            self.end_search();
+        }
+        match self.w.search.as_mut() {
+            Some(s) => s.query = text,
+            None => {
+                self.w.search = Some(SearchBar {
+                    pane: id,
+                    query: text,
+                    status: None,
+                })
+            }
+        }
+        self.search_query_changed();
+    }
+
     /// 찾기 막대를 닫고 강조를 지운다. 화면 자리는 그대로 둔다
     fn end_search(&mut self) {
         if let Some(s) = self.w.search.take() {
@@ -2344,9 +2379,11 @@ impl App {
     fn can_perform(&mut self, action: &Action) -> bool {
         let has_selection = |s: &Self| s.active_pane().and_then(|t| t.session.selection_text()).is_some();
         match action {
-            Action::Copy | Action::AdjustSelection(_) | Action::WriteFile(crate::keymap::FileSource::Selection, _) => {
-                has_selection(self)
-            }
+            Action::Copy
+            | Action::AdjustSelection(_)
+            | Action::ScrollToSelection
+            | Action::SearchSelection
+            | Action::WriteFile(crate::keymap::FileSource::Selection, _) => has_selection(self),
             Action::Paste => self
                 .clipboard
                 .as_mut()
@@ -2607,6 +2644,28 @@ impl App {
                 }
             }
             Action::ReloadConfig => self.reload_config(),
+            Action::Reset => {
+                if let Some(t) = self.active_pane() {
+                    t.session.reset();
+                }
+            }
+            Action::ScrollToRow(row) => {
+                if let Some(t) = self.active_pane() {
+                    t.session.scroll_to_row(row);
+                }
+            }
+            Action::ScrollToSelection => {
+                if let Some(t) = self.active_pane() {
+                    t.session.scroll_to_selection();
+                }
+            }
+            Action::Search(text) => self.search_with(&text),
+            Action::SearchSelection => {
+                if let Some(text) = self.active_pane().and_then(|t| t.session.selection_text()) {
+                    self.search_with(&text);
+                }
+            }
+            Action::SetFontSize(size) => self.set_font_size(size),
             Action::JumpToPrompt(dir) => {
                 if let Some(t) = self.active_pane() {
                     if !t.session.jump_to_prompt(dir) && !t.session.has_shell_integration() {
@@ -5333,5 +5392,15 @@ mod tests {
             "빈 글은 아무것도 보이지 않는다"
         );
         assert_eq!(search_status_text("x", None), "");
+    }
+
+    #[test]
+    fn search_text_is_first_line_without_controls_and_capped() {
+        assert_eq!(search_text("error"), "error");
+        assert_eq!(search_text("first\nsecond"), "first", "여러 줄이면 첫 줄만");
+        assert_eq!(search_text("a\x1b[31mb\tc"), "a[31mbc", "제어 문자는 지운다");
+        assert_eq!(search_text(""), "");
+        let long = "가".repeat(300);
+        assert_eq!(search_text(&long).chars().count(), 256);
     }
 }

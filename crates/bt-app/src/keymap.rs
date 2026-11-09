@@ -108,6 +108,18 @@ pub enum Action {
     SetWindowTitle(String),
     /// 지금 칸의 터미널 제목을 클립보드로 복사한다(Ghostty `copy_title_to_clipboard`, #207)
     CopyTitle,
+    /// 터미널을 초기화한다(Ghostty `reset`, VT의 RIS와 같다)
+    Reset,
+    /// 스크롤백 맨 위를 0으로 센 줄이 화면 맨 위에 오게(Ghostty `scroll_to_row:N`)
+    ScrollToRow(usize),
+    /// 고른 곳이 보이게 스크롤(Ghostty `scroll_to_selection`)
+    ScrollToSelection,
+    /// 그 글로 찾기를 시작한다. 이미 찾는 중이면 바꾸고, 빈 글이면 찾기를 취소한다(막대는 둔다, Ghostty `search:글`)
+    Search(String),
+    /// 고른 글로 찾기(Ghostty `search_selection`)
+    SearchSelection,
+    /// 글자 크기를 그 값(pt)으로(Ghostty `set_font_size:N`)
+    SetFontSize(f32),
 }
 
 /// 파일로 쓸 글
@@ -371,6 +383,22 @@ pub fn parse_action(s: &str) -> Result<Option<Action>, String> {
         "text" => Action::Text(unescape(arg.unwrap_or(""))),
         "csi" => Action::Text(format!("\x1b[{}", arg.unwrap_or(""))),
         "esc" => Action::Text(format!("\x1b{}", arg.unwrap_or(""))),
+        "reset" => Action::Reset,
+        "scroll_to_row" => Action::ScrollToRow(
+            arg.and_then(|a| a.trim().parse().ok())
+                .ok_or("scroll_to_row:줄 번호(스크롤백 맨 위가 0)")?,
+        ),
+        "scroll_to_selection" => Action::ScrollToSelection,
+        // 글은 그대로 받는다(Ghostty처럼 이스케이프를 풀지 않는다). 빈 글은 찾기 취소
+        "search" => Action::Search(arg.ok_or("search:찾을 글(비우면 찾기 취소)")?.to_string()),
+        "search_selection" => Action::SearchSelection,
+        "set_font_size" => Action::SetFontSize(
+            arg.and_then(|a| a.trim().parse::<f32>().ok())
+                .filter(|f| f.is_finite())
+                .ok_or("set_font_size:글자 크기(pt)")?,
+        ),
+        // Ghostty도 이 동작은 설정에 쓸 수 없다(Binding.zig: "Cursor keys can't be set currently")
+        "cursor_key" => return Err("cursor_key는 Ghostty처럼 설정에 쓸 수 없는 동작입니다".into()),
         other => return Err(format!("b-terminal에 없는 동작입니다: {other}")),
     }))
 }
@@ -872,6 +900,70 @@ mod tests {
         assert_eq!(trig("super++").key, "equal");
         assert!(parse_trigger("ctrl+a>n").is_err());
         assert!(parse_trigger("hyper+a").is_err());
+    }
+
+    #[test]
+    fn screen_and_search_actions_parse_like_ghostty() {
+        assert_eq!(parse_action("reset").unwrap(), Some(Action::Reset));
+        assert_eq!(parse_action("scroll_to_row:0").unwrap(), Some(Action::ScrollToRow(0)));
+        assert_eq!(
+            parse_action("scroll_to_row: 42").unwrap(),
+            Some(Action::ScrollToRow(42))
+        );
+        assert!(parse_action("scroll_to_row").is_err(), "인자가 필요하다");
+        assert!(parse_action("scroll_to_row:-1").is_err(), "usize");
+        assert!(parse_action("scroll_to_row:abc").is_err());
+        assert_eq!(
+            parse_action("scroll_to_selection").unwrap(),
+            Some(Action::ScrollToSelection)
+        );
+        assert_eq!(
+            parse_action("search:foo bar").unwrap(),
+            Some(Action::Search("foo bar".into()))
+        );
+        assert_eq!(
+            parse_action("search:").unwrap(),
+            Some(Action::Search(String::new())),
+            "빈 글은 찾기 취소"
+        );
+        assert_eq!(
+            parse_action("search:a\\nb").unwrap(),
+            Some(Action::Search("a\\nb".into())),
+            "search는 글을 그대로 받는다(이스케이프를 풀지 않는다)"
+        );
+        assert!(parse_action("search").is_err(), "콜론이 없으면 형식 오류");
+        assert_eq!(parse_action("search_selection").unwrap(), Some(Action::SearchSelection));
+        assert_eq!(
+            parse_action("set_font_size:14.5").unwrap(),
+            Some(Action::SetFontSize(14.5))
+        );
+        assert!(parse_action("set_font_size").is_err());
+        assert!(parse_action("set_font_size:abc").is_err());
+        assert!(parse_action("set_font_size:nan").is_err());
+        assert!(parse_action("set_font_size:inf").is_err());
+    }
+
+    #[test]
+    fn cursor_key_cannot_be_set_like_ghostty() {
+        // Ghostty Binding.zig: parse에서 CursorKey는 InvalidAction("Cursor keys can't be set currently")
+        for line in ["cursor_key", "cursor_key:\\x1b[A,\\x1bOA"] {
+            let e = parse_action(line).unwrap_err();
+            assert!(e.contains("설정에 쓸 수 없는"), "{line}: {e}");
+        }
+    }
+
+    #[test]
+    fn screen_and_search_actions_in_a_keybind_line() {
+        let (km, warns) = Keymap::build(&[
+            "ctrl+alt+r=reset".into(),
+            "ctrl+alt+f=search:error".into(),
+            "ctrl+alt+g=scroll_to_row:3".into(),
+        ]);
+        assert!(warns.is_empty(), "{warns:?}");
+        let get = |k: &str| km.lookup(&trig(k)).cloned();
+        assert_eq!(get("ctrl+alt+r"), Some(Action::Reset));
+        assert_eq!(get("ctrl+alt+f"), Some(Action::Search("error".into())));
+        assert_eq!(get("ctrl+alt+g"), Some(Action::ScrollToRow(3)));
     }
 
     #[test]
