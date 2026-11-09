@@ -127,8 +127,13 @@ fn draw_rows(
         let py = y + row as i32 * ch;
         for col in 0..view.cols {
             let cell = &view.cells[row * view.cols + col];
-            let bg = if cell.selected { view.selection_bg } else { cell.bg };
-            canvas.fill_rect(x + col as i32 * cw, py, m.width, m.height, bg);
+            let (cx, w, h) = (x + col as i32 * cw, m.width, m.height);
+            if cell.selected {
+                canvas.fill_rect(cx, py, w, h, view.selection_bg);
+            } else {
+                // background-opacity-cells(#177)를 켰으면 색 바탕 칸도 비친다
+                canvas.fill_rect_cell(cx, py, w, h, cell.bg);
+            }
         }
     }
     // 2) 글자와 밑줄. 이웃 줄에서 넘쳐 들어온 글자도 그린다

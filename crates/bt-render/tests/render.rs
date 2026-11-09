@@ -1114,3 +1114,45 @@ fn font_variation_changes_glyph_weight_per_style() {
     assert_eq!(r, t);
     assert_eq!(b, h);
 }
+
+// ---- #177: background-opacity-cells ----
+
+/// 색 바탕 칸(0번)과 기본 바탕 칸(1번)을 투명 창에 그린 첫 칸·둘째 칸의 왼쪽 위 픽셀
+fn translucent_corners(f: &mut Fonts, cells_on: bool) -> (u32, u32) {
+    let t = Theme::default();
+    let mut e = Emulator::new(GridSize::new(4, 1), t.clone());
+    e.feed(b"  ");
+    let s = e.snapshot();
+    let mut dc = cells(&s);
+    dc[0].bg = Rgb::new(200, 100, 50);
+    let m = f.metrics();
+    let (w, h) = (m.width * 4, m.height);
+    let mut buf = vec![0u32; (w * h) as usize];
+    let view = GridView {
+        cols: s.cols,
+        rows: s.rows,
+        cells: &dc,
+        cursor: None,
+        selection_bg: t.selection_background,
+        selection_fg: t.selection_foreground,
+        preedit: None,
+        min_contrast: 1.0,
+    };
+    let mut c = Canvas::new(&mut buf, w, h);
+    c.set_see_through(s.background, 128);
+    c.set_cells_alpha(bt_render::cells_alpha(0.5, cells_on));
+    c.clear(s.background);
+    draw_grid(&mut c, f, 0, 0, &view);
+    (buf[0], buf[m.width as usize])
+}
+
+#[test]
+fn background_opacity_cells_makes_colored_cells_translucent() {
+    let Some(mut f) = fonts(1.0) else { return };
+    let (colored_off, plain_off) = translucent_corners(&mut f, false);
+    assert_eq!(colored_off >> 24, 0xff, "옵션이 없으면 색 바탕 칸은 불투명");
+    assert_eq!(plain_off >> 24, 0x80, "기본 바탕 칸은 늘 반투명");
+    let (colored_on, plain_on) = translucent_corners(&mut f, true);
+    assert_eq!(colored_on, 0x8064_3219, "옵션을 켜면 색 바탕 칸도 알파 128, 곱한 색");
+    assert_eq!(plain_on, plain_off, "기본 바탕 칸은 달라지지 않는다");
+}

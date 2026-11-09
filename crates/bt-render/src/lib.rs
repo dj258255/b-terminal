@@ -9,7 +9,7 @@ pub mod grid;
 mod sfnt;
 pub mod text;
 
-pub use canvas::Canvas;
+pub use canvas::{Canvas, cells_alpha};
 pub use font::{CellMetrics, FontConfig, FontError, FontStyle, Fonts, MetricAdjust, Variations};
 pub use grid::{CursorStyle, DrawCell, DrawCursor, GridView, draw_grid, draw_grid_rows};
 pub use text::{char_cells, draw_text, text_cells, truncate};

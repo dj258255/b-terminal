@@ -47,7 +47,7 @@ config-file = ?~/.config/b-terminal/local   # ?가 붙으면 없어도 된다
 | `font-variation` / `-bold` / `-italic` / `-bold-italic` | `축=값`(여러 번, 예 `wght=500`) | 없음 | 가변 글꼴의 축. 축 이름은 네 글자입니다. `font-variation`은 모든 꼴에, 나머지는 그 꼴에만 더합니다(같은 축이면 꼴별 값이 이김). 글꼴이 지원하지 않는 축이나 범위 밖 값은 글꼴이 알아서 무시하거나 자릅니다. 기본 글꼴의 네 꼴에만 적용하고 대체 글꼴에는 적용하지 않습니다. 칸 크기를 잴 때는 반영하지 않습니다. 빈 값이면 그 목록을 비웁니다 |
 | `theme` | 테마 이름, 절대 경로, `light:…,dark:…` | 없음 | 찾는 곳: `~/.config/b-terminal/themes`, 그다음 앱에 넣어 둔 905개([assets/themes-README.md](../assets/themes-README.md), `b-terminal --list-themes`). 이름은 띄어쓰기·대소문자를 무시합니다(`Tokyo Night` = `TokyoNight`) |
 | `background` / `foreground` | `#rrggbb` | Ghostty 기본 | 테마 위에 덮습니다 |
-| `palette` | `N=#rrggbb`(0~15) | Ghostty 기본 | 16~255번은 xterm 표 |
+| `palette` | `N=#rrggbb`(0~255) | Ghostty 기본 | 16~255번은 xterm 표이고, `palette-generate`를 켜면 만든 색입니다. 직접 정한 번호가 늘 이깁니다 |
 | `cursor-color` / `cursor-text` | `#rrggbb`, `cell-foreground`, `cell-background` | 글자색 / 바탕색 | `cell-*`는 커서 칸의 글자색·바탕색을 씁니다(예: `cursor-color = cell-foreground`, `cursor-text = cell-background`면 칸을 뒤집은 모양) |
 | `cursor-opacity` | `0`~`1` | `1` | 커서 불투명도. 1보다 작으면 칸 위에 섞어 그리고, 블록 커서 위 글자색도 그만큼 섞습니다 |
 | `cursor-click-to-move` | `true` `false` | `true` | 셸 통합이 있는 칸의 프롬프트에서 커서 줄을 한 번 누르면 그 자리까지 ←·→를 보내 커서를 옮깁니다(넓은 글자는 한 글자로 셈, 글 끝 뒤를 누르면 글 끝까지). 명령이 도는 중·vim 같은 전체 화면 프로그램·스크롤해 올라가 있을 때는 하지 않습니다. 커서 줄 밖(여러 줄 입력의 다른 줄)은 옮기지 않습니다 |
@@ -78,8 +78,9 @@ config-file = ?~/.config/b-terminal/local   # ?가 붙으면 없어도 된다
 | `window-titlebar-background` `window-titlebar-foreground` | 색 | (없음) | 받기만 합니다. Ghostty에서도 GTK 앱 런타임 전용이고, macOS 제목 막대 색은 winit·objc2의 safe 함수로 정할 수 없습니다 |
 | `window-position-x` / `window-position-y` | 정수(점) | 없음 | 첫 창의 자리. 주 화면의 보이는 영역(macOS는 메뉴 막대 아래) 왼쪽 위에서 잰 값이고, 둘 다 있어야 쓰며 하나만 있으면 무시합니다(Ghostty와 같음). 창 상태 복원으로 되살린 창은 복원한 자리가 이깁니다 |
 | `macos-option-as-alt` | `true` `false` `left` `right` | `false` | Ghostty 기본과 같게 끔 |
-| `scrollback-limit` | 바이트 | 1000만 | Ghostty 값. 줄 하나를 약 1KB로 보고 줄 수로 바꿉니다(100~20만 줄) |
-| `scrollback-lines` | 줄 수 | | b-terminal 키. 줄 수로 바로 |
+| `scrollback-limit-bytes` | 바이트, `unlimited` | 5000만 | Ghostty 1.4 값. VT 엔진은 줄 수 상한만 있어 줄 하나를 약 1KB로 보고 줄 수로 바꿉니다(5000만이면 5만 줄, 100줄 이상). 옛 이름 `scrollback-limit`도 같은 뜻으로 받습니다. 전의 기본은 1000만(1만 줄)이었습니다 |
+| `scrollback-limit-lines` | 줄 수, `unlimited` | `unlimited` | Ghostty 1.4 값. 바이트 상한과 둘 다 있으면 먼저 닿는 쪽(작은 쪽)이 이깁니다. 둘 다 `unlimited`여도 100만 줄에서 멈춥니다 |
+| `scrollback-lines` | 줄 수 | | b-terminal 옛 키. 정확히 그 줄 수로 두고 바이트 상한은 풉니다(뒤에 쓴 `scrollback-limit-*`가 이김) |
 | `copy-on-select` | `true` `false` `clipboard`(Ghostty 1.4 이름 `none` `primary` `both`도 받음) | `true` | 고르기를 마치면 클립보드로. macOS에는 선택 클립보드가 없어 `true`·`clipboard`·`both`는 같고(시스템 클립보드), `false`·`none`·`primary`면 복사하지 않습니다. Ghostty 1.4(아직 나오지 않은 판)는 macOS 기본을 `none`으로 바꿨지만, b-terminal은 지금 나온 판의 기본(켬)을 따릅니다 |
 | `clipboard-trim-trailing-spaces` | `true` / `false` | `true` | 복사하는 글(⌘C·`copy_to_clipboard`·고르면 복사)의 줄 끝 공백과 탭을 지웁니다. 줄 가운데 공백은 그대로이고, 프로그램이 OSC 52로 쓰는 글에는 적용하지 않습니다 |
 | `right-click-action` | `context-menu` `paste` `copy` `copy-or-paste` `ignore` | `context-menu` | 오른쪽 클릭 동작. `copy-or-paste`는 고른 글이 있으면 복사, 없으면 붙여넣기(붙여넣기 보호를 거칩니다). `context-menu`는 값만 받고 하는 일이 없습니다(메뉴가 없음). 마우스 보고 모드의 프로그램에는 이 키와 상관없이 클릭을 보냅니다 |
@@ -129,6 +130,9 @@ config-file = ?~/.config/b-terminal/local   # ?가 붙으면 없어도 된다
 | `quick-terminal-animation-duration` | 초 | `0.2` | 들어오고 나가는 움직임의 길이. `0`이면 움직이지 않습니다. 가운데(`center`)는 움직이지 않습니다 |
 | `window-save-state` | `default` `always` `never` | `default` | 앱을 끌 때(Cmd-Q) 창 크기·자리, 탭, 분할(비율), 칸의 작업 폴더를 적어 두고 다음에 켤 때 새 셸로 되살립니다. 돌던 프로그램·화면 내용은 되살리지 않습니다. 마지막 창을 닫아 꺼진 경우와 `-e`·`--cwd`로 띄운 경우는 되살리지 않습니다 |
 | `background-opacity` | `0`~`1` | `1` | 기본 바탕색 칸으로 창 뒤가 비칩니다(글자·색 칸은 불투명). 새 창부터 따릅니다 |
+| `background-opacity-cells` | `true` / `false` | `false` | Ghostty 1.2 값. 켜면 `background-opacity`를 색이 있는 바탕 칸(프로그램이 바탕색을 칠한 칸)에도 적용합니다. 끄면 기본 바탕색 칸만 비칩니다. 고른 영역·커서·탭 막대는 그대로입니다 |
+| `palette-generate` | `true` / `false` | `false` | Ghostty 1.3 값. 16~255번 색을 기본 16색과 바탕·글자색에서 만듭니다(CIELAB 3선형 보간 6x6x6 정육면체와 회색 24단계). `palette = 100=#...`로 직접 정한 번호는 덮어쓰지 않습니다. 끄면 xterm 표 그대로입니다 |
+| `palette-harmonious` | `true` / `false` | `false` | Ghostty 1.3 값. `palette-generate`일 때, 밝은 테마(글자색이 바탕보다 어두움)에서 바탕·글자색을 맞바꾸지 않습니다. 기본(끔)은 맞바꿔서 16번이 어둡고 231번이 밝은 옛 순서를 지킵니다. 어두운 테마에서는 차이가 없습니다. `palette-generate`가 꺼져 있으면 아무 일도 하지 않습니다 |
 | `background-image` | PNG·JPEG 파일 경로(`~/`, 상대 경로는 설정 파일 폴더 기준), 빈 값이면 없음 | (없음) | 창 바탕에 그림을 깝니다. 기본 바탕색 칸과 여백에만 보이고, 색 바탕 칸은 그 색으로 덮습니다. 한 변 10000px·파일 64MiB까지 |
 | `background-image-opacity` | 0 이상 | `1` | 그림 불투명도. 1보다 크면 `background-opacity`보다 진하게 보입니다(그림 알파 = 값 × 바탕 불투명도, 1에서 자름) |
 | `background-image-position` | `top-left` `top-center` `top-right` `center-left` `center` `center-right` `bottom-left` `bottom-center` `bottom-right` | `center` | 그림 자리 |

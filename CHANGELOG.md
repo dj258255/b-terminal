@@ -4,6 +4,7 @@
 
 ## [아직 릴리스하지 않음]
 
+- 스크롤백·팔레트 키(Ghostty): `scrollback-limit-bytes`(기본 5000만으로 올라 스크롤백 기본이 1만 줄에서 5만 줄), `scrollback-limit-lines`(먼저 닿는 쪽), `palette-generate`·`palette-harmonious`(16~255번 색 만들기, 기본 끔), `palette = 100=#...`(16번 이후), `background-opacity-cells`(색 바탕 칸도 비침, 기본 끔). 옛 `scrollback-limit`·`scrollback-lines`는 그대로 받습니다. 실제 창에서는 아직 확인하지 않았습니다. #177
 - macOS 창 키 추가: `macos-non-native-fullscreen`(새 Space 없는 전체 화면), `window-step-resize`, `macos-window-buttons`, `macos-hidden`. `window-subtitle`·`window-titlebar-*`는 받기만 한다 #179
 - 마우스 키 `mouse-reporting`·`mouse-shift-capture`·`middle-click-action`·`click-repeat-interval`을 Ghostty와 같은 뜻으로 받습니다. 두 번 누르기 기본 간격이 400ms에서 OS 값(macOS)·500ms로 바뀝니다 #175
 
