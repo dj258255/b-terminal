@@ -192,10 +192,22 @@ fn draw_rows(
                 (None, None) => draw_cell_text(canvas, fonts, m, px, py, span, cell.ch, fg, cell.bold, cell.italic),
             }
             if cell.underline {
-                canvas.fill_rect(px, py + m.underline_offset as i32, m.width * span, m.stroke, cell.fg);
+                canvas.fill_rect(
+                    px,
+                    py + m.underline_offset as i32,
+                    m.width * span,
+                    m.underline_thickness,
+                    cell.fg,
+                );
             }
             if cell.strike {
-                canvas.fill_rect(px, py + (m.height / 2) as i32, m.width * span, m.stroke, cell.fg);
+                canvas.fill_rect(
+                    px,
+                    py + m.strike_offset as i32,
+                    m.width * span,
+                    m.strike_thickness,
+                    cell.fg,
+                );
             }
         }
     }
@@ -277,7 +289,7 @@ fn draw_cell_text(
     if c == ' ' || c == '\0' {
         return;
     }
-    if crate::boxdraw::draw(canvas, c, px, py, m.width * span, m.height, m.stroke, fg) {
+    if crate::boxdraw::draw(canvas, c, px, py, m.width * span, m.height, m.box_thickness, fg) {
         return;
     }
     let Some(g) = fonts.glyph(c, FontStyle::from_flags(bold, italic)) else {
@@ -319,9 +331,12 @@ fn draw_cursor(
             canvas.blend_rect(x, y, rw, rh, cur.color, alpha);
         }
     };
+    // 커서 높이(`adjust-cursor-height`)는 셀 가운데에 둔다. 아래로 가는 선(밑줄 커서)은 커서 아래에 붙는다
+    let ch = m.cursor_height.min(m.height);
+    let cy = py + ((m.height - ch) / 2) as i32;
     match cur.style {
         CursorStyle::Block => {
-            paint(canvas, px, py, w, m.height);
+            paint(canvas, px, cy, w, ch);
             // 반투명이면 커서 위 글자도 칸 글자색과 커서 글자색 사이로
             let text = if alpha == 255 {
                 cur.text_color
@@ -331,26 +346,23 @@ fn draw_cursor(
             draw_cell_text(canvas, fonts, m, px, py, span, cell.ch, text, cell.bold, cell.italic);
         }
         CursorStyle::Hollow => {
-            let t = m.stroke;
-            paint(canvas, px, py, w, t);
-            paint(canvas, px, py + m.height as i32 - t as i32, w, t);
-            paint(canvas, px, py + t as i32, t, m.height.saturating_sub(2 * t));
+            let t = m.cursor_hollow.min(ch / 2).max(1);
+            paint(canvas, px, cy, w, t);
+            paint(canvas, px, cy + ch as i32 - t as i32, w, t);
+            paint(canvas, px, cy + t as i32, t, ch.saturating_sub(2 * t));
             paint(
                 canvas,
                 px + w as i32 - t as i32,
-                py + t as i32,
+                cy + t as i32,
                 t,
-                m.height.saturating_sub(2 * t),
+                ch.saturating_sub(2 * t),
             );
         }
-        CursorStyle::Beam => paint(canvas, px, py, (m.stroke * 2).max(2), m.height),
-        CursorStyle::Underline => paint(
-            canvas,
-            px,
-            py + m.height as i32 - (m.stroke * 2) as i32,
-            w,
-            m.stroke * 2,
-        ),
+        CursorStyle::Beam => paint(canvas, px, cy, m.cursor_beam.min(w), ch),
+        CursorStyle::Underline => {
+            let t = (m.stroke * 2).min(ch);
+            paint(canvas, px, cy + ch as i32 - t as i32, w, t)
+        }
     }
 }
 

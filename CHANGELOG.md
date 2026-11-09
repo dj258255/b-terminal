@@ -4,6 +4,7 @@
 
 ## [아직 릴리스하지 않음]
 
+- 글꼴 미세 조정 키(Ghostty): `adjust-underline-position`·`-thickness`, `adjust-strikethrough-position`·`-thickness`, `adjust-overline-position`·`-thickness`(윗줄 SGR 53은 아직 그리지 않아 키만 받음), `adjust-cursor-height`·`-thickness`, `adjust-font-baseline`, `adjust-box-thickness`와 가변 글꼴 축 `font-variation`·`-bold`·`-italic`·`-bold-italic`(예 `wght=500`). 실제 창에서는 아직 확인하지 않았고 픽셀 테스트로만 확인했습니다. #163
 - 선택·색 키(Ghostty): `selection-clear-on-typing`(기본 켬)·`selection-clear-on-copy`(기본 끔), 찾기 강조 색 `search-foreground`·`search-background`·`search-selected-foreground`·`search-selected-background`(`cell-foreground`·`cell-background` 포함), `bold-color`(색 또는 `bright`), `faint-opacity`(기본 0.5). 기본 동작이 바뀝니다: 찾기에 맞은 칸이 검정 글자에 노랑(#ffe082) 바탕, 지금 고른 곳이 살구색(#f2a57e) 바탕으로 칠해지고(전에는 팔레트 노랑을 섞은 색/팔레트 노랑), 흐린 글자가 전보다 조금 더 흐립니다(불투명도 0.6에서 0.5). 실제 창에서는 아직 확인하지 않았고 단위·픽셀 테스트로만 확인했습니다. #162
 - 명령 끝 알림과 알림 허용 키(Ghostty): `notify-on-command-finish`(`never`·`unfocused`·`always`), `-action`(`bell`·`notify`), `-after`(기간, 기본 5초), `desktop-notifications`(프로그램의 OSC 9·777 알림 허용, 켬), `app-notifications`(`clipboard-copy`·`config-reload`, 켬). `notify-on-command-finish`를 적지 않으면 옛 `notify-command-seconds` 동작 그대로입니다(기본 동작 변화 없음). 실제 창에서는 아직 확인하지 않았고 순수 함수 테스트로만 확인했습니다. #161
 - 소리 벨(Ghostty 키): `bell-features`의 `audio`가 `bell-audio-path` 소리 파일을 `bell-audio-volume`(0.0~1.0, 기본 0.5)으로 재생합니다(macOS `NSSound`, 앞 소리가 나는 중이거나 0.1초 안이면 건너뜀). 이전에는 `audio`를 받기만 했습니다. 실제 소리는 아직 들어 보지 않았고 해석·판단만 테스트로 확인했습니다. #165
