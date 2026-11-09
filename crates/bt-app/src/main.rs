@@ -8,6 +8,7 @@ mod keys;
 mod menu;
 mod mouse;
 mod palette;
+mod quick;
 mod shellint;
 mod split;
 mod state;

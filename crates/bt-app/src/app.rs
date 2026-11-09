@@ -153,6 +153,18 @@ fn paste_prompt(text: &str) -> String {
     format!("붙여넣을 글({n}줄)의 줄바꿈이 바로 실행될 수 있습니다: {first}")
 }
 
+/// 퀵 창 움직임의 한 프레임(약 120Hz)
+const QUICK_FRAME: Duration = Duration::from_millis(8);
+
+/// 퀵 창 움직임 하나(논리 점): `from`에서 `to`로, 끝나면 `hide`면 숨긴다
+struct QuickAnim {
+    from: (f64, f64),
+    to: (f64, f64),
+    start: Instant,
+    dur: Duration,
+    hide: bool,
+}
+
 /// 확인을 기다리는 일(#108)
 #[derive(Debug, Clone, PartialEq)]
 enum Pending {
@@ -307,6 +319,10 @@ struct Win {
     quick: bool,
     /// 퀵 터미널을 보인 때. 직후의 포커스 잃음(앱이 앞으로 오기 전)은 숨기지 않는다
     quick_shown: Option<Instant>,
+    /// 퀵 창이 놓인 자리와 숨을 때 나가는 자리(#110)
+    quick_place: Option<(crate::quick::Rect, (f64, f64))>,
+    /// 퀵 창의 들어오고 나가는 움직임(#110)
+    quick_anim: Option<QuickAnim>,
     /// 키 순서(`ctrl+a>n`)의 기다리는 앞 키들(#106)
     keyseq: crate::keymap::Sequencer,
     /// 닫기·끝내기 확인 막대(#108)
@@ -343,6 +359,8 @@ impl Win {
             palette: None,
             quick: false,
             quick_shown: None,
+            quick_place: None,
+            quick_anim: None,
             keyseq: Default::default(),
             confirm: None,
             force_present: false,
@@ -1806,13 +1824,14 @@ impl App {
             .with_inner_size(LogicalSize::new(1000.0, 680.0))
             .with_min_inner_size(LogicalSize::new(320.0, 200.0))
             .with_transparent(transparent);
-        let attrs = match event_loop.primary_monitor().filter(|_| quick) {
-            Some(m) => attrs
+        // 퀵 창은 테두리 없이 맨 위 층에, 보이지 않게 만든다. 자리를 잡고 보이는 일은 show_quick이 한다(#110)
+        let attrs = if quick {
+            attrs
                 .with_decorations(false)
                 .with_window_level(winit::window::WindowLevel::AlwaysOnTop)
-                .with_inner_size(PhysicalSize::new(m.size().width, (m.size().height as f64 * 0.4) as u32))
-                .with_position(m.position()),
-            None => attrs,
+                .with_visible(false)
+        } else {
+            attrs
         };
         #[cfg(target_os = "macos")]
         let attrs = {
@@ -1912,31 +1931,127 @@ impl App {
         };
         self.switch_to(id);
         let Some(g) = &self.w.gfx else { return };
+        let hiding = self.w.quick_anim.as_ref().is_some_and(|a| a.hide);
         log::debug!(
-            "퀵 터미널 토글: 보임 {:?}, 포커스 {}",
+            "퀵 터미널 토글: 보임 {:?}, 숨는 중 {hiding}, 포커스 {}",
             g.window.is_visible(),
             self.w.focused
         );
-        if g.window.is_visible() == Some(true) {
-            g.window.set_visible(false);
+        if g.window.is_visible() == Some(true) && !hiding {
+            self.hide_quick();
         } else {
-            g.window.set_visible(true);
-            g.window.focus_window();
-            self.w.quick_shown = Some(Instant::now());
+            self.show_quick(event_loop);
             self.last_focused = Some(id);
         }
     }
 
-    /// 퀵 터미널 창을 만든다: 테두리 없이, 항상 위, 화면 폭 전체·높이 40%로 화면 맨 위에
+    /// 퀵 터미널 창을 만든다(보이지 않게). 자리를 잡아 보이는 일은 show_quick
     fn open_quick(&mut self, event_loop: &ActiveEventLoop) {
         let opts = self.default_spawn();
         if self.open_window_with(event_loop, opts, true).is_none() {
             return;
         }
         self.w.quick = true;
+        self.show_quick(event_loop);
+    }
+
+    /// 퀵 창을 띄울 화면(논리 점): `quick-terminal-screen`. 찾지 못하면 메뉴 막대 화면
+    fn quick_screen(&self, event_loop: &ActiveEventLoop) -> Option<crate::quick::Rect> {
+        let logical = |m: &winit::monitor::MonitorHandle| {
+            let sf = m.scale_factor();
+            let (p, s) = (m.position(), m.size());
+            crate::quick::Rect {
+                x: p.x as f64 / sf,
+                y: p.y as f64 / sf,
+                w: s.width as f64 / sf,
+                h: s.height as f64 / sf,
+            }
+        };
+        let primary = event_loop
+            .primary_monitor()
+            .or_else(|| event_loop.available_monitors().next())?;
+        let primary = logical(&primary);
+        #[cfg_attr(not(target_os = "macos"), allow(unused_variables))]
+        let screens: Vec<crate::quick::Rect> = event_loop.available_monitors().map(|m| logical(&m)).collect();
+        let picked = match self.config.quick.screen {
+            bt_core::config::QuickScreen::MenuBar => None,
+            #[cfg(target_os = "macos")]
+            bt_core::config::QuickScreen::Main => crate::quick::main_screen(primary.h).and_then(|r| {
+                // winit 화면 중 같은 자리의 것(점 단위가 조금 어긋나도)
+                screens
+                    .iter()
+                    .copied()
+                    .find(|s| (s.x - r.x).abs() < 2.0 && (s.y - r.y).abs() < 2.0)
+            }),
+            #[cfg(target_os = "macos")]
+            bt_core::config::QuickScreen::Mouse => {
+                crate::quick::screen_at(crate::quick::mouse_location(primary.h), &screens).map(|i| screens[i])
+            }
+            #[cfg(not(target_os = "macos"))]
+            _ => None,
+        };
+        let screen = picked.unwrap_or(primary);
+        // 메뉴 막대와 Dock을 뺀 영역에 놓는다(위쪽 창이 메뉴 막대에 가리지 않게)
+        #[cfg(target_os = "macos")]
+        let screen = crate::quick::visible_area(screen, primary.h).unwrap_or(screen);
+        Some(screen)
+    }
+
+    /// 퀵 창을 고른 화면의 자리로 옮겨 보인다. 움직임이 있으면 가장자리 바깥에서 들어온다
+    fn show_quick(&mut self, event_loop: &ActiveEventLoop) {
+        let Some(screen) = self.quick_screen(event_loop) else {
+            return;
+        };
+        let q = self.config.quick;
+        let frame = crate::quick::frame(&q, screen);
+        let hidden = crate::quick::hidden_origin(q.position, frame, screen);
+        let animate = q.animation > 0.0 && q.position != bt_core::config::QuickPosition::Center;
+        let Some(g) = &self.w.gfx else { return };
+        let _ = g.window.request_inner_size(LogicalSize::new(frame.w, frame.h));
+        let start = if animate { hidden } else { (frame.x, frame.y) };
+        g.window
+            .set_outer_position(winit::dpi::LogicalPosition::new(start.0, start.1));
+        g.window.set_visible(true);
+        g.window.focus_window();
+        log::debug!("퀵 터미널: 화면 {screen:?}, 자리 {frame:?}, 움직임 {animate}");
         self.w.quick_shown = Some(Instant::now());
-        if let Some(g) = &self.w.gfx {
-            g.window.focus_window();
+        self.w.quick_place = Some((frame, hidden));
+        self.w.quick_anim = animate.then(|| QuickAnim {
+            from: start,
+            to: (frame.x, frame.y),
+            start: Instant::now(),
+            dur: Duration::from_secs_f64(q.animation),
+            hide: false,
+        });
+    }
+
+    /// 퀵 창을 숨긴다. 움직임이 있으면 가장자리 바깥으로 나간 뒤 숨는다
+    fn hide_quick(&mut self) {
+        let q = self.config.quick;
+        let animate = q.animation > 0.0 && q.position != bt_core::config::QuickPosition::Center;
+        match (animate, self.w.quick_place) {
+            (true, Some((frame, hidden))) => {
+                // 들어오는 중이었으면 지금 자리에서 나간다
+                let from = self
+                    .w
+                    .quick_anim
+                    .as_ref()
+                    .map(|a| crate::quick::slide(a.from, a.to, a.start.elapsed().as_secs_f64() / a.dur.as_secs_f64()))
+                    .unwrap_or((frame.x, frame.y));
+                self.w.quick_anim = Some(QuickAnim {
+                    from,
+                    to: hidden,
+                    start: Instant::now(),
+                    dur: Duration::from_secs_f64(q.animation),
+                    hide: true,
+                });
+            }
+            _ => {
+                self.w.quick_anim = None;
+                if let Some(g) = &self.w.gfx {
+                    g.window.set_visible(false);
+                }
+            }
         }
     }
 
@@ -2860,11 +2975,9 @@ impl ApplicationHandler<UserEvent> for App {
                     .w
                     .quick_shown
                     .is_some_and(|t| t.elapsed() < Duration::from_millis(500));
-                if !focused && self.w.quick && !just_shown {
+                if !focused && self.w.quick && self.config.quick.autohide && !just_shown {
                     log::debug!("퀵 터미널이 포커스를 잃어 숨깁니다");
-                    if let Some(g) = &self.w.gfx {
-                        g.window.set_visible(false);
-                    }
+                    self.hide_quick();
                 }
                 if focused {
                     self.last_focused = Some(id);
@@ -3160,6 +3273,25 @@ impl ApplicationHandler<UserEvent> for App {
                 }
             }
         }
+        // 퀵 창 움직임(#110): 프레임마다 자리를 옮기고, 끝나면 숨길 것은 숨긴다
+        let mut animating = false;
+        for w in std::iter::once(&mut self.w).chain(self.others.iter_mut()) {
+            let (Some(a), Some(g)) = (&w.quick_anim, &w.gfx) else {
+                continue;
+            };
+            let t = a.start.elapsed().as_secs_f64() / a.dur.as_secs_f64().max(1e-3);
+            let (x, y) = crate::quick::slide(a.from, a.to, t);
+            g.window.set_outer_position(winit::dpi::LogicalPosition::new(x, y));
+            if t >= 1.0 {
+                if a.hide {
+                    g.window.set_visible(false);
+                }
+                w.quick_anim = None;
+            } else {
+                animating = true;
+            }
+        }
+        let anim_next = animating.then(|| now + QUICK_FRAME);
         let blink_next = std::iter::once(&self.w)
             .chain(&self.others)
             .filter(|w| w.blink_wanted)
@@ -3172,13 +3304,19 @@ impl ApplicationHandler<UserEvent> for App {
             .filter_map(|t| t.session.sync_deadline())
             .chain([self.next_poll])
             .chain(blink_next)
+            .chain(anim_next)
             .min();
         match deadline {
             Some(d) if d <= Instant::now() => {
                 if self.panes.iter().any(|t| t.session.flush_expired_sync()) {
                     self.request_redraw_all();
                 }
-                event_loop.set_control_flow(ControlFlow::Wait);
+                // 움직이는 중이면 다음 프레임에 다시 깨어난다(기한이 이미 지나 잠들어 버리지 않게)
+                event_loop.set_control_flow(if animating {
+                    ControlFlow::WaitUntil(Instant::now() + QUICK_FRAME)
+                } else {
+                    ControlFlow::Wait
+                });
             }
             Some(d) => event_loop.set_control_flow(ControlFlow::WaitUntil(d)),
             None => event_loop.set_control_flow(ControlFlow::Wait),

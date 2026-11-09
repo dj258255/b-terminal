@@ -7,6 +7,7 @@
 - 원본: crates.io `winit 0.30.13`(Apache-2.0, `vendor/winit/LICENSE`). 예제·문서·테스트는 뺐습니다.
 - 연결: 루트 `Cargo.toml`의 `[patch.crates-io]`.
 - 고친 곳: `src/platform_impl/macos/view.rs`의 `insert_text`와 `do_command_by_selector` 두 군데. `b-terminal 패치`로 찾을 수 있습니다.
+- 고친 곳(#110): `src/platform_impl/macos/window.rs`의 `WinitWindow`에 `constrainFrameRect:toScreen:`를 더했습니다. 테두리 없는 창(퀵 터미널)은 macOS가 메뉴 막대 아래로 밀어 넣지 않고 준 자리 그대로 둡니다. 제목 막대가 있는 창은 원래대로(부모 클래스의 것)입니다. 이것이 없으면 위쪽 퀵 터미널이 화면 위쪽 바깥에서 시작하지 못해 미끄러지는 움직임이 보이지 않습니다(실제로 `y=39`에 붙박였음).
 
 ### 왜
 
