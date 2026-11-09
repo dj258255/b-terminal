@@ -21,6 +21,24 @@ const NERD_SYMBOLS: &str = "Symbols Nerd Font Mono";
 /// 셀 크기 보정
 pub use bt_core::config::Adjust;
 
+/// 셀 안 그림 자리·두께 보정(Ghostty `adjust-*`, #163). 값은 퍼센트 또는 픽셀
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct MetricAdjust {
+    pub baseline: Option<Adjust>,
+    pub underline_position: Option<Adjust>,
+    pub underline_thickness: Option<Adjust>,
+    pub strikethrough_position: Option<Adjust>,
+    pub strikethrough_thickness: Option<Adjust>,
+    pub overline_position: Option<Adjust>,
+    pub overline_thickness: Option<Adjust>,
+    pub cursor_thickness: Option<Adjust>,
+    pub cursor_height: Option<Adjust>,
+    pub box_thickness: Option<Adjust>,
+}
+
+/// 가변 글꼴 축 값(태그, 값)
+pub type Variations = Vec<([u8; 4], f32)>;
+
 /// 글꼴 설정
 #[derive(Debug, Clone, PartialEq)]
 pub struct FontConfig {
@@ -32,6 +50,13 @@ pub struct FontConfig {
     pub family_bold_italic: Option<String>,
     pub adjust_cell_height: Option<Adjust>,
     pub adjust_cell_width: Option<Adjust>,
+    /// 밑줄·취소선·윗줄·커서·상자 선·기준선 보정(#163)
+    pub adjust: MetricAdjust,
+    /// 가변 글꼴 축(#163). `variation`은 모든 꼴에, 나머지는 그 꼴에만 더한다(같은 축이면 꼴별 값이 이긴다)
+    pub variation: Variations,
+    pub variation_bold: Variations,
+    pub variation_italic: Variations,
+    pub variation_bold_italic: Variations,
     /// 논리 크기(pt). 화면 배율을 곱해 픽셀로 쓴다
     pub size: f32,
     /// 화면 배율(Retina 2.0)
@@ -51,6 +76,11 @@ impl Default for FontConfig {
             family_bold_italic: None,
             adjust_cell_height: None,
             adjust_cell_width: None,
+            adjust: MetricAdjust::default(),
+            variation: Vec::new(),
+            variation_bold: Vec::new(),
+            variation_italic: Vec::new(),
+            variation_bold_italic: Vec::new(),
             size: 13.0,
             scale: 1.0,
             fallbacks: vec![
@@ -130,6 +160,21 @@ pub struct CellMetrics {
     pub baseline: u32,
     pub underline_offset: u32,
     pub stroke: u32,
+    /// 밑줄 두께(`adjust-underline-thickness`, #163)
+    pub underline_thickness: u32,
+    /// 취소선 위 가장자리(셀 위에서)와 두께
+    pub strike_offset: u32,
+    pub strike_thickness: u32,
+    /// 윗줄 위 가장자리(셀 위에서)와 두께. 윗줄(SGR 53)은 아직 그리지 않는다
+    pub overline_offset: u32,
+    pub overline_thickness: u32,
+    /// 커서 높이(`adjust-cursor-height`). 셀 높이와 달라도 셀 가운데에 둔다
+    pub cursor_height: u32,
+    /// 막대 커서 두께와 속 빈 네모 커서 선 두께(`adjust-cursor-thickness`)
+    pub cursor_beam: u32,
+    pub cursor_hollow: u32,
+    /// 상자 선 두께(`adjust-box-thickness`)
+    pub box_thickness: u32,
 }
 
 /// 글꼴 묶음과 글리프 캐시
@@ -154,6 +199,8 @@ pub struct Fonts {
     shaper: std::cell::RefCell<swash::shape::ShapeContext>,
     shape_cache: HashMap<(Box<str>, FontStyle), Rc<[u16]>>,
     gid_cache: HashMap<(u16, FontStyle), Option<Rc<Glyph>>>,
+    /// 꼴마다 적용할 가변 글꼴 축(#163). `font-variation`에 꼴별 값을 더한 것(기본 글꼴의 네 꼴에만 쓴다)
+    variations: [Variations; 4],
 }
 
 /// 다듬은 묶음 캐시의 상한. 넘으면 비운다(화면에 보이는 글은 곧 다시 찬다)
@@ -398,6 +445,7 @@ impl Fonts {
             px,
             config.adjust_cell_width,
             config.adjust_cell_height,
+            &config.adjust,
             config.scale,
         );
         let fallbacks = config
@@ -430,6 +478,12 @@ impl Fonts {
             shaper: std::cell::RefCell::new(swash::shape::ShapeContext::new()),
             shape_cache: HashMap::new(),
             gid_cache: HashMap::new(),
+            variations: [
+                config.variation.clone(),
+                merge_variations(&config.variation, &config.variation_bold),
+                merge_variations(&config.variation, &config.variation_italic),
+                merge_variations(&config.variation, &config.variation_bold_italic),
+            ],
         })
     }
 
@@ -462,19 +516,23 @@ impl Fonts {
         }
         let idx = style as usize;
         let primary = &self.regular[idx];
-        let (font, px) = if primary.has(ch) {
-            (primary.clone(), self.px)
+        let (font, px, vars) = if primary.has(ch) {
+            (primary.clone(), self.px, &self.variations[idx][..])
         } else if self.regular[0].has(ch) {
-            (self.regular[0].clone(), self.px)
+            (self.regular[0].clone(), self.px, &self.variations[0][..])
         } else {
             // 사설 영역(Nerd Font 아이콘)은 기호 글꼴에서만 찾는다. 한글 글꼴이 같은 번호에 엉뚱한 글자를 둔 경우가 있다
             let pua = is_private_use(ch);
             let fb = self.fallbacks.iter().find(|f| (!pua || f.pua) && f.font.has(ch))?;
             let wide = crate::text::char_cells(ch) == 2;
-            (fb.font.clone(), if wide { self.px * fb.wide_scale } else { self.px })
+            (
+                fb.font.clone(),
+                if wide { self.px * fb.wide_scale } else { self.px },
+                &[][..],
+            )
         };
         let mut ctx = self.context.borrow_mut();
-        let mut scaler = ctx.builder(font.font()).size(px).hint(false).build();
+        let mut scaler = ctx.builder(font.font()).size(px).hint(false).variations(vars).build();
         let gid = font.glyph_id(ch);
         let img = swash::scale::Render::new(&[swash::scale::Source::Outline]).render(&mut scaler, gid)?;
         Some(Glyph {
@@ -509,6 +567,7 @@ impl Fonts {
                 .builder(font.font())
                 .script(swash::text::Script::Latin)
                 .features(self.features.iter())
+                .variations(self.variations[style as usize].iter())
                 .build();
             shaper.add_str(text);
             shaper.shape_with(|c| {
@@ -541,7 +600,12 @@ impl Fonts {
         let font = self.regular[style as usize].clone();
         let g = {
             let mut ctx = self.context.borrow_mut();
-            let mut scaler = ctx.builder(font.font()).size(self.px).hint(false).build();
+            let mut scaler = ctx
+                .builder(font.font())
+                .size(self.px)
+                .hint(false)
+                .variations(&self.variations[style as usize])
+                .build();
             swash::scale::Render::new(&[swash::scale::Source::Outline])
                 .render(&mut scaler, gid)
                 .map(|img| {
@@ -728,7 +792,36 @@ fn wide_scale(font: &Font, px: f32, m: CellMetrics) -> f32 {
     by_width.min(by_height).clamp(1.0, 1.35)
 }
 
-fn cell_metrics(font: &Font, px: f32, adjust_w: Option<Adjust>, adjust_h: Option<Adjust>, scale: f32) -> CellMetrics {
+/// 꼴 하나의 가변 글꼴 축: 모든 꼴 공통 값 위에 꼴별 값을 얹는다(같은 축이면 꼴별 값이 이긴다)
+fn merge_variations(all: &[([u8; 4], f32)], own: &[([u8; 4], f32)]) -> Variations {
+    let mut out: Variations = all
+        .iter()
+        .filter(|(t, _)| !own.iter().any(|(o, _)| o == t))
+        .copied()
+        .collect();
+    out.extend_from_slice(own);
+    out
+}
+
+/// 보정 하나를 기준 값에 적용한다(Ghostty `Metrics.Modifier`와 같은 뜻). 퍼센트는 기준 값에 곱하고, 포인트는 화면 배율을 곱한 픽셀을 더한다.
+/// 결과는 반올림한다. 아래 한계는 부른 쪽이 정한다
+pub(crate) fn adjusted(base: f32, a: Option<Adjust>, scale: f32) -> i32 {
+    let v = match a {
+        None => base,
+        Some(Adjust::Percent(p)) => base * (1.0 + p / 100.0),
+        Some(Adjust::Points(p)) => base + p * scale,
+    };
+    v.round() as i32
+}
+
+fn cell_metrics(
+    font: &Font,
+    px: f32,
+    adjust_w: Option<Adjust>,
+    adjust_h: Option<Adjust>,
+    adj: &MetricAdjust,
+    scale: f32,
+) -> CellMetrics {
     let advance = font.advance('M', px);
     let (ascent, descent, gap) = font.line(px);
     // 보정 값의 포인트는 화면 배율을 곱해 픽셀로
@@ -748,12 +841,36 @@ fn cell_metrics(font: &Font, px: f32, adjust_w: Option<Adjust>, adjust_h: Option
     let baseline = (ascent + gap / 2.0 + (height_f - natural_h) / 2.0).round().max(1.0) as u32;
     let stroke = (px / 14.0).round().max(1.0) as u32;
     let underline_offset = (baseline + stroke + 1).min(height.saturating_sub(stroke));
+
+    // 두께는 1픽셀 밑으로 내려가지 않는다(Ghostty도 `*-thickness`는 1px 아래로 가지 않는다)
+    let thickness = |base: u32, a: Option<Adjust>| adjusted(base as f32, a, scale).max(1) as u32;
+    let h = height as i32;
+    // 위치(셀 위에서)는 줄이 셀 안에 들어가게 자른다
+    let position = |base: u32, a: Option<Adjust>, thick: u32| {
+        adjusted(base as f32, a, scale).clamp(0, (h - thick as i32).max(0)) as u32
+    };
+
+    let underline_thickness = thickness(stroke, adj.underline_thickness);
+    let strike_thickness = thickness(stroke, adj.strikethrough_thickness);
+    let overline_thickness = thickness(stroke, adj.overline_thickness);
+    // 기준선 보정은 셀 아래에서 기준선까지의 거리에 한다: 늘리면 글자가 위로 올라간다
+    let from_bottom = (height - baseline.min(height)) as f32;
+    let baseline_adjusted = (h - adjusted(from_bottom, adj.baseline, scale)).clamp(1, h.max(1)) as u32;
     CellMetrics {
         width,
         height,
-        baseline,
-        underline_offset,
+        baseline: baseline_adjusted,
+        underline_offset: position(underline_offset, adj.underline_position, underline_thickness),
         stroke,
+        underline_thickness,
+        strike_offset: position(height / 2, adj.strikethrough_position, strike_thickness),
+        strike_thickness,
+        overline_offset: position(0, adj.overline_position, overline_thickness),
+        overline_thickness,
+        cursor_height: adjusted(height as f32, adj.cursor_height, scale).clamp(1, h.max(1)) as u32,
+        cursor_beam: thickness((stroke * 2).max(2), adj.cursor_thickness),
+        cursor_hollow: thickness(stroke, adj.cursor_thickness),
+        box_thickness: thickness(stroke, adj.box_thickness),
     }
 }
 

@@ -170,6 +170,22 @@ pub struct Config {
     pub font_size: f32,
     pub adjust_cell_height: Option<Adjust>,
     pub adjust_cell_width: Option<Adjust>,
+    /// 글꼴 미세 조정 키(#163, Ghostty `adjust-*`). 값은 `10%` 또는 픽셀
+    pub adjust_font_baseline: Option<Adjust>,
+    pub adjust_underline_position: Option<Adjust>,
+    pub adjust_underline_thickness: Option<Adjust>,
+    pub adjust_strikethrough_position: Option<Adjust>,
+    pub adjust_strikethrough_thickness: Option<Adjust>,
+    pub adjust_overline_position: Option<Adjust>,
+    pub adjust_overline_thickness: Option<Adjust>,
+    pub adjust_cursor_thickness: Option<Adjust>,
+    pub adjust_cursor_height: Option<Adjust>,
+    pub adjust_box_thickness: Option<Adjust>,
+    /// 가변 글꼴 축(#163, Ghostty `font-variation*`): (축 태그, 값). `font-variation`은 모든 꼴에, 나머지는 그 꼴에만 더한다
+    pub font_variation: Vec<([u8; 4], f32)>,
+    pub font_variation_bold: Vec<([u8; 4], f32)>,
+    pub font_variation_italic: Vec<([u8; 4], f32)>,
+    pub font_variation_bold_italic: Vec<([u8; 4], f32)>,
     pub theme: Theme,
     pub cursor_style: CursorStyle,
     pub cursor_blink: Option<bool>,
@@ -702,6 +718,20 @@ impl Default for Config {
             font_size: 13.0,
             adjust_cell_height: None,
             adjust_cell_width: None,
+            adjust_font_baseline: None,
+            adjust_underline_position: None,
+            adjust_underline_thickness: None,
+            adjust_strikethrough_position: None,
+            adjust_strikethrough_thickness: None,
+            adjust_overline_position: None,
+            adjust_overline_thickness: None,
+            adjust_cursor_thickness: None,
+            adjust_cursor_height: None,
+            adjust_box_thickness: None,
+            font_variation: Vec::new(),
+            font_variation_bold: Vec::new(),
+            font_variation_italic: Vec::new(),
+            font_variation_bold_italic: Vec::new(),
             theme: Theme::ghostty_default(),
             cursor_style: CursorStyle::Block,
             cursor_blink: None,
@@ -952,6 +982,38 @@ fn expand_home(p: &str, base: &Path) -> PathBuf {
 
 fn home() -> PathBuf {
     std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default()
+}
+
+/// `adjust-*` 값 하나를 읽어 둔다. 빈 값은 지우고, 읽지 못하면 `fail`을 부르고 안 정한 채로 둔다
+fn set_adjust(slot: &mut Option<Adjust>, v: &str, fail: impl FnOnce()) {
+    *slot = if v.is_empty() {
+        None
+    } else {
+        Adjust::parse(v).or_else(|| {
+            fail();
+            None
+        })
+    };
+}
+
+/// 가변 글꼴 축 하나(Ghostty `font-variation`): `축=값`, 축은 네 글자, 값은 유한한 수. 양쪽 공백은 무시
+pub fn parse_font_variation(s: &str) -> Option<([u8; 4], f32)> {
+    let (tag, val) = s.split_once('=')?;
+    let tag: [u8; 4] = tag.trim().as_bytes().try_into().ok()?;
+    let val: f32 = val.trim().parse().ok()?;
+    (tag.iter().all(|b| b.is_ascii_graphic()) && val.is_finite()).then_some((tag, val))
+}
+
+/// `font-variation*` 한 줄을 목록에 더한다. 같은 축을 다시 쓰면 뒤가 이기고, 빈 값은 목록을 비운다
+fn set_variation(list: &mut Vec<([u8; 4], f32)>, v: &str, fail: impl FnOnce()) {
+    if v.is_empty() {
+        list.clear();
+    } else if let Some(var) = parse_font_variation(v) {
+        list.retain(|(t, _)| *t != var.0);
+        list.push(var);
+    } else {
+        fail();
+    }
 }
 
 /// 글꼴 기능 하나(Ghostty 문법): `calt`·`+calt`는 켬, `-calt`는 끔, `calt=2`는 그 값. 태그는 네 글자(ASCII)
@@ -1335,6 +1397,22 @@ impl Config {
                     })
                 }
             }
+            "adjust-font-baseline" => set_adjust(&mut self.adjust_font_baseline, v, || bad(warnings)),
+            "adjust-underline-position" => set_adjust(&mut self.adjust_underline_position, v, || bad(warnings)),
+            "adjust-underline-thickness" => set_adjust(&mut self.adjust_underline_thickness, v, || bad(warnings)),
+            "adjust-strikethrough-position" => set_adjust(&mut self.adjust_strikethrough_position, v, || bad(warnings)),
+            "adjust-strikethrough-thickness" => {
+                set_adjust(&mut self.adjust_strikethrough_thickness, v, || bad(warnings))
+            }
+            "adjust-overline-position" => set_adjust(&mut self.adjust_overline_position, v, || bad(warnings)),
+            "adjust-overline-thickness" => set_adjust(&mut self.adjust_overline_thickness, v, || bad(warnings)),
+            "adjust-cursor-thickness" => set_adjust(&mut self.adjust_cursor_thickness, v, || bad(warnings)),
+            "adjust-cursor-height" => set_adjust(&mut self.adjust_cursor_height, v, || bad(warnings)),
+            "adjust-box-thickness" => set_adjust(&mut self.adjust_box_thickness, v, || bad(warnings)),
+            "font-variation" => set_variation(&mut self.font_variation, v, || bad(warnings)),
+            "font-variation-bold" => set_variation(&mut self.font_variation_bold, v, || bad(warnings)),
+            "font-variation-italic" => set_variation(&mut self.font_variation_italic, v, || bad(warnings)),
+            "font-variation-bold-italic" => set_variation(&mut self.font_variation_bold_italic, v, || bad(warnings)),
             "cursor-style" => match v {
                 "block" => self.cursor_style = CursorStyle::Block,
                 "bar" => self.cursor_style = CursorStyle::Bar,
@@ -2273,6 +2351,60 @@ mod tests {
         assert_eq!(c.font_size, 13.0);
         assert_eq!(c.cursor_style, CursorStyle::Block);
         assert_eq!(c.warnings.len(), 3);
+    }
+
+    /// #163: `adjust-*` 키는 `10%`·픽셀을 받고, 읽지 못하면 경고하고 안 정한 채로 둔다. 빈 값은 지운다
+    #[test]
+    fn font_adjust_keys() {
+        let c = Config::from_text(
+            "adjust-font-baseline = 2\nadjust-underline-position = -1\nadjust-underline-thickness = 50%\n\
+             adjust-strikethrough-position = 3\nadjust-strikethrough-thickness = 1\n\
+             adjust-overline-position = 4\nadjust-overline-thickness = 200%\n\
+             adjust-cursor-thickness = 2\nadjust-cursor-height = -10%\nadjust-box-thickness = 1\n",
+            true,
+        );
+        assert!(c.warnings.is_empty(), "{:?}", c.warnings);
+        assert_eq!(c.adjust_font_baseline, Some(Adjust::Points(2.0)));
+        assert_eq!(c.adjust_underline_position, Some(Adjust::Points(-1.0)));
+        assert_eq!(c.adjust_underline_thickness, Some(Adjust::Percent(50.0)));
+        assert_eq!(c.adjust_strikethrough_position, Some(Adjust::Points(3.0)));
+        assert_eq!(c.adjust_strikethrough_thickness, Some(Adjust::Points(1.0)));
+        assert_eq!(c.adjust_overline_position, Some(Adjust::Points(4.0)));
+        assert_eq!(c.adjust_overline_thickness, Some(Adjust::Percent(200.0)));
+        assert_eq!(c.adjust_cursor_thickness, Some(Adjust::Points(2.0)));
+        assert_eq!(c.adjust_cursor_height, Some(Adjust::Percent(-10.0)));
+        assert_eq!(c.adjust_box_thickness, Some(Adjust::Points(1.0)));
+
+        let c = Config::from_text(
+            "adjust-cursor-height = tall\nadjust-box-thickness = 2\nadjust-box-thickness =\n",
+            true,
+        );
+        assert_eq!(c.warnings.len(), 1, "{:?}", c.warnings);
+        assert_eq!(c.adjust_cursor_height, None);
+        assert_eq!(c.adjust_box_thickness, None, "빈 값은 지움");
+    }
+
+    /// #163: `font-variation*`은 `축=값`(축은 네 글자)을 쌓고, 같은 축을 다시 쓰면 뒤가 이기며, 빈 값은 비운다
+    #[test]
+    fn font_variation_keys() {
+        let c = Config::from_text(
+            "font-variation = wght=500\nfont-variation = slnt = -15\nfont-variation = wght=520.5\n\
+             font-variation-bold = wght=700\nfont-variation-italic = ital=1\nfont-variation-bold-italic = wdth=90\n",
+            true,
+        );
+        assert!(c.warnings.is_empty(), "{:?}", c.warnings);
+        assert_eq!(c.font_variation, vec![(*b"slnt", -15.0), (*b"wght", 520.5)]);
+        assert_eq!(c.font_variation_bold, vec![(*b"wght", 700.0)]);
+        assert_eq!(c.font_variation_italic, vec![(*b"ital", 1.0)]);
+        assert_eq!(c.font_variation_bold_italic, vec![(*b"wdth", 90.0)]);
+
+        let c = Config::from_text(
+            "font-variation = weight=500\nfont-variation = wght\nfont-variation = wght=heavy\nfont-variation = wght=inf\n\
+             font-variation = wght=300\nfont-variation =\n",
+            true,
+        );
+        assert_eq!(c.warnings.len(), 4, "{:?}", c.warnings);
+        assert!(c.font_variation.is_empty(), "빈 값은 비움");
     }
 
     #[test]

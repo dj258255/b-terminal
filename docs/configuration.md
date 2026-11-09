@@ -38,6 +38,13 @@ config-file = ?~/.config/b-terminal/local   # ?가 붙으면 없어도 된다
 | `font-feature` | 글꼴 기능(여러 번, 쉼표로 여럿): `-calt` 끔, `ss01` 켬, `cv01=2` 값 | 글꼴의 기본(calt·liga 켬) | 합자(`->` `!=` `===`)를 끄려면 `-calt`(JetBrains Mono·Fira Code). 커서 칸에서는 합자를 풀어 보입니다. 빈 값이면 지움 |
 | `font-size` | 포인트 | `13` | Cmd-= / Cmd-- / Cmd-0 |
 | `adjust-cell-height` / `adjust-cell-width` | `10%` 또는 포인트(`2`, `-1`) | 없음 | 높이를 바꾸면 글자를 가운데에 둡니다 |
+| `adjust-font-baseline` | `10%` 또는 포인트 | 없음 | 셀 아래에서 기준선까지의 거리를 바꿉니다. 늘리면 글자가 위로 올라갑니다 |
+| `adjust-underline-position` / `adjust-strikethrough-position` / `adjust-overline-position` | `10%` 또는 포인트 | 없음 | 셀 위에서 그 줄 위 가장자리까지의 거리. 늘리면 줄이 아래로 내려가고, 줄이 셀 안에 들어가게 자릅니다. 윗줄(SGR 53)은 아직 그리지 않아서 키만 받습니다 |
+| `adjust-underline-thickness` / `adjust-strikethrough-thickness` / `adjust-overline-thickness` | `10%` 또는 포인트 | 없음 | 줄 두께. 1픽셀 아래로는 내려가지 않습니다. 윗줄은 키만 받습니다 |
+| `adjust-cursor-height` | `10%` 또는 포인트 | 없음 | 모든 커서 꼴의 높이. 셀 가운데에 두고 셀 높이를 넘기지 않습니다. 밑줄 커서는 커서 아래에 붙습니다 |
+| `adjust-cursor-thickness` | `10%` 또는 포인트 | 없음 | 막대 커서와 속 빈 네모 커서의 선 두께. 밑줄 커서 두께는 바꾸지 않습니다 |
+| `adjust-box-thickness` | `10%` 또는 포인트 | 없음 | 상자 선(`─` `│` 등)의 선 두께 |
+| `font-variation` / `-bold` / `-italic` / `-bold-italic` | `축=값`(여러 번, 예 `wght=500`) | 없음 | 가변 글꼴의 축. 축 이름은 네 글자입니다. `font-variation`은 모든 꼴에, 나머지는 그 꼴에만 더합니다(같은 축이면 꼴별 값이 이김). 글꼴이 지원하지 않는 축이나 범위 밖 값은 글꼴이 알아서 무시하거나 자릅니다. 기본 글꼴의 네 꼴에만 적용하고 대체 글꼴에는 적용하지 않습니다. 칸 크기를 잴 때는 반영하지 않습니다. 빈 값이면 그 목록을 비웁니다 |
 | `theme` | 테마 이름, 절대 경로, `light:…,dark:…` | 없음 | 찾는 곳: `~/.config/b-terminal/themes`, 그다음 앱에 넣어 둔 905개([assets/themes-README.md](../assets/themes-README.md), `b-terminal --list-themes`). 이름은 띄어쓰기·대소문자를 무시합니다(`Tokyo Night` = `TokyoNight`) |
 | `background` / `foreground` | `#rrggbb` | Ghostty 기본 | 테마 위에 덮습니다 |
 | `palette` | `N=#rrggbb`(0~15) | Ghostty 기본 | 16~255번은 xterm 표 |

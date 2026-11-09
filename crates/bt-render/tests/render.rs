@@ -786,3 +786,331 @@ fn search_match_background_is_painted_with_search_colors() {
     assert_eq!(corner(1), Rgb::new(0xf2, 0xa5, 0x7e), "지금 고른 곳");
     assert_eq!(corner(2), t.background, "맞지 않은 칸");
 }
+
+// ---- #163: adjust-underline-*/strikethrough-*/overline-*/cursor-*/font-baseline/box-thickness, font-variation ----
+
+use bt_core::config::Adjust;
+use bt_render::MetricAdjust;
+
+fn metrics_of(adjust: MetricAdjust, scale: f32) -> bt_render::CellMetrics {
+    Fonts::new(&FontConfig {
+        scale,
+        adjust,
+        ..FontConfig::default()
+    })
+    .unwrap()
+    .metrics()
+}
+
+#[test]
+fn underline_position_and_thickness_adjust() {
+    let base = metrics_of(MetricAdjust::default(), 2.0);
+    let m = |a: MetricAdjust| metrics_of(a, 2.0);
+    // 위치: 양수는 아래로, 음수는 위로(셀 위에서 잰다). 포인트는 화면 배율을 곱한다
+    let up = m(MetricAdjust {
+        underline_position: Some(Adjust::Points(-1.0)),
+        ..Default::default()
+    });
+    assert_eq!(up.underline_offset, base.underline_offset - 2);
+    // 셀 밖으로 나가지 않는다
+    let far = m(MetricAdjust {
+        underline_position: Some(Adjust::Points(100.0)),
+        ..Default::default()
+    });
+    assert_eq!(far.underline_offset, far.height - far.underline_thickness);
+    // 두께: 퍼센트·포인트, 1픽셀 밑으로는 내려가지 않는다
+    let thick = m(MetricAdjust {
+        underline_thickness: Some(Adjust::Percent(200.0)),
+        ..Default::default()
+    });
+    assert_eq!(thick.underline_thickness, base.underline_thickness * 3);
+    let plus = m(MetricAdjust {
+        underline_thickness: Some(Adjust::Points(1.0)),
+        ..Default::default()
+    });
+    assert_eq!(plus.underline_thickness, base.underline_thickness + 2);
+    let none = m(MetricAdjust {
+        underline_thickness: Some(Adjust::Points(-50.0)),
+        ..Default::default()
+    });
+    assert_eq!(none.underline_thickness, 1);
+    // 다른 값은 그대로
+    assert_eq!(plus.strike_thickness, base.strike_thickness);
+    assert_eq!(plus.stroke, base.stroke);
+}
+
+#[test]
+fn strikethrough_and_overline_adjust() {
+    let base = metrics_of(MetricAdjust::default(), 1.0);
+    let m = metrics_of(
+        MetricAdjust {
+            strikethrough_position: Some(Adjust::Points(2.0)),
+            strikethrough_thickness: Some(Adjust::Points(1.0)),
+            overline_position: Some(Adjust::Points(3.0)),
+            overline_thickness: Some(Adjust::Percent(200.0)),
+            ..Default::default()
+        },
+        1.0,
+    );
+    assert_eq!(m.strike_offset, base.strike_offset + 2);
+    assert_eq!(m.strike_thickness, base.strike_thickness + 1);
+    assert_eq!(m.overline_offset, base.overline_offset + 3);
+    assert_eq!(m.overline_thickness, base.overline_thickness * 3);
+    assert_eq!(m.underline_offset, base.underline_offset);
+}
+
+#[test]
+fn cursor_baseline_and_box_adjust() {
+    let base = metrics_of(MetricAdjust::default(), 1.0);
+    let m = metrics_of(
+        MetricAdjust {
+            cursor_height: Some(Adjust::Points(-4.0)),
+            cursor_thickness: Some(Adjust::Points(2.0)),
+            box_thickness: Some(Adjust::Points(1.0)),
+            baseline: Some(Adjust::Points(2.0)),
+            ..Default::default()
+        },
+        1.0,
+    );
+    assert_eq!(m.cursor_height, base.cursor_height - 4);
+    assert_eq!(m.cursor_beam, base.cursor_beam + 2);
+    assert_eq!(m.cursor_hollow, base.cursor_hollow + 2);
+    assert_eq!(m.box_thickness, base.box_thickness + 1);
+    // 기준선은 셀 아래에서 잰 거리: 늘리면 글자가 위로(셀 위에서 잰 값은 줄어든다)
+    assert_eq!(m.baseline, base.baseline - 2);
+    assert_eq!((m.width, m.height), (base.width, base.height));
+    // 퍼센트 커서 높이는 셀 높이 기준
+    let half = metrics_of(
+        MetricAdjust {
+            cursor_height: Some(Adjust::Percent(-50.0)),
+            ..Default::default()
+        },
+        1.0,
+    );
+    assert_eq!(half.cursor_height, (base.height as f32 * 0.5).round() as u32);
+}
+
+fn blank(ch: char) -> DrawCell {
+    DrawCell {
+        ch,
+        fg: Rgb::new(255, 255, 255),
+        bg: Rgb::new(0, 0, 0),
+        bold: false,
+        italic: false,
+        underline: false,
+        strike: false,
+        wide: false,
+        spacer: false,
+        selected: false,
+        emoji: false,
+        cluster: None,
+        cluster_cells: 0,
+    }
+}
+
+/// 셀 한 줄을 그린다(바탕 검정, 글자 흰색). 픽셀과 크기를 돌려준다
+fn draw_row(f: &mut Fonts, cells: &[DrawCell], cursor: Option<DrawCursor>) -> (Vec<u32>, u32, u32) {
+    let m = f.metrics();
+    let (w, h) = (m.width * cells.len() as u32, m.height);
+    let mut buf = vec![0u32; (w * h) as usize];
+    let t = Theme::default();
+    let view = GridView {
+        cols: cells.len(),
+        rows: 1,
+        cells,
+        cursor,
+        selection_bg: t.selection_background,
+        selection_fg: t.selection_foreground,
+        preedit: None,
+        min_contrast: 1.0,
+    };
+    let mut c = Canvas::new(&mut buf, w, h);
+    c.clear(Rgb::new(0, 0, 0));
+    draw_grid(&mut c, f, 0, 0, &view);
+    (buf, w, h)
+}
+
+/// 한 열에서 밝은(흰색에 가까운) 픽셀이 있는 줄들
+fn lit_rows(buf: &[u32], w: u32, h: u32, x: u32) -> Vec<u32> {
+    (0..h)
+        .filter(|&y| Rgb::from_u32(buf[(y * w + x) as usize]).r > 200)
+        .collect()
+}
+
+fn fonts_with(adjust: MetricAdjust) -> Fonts {
+    Fonts::new(&FontConfig {
+        adjust,
+        ..FontConfig::default()
+    })
+    .unwrap()
+}
+
+#[test]
+fn underline_is_drawn_at_adjusted_row_and_thickness() {
+    let mut cell = blank(' ');
+    cell.underline = true;
+    let mut f = fonts_with(MetricAdjust::default());
+    let m0 = f.metrics();
+    let (b, w, h) = draw_row(&mut f, &[cell.clone()], None);
+    let base = lit_rows(&b, w, h, 0);
+    assert_eq!(base.first().copied(), Some(m0.underline_offset));
+    assert_eq!(base.len() as u32, m0.underline_thickness);
+
+    let mut f = fonts_with(MetricAdjust {
+        underline_position: Some(Adjust::Points(-2.0)),
+        underline_thickness: Some(Adjust::Points(2.0)),
+        ..Default::default()
+    });
+    let (b, w, h) = draw_row(&mut f, &[cell], None);
+    let rows = lit_rows(&b, w, h, 0);
+    assert_eq!(rows.first().copied(), Some(m0.underline_offset - 2));
+    assert_eq!(rows.len() as u32, m0.underline_thickness + 2);
+}
+
+#[test]
+fn strikethrough_is_drawn_at_adjusted_row_and_thickness() {
+    let mut cell = blank(' ');
+    cell.strike = true;
+    let mut f = fonts_with(MetricAdjust::default());
+    let m0 = f.metrics();
+    let (b, w, h) = draw_row(&mut f, &[cell.clone()], None);
+    assert_eq!(lit_rows(&b, w, h, 0).first().copied(), Some(m0.strike_offset));
+
+    let mut f = fonts_with(MetricAdjust {
+        strikethrough_position: Some(Adjust::Points(-3.0)),
+        strikethrough_thickness: Some(Adjust::Points(2.0)),
+        ..Default::default()
+    });
+    let (b, w, h) = draw_row(&mut f, &[cell], None);
+    let rows = lit_rows(&b, w, h, 0);
+    assert_eq!(rows.first().copied(), Some(m0.strike_offset - 3));
+    assert_eq!(rows.len() as u32, m0.strike_thickness + 2);
+}
+
+fn cursor_at(style: CursorStyle) -> DrawCursor {
+    DrawCursor {
+        col: 0,
+        row: 0,
+        style,
+        wide: false,
+        color: Rgb::new(255, 255, 255),
+        text_color: Rgb::new(0, 0, 0),
+        opacity: 1.0,
+    }
+}
+
+#[test]
+fn cursor_height_and_thickness_adjust() {
+    let cells = [blank(' '), blank(' ')];
+    let mut f = fonts_with(MetricAdjust::default());
+    let m0 = f.metrics();
+    let (b, w, h) = draw_row(&mut f, &cells, Some(cursor_at(CursorStyle::Beam)));
+    assert_eq!(lit_rows(&b, w, h, 0).len() as u32, m0.height, "기본은 셀 높이");
+
+    let mut f = fonts_with(MetricAdjust {
+        cursor_height: Some(Adjust::Points(-4.0)),
+        cursor_thickness: Some(Adjust::Points(2.0)),
+        ..Default::default()
+    });
+    let (b, w, h) = draw_row(&mut f, &cells, Some(cursor_at(CursorStyle::Beam)));
+    let rows = lit_rows(&b, w, h, 0);
+    assert_eq!(rows.len() as u32, m0.height - 4);
+    assert_eq!(rows.first().copied(), Some(2), "셀 가운데에 둔다");
+    // 막대 두께: 가운데 줄에서 밝은 칸 수
+    let mid = h / 2;
+    let thick = (0..w)
+        .filter(|&x| Rgb::from_u32(b[(mid * w + x) as usize]).r > 200)
+        .count() as u32;
+    assert_eq!(thick, m0.cursor_beam + 2);
+
+    // 블록 커서도 높이를 따른다
+    let (b, w, h) = draw_row(&mut f, &cells, Some(cursor_at(CursorStyle::Block)));
+    assert_eq!(lit_rows(&b, w, h, 0).len() as u32, m0.height - 4);
+}
+
+#[test]
+fn box_thickness_adjusts_line_drawing() {
+    let cells = [blank('─')];
+    let mut f = fonts_with(MetricAdjust::default());
+    let (b, w, h) = draw_row(&mut f, &cells, None);
+    let base = lit_rows(&b, w, h, 0).len();
+    let mut f = fonts_with(MetricAdjust {
+        box_thickness: Some(Adjust::Points(2.0)),
+        ..Default::default()
+    });
+    let (b, w, h) = draw_row(&mut f, &cells, None);
+    assert_eq!(lit_rows(&b, w, h, 0).len(), base + 2);
+}
+
+#[test]
+fn font_baseline_moves_glyphs_up() {
+    let top_of = |f: &mut Fonts| {
+        let (b, w, h) = draw_row(f, &[blank('x')], None);
+        (0..h)
+            .find(|&y| (0..w).any(|x| Rgb::from_u32(b[(y * w + x) as usize]).r > 100))
+            .unwrap()
+    };
+    let mut f = fonts_with(MetricAdjust::default());
+    let base = top_of(&mut f);
+    let mut f = fonts_with(MetricAdjust {
+        baseline: Some(Adjust::Points(2.0)),
+        ..Default::default()
+    });
+    assert_eq!(top_of(&mut f), base - 2);
+}
+
+/// 가변 글꼴(wght 축이 있는 것)을 찾는다. 없으면 건너뛴다
+fn variable_font() -> Option<(fontdb::Database, String)> {
+    for path in [
+        "/System/Library/Fonts/SFNSMono.ttf",
+        "/System/Library/Fonts/SFNS.ttf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf",
+    ] {
+        let Ok(data) = std::fs::read(path) else { continue };
+        let Some(font) = swash::FontRef::from_index(&data, 0) else {
+            continue;
+        };
+        if font.variations().find_by_tag(swash::tag_from_bytes(b"wght")).is_none() {
+            continue;
+        }
+        let mut db = fontdb::Database::new();
+        db.load_font_data(data);
+        let name = db.faces().next()?.families.first()?.0.clone();
+        return Some((db, name));
+    }
+    eprintln!("건너뜀: 가변 글꼴이 없다");
+    None
+}
+
+fn ink_sum(g: &bt_render::font::Glyph) -> u32 {
+    g.bitmap.iter().map(|&v| v as u32).sum()
+}
+
+#[test]
+fn font_variation_changes_glyph_weight_per_style() {
+    let Some((db, name)) = variable_font() else { return };
+    let make = |variation: Vec<([u8; 4], f32)>, bold: Vec<([u8; 4], f32)>| {
+        Fonts::with_database(
+            &db,
+            &FontConfig {
+                family: Some(name.clone()),
+                variation,
+                variation_bold: bold,
+                ..FontConfig::default()
+            },
+        )
+        .unwrap()
+    };
+    let mut thin = make(vec![(*b"wght", 100.0)], vec![]);
+    let mut heavy = make(vec![(*b"wght", 800.0)], vec![]);
+    let t = ink_sum(&thin.glyph('l', bt_render::FontStyle::Regular).unwrap());
+    let h = ink_sum(&heavy.glyph('l', bt_render::FontStyle::Regular).unwrap());
+    assert!(h > t * 3 / 2, "wght=800({h})이 wght=100({t})보다 확실히 굵어야 한다");
+
+    // 굵은 꼴에만 쓰는 값: 보통 꼴은 그대로, 굵은 꼴만 바뀐다
+    let mut only_bold = make(vec![(*b"wght", 100.0)], vec![(*b"wght", 800.0)]);
+    let r = ink_sum(&only_bold.glyph('l', bt_render::FontStyle::Regular).unwrap());
+    let b = ink_sum(&only_bold.glyph('l', bt_render::FontStyle::Bold).unwrap());
+    assert_eq!(r, t);
+    assert_eq!(b, h);
+}
