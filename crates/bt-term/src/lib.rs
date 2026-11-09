@@ -19,5 +19,6 @@ pub use notify::{Notification, PromptMark, Signal};
 pub use process::Foreground;
 pub use screen::{Cell, CellFlags, Cursor, CursorShape, ImageView, Modes, Screen};
 pub use session::{
-    ClipboardReply, CommandRecord, Emulator, EventSink, GridSize, SelectKind, Session, SessionEvent, SpawnOptions,
+    ClipboardReply, CommandRecord, Emulator, EventSink, GridSize, SelectKind, SelectionAdjust, Session, SessionEvent,
+    SpawnOptions,
 };

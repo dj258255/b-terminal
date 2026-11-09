@@ -1792,6 +1792,21 @@ impl App {
             }
             Action::Quit => self.request(Pending::Quit, event_loop),
             Action::WriteFile(source, then) => self.write_file(source, then),
+            Action::AdjustSelection(adj) => {
+                if let Some(t) = self.active_pane() {
+                    t.session.adjust_selection(adj);
+                }
+            }
+            Action::CopyUrl => {
+                // 마우스 아래 링크(화면 글의 URL·OSC 8). 없으면 아무것도 안 한다
+                if let Some((_, hit)) = self.link_under(self.w.cursor_pos) {
+                    let url = bt_core::proto::printable(&hit.url);
+                    if let Some(cb) = self.clipboard.as_mut() {
+                        let _ = cb.set_text(url.clone());
+                    }
+                    self.toast(format!("링크 주소를 복사했습니다: {url}"));
+                }
+            }
             Action::PromptSurfaceTitle => {
                 if let Some(p) = self.active_pane() {
                     let (id, now) = (p.id, p.user_title.clone().unwrap_or_default());

@@ -4,6 +4,8 @@
 
 ## [아직 릴리스하지 않음]
 
+- 키보드로 고르기 늘리기(`adjust_selection`)와 링크 주소 복사(`copy_url_to_clipboard`), Ghostty 동작.
+
 - 여백 키(Ghostty): `window-padding-balance`로 남는 자리를 네 변에 고르게 나누고, `window-padding-color = extend`로 여백을 가장자리 칸의 바탕색으로 칠합니다(vim 상태 줄 같은 색 줄이 창 끝까지 이어짐).
 
 - 커서 키(Ghostty): `cursor-opacity`(0~1)로 커서를 칸 위에 섞어 그리고, `cursor-color`·`cursor-text`에 `cell-foreground`·`cell-background`를 주면 커서 칸의 색을 씁니다.
