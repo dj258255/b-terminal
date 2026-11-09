@@ -13,6 +13,7 @@ mod session;
 
 pub use input::{
     KittyFlags, Mods, NamedKey, encode_char_kitty, encode_named, encode_named_kitty, encode_paste, encode_text,
+    paste_is_safe,
 };
 pub use notify::{Notification, PromptMark, Signal};
 pub use process::Foreground;

@@ -102,6 +102,10 @@ pub struct Config {
     pub clipboard_write: bool,
     /// OSC 52로 프로그램이 클립보드를 읽는 것을 허용(기본 금지. Ghostty 기본은 ask)
     pub clipboard_read: bool,
+    /// 위험해 보이는 붙여넣기(괄호 붙여넣기가 꺼진 프로그램에 줄바꿈)를 묻는다(Ghostty `clipboard-paste-protection`, #109)
+    pub paste_protection: bool,
+    /// 괄호 붙여넣기 모드의 붙여넣기는 안전으로 본다(Ghostty `clipboard-paste-bracketed-safe`)
+    pub paste_bracketed_safe: bool,
     /// 분할에서 고르지 않은 칸의 불투명도(0.15~1). 낮을수록 흐리게 덮는다(Ghostty 기본 0.7)
     pub unfocused_split_opacity: f32,
     /// 고르지 않은 칸을 덮는 색. 없으면 바탕색
@@ -217,6 +221,8 @@ impl Default for Config {
             mouse_reset_on_shell: true,
             clipboard_write: true,
             clipboard_read: false,
+            paste_protection: true,
+            paste_bracketed_safe: true,
             shell_integration: "detect".into(),
             notify_command_seconds: 10,
             unfocused_split_opacity: 0.7,
@@ -654,6 +660,14 @@ impl Config {
                 "deny" | "false" | "ask" => self.clipboard_read = false,
                 _ => bad(warnings),
             },
+            "clipboard-paste-protection" => match parse_bool(v) {
+                Some(b) => self.paste_protection = b,
+                None => bad(warnings),
+            },
+            "clipboard-paste-bracketed-safe" => match parse_bool(v) {
+                Some(b) => self.paste_bracketed_safe = b,
+                None => bad(warnings),
+            },
             "mouse-reset-on-shell" => self.mouse_reset_on_shell = parse_bool(v).unwrap_or(true),
             "window-save-state" => match v {
                 "default" | "always" => self.window_save_state = true,
@@ -787,6 +801,8 @@ impl Config {
             .map(|(on, name)| if on { name } else { "" })
             .filter(|n| !n.is_empty())
             .collect();
+        push("clipboard-paste-protection", self.paste_protection.to_string());
+        push("clipboard-paste-bracketed-safe", self.paste_bracketed_safe.to_string());
         push(
             "confirm-close-surface",
             match self.confirm_close {
@@ -828,7 +844,6 @@ const KNOWN_IGNORED: &[&str] = &[
     "auto-update-channel",
     "minimum-contrast",
     "link-url",
-    "clipboard-paste-protection",
     "resize-overlay",
     "gtk-titlebar",
     "gtk-single-instance",
@@ -1012,6 +1027,27 @@ mod tests {
         assert!(!Config::from_text("window-save-state = never\n", true).window_save_state);
         assert!(Config::from_text("window-save-state = always\n", true).window_save_state);
         assert_eq!(Config::from_text("window-save-state = maybe\n", true).warnings.len(), 1);
+    }
+
+    #[test]
+    fn paste_protection_keys() {
+        let d = Config::default();
+        assert!(
+            d.paste_protection && d.paste_bracketed_safe,
+            "Ghostty 기본은 둘 다 true"
+        );
+        let c = Config::from_text(
+            "clipboard-paste-protection = false\nclipboard-paste-bracketed-safe = false\n",
+            true,
+        );
+        assert!(!c.paste_protection && !c.paste_bracketed_safe);
+        assert!(c.warnings.is_empty(), "{:?}", c.warnings);
+        assert_eq!(
+            Config::from_text("clipboard-paste-protection = ask\n", true)
+                .warnings
+                .len(),
+            1
+        );
     }
 
     #[test]
