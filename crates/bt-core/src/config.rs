@@ -116,6 +116,13 @@ pub struct Config {
     /// 처음 창 크기(셀)
     pub window_width: Option<u16>,
     pub window_height: Option<u16>,
+    /// 새 창을 최대화로 띄운다(Ghostty `maximize`, #148). 퀵 터미널 창에는 적용하지 않는다
+    pub maximize: bool,
+    /// 새 창을 전체 화면으로 띄운다(Ghostty `fullscreen`, #148)
+    pub fullscreen: bool,
+    /// 첫 창 자리(Ghostty `window-position-x`·`-y`, #148). 둘 다 있어야 쓴다
+    pub window_position_x: Option<i32>,
+    pub window_position_y: Option<i32>,
     pub option_as_alt: OptionAsAlt,
     pub scrollback_lines: usize,
     pub copy_on_select: CopyOnSelect,
@@ -506,6 +513,10 @@ impl Default for Config {
             padding_y: (2.0, 2.0),
             window_width: None,
             window_height: None,
+            maximize: false,
+            fullscreen: false,
+            window_position_x: None,
+            window_position_y: None,
             option_as_alt: OptionAsAlt::None,
             scrollback_lines: 10_000,
             copy_on_select: CopyOnSelect::True,
@@ -1076,6 +1087,24 @@ impl Config {
             },
             "window-width" => self.window_width = v.parse::<u16>().ok().filter(|n| *n >= 10),
             "window-height" => self.window_height = v.parse::<u16>().ok().filter(|n| *n >= 4),
+            "maximize" => match parse_bool(v) {
+                Some(b) => self.maximize = b,
+                None => bad(warnings),
+            },
+            // Ghostty는 non-native 값도 받는다. 여기서는 모두 같은 전체 화면으로 띄운다
+            "fullscreen" => match v {
+                "true" | "non-native" | "non-native-visible-menu" | "non-native-padded-notch" => self.fullscreen = true,
+                "false" => self.fullscreen = false,
+                _ => bad(warnings),
+            },
+            "window-position-x" => match v.parse::<i32>() {
+                Ok(n) => self.window_position_x = Some(n),
+                Err(_) => bad(warnings),
+            },
+            "window-position-y" => match v.parse::<i32>() {
+                Ok(n) => self.window_position_y = Some(n),
+                Err(_) => bad(warnings),
+            },
             "macos-option-as-alt" => match v {
                 "true" => self.option_as_alt = OptionAsAlt::Both,
                 "false" => self.option_as_alt = OptionAsAlt::None,
@@ -1725,6 +1754,23 @@ mod tests {
         assert_eq!(c.font_size, 13.0);
         assert_eq!(c.cursor_style, CursorStyle::Block);
         assert_eq!(c.warnings.len(), 3);
+    }
+
+    #[test]
+    fn startup_window_keys() {
+        let d = Config::default();
+        assert!(!d.maximize && !d.fullscreen);
+        assert_eq!((d.window_position_x, d.window_position_y), (None, None));
+        let c = Config::from_text(
+            "maximize = true\nfullscreen = true\nwindow-position-x = 40\nwindow-position-y = -20\n",
+            true,
+        );
+        assert!(c.maximize && c.fullscreen);
+        assert_eq!((c.window_position_x, c.window_position_y), (Some(40), Some(-20)));
+        assert!(c.warnings.is_empty());
+        assert!(Config::from_text("fullscreen = non-native\n", true).fullscreen);
+        assert_eq!(Config::from_text("maximize = yes\n", true).warnings.len(), 1);
+        assert_eq!(Config::from_text("window-position-x = left\n", true).warnings.len(), 1);
     }
 
     #[test]

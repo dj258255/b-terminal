@@ -13,6 +13,7 @@ mod palette;
 mod quick;
 mod shellint;
 mod split;
+mod startup;
 mod state;
 mod tabbar;
 

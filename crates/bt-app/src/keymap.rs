@@ -80,6 +80,10 @@ pub enum Action {
     SetSurfaceTitle(String),
     /// 전체 화면 켜고 끄기(Ghostty `toggle_fullscreen`, #126)
     ToggleFullscreen,
+    /// 창 최대화 켜고 끄기(Ghostty `toggle_maximize`, #148)
+    ToggleMaximize,
+    /// 창을 다른 창 위에 항상 띄우기 켜고 끄기(Ghostty `toggle_window_float_on_top`, #148)
+    ToggleFloatOnTop,
     /// 줄 단위 스크롤: 양수면 아래로(Ghostty `scroll_page_lines`)
     ScrollLines(i32),
     /// 화면의 몇 분의 일 스크롤: 양수면 아래로(Ghostty `scroll_page_fractional`)
@@ -275,6 +279,8 @@ pub fn parse_action(s: &str) -> Result<Option<Action>, String> {
         "reload_config" => Action::ReloadConfig,
         "quit" => Action::Quit,
         "toggle_fullscreen" => Action::ToggleFullscreen,
+        "toggle_maximize" => Action::ToggleMaximize,
+        "toggle_window_float_on_top" => Action::ToggleFloatOnTop,
         "prompt_surface_title" => Action::PromptSurfaceTitle,
         "copy_url_to_clipboard" => Action::CopyUrl,
         "adjust_selection" => {
@@ -687,6 +693,11 @@ mod tests {
         assert!(parse_action("navigate_search:sideways").is_err());
         assert!(parse_action("resize_split:left").is_err());
         assert!(parse_action("new_split:diagonal").is_err());
+        assert_eq!(parse_action("toggle_maximize").unwrap(), Some(Action::ToggleMaximize));
+        assert_eq!(
+            parse_action("toggle_window_float_on_top").unwrap(),
+            Some(Action::ToggleFloatOnTop)
+        );
         assert_eq!(
             parse_action("toggle_fullscreen").unwrap(),
             Some(Action::ToggleFullscreen)
