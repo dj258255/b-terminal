@@ -6,6 +6,7 @@ pub mod canvas;
 pub mod cluster;
 pub mod font;
 pub mod grid;
+pub mod scrollbar;
 mod sfnt;
 pub mod text;
 

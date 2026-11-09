@@ -14,6 +14,12 @@ pub struct TabLabel {
     pub progress: Option<(u8, u8)>,
 }
 
+/// 프로그램이 보낸 진행 표시(OSC 9;4)를 받는가: `progress-style`이 꺼져 있으면 조용히 버린다.
+/// 상태 0(지움)도 표시를 남기지 않는다. 받으면 (상태, 퍼센트)
+pub fn accept_progress(style: bool, state: u8, percent: u8) -> Option<(u8, u8)> {
+    (style && state != 0).then_some((state, percent))
+}
+
 /// 진행 막대를 (x, y)에서 폭 w로 그린다. 끝을 모르면(3) 가운데 3분의 1을 칠한다
 pub fn draw_progress(canvas: &mut Canvas, theme: &Theme, x: i32, y: i32, w: u32, p: (u8, u8), h: u32) {
     let (state, percent) = p;
@@ -426,6 +432,14 @@ pub fn draw_resize_overlay(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn progress_is_ignored_when_style_is_off() {
+        assert_eq!(accept_progress(true, 1, 40), Some((1, 40)));
+        assert_eq!(accept_progress(true, 0, 0), None, "상태 0은 지움");
+        assert_eq!(accept_progress(false, 1, 40), None);
+        assert_eq!(accept_progress(false, 3, 0), None);
+    }
 
     #[test]
     fn prompt_bar_keeps_the_end_of_long_text_visible() {
