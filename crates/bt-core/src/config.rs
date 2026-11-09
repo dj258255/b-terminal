@@ -351,6 +351,11 @@ pub struct Config {
     pub font_style_bold_italic: FontStyleName,
     /// 글자 범위마다 정한 글꼴(#174, Ghostty `font-codepoint-map`). 뒤에 쓴 것이 앞의 것을 덮는다
     pub font_codepoint_map: Vec<CodepointFont>,
+    /// 글자 두껍게(#193, Ghostty `font-thicken`·`font-thicken-strength`). 기본 끔·255
+    pub font_thicken: bool,
+    pub font_thicken_strength: u8,
+    /// 없는 굵게·기울임 꼴을 합성할지(#193, Ghostty `font-synthetic-style`). 기본 모두 켬
+    pub font_synthetic_style: SyntheticStyle,
     /// 다듬기(합자)를 끊는 자리(#174, Ghostty `font-shaping-break`)
     pub font_shaping_break: ShapingBreak,
     /// Nerd Font 아이콘 높이 보정(#174, Ghostty `adjust-icon-height`)
@@ -1116,6 +1121,9 @@ impl Default for Config {
             font_style_italic: FontStyleName::Default,
             font_style_bold_italic: FontStyleName::Default,
             font_codepoint_map: Vec::new(),
+            font_thicken: false,
+            font_thicken_strength: 255,
+            font_synthetic_style: SyntheticStyle::default(),
             font_shaping_break: ShapingBreak::default(),
             adjust_icon_height: None,
             theme: Theme::ghostty_default(),
@@ -1605,6 +1613,65 @@ impl FontStyleName {
     }
 }
 
+/// `font-synthetic-style`(Ghostty `FontSyntheticStyle`): 꼴마다, 글꼴에 그 꼴이 없을 때 합성할지. 기본은 모두 켬
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SyntheticStyle {
+    pub bold: bool,
+    pub italic: bool,
+    pub bold_italic: bool,
+}
+
+impl Default for SyntheticStyle {
+    fn default() -> Self {
+        Self {
+            bold: true,
+            italic: true,
+            bold_italic: true,
+        }
+    }
+}
+
+impl SyntheticStyle {
+    /// `true`·`false`나 쉼표로 가른 `bold`·`italic`·`bold-italic`(앞에 `no-`면 끔). 기본값에서 시작해 적은 것만 바꾼다.
+    /// 모르는 이름이 하나라도 있으면 없다
+    pub fn parse(v: &str) -> Option<Self> {
+        let mut out = Self::default();
+        for item in v.split(',').map(str::trim).filter(|i| !i.is_empty()) {
+            let (on, name) = match item.strip_prefix("no-") {
+                Some(n) => (false, n),
+                None => (true, item),
+            };
+            match name {
+                // `true`·`false`는 `no-`가 붙지 않은 것만(`no-true`는 모르는 이름)
+                "true" | "false" if item == name => {
+                    let on = name == "true";
+                    out = Self {
+                        bold: on,
+                        italic: on,
+                        bold_italic: on,
+                    };
+                }
+                "bold" => out.bold = on,
+                "italic" => out.italic = on,
+                "bold-italic" => out.bold_italic = on,
+                _ => return None,
+            }
+        }
+        Some(out)
+    }
+
+    /// `--show-config`에 적는 값(다시 읽으면 같은 값)
+    fn render(self) -> String {
+        let name = |on: bool, n: &str| if on { n.to_string() } else { format!("no-{n}") };
+        [
+            name(self.bold, "bold"),
+            name(self.italic, "italic"),
+            name(self.bold_italic, "bold-italic"),
+        ]
+        .join(",")
+    }
+}
+
 /// `font-codepoint-map` 한 칸: `start..=end` 글자는 `family` 글꼴로
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CodepointFont {
@@ -1760,15 +1827,39 @@ fn set_variation(list: &mut Vec<([u8; 4], f32)>, v: &str, fail: impl FnOnce()) {
 
 /// 글꼴 기능 하나(Ghostty 문법): `calt`·`+calt`는 켬, `-calt`는 끔, `calt=2`는 그 값. 태그는 네 글자(ASCII)
 pub fn parse_font_feature(s: &str) -> Option<([u8; 4], u16)> {
-    let (tag, val) = if let Some(t) = s.strip_prefix('-') {
-        (t, 0)
-    } else if let Some((t, v)) = s.split_once('=') {
-        (t.trim(), v.trim().parse().ok()?)
-    } else {
-        (s.strip_prefix('+').unwrap_or(s), 1)
+    let s = s.trim();
+    // 앞의 `+`는 켬, `-`는 끔(값을 따로 쓸 수 없다)
+    let (sign, rest) = match s.as_bytes().first()? {
+        b'+' => (Some(true), &s[1..]),
+        b'-' => (Some(false), &s[1..]),
+        _ => (None, s),
     };
-    let tag: [u8; 4] = tag.as_bytes().try_into().ok()?;
-    tag.iter().all(|b| b.is_ascii_graphic()).then_some((tag, val))
+    // 이름: 따옴표로 감쌌으면 그 안, 아니면 공백·`=` 앞까지(CSS `font-feature-settings`와 같은 모양)
+    let (name, tail) = match rest.chars().next()? {
+        q @ ('"' | '\'') => {
+            let body = &rest[1..];
+            let end = body.find(q)?;
+            (&body[..end], &body[end + 1..])
+        }
+        _ => {
+            let end = rest.find(|c: char| c.is_whitespace() || c == '=').unwrap_or(rest.len());
+            (&rest[..end], &rest[end..])
+        }
+    };
+    let tag: [u8; 4] = name.as_bytes().try_into().ok()?;
+    if !tag.iter().all(|b| b.is_ascii_graphic()) {
+        return None;
+    }
+    let tail = tail.trim();
+    let tail = tail.strip_prefix('=').map_or(tail, str::trim);
+    let val = match (sign, tail) {
+        (Some(on), "") => u16::from(on),
+        (Some(_), _) => return None,
+        (None, "") | (None, "on") => 1,
+        (None, "off") => 0,
+        (None, v) => v.parse().ok()?,
+    };
+    Some((tag, val))
 }
 
 /// 맨 아래로 스크롤하는 때(Ghostty `scroll-to-bottom`, #147)
@@ -2166,6 +2257,18 @@ impl Config {
                     bad(warnings);
                 }
             }
+            "font-thicken" => match parse_bool(v) {
+                Some(b) => self.font_thicken = b,
+                None => bad(warnings),
+            },
+            "font-thicken-strength" => match v.parse::<u8>() {
+                Ok(n) => self.font_thicken_strength = n,
+                Err(_) => bad(warnings),
+            },
+            "font-synthetic-style" => match SyntheticStyle::parse(v) {
+                Some(x) => self.font_synthetic_style = x,
+                None => bad(warnings),
+            },
             "font-style" => self.font_style = FontStyleName::parse(v),
             "font-style-bold" => self.font_style_bold = FontStyleName::parse(v),
             "font-style-italic" => self.font_style_italic = FontStyleName::parse(v),
@@ -2841,6 +2944,15 @@ impl Config {
                 },
             );
         }
+        if self.font_thicken {
+            push("font-thicken", "true".into());
+        }
+        if self.font_thicken_strength != 255 {
+            push("font-thicken-strength", self.font_thicken_strength.to_string());
+        }
+        if self.font_synthetic_style != SyntheticStyle::default() {
+            push("font-synthetic-style", self.font_synthetic_style.render());
+        }
         push("font-size", format!("{}", self.font_size));
         push("background", hex(t.background));
         push("foreground", hex(t.foreground));
@@ -3134,10 +3246,6 @@ impl Config {
 
 /// Ghostty에 있지만 b-terminal이 일부러 쓰지 않는 키(경고하지 않는다). 화면 모양·창 장식처럼 지금 그릴 수 없는 것
 const KNOWN_IGNORED: &[&str] = &[
-    "font-feature",
-    "font-thicken",
-    "font-thicken-strength",
-    "font-synthetic-style",
     "background-blur",
     "background-blur-radius",
     "window-decoration",
@@ -4992,6 +5100,106 @@ mod tests {
         assert!(c.render().contains("font-feature = -liga"));
         let c = Config::from_text("font-feature = -calt\nfont-feature =\n", false);
         assert!(c.font_features.is_empty());
+    }
+
+    /// #193: font-feature는 Ghostty 문법대로 따옴표·`on`/`off`·공백 값도 읽는다
+    #[test]
+    fn font_feature_syntax_variants() {
+        type Feat = Option<([u8; 4], u16)>;
+        let cases: &[(&str, Feat)] = &[
+            ("calt on", Some((*b"calt", 1))),
+            ("calt off", Some((*b"calt", 0))),
+            ("calt = 0", Some((*b"calt", 0))),
+            ("ss01 3", Some((*b"ss01", 3))),
+            ("cv01 = 4", Some((*b"cv01", 4))),
+            ("\"calt\"", Some((*b"calt", 1))),
+            ("\"calt\" off", Some((*b"calt", 0))),
+            ("-\"liga\"", Some((*b"liga", 0))),
+            ("'ss02'=2", Some((*b"ss02", 2))),
+            ("+ss03", Some((*b"ss03", 1))),
+            ("calt maybe", None),
+            ("-calt=1", None),
+            ("\"calt", None),
+            ("", None),
+        ];
+        for (text, want) in cases {
+            assert_eq!(parse_font_feature(text), *want, "{text:?}");
+        }
+        let c = Config::from_text("font-feature = \"calt\" off, ss01 on\n", false);
+        assert_eq!(c.font_features, vec![(*b"calt", 0), (*b"ss01", 1)]);
+    }
+
+    /// #193: font-thicken은 기본 끔, 강도는 0~255(기본 255). 범위 밖·글자는 경고하고 앞 값을 둔다
+    #[test]
+    fn font_thicken_keys() {
+        let d = Config::default();
+        assert!(!d.font_thicken);
+        assert_eq!(d.font_thicken_strength, 255);
+        let c = Config::from_text("font-thicken = true\nfont-thicken-strength = 0\n", true);
+        assert!(c.font_thicken);
+        assert_eq!(c.font_thicken_strength, 0);
+        assert!(c.warnings.is_empty(), "{:?}", c.warnings);
+        let c = Config::from_text(
+            "font-thicken-strength = 128\nfont-thicken-strength = 256\nfont-thicken = yes\n",
+            true,
+        );
+        assert_eq!(c.font_thicken_strength, 128);
+        assert!(!c.font_thicken);
+        assert_eq!(c.warnings.len(), 2, "{:?}", c.warnings);
+    }
+
+    /// #193: font-synthetic-style은 기본 모두 켬. true/false, 쉼표 목록, `no-` 접두. 모르는 이름은 경고하고 앞 값을 둔다
+    #[test]
+    fn font_synthetic_style_key() {
+        assert_eq!(Config::default().font_synthetic_style, SyntheticStyle::default());
+        let on = SyntheticStyle::default();
+        let off = SyntheticStyle {
+            bold: false,
+            italic: false,
+            bold_italic: false,
+        };
+        let cases = [
+            ("true", on),
+            ("false", off),
+            ("no-bold", SyntheticStyle { bold: false, ..on }),
+            (
+                "no-bold,no-italic",
+                SyntheticStyle {
+                    bold: false,
+                    italic: false,
+                    ..on
+                },
+            ),
+            (
+                "no-bold-italic",
+                SyntheticStyle {
+                    bold_italic: false,
+                    ..on
+                },
+            ),
+            ("false,bold", SyntheticStyle { bold: true, ..off }),
+            ("", on),
+        ];
+        for (text, want) in cases {
+            let c = Config::from_text(&format!("font-synthetic-style = {text}\n"), true);
+            assert_eq!(c.font_synthetic_style, want, "{text:?}");
+            assert!(c.warnings.is_empty(), "{text:?} {:?}", c.warnings);
+        }
+        let c = Config::from_text("font-synthetic-style = no-bold\nfont-synthetic-style = wobble\n", true);
+        assert!(!c.font_synthetic_style.bold, "읽지 못한 줄은 앞 값을 그대로 둔다");
+        assert_eq!(c.warnings.len(), 1, "{:?}", c.warnings);
+        // 이제 알고 있는 키라서 "모르는 설정" 경고가 아니다
+        let c = Config::from_text("font-thicken = true\nfont-feature = -calt\n", true);
+        assert!(c.warnings.is_empty(), "{:?}", c.warnings);
+        // --show-config는 다시 읽어도 같은 값
+        let c = Config::from_text(
+            "font-thicken = true\nfont-thicken-strength = 7\nfont-synthetic-style = no-italic\n",
+            true,
+        );
+        let again = Config::from_text(&c.render(), true);
+        assert!(again.font_thicken);
+        assert_eq!(again.font_thicken_strength, 7);
+        assert_eq!(again.font_synthetic_style, c.font_synthetic_style);
     }
 
     #[test]

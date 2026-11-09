@@ -107,6 +107,9 @@ fn font_config(c: &AppConfig, size: f32, scale: f32) -> FontConfig {
         ],
         codepoint_map: c.font_codepoint_map.clone(),
         shaping_break_cursor: c.font_shaping_break.cursor,
+        thicken: c.font_thicken,
+        thicken_strength: c.font_thicken_strength,
+        synthetic: c.font_synthetic_style,
     }
 }
 
