@@ -313,6 +313,17 @@ enum Pending {
     },
 }
 
+impl Pending {
+    /// 이 확인이 `leaves` 중 한 칸에 매여 있는가. 탭을 다른 창으로 옮길 때 그 막대를 닫아야 하는지 가른다(#223).
+    /// 창·앱 전체를 묻는 것(창 닫기·모두 닫기·끝내기)은 칸에 매이지 않는다
+    fn binds_to(&self, leaves: &[u64]) -> bool {
+        match self {
+            Pending::ClosePane(id) | Pending::CloseTab(id) | Pending::Paste { pane: id, .. } => leaves.contains(id),
+            Pending::CloseWindow | Pending::CloseAllWindows | Pending::Quit => false,
+        }
+    }
+}
+
 /// 창 위에 띄운 확인 막대: Enter·y면 한다, Esc·n이면 그만둔다
 struct Confirm {
     pending: Pending,
@@ -3269,13 +3280,33 @@ impl App {
         }) {
             self.w.title_prompt = None;
         }
+        // 옮긴 칸을 가리키는 확인 막대(칸 닫기·탭 닫기·붙여넣기)도 남는 창에서 닫는다(#223)
+        if self.w.confirm.as_ref().is_some_and(|c| c.pending.binds_to(&leaves)) {
+            self.w.confirm = None;
+        }
         let id = gfx.window.id();
+        let old_focused = self.w.focused;
+        let new_focused = gfx.window.has_focus();
+        let moved_focus = moved.focus;
         let mut win = Win::new();
-        win.focused = gfx.window.has_focus();
+        win.focused = new_focused;
         win.gfx = Some(gfx);
         win.tabs.push(moved);
         let mut old = std::mem::replace(&mut self.w, win);
         old.focused = false;
+        // 옮긴 칸에 초점 보고(DEC 1004)를 한 번만 보낸다(#223). 창이 만들어질 때 이미 초점이 있으면 뒤따르는
+        // 포커스 사건은 상태가 같아 건너뛰므로(WindowEvent::Focused) 중복되지 않는다
+        let plan = crate::winact::move_focus_plan(old_focused, new_focused);
+        if let Some(i) = self.pane_index(moved_focus) {
+            if self.panes[i].session.modes().focus_events {
+                if plan.lose {
+                    self.panes[i].session.write(b"\x1b[O");
+                }
+                if plan.gain {
+                    self.panes[i].session.write(b"\x1b[I");
+                }
+            }
+        }
         self.others.push(old);
         self.quit_deadline = None;
         self.last_focused = Some(id);
@@ -3535,6 +3566,13 @@ impl App {
                 .find(|p| p.id == id)
                 .and_then(|p| p.cwd.clone().or_else(|| p.session.cwd()))
         };
+        // 사람이 붙인 칸 제목만 적는다. 프로그램이 OSC로 정한 제목(`Pane::title`)은 적지 않는다(Ghostty `titleOverride`처럼)
+        let title_of = |id: u64| {
+            self.panes
+                .iter()
+                .find(|p| p.id == id)
+                .and_then(|p| p.user_title.clone())
+        };
         let windows: Vec<crate::state::SavedWindow> = std::iter::once(&self.w)
             .chain(&self.others)
             .filter(|w| !w.tabs.is_empty() && !w.quick)
@@ -3548,12 +3586,14 @@ impl App {
                         .tabs
                         .iter()
                         .map(|t| crate::state::SavedTab {
-                            layout: crate::state::SavedNode::from_node(&t.layout, &cwd_of),
+                            layout: crate::state::SavedNode::from_node(&t.layout, &cwd_of, &title_of),
                             focus: t.layout.leaves().iter().position(|&id| id == t.focus).unwrap_or(0),
                             zoomed: t.zoomed,
+                            title: t.title.clone(),
                         })
                         .collect(),
                     active: w.active,
+                    title: w.window_title.clone(),
                 })
             })
             .collect();
@@ -3619,8 +3659,14 @@ impl App {
                     layout,
                     focus,
                     zoomed: st.zoomed && leaves.len() > 1,
-                    title: None,
+                    // 상태 파일은 보안 경계는 아니지만 믿지 않는다: 읽은 제목도 사람이 친 제목과 같은 규칙을 다시 거친다
+                    title: st.title.as_deref().and_then(clean_user_title),
                 });
+                for (id, t) in leaves.iter().zip(st.layout.pane_titles()) {
+                    if let Some(t) = t.as_deref().and_then(clean_user_title) {
+                        self.set_user_title(*id, &t);
+                    }
+                }
                 restored = true;
             }
             if self.w.tabs.is_empty() {
@@ -3633,6 +3679,7 @@ impl App {
                 continue;
             }
             self.w.active = sw.active.min(self.w.tabs.len() - 1);
+            self.w.window_title = sw.title.as_deref().and_then(clean_user_title);
             self.last_focused = self.w.id();
             self.resize_all();
         }
@@ -4751,6 +4798,7 @@ impl ApplicationHandler<UserEvent> for App {
                 self.update_hover();
             }
             WindowEvent::Focused(focused) => {
+                let was_focused = self.w.focused;
                 self.w.focused = focused;
                 // 퀵 터미널은 포커스를 잃으면 숨는다(Ghostty quick-terminal-autohide 기본과 같다)
                 // 보인 직후(0.5초 안)의 포커스 잃음은 앱이 앞으로 오는 중일 수 있어 무시한다
@@ -4774,9 +4822,12 @@ impl ApplicationHandler<UserEvent> for App {
                     self.clear_visible_unread();
                     self.request_redraw();
                 }
-                if let Some(t) = self.active_pane() {
-                    if t.session.modes().focus_events {
-                        t.session.write(if focused { b"\x1b[I" } else { b"\x1b[O" });
+                // 창 상태가 그대로면 이미 알린 것이다(탭을 새 창으로 옮길 때 미리 정해 둔 경우, #223)
+                if crate::winact::focus_event_changes(was_focused, focused) {
+                    if let Some(t) = self.active_pane() {
+                        if t.session.modes().focus_events {
+                            t.session.write(if focused { b"\x1b[I" } else { b"\x1b[O" });
+                        }
                     }
                 }
             }
@@ -5356,6 +5407,43 @@ mod tests {
         let cells = to_draw_cells(&s, &theme);
         assert_eq!((cells[1].fg, cells[1].bg), (theme.background, red));
         assert_eq!((cells[2].fg, cells[2].bg), (Rgb::new(9, 9, 9), Rgb::new(1, 2, 3)));
+    }
+
+    #[test]
+    fn confirm_bar_binds_to_moved_panes_only() {
+        let moved = [4u64, 5];
+        assert!(Pending::ClosePane(5).binds_to(&moved));
+        assert!(!Pending::ClosePane(1).binds_to(&moved));
+        assert!(Pending::CloseTab(4).binds_to(&moved));
+        assert!(!Pending::CloseTab(2).binds_to(&moved));
+        assert!(
+            Pending::Paste {
+                pane: 4,
+                text: "a\nb".into()
+            }
+            .binds_to(&moved)
+        );
+        assert!(
+            !Pending::Paste {
+                pane: 9,
+                text: "a\nb".into()
+            }
+            .binds_to(&moved)
+        );
+        // 창·앱 전체를 묻는 막대는 남는 창의 것이다
+        assert!(!Pending::CloseWindow.binds_to(&moved));
+        assert!(!Pending::CloseAllWindows.binds_to(&moved));
+        assert!(!Pending::Quit.binds_to(&moved));
+    }
+
+    #[test]
+    fn saved_titles_are_cleaned_again_on_restore() {
+        // 상태 파일에서 읽은 제목도 사람이 친 제목과 같은 규칙(제어 문자 지우기, 200자, 빈 글은 없음)을 거친다
+        let from_file = |t: &str| Some(t.to_string()).as_deref().and_then(clean_user_title);
+        let t = from_file("빌드\x1b]0;x\x07 서버").unwrap();
+        assert!(!t.chars().any(char::is_control), "{t:?}");
+        assert_eq!(from_file("  \n"), None);
+        assert_eq!(from_file(&"가".repeat(500)).map(|t| t.chars().count()), Some(200));
     }
 
     #[test]

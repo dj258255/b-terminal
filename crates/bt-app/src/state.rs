@@ -24,6 +24,9 @@ pub struct SavedWindow {
     pub position: Option<(i32, i32)>,
     pub tabs: Vec<SavedTab>,
     pub active: usize,
+    /// 사람이 붙인 창 제목(`set_window_title`). 옛 판 파일에는 없다
+    #[serde(default)]
+    pub title: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -32,12 +35,18 @@ pub struct SavedTab {
     /// 고른 칸: 잎 차례(왼쪽·위부터)
     pub focus: usize,
     pub zoomed: bool,
+    /// 사람이 붙인 탭 제목(`set_tab_title`). 옛 판 파일에는 없다
+    #[serde(default)]
+    pub title: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum SavedNode {
     Pane {
         cwd: Option<PathBuf>,
+        /// 사람이 붙인 칸 제목(`set_surface_title`). 옛 판 파일에는 없다
+        #[serde(default)]
+        title: Option<String>,
     },
     Split {
         /// 좌우로 나란히(참) 또는 위아래(거짓)
@@ -50,9 +59,12 @@ pub enum SavedNode {
 
 impl SavedNode {
     /// 분할 트리를 적는다. `cwd(칸 id)`가 칸의 폴더를 준다
-    pub fn from_node(node: &Node, cwd: &dyn Fn(u64) -> Option<PathBuf>) -> Self {
+    pub fn from_node(node: &Node, cwd: &dyn Fn(u64) -> Option<PathBuf>, title: &dyn Fn(u64) -> Option<String>) -> Self {
         match node {
-            Node::Leaf(id) => SavedNode::Pane { cwd: cwd(*id) },
+            Node::Leaf(id) => SavedNode::Pane {
+                cwd: cwd(*id),
+                title: title(*id),
+            },
             Node::Split {
                 axis,
                 ratio,
@@ -61,8 +73,8 @@ impl SavedNode {
             } => SavedNode::Split {
                 horizontal: *axis == Axis::Horizontal,
                 ratio: *ratio,
-                first: Box::new(Self::from_node(first, cwd)),
-                second: Box::new(Self::from_node(second, cwd)),
+                first: Box::new(Self::from_node(first, cwd, title)),
+                second: Box::new(Self::from_node(second, cwd, title)),
             },
         }
     }
@@ -70,10 +82,22 @@ impl SavedNode {
     /// 칸들의 폴더(잎 차례)
     pub fn panes(&self) -> Vec<Option<PathBuf>> {
         match self {
-            SavedNode::Pane { cwd } => vec![cwd.clone()],
+            SavedNode::Pane { cwd, .. } => vec![cwd.clone()],
             SavedNode::Split { first, second, .. } => {
                 let mut v = first.panes();
                 v.extend(second.panes());
+                v
+            }
+        }
+    }
+
+    /// 칸들의 사람이 붙인 제목(잎 차례). 파일에서 읽은 글이라 쓰기 전에 다듬어야 한다
+    pub fn pane_titles(&self) -> Vec<Option<String>> {
+        match self {
+            SavedNode::Pane { title, .. } => vec![title.clone()],
+            SavedNode::Split { first, second, .. } => {
+                let mut v = first.pane_titles();
+                v.extend(second.pane_titles());
                 v
             }
         }
@@ -155,7 +179,12 @@ mod tests {
             *ratio = 0.3;
         }
         let cwd = |id: u64| Some(PathBuf::from(format!("/tmp/p{id}")));
-        let saved = SavedNode::from_node(&t, &cwd);
+        let title = |id: u64| (id != 2).then(|| format!("제목{id}"));
+        let saved = SavedNode::from_node(&t, &cwd, &title);
+        assert_eq!(
+            saved.pane_titles(),
+            vec![Some("제목1".to_string()), None, Some("제목3".to_string())]
+        );
         assert_eq!(saved.panes(), vec![cwd(1), cwd(2), cwd(3)]);
         let mut ids = [10u64, 20, 30].into_iter();
         let back = saved.to_node(&mut ids).unwrap();
@@ -180,11 +209,14 @@ mod tests {
                 tabs: vec![SavedTab {
                     layout: SavedNode::Pane {
                         cwd: Some("/tmp".into()),
+                        title: Some("서버".into()),
                     },
                     focus: 0,
                     zoomed: false,
+                    title: Some("빌드".into()),
                 }],
                 active: 0,
+                title: Some("작업".into()),
             }],
         };
         save(&p, &state).unwrap();
@@ -207,5 +239,21 @@ mod tests {
         std::fs::write(&p, b"{not json").unwrap();
         assert_eq!(load(&p), None, "망가진 파일");
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn old_state_file_without_titles_still_loads() {
+        // 제목 필드가 생기기 전 판(#94)이 적은 모양. 판 번호는 그대로 1이다
+        let old = r#"{"version":1,"windows":[{"size":[800,600],"position":null,
+            "tabs":[{"layout":{"Split":{"horizontal":true,"ratio":0.5,
+              "first":{"Pane":{"cwd":"/tmp"}},"second":{"Pane":{"cwd":null}}}},
+              "focus":0,"zoomed":false}],"active":0}]}"#;
+        let state: SavedState = serde_json::from_str(old).expect("옛 판도 읽혀야 한다");
+        assert_eq!(state.version, VERSION);
+        let w = &state.windows[0];
+        assert_eq!(w.title, None);
+        assert_eq!(w.tabs[0].title, None);
+        assert_eq!(w.tabs[0].layout.pane_titles(), vec![None, None]);
+        assert_eq!(w.tabs[0].layout.panes()[0], Some(PathBuf::from("/tmp")));
     }
 }

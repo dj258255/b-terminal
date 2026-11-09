@@ -68,6 +68,29 @@ pub fn visibility_plan(app_hidden: bool, focused_fullscreen: bool) -> Option<Vis
     }
 }
 
+/// 탭을 새 창으로 옮길 때 옮긴 칸에 보낼 초점 보고(DEC 1004, #223)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MoveFocus {
+    /// `CSI O`: 옛 창에서 초점을 잃었고 새 창은 아직 초점이 없다
+    pub lose: bool,
+    /// `CSI I`: 옛 창에 초점이 없었는데 새 창이 지금 초점을 가졌다
+    pub gain: bool,
+}
+
+/// 옮긴 칸의 초점은 "창이 초점을 가졌는가"를 따른다. 앞뒤가 같으면(옛 창도 새 창도 초점 있음) 칸은 계속 초점
+/// 칸이라 보낼 것이 없고, 새 창이 아직 초점을 못 받았으면 지금 `CSI O`를 보내고 뒤에 오는 포커스 사건이 `CSI I`를 보낸다
+pub fn move_focus_plan(old_window_focused: bool, new_window_focused: bool) -> MoveFocus {
+    MoveFocus {
+        lose: old_window_focused && !new_window_focused,
+        gain: !old_window_focused && new_window_focused,
+    }
+}
+
+/// 창의 포커스 사건이 칸에 보고를 보내야 하는가: 창이 이미 그 상태면 이미 보낸 것이다
+pub fn focus_event_changes(was_focused: bool, now_focused: bool) -> bool {
+    was_focused != now_focused
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -141,5 +164,25 @@ mod tests {
             Some(Visibility::Show),
             "숨은 뒤에는 되살린다"
         );
+    }
+
+    #[test]
+    fn moved_pane_focus_report_plan() {
+        let m = |lose, gain| MoveFocus { lose, gain };
+        // 옛 창도 새 창도 초점: 칸은 계속 초점 칸이다
+        assert_eq!(move_focus_plan(true, true), m(false, false));
+        // 새 창이 아직 초점을 못 받음: 지금 잃음을 알리고 얻음은 포커스 사건이 알린다
+        assert_eq!(move_focus_plan(true, false), m(true, false));
+        // 초점 없는 창에서 옮겼는데 새 창이 초점을 가짐
+        assert_eq!(move_focus_plan(false, true), m(false, true));
+        assert_eq!(move_focus_plan(false, false), m(false, false));
+    }
+
+    #[test]
+    fn focus_event_is_reported_once_per_change() {
+        assert!(focus_event_changes(false, true));
+        assert!(focus_event_changes(true, false));
+        assert!(!focus_event_changes(true, true));
+        assert!(!focus_event_changes(false, false));
     }
 }
