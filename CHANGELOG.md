@@ -4,15 +4,22 @@
 
 ## [아직 릴리스하지 않음]
 
-- 화면을 파일로(`write_scrollback_file`·`write_screen_file`·`write_selection_file`, Ghostty 동작, `copy`·`paste`·`open`): 긴 출력을 편집기로 열거나 경로를 다른 프로그램에 넘깁니다. 파일은 이 사용자 전용 폴더에 0600으로 쓰고 앱이 끝날 때 지웁니다.
+## [0.8.0] - 2026-11-09
 
-- 칸 제목 바꾸기(`prompt_surface_title`·`set_surface_title`, Ghostty 동작): 메뉴 "셸 › 제목 바꾸기…"나 팔레트로 입력 막대를 열어 탭 제목을 붙입니다. 붙인 제목은 프로그램이 정한 제목보다 먼저 보이고, 비우면 원래대로 돌아갑니다.
+Ghostty 키 채우기. 크기 표시, 최소 명암비, 칸 제목 바꾸기, 화면을 파일로, 마우스·창의 작은 키. 추적 이슈 #121.
 
 - 크기 표시(`resize-overlay`·`-position`·`-duration`, Ghostty 키, 기본 `after-first`·`center`·`750ms`): 창이나 분할 칸의 크기가 바뀌면 칸 안에 `80 × 24`를 잠깐 보입니다.
-
 - 최소 명암비(`minimum-contrast`, Ghostty 키, 기본 `1`=끔): 바탕과 너무 비슷한 글자색을 흰색이나 검은색으로 그립니다. 켜면 화면 전체 다시 그리기가 약 0.6ms 늘었습니다(200×60 레티나, 한 번 잰 값).
-
+- 칸 제목 바꾸기(`prompt_surface_title`·`set_surface_title`, Ghostty 동작): 메뉴 "셸 › 제목 바꾸기…"나 팔레트로 입력 막대를 열어 탭 제목을 붙입니다. 붙인 제목은 프로그램이 정한 제목보다 먼저 보이고, 비우면 원래대로 돌아갑니다.
+- 화면을 파일로(`write_scrollback_file`·`write_screen_file`·`write_selection_file`, Ghostty 동작, `copy`·`paste`·`open`): 긴 출력을 편집기로 열거나 경로를 다른 프로그램에 넘깁니다. 파일은 이 사용자 전용 폴더에 0600으로 쓰고 앱이 끝날 때 지웁니다.
 - 마우스·창의 작은 Ghostty 키: `focus-follows-mouse`(마우스가 올라간 칸 고르기), `mouse-scroll-multiplier`(휠 배율, 기본 3·트랙패드 1), `selection-word-chars`(두 번 눌러 고르는 단어의 경계 글자), `toggle_fullscreen` 동작(⌃⌘F), `scroll_page_lines`·`scroll_page_fractional` 동작.
+
+### 알려진 한계
+
+- 이번 판에서 새로 들어온 동작 대부분(칸 제목 입력 막대, 화면을 파일로, 마우스 따라 고르기, 휠 배율, 단어 고르기 경계, 전체 화면)은 키·마우스로 실제로 해 보지 않았고 테스트로만 확인했습니다. 실제 창에서 본 것은 크기 표시뿐입니다.
+- 최소 명암비를 켜면 화면 전체 다시 그리기가 약 0.6ms 늘어납니다(한 번 잰 값).
+- 크기 표시의 `after-first`는 칸을 만든 직후 0.5초를 시간으로 셉니다(Ghostty는 칸의 첫 크기 바뀜을 셉니다).
+- 화면을 파일로 쓴 파일은 앱이 정상으로 끝날 때만 지웁니다.
 
 ## [0.7.0] - 2026-11-09
 
