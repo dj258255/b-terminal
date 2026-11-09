@@ -35,6 +35,8 @@ pub fn action_for(id: &str) -> Option<MenuCommand> {
         "next_tab" => MenuCommand::Action(Action::NextTab),
         "prev_tab" => MenuCommand::Action(Action::PrevTab),
         "quit" => MenuCommand::Action(Action::Quit),
+        // 앱 전체의 보안 키보드 입력(#258). 키 묶음 `toggle_secure_input`(초점 칸 하나)과 다르다
+        "secure_input" => MenuCommand::ToggleSecureKeyboardEntry,
         _ => return None,
     })
 }
@@ -43,11 +45,15 @@ pub fn action_for(id: &str) -> Option<MenuCommand> {
 pub enum MenuCommand {
     Action(Action),
     OpenSettings,
+    /// 앱 메뉴의 보안 키보드 입력(앱 전체로 켜고 끈다)
+    ToggleSecureKeyboardEntry,
 }
 
 #[cfg(target_os = "macos")]
-pub fn build() -> muda::Menu {
-    use muda::{AboutMetadata, Menu, MenuItem, PredefinedMenuItem, Submenu};
+/// 메뉴와, 체크 표시를 맞추려고 따로 들고 있을 보안 키보드 입력 항목
+pub fn build(secure_on: bool) -> (muda::Menu, muda::CheckMenuItem) {
+    use muda::{AboutMetadata, CheckMenuItem, Menu, MenuItem, PredefinedMenuItem, Submenu};
+    let secure = CheckMenuItem::with_id("secure_input", "보안 키보드 입력", true, secure_on, None);
     let item = |id: &str, text: &str| MenuItem::with_id(id, text, true, None);
     let menu = Menu::new();
     let about = AboutMetadata {
@@ -64,6 +70,7 @@ pub fn build() -> muda::Menu {
             &PredefinedMenuItem::separator(),
             &item("settings", "설정…"),
             &item("reload_config", "설정 다시 읽기"),
+            &secure,
             &PredefinedMenuItem::separator(),
             &PredefinedMenuItem::services(Some("서비스")),
             &PredefinedMenuItem::separator(),
@@ -137,7 +144,7 @@ pub fn build() -> muda::Menu {
     for sub in [&app, &shell, &edit, &view, &window] {
         let _ = sub.as_ref().map(|s| menu.append(s));
     }
-    menu
+    (menu, secure)
 }
 
 /// 설정 파일이 없으면 예시가 담긴 파일을 만들고 그 경로를 돌려준다
@@ -179,6 +186,7 @@ mod tests {
             Some(MenuCommand::Action(Action::NewSplit(Some(Direction::Down))))
         );
         assert_eq!(action_for("quit"), Some(MenuCommand::Action(Action::Quit)));
+        assert_eq!(action_for("secure_input"), Some(MenuCommand::ToggleSecureKeyboardEntry));
         assert_eq!(action_for("nope"), None);
     }
 }

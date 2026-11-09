@@ -538,3 +538,10 @@ pub enum OptionAsAlt {
     #[default]
     None,
 }
+
+/// Turns Secure Event Input (Carbon `EnableSecureEventInput` / `DisableSecureEventInput`) on or off for the whole
+/// process. The calls are global and counted, so the caller keeps them balanced. Returns whether the call succeeded
+/// (`noErr`). b-terminal(#258)
+pub fn set_secure_event_input(enable: bool) -> bool {
+    crate::platform_impl::set_secure_event_input(enable)
+}

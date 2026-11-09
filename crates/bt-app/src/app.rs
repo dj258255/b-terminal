@@ -6,7 +6,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
-use bt_render::{Canvas, CursorStyle, DrawCell, DrawCursor, FontConfig, Fonts, GridView, draw_grid, draw_grid_rows};
+use bt_render::{Canvas, DrawCell, DrawCursor, FontConfig, Fonts, GridView, draw_grid, draw_grid_rows};
 use bt_term::{CellFlags, CursorShape, GridSize, Screen, SelectKind, Session, SessionEvent, SpawnOptions};
 use winit::application::ApplicationHandler;
 use winit::dpi::{LogicalSize, PhysicalPosition, PhysicalSize};
@@ -43,6 +43,8 @@ fn command_result(rec: &bt_term::CommandRecord) -> bt_core::proto::CommandResult
 /// 알림 띠가 보이는 시간
 /// 새 창의 기본 안쪽 크기(논리 점). `window-width`·`window-height`가 없을 때(`reset_window_size`도 이 크기로 되돌린다)
 const DEFAULT_WINDOW_LOGICAL: (f64, f64) = (1000.0, 680.0);
+/// 칸의 암호 입력을 살피는 간격(Ghostty termio/Exec.zig `TERMIOS_POLL_MS`, #258)
+const SECURE_POLL: Duration = Duration::from_millis(200);
 const TOAST_FOR: Duration = Duration::from_millis(2500);
 /// 스크롤한 뒤 스크롤 막대를 보이는 시간
 const SCROLLBAR_FOR: Duration = Duration::from_millis(1200);
@@ -162,6 +164,8 @@ pub struct Pane {
     scrollbar_until: Option<Instant>,
     /// `toggle_mouse_reporting`로 이 칸에 정한 마우스 보고 켬·끔(#209). 없으면 `mouse-reporting` 설정을 따른다
     mouse_reporting_over: Option<bool>,
+    /// PTY의 termios로 알아챈 암호 입력(#258). 자물쇠 커서를 그린다
+    password: bool,
 }
 
 impl Pane {
@@ -776,6 +780,13 @@ pub struct App {
     reported_dark: bool,
     /// 탭 줄 제목 글꼴(#241 `window-title-font-family`). 키가 없거나 글꼴을 못 찾았으면 없고, 그러면 터미널 글꼴로 그린다
     title_fonts: Option<Fonts>,
+    /// 보안 키보드 입력 상태(#258)
+    secure: crate::secure_input::SecureInput,
+    /// 다음에 칸의 암호 입력을 살필 때(200ms마다, 앱이 앞이고 창에 초점이 있을 때만)
+    next_secure_poll: Instant,
+    /// 앱 메뉴의 보안 키보드 입력 항목(체크 표시를 맞춘다)
+    #[cfg(target_os = "macos")]
+    menu_secure: Option<muda::CheckMenuItem>,
 }
 
 impl App {
@@ -834,6 +845,13 @@ impl App {
             applied_dark: crate::system_is_dark(),
             reported_dark: crate::system_is_dark(),
             title_fonts: None,
+            secure: crate::secure_input::SecureInput::new(
+                Box::new(crate::secure_input::system_call),
+                crate::secure_input::global_path().is_some_and(|p| crate::secure_input::load_global(&p)),
+            ),
+            next_secure_poll: Instant::now(),
+            #[cfg(target_os = "macos")]
+            menu_secure: None,
         }
     }
 
@@ -1358,6 +1376,7 @@ impl App {
                 scroll_seen: 0,
                 scrollbar_until: None,
                 mouse_reporting_over: None,
+                password: false,
                 running: None,
                 last_command: None,
             }),
@@ -3113,6 +3132,7 @@ impl App {
                 self.apply_window_look();
             }
             Action::OpenConfig => self.open_settings(),
+            Action::ToggleSecureInput => self.toggle_pane_secure_input(),
             _ => {}
         }
         self.request_redraw();
@@ -4053,6 +4073,88 @@ impl App {
     }
 
     /// 창이 하나도 없는 상태인가(첫 창 없이 띄웠거나 마지막 창을 닫았는데 앱이 남아 있다, #178)
+    /// 창 가운데 초점이 있는 것이 있나(앱이 앞에 있다고 본다)
+    fn any_window_focused(&self) -> bool {
+        std::iter::once(&self.w).chain(&self.others).any(|w| w.focused)
+    }
+
+    /// 앱이 앞인지를 보안 입력 상태에 알린다(#258)
+    fn update_secure_active(&mut self) {
+        let active = self.any_window_focused();
+        self.secure.set_active(active);
+    }
+
+    /// 칸 단위 보안 입력의 초점을 맞춘다: 초점 창이 보고 있는 탭의 고른 칸만 초점이고, 사라진 칸은 뺀다(#258)
+    fn sync_secure_focus(&mut self) {
+        let focused: std::collections::HashSet<u64> = std::iter::once(&self.w)
+            .chain(&self.others)
+            .filter(|w| w.focused)
+            .filter_map(|w| w.tabs.get(w.active).map(|g| g.focus))
+            .collect();
+        let alive: std::collections::HashSet<u64> = self.panes.iter().map(|p| p.id).collect();
+        self.secure
+            .sync_scoped(|id| alive.contains(&id).then(|| focused.contains(&id)));
+    }
+
+    /// 모든 칸의 암호 입력 상태를 PTY의 termios로 살핀다. 바뀐 칸이 있으면 참. `macos-auto-secure-input`이 꺼져 있어도
+    /// 자물쇠 커서는 바뀐다(Ghostty는 칸의 `password_input` 표시와 보안 입력을 따로 다룬다, #258)
+    fn poll_password(&mut self) -> bool {
+        let auto = self.config.macos_auto_secure_input;
+        let mut changed = false;
+        for p in &mut self.panes {
+            if p.exited.is_some() {
+                continue;
+            }
+            let Some(now) = p.session.password_input() else {
+                continue;
+            };
+            if now == p.password {
+                continue;
+            }
+            p.password = now;
+            changed = true;
+            if auto {
+                if now {
+                    self.secure.set_scoped(p.id, false);
+                } else {
+                    self.secure.remove_scoped(p.id);
+                }
+            }
+        }
+        changed
+    }
+
+    /// `toggle_secure_input`: 초점 칸의 칸 단위 상태를 뒤집는다. `macos-auto-secure-input`이 꺼져 있으면 아무 일도 없다
+    /// (Ghostty Ghostty.App.swift `toggleSecureInput`). 앱 전체 켜짐(메뉴)과 다르다
+    fn toggle_pane_secure_input(&mut self) {
+        if !self.config.macos_auto_secure_input {
+            return;
+        }
+        let Some(id) = self.focused_id() else { return };
+        if self.secure.has_scoped(id) {
+            self.secure.remove_scoped(id);
+        } else {
+            self.secure.set_scoped(id, true);
+        }
+        self.request_redraw_all();
+    }
+
+    /// 메뉴 `보안 키보드 입력`: 앱 전체로 켜고 끈다. 다음 실행에도 남긴다
+    fn toggle_global_secure_input(&mut self) {
+        let on = !self.secure.global();
+        self.secure.set_global(on);
+        if let Some(path) = crate::secure_input::global_path()
+            && let Err(e) = crate::secure_input::save_global(&path, on)
+        {
+            log::warn!("보안 입력 켜짐을 남기지 못했습니다: {e}");
+        }
+        #[cfg(target_os = "macos")]
+        if let Some(item) = &self.menu_secure {
+            item.set_checked(on);
+        }
+        self.request_redraw_all();
+    }
+
     fn windowless(&self) -> bool {
         self.w.gfx.is_none() && self.others.is_empty()
     }
@@ -4125,6 +4227,8 @@ impl App {
         let theme = self.config.theme.clone();
         let top_inset = self.top_inset();
         let toast = self.w.toast.clone().filter(|(_, at)| at.elapsed() < TOAST_FOR);
+        // 보안 입력이 켜져 있는 동안 창 오른쪽 위의 자물쇠 표시(`macos-secure-input-indication`, #258)
+        let secure_badge = self.secure.enabled() && self.config.macos_secure_input_indication;
         let confirm = self
             .w
             .confirm
@@ -4286,17 +4390,21 @@ impl App {
                     (theme.cursor, theme.cursor_text),
                     under,
                 );
-                let cursor = (screen.cursor.visible && !hide).then_some(DrawCursor {
+                // 암호 입력 중이면 자물쇠(#258). 모양은 Ghostty cursor.zig의 순서를 따른다
+                let password = self.pane_index(v.id).is_some_and(|i| self.panes[i].password);
+                let composing = v.focused && search.is_none() && palette.is_none() && !preedit.is_empty();
+                let cursor = crate::secure_input::cursor_style(
+                    password,
+                    composing,
+                    screen.cursor.visible,
+                    v.focused,
+                    hide,
+                    screen.cursor.shape,
+                )
+                .map(|style| DrawCursor {
                     col: screen.cursor.col,
                     row: screen.cursor.row,
-                    // 고르지 않은 칸의 커서는 속이 빈 네모(Ghostty와 같다)
-                    style: match (v.focused, screen.cursor.shape) {
-                        (false, _) => CursorStyle::Hollow,
-                        (true, CursorShape::Block) => CursorStyle::Block,
-                        (true, CursorShape::Beam) => CursorStyle::Beam,
-                        (true, CursorShape::Underline) => CursorStyle::Underline,
-                        (true, CursorShape::HollowBlock) => CursorStyle::Hollow,
-                    },
+                    style,
                     wide: screen.cursor.wide,
                     color: cursor_color.0,
                     text_color: cursor_color.1,
@@ -4356,6 +4464,7 @@ impl App {
                 .map(|l| (l.title.clone(), l.active, l.unread, l.progress))
                 .collect(),
             overlay: toast.is_some()
+                || secure_badge
                 || hover.is_some()
                 || search.is_some()
                 || palette.is_some()
@@ -4612,6 +4721,9 @@ impl App {
                 if let Some((text, _)) = &toast {
                     crate::tabbar::draw_toast(&mut canvas, fonts, &theme, text);
                 }
+                if secure_badge {
+                    crate::tabbar::draw_secure_badge(&mut canvas, fonts, &theme, top_inset);
+                }
                 if let Some((label, text)) = &title_prompt {
                     tabbar::draw_prompt(
                         &mut canvas,
@@ -4837,8 +4949,9 @@ impl ApplicationHandler<UserEvent> for App {
         self.w.gfx = Some(gfx);
         #[cfg(target_os = "macos")]
         if self.menu.is_none() {
-            let menu = crate::menu::build();
+            let (menu, secure_item) = crate::menu::build(self.secure.global());
             menu.init_for_nsapp();
+            self.menu_secure = Some(secure_item);
             let proxy = self.proxy.clone();
             muda::MenuEvent::set_event_handler(Some(move |e: muda::MenuEvent| {
                 let _ = proxy.send_event(UserEvent::Menu(e.id.0.clone()));
@@ -4916,6 +5029,8 @@ impl ApplicationHandler<UserEvent> for App {
     }
 
     fn exiting(&mut self, _event_loop: &ActiveEventLoop) {
+        // 켜 둔 보안 입력은 풀고 나간다(#258)
+        self.secure.shutdown();
         // write_*_file로 쓴 파일은 화면 내용이라 남기지 않는다(#125)
         for f in self.written_files.drain(..) {
             let _ = std::fs::remove_file(f);
@@ -4947,6 +5062,7 @@ impl ApplicationHandler<UserEvent> for App {
                 _ if self.last_focused.is_some_and(|w| !self.switch_to(w)) => {}
                 Some(crate::menu::MenuCommand::Action(a)) => self.handle_action(a, event_loop),
                 Some(crate::menu::MenuCommand::OpenSettings) => self.open_settings(),
+                Some(crate::menu::MenuCommand::ToggleSecureKeyboardEntry) => self.toggle_global_secure_input(),
                 None => {}
             },
             UserEvent::Control(req, reply) => {
@@ -5080,6 +5196,11 @@ impl ApplicationHandler<UserEvent> for App {
             WindowEvent::Focused(focused) => {
                 let was_focused = self.w.focused;
                 self.w.focused = focused;
+                // 보안 입력: 앱이 앞이면 켜고(창 어느 하나라도 초점이면), 아니면 끈다. 앞으로 오면 바로 칸을 살핀다(#258)
+                self.update_secure_active();
+                if focused {
+                    self.next_secure_poll = Instant::now();
+                }
                 // 퀵 터미널은 포커스를 잃으면 숨는다(Ghostty quick-terminal-autohide 기본과 같다)
                 // 보인 직후(0.5초 안)의 포커스 잃음은 앱이 앞으로 오는 중일 수 있어 무시한다
                 let just_shown = self
@@ -5510,6 +5631,14 @@ impl ApplicationHandler<UserEvent> for App {
             }
             self.next_poll = now + Duration::from_secs(1);
         }
+        // 암호 입력 살피기(#258): 앱이 앞이고 창에 초점이 있을 때만 200ms마다 깨운다
+        if self.any_window_focused() && now >= self.next_secure_poll {
+            self.next_secure_poll = now + SECURE_POLL;
+            if self.poll_password() {
+                self.request_redraw_all();
+            }
+        }
+        self.sync_secure_focus();
         // 커서 깜빡임(창마다)
         for w in std::iter::once(&mut self.w).chain(self.others.iter_mut()) {
             if w.blink_wanted && now >= w.blink_next {
@@ -5583,6 +5712,7 @@ impl ApplicationHandler<UserEvent> for App {
             .chain(self.undo.next_deadline())
             .chain(self.redo.next_deadline())
             .chain(self.quit_deadline)
+            .chain(self.any_window_focused().then_some(self.next_secure_poll))
             .min();
         match deadline {
             Some(d) if d <= Instant::now() => {
@@ -6068,7 +6198,7 @@ mod tests {
             Some(DrawCursor {
                 col: 0,
                 row,
-                style: CursorStyle::Block,
+                style: bt_render::CursorStyle::Block,
                 wide: false,
                 color: blank.fg,
                 text_color: blank.bg,

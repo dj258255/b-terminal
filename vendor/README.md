@@ -54,3 +54,7 @@ alacritty_terminal은 글자마다 `unicode-width`로 폭을 세고, 폭 0인 �
 
 alacritty_terminal이 글자 묶음 폭(mode 2027)을 지원하는 판을 내면 패치를 지우고 그 판으로 올립니다. 올릴 때는 `tests/grapheme.rs`(bt-term)가 그대로 통과해야 합니다. 새 판으로 올릴 때마다 이 패치를 새 `mod.rs`에 다시 얹어야 하므로, 판이 바뀌면 `diff`로 먼저 확인합니다.
 
+
+## winit: 보안 키보드 입력(#258)
+
+- 고친 곳: `src/platform/macos.rs` 끝의 `pub fn set_secure_event_input(bool) -> bool`, `src/platform_impl/macos/mod.rs`의 같은 이름 함수(Carbon `EnableSecureEventInput`·`DisableSecureEventInput`을 부르고 `noErr`면 참), `src/platform_impl/macos/ffi.rs`의 Carbon 선언 두 줄. `b-terminal(#258)`로 찾을 수 있습니다. 창에 묶이지 않는 프로세스 전역 호출이라 창 메서드가 아니라 자유 함수입니다. 이유: Ghostty `macos-auto-secure-input`·메뉴 `Secure Keyboard Entry`·`toggle_secure_input`. 작업 공간이 `unsafe_code = "deny"`라 앱 코드는 FFI를 못 부릅니다. 되돌릴 조건: winit이 보안 이벤트 입력 API를 내면 지우고 그것을 씁니다.

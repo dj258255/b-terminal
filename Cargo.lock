@@ -338,6 +338,7 @@ dependencies = [
  "libproc",
  "log",
  "miniz_oxide 0.8.9",
+ "nix",
  "parking_lot 0.13.0",
  "png 0.17.16",
  "portable-pty",

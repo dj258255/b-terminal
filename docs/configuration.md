@@ -103,7 +103,9 @@ config-file = ?~/.config/b-terminal/local   # ?가 붙으면 없어도 된다
 | `search-selected-background` / `search-selected-foreground` | `#rrggbb`, `cell-foreground`, `cell-background` | `#f2a57e` / `#000000` | 지금 고른 맞은 곳(Enter로 옮겨 다니는 것)의 바탕·글자색 |
 | `selection-clear-on-typing` | `true` / `false` | `true` | 글을 치면 고른 영역을 지웁니다(IME 조합을 시작할 때도). 끄면 지우지 않지만 Esc는 지웁니다. 붙여넣기는 이 값과 상관없이 지웁니다 |
 | `selection-clear-on-copy` | `true` / `false` | `false` | 복사 명령(단축키·메뉴·`right-click-action`의 복사)으로 복사한 뒤 고른 영역을 지웁니다. `copy-on-select`의 자동 복사는 지우지 않습니다 |
-| `cursor-style` | `block` `bar` `underline` `block_hollow` | `block` | 프로그램이 바꾸면 그쪽이 이깁니다 |
+| `macos-auto-secure-input` | `true` / `false` | `true` | macOS에서 암호 입력을 알아채면(PTY의 termios가 줄 단위 입력이고 되울림이 꺼짐, 200ms마다 살핌) 그 칸이 초점일 때 보안 키보드 입력을 켭니다. 앱이 뒤로 가면 끄고 앞으로 오면 다시 켭니다. 끄면 칸 단위로는 켜지 않고 `toggle_secure_input`도 아무 일이 없습니다. 자물쇠 커서는 이 값과 상관없이 그려집니다. ssh 너머의 암호는 알아채지 못합니다(Ghostty도 같음). 앱 메뉴 `보안 키보드 입력`(앱 전체로 켬, 다음 실행에도 남음)은 이 값과 상관없습니다. macOS 밖에서는 자물쇠 커서만 있습니다 |
+| `macos-secure-input-indication` | `true` / `false` | `true` | 보안 입력이 켜져 있는 동안 창 오른쪽 위에 자물쇠 표시를 그립니다(누르면 설명이 뜨는 것은 없음) |
+| `cursor-style` | `block` `bar` `underline` `block_hollow` | `block` | 프로그램이 바꾸면 그쪽이 이깁니다. 암호 입력 중에는 자물쇠입니다 |
 | `cursor-style-blink` | `true` / `false` | 끔 | 0.6초마다 깜빡입니다. 프로그램이 DECSCUSR(`ESC[1 q` 등)로 바꾸면 그쪽을 따르고, 키를 치는 동안과 창을 보지 않을 때는 깜빡이지 않습니다 |
 | `window-padding-x` / `window-padding-y` | `2` 또는 `왼,오른`(`위,아래`) | `2` | 포인트 |
 | `window-padding-balance` | `true` `false` | `false` | 창 크기가 칸 크기로 나누어떨어지지 않아 남는 자리를 네 변에 고르게 나눕니다(끄면 오른쪽·아래에 몰림) |
@@ -215,7 +217,6 @@ config-file = ?~/.config/b-terminal/local   # ?가 붙으면 없어도 된다
 
 | 키 | 이유 |
 |---|---|
-| `macos-auto-secure-input` `macos-secure-input-indication` | 보안 입력(`EnableSecureEventInput`)은 Carbon 함수를 직접 불러야 해 unsafe가 필요합니다 |
 | `macos-applescript` `macos-shortcuts` | AppleScript 사전과 단축어(App Intents)는 앱 꾸러미와 Objective-C 클래스 정의가 필요한데 지금 b-terminal에는 그 기능이 없습니다 |
 | `macos-dock-drop-behavior` | Dock 아이콘에 파일·폴더를 놓으면 앱 델리게이트의 `application:openURLs:`가 불리는데 winit 0.30은 그 이벤트를 주지 않습니다. 창에 놓은 파일(`DroppedFile`)만 옵니다 |
 | `macos-icon-frame` `macos-icon-ghost-color` `macos-icon-screen-color` | `macos-icon = custom-style` 전용입니다. 그 그림 틀(유령·화면 그라데이션)이 b-terminal에 없습니다 |
@@ -323,6 +324,7 @@ keybind = nav/escape=deactivate_key_table
 | `toggle_quick_terminal` | 퀵 터미널(화면 가장자리에서 미끄러져 나오는 창) 보이기·숨기기. 자리·크기·화면·움직임은 `quick-terminal-*` 설정. 창 상태 복원에서 빠집니다 | (없음, `global:`로 묶으세요) |
 | `toggle_background_opacity` | 지금 창의 바탕 투명도를 `background-opacity`와 불투명 사이에서 바꿉니다. `background-opacity`가 1 이상이면 아무것도 하지 않습니다(창이 처음부터 불투명하게 만들어집니다). 창마다 따로이고 설정을 다시 읽어도 남습니다. 창 자체를 불투명으로 바꾸는 것이 아니라 바탕을 칠하는 알파만 바꿉니다 | (없음) |
 | `toggle_mouse_reporting` | 지금 칸의 마우스 보고(프로그램에 마우스 보내기)를 끄고 켭니다. 끄면 프로그램이 요청해도 보내지 않아 마우스로 늘 고르기를 할 수 있습니다. 처음 값은 `mouse-reporting`이고, 이 동작으로 정한 값은 그 칸에서 다시 바꿀 때까지 설정을 다시 읽어도 남습니다 | (없음) |
+| `toggle_secure_input` | 초점 칸의 칸 단위 보안 입력을 켜고 끕니다(그 칸이 초점일 때만 보안 입력이 켜짐). `macos-auto-secure-input = false`면 아무 일도 없습니다. 앱 전체를 켜고 끄는 메뉴 `보안 키보드 입력`과 다릅니다 | (없음) |
 | `toggle_readonly` | 지금 칸을 읽기 전용으로 하거나 풉니다. 읽기 전용 칸에는 키·IME 확정 글자·붙여넣기·마우스 보고·초점 보고·`text:`/`csi:`/`esc:`(`all:` 포함)·`btctl send`·`btctl run`이 모두 가지 않습니다(ADR-018). 고르기·복사·스크롤·키 묶음 동작은 그대로 되고, 칸을 닫거나 끝낼 때는 프로그램이 돌지 않아도 늘 묻습니다. 탭 제목 앞에 🔒가 붙습니다. 프로그램이 물은 것에 터미널이 답하는 바이트(커서 위치·색 질의 등)는 막지 않습니다 | (없음) |
 | `set_window_theme:config` `system` `light` `dark` | 이번 실행 동안의 창 테마. 설정 파일은 바꾸지 않고, 설정을 다시 읽어도 남으며, `config`면 설정의 `window-theme`으로 돌아갑니다. 모든 창에 적용됩니다. `window-theme = auto`처럼 바탕색을 따르는 일은 `config`일 때만 합니다 | (없음) |
 | `open_config` | 설정 파일(`~/.config/b-terminal/config`)을 기본 텍스트 편집기로 엽니다(macOS `open -t`, 셸을 거치지 않고 인자 배열로). 파일이 없으면 주석만 든 견본을 만들어 엽니다. `open_config:os_open`이 기본이고 `new_window`(Ghostty에서는 GTK 전용)는 받아서 같은 일을 합니다. 팔레트·메뉴의 "설정 파일 열기"와 같습니다 | (없음) |
@@ -346,7 +348,6 @@ Ghostty 설정에 흔한 아래 동작은 `keybind`에 써도 경고가 나지 �
 | `show_gtk_inspector` | GTK 전용입니다(Ghostty도 macOS에서는 아무 일도 하지 않음) |
 | `show_on_screen_keyboard` | 화상 키보드는 GTK·Windows 쪽 기능입니다 |
 | `toggle_tab_overview` | 네이티브 탭이 없어(탭은 앱이 직접 그림) 모아 보는 화면이 없습니다 |
-| `toggle_secure_input` | 보안 입력은 Carbon의 `EnableSecureEventInput`을 불러야 하고, 이 작업 공간은 `unsafe`를 쓰지 않습니다 |
 | `crash:main` `io` `render` | 일부러 앱을 죽여 충돌 처리를 시험하는 디버그 동작입니다. 데이터를 잃을 수 있어 하지 않습니다 |
 
 설정 다시 읽기는 글꼴·색(이미 열린 탭 포함)·키 묶음(전역 단축키 포함)·여백·Option 키를 바꿉니다. 바깥에서 부르려면 `btctl reload-config`. 퀵 터미널은 `btctl quick`.

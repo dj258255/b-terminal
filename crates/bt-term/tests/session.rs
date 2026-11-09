@@ -913,3 +913,29 @@ fn toggling_mouse_reporting_resets_the_program_shape_like_ghostty() {
     // 같은 덩어리에서 모드를 켠 뒤 정한 모양은 남는다(모드가 먼저, 신호가 나중)
     wait_shape(&s, Some(M::Move));
 }
+
+#[test]
+fn password_input_follows_the_ptys_termios() {
+    // 되울림을 끈 줄 입력(stty -echo, 암호 프롬프트와 같은 상태)
+    let (s, _rx) = sh("printf a; stty -echo; printf b; sleep 8", GridSize::new(40, 10));
+    wait_until(&s, |t| t.contains("ab"));
+    assert_eq!(s.password_input(), Some(true));
+
+    // 보통 셸 상태
+    let (s, _rx) = sh("printf a; sleep 8", GridSize::new(40, 10));
+    wait_until(&s, |t| t.contains('a'));
+    assert_eq!(s.password_input(), Some(false));
+
+    // 되울림도 줄 단위도 끈 원시 입력(vim 같은 것)은 암호가 아니다
+    let (s, _rx) = sh("printf a; stty -echo -icanon; printf b; sleep 8", GridSize::new(40, 10));
+    wait_until(&s, |t| t.contains("ab"));
+    assert_eq!(s.password_input(), Some(false));
+
+    // 다시 되울림을 켜면 풀린다
+    let (s, _rx) = sh(
+        "stty -echo; printf a; stty echo; printf b; sleep 8",
+        GridSize::new(40, 10),
+    );
+    wait_until(&s, |t| t.contains("ab"));
+    assert_eq!(s.password_input(), Some(false));
+}

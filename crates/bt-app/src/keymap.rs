@@ -156,6 +156,8 @@ pub enum Action {
     SetWindowTheme(Option<bt_core::config::WindowTheme>),
     /// 설정 파일을 기본 편집기로 연다(Ghostty `open_config`, #209)
     OpenConfig,
+    /// 초점 칸의 칸 단위 보안 입력을 뒤집는다(Ghostty `toggle_secure_input`, #258). 메뉴 항목(앱 전체)과 다르다
+    ToggleSecureInput,
 }
 
 /// 파일로 쓸 글
@@ -402,12 +404,11 @@ pub fn parse_action(s: &str) -> Result<Option<Action>, String> {
         "select_all" => Action::SelectAll,
         "jump_to_prompt" => Action::JumpToPrompt(arg.and_then(|a| a.trim().parse().ok()).unwrap_or(-1)),
         "ignore" => Action::Ignore,
+        "toggle_secure_input" => Action::ToggleSecureInput,
         // 받기만 하는 동작(#211): 키를 먹고 아무 일도 하지 않는다. 이유는 docs/configuration.md
-        "check_for_updates"
-        | "show_gtk_inspector"
-        | "show_on_screen_keyboard"
-        | "toggle_tab_overview"
-        | "toggle_secure_input" => Action::Ignore,
+        "check_for_updates" | "show_gtk_inspector" | "show_on_screen_keyboard" | "toggle_tab_overview" => {
+            Action::Ignore
+        }
         "inspector" => match arg.map(str::trim) {
             Some("toggle" | "show" | "hide") => Action::Ignore,
             _ => return Err("inspector:toggle·show·hide".into()),
@@ -1605,6 +1606,14 @@ mod tests {
     }
 
     #[test]
+    fn toggle_secure_input_is_a_real_action() {
+        assert_eq!(
+            parse_action("toggle_secure_input").unwrap(),
+            Some(Action::ToggleSecureInput)
+        );
+    }
+
+    #[test]
     fn receive_only_actions_parse_and_consume_the_key() {
         for a in [
             "check_for_updates",
@@ -1614,7 +1623,6 @@ mod tests {
             "show_gtk_inspector",
             "show_on_screen_keyboard",
             "toggle_tab_overview",
-            "toggle_secure_input",
             "crash:main",
             "crash:io",
             "crash:render",
