@@ -98,6 +98,16 @@ pub enum Action {
     Ignore,
     /// `text:…`: 글을 그대로 PTY에 보낸다(`\n`, `\x1b` 같은 이스케이프를 푼다)
     Text(String),
+    /// 입력 막대로 지금 탭의 제목을 묻는다(Ghostty `prompt_tab_title`, #207)
+    PromptTabTitle,
+    /// 입력 막대로 지금 창의 제목을 묻는다(Ghostty `prompt_window_title`, #207)
+    PromptWindowTitle,
+    /// 지금 탭의 제목을 덮어쓴다. 빈 글이면 덮어쓴 제목을 지운다(Ghostty `set_tab_title`, #207)
+    SetTabTitle(String),
+    /// 지금 창의 제목을 덮어쓴다. 빈 글이면 덮어쓴 제목을 지운다(Ghostty `set_window_title`, #207)
+    SetWindowTitle(String),
+    /// 지금 칸의 터미널 제목을 클립보드로 복사한다(Ghostty `copy_title_to_clipboard`, #207)
+    CopyTitle,
 }
 
 /// 파일로 쓸 글
@@ -327,6 +337,11 @@ pub fn parse_action(s: &str) -> Result<Option<Action>, String> {
             Action::WriteFile(source, then)
         }
         "set_surface_title" => Action::SetSurfaceTitle(arg.unwrap_or("").to_string()),
+        "prompt_tab_title" => Action::PromptTabTitle,
+        "prompt_window_title" => Action::PromptWindowTitle,
+        "set_tab_title" => Action::SetTabTitle(arg.unwrap_or("").to_string()),
+        "set_window_title" => Action::SetWindowTitle(arg.unwrap_or("").to_string()),
+        "copy_title_to_clipboard" => Action::CopyTitle,
         "scroll_page_lines" => Action::ScrollLines(
             arg.and_then(|a| a.trim().parse().ok())
                 .ok_or("scroll_page_lines:줄 수(양수면 아래로)")?,
@@ -1369,5 +1384,35 @@ mod tests {
     fn clear_removes_all_defaults() {
         let (km, _) = Keymap::build(&["clear".into(), "super+q=new_tab".into()]);
         assert_eq!(km.map.len(), 1);
+    }
+
+    #[test]
+    fn title_actions_parse() {
+        assert_eq!(parse_action("prompt_tab_title").unwrap(), Some(Action::PromptTabTitle));
+        assert_eq!(
+            parse_action("prompt_window_title").unwrap(),
+            Some(Action::PromptWindowTitle)
+        );
+        assert_eq!(
+            parse_action("copy_title_to_clipboard").unwrap(),
+            Some(Action::CopyTitle)
+        );
+        assert_eq!(
+            parse_action("set_tab_title:빌드 서버").unwrap(),
+            Some(Action::SetTabTitle("빌드 서버".into()))
+        );
+        assert_eq!(
+            parse_action("set_tab_title").unwrap(),
+            Some(Action::SetTabTitle(String::new())),
+            "글이 없으면 지우기"
+        );
+        assert_eq!(
+            parse_action("set_window_title:창").unwrap(),
+            Some(Action::SetWindowTitle("창".into()))
+        );
+        assert_eq!(
+            parse_action("set_window_title").unwrap(),
+            Some(Action::SetWindowTitle(String::new()))
+        );
     }
 }
