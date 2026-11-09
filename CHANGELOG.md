@@ -4,12 +4,24 @@
 
 ## [아직 릴리스하지 않음]
 
-- 제목·색 보고 키(Ghostty): `title-report`(기본 끔, CSI 21 t에 제목으로 답함)와 `osc-color-report-format`(`none`·`8-bit`·`16-bit`, 기본 `16-bit`). 제목 보고는 출력이 정한 제목이 셸 입력으로 돌아와 명령이 되는 길이라 기본으로 끕니다(ADR-012).
-- 키 묶음 접두사 `all:`·`unconsumed:`·`performable:`(겹쳐 쓰기 가능)와 `catch_all` 트리거, `ignore` 동작(Ghostty, #149): `performable:`은 동작을 할 수 없으면(고른 글이 없는데 copy 등) 키를 프로그램에 보내고, `all:`은 글 보내기를 모든 칸에 합니다. 앱 창에서는 확인하지 않았고 keymap 단위 테스트로 확인했습니다.
-- 시작 창 키(Ghostty): `maximize`·`fullscreen`으로 새 창을 최대화·전체 화면으로 띄우고, `window-position-x`·`-y`로 첫 창 자리를 정하며(둘 다 있어야 함, 복원한 창은 복원 자리가 이김), `toggle_maximize`·`toggle_window_float_on_top` 동작과 팔레트 항목을 더했습니다. 실제 창에서는 아직 확인하지 않았습니다(#148).
-- 팔레트 사용자 항목(`command-palette-entry`, Ghostty 1.2 문법, #150): `title:…,action:…,description:…`을 여러 줄 쌓아 명령 팔레트에 더하고, 빈 값은 기본 항목을 지웁니다. 설명으로도 찾습니다.
+## [0.10.0] - 2026-11-09
+
+Ghostty 키 채우기 3. 클립보드·오른쪽 클릭, 맨 아래로 스크롤, 시작 창, 키 묶음 접두사, 팔레트 사용자 항목, 제목·색 보고. 하위 이슈마다 에이전트 하나가 따로 구현하고 주 세션이 검토·병합했습니다. 추적 이슈 #145.
+
 - 클립보드·오른쪽 클릭 키(Ghostty): `clipboard-trim-trailing-spaces`(복사하는 글의 줄 끝 공백 지움, 켬), `copy-on-select`가 `clipboard` 값을 구분해 받음(macOS는 `true`와 같음), `right-click-action`(`context-menu` 기본은 하는 일 없음, 이전에는 오른쪽 클릭이 아무 일도 하지 않던 것과 같음). 주의: 복사한 글의 줄 끝 공백이 이제 기본으로 지워집니다. #146
 - 맨 아래로 스크롤(`scroll-to-bottom`, Ghostty 키, 기본 `keystroke, no-output`): 키·붙여넣기 때(`keystroke`)와 새 출력이 올 때(`output`) 맨 아래로 돌아갈지 정합니다. 전에는 `output` 없이 글을 보낼 때(응답·초점 알림·btctl send 포함) 항상 돌아갔는데, 이제 사용자가 친 키·붙여넣기 때만 돌아갑니다. 실제 창에서는 아직 확인하지 않았고 PTY 테스트로만 확인했습니다. #147
+- 시작 창 키(Ghostty): `maximize`·`fullscreen`으로 새 창을 최대화·전체 화면으로 띄우고, `window-position-x`·`-y`로 첫 창 자리를 정하며(둘 다 있어야 함, 복원한 창은 복원 자리가 이김), `toggle_maximize`·`toggle_window_float_on_top` 동작과 팔레트 항목을 더했습니다. 실제 창에서는 아직 확인하지 않았습니다(#148).
+- 키 묶음 접두사 `all:`·`unconsumed:`·`performable:`(겹쳐 쓰기 가능)와 `catch_all` 트리거, `ignore` 동작(Ghostty, #149): `performable:`은 동작을 할 수 없으면(고른 글이 없는데 copy 등) 키를 프로그램에 보내고, `all:`은 글 보내기를 모든 칸에 합니다. 앱 창에서는 확인하지 않았고 keymap 단위 테스트로 확인했습니다.
+- 팔레트 사용자 항목(`command-palette-entry`, Ghostty 1.2 문법, #150): `title:…,action:…,description:…`을 여러 줄 쌓아 명령 팔레트에 더하고, 빈 값은 기본 항목을 지웁니다. 설명으로도 찾습니다.
+- 제목·색 보고 키(Ghostty): `title-report`(기본 끔, CSI 21 t에 제목으로 답함)와 `osc-color-report-format`(`none`·`8-bit`·`16-bit`, 기본 `16-bit`). 제목 보고는 출력이 정한 제목이 셸 입력으로 돌아와 명령이 되는 길이라 기본으로 끕니다(ADR-012).
+
+### 알려진 한계
+
+- 이번 판의 키·마우스 동작(오른쪽 클릭, 줄 끝 공백 다듬기, 키 묶음 접두사, 팔레트 사용자 항목, 창 최대화·항상 위 토글)은 실제 키·마우스로 해 보지 않았고 테스트로만 확인했습니다. 실제 창에서 본 것은 `window-position`과 `maximize`입니다.
+- 맨 아래로 스크롤: 이제 사용자 키·붙여넣기 때만 돌아갑니다(전에는 프로그램 응답·btctl send에도 돌아감).
+- 복사한 글의 줄 끝 공백이 기본으로 지워집니다(`clipboard-trim-trailing-spaces`, Ghostty 기본과 같음).
+- `copy-on-select`는 지금 나온 Ghostty 판대로 기본 켬입니다(Ghostty main은 macOS 기본을 `none`으로 바꿈).
+- `toggle_maximize`가 macOS에서 무엇을 하는지 확인하지 않았습니다(Ghostty 문서는 macOS에서 효과가 없다고 함).
 
 ## [0.9.0] - 2026-11-09
 
