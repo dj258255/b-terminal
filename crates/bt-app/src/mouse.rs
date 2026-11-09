@@ -1,5 +1,40 @@
 //! 마우스 보고(xterm 1000/1002/1003, SGR 1006). vim·htop·less 같은 프로그램이 마우스를 쓸 때 켠다
 
+use bt_core::config::{MiddleClickAction, MouseShiftCapture};
+use std::time::Duration;
+
+/// 이 클릭·움직임·휠을 프로그램(마우스 보고)에 보내는가. `mouse-reporting`을 끄면 늘 아니오.
+/// Shift를 누르면 `mouse-shift-capture`가 `true`·`always`일 때만 프로그램이 받고, 아니면 고르기가 받는다
+pub fn reports_to_program(reporting: bool, capture: MouseShiftCapture, shift: bool) -> bool {
+    reporting && (!shift || capture.sends_shift())
+}
+
+/// 두 번·세 번 누르기 간격. 설정이 0이면 플랫폼 값(macOS는 OS 설정, 그 밖에는 500ms)
+pub fn repeat_interval(config_ms: u32, platform: Option<Duration>) -> Duration {
+    if config_ms > 0 {
+        Duration::from_millis(u64::from(config_ms))
+    } else {
+        platform.unwrap_or(Duration::from_millis(500))
+    }
+}
+
+/// OS의 두 번 누르기 간격. macOS만 안다
+#[cfg(target_os = "macos")]
+pub fn platform_repeat_interval() -> Option<Duration> {
+    let secs = objc2_app_kit::NSEvent::doubleClickInterval();
+    (secs.is_finite() && secs > 0.0).then(|| Duration::from_secs_f64(secs.min(5.0)))
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn platform_repeat_interval() -> Option<Duration> {
+    None
+}
+
+/// 가운데 클릭이 클립보드 붙여넣기인가. `primary-paste`는 macOS에 선택 클립보드가 없어 아니오
+pub fn middle_click_pastes(action: MiddleClickAction) -> bool {
+    action == MiddleClickAction::ClipboardPaste
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Button {
     Left,
@@ -99,6 +134,40 @@ pub fn click_to_move(row: &[(char, bool)], cursor: usize, target: usize, app_cur
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn report_decision() {
+        use MouseShiftCapture::*;
+        // 보고를 끄면 Shift와 상관없이 프로그램에 보내지 않는다
+        for c in [False, True, Always, Never] {
+            assert!(!reports_to_program(false, c, false));
+            assert!(!reports_to_program(false, c, true));
+        }
+        // Shift 없이는 켜 있으면 보낸다
+        for c in [False, True, Always, Never] {
+            assert!(reports_to_program(true, c, false));
+        }
+        // Shift를 누르면 true·always만 보낸다(기본 false는 고르기)
+        assert!(!reports_to_program(true, False, true));
+        assert!(!reports_to_program(true, Never, true));
+        assert!(reports_to_program(true, True, true));
+        assert!(reports_to_program(true, Always, true));
+    }
+
+    #[test]
+    fn repeat_interval_picks_config_then_platform() {
+        let os = Some(Duration::from_millis(350));
+        assert_eq!(repeat_interval(300, os), Duration::from_millis(300));
+        assert_eq!(repeat_interval(0, os), Duration::from_millis(350));
+        assert_eq!(repeat_interval(0, None), Duration::from_millis(500));
+    }
+
+    #[test]
+    fn middle_click_actions() {
+        assert!(middle_click_pastes(MiddleClickAction::ClipboardPaste));
+        assert!(!middle_click_pastes(MiddleClickAction::PrimaryPaste));
+        assert!(!middle_click_pastes(MiddleClickAction::Ignore));
+    }
 
     #[test]
     fn click_to_move_counts_characters_not_cells() {

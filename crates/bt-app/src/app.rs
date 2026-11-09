@@ -2470,10 +2470,17 @@ impl App {
     /// 칸 idx의 프로그램이 마우스 보고를 켰으면 그 모드
     fn mouse_reporting(&self, idx: usize) -> Option<bt_term::Modes> {
         let m = self.panes.get(idx)?.session.modes();
-        // Shift를 누르면 앱의 마우스 보고를 건너뛰고 고르기를 한다(xterm 관례)
+        // mouse-reporting을 끄면 보내지 않는다. Shift를 누르면 mouse-shift-capture가 true·always일 때만
+        // 프로그램이 받고, 아니면 고르기를 한다(xterm 관례)
         (m.mouse_report || m.mouse_drag || m.mouse_motion)
             .then_some(m)
-            .filter(|_| !self.mods.shift_key())
+            .filter(|_| {
+                mouse::reports_to_program(
+                    self.config.mouse_reporting,
+                    self.config.mouse_shift_capture,
+                    self.mods.shift_key(),
+                )
+            })
     }
 
     fn send_mouse(&mut self, idx: usize, button: mouse::Button, action: mouse::Action) {
@@ -4067,6 +4074,15 @@ impl ApplicationHandler<UserEvent> for App {
                     }
                     return;
                 }
+                if button == MouseButton::Middle {
+                    if state == ElementState::Pressed && mouse::middle_click_pastes(self.config.middle_click_action) {
+                        let text = self.clipboard.as_mut().and_then(|cb| cb.get_text().ok());
+                        if let Some(text) = text.filter(|t| !t.is_empty()) {
+                            self.paste(text);
+                        }
+                    }
+                    return;
+                }
                 if button != MouseButton::Left {
                     return;
                 }
@@ -4077,7 +4093,15 @@ impl ApplicationHandler<UserEvent> for App {
                         };
                         let now = Instant::now();
                         let clicks = match self.w.last_click {
-                            Some((t, lc, lr, n)) if now - t < Duration::from_millis(400) && lc == c && lr == r => {
+                            Some((t, lc, lr, n))
+                                if now - t
+                                    < mouse::repeat_interval(
+                                        self.config.click_repeat_interval,
+                                        mouse::platform_repeat_interval(),
+                                    )
+                                    && lc == c
+                                    && lr == r =>
+                            {
                                 n % 3 + 1
                             }
                             _ => 1,

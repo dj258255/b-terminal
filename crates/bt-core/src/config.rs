@@ -44,6 +44,34 @@ pub enum RightClickAction {
     Ignore,
 }
 
+/// `mouse-shift-capture`(Ghostty): Shift를 누른 클릭을 프로그램(마우스 보고)이 받는가
+/// XTSHIFTESCAPE(프로그램이 바꾸는 길)는 받지 않아 `True`는 `Always`, `False`는 `Never`와 같게 동작한다
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum MouseShiftCapture {
+    #[default]
+    False,
+    True,
+    Always,
+    Never,
+}
+
+impl MouseShiftCapture {
+    /// Shift를 누른 클릭을 프로그램에 보내는가
+    pub fn sends_shift(self) -> bool {
+        matches!(self, MouseShiftCapture::True | MouseShiftCapture::Always)
+    }
+}
+
+/// `middle-click-action`(Ghostty)
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum MiddleClickAction {
+    /// 선택 클립보드 붙여넣기. macOS에는 선택 클립보드가 없어 하는 일이 없다(기본)
+    #[default]
+    PrimaryPaste,
+    ClipboardPaste,
+    Ignore,
+}
+
 /// 새 칸을 어떤 길로 여는가. 폴더 이어받기 키(`*-inherit-working-directory`)를 가른다
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SpawnKind {
@@ -214,6 +242,14 @@ pub struct Config {
     pub selection_clear_on_copy: bool,
     /// 오른쪽 클릭 동작(Ghostty `right-click-action`). 마우스 보고 모드의 프로그램에는 항상 클릭을 보낸다
     pub right_click_action: RightClickAction,
+    /// 마우스 보고 켜기(Ghostty `mouse-reporting`, 기본 켬). 끄면 프로그램이 요청해도 보내지 않는다
+    pub mouse_reporting: bool,
+    /// Shift를 누른 클릭을 프로그램이 받는가(Ghostty `mouse-shift-capture`, 기본 `false`)
+    pub mouse_shift_capture: MouseShiftCapture,
+    /// 가운데 클릭 동작(Ghostty `middle-click-action`, 기본 `primary-paste`)
+    pub middle_click_action: MiddleClickAction,
+    /// 두 번·세 번 누르기 간격 밀리초(Ghostty `click-repeat-interval`). 0이면 플랫폼 값
+    pub click_repeat_interval: u32,
     /// 새 창·탭·분할이 고른 칸의 폴더를 이어받는가(Ghostty, 모두 기본 켬). 켜면 `working-directory`보다 앞선다
     pub window_inherit_working_directory: bool,
     pub tab_inherit_working_directory: bool,
@@ -752,6 +788,10 @@ impl Default for Config {
             selection_clear_on_typing: true,
             selection_clear_on_copy: false,
             right_click_action: RightClickAction::ContextMenu,
+            mouse_reporting: true,
+            mouse_shift_capture: MouseShiftCapture::False,
+            middle_click_action: MiddleClickAction::PrimaryPaste,
+            click_repeat_interval: 0,
             window_inherit_working_directory: true,
             tab_inherit_working_directory: true,
             split_inherit_working_directory: true,
@@ -1498,6 +1538,27 @@ impl Config {
                 "ignore" => self.right_click_action = RightClickAction::Ignore,
                 _ => bad(warnings),
             },
+            "mouse-reporting" => match parse_bool(v) {
+                Some(b) => self.mouse_reporting = b,
+                None => bad(warnings),
+            },
+            "mouse-shift-capture" => match v {
+                "true" => self.mouse_shift_capture = MouseShiftCapture::True,
+                "false" => self.mouse_shift_capture = MouseShiftCapture::False,
+                "always" => self.mouse_shift_capture = MouseShiftCapture::Always,
+                "never" => self.mouse_shift_capture = MouseShiftCapture::Never,
+                _ => bad(warnings),
+            },
+            "middle-click-action" => match v {
+                "primary-paste" => self.middle_click_action = MiddleClickAction::PrimaryPaste,
+                "clipboard-paste" => self.middle_click_action = MiddleClickAction::ClipboardPaste,
+                "ignore" => self.middle_click_action = MiddleClickAction::Ignore,
+                _ => bad(warnings),
+            },
+            "click-repeat-interval" => match v.parse::<u32>() {
+                Ok(n) => self.click_repeat_interval = n,
+                Err(_) => bad(warnings),
+            },
             "window-inherit-working-directory" => match parse_bool(v) {
                 Some(b) => self.window_inherit_working_directory = b,
                 None => bad(warnings),
@@ -1918,6 +1979,27 @@ impl Config {
             }
             .into(),
         );
+        push("mouse-reporting", self.mouse_reporting.to_string());
+        push(
+            "mouse-shift-capture",
+            match self.mouse_shift_capture {
+                MouseShiftCapture::False => "false",
+                MouseShiftCapture::True => "true",
+                MouseShiftCapture::Always => "always",
+                MouseShiftCapture::Never => "never",
+            }
+            .into(),
+        );
+        push(
+            "middle-click-action",
+            match self.middle_click_action {
+                MiddleClickAction::PrimaryPaste => "primary-paste",
+                MiddleClickAction::ClipboardPaste => "clipboard-paste",
+                MiddleClickAction::Ignore => "ignore",
+            }
+            .into(),
+        );
+        push("click-repeat-interval", self.click_repeat_interval.to_string());
         push(
             "window-inherit-working-directory",
             self.window_inherit_working_directory.to_string(),
@@ -2243,6 +2325,49 @@ mod tests {
         assert!(!Auto.visible(1) && Auto.visible(2));
         assert!(Always.visible(1) && Always.visible(5));
         assert!(!Never.visible(1) && !Never.visible(5));
+    }
+
+    #[test]
+    fn mouse_keys() {
+        let d = Config::default();
+        assert!(d.mouse_reporting);
+        assert_eq!(d.mouse_shift_capture, MouseShiftCapture::False);
+        assert_eq!(d.middle_click_action, MiddleClickAction::PrimaryPaste);
+        assert_eq!(d.click_repeat_interval, 0);
+        let c = Config::from_text(
+            "mouse-reporting = false\nmouse-shift-capture = always\nmiddle-click-action = clipboard-paste\nclick-repeat-interval = 300\n",
+            true,
+        );
+        assert!(!c.mouse_reporting);
+        assert_eq!(c.mouse_shift_capture, MouseShiftCapture::Always);
+        assert_eq!(c.middle_click_action, MiddleClickAction::ClipboardPaste);
+        assert_eq!(c.click_repeat_interval, 300);
+        assert!(c.warnings.is_empty(), "{:?}", c.warnings);
+        for (v, want) in [
+            ("true", MouseShiftCapture::True),
+            ("false", MouseShiftCapture::False),
+            ("always", MouseShiftCapture::Always),
+            ("never", MouseShiftCapture::Never),
+        ] {
+            assert_eq!(
+                Config::from_text(&format!("mouse-shift-capture = {v}\n"), true).mouse_shift_capture,
+                want
+            );
+        }
+        assert_eq!(
+            Config::from_text("middle-click-action = ignore\n", true).middle_click_action,
+            MiddleClickAction::Ignore
+        );
+        assert!(MouseShiftCapture::True.sends_shift() && MouseShiftCapture::Always.sends_shift());
+        assert!(!MouseShiftCapture::False.sends_shift() && !MouseShiftCapture::Never.sends_shift());
+        for bad in [
+            "mouse-reporting = maybe",
+            "mouse-shift-capture = sometimes",
+            "middle-click-action = menu",
+            "click-repeat-interval = -1",
+        ] {
+            assert_eq!(Config::from_text(&format!("{bad}\n"), true).warnings.len(), 1, "{bad}");
+        }
     }
 
     #[test]

@@ -4,6 +4,8 @@
 
 ## [아직 릴리스하지 않음]
 
+- 마우스 키 `mouse-reporting`·`mouse-shift-capture`·`middle-click-action`·`click-repeat-interval`을 Ghostty와 같은 뜻으로 받습니다. 두 번 누르기 기본 간격이 400ms에서 OS 값(macOS)·500ms로 바뀝니다 #175
+
 ## [0.11.0] - 2026-11-09
 
 Ghostty 키 채우기 4. 창·탭 이어받기, 명령 끝 알림, 선택·색, 글꼴 미세 조정, 닫은 것 되살리기, 소리 벨. 0.10처럼 하위 이슈마다 에이전트 하나가 구현하고 주 세션이 Ghostty 소스와 대조·검토·병합했습니다. 추적 이슈 #159.
