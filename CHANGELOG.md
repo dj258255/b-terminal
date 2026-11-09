@@ -4,8 +4,19 @@
 
 ## [아직 릴리스하지 않음]
 
+## [0.19.0] - 2026-11-10
+
+보안 입력과 체크섬 보고. 받기만 하던 Ghostty 키 가운데 macOS에서 뜻이 있는 둘을 채웠습니다: 보안 키보드 입력(`macos-auto-secure-input`·`macos-secure-input-indication`·`toggle_secure_input`), DECRQCRA 체크섬 보고(`vt-xt-checksum-report`·`vt-xt-checksum-extension`). 둘 다 보안 경계라 ADR과 커밋 보안 검토를 거쳤습니다. 하위 이슈마다 에이전트 하나가 구현하고, 주 세션이 Ghostty 원본과 대조·검토·실제 확인·병합했습니다. 추적 이슈 #257.
+
 - 보안 키보드 입력(macOS)을 채웁니다: 칸의 PTY가 줄 단위 입력이고 되울림이 꺼졌으면(암호 입력) 그 칸이 초점일 때 `EnableSecureEventInput`을 켜고, 앱이 뒤로 가면 끄고 앞으로 오면 다시 켭니다(켠 횟수와 끈 횟수를 맞춤, 호출이 실패하면 상태를 바꾸지 않음). 암호 입력 중에는 커서가 자물쇠가 됩니다(`macos-auto-secure-input`과 상관없이). `macos-auto-secure-input`(기본 `true`)과 `macos-secure-input-indication`(기본 `true`, 켜 있는 동안 창 오른쪽 위 자물쇠 표시)을 해석하고, `toggle_secure_input`(초점 칸 하나)과 앱 메뉴 `보안 키보드 입력`(앱 전체, 다음 실행에도 남김)을 더합니다. **기본 동작이 바뀝니다**: 암호를 치는 칸이 초점이면 보안 입력이 자동으로 켜지고 커서가 자물쇠가 되며, 이를 끄려면 `macos-auto-secure-input = false`입니다. 감지는 앱이 앞일 때 200ms마다 칸마다 `tcgetattr` 한 번이고 깨우는 비용은 재지 않았습니다. 판단·상태 기계·설정 해석·PTY의 termios 읽기는 테스트로 확인했습니다. 격리한 실제 창에서는 `stty -echo; read x` 동안 `ioreg`의 보안 입력 PID가 이 앱이 되고 Enter 뒤와 앱을 끈 뒤 사라지는 것, 자물쇠 커서와 표시(탭이 둘일 때 탭 줄 아래), `macos-auto-secure-input = false`에서 커서만 자물쇠인 것을 봤습니다. 메뉴·`toggle_secure_input`(키를 눌러야 함)과 다른 앱으로 갔다 오기는 보지 않았습니다. #258
 - `vt-xt-checksum-report = true`로 DECRQCRA(`CSI Pi ; Pg ; Pt ; Pl ; Pb ; Pr * y`)에 `DCS Pi ! ~ XXXX ST`로 답하고, `vt-xt-checksum-extension`(`negate` `attributes` `trim` `undrawn` `full`, 앞에 `no-`)과 XTCHECKSUM(`CSI Ps # y`)으로 계산법을 고릅니다(초기화·소프트 리셋 뒤에는 설정의 값). 계산은 Ghostty `xt_checksum.zig` 테스트의 기대값에 맞췄습니다. **기본은 꺼짐이라 기본 동작은 바뀌지 않습니다**: 켜면 찍힌 글이 화면을 한 칸씩 읽어 갈 수 있습니다(SECURITY.md). alacritty 격자에 "쓴 적 없는 칸" 표시가 없어 평범한 빈칸을 쓴 적 없는 칸으로 보므로, 기본 계산에서 사각형 첫 칸이 빈칸이면 Ghostty와 합이 다르고 깜박임·DECSCA 보호·왼쪽 여백은 없습니다. 새로 연 칸부터 적용합니다. `/bin/sh`와 `printf`로 PTY를 띄우는 테스트로 확인했습니다. 격리한 실제 창에서는 `abc` 뒤 첫 줄 세 칸을 물어 켠 설정에서 `FEDA`가 오고 꺼진 설정에서는 답이 없는 것을 봤습니다. #259
+
+### 알려진 한계
+
+- 기본 동작이 바뀐 것: 암호를 치는 칸이 초점이면 보안 입력이 켜지고 커서가 자물쇠가 됩니다(Ghostty와 같음). 끄려면 `macos-auto-secure-input = false`(커서는 그래도 자물쇠).
+- 보안 입력: 감지는 200ms 간격이라 프롬프트 직후 한 박자 늦게 켜집니다. ssh 너머의 암호는 알아채지 못합니다. 창 사이로 초점을 옮길 때 잠깐 껐다 켤 수 있습니다. 배지를 눌러도 설명이 뜨지 않습니다.
+- 체크섬: 평범한 빈칸을 쓴 적 없는 칸으로 봐서, 기본 계산에서 사각형 첫 칸이 빈칸이면 Ghostty와 합이 다릅니다. 깜박임·DECSCA 보호·왼쪽 여백은 계산에 없습니다.
+- 실제로 보지 않은 것: 앱 메뉴 `보안 키보드 입력`, `toggle_secure_input` 키, 다른 앱으로 갔다 올 때의 보안 입력, esctest·vttest, Linux.
 
 ## [0.18.0] - 2026-11-10
 
