@@ -542,3 +542,68 @@ fn kitty_graphics_query_follows_image_storage_limit() {
         hex_of("\x1b_Gi=1;OK\x1b\\")
     );
 }
+
+fn sh_with(script: &str, opts: impl FnOnce(&mut SpawnOptions)) -> (Session, Receiver<SessionEvent>) {
+    let (tx, rx) = channel();
+    let tx = std::sync::Mutex::new(tx);
+    let sink = Arc::new(move |e: SessionEvent| {
+        let _ = tx.lock().unwrap().send(e);
+    });
+    let mut o = SpawnOptions {
+        program: Some("/bin/sh".into()),
+        args: vec!["-c".into(), script.into()],
+        cwd: Some(std::env::temp_dir()),
+        ..Default::default()
+    };
+    opts(&mut o);
+    (
+        Session::spawn(o, GridSize::new(80, 10), Theme::default(), sink).expect("spawn"),
+        rx,
+    )
+}
+
+#[test]
+fn env_option_reaches_the_child_and_beats_built_in_variables() {
+    let (s, rx) = sh_with("printf '%s|%s|%s' \"$FOO\" \"$TERM_PROGRAM\" \"$BT_TAB_ID\"", |o| {
+        o.env = vec![
+            ("BT_TAB_ID".into(), "7".into()),
+            ("FOO".into(), "bar".into()),
+            ("TERM_PROGRAM".into(), "mine".into()),
+        ];
+    });
+    wait_exit(&rx);
+    assert_eq!(s.snapshot().row_text(0), "bar|mine|7");
+}
+
+#[test]
+fn term_option_sets_term_and_empty_keeps_the_default() {
+    let (s, rx) = sh_with("printf '%s' \"$TERM\"", |o| o.term = "screen-256color".into());
+    wait_exit(&rx);
+    assert_eq!(s.snapshot().row_text(0), "screen-256color");
+    let (s, rx) = sh_with("printf '%s' \"$TERM\"", |_| {});
+    wait_exit(&rx);
+    assert_eq!(s.snapshot().row_text(0), "xterm-256color");
+    // env의 TERM이 term보다 이긴다(Ghostty처럼)
+    let (s, rx) = sh_with("printf '%s' \"$TERM\"", |o| {
+        o.term = "screen".into();
+        o.env = vec![("TERM".into(), "from-env".into())];
+    });
+    wait_exit(&rx);
+    assert_eq!(s.snapshot().row_text(0), "from-env");
+}
+
+#[test]
+fn startup_input_is_written_to_the_pty() {
+    let (s, _rx) = sh_with("read x; printf '[%s]' \"$x\"; sleep 5", |o| {
+        o.input = b"hello\n".to_vec()
+    });
+    wait_until(&s, |t| t.contains("[hello]"));
+}
+
+#[test]
+fn big_startup_input_does_not_block_spawn() {
+    // 아무도 읽지 않는 큰 입력이 칸 띄우기를 붙잡으면 안 된다
+    let t = Instant::now();
+    let (_s, _rx) = sh_with("sleep 3", |o| o.input = vec![b'a'; 1 << 20]);
+    assert!(t.elapsed() < Duration::from_secs(2), "{:?}", t.elapsed());
+}

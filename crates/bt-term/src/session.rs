@@ -90,6 +90,10 @@ pub struct SpawnOptions {
     pub cwd: Option<PathBuf>,
     /// 더하거나 덮을 환경 변수
     pub env: Vec<(String, String)>,
+    /// TERM 값(설정 term, #190). 비어 있으면 `xterm-256color`
+    pub term: String,
+    /// 칸을 띄운 직후 PTY에 보낼 바이트(설정 input을 풀어 둔 것, #190)
+    pub input: Vec<u8>,
     pub scrollback: usize,
     /// 프로그램이 DECSCUSR로 바꾸기 전의 커서 모양(설정 cursor-style)
     pub cursor_shape: Option<CursorShape>,
@@ -191,6 +195,25 @@ impl PartialEq for ClipboardReply {
 impl Eq for ClipboardReply {}
 
 type Writer = Arc<Mutex<Box<dyn Write + Send>>>;
+
+/// 시작 입력을 PTY에 쓴다. 아무도 읽지 않는 큰 입력이 칸 띄우기를 붙잡지 않게 다른 스레드에서 쓰고, 쓰는 동안
+/// 잠금을 오래 쥐지 않게 작은 덩어리로 나눈다(터미널의 응답이 막히지 않게). 쓰기가 실패하면(칸이 끝남) 멈춘다
+fn send_startup_input(writer: &Writer, data: Vec<u8>) {
+    let writer = writer.clone();
+    let spawned = std::thread::Builder::new()
+        .name("bt-startup-input".into())
+        .spawn(move || {
+            for chunk in data.chunks(1024) {
+                let mut w = writer.lock();
+                if w.write_all(chunk).and_then(|()| w.flush()).is_err() {
+                    break;
+                }
+            }
+        });
+    if let Err(e) = spawned {
+        log::warn!("시작 입력을 쓸 스레드를 만들지 못했습니다: {e}");
+    }
+}
 
 /// VT 엔진이 요구하는 이벤트 받이. 응답(장치 속성 등)은 PTY에 바로 쓴다
 #[derive(Clone)]
@@ -410,7 +433,7 @@ impl Session {
     }
 
     /// 프로그램을 PTY로 띄운다. `sink`는 읽기 스레드에서 불린다
-    pub fn spawn(options: SpawnOptions, size: GridSize, theme: Theme, sink: EventSink) -> anyhow::Result<Self> {
+    pub fn spawn(mut options: SpawnOptions, size: GridSize, theme: Theme, sink: EventSink) -> anyhow::Result<Self> {
         let pty = native_pty_system();
         let pair = pty.openpty(size.pty())?;
 
@@ -434,7 +457,14 @@ impl Session {
         if let Some(cwd) = cwd {
             cmd.cwd(cwd);
         }
-        cmd.env("TERM", "xterm-256color");
+        cmd.env(
+            "TERM",
+            if options.term.is_empty() {
+                "xterm-256color"
+            } else {
+                &options.term
+            },
+        );
         cmd.env("COLORTERM", "truecolor");
         cmd.env("TERM_PROGRAM", "b-terminal");
         cmd.env("TERM_PROGRAM_VERSION", env!("CARGO_PKG_VERSION"));
@@ -451,6 +481,9 @@ impl Session {
         let pid = child.process_id();
         let mut reader = pair.master.try_clone_reader()?;
         let writer: Writer = Arc::new(Mutex::new(pair.master.take_writer()?));
+        if !options.input.is_empty() {
+            send_startup_input(&writer, std::mem::take(&mut options.input));
+        }
 
         let theme = Arc::new(theme);
         let title = Arc::new(Mutex::new(String::new()));
