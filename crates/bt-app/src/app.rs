@@ -20,6 +20,7 @@ use crate::keys;
 use crate::mouse;
 use crate::split::{Direction, Node, Rect};
 use crate::tabbar;
+use bt_core::config::NotifyOnFinish;
 
 fn truncate_chars(s: &str, n: usize) -> String {
     if s.chars().count() <= n {
@@ -288,6 +289,46 @@ fn bell_response(
 /// 소리 파일이 아직 나고 있지 않아야 한다(#165). 쏟아지는 벨이 소리를 겹쳐 쌓지 않게 한다
 fn bell_sound_due(since_last: Option<Duration>, still_playing: bool) -> bool {
     !still_playing && since_last.is_none_or(|d| d >= Duration::from_millis(100))
+}
+
+/// 명령이 끝났을 때 할 일(#161)
+#[derive(Debug, PartialEq)]
+struct FinishResponse {
+    /// 벨이 울린 것처럼
+    bell: bool,
+    /// 데스크톱 알림
+    notify: bool,
+}
+
+/// 끝난 명령에 대해 무엇을 할지. `duration`은 걸린 시간, `watching`은 창이 앞에 있고 그 칸이 보임.
+/// `notify-on-command-finish`를 적었으면 새 키들을 따르고, 적지 않았으면 옛 `notify-command-seconds`
+/// (창을 보지 않을 때 데스크톱 알림만)를 따른다
+fn command_finish_response(c: &bt_core::config::Config, duration: Duration, watching: bool) -> FinishResponse {
+    let none = FinishResponse {
+        bell: false,
+        notify: false,
+    };
+    match c.notify_on_command_finish {
+        // 새 키를 적지 않았다: 옛 동작(창을 보지 않을 때 데스크톱 알림만)
+        None => {
+            let limit = c.notify_command_seconds;
+            FinishResponse {
+                bell: false,
+                notify: limit > 0 && duration.as_secs() >= limit && !watching,
+            }
+        }
+        Some(NotifyOnFinish::Never) => none,
+        Some(mode) => {
+            if (mode == NotifyOnFinish::Unfocused && watching) || duration < c.notify_on_command_finish_after {
+                return none;
+            }
+            let a = c.notify_on_command_finish_action;
+            FinishResponse {
+                bell: a.bell,
+                notify: a.notify,
+            }
+        }
+    }
 }
 
 /// 탭 줄의 탭 하나: 칸들을 나눈 트리와 고른 칸(#35)
@@ -745,9 +786,17 @@ impl App {
     /// 탭이 알림을 보냈다. 보고 있는 탭이 아니면 안 읽음으로 두고, 창을 보고 있지 않으면 데스크톱 알림을 띄운다
     fn on_notification(&mut self, idx: usize, note: bt_term::Notification) {
         let watching = self.w.focused && self.is_visible(idx);
+        self.notify_tab(idx, note, !watching);
+    }
+
+    /// 안 읽음 표시와 데스크톱 알림. `desktop`이 거짓이면 데스크톱 알림은 띄우지 않는다
+    fn notify_tab(&mut self, idx: usize, note: bt_term::Notification, desktop: bool) {
+        let watching = self.w.focused && self.is_visible(idx);
         let t = &mut self.panes[idx];
         if !watching {
             t.unread = true;
+        }
+        if desktop {
             // 같은 탭의 데스크톱 알림은 3초에 한 번(출력에 알림이 몰려도 화면을 덮지 않게)
             let now = Instant::now();
             if t.last_desktop.is_none_or(|at| now - at >= Duration::from_secs(3)) {
@@ -823,9 +872,12 @@ impl App {
                 serde_json::to_value(command_result(&rec)).unwrap_or_default(),
             ));
         }
-        let limit = self.config.notify_command_seconds;
         let watching = self.w.focused && self.is_visible(idx);
-        if limit > 0 && rec.duration.as_secs() >= limit && !watching {
+        let r = command_finish_response(&self.config, rec.duration, watching);
+        if r.bell {
+            self.on_bell(idx);
+        }
+        if r.notify {
             let cmd = rec.command.clone().unwrap_or_else(|| "명령".into());
             let code = rec
                 .exit_code
@@ -837,12 +889,14 @@ impl App {
             } else {
                 "명령이 끝났습니다"
             };
-            self.on_notification(
+            // 보고 있어도(always) 띄운다
+            self.notify_tab(
                 idx,
                 bt_term::Notification {
                     title: title.into(),
                     body,
                 },
+                true,
             );
         }
         self.panes[idx].last_command = Some(rec);
@@ -1458,7 +1512,9 @@ impl App {
                 if let Some(cb) = self.clipboard.as_mut() {
                     let _ = cb.set_text(shown.clone());
                 }
-                self.toast(format!("경로를 복사했습니다: {shown}"));
+                if self.config.app_notifications.clipboard_copy {
+                    self.toast(format!("경로를 복사했습니다: {shown}"));
+                }
             }
             FileThen::Paste => self.paste_into(id, &shown),
             FileThen::Open => {
@@ -1955,7 +2011,9 @@ impl App {
                     if let Some(cb) = self.clipboard.as_mut() {
                         let _ = cb.set_text(url.clone());
                     }
-                    self.toast(format!("링크 주소를 복사했습니다: {url}"));
+                    if self.config.app_notifications.clipboard_copy {
+                        self.toast(format!("링크 주소를 복사했습니다: {url}"));
+                    }
                 }
             }
             Action::PromptSurfaceTitle => {
@@ -2162,11 +2220,14 @@ impl App {
         self.register_hotkeys();
         log::info!("설정을 다시 읽었습니다");
         let warn = self.config.warnings.len();
-        self.toast(if warn == 0 {
-            "설정을 다시 읽었습니다".into()
-        } else {
-            format!("설정을 다시 읽었습니다(경고 {warn}개)")
-        });
+        // 경고가 있으면 알림을 껐어도 알린다(고칠 것이 있다는 뜻이라)
+        if self.config.app_notifications.config_reload || warn > 0 {
+            self.toast(if warn == 0 {
+                "설정을 다시 읽었습니다".into()
+            } else {
+                format!("설정을 다시 읽었습니다(경고 {warn}개)")
+            });
+        }
     }
 
     /// 칸 idx의 프로그램이 마우스 보고를 켰으면 그 모드
@@ -3469,7 +3530,12 @@ impl ApplicationHandler<UserEvent> for App {
                             self.panes[idx].cwd = Some(path);
                         }
                     }
-                    SessionEvent::Notification(note) => self.on_notification(idx, note),
+                    SessionEvent::Notification(note) => {
+                        // 프로그램의 OSC 9·777 알림(desktop-notifications). 끄면 버린다
+                        if self.config.desktop_notifications {
+                            self.on_notification(idx, note)
+                        }
+                    }
                     SessionEvent::Exited(code) => {
                         self.panes[idx].exited = Some(code);
                         // 셸이 끝나면 그 칸을 닫는다(Ghostty 기본과 같다)
@@ -3495,7 +3561,9 @@ impl ApplicationHandler<UserEvent> for App {
                                 text.chars().count()
                             );
                             // 보고 있는 탭이라 안 읽음·데스크톱 알림으로는 보이지 않는다. 창 안 알림 띠로 늘 보인다
-                            self.toast(format!("클립보드에 복사됨: {shown}"));
+                            if self.config.app_notifications.clipboard_copy {
+                                self.toast(format!("클립보드에 복사됨: {shown}"));
+                            }
                         } else {
                             log::warn!(
                                 "탭 {}: 보고 있지 않은 탭의 클립보드 쓰기(OSC 52)를 버렸습니다",
@@ -4063,6 +4131,70 @@ mod tests {
         assert_eq!(o.program.as_deref(), Some("htop"));
         assert_eq!(o.args, vec!["-d", "5"]);
         assert_eq!(o.cwd.as_deref(), Some(std::path::Path::new("/tmp")));
+    }
+
+    #[test]
+    fn command_finish_response_follows_new_keys_or_legacy() {
+        use bt_core::config::{Config, FinishAction, NotifyOnFinish};
+        let secs = Duration::from_secs;
+        let r = |bell, notify| FinishResponse { bell, notify };
+        let none = r(false, false);
+
+        // 새 키를 적지 않았으면 옛 동작: 10초 넘고 보지 않을 때만 데스크톱 알림
+        let legacy = Config::default();
+        assert_eq!(command_finish_response(&legacy, secs(10), false), r(false, true));
+        assert_eq!(command_finish_response(&legacy, secs(9), false), none);
+        assert_eq!(command_finish_response(&legacy, secs(60), true), none);
+        let off = Config {
+            notify_command_seconds: 0,
+            ..Config::default()
+        };
+        assert_eq!(command_finish_response(&off, secs(60), false), none);
+        // 옛 키 값을 바꾸면 따른다
+        let c30 = Config {
+            notify_command_seconds: 30,
+            ..Config::default()
+        };
+        assert_eq!(command_finish_response(&c30, secs(20), false), none);
+        assert_eq!(command_finish_response(&c30, secs(30), false), r(false, true));
+
+        // 새 키를 적으면 옛 키는 무시한다
+        let mut c = Config {
+            notify_on_command_finish: Some(NotifyOnFinish::Unfocused),
+            notify_command_seconds: 0,
+            ..Config::default()
+        };
+        // 기본 동작은 bell, 기본 기간은 5초
+        assert_eq!(command_finish_response(&c, secs(5), false), r(true, false));
+        assert_eq!(command_finish_response(&c, secs(4), false), none);
+        assert_eq!(
+            command_finish_response(&c, secs(60), true),
+            none,
+            "unfocused는 보고 있으면 조용"
+        );
+        c.notify_on_command_finish = Some(NotifyOnFinish::Always);
+        assert_eq!(command_finish_response(&c, secs(60), true), r(true, false));
+        c.notify_on_command_finish_action = FinishAction {
+            bell: false,
+            notify: true,
+        };
+        assert_eq!(command_finish_response(&c, secs(60), true), r(false, true));
+        c.notify_on_command_finish_action = FinishAction {
+            bell: false,
+            notify: false,
+        };
+        assert_eq!(command_finish_response(&c, secs(60), false), none);
+        c.notify_on_command_finish_action = FinishAction {
+            bell: true,
+            notify: true,
+        };
+        c.notify_on_command_finish_after = secs(60);
+        assert_eq!(command_finish_response(&c, secs(59), false), none);
+        assert_eq!(command_finish_response(&c, secs(61), false), r(true, true));
+        // never는 옛 키가 켜 있어도 끈다
+        c.notify_on_command_finish = Some(NotifyOnFinish::Never);
+        c.notify_command_seconds = 1;
+        assert_eq!(command_finish_response(&c, secs(600), false), none);
     }
 
     #[test]

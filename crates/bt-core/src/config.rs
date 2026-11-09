@@ -219,6 +219,17 @@ pub struct Config {
     pub shell_integration: String,
     /// 셸 통합으로 안 명령이 이만큼(초) 넘게 걸려 끝나면, 창을 보고 있지 않을 때 알린다. 0이면 끔
     pub notify_command_seconds: u64,
+    /// 명령이 끝났을 때 알릴 때(Ghostty `notify-on-command-finish`, #161). 적지 않았으면 None:
+    /// 그때는 옛 키 `notify_command_seconds`를 따른다
+    pub notify_on_command_finish: Option<NotifyOnFinish>,
+    /// 명령 끝 알림 방법(Ghostty `notify-on-command-finish-action`, 기본 bell)
+    pub notify_on_command_finish_action: FinishAction,
+    /// 명령 끝 알림이 나가려면 이만큼 넘게 걸려야 한다(Ghostty `notify-on-command-finish-after`, 기본 5초)
+    pub notify_on_command_finish_after: std::time::Duration,
+    /// 프로그램의 데스크톱 알림(OSC 9·777)을 받는다(Ghostty `desktop-notifications`, 기본 켬)
+    pub desktop_notifications: bool,
+    /// 앱 자신의 알림 띠(Ghostty `app-notifications`)
+    pub app_notifications: AppNotifications,
     /// OSC 52로 프로그램이 클립보드에 쓰는 것을 허용(Ghostty 기본 allow)
     pub clipboard_write: bool,
     /// OSC 52로 프로그램이 클립보드를 읽는 것을 허용(기본 금지. Ghostty 기본은 ask)
@@ -288,6 +299,102 @@ pub struct Config {
     pub warnings: Vec<String>,
     /// 실제로 읽은 파일
     pub sources: Vec<PathBuf>,
+}
+
+/// 명령 끝 알림을 언제 보낼까(Ghostty `notify-on-command-finish`)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NotifyOnFinish {
+    Never,
+    /// 그 칸을 보고 있지 않을 때만
+    Unfocused,
+    Always,
+}
+
+/// 명령 끝 알림 방법(Ghostty `notify-on-command-finish-action`). Ghostty 기본은 bell만
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FinishAction {
+    /// 벨이 울린 것처럼 한다(`bell-features`를 따름)
+    pub bell: bool,
+    /// 데스크톱 알림
+    pub notify: bool,
+}
+
+impl Default for FinishAction {
+    fn default() -> Self {
+        Self {
+            bell: true,
+            notify: false,
+        }
+    }
+}
+
+impl FinishAction {
+    /// `no-bell,notify` 같은 글을 지금 값 위에 얹는다. 모르는 이름이 있으면 아무것도 바꾸지 않고 거짓
+    pub fn apply(&mut self, v: &str) -> bool {
+        let mut next = *self;
+        for item in v.split(',').map(str::trim).filter(|i| !i.is_empty()) {
+            let (on, name) = match item.strip_prefix("no-") {
+                Some(n) => (false, n),
+                None => (true, item),
+            };
+            match name {
+                "true" | "false" if item == name => {
+                    let all = name == "true";
+                    next = FinishAction { bell: all, notify: all };
+                }
+                "bell" => next.bell = on,
+                "notify" => next.notify = on,
+                _ => return false,
+            }
+        }
+        *self = next;
+        true
+    }
+}
+
+/// 앱 자신의 알림 띠(Ghostty `app-notifications`). 둘 다 기본 켬
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AppNotifications {
+    /// 글을 클립보드에 복사했을 때
+    pub clipboard_copy: bool,
+    /// 설정을 다시 읽었을 때
+    pub config_reload: bool,
+}
+
+impl Default for AppNotifications {
+    fn default() -> Self {
+        Self {
+            clipboard_copy: true,
+            config_reload: true,
+        }
+    }
+}
+
+impl AppNotifications {
+    /// `no-clipboard-copy`, `false` 같은 글을 지금 값 위에 얹는다. 모르는 이름이 있으면 아무것도 바꾸지 않고 거짓
+    pub fn apply(&mut self, v: &str) -> bool {
+        let mut next = *self;
+        for item in v.split(',').map(str::trim).filter(|i| !i.is_empty()) {
+            let (on, name) = match item.strip_prefix("no-") {
+                Some(n) => (false, n),
+                None => (true, item),
+            };
+            match name {
+                "true" | "false" if item == name => {
+                    let all = name == "true";
+                    next = AppNotifications {
+                        clipboard_copy: all,
+                        config_reload: all,
+                    };
+                }
+                "clipboard-copy" => next.clipboard_copy = on,
+                "config-reload" => next.config_reload = on,
+                _ => return false,
+            }
+        }
+        *self = next;
+        true
+    }
 }
 
 impl BellFeatures {
@@ -627,6 +734,11 @@ impl Default for Config {
             paste_bracketed_safe: true,
             shell_integration: "detect".into(),
             notify_command_seconds: 10,
+            notify_on_command_finish: None,
+            notify_on_command_finish_action: FinishAction::default(),
+            notify_on_command_finish_after: std::time::Duration::from_secs(5),
+            desktop_notifications: true,
+            app_notifications: AppNotifications::default(),
             unfocused_split_opacity: 0.7,
             unfocused_split_fill: None,
             split_divider_color: None,
@@ -1317,6 +1429,31 @@ impl Config {
                 Ok(n) => self.notify_command_seconds = n,
                 Err(_) => bad(warnings),
             },
+            "notify-on-command-finish" => match v {
+                "never" => self.notify_on_command_finish = Some(NotifyOnFinish::Never),
+                "unfocused" => self.notify_on_command_finish = Some(NotifyOnFinish::Unfocused),
+                "always" => self.notify_on_command_finish = Some(NotifyOnFinish::Always),
+                _ => bad(warnings),
+            },
+            "notify-on-command-finish-action" => {
+                if !self.notify_on_command_finish_action.apply(v) {
+                    bad(warnings)
+                }
+            }
+            "notify-on-command-finish-after" => match parse_duration(v) {
+                Some(d) => self.notify_on_command_finish_after = d,
+                None => bad(warnings),
+            },
+            "desktop-notifications" => match v {
+                "true" => self.desktop_notifications = true,
+                "false" => self.desktop_notifications = false,
+                _ => bad(warnings),
+            },
+            "app-notifications" => {
+                if !self.app_notifications.apply(v) {
+                    bad(warnings)
+                }
+            }
             "clipboard-write" => match v {
                 "allow" | "true" => self.clipboard_write = true,
                 "deny" | "false" => self.clipboard_write = false,
@@ -1686,6 +1823,44 @@ impl Config {
                 ConfirmClose::Always => "always",
             }
             .into(),
+        );
+        if let Some(m) = self.notify_on_command_finish {
+            push(
+                "notify-on-command-finish",
+                match m {
+                    NotifyOnFinish::Never => "never",
+                    NotifyOnFinish::Unfocused => "unfocused",
+                    NotifyOnFinish::Always => "always",
+                }
+                .into(),
+            );
+        }
+        let a = self.notify_on_command_finish_action;
+        push(
+            "notify-on-command-finish-action",
+            format!(
+                "{}bell,{}notify",
+                if a.bell { "" } else { "no-" },
+                if a.notify { "" } else { "no-" }
+            ),
+        );
+        push("notify-on-command-finish-after", {
+            let ms = self.notify_on_command_finish_after.as_millis();
+            if ms % 1000 == 0 {
+                format!("{}s", ms / 1000)
+            } else {
+                format!("{ms}ms")
+            }
+        });
+        push("desktop-notifications", self.desktop_notifications.to_string());
+        let n = self.app_notifications;
+        push(
+            "app-notifications",
+            format!(
+                "{}clipboard-copy,{}config-reload",
+                if n.clipboard_copy { "" } else { "no-" },
+                if n.config_reload { "" } else { "no-" }
+            ),
         );
         push(
             "bell-features",
@@ -2368,6 +2543,116 @@ mod tests {
         assert!(c.render().contains("confirm-close-surface = false"));
         let c = Config::from_text("confirm-close-surface = maybe\n", true);
         assert_eq!((c.confirm_close, c.warnings.len()), (ConfirmClose::True, 1));
+    }
+
+    #[test]
+    fn command_finish_keys_like_ghostty() {
+        let d = Config::default();
+        assert_eq!(d.notify_on_command_finish, None, "적지 않았으면 옛 키를 따른다");
+        assert_eq!(
+            d.notify_on_command_finish_action,
+            FinishAction {
+                bell: true,
+                notify: false
+            }
+        );
+        assert_eq!(d.notify_on_command_finish_after, std::time::Duration::from_secs(5));
+        assert!(d.desktop_notifications);
+        assert_eq!(
+            d.app_notifications,
+            AppNotifications {
+                clipboard_copy: true,
+                config_reload: true
+            }
+        );
+        for (v, want) in [
+            ("never", NotifyOnFinish::Never),
+            ("unfocused", NotifyOnFinish::Unfocused),
+            ("always", NotifyOnFinish::Always),
+        ] {
+            let c = Config::from_text(&format!("notify-on-command-finish = {v}\n"), true);
+            assert_eq!(c.notify_on_command_finish, Some(want), "{v}");
+            assert!(c.warnings.is_empty(), "{:?}", c.warnings);
+            assert!(c.render().contains(&format!("notify-on-command-finish = {v}")));
+        }
+        let c = Config::from_text("notify-on-command-finish = sometimes\n", true);
+        assert_eq!((c.notify_on_command_finish, c.warnings.len()), (None, 1));
+
+        let c = Config::from_text("notify-on-command-finish-action = no-bell,notify\n", true);
+        assert_eq!(
+            c.notify_on_command_finish_action,
+            FinishAction {
+                bell: false,
+                notify: true
+            }
+        );
+        let c = Config::from_text("notify-on-command-finish-action = notify\n", true);
+        assert_eq!(
+            c.notify_on_command_finish_action,
+            FinishAction {
+                bell: true,
+                notify: true
+            },
+            "적지 않은 것은 그대로"
+        );
+        let c = Config::from_text("notify-on-command-finish-action = false\n", true);
+        assert_eq!(
+            c.notify_on_command_finish_action,
+            FinishAction {
+                bell: false,
+                notify: false
+            }
+        );
+        let c = Config::from_text("notify-on-command-finish-action = bell,chime\n", true);
+        assert_eq!(c.notify_on_command_finish_action, FinishAction::default());
+        assert_eq!(c.warnings.len(), 1);
+
+        let c = Config::from_text("notify-on-command-finish-after = 1m30s\n", true);
+        assert_eq!(c.notify_on_command_finish_after, std::time::Duration::from_secs(90));
+        assert!(c.render().contains("notify-on-command-finish-after = 90s"));
+        let c = Config::from_text("notify-on-command-finish-after = soon\n", true);
+        assert_eq!(c.notify_on_command_finish_after, std::time::Duration::from_secs(5));
+        assert_eq!(c.warnings.len(), 1);
+
+        let c = Config::from_text("desktop-notifications = false\n", true);
+        assert!(!c.desktop_notifications);
+        assert!(c.render().contains("desktop-notifications = false"));
+        let c = Config::from_text("desktop-notifications = maybe\n", true);
+        assert!(c.desktop_notifications);
+        assert_eq!(c.warnings.len(), 1);
+
+        let c = Config::from_text("app-notifications = no-clipboard-copy\n", true);
+        assert_eq!(
+            c.app_notifications,
+            AppNotifications {
+                clipboard_copy: false,
+                config_reload: true
+            }
+        );
+        let c = Config::from_text("app-notifications = false\napp-notifications = config-reload\n", true);
+        assert_eq!(
+            c.app_notifications,
+            AppNotifications {
+                clipboard_copy: false,
+                config_reload: true
+            }
+        );
+        let c = Config::from_text("app-notifications = false\n", true);
+        assert_eq!(
+            c.app_notifications,
+            AppNotifications {
+                clipboard_copy: false,
+                config_reload: false
+            }
+        );
+        let c = Config::from_text("app-notifications = true\n", true);
+        assert_eq!(c.app_notifications, AppNotifications::default());
+        let c = Config::from_text("app-notifications = no-clipboard-copy,toast\n", true);
+        assert_eq!(c.app_notifications, AppNotifications::default());
+        assert_eq!(c.warnings.len(), 1);
+        // 옛 키는 그대로 받는다
+        let c = Config::from_text("notify-command-seconds = 30\n", true);
+        assert_eq!(c.notify_command_seconds, 30);
     }
 
     #[test]
