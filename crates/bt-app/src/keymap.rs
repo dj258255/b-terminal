@@ -68,6 +68,8 @@ pub enum Action {
     SelectAll,
     /// 앞(-1)·뒤(+1) 프롬프트로(셸 통합)
     JumpToPrompt(i32),
+    /// 칸의 글을 파일로 쓰고 그 경로를 어떻게 할지(Ghostty `write_scrollback_file` 등, #125)
+    WriteFile(FileSource, FileThen),
     /// 입력 막대로 지금 칸의 제목을 묻는다(Ghostty `prompt_surface_title`, #124)
     PromptSurfaceTitle,
     /// 지금 칸의 제목을 정한다. 빈 글이면 사람이 붙인 제목을 지운다(Ghostty `set_surface_title`)
@@ -82,6 +84,22 @@ pub enum Action {
     Quit,
     /// `text:…`: 글을 그대로 PTY에 보낸다(`\n`, `\x1b` 같은 이스케이프를 푼다)
     Text(String),
+}
+
+/// 파일로 쓸 글
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FileSource {
+    Scrollback,
+    Screen,
+    Selection,
+}
+
+/// 쓴 파일의 경로를: 클립보드에 넣기, 칸에 붙여넣기, 기본 앱으로 열기
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FileThen {
+    Copy,
+    Paste,
+    Open,
 }
 
 /// goto_split의 대상
@@ -254,6 +272,20 @@ pub fn parse_action(s: &str) -> Result<Option<Action>, String> {
         "quit" => Action::Quit,
         "toggle_fullscreen" => Action::ToggleFullscreen,
         "prompt_surface_title" => Action::PromptSurfaceTitle,
+        "write_scrollback_file" | "write_screen_file" | "write_selection_file" => {
+            let source = match name {
+                "write_scrollback_file" => FileSource::Scrollback,
+                "write_screen_file" => FileSource::Screen,
+                _ => FileSource::Selection,
+            };
+            let then = match arg.map(str::trim) {
+                Some("copy") => FileThen::Copy,
+                Some("paste") => FileThen::Paste,
+                Some("open") => FileThen::Open,
+                _ => return Err(format!("{name}:copy·paste·open")),
+            };
+            Action::WriteFile(source, then)
+        }
         "set_surface_title" => Action::SetSurfaceTitle(arg.unwrap_or("").to_string()),
         "scroll_page_lines" => Action::ScrollLines(
             arg.and_then(|a| a.trim().parse().ok())
@@ -637,6 +669,20 @@ mod tests {
             parse_action("prompt_surface_title").unwrap(),
             Some(Action::PromptSurfaceTitle)
         );
+        assert_eq!(
+            parse_action("write_scrollback_file:copy").unwrap(),
+            Some(Action::WriteFile(FileSource::Scrollback, FileThen::Copy))
+        );
+        assert_eq!(
+            parse_action("write_screen_file:open").unwrap(),
+            Some(Action::WriteFile(FileSource::Screen, FileThen::Open))
+        );
+        assert_eq!(
+            parse_action("write_selection_file:paste").unwrap(),
+            Some(Action::WriteFile(FileSource::Selection, FileThen::Paste))
+        );
+        assert!(parse_action("write_screen_file").is_err(), "할 일이 있어야 한다");
+        assert!(parse_action("write_screen_file:mail").is_err());
         assert_eq!(
             parse_action("set_surface_title:빌드 서버").unwrap(),
             Some(Action::SetSurfaceTitle("빌드 서버".into()))
