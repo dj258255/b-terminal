@@ -47,6 +47,15 @@ const TOAST_FOR: Duration = Duration::from_millis(2500);
 /// 스크롤한 뒤 스크롤 막대를 보이는 시간
 const SCROLLBAR_FOR: Duration = Duration::from_millis(1200);
 
+/// 스크롤 막대를 누르고 있는 상태
+#[derive(Debug, Clone, Copy)]
+struct ScrollbarPress {
+    /// 누른 칸
+    pane: u64,
+    /// 손잡이를 쥔 곳(손잡이 맨 위에서의 거리). 빈 곳을 눌러 쪽 단위로 옮긴 누름이면 없다
+    grab: Option<u32>,
+}
+
 /// 다른 스레드(PTY 읽기)가 창 스레드를 깨우는 사건
 #[derive(Debug, Clone)]
 pub enum UserEvent {
@@ -573,6 +582,9 @@ struct Win {
     cursor_pos: PhysicalPosition<f64>,
     /// 마우스가 오른쪽 끝(스크롤 막대 자리) 위에 있는 칸
     gutter_hot: Option<u64>,
+    /// 스크롤 막대를 누르고 있는 중(손잡이를 끌거나 빈 곳을 눌러 쪽 단위로 옮긴 누름). 놓을 때까지 마우스는
+    /// 프로그램에 보고하지 않고 글도 고르지 않는다
+    scrollbar_press: Option<ScrollbarPress>,
     selecting: bool,
     last_click: Option<(Instant, usize, usize, u8)>,
     scroll_accum: f64,
@@ -630,6 +642,7 @@ impl Win {
             preedit: String::new(),
             cursor_pos: PhysicalPosition::new(0.0, 0.0),
             gutter_hot: None,
+            scrollbar_press: None,
             selecting: false,
             last_click: None,
             scroll_accum: 0.0,
@@ -852,6 +865,60 @@ impl App {
         self.group_layout(self.w.active).into_iter().find_map(|(id, r)| {
             bt_render::scrollbar::in_gutter(x, y, r.x, r.y, r.right(), r.bottom(), gutter).then_some(id)
         })
+    }
+
+    /// 칸의 스크롤 막대 트랙: (맨 위 픽셀 y, 길이 픽셀). 막대를 그리는 곳과 같다(칸 안쪽 맨 위에서 보이는 줄 수만큼)
+    fn scrollbar_track(&self, id: u64, rows: usize) -> Option<(i32, u32)> {
+        let m = self.fonts.as_ref()?.metrics();
+        let inner = self.inner_rect(self.pane_rect(id)?);
+        Some((inner.y, rows as u32 * m.height))
+    }
+
+    /// 마우스가 막대 띠 위에 있을 때 누름을 처리한다. 처리했으면 참(프로그램 보고·고르기를 하지 않는다).
+    /// 스크롤백이 없거나 대체 화면이면 막대가 없으므로 거짓이고 마우스는 평소처럼 간다
+    fn scrollbar_press_start(&mut self) -> bool {
+        let Some(id) = self.gutter_pane() else { return false };
+        let Some(idx) = self.pane_index(id) else { return false };
+        let session = &self.panes[idx].session;
+        if session.modes().alt_screen {
+            return false;
+        }
+        let (rows, history, offset) = session.scroll_metrics();
+        let Some((top, track)) = self.scrollbar_track(id, rows) else {
+            return false;
+        };
+        let y = self.w.cursor_pos.y - top as f64;
+        let Some(hit) = bt_render::scrollbar::hit(track, rows, history, offset, y) else {
+            return false;
+        };
+        let grab = match hit {
+            bt_render::scrollbar::Hit::Thumb { grab } => Some(grab),
+            bt_render::scrollbar::Hit::Page { up } => {
+                let n = bt_render::scrollbar::page_lines(rows) as i32;
+                self.panes[idx].session.scroll(if up { n } else { -n });
+                None
+            }
+        };
+        self.w.scrollbar_press = Some(ScrollbarPress { pane: id, grab });
+        self.panes[idx].scrollbar_until = Some(Instant::now() + SCROLLBAR_FOR);
+        self.request_redraw();
+        true
+    }
+
+    /// 손잡이를 끄는 중 포인터가 움직였다
+    fn scrollbar_drag(&mut self, press: ScrollbarPress) {
+        let Some(grab) = press.grab else { return };
+        let Some(idx) = self.pane_index(press.pane) else { return };
+        let (rows, history, _) = self.panes[idx].session.scroll_metrics();
+        let Some((top, track)) = self.scrollbar_track(press.pane, rows) else {
+            return;
+        };
+        let y = self.w.cursor_pos.y - top as f64;
+        if let Some(row) = bt_render::scrollbar::drag_top(track, rows, history, y, grab) {
+            self.panes[idx].session.scroll_to_row(row);
+        }
+        self.panes[idx].scrollbar_until = Some(Instant::now() + SCROLLBAR_FOR);
+        self.request_redraw();
     }
 
     /// 칸의 바깥 사각형(보이지 않으면 없다)
@@ -3870,7 +3937,9 @@ impl App {
                 let scrolling = self
                     .pane_index(v.id)
                     .is_some_and(|i| self.panes[i].scrollbar_until.is_some_and(|t| t > now_bar));
-                let hovering = self.w.gutter_hot == Some(v.id);
+                // 누르고 있는 동안은 마우스가 띠 밖으로 나가도 막대를 계속 보인다
+                let hovering =
+                    self.w.gutter_hot == Some(v.id) || self.w.scrollbar_press.is_some_and(|p| p.pane == v.id);
                 (
                     self.config.scrollbar.shows(v.screen.history, scrolling, hovering),
                     hovering,
@@ -4957,6 +5026,11 @@ impl ApplicationHandler<UserEvent> for App {
                         self.focus_pane(id);
                     }
                 }
+                // 막대를 누르고 있으면 끌기만 한다(프로그램에 보고하지 않고 글도 고르지 않는다)
+                if let Some(press) = self.w.scrollbar_press {
+                    self.scrollbar_drag(press);
+                    return;
+                }
                 let Some(idx) = self.active_index() else { return };
                 if self.w.selecting {
                     if let Some((c, r)) = self.cell_in(idx, position) {
@@ -4971,6 +5045,17 @@ impl ApplicationHandler<UserEvent> for App {
                 }
             }
             WindowEvent::MouseInput { state, button, .. } => {
+                // 막대를 누르던 중 왼쪽 단추를 놓으면 끝낸다. 놓은 뒤 평소처럼 사라지는 시간을 다시 센다
+                if let Some(press) = self.w.scrollbar_press {
+                    if button == MouseButton::Left && state == ElementState::Released {
+                        self.w.scrollbar_press = None;
+                        if let Some(i) = self.pane_index(press.pane) {
+                            self.panes[i].scrollbar_until = Some(Instant::now() + SCROLLBAR_FOR);
+                        }
+                        self.request_redraw();
+                    }
+                    return;
+                }
                 // 제목 막대 자리(콘텐츠가 그 밑까지 들어간 창)는 칸이 아니다
                 let top_inset = self.top_inset();
                 if (self.w.cursor_pos.y as u32) < top_inset {
@@ -5003,6 +5088,10 @@ impl ApplicationHandler<UserEvent> for App {
                             return;
                         }
                     }
+                }
+                // 막대 띠에서 왼쪽 단추를 누르면 스크롤한다(막대가 있을 때만). 프로그램·고르기에는 보내지 않는다
+                if state == ElementState::Pressed && button == MouseButton::Left && self.scrollbar_press_start() {
+                    return;
                 }
                 // 다른 칸을 누르면 그 칸을 고른다. 누름은 고른 칸이 그대로 받는다
                 if state == ElementState::Pressed {
