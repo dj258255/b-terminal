@@ -653,6 +653,8 @@ pub struct App {
     keymap: Keymap,
     /// --config-file(설정을 다시 읽을 때 같은 파일을 읽는다)
     config_extra: Option<std::path::PathBuf>,
+    /// `--config-default-files`(거짓이면 설정을 다시 읽을 때도 기본 설정 파일을 읽지 않는다)
+    config_default_files: bool,
     /// 지금 창(사건을 받은 창)의 상태. 다른 창의 사건이 오면 `others`와 바꿔 끼운다(#36)
     w: Win,
     others: Vec<Win>,
@@ -678,7 +680,7 @@ pub struct App {
 impl App {
     pub fn new(
         config: AppConfig,
-        config_extra: Option<std::path::PathBuf>,
+        (config_extra, config_default_files): (Option<std::path::PathBuf>, bool),
         proxy: EventLoopProxy<UserEvent>,
         first: SpawnOptions,
     ) -> Self {
@@ -712,6 +714,7 @@ impl App {
             control: None,
             keymap,
             config_extra,
+            config_default_files,
             w: Win::new(),
             others: Vec::new(),
             last_focused: None,
@@ -2647,7 +2650,11 @@ impl App {
     }
 
     fn reload_config(&mut self) {
-        let next = AppConfig::load(self.config_extra.as_deref(), crate::system_is_dark());
+        let next = AppConfig::load_with(
+            self.config_extra.as_deref(),
+            crate::system_is_dark(),
+            self.config_default_files,
+        );
         for w in &next.warnings {
             log::warn!("설정: {w}");
         }

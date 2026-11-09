@@ -354,6 +354,20 @@ pub fn parse_action(s: &str) -> Result<Option<Action>, String> {
         "select_all" => Action::SelectAll,
         "jump_to_prompt" => Action::JumpToPrompt(arg.and_then(|a| a.trim().parse().ok()).unwrap_or(-1)),
         "ignore" => Action::Ignore,
+        // 받기만 하는 동작(#211): 키를 먹고 아무 일도 하지 않는다. 이유는 docs/configuration.md
+        "check_for_updates"
+        | "show_gtk_inspector"
+        | "show_on_screen_keyboard"
+        | "toggle_tab_overview"
+        | "toggle_secure_input" => Action::Ignore,
+        "inspector" => match arg.map(str::trim) {
+            Some("toggle" | "show" | "hide") => Action::Ignore,
+            _ => return Err("inspector:toggle·show·hide".into()),
+        },
+        "crash" => match arg.map(str::trim) {
+            Some("main" | "io" | "render") => Action::Ignore,
+            _ => return Err("crash:main·io·render".into()),
+        },
         "text" => Action::Text(unescape(arg.unwrap_or(""))),
         "csi" => Action::Text(format!("\x1b[{}", arg.unwrap_or(""))),
         "esc" => Action::Text(format!("\x1b{}", arg.unwrap_or(""))),
@@ -1209,6 +1223,39 @@ mod tests {
         // 접두사를 붙인 unbind는 그 묶음을 지운다
         let (km, _) = Keymap::build(&["ctrl+alt+d=new_tab".into(), "performable:ctrl+alt+d=unbind".into()]);
         assert_eq!(km.lookup(&trig("ctrl+alt+d")), None);
+    }
+
+    #[test]
+    fn receive_only_actions_parse_and_consume_the_key() {
+        for a in [
+            "check_for_updates",
+            "inspector:toggle",
+            "inspector:show",
+            "inspector:hide",
+            "show_gtk_inspector",
+            "show_on_screen_keyboard",
+            "toggle_tab_overview",
+            "toggle_secure_input",
+            "crash:main",
+            "crash:io",
+            "crash:render",
+        ] {
+            assert!(parse_action(a).unwrap().is_some(), "{a}");
+        }
+        // 인자가 필요한 것은 인자를 확인한다(Ghostty도 잘못된 인자는 오류)
+        assert!(parse_action("inspector").is_err());
+        assert!(parse_action("inspector:flip").is_err());
+        assert!(parse_action("crash").is_err());
+        assert!(parse_action("crash:gpu").is_err());
+        // 동작이 있는 묶음이라 키를 먹는다(프로그램에 보내지 않는다)
+        let (km, warns) = Keymap::build(&[
+            "ctrl+alt+u=check_for_updates".into(),
+            "ctrl+alt+j=inspector:toggle".into(),
+        ]);
+        assert!(warns.is_empty(), "{warns:?}");
+        let mut sq = Sequencer::default();
+        let out = feed_all(&mut sq, &km, "ctrl+alt+u", b"u", true);
+        assert!(out.action.is_some() && out.send.is_empty(), "{out:?}");
     }
 
     #[test]

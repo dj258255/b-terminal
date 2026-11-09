@@ -26,9 +26,10 @@ use bt_term::SpawnOptions;
 use winit::event_loop::EventLoop;
 
 const USAGE: &str =
-    "사용: b-terminal [--config-file <파일>] [--show-config] [--list-themes] [--cwd <폴더>] [-e <프로그램> [인자...]]
+    "사용: b-terminal [--config-file <파일>] [--config-default-files=false] [--show-config] [--list-themes] [--cwd <폴더>] [-e <프로그램> [인자...]]
 
-설정: ~/.config/b-terminal/config (Ghostty와 같은 문법). 테마 905개를 넣어 두었습니다(--list-themes).";
+설정: ~/.config/b-terminal/config (Ghostty와 같은 문법). 테마 905개를 넣어 두었습니다(--list-themes).
+--config-default-files=false: 위 기본 설정 파일을 읽지 않습니다(--config-file로 준 파일은 읽습니다).";
 
 /// 명령줄에서 읽은 것
 #[derive(Debug, Default)]
@@ -36,11 +37,16 @@ struct Cli {
     first: SpawnOptions,
     config_file: Option<std::path::PathBuf>,
     show_config: bool,
+    /// `--config-default-files=false`면 거짓(기본 설정 파일을 읽지 않는다)
+    default_files: bool,
 }
 
 /// 명령줄: `-e` 뒤는 모두 처음 탭에서 띄울 프로그램과 인자다(Ghostty·xterm과 같다)
 fn parse_args(args: impl Iterator<Item = String>) -> Result<Cli, String> {
-    let mut cli = Cli::default();
+    let mut cli = Cli {
+        default_files: true,
+        ..Cli::default()
+    };
     let opts = &mut cli.first;
     let mut args = args.peekable();
     while let Some(a) = args.next() {
@@ -54,6 +60,15 @@ fn parse_args(args: impl Iterator<Item = String>) -> Result<Cli, String> {
                 cli.config_file = Some(args.next().ok_or("--config-file 뒤에 파일이 필요합니다")?.into())
             }
             "--show-config" => cli.show_config = true,
+            // 명령줄 전용 bool(Ghostty). 값 없이 쓰면 켬
+            "--config-default-files" => cli.default_files = true,
+            v if v.starts_with("--config-default-files=") => {
+                cli.default_files = match &v["--config-default-files=".len()..] {
+                    "true" => true,
+                    "false" => false,
+                    x => return Err(format!("--config-default-files는 true나 false여야 합니다: {x}")),
+                }
+            }
             "--list-themes" => {
                 return Err(bt_core::config::bundled_theme_names().collect::<Vec<_>>().join("\n"));
             }
@@ -91,7 +106,7 @@ fn main() -> anyhow::Result<()> {
             return Ok(());
         }
     };
-    let mut config = bt_core::Config::load(cli.config_file.as_deref(), system_is_dark());
+    let mut config = bt_core::Config::load_with(cli.config_file.as_deref(), system_is_dark(), cli.default_files);
     if cli.show_config {
         for src in &config.sources {
             println!("# 읽은 파일: {}", src.display());
@@ -110,7 +125,12 @@ fn main() -> anyhow::Result<()> {
         config.apply_cli_command();
     }
     let event_loop = EventLoop::<app::UserEvent>::with_user_event().build()?;
-    let mut app = app::App::new(config, cli.config_file.clone(), event_loop.create_proxy(), cli.first);
+    let mut app = app::App::new(
+        config,
+        (cli.config_file.clone(), cli.default_files),
+        event_loop.create_proxy(),
+        cli.first,
+    );
     event_loop.run_app(&mut app)?;
     Ok(())
 }
@@ -139,6 +159,28 @@ mod tests {
         .unwrap();
         assert_eq!(cli.config_file.as_deref(), Some(std::path::Path::new("/tmp/x")));
         assert!(cli.show_config);
+    }
+
+    #[test]
+    fn config_default_files_is_cli_only_and_defaults_on() {
+        let cli = |v: &[&str]| parse_args(v.iter().map(|s| s.to_string()));
+        assert!(cli(&[]).unwrap().default_files);
+        assert!(!cli(&["--config-default-files=false"]).unwrap().default_files);
+        assert!(cli(&["--config-default-files=true"]).unwrap().default_files);
+        // 값 없이 쓰면 켬(Ghostty의 bool 인자)
+        assert!(cli(&["--config-default-files"]).unwrap().default_files);
+        // 나중 것이 이긴다
+        assert!(
+            cli(&["--config-default-files=false", "--config-default-files=true"])
+                .unwrap()
+                .default_files
+        );
+        assert!(cli(&["--config-default-files=maybe"]).is_err());
+        // --config-file은 그대로 읽힌다
+        let c = cli(&["--config-default-files=false", "--config-file", "/tmp/x"]).unwrap();
+        assert!(!c.default_files);
+        assert_eq!(c.config_file.as_deref(), Some(std::path::Path::new("/tmp/x")));
+        assert!(USAGE.contains("--config-default-files"));
     }
 
     #[test]
