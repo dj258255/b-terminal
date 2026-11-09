@@ -1361,6 +1361,31 @@ impl App {
         }
     }
 
+    /// 셸 통합이 있는 칸의 프롬프트에서, 커서 줄을 누르면 그 칸까지 ←·→를 보낸다(#137).
+    /// 명령이 도는 중·대체 화면·스크롤해 올라가 있으면 하지 않는다
+    fn click_to_move(&mut self, idx: usize, col: usize, row: usize) {
+        let Some(p) = self.panes.get(idx) else { return };
+        let modes = p.session.modes();
+        if !p.session.has_shell_integration() || p.running.is_some() || modes.alt_screen {
+            return;
+        }
+        let screen = p.session.snapshot();
+        if screen.display_offset != 0 || screen.cursor.row != row {
+            return;
+        }
+        let cells: Vec<(char, bool)> = (0..screen.cols)
+            .map(|c| {
+                let cell = screen.cell(c, row);
+                (cell.ch, cell.flags.contains(CellFlags::SPACER))
+            })
+            .collect();
+        let bytes = crate::mouse::click_to_move(&cells, screen.cursor.col, col, modes.app_cursor);
+        if !bytes.is_empty() {
+            p.session.select_clear();
+            p.session.write(&bytes);
+        }
+    }
+
     /// 칸에 사람이 붙인 제목을 정한다. 빈 글이면 지운다(프로그램이 정한 제목으로 돌아감)
     fn set_user_title(&mut self, pane: u64, text: &str) {
         if let Some(i) = self.pane_index(pane) {
@@ -3486,6 +3511,20 @@ impl ApplicationHandler<UserEvent> for App {
                     }
                     ElementState::Released => {
                         self.w.selecting = false;
+                        // 프롬프트 줄을 끌지 않고 한 번 누르면 그 자리로 커서를 옮긴다(cursor-click-to-move, #137)
+                        let released = self.cell_in(idx, self.w.cursor_pos);
+                        let plain_click = matches!(
+                            (self.w.last_click, released),
+                            (Some((_, c, r, 1)), Some((rc, rr))) if (c, r) == (rc, rr)
+                        ) && !(self.mods.super_key()
+                            || self.mods.control_key()
+                            || self.mods.alt_key()
+                            || self.mods.shift_key());
+                        if plain_click && self.config.cursor_click_to_move {
+                            if let Some((col, row)) = released {
+                                self.click_to_move(idx, col, row);
+                            }
+                        }
                         // copy-on-select(Ghostty 기본 켬): 고르기를 마치면 바로 클립보드로
                         if self.config.copy_on_select {
                             if let Some(text) = self.active_pane().and_then(|t| t.session.selection_text()) {

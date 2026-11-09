@@ -65,9 +65,78 @@ pub fn encode(
     vec![0x1b, b'[', b'M', 32 + code as u8, 32 + x as u8, 32 + y as u8]
 }
 
+/// 프롬프트 줄을 눌러 커서 옮기기(Ghostty `cursor-click-to-move`, #137): 커서 칸에서 누른 칸까지 보낼 ←·→ 바이트.
+/// `row`는 커서 줄의 칸들(글자, 넓은 글자의 뒤 칸인가). 넓은 글자는 한 글자로 센다.
+/// 글 끝보다 뒤를 누르면 글 끝(커서가 더 뒤면 커서)까지만
+pub fn click_to_move(row: &[(char, bool)], cursor: usize, target: usize, app_cursor: bool) -> Vec<u8> {
+    // 글 끝: 마지막으로 글자가 있는(빈칸·뒤 칸이 아닌) 칸의 다음
+    let end = row
+        .iter()
+        .rposition(|&(c, spacer)| !spacer && c != ' ' && c != '\0')
+        .map_or(0, |i| {
+            // 넓은 글자면 뒤 칸까지 포함
+            if row.get(i + 1).is_some_and(|x| x.1) {
+                i + 2
+            } else {
+                i + 1
+            }
+        });
+    let mut target = target.min(end.max(cursor)).min(row.len());
+    // 넓은 글자의 뒤 칸이면 그 글자로
+    while target > 0 && row.get(target).is_some_and(|x| x.1) {
+        target -= 1;
+    }
+    let chars = |a: usize, b: usize| row[a.min(row.len())..b.min(row.len())].iter().filter(|x| !x.1).count();
+    let none = bt_term::Mods::default();
+    let (key, n) = if target > cursor {
+        (bt_term::NamedKey::Right, chars(cursor, target))
+    } else {
+        (bt_term::NamedKey::Left, chars(target, cursor))
+    };
+    bt_term::encode_named(key, none, app_cursor).repeat(n)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn click_to_move_counts_characters_not_cells() {
+        // "$ 한글ab  ": 한·글은 두 칸(뒤 칸은 spacer)
+        let row: Vec<(char, bool)> = vec![
+            ('$', false),
+            (' ', false),
+            ('한', false),
+            (' ', true),
+            ('글', false),
+            (' ', true),
+            ('a', false),
+            ('b', false),
+            (' ', false),
+            (' ', false),
+        ];
+        let left = b"\x1b[D".to_vec();
+        let right = b"\x1b[C".to_vec();
+        assert_eq!(
+            click_to_move(&row, 8, 2, false),
+            left.repeat(4),
+            "한·글·a·b 네 글자 왼쪽"
+        );
+        assert_eq!(
+            click_to_move(&row, 8, 3, false),
+            left.repeat(4),
+            "넓은 글자 뒤 칸은 그 글자"
+        );
+        assert_eq!(click_to_move(&row, 2, 7, false), right.repeat(3));
+        assert!(
+            click_to_move(&row, 8, 9, false).is_empty(),
+            "글 끝 뒤는 글 끝까지(이미 거기)"
+        );
+        assert_eq!(click_to_move(&row, 2, 9, false), right.repeat(4), "글 끝까지만");
+        assert!(click_to_move(&row, 6, 6, false).is_empty());
+        // 프로그램이 화살표 키를 응용 모드로 받으면 SS3
+        assert_eq!(click_to_move(&row, 7, 6, true), b"\x1bOD".to_vec());
+    }
 
     #[test]
     fn sgr_press_release_and_wheel() {

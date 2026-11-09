@@ -43,6 +43,7 @@ config-file = ?~/.config/b-terminal/local   # ?가 붙으면 없어도 된다
 | `palette` | `N=#rrggbb`(0~15) | Ghostty 기본 | 16~255번은 xterm 표 |
 | `cursor-color` / `cursor-text` | `#rrggbb`, `cell-foreground`, `cell-background` | 글자색 / 바탕색 | `cell-*`는 커서 칸의 글자색·바탕색을 씁니다(예: `cursor-color = cell-foreground`, `cursor-text = cell-background`면 칸을 뒤집은 모양) |
 | `cursor-opacity` | `0`~`1` | `1` | 커서 불투명도. 1보다 작으면 칸 위에 섞어 그리고, 블록 커서 위 글자색도 그만큼 섞습니다 |
+| `cursor-click-to-move` | `true` `false` | `true` | 셸 통합이 있는 칸의 프롬프트에서 커서 줄을 한 번 누르면 그 자리까지 ←·→를 보내 커서를 옮깁니다(넓은 글자는 한 글자로 셈, 글 끝 뒤를 누르면 글 끝까지). 명령이 도는 중·vim 같은 전체 화면 프로그램·스크롤해 올라가 있을 때는 하지 않습니다. 커서 줄 밖(여러 줄 입력의 다른 줄)은 옮기지 않습니다 |
 | `selection-background` / `selection-foreground` | `#rrggbb` | 색 뒤집기 | |
 | `bold-is-bright` | `true` / `false` | `false` | Ghostty 기본과 같게 끔 |
 | `cursor-style` | `block` `bar` `underline` `block_hollow` | `block` | 프로그램이 바꾸면 그쪽이 이깁니다 |
