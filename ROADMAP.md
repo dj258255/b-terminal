@@ -106,9 +106,31 @@
 - 한 번씩 띄운 올리기 시간은 같은 빌드에서도 0.1ms 넘게 흔들린다. 견줄 때는 번갈아 여러 번 띄운다(#97).
 
 
+## 0.7.0 (2026-11-09)
+
+확인과 알림. 추적 이슈 [#105](https://github.com/dj258255/b-terminal/issues/105). 사람 없이 코딩 에이전트가 진행했다. 이번 판도 이슈마다 실제 시간을 재지 않았다. 병합 시각(KST)만 적는다: 추적 이슈를 연 09:37부터 마지막 PR 병합 11:11까지.
+
+| 이슈 | 내용 | 예상 | 실제 | PR | 상태 |
+|---|---|---|---|---|---|
+| [#106](https://github.com/dj258255/b-terminal/issues/106) | 키 순서(`keybind = ctrl+a>n=…`) | 2~3시간 | 재지 않음(병합 09:43) | [#111](https://github.com/dj258255/b-terminal/pull/111) | 끝(실제 키로는 눌러 보지 않음) |
+| [#112](https://github.com/dj258255/b-terminal/issues/112) | 탭 막대 글의 색 이모지로 앱이 꺼짐(#107 확인 중 찾음) | — | 재지 않음(병합 09:54) | [#113](https://github.com/dj258255/b-terminal/pull/113) | 끝 |
+| [#107](https://github.com/dj258255/b-terminal/issues/107) | 벨(`bell-features`) | 2~3시간 | 재지 않음(병합 09:57) | [#114](https://github.com/dj258255/b-terminal/pull/114) | 끝(Dock·경고음은 확인하지 못함) |
+| [#115](https://github.com/dj258255/b-terminal/issues/115) | `btctl new`가 설정의 command를 무시함(#107 확인 중 찾음) | — | 재지 않음(병합 10:00) | [#116](https://github.com/dj258255/b-terminal/pull/116) | 끝 |
+| [#108](https://github.com/dj258255/b-terminal/issues/108) | 닫기 확인(`confirm-close-surface`) | 3시간 | 재지 않음(병합 10:08) | [#117](https://github.com/dj258255/b-terminal/pull/117) | 끝(실제 키로는 눌러 보지 않음) |
+| [#109](https://github.com/dj258255/b-terminal/issues/109) | 붙여넣기 보호(`clipboard-paste-protection`) | 2~3시간 | 재지 않음(병합 10:14) | [#118](https://github.com/dj258255/b-terminal/pull/118) | 끝(실제로 붙여넣어 보지 않음) |
+| [#110](https://github.com/dj258255/b-terminal/issues/110) | 퀵 터미널 자리·크기·화면·움직임 | 3시간 | 재지 않음(병합 11:11) | [#119](https://github.com/dj258255/b-terminal/pull/119) | 끝(화면이 둘일 때는 해 보지 못함) |
+
+이번에 배운 것:
+
+- 탭 막대처럼 셀 격자 밖에서 글을 그리는 길은 셀 격자와 다른 코드라, 셀 격자에서 고친 것(색 이모지)이 거기에는 없었다. 프로그램 출력이 닿는 그리기 길은 모두 같은 글리프 종류를 다뤄야 한다(#112).
+- 시험 앱 pid에만 보내는 키 이벤트(`CGEventPostToPid`)는 그 앱이 맨 앞이 아니면 닿지 않는다. 사람의 포커스를 빼앗지 않고는 키 입력을 확인할 길이 없어, 키로 하는 확인은 판단을 순수 함수로 떼어 테스트했다(#108).
+- macOS는 테두리 없는 창도 보이거나 옮길 때 메뉴 막대 아래로 밀어 넣는다(`constrainFrameRect:toScreen:`). 위쪽에서 미끄러지는 창은 이것을 건너뛰어야 한다(#110).
+- 리눅스 CI에서만 나는 dead_code 경고가 있다. macOS에서만 쓰는 함수는 `cfg_attr`로 다룬다(#110).
+
 ## 다음
 
 - 범수 님이 직접 해야 할 것: 키보드·마우스 확인(한글 2벌식 "안녕 하세요⏎", Claude Code의 Shift+Enter, Cmd-D·Cmd-F·Cmd-클릭·Cmd-N·Cmd-Shift-P, 메뉴, 창 닫기 단추, vim·htop, kitty icat·yazi, 투명 창), Developer ID 계정으로 `scripts/bundle-macos.sh --sign … --notarize … --dmg`
 - 범수 님이 정할 것: `window-colorspace` 기본값(ADR-009)
 - 범수 님이 확인할 것(0.6): 퀵 터미널을 실제 전역 단축키로(`keybind = global:ctrl+backquote=toggle_quick_terminal`), 외부 모니터로 창을 옮겼을 때 present 시간(`RUST_LOG=b_terminal=debug`)
-- 큰 일로 남긴 것: GPU(또는 IOSurface) 렌더러, 글자 묶음 폭(mode 2027), 퀵 터미널 움직임·화면 고르기
+- 범수 님이 확인할 것(0.7): `sleep 100` 중에 ⌘W → 확인 막대 → esc는 그대로·↩는 닫힘, 프롬프트에서 ⌘W는 바로 닫힘, ⌘Q도 같게. 셸에서 `cat` 중에 두 줄 글 ⌘V → 붙여넣기 확인 막대. `keybind = ctrl+a>n=new_window` 뒤 Ctrl-A·N → 새 창, Ctrl-A·X → `^A`와 `x`가 셸로. 다른 탭에서 `sleep 2; printf '\a'` → 탭 제목에 🔔
+- 큰 일로 남긴 것: GPU(또는 IOSurface) 렌더러, 글자 묶음 폭(mode 2027)
