@@ -41,6 +41,8 @@ fn command_result(rec: &bt_term::CommandRecord) -> bt_core::proto::CommandResult
 }
 
 /// 알림 띠가 보이는 시간
+/// 새 창의 기본 안쪽 크기(논리 점). `window-width`·`window-height`가 없을 때(`reset_window_size`도 이 크기로 되돌린다)
+const DEFAULT_WINDOW_LOGICAL: (f64, f64) = (1000.0, 680.0);
 const TOAST_FOR: Duration = Duration::from_millis(2500);
 /// 스크롤한 뒤 스크롤 막대를 보이는 시간
 const SCROLLBAR_FOR: Duration = Duration::from_millis(1200);
@@ -284,6 +286,8 @@ enum Pending {
     /// 이 칸이 든 탭
     CloseTab(u64),
     CloseWindow,
+    /// 모든 창(`close_all_windows`, #206)
+    CloseAllWindows,
     Quit,
     /// 줄바꿈이 든 붙여넣기(#109): 이 칸에 이 글을
     Paste {
@@ -529,6 +533,8 @@ struct Gfx {
 
 /// 창 하나의 상태(#36). 칸(셸)은 모든 창이 App에서 함께 든다
 struct Win {
+    /// 창을 만든 차례(`goto_window`가 이 차례로 돈다, #206). 바꿔 끼워도 변하지 않는다
+    serial: u64,
     gfx: Option<Gfx>,
     /// 항상 위에 띄우는 중(`toggle_window_float_on_top`, #148)
     float_on_top: bool,
@@ -584,7 +590,9 @@ struct Win {
 
 impl Win {
     fn new() -> Self {
+        static NEXT_SERIAL: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
         Self {
+            serial: NEXT_SERIAL.fetch_add(1, Ordering::Relaxed),
             gfx: None,
             float_on_top: false,
             tabs: Vec::new(),
@@ -1541,7 +1549,7 @@ impl App {
                 .map(|gi| self.w.tabs[gi].layout.leaves())
                 .unwrap_or_default(),
             Pending::CloseWindow => self.w.tabs.iter().flat_map(|g| g.layout.leaves()).collect(),
-            Pending::Quit => self.panes.iter().map(|p| p.id).collect(),
+            Pending::CloseAllWindows | Pending::Quit => self.panes.iter().map(|p| p.id).collect(),
             // 붙여넣기는 묻기로 정한 뒤에 ask로 온다
             Pending::Paste { .. } => Vec::new(),
         };
@@ -1572,6 +1580,10 @@ impl App {
             ),
             Pending::CloseWindow => (
                 format!("이 창에서 프로그램이 도는 칸이 {n}개 있습니다. 창을 닫을까요?"),
+                "닫기",
+            ),
+            Pending::CloseAllWindows => (
+                format!("프로그램이 도는 칸이 {n}개 있습니다. 모든 창을 닫을까요?"),
                 "닫기",
             ),
             Pending::Quit => (format!("프로그램이 도는 칸이 {n}개 있습니다. 끝낼까요?"), "끝내기"),
@@ -1672,6 +1684,12 @@ impl App {
                 }
             }
             Pending::CloseWindow => self.close_current_window(event_loop),
+            // 마지막 창이 닫히면 앱을 끝낼지는 quit-after-last-window-closed가 정한다(#178)
+            Pending::CloseAllWindows => {
+                while !self.windowless() {
+                    self.close_current_window(event_loop);
+                }
+            }
             // 끌 때 창 상태는 exiting에서 적는다
             Pending::Quit => event_loop.exit(),
             Pending::Paste { pane, text } => self.paste_into(pane, &text),
@@ -2474,6 +2492,14 @@ impl App {
                 }
             }
             Action::Quit => self.request(Pending::Quit, event_loop),
+            Action::CloseWindow => self.request(Pending::CloseWindow, event_loop),
+            Action::CloseAllWindows => self.request(Pending::CloseAllWindows, event_loop),
+            Action::GotoWindow(delta) => self.goto_window(delta),
+            Action::MoveTab(delta) => self.move_tab(delta),
+            Action::MoveTabToNewWindow => self.move_tab_to_new_window(event_loop),
+            Action::ResetWindowSize => self.reset_window_size(),
+            Action::ToggleWindowDecorations => self.toggle_window_decorations(),
+            Action::ToggleVisibility => self.toggle_visibility(),
             Action::WriteFile(source, then) => self.write_file(source, then),
             Action::AdjustSelection(adj) => {
                 if let Some(t) = self.active_pane() {
@@ -2833,7 +2859,7 @@ impl App {
         );
         let attrs = Window::default_attributes()
             .with_title("b-terminal")
-            .with_inner_size(LogicalSize::new(1000.0, 680.0))
+            .with_inner_size(LogicalSize::new(DEFAULT_WINDOW_LOGICAL.0, DEFAULT_WINDOW_LOGICAL.1))
             .with_min_inner_size(LogicalSize::new(320.0, 200.0))
             .with_transparent(transparent)
             .with_decorations(look.decorations)
@@ -2992,10 +3018,142 @@ impl App {
         if let (Some(f), Some(g)) = (&self.fonts, &self.w.gfx) {
             if let (Some(cols), Some(rows)) = (self.config.window_width, self.config.window_height) {
                 let m = f.metrics();
-                let px = |pt: f32| (pt as f64 * self.scale).round() as u32;
-                let w = m.width * cols as u32 + px(self.config.padding_x.0) + px(self.config.padding_x.1);
-                let h = m.height * rows as u32 + px(self.config.padding_y.0) + px(self.config.padding_y.1);
+                let (w, h) = self.window_inner_for(Some((cols as u32, rows as u32)), (m.width, m.height));
                 let _ = g.window.request_inner_size(PhysicalSize::new(w, h));
+            }
+        }
+    }
+
+    /// 새 창이 만들어질 안쪽 크기(물리 픽셀): `window-width`·`window-height`(칸)가 있으면 그것, 없으면 기본(#206)
+    fn window_inner_for(&self, cells: Option<(u32, u32)>, cell: (u32, u32)) -> (u32, u32) {
+        let px = |pt: f32| (pt as f64 * self.scale).round() as u32;
+        crate::winact::window_inner_px(
+            cells,
+            cell,
+            (
+                px(self.config.padding_x.0) + px(self.config.padding_x.1),
+                px(self.config.padding_y.0) + px(self.config.padding_y.1),
+            ),
+            self.scale,
+            DEFAULT_WINDOW_LOGICAL,
+        )
+    }
+
+    /// `reset_window_size`: 창을 새 창이 만들어질 크기로 되돌린다. 전체 화면이면 하지 않는다(Ghostty). 최대화는 풀고 되돌린다
+    fn reset_window_size(&mut self) {
+        let Some(f) = &self.fonts else { return };
+        let m = f.metrics();
+        let cells = match (self.config.window_width, self.config.window_height) {
+            (Some(c), Some(r)) => Some((c as u32, r as u32)),
+            _ => None,
+        };
+        let (w, h) = self.window_inner_for(cells, (m.width, m.height));
+        let Some(g) = &self.w.gfx else { return };
+        if window_is_fullscreen(&g.window) {
+            return;
+        }
+        if g.window.is_maximized() {
+            g.window.set_maximized(false);
+        }
+        let _ = g.window.request_inner_size(PhysicalSize::new(w, h));
+    }
+
+    /// `toggle_window_decorations`: 지금 창의 제목 막대·테두리를 켜고 끈다. 위쪽 비움 높이는 `top_inset`이
+    /// 창의 지금 꾸밈 상태(`is_decorated`)에서 그때그때 구하므로 격자만 다시 맞춘다. 퀵 창은 늘 꾸밈이 없다
+    fn toggle_window_decorations(&mut self) {
+        if self.w.quick {
+            return;
+        }
+        let Some(g) = &self.w.gfx else { return };
+        g.window.set_decorations(!g.window.is_decorated());
+        self.resize_all();
+    }
+
+    /// `goto_window`: 만든 차례로 앞·뒤 창에 포커스를 준다(퀵 창은 건너뛴다). 포커스 사건이 오면 그 창이 지금 창이 된다
+    fn goto_window(&mut self, delta: isize) {
+        let serials: Vec<u64> = std::iter::once(&self.w)
+            .chain(&self.others)
+            .filter(|w| w.gfx.is_some() && !w.quick)
+            .map(|w| w.serial)
+            .collect();
+        let Some(target) = crate::winact::pick_window(&serials, self.w.serial, delta) else {
+            return;
+        };
+        let win = std::iter::once(&self.w)
+            .chain(&self.others)
+            .find(|w| w.serial == target);
+        if let Some(g) = win.and_then(|w| w.gfx.as_ref()) {
+            g.window.focus_window();
+        }
+    }
+
+    /// `move_tab`: 지금 탭을 `delta`만큼 옮기고 끝을 넘으면 돌아간다
+    fn move_tab(&mut self, delta: isize) {
+        let len = self.w.tabs.len();
+        let from = self.w.active;
+        let to = crate::winact::wrap_index(from, len, delta);
+        if len < 2 || from >= len || to == from {
+            return;
+        }
+        let tab = self.w.tabs.remove(from);
+        self.w.tabs.insert(to, tab);
+        self.w.active = to;
+        self.request_redraw();
+    }
+
+    /// `move_tab_to_new_window`: 지금 탭을 새 창으로 떼어 낸다. 탭이 하나뿐이면 아무것도 하지 않는다
+    /// (AppKit의 "탭을 새 창으로 이동"도 탭이 하나면 꺼져 있다). 칸(셸)은 App이 들고 있어 탭 묶음만 옮긴다
+    fn move_tab_to_new_window(&mut self, event_loop: &ActiveEventLoop) {
+        if self.w.quick || !crate::winact::can_detach_tab(self.w.tabs.len()) || self.w.active >= self.w.tabs.len() {
+            return;
+        }
+        let Some(gfx) = self.create_gfx_with(event_loop, false) else {
+            self.toast("새 창을 만들지 못했습니다".into());
+            return;
+        };
+        let moved = self.w.tabs.remove(self.w.active);
+        if self.w.active >= self.w.tabs.len() {
+            self.w.active = self.w.tabs.len() - 1;
+        }
+        // 찾기·제목 입력 막대는 옮긴 칸에 붙어 있었다. 남는 창에서 닫는다
+        let leaves = moved.layout.leaves();
+        if self.w.search.as_ref().is_some_and(|s| leaves.contains(&s.pane)) {
+            self.end_search();
+        }
+        if self.w.title_prompt.as_ref().is_some_and(|(p, _)| leaves.contains(p)) {
+            self.w.title_prompt = None;
+        }
+        let id = gfx.window.id();
+        let mut win = Win::new();
+        win.focused = gfx.window.has_focus();
+        win.gfx = Some(gfx);
+        win.tabs.push(moved);
+        let mut old = std::mem::replace(&mut self.w, win);
+        old.focused = false;
+        self.others.push(old);
+        self.quit_deadline = None;
+        self.last_focused = Some(id);
+        self.apply_initial_size();
+        // 남은 창은 탭이 줄어(탭 줄이 사라질 수 있다) 격자를 다시 맞춘다
+        self.for_each_window(|app| app.resize_all());
+        self.clear_visible_unread();
+    }
+
+    /// `toggle_visibility`(macOS): 앱의 모든 창을 숨기고 보인다. 보고 있는 칸이 전체 화면이면 하지 않는다.
+    /// 다시 보일 때 앱을 앞으로 가져온다(`unhide:`가 한다고 문서에 있으나 실제 창에서는 아직 확인하지 않았다)
+    fn toggle_visibility(&mut self) {
+        #[cfg(target_os = "macos")]
+        {
+            use crate::winact::Visibility;
+            let Some(mtm) = objc2::MainThreadMarker::new() else {
+                return;
+            };
+            let app = objc2_app_kit::NSApplication::sharedApplication(mtm);
+            let fullscreen = self.w.gfx.as_ref().is_some_and(|g| window_is_fullscreen(&g.window));
+            match crate::winact::visibility_plan(app.isHidden(), fullscreen) {
+                Some(Visibility::Hide) => app.hide(None),
+                Some(Visibility::Show) => app.unhide(None),
+                None => {}
             }
         }
     }

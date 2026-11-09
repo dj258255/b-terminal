@@ -4,6 +4,7 @@
 
 ## [아직 릴리스하지 않음]
 
+- 창·탭 동작(Ghostty): `close_window`·`close_all_windows`(닫기 확인을 거침), `goto_window:previous|next`, `move_tab:N`(끝을 넘으면 돌아감), `move_tab_to_new_window`(탭이 하나면 아무것도 안 함), `reset_window_size`, `toggle_window_decorations`, `toggle_visibility`(macOS)와 팔레트 항목을 더했습니다. 기본 동작은 그대로입니다. 판단 부분(돌아가기·창 고르기·크기·숨김 계획)과 해석은 테스트로 확인했고, 실제 창에서는 아직 보지 않았습니다. `close_all_windows`는 Ghostty 문서가 효과 없다고 한 동작이지만 b-terminal은 닫습니다. #206
 - 화면·찾기 동작 6개(Ghostty 키 묶음): `reset`(VT의 RIS), `scroll_to_row:N`(스크롤백 맨 위가 0), `scroll_to_selection`, `search:글`(빈 글이면 찾기만 취소, 막대는 둠), `search_selection`, `set_font_size:N`(6~72pt). `cursor_key`는 Ghostty처럼 설정에 쓸 수 없다고 경고합니다. 기본 묶음은 그대로입니다. 판단·해석은 테스트로 확인했고 실제 창에서는 보지 않았습니다. #208
 - 키 묶음 동작 `check_for_updates`, `inspector:toggle|show|hide`, `show_gtk_inspector`, `show_on_screen_keyboard`, `toggle_tab_overview`, `toggle_secure_input`, `crash:main|io|render`를 `keybind`에 써도 경고가 나지 않습니다(받기만 하고 키를 먹으며 하는 일은 없음. 이유는 docs/configuration.md). 명령줄 `--config-default-files=false`를 더해 기본 설정 파일(b-terminal·Ghostty)을 읽지 않고 `--config-file`만 읽습니다. 기본 동작은 그대로이고, 판단·해석은 테스트로 확인했으나 실제 창에서는 보지 않았습니다. #211
 - 제목 동작(Ghostty): `prompt_tab_title`·`prompt_window_title`(입력 막대로 묻기), `set_tab_title:글`·`set_window_title:글`(빈 글이면 덮어쓴 제목을 지움), `copy_title_to_clipboard`(지금 칸의 터미널 제목을 복사, 제목이 비면 하지 않음). 제목은 제어 문자를 지우고 200자로 자릅니다. 순서는 탭 줄·탭: 탭 제목 → 칸 제목(사람이 붙인 것 → 프로그램이 정한 것), 창 제목: 설정 `title` → 창 제목 → 지금 탭 제목. 메뉴 "셸"에 탭·창 제목 항목과 팔레트 항목을 더했습니다. 판단은 테스트로 확인했고 실제 창에서는 보지 않았습니다 #207

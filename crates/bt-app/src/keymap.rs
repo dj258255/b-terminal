@@ -120,6 +120,22 @@ pub enum Action {
     SearchSelection,
     /// 글자 크기를 그 값(pt)으로(Ghostty `set_font_size:N`)
     SetFontSize(f32),
+    /// 지금 창을 닫는다. 닫기 확인을 거친다(Ghostty `close_window`, #206)
+    CloseWindow,
+    /// 모든 창을 닫는다. 닫기 확인을 거친다(Ghostty `close_all_windows`, #206)
+    CloseAllWindows,
+    /// 앞(-1)·뒤(+1) 창에 포커스(Ghostty `goto_window`)
+    GotoWindow(isize),
+    /// 지금 탭을 상대 위치로 옮긴다. 끝을 넘으면 돌아간다(Ghostty `move_tab`)
+    MoveTab(isize),
+    /// 지금 탭을 새 창으로 떼어 낸다(Ghostty `move_tab_to_new_window`)
+    MoveTabToNewWindow,
+    /// 창을 새 창이 만들어질 크기로 되돌린다(Ghostty `reset_window_size`)
+    ResetWindowSize,
+    /// 지금 창의 꾸밈(제목 막대·테두리)을 켜고 끈다(Ghostty `toggle_window_decorations`)
+    ToggleWindowDecorations,
+    /// 모든 창을 숨기고 보인다(Ghostty `toggle_visibility`, macOS만)
+    ToggleVisibility,
 }
 
 /// 파일로 쓸 글
@@ -399,6 +415,21 @@ pub fn parse_action(s: &str) -> Result<Option<Action>, String> {
         ),
         // Ghostty도 이 동작은 설정에 쓸 수 없다(Binding.zig: "Cursor keys can't be set currently")
         "cursor_key" => return Err("cursor_key는 Ghostty처럼 설정에 쓸 수 없는 동작입니다".into()),
+        "close_window" => Action::CloseWindow,
+        "close_all_windows" => Action::CloseAllWindows,
+        "goto_window" => Action::GotoWindow(match arg.map(str::trim) {
+            Some("next") => 1,
+            Some("previous") => -1,
+            _ => return Err("goto_window:previous·next".into()),
+        }),
+        "move_tab" => Action::MoveTab(
+            arg.and_then(|a| a.trim().parse().ok())
+                .ok_or("move_tab:정수(양수면 오른쪽, 음수면 왼쪽)")?,
+        ),
+        "move_tab_to_new_window" => Action::MoveTabToNewWindow,
+        "reset_window_size" => Action::ResetWindowSize,
+        "toggle_window_decorations" => Action::ToggleWindowDecorations,
+        "toggle_visibility" => Action::ToggleVisibility,
         other => return Err(format!("b-terminal에 없는 동작입니다: {other}")),
     }))
 }
@@ -890,6 +921,42 @@ mod tests {
     }
 
     #[test]
+    fn parses_window_and_tab_actions() {
+        assert_eq!(parse_action("close_window").unwrap(), Some(Action::CloseWindow));
+        assert_eq!(
+            parse_action("close_all_windows").unwrap(),
+            Some(Action::CloseAllWindows)
+        );
+        assert_eq!(parse_action("goto_window:next").unwrap(), Some(Action::GotoWindow(1)));
+        assert_eq!(
+            parse_action("goto_window:previous").unwrap(),
+            Some(Action::GotoWindow(-1))
+        );
+        assert!(parse_action("goto_window").is_err(), "인자가 필요하다");
+        assert!(parse_action("goto_window:left").is_err());
+        assert_eq!(parse_action("move_tab:1").unwrap(), Some(Action::MoveTab(1)));
+        assert_eq!(parse_action("move_tab:-2").unwrap(), Some(Action::MoveTab(-2)));
+        assert!(parse_action("move_tab").is_err(), "인자가 필요하다");
+        assert!(parse_action("move_tab:x").is_err());
+        assert_eq!(
+            parse_action("move_tab_to_new_window").unwrap(),
+            Some(Action::MoveTabToNewWindow)
+        );
+        assert_eq!(
+            parse_action("reset_window_size").unwrap(),
+            Some(Action::ResetWindowSize)
+        );
+        assert_eq!(
+            parse_action("toggle_window_decorations").unwrap(),
+            Some(Action::ToggleWindowDecorations)
+        );
+        assert_eq!(
+            parse_action("toggle_visibility").unwrap(),
+            Some(Action::ToggleVisibility)
+        );
+    }
+
+    #[test]
     fn triggers_and_key_names() {
         let t = trig("super+shift+T");
         assert!(t.mods.sup && t.mods.shift && !t.mods.ctrl);
@@ -1065,7 +1132,7 @@ mod tests {
         );
         assert!(parse_action("scroll_page_lines").is_err(), "줄 수가 있어야 한다");
         assert!(parse_action("scroll_page_fractional:x").is_err());
-        assert!(parse_action("toggle_window_decorations").is_err());
+        assert!(parse_action("no_such_action").is_err());
         assert!(parse_action("goto_tab:0").is_err());
     }
 

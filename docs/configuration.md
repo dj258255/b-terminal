@@ -267,6 +267,13 @@ keybind = ctrl+a>ctrl+a=text:\x01     # 앞 키 자체를 보내고 싶을 때
 | `toggle_fullscreen` | 전체 화면 켜고 끄기 | `super+ctrl+f` |
 | `toggle_maximize` | 지금 창 최대화 켜고 끄기(Ghostty와 같이 기본 키 없음) | (없음) |
 | `toggle_window_float_on_top` | 지금 창을 다른 창 위에 항상 띄우기 켜고 끄기(Ghostty는 macOS만 구현) | (없음) |
+| `close_window` / `close_all_windows` | 지금 창 / 모든 창 닫기. 프로그램이 도는 칸이 있으면 `confirm-close-surface`에 따라 확인 막대로 묻습니다(`close_all_windows`는 Ghostty 문서가 "효과 없음, `all:close_window`를 쓰라"고 한 동작인데 b-terminal은 닫습니다) | (없음, 창 닫기 단추) |
+| `goto_window:previous` / `goto_window:next` | 창을 만든 차례대로 앞·뒤 창에 포커스(끝에서 돌아감, 퀵 터미널은 건너뜀) | (없음) |
+| `move_tab:N` | 지금 탭을 N칸 옮김(양수는 오른쪽, 음수는 왼쪽, 끝을 넘으면 돌아감) | (없음) |
+| `move_tab_to_new_window` | 지금 탭을 새 창으로 떼어 냄. 탭이 하나뿐이면 아무것도 하지 않습니다 | (없음) |
+| `reset_window_size` | 창을 새 창이 만들어질 크기(`window-width`·`window-height`, 없으면 기본)로 되돌림. 전체 화면에서는 하지 않고, 최대화는 풀고 되돌립니다 | (없음) |
+| `toggle_window_decorations` | 지금 창의 제목 막대·테두리 켜고 끄기(Ghostty는 Linux만 구현). 설정을 다시 읽으면 `window-decoration`으로 돌아갑니다 | (없음) |
+| `toggle_visibility` | 모든 창 숨기기 / 다시 보이기(macOS만). 보고 있는 칸이 전체 화면이면 아무것도 하지 않습니다 | (없음, 전역 단축키 `global:`와 함께 쓰는 동작) |
 | `start_search` / `end_search` | 찾기 막대 열기 / 닫기. 막대에서 글을 치면 바로 찾고, Enter는 위로·Shift-Enter는 아래로, Esc로 닫습니다 | `super+f` / (Esc) |
 | `navigate_search:next` / `navigate_search:previous` | 위(오래된 쪽) / 아래 맞은 곳으로 | `super+g` / `super+shift+g` |
 | `toggle_command_palette` | 명령 팔레트 열기·닫기 | `super+shift+p` |

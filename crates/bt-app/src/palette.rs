@@ -61,6 +61,14 @@ const ENTRIES: &[(&str, &str)] = &[
     ("스크롤백을 파일로 열기", "write_scrollback_file:open"),
     ("화면을 파일로 열기", "write_screen_file:open"),
     ("스크롤백 파일 경로 복사", "write_scrollback_file:copy"),
+    ("창 닫기", "close_window"),
+    ("다음 창", "goto_window:next"),
+    ("앞 창", "goto_window:previous"),
+    ("탭을 새 창으로", "move_tab_to_new_window"),
+    ("탭을 오른쪽으로 옮기기", "move_tab:1"),
+    ("탭을 왼쪽으로 옮기기", "move_tab:-1"),
+    ("창 크기 처음대로", "reset_window_size"),
+    ("창 꾸밈 켜고 끄기", "toggle_window_decorations"),
     ("b-terminal 종료", "quit"),
 ];
 

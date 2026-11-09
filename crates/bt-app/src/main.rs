@@ -20,6 +20,7 @@ mod startup;
 mod state;
 mod tabbar;
 mod undo;
+mod winact;
 mod windeco;
 
 use bt_term::SpawnOptions;
