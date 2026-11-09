@@ -127,10 +127,30 @@
 - macOS는 테두리 없는 창도 보이거나 옮길 때 메뉴 막대 아래로 밀어 넣는다(`constrainFrameRect:toScreen:`). 위쪽에서 미끄러지는 창은 이것을 건너뛰어야 한다(#110).
 - 리눅스 CI에서만 나는 dead_code 경고가 있다. macOS에서만 쓰는 함수는 `cfg_attr`로 다룬다(#110).
 
+## 0.8.0 (2026-11-09)
+
+Ghostty 키 채우기. 추적 이슈 [#121](https://github.com/dj258255/b-terminal/issues/121). 사람 없이 코딩 에이전트가 진행했다. 이슈마다 실제 시간은 재지 않았고 병합 시각(KST)만 적는다: 추적 이슈를 연 11:22부터 마지막 PR 병합 13:07까지(중간에 대화가 끊긴 시간 포함).
+
+| 이슈 | 내용 | 예상 | 실제 | PR | 상태 |
+|---|---|---|---|---|---|
+| [#126](https://github.com/dj258255/b-terminal/issues/126) | 마우스·창의 작은 키(`focus-follows-mouse` 등) | 2~3시간 | 재지 않음(병합 11:27) | [#127](https://github.com/dj258255/b-terminal/pull/127) | 끝(실제 마우스로는 해 보지 않음) |
+| [#123](https://github.com/dj258255/b-terminal/issues/123) | 최소 명암비(`minimum-contrast`) | 2~3시간 | 재지 않음(병합 12:52) | [#128](https://github.com/dj258255/b-terminal/pull/128) | 끝(렌더 테스트로 확인) |
+| [#122](https://github.com/dj258255/b-terminal/issues/122) | 크기 표시(`resize-overlay`) | 2~3시간 | 재지 않음(병합 12:57) | [#129](https://github.com/dj258255/b-terminal/pull/129) | 끝 |
+| [#124](https://github.com/dj258255/b-terminal/issues/124) | 칸 제목 바꾸기(`prompt_surface_title`) | 2~3시간 | 재지 않음(병합 13:02) | [#130](https://github.com/dj258255/b-terminal/pull/130) | 끝(실제 키로는 해 보지 않음) |
+| [#125](https://github.com/dj258255/b-terminal/issues/125) | 화면을 파일로(`write_*_file`) | 2~3시간 | 재지 않음(병합 13:07) | [#131](https://github.com/dj258255/b-terminal/pull/131) | 끝(실제 키로는 해 보지 않음) |
+
+이번에 배운 것:
+
+- 검사 명령을 `;`로 이으면 fmt가 실패해도 커밋·올리기가 이어진다(#128에서 fmt가 깨진 채 올림). 배포 스크립트가 올리기 전에 fmt·clippy·작업 트리를 직접 보게 했다.
+- 스크립트로 글을 바꿔 넣을 때, fmt가 줄 모양을 바꾸면 바꿔 넣기가 조용히 빠진다(#124). 바꿔 넣을 때마다 맞은 수를 확인한다.
+- 설정 해석기가 값을 다듬으면(`trim`) 공백 자체가 뜻인 값(`selection-word-chars`)이 망가진다(#126).
+- 커밋 보안 검토 기록 파일은 비워질 수 있다. 결과는 본 즉시 PR에 남긴다(#131).
+
 ## 다음
 
 - 범수 님이 직접 해야 할 것: 키보드·마우스 확인(한글 2벌식 "안녕 하세요⏎", Claude Code의 Shift+Enter, Cmd-D·Cmd-F·Cmd-클릭·Cmd-N·Cmd-Shift-P, 메뉴, 창 닫기 단추, vim·htop, kitty icat·yazi, 투명 창), Developer ID 계정으로 `scripts/bundle-macos.sh --sign … --notarize … --dmg`
 - 범수 님이 정할 것: `window-colorspace` 기본값(ADR-009)
 - 범수 님이 확인할 것(0.6): 퀵 터미널을 실제 전역 단축키로(`keybind = global:ctrl+backquote=toggle_quick_terminal`), 외부 모니터로 창을 옮겼을 때 present 시간(`RUST_LOG=b_terminal=debug`)
 - 범수 님이 확인할 것(0.7): `sleep 100` 중에 ⌘W → 확인 막대 → esc는 그대로·↩는 닫힘, 프롬프트에서 ⌘W는 바로 닫힘, ⌘Q도 같게. 셸에서 `cat` 중에 두 줄 글 ⌘V → 붙여넣기 확인 막대. `keybind = ctrl+a>n=new_window` 뒤 Ctrl-A·N → 새 창, Ctrl-A·X → `^A`와 `x`가 셸로. 다른 탭에서 `sleep 2; printf '\a'` → 탭 제목에 🔔
+- 범수 님이 확인할 것(0.8): 메뉴 "셸 › 제목 바꾸기…"로 탭 제목 붙이고 비우기, 팔레트 "스크롤백을 파일로 열기"와 앱을 끈 뒤 `$TMPDIR/b-terminal-$(id -u)/files`가 비었는지, `focus-follows-mouse = true`로 분할 칸 위를 마우스로 오가기, 단어 두 번 눌러 고르기(`;`·`$`에서 끊김), ⌃⌘F 전체 화면
 - 큰 일로 남긴 것: GPU(또는 IOSurface) 렌더러, 글자 묶음 폭(mode 2027)
