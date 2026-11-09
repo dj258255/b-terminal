@@ -32,5 +32,5 @@ workspace = true
 [target.'cfg(target_os = "macos")'.dependencies]
 muda = "0.19.3"
 objc2 = "0.6.5"
-objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "NSApplication", "NSEvent", "NSGraphics", "NSRunningApplication", "NSScreen", "NSSound"] }
+objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "NSApplication", "NSControl", "NSDockTile", "NSEvent", "NSGraphics", "NSImage", "NSImageView", "NSRunningApplication", "NSScreen", "NSSound", "NSView", "NSWindow"] }
 objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSString"] }

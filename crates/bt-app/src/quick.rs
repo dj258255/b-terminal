@@ -140,6 +140,32 @@ pub fn mouse_location(primary_h: f64) -> (f64, f64) {
     (p.x, primary_h - p.y)
 }
 
+/// Space(데스크톱)를 옮길 때의 창 모음 동작. `move`는 지금 Space로 따라오고(`MoveToActiveSpace`), `remain`은 처음 연 Space에 남는다
+#[cfg(target_os = "macos")]
+pub fn collection_behavior(space: bt_core::config::QuickSpace) -> objc2_app_kit::NSWindowCollectionBehavior {
+    use bt_core::config::QuickSpace;
+    use objc2_app_kit::NSWindowCollectionBehavior as B;
+    match space {
+        QuickSpace::Move => B::MoveToActiveSpace,
+        QuickSpace::Remain => B::empty(),
+    }
+}
+
+/// 지금 키 창(퀵 터미널이 포커스를 받은 직후의 퀵 창)에 Space 동작을 정한다.
+/// winit이 `NSWindow`를 safe하게 내주지 않아 `NSApplication.keyWindow`를 쓴다. macOS 밖에서는 하는 일이 없다
+#[cfg(target_os = "macos")]
+pub fn apply_space_behavior(space: bt_core::config::QuickSpace) {
+    let Some(mtm) = objc2::MainThreadMarker::new() else {
+        return;
+    };
+    if let Some(w) = objc2_app_kit::NSApplication::sharedApplication(mtm).keyWindow() {
+        w.setCollectionBehavior(collection_behavior(space));
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn apply_space_behavior(_space: bt_core::config::QuickSpace) {}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -160,6 +186,7 @@ mod tests {
             screen: QuickScreen::Main,
             autohide: true,
             animation: 0.2,
+            space: bt_core::config::QuickSpace::Move,
         }
     }
 
@@ -234,5 +261,14 @@ mod tests {
         assert_eq!(screen_at((999.9, 799.9), &screens), Some(0), "오른쪽 아래 끝 바로 안");
         assert_eq!(screen_at((1000.0, 0.0), &screens), Some(1), "경계는 오른쪽 화면");
         assert_eq!(screen_at((-5.0, 0.0), &screens), None);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn space_behavior_maps_to_collection_behavior() {
+        use bt_core::config::QuickSpace;
+        use objc2_app_kit::NSWindowCollectionBehavior as B;
+        assert_eq!(collection_behavior(QuickSpace::Move), B::MoveToActiveSpace);
+        assert_eq!(collection_behavior(QuickSpace::Remain), B::empty());
     }
 }

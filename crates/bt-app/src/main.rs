@@ -5,6 +5,7 @@ mod bell_sound;
 mod control;
 mod desktop;
 mod dump;
+mod icon;
 mod keymap;
 mod keys;
 mod lifecycle;
