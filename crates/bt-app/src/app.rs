@@ -144,6 +144,15 @@ fn pane_busy(
     }
 }
 
+/// 줄바꿈이 든 붙여넣기를 물을 글(#109): 글이 든 줄 수와 첫 줄(제어 문자를 지우고 30칸까지)
+fn paste_prompt(text: &str) -> String {
+    let mut lines = text.split(['\n', '\r']).filter(|l| !l.trim().is_empty());
+    let first = lines.next().unwrap_or("");
+    let n = 1 + lines.count();
+    let first = bt_render::truncate(bt_core::proto::printable(first).trim(), 30);
+    format!("붙여넣을 글({n}줄)의 줄바꿈이 바로 실행될 수 있습니다: {first}")
+}
+
 /// 확인을 기다리는 일(#108)
 #[derive(Debug, Clone, PartialEq)]
 enum Pending {
@@ -152,6 +161,11 @@ enum Pending {
     CloseTab(u64),
     CloseWindow,
     Quit,
+    /// 줄바꿈이 든 붙여넣기(#109): 이 칸에 이 글을
+    Paste {
+        pane: u64,
+        text: String,
+    },
 }
 
 /// 창 위에 띄운 확인 막대: Enter·y면 한다, Esc·n이면 그만둔다
@@ -1104,6 +1118,8 @@ impl App {
                 .unwrap_or_default(),
             Pending::CloseWindow => self.w.tabs.iter().flat_map(|g| g.layout.leaves()).collect(),
             Pending::Quit => self.panes.iter().map(|p| p.id).collect(),
+            // 붙여넣기는 묻기로 정한 뒤에 ask로 온다
+            Pending::Paste { .. } => Vec::new(),
         };
         let busy: Vec<u64> = ids.into_iter().filter(|&id| self.pane_needs_confirm(id)).collect();
         if busy.is_empty() {
@@ -1135,11 +1151,37 @@ impl App {
                 "닫기",
             ),
             Pending::Quit => (format!("프로그램이 도는 칸이 {n}개 있습니다. 끝낼까요?"), "끝내기"),
+            Pending::Paste { .. } => return,
         };
-        // 닫으려는 칸이 다른 창에 있어도 묻는 막대는 지금 창에
+        self.ask(pending, message, yes);
+    }
+
+    /// 확인 막대를 띄운다. 묻는 동안 팔레트는 닫는다
+    fn ask(&mut self, pending: Pending, message: String, yes: &'static str) {
         self.w.palette = None;
         self.w.confirm = Some(Confirm { pending, message, yes });
         self.request_redraw();
+    }
+
+    /// 클립보드 글을 고른 칸에 붙여넣는다. 괄호 붙여넣기를 쓰지 않는 프로그램에 줄바꿈이 든 글이면 먼저 묻는다(#109)
+    fn paste(&mut self, text: String) {
+        let Some(t) = self.active_pane() else { return };
+        let (id, bracketed) = (t.id, t.session.modes().bracketed_paste);
+        if !self.config.paste_protection || bt_term::paste_is_safe(&text, bracketed, self.config.paste_bracketed_safe) {
+            self.paste_into(id, &text);
+            return;
+        }
+        let message = paste_prompt(&text);
+        self.ask(Pending::Paste { pane: id, text }, message, "붙여넣기");
+    }
+
+    /// 그 칸의 지금 모드로 붙여넣기 바이트를 만들어 쓴다
+    fn paste_into(&mut self, pane: u64, text: &str) {
+        if let Some(t) = self.pane_index(pane).map(|i| &self.panes[i]) {
+            let bytes = bt_term::encode_paste(text, t.session.modes().bracketed_paste);
+            t.session.select_clear();
+            t.session.write(&bytes);
+        }
     }
 
     fn perform(&mut self, pending: Pending, event_loop: &ActiveEventLoop) {
@@ -1157,6 +1199,7 @@ impl App {
             Pending::CloseWindow => self.close_current_window(event_loop),
             // 끌 때 창 상태는 exiting에서 적는다
             Pending::Quit => event_loop.exit(),
+            Pending::Paste { pane, text } => self.paste_into(pane, &text),
         }
     }
 
@@ -1545,10 +1588,8 @@ impl App {
             Action::EndSearch => self.end_search(),
             Action::NavigateSearch(older) => self.search_step(older),
             Action::Paste => {
-                let text = self.clipboard.as_mut().and_then(|cb| cb.get_text().ok());
-                if let (Some(text), Some(t)) = (text, self.active_pane()) {
-                    let bytes = bt_term::encode_paste(&text, t.session.modes().bracketed_paste);
-                    self.write_active(&bytes);
+                if let Some(text) = self.clipboard.as_mut().and_then(|cb| cb.get_text().ok()) {
+                    self.paste(text);
                 }
             }
             Action::FontBigger(n) => self.set_font_size(self.font_size + n),
@@ -3149,6 +3190,16 @@ impl ApplicationHandler<UserEvent> for App {
 mod tests {
     use super::*;
     use bt_term::search::SearchStatus;
+
+    #[test]
+    fn paste_prompt_counts_lines_and_strips_control_chars() {
+        let p = paste_prompt("\n  \necho \x1b[31mhi\r\nrm -rf ~\n\n");
+        assert!(p.contains("(2줄)"), "{p}");
+        assert!(p.ends_with("echo  [31mhi"), "첫 글 줄, 제어 문자는 빈칸: {p}");
+        assert!(!p.contains('\x1b'));
+        let long = paste_prompt(&("x".repeat(100) + "\ny"));
+        assert!(long.ends_with('…'), "{long}");
+    }
 
     #[test]
     fn busy_panes_need_confirm_like_ghostty() {

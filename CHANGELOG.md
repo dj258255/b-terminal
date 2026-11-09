@@ -4,6 +4,8 @@
 
 ## [아직 릴리스하지 않음]
 
+- 붙여넣기 보호(`clipboard-paste-protection`·`clipboard-paste-bracketed-safe`, Ghostty 키, 기본 `true`): 괄호 붙여넣기를 쓰지 않는 프로그램에 줄바꿈이 든 글을 붙여넣으면 줄 수와 첫 줄을 보이고 먼저 묻습니다.
+
 - 닫기 확인(`confirm-close-surface`, Ghostty 키, 기본 `true`): 프로그램이 도는 칸을 ⌘W·⌥⌘W·창 닫기 단추·⌘Q로 닫으려 하면 창 위쪽 확인 막대로 묻습니다(↩ 닫기, esc 취소). ⌘Q는 이제 키 묶음의 `quit` 동작입니다.
 
 - 명령을 주지 않은 `btctl new`가 설정의 `command`·`working-directory`를 무시하고 로그인 셸로 띄우던 것을 고쳤습니다(Cmd-T와 같게).

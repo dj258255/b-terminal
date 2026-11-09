@@ -234,9 +234,31 @@ pub fn encode_paste(text: &str, bracketed: bool) -> Vec<u8> {
     }
 }
 
+/// 묻지 않고 붙여넣어도 되는 글인가(Ghostty `clipboard-paste-protection`, #109).
+/// 괄호 붙여넣기가 꺼져 있으면 줄바꿈(LF·CR)이 셸에서 곧바로 Enter가 되어 보지 못한 명령이 돈다.
+/// 괄호 붙여넣기가 켜져 있으면 프로그램이 붙여넣기로 받으므로 `bracketed_safe`일 때 안전으로 본다
+/// (끝 표시를 끼워 빠져나오는 길은 `encode_paste`가 지운다)
+pub fn paste_is_safe(text: &str, bracketed: bool, bracketed_safe: bool) -> bool {
+    (bracketed && bracketed_safe) || !text.contains(['\n', '\r'])
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn paste_with_newlines_is_unsafe_unless_bracketed_like_ghostty() {
+        assert!(paste_is_safe("ls -la", false, true), "한 줄은 안전");
+        assert!(!paste_is_safe("echo hi\nrm -rf ~", false, true), "LF는 Enter가 된다");
+        assert!(!paste_is_safe("echo hi\r", false, true), "CR 혼자도 Enter다");
+        assert!(!paste_is_safe("curl x | sh\r\n", false, true));
+        // 괄호 붙여넣기: 기본(bracketed-safe)이면 안전, 끄면 줄바꿈을 다시 본다
+        assert!(paste_is_safe("a\nb", true, true));
+        assert!(!paste_is_safe("a\nb", true, false));
+        assert!(paste_is_safe("ab", true, false));
+        // 끝 표시를 끼운 글은 괄호 붙여넣기여도 지워지지만, 꺼져 있으면 줄바꿈으로 막힌다
+        assert!(!paste_is_safe("x\x1b[201~\nrm -rf ~", false, true));
+    }
 
     const NONE: Mods = Mods {
         shift: false,
