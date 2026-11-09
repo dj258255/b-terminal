@@ -150,6 +150,15 @@ pub fn save_global(path: &Path, on: bool) -> std::io::Result<()> {
     std::fs::write(path, "1\n")
 }
 
+/// 한 번 살핀 뒤 칸의 암호 입력 상태. 프로세스가 끝난 칸은 더 칠 암호가 없으므로 꺼짐(끝난 칸에 보안 입력이 남지
+/// 않게). termios를 읽지 못하면 그대로 둔다
+pub fn password_after_poll(prev: bool, exited: bool, polled: Option<bool>) -> bool {
+    if exited {
+        return false;
+    }
+    polled.unwrap_or(prev)
+}
+
 /// 칸의 커서 모양(Ghostty renderer/cursor.zig `style`의 순서): 조합 중이면 네모, 암호 입력이면 자물쇠(커서를 숨기는
 /// 상태보다 앞), 숨겼으면 없음, 초점이 없으면 속 빈 네모, 깜빡임에서 꺼진 때는 없음, 아니면 프로그램이 정한 모양
 pub fn cursor_style(
@@ -186,6 +195,15 @@ pub fn cursor_style(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn exited_pane_leaves_password_input() {
+        assert!(!password_after_poll(true, true, None), "끝난 칸은 암호 입력이 아니다");
+        assert!(!password_after_poll(true, true, Some(true)));
+        assert!(password_after_poll(false, false, Some(true)));
+        assert!(!password_after_poll(true, false, Some(false)));
+        assert!(password_after_poll(true, false, None), "읽지 못하면 그대로");
+    }
     use std::cell::RefCell;
     use std::rc::Rc;
 

@@ -4102,12 +4102,9 @@ impl App {
         let auto = self.config.macos_auto_secure_input;
         let mut changed = false;
         for p in &mut self.panes {
-            if p.exited.is_some() {
-                continue;
-            }
-            let Some(now) = p.session.password_input() else {
-                continue;
-            };
+            let exited = p.exited.is_some();
+            let polled = if exited { None } else { p.session.password_input() };
+            let now = crate::secure_input::password_after_poll(p.password, exited, polled);
             if now == p.password {
                 continue;
             }
