@@ -1,9 +1,9 @@
 #![allow(clippy::unnecessary_cast)]
 
 use objc2::rc::{autoreleasepool, Retained};
-use objc2::{declare_class, mutability, ClassType, DeclaredClass};
-use objc2_app_kit::{NSResponder, NSWindow};
-use objc2_foundation::{MainThreadBound, MainThreadMarker, NSObject};
+use objc2::{declare_class, msg_send, mutability, ClassType, DeclaredClass};
+use objc2_app_kit::{NSResponder, NSScreen, NSWindow, NSWindowStyleMask};
+use objc2_foundation::{MainThreadBound, MainThreadMarker, NSObject, NSRect};
 
 use super::event_loop::ActiveEventLoop;
 use super::window_delegate::WindowDelegate;
@@ -115,6 +115,17 @@ declare_class!(
         fn can_become_key_window(&self) -> bool {
             trace_scope!("canBecomeKeyWindow");
             true
+        }
+
+        // b-terminal 패치(#110): 테두리 없는 창(퀵 터미널)은 macOS가 메뉴 막대 아래로 밀어 넣지 않게 둔다.
+        // 화면 위쪽 바깥에서 미끄러져 들어오는 움직임에 필요하다. 제목 막대가 있는 창은 원래대로
+        #[method(constrainFrameRect:toScreen:)]
+        fn constrain_frame_rect(&self, frame: NSRect, screen: Option<&NSScreen>) -> NSRect {
+            if self.styleMask().contains(NSWindowStyleMask::Titled) {
+                unsafe { msg_send![super(self), constrainFrameRect: frame, toScreen: screen] }
+            } else {
+                frame
+            }
         }
     }
 );

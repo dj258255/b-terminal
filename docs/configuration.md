@@ -67,6 +67,11 @@ config-file = ?~/.config/b-terminal/local   # ?가 붙으면 없어도 된다
 | `clipboard-paste-protection` | `true` `false` | `true` | 괄호 붙여넣기를 쓰지 않는 프로그램에 줄바꿈(LF·CR)이 든 글을 붙여넣으면 먼저 묻습니다(줄바꿈이 바로 Enter가 되어 보지 못한 명령이 돌 수 있어서). ↩·`y` 붙여넣기, esc·`n` 버리기 |
 | `clipboard-paste-bracketed-safe` | `true` `false` | `true` | 괄호 붙여넣기 모드의 붙여넣기는 안전으로 봅니다. `false`면 그때도 줄바꿈이 있으면 묻습니다 |
 | `confirm-close-surface` | `true` `false` `always` | `true` | 칸·탭·창을 닫거나 끝낼 때(⌘W, ⌥⌘W, 창 닫기 단추, ⌘Q) 프로그램이 도는 칸이 있으면 창 위쪽에 확인 막대를 띄웁니다. ↩·`y`면 닫고 esc·`n`이면 그만둡니다. 셸 통합이 있으면 명령이 도는 중인지로, 없으면 전경 프로세스가 셸 자신인지로 봅니다. `always`는 셸이 살아 있으면 늘 묻습니다. Dock 메뉴나 로그아웃으로 끝낼 때는 묻지 못합니다 |
+| `quick-terminal-position` | `top` `bottom` `left` `right` `center` | `top` | 퀵 터미널이 붙는 가장자리. 메뉴 막대와 Dock을 뺀 영역에 놓습니다 |
+| `quick-terminal-size` | `40%`, `300px`, 둘을 쉼표로(`50%,800px`) | `40%` | 첫 값은 주축(위·아래면 높이, 왼쪽·오른쪽·가운데면 폭), 둘째 값은 다른 축(없으면 위·아래·왼쪽·오른쪽은 끝까지, 가운데는 첫 값과 같게). 단위가 없으면 잘못된 값입니다. px는 화면의 점 단위입니다 |
+| `quick-terminal-screen` | `main` `mouse` `macos-menu-bar` | `main` | 퀵 터미널이 뜨는 화면: 앞에 있는 창의 화면, 마우스가 있는 화면, 메뉴 막대가 있는 화면 |
+| `quick-terminal-autohide` | `true` `false` | `true` | 포커스를 잃으면 숨습니다 |
+| `quick-terminal-animation-duration` | 초 | `0.2` | 들어오고 나가는 움직임의 길이. `0`이면 움직이지 않습니다. 가운데(`center`)는 움직이지 않습니다 |
 | `window-save-state` | `default` `always` `never` | `default` | 앱을 끌 때(Cmd-Q) 창 크기·자리, 탭, 분할(비율), 칸의 작업 폴더를 적어 두고 다음에 켤 때 새 셸로 되살립니다. 돌던 프로그램·화면 내용은 되살리지 않습니다. 마지막 창을 닫아 꺼진 경우와 `-e`·`--cwd`로 띄운 경우는 되살리지 않습니다 |
 | `background-opacity` | `0`~`1` | `1` | 기본 바탕색 칸으로 창 뒤가 비칩니다(글자·색 칸은 불투명). 새 창부터 따릅니다 |
 | `window-colorspace` | `display-p3` / `srgb` | `display-p3` | macOS. `display-p3`는 화면 색 공간으로 그대로 넘겨 빠르고(색은 맞추지 않음), `srgb`는 테마 색을 정확히 맞추지만 큰 창에서 프레임마다 약 10ms가 더 듭니다(실험 E3). 새 창부터 따릅니다 |
@@ -121,7 +126,7 @@ keybind = ctrl+a>ctrl+a=text:\x01     # 앞 키 자체를 보내고 싶을 때
 | `select_all` | 보이는 화면 모두 고르기 | `super+a` |
 | `reload_config` | 설정 다시 읽기 | `super+shift+comma` |
 | `quit` | 앱 끝내기(프로그램이 도는 칸이 있으면 묻습니다) | `super+q` |
-| `toggle_quick_terminal` | 퀵 터미널(화면 위쪽에 떠서 내려오는 창) 보이기·숨기기. 포커스를 잃으면 숨습니다. 창 상태 복원에서 빠집니다 | (없음, `global:`로 묶으세요) |
+| `toggle_quick_terminal` | 퀵 터미널(화면 가장자리에서 미끄러져 나오는 창) 보이기·숨기기. 자리·크기·화면·움직임은 `quick-terminal-*` 설정. 창 상태 복원에서 빠집니다 | (없음, `global:`로 묶으세요) |
 | `text:글` / `csi:…` / `esc:…` | 글·이스케이프 보내기 | |
 | `unbind` | 그 트리거 지우기 | |
 

@@ -4,6 +4,8 @@
 
 ## [아직 릴리스하지 않음]
 
+- 퀵 터미널의 자리·크기·화면·움직임(`quick-terminal-position`·`-size`·`-screen`·`-autohide`·`-animation-duration`, Ghostty 키): 위·아래·왼쪽·오른쪽·가운데에, 앞에 있는 창의 화면이나 마우스가 있는 화면에 띄우고, 가장자리 바깥에서 0.2초 동안 미끄러져 들어오고 나갑니다. 메뉴 막대와 Dock을 뺀 영역에 놓습니다.
+
 - 붙여넣기 보호(`clipboard-paste-protection`·`clipboard-paste-bracketed-safe`, Ghostty 키, 기본 `true`): 괄호 붙여넣기를 쓰지 않는 프로그램에 줄바꿈이 든 글을 붙여넣으면 줄 수와 첫 줄을 보이고 먼저 묻습니다.
 
 - 닫기 확인(`confirm-close-surface`, Ghostty 키, 기본 `true`): 프로그램이 도는 칸을 ⌘W·⌥⌘W·창 닫기 단추·⌘Q로 닫으려 하면 창 위쪽 확인 막대로 묻습니다(↩ 닫기, esc 취소). ⌘Q는 이제 키 묶음의 `quit` 동작입니다.

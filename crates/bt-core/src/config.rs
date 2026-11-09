@@ -123,6 +123,8 @@ pub struct Config {
     pub bell_features: BellFeatures,
     /// 프로그램이 도는 칸을 닫기 전에 묻는가(Ghostty `confirm-close-surface`, #108)
     pub confirm_close: ConfirmClose,
+    /// 퀵 터미널의 자리·크기·화면·자동 숨김·움직임(Ghostty `quick-terminal-*`, #110)
+    pub quick: QuickTerminal,
     pub warnings: Vec<String>,
     /// 실제로 읽은 파일
     pub sources: Vec<PathBuf>,
@@ -158,6 +160,72 @@ impl BellFeatures {
         *self = next;
         true
     }
+}
+
+/// 퀵 터미널이 붙는 화면 가장자리(Ghostty `quick-terminal-position`)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum QuickPosition {
+    Top,
+    Bottom,
+    Left,
+    Right,
+    Center,
+}
+
+/// 퀵 터미널 크기의 한 축: 화면의 몇 %, 또는 몇 점(px)
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum QuickDim {
+    Percent(f64),
+    Px(f64),
+}
+
+/// 퀵 터미널이 뜨는 화면(Ghostty `quick-terminal-screen`)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum QuickScreen {
+    /// 운영체제가 권하는 화면(macOS `NSScreen.mainScreen`: 지금 앞에 있는 창의 화면)
+    Main,
+    /// 마우스가 있는 화면
+    Mouse,
+    /// 메뉴 막대가 있는 화면
+    MenuBar,
+}
+
+/// 퀵 터미널 설정(#110)
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct QuickTerminal {
+    pub position: QuickPosition,
+    /// 주축(위·아래면 높이, 왼쪽·오른쪽이면 폭, 가운데면 폭)
+    pub size: QuickDim,
+    /// 다른 축. 없으면 위·아래·왼쪽·오른쪽은 화면 전체, 가운데는 주축과 같은 값
+    pub size2: Option<QuickDim>,
+    pub screen: QuickScreen,
+    /// 포커스를 잃으면 숨는다
+    pub autohide: bool,
+    /// 들어오고 나가는 움직임(초). 0이면 움직이지 않는다
+    pub animation: f64,
+}
+
+impl Default for QuickTerminal {
+    fn default() -> Self {
+        Self {
+            position: QuickPosition::Top,
+            size: QuickDim::Percent(40.0),
+            size2: None,
+            screen: QuickScreen::Main,
+            autohide: true,
+            animation: 0.2,
+        }
+    }
+}
+
+/// `40%`, `300px` 하나. 붙이는 단위가 없으면 Ghostty처럼 잘못된 값이다
+fn parse_quick_dim(s: &str) -> Option<QuickDim> {
+    if let Some(n) = s.strip_suffix('%') {
+        let p: f64 = n.parse().ok()?;
+        return (p > 0.0 && p <= 100.0).then_some(QuickDim::Percent(p));
+    }
+    let px: f64 = s.strip_suffix("px")?.parse().ok()?;
+    (px.is_finite() && px > 0.0).then_some(QuickDim::Px(px))
 }
 
 /// 닫기 확인(Ghostty `confirm-close-surface`). 기본 `true`
@@ -233,6 +301,7 @@ impl Default for Config {
             window_save_state: true,
             bell_features: BellFeatures::default(),
             confirm_close: ConfirmClose::True,
+            quick: QuickTerminal::default(),
             warnings: Vec::new(),
             sources: Vec::new(),
         }
@@ -674,6 +743,38 @@ impl Config {
                 "never" => self.window_save_state = false,
                 _ => bad(warnings),
             },
+            "quick-terminal-position" => match v {
+                "top" => self.quick.position = QuickPosition::Top,
+                "bottom" => self.quick.position = QuickPosition::Bottom,
+                "left" => self.quick.position = QuickPosition::Left,
+                "right" => self.quick.position = QuickPosition::Right,
+                "center" => self.quick.position = QuickPosition::Center,
+                _ => bad(warnings),
+            },
+            "quick-terminal-size" => {
+                let mut parts = v.split(',').map(str::trim);
+                let first = parts.next().and_then(parse_quick_dim);
+                let second = parts.next().map(parse_quick_dim);
+                match (first, second, parts.next()) {
+                    (Some(a), None, None) => (self.quick.size, self.quick.size2) = (a, None),
+                    (Some(a), Some(Some(b)), None) => (self.quick.size, self.quick.size2) = (a, Some(b)),
+                    _ => bad(warnings),
+                }
+            }
+            "quick-terminal-screen" => match v {
+                "main" => self.quick.screen = QuickScreen::Main,
+                "mouse" => self.quick.screen = QuickScreen::Mouse,
+                "macos-menu-bar" => self.quick.screen = QuickScreen::MenuBar,
+                _ => bad(warnings),
+            },
+            "quick-terminal-autohide" => match parse_bool(v) {
+                Some(b) => self.quick.autohide = b,
+                None => bad(warnings),
+            },
+            "quick-terminal-animation-duration" => match v.parse::<f64>() {
+                Ok(d) if d.is_finite() && d >= 0.0 => self.quick.animation = d.min(5.0),
+                _ => bad(warnings),
+            },
             "confirm-close-surface" => match v {
                 "true" => self.confirm_close = ConfirmClose::True,
                 "false" => self.confirm_close = ConfirmClose::False,
@@ -1027,6 +1128,36 @@ mod tests {
         assert!(!Config::from_text("window-save-state = never\n", true).window_save_state);
         assert!(Config::from_text("window-save-state = always\n", true).window_save_state);
         assert_eq!(Config::from_text("window-save-state = maybe\n", true).warnings.len(), 1);
+    }
+
+    #[test]
+    fn quick_terminal_keys_like_ghostty() {
+        let d = Config::default().quick;
+        assert_eq!(d.position, QuickPosition::Top);
+        assert_eq!((d.screen, d.autohide, d.animation), (QuickScreen::Main, true, 0.2));
+        let c = Config::from_text(
+            "quick-terminal-position = right\nquick-terminal-size = 30%,500px\nquick-terminal-screen = mouse\nquick-terminal-autohide = false\nquick-terminal-animation-duration = 0\n",
+            true,
+        );
+        assert!(c.warnings.is_empty(), "{:?}", c.warnings);
+        let q = c.quick;
+        assert_eq!(q.position, QuickPosition::Right);
+        assert_eq!((q.size, q.size2), (QuickDim::Percent(30.0), Some(QuickDim::Px(500.0))));
+        assert_eq!((q.screen, q.autohide, q.animation), (QuickScreen::Mouse, false, 0.0));
+        // 단위 없는 값, 셋 이상, 음수, 0%는 Ghostty처럼 잘못된 값
+        for bad in ["40", "10%,20%,30%", "-5%", "0%", "abc%", "120%", "300 px"] {
+            let c = Config::from_text(&format!("quick-terminal-size = {bad}\n"), true);
+            assert_eq!(c.warnings.len(), 1, "{bad}");
+            assert_eq!(c.quick.size, QuickDim::Percent(40.0), "{bad}: 그대로");
+        }
+        assert_eq!(
+            Config::from_text("quick-terminal-size = 25%\n", true).quick.size,
+            QuickDim::Percent(25.0)
+        );
+        assert_eq!(
+            Config::from_text("quick-terminal-screen = left\n", true).warnings.len(),
+            1
+        );
     }
 
     #[test]
