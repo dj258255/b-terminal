@@ -87,7 +87,8 @@ pub fn slide(from: (f64, f64), to: (f64, f64), t: f64) -> (f64, f64) {
     (from.0 + (to.0 - from.0) * e, from.1 + (to.1 - from.1) * e)
 }
 
-/// 이 점이 든 화면
+/// 이 점이 든 화면(`quick-terminal-screen = mouse`, macOS에서만 마우스 자리를 안다)
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub fn screen_at(p: (f64, f64), screens: &[Rect]) -> Option<usize> {
     screens
         .iter()
