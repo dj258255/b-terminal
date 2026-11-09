@@ -2276,10 +2276,20 @@ fn parse_limit<T: std::str::FromStr>(v: &str, default: Option<T>) -> Option<Opti
 impl Config {
     /// 기본값 → Ghostty 설정 → b-terminal 설정 → 덧붙인 파일 순서로 읽는다. `dark`는 `theme = light:…,dark:…`에서 고를 쪽
     pub fn load(extra: Option<&Path>, dark: bool) -> Self {
+        Self::load_with(extra, dark, true)
+    }
+
+    /// `load`와 같고, `default_files`가 거짓이면 기본 설정 파일(b-terminal·Ghostty 사용자 설정)을 읽지 않는다.
+    /// `--config-default-files=false`(명령줄 전용). `extra`(`--config-file`)는 그래도 읽는다
+    pub fn load_with(extra: Option<&Path>, dark: bool, default_files: bool) -> Self {
         let mut cfg = Config::default();
         let mut warnings = Vec::new();
         let mut sources = Vec::new();
-        let own = read_entries(&bterminal_config_path(), 0, &mut warnings, &mut sources);
+        let own = if default_files {
+            read_entries(&bterminal_config_path(), 0, &mut warnings, &mut sources)
+        } else {
+            Vec::new()
+        };
         let extra_entries = extra
             .map(|p| read_entries(p, 0, &mut warnings, &mut sources))
             .unwrap_or_default();
@@ -2287,7 +2297,8 @@ impl Config {
         // Ghostty 설정은 옮겨 오는 사람만 켠다(기본 끔, ADR-006)
         let import = import.map(|e| parse_bool(&e.value) == Some(true)).unwrap_or(false);
         let mut entries = Vec::new();
-        if import {
+        // Ghostty 사용자 설정도 기본 설정 파일이라 `--config-default-files=false`면 읽지 않는다
+        if import && default_files {
             if let Some(g) = ghostty_config_paths().into_iter().next() {
                 let mut gs = Vec::new();
                 entries.extend(read_entries(&g, 0, &mut warnings, &mut gs));
@@ -3610,6 +3621,8 @@ impl Config {
 
 /// Ghostty에 있지만 b-terminal이 일부러 쓰지 않는 키(경고하지 않는다). 화면 모양·창 장식처럼 지금 그릴 수 없는 것
 const KNOWN_IGNORED: &[&str] = &[
+    // 명령줄 전용(`--config-default-files`). 파일 안에서는 Ghostty처럼 오류도 경고도 없이 아무 일도 하지 않는다(#211)
+    "config-default-files",
     "background-blur",
     "background-blur-radius",
     // GTK에서만 뜻이 있는 Ghostty 키(받기만 한다, #179)
@@ -3787,6 +3800,23 @@ fn parse_text(text: &str, origin: &Path) -> Vec<Entry> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn config_default_files_false_reads_only_the_given_file() {
+        let dir = std::env::temp_dir().join(format!("bt-cdf-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let f = dir.join("only");
+        // 파일 안의 config-default-files는 아무 일도 하지 않고 경고도 없다(Ghostty)
+        std::fs::write(&f, "font-size = 21\nconfig-default-files = false\n").unwrap();
+        let c = Config::load_with(Some(&f), true, false);
+        assert_eq!(c.sources, vec![f.clone()], "기본 설정 파일은 읽지 않는다");
+        assert_eq!(c.font_size, 21.0);
+        assert!(c.warnings.is_empty(), "{:?}", c.warnings);
+        let _ = std::fs::remove_dir_all(&dir);
+        // 파일 없이도 기본값만으로 만들어진다
+        let none = Config::load_with(None, true, false);
+        assert!(none.sources.is_empty());
+    }
+
     use super::*;
 
     #[test]

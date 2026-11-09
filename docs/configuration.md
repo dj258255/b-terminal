@@ -11,6 +11,8 @@ b-terminal은 Ghostty와 같은 문법으로 설정합니다. Ghostty를 깔지 
 3. b-terminal 설정: `~/.config/b-terminal/config`(`$XDG_CONFIG_HOME` 따름)
 4. 명령줄 `--config-file <파일>`
 
+`b-terminal --config-default-files=false`(Ghostty와 같은 명령줄 전용 키)를 주면 2·3번(기본 설정 파일)을 읽지 않고, 4번으로 준 파일만 읽습니다. 설정을 다시 읽을 때도 같습니다. 설정 파일 안에 이 키를 써도 경고 없이 아무 일도 하지 않습니다(Ghostty와 같음). 값 없이 `--config-default-files`만 쓰면 켬(기본)입니다.
+
 `b-terminal --show-config`는 읽은 파일, 경고, 지금 적용된 값을 Ghostty 문법으로 보입니다.
 
 ## 문법
@@ -282,6 +284,20 @@ keybind = ctrl+a>ctrl+a=text:\x01     # 앞 키 자체를 보내고 싶을 때
 | `toggle_quick_terminal` | 퀵 터미널(화면 가장자리에서 미끄러져 나오는 창) 보이기·숨기기. 자리·크기·화면·움직임은 `quick-terminal-*` 설정. 창 상태 복원에서 빠집니다 | (없음, `global:`로 묶으세요) |
 | `text:글` / `csi:…` / `esc:…` | 글·이스케이프 보내기 | |
 | `unbind` | 그 트리거 지우기 | |
+
+### 받기만 하는 키 묶음 동작
+
+Ghostty 설정에 흔한 아래 동작은 `keybind`에 써도 경고가 나지 않습니다. 동작이 있는 묶음이라 키를 먹고(프로그램에 보내지 않음, Ghostty와 같음) 하는 일은 없습니다. `inspector`와 `crash`는 Ghostty처럼 인자가 꼭 있어야 하고, 틀린 인자는 오류입니다.
+
+| 동작 | 왜 받기만 하는가 |
+|---|---|
+| `check_for_updates` | b-terminal에는 자동 업데이트가 없습니다(릴리스는 직접 받습니다). 만들지 않습니다 |
+| `inspector:toggle` `show` `hide` | 터미널 검사기가 없습니다. 만들지 않습니다 |
+| `show_gtk_inspector` | GTK 전용입니다(Ghostty도 macOS에서는 아무 일도 하지 않음) |
+| `show_on_screen_keyboard` | 화상 키보드는 GTK·Windows 쪽 기능입니다 |
+| `toggle_tab_overview` | 네이티브 탭이 없어(탭은 앱이 직접 그림) 모아 보는 화면이 없습니다 |
+| `toggle_secure_input` | 보안 입력은 Carbon의 `EnableSecureEventInput`을 불러야 하고, 이 작업 공간은 `unsafe`를 쓰지 않습니다 |
+| `crash:main` `io` `render` | 일부러 앱을 죽여 충돌 처리를 시험하는 디버그 동작입니다. 데이터를 잃을 수 있어 하지 않습니다 |
 
 설정 다시 읽기는 글꼴·색(이미 열린 탭 포함)·키 묶음(전역 단축키 포함)·여백·Option 키를 바꿉니다. 바깥에서 부르려면 `btctl reload-config`. 퀵 터미널은 `btctl quick`.
 
