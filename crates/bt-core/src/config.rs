@@ -125,6 +125,8 @@ pub struct Config {
     pub confirm_close: ConfirmClose,
     /// 퀵 터미널의 자리·크기·화면·자동 숨김·움직임(Ghostty `quick-terminal-*`, #110)
     pub quick: QuickTerminal,
+    /// 프롬프트를 눌러 커서 옮기기(Ghostty `cursor-click-to-move`, #137)
+    pub cursor_click_to_move: bool,
     /// 남는 자리를 네 변에 고르게(Ghostty `window-padding-balance`, #136)
     pub padding_balance: bool,
     /// 여백 색(Ghostty `window-padding-color`)
@@ -451,6 +453,7 @@ impl Default for Config {
             bell_features: BellFeatures::default(),
             confirm_close: ConfirmClose::True,
             quick: QuickTerminal::default(),
+            cursor_click_to_move: true,
             padding_balance: false,
             padding_color: PaddingColor::Background,
             cursor_opacity: 1.0,
@@ -917,6 +920,10 @@ impl Config {
                 "never" => self.window_save_state = false,
                 _ => bad(warnings),
             },
+            "cursor-click-to-move" => match parse_bool(v) {
+                Some(b) => self.cursor_click_to_move = b,
+                None => bad(warnings),
+            },
             "window-padding-balance" => match parse_bool(v) {
                 Some(b) => self.padding_balance = b,
                 None => bad(warnings),
@@ -1348,6 +1355,16 @@ mod tests {
         assert!(!Config::from_text("window-save-state = never\n", true).window_save_state);
         assert!(Config::from_text("window-save-state = always\n", true).window_save_state);
         assert_eq!(Config::from_text("window-save-state = maybe\n", true).warnings.len(), 1);
+    }
+
+    #[test]
+    fn cursor_click_to_move_key() {
+        assert!(Config::default().cursor_click_to_move);
+        assert!(!Config::from_text("cursor-click-to-move = false\n", true).cursor_click_to_move);
+        assert_eq!(
+            Config::from_text("cursor-click-to-move = yes\n", true).warnings.len(),
+            1
+        );
     }
 
     #[test]

@@ -4,6 +4,8 @@
 
 ## [아직 릴리스하지 않음]
 
+- 프롬프트를 눌러 커서 옮기기(`cursor-click-to-move`, Ghostty 키, 켬): 셸 통합이 있는 프롬프트에서 커서 줄을 누르면 그 자리로 커서가 갑니다.
+
 - 키보드로 고르기 늘리기(`adjust_selection`)와 링크 주소 복사(`copy_url_to_clipboard`), Ghostty 동작.
 
 - 여백 키(Ghostty): `window-padding-balance`로 남는 자리를 네 변에 고르게 나누고, `window-padding-color = extend`로 여백을 가장자리 칸의 바탕색으로 칠합니다(vim 상태 줄 같은 색 줄이 창 끝까지 이어짐).
