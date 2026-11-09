@@ -940,6 +940,81 @@ fn password_input_follows_the_ptys_termios() {
     assert_eq!(s.password_input(), Some(false));
 }
 
+// ---- DCS 질의: DECRQSS, XTGETTCAP(#265) ----
+
+fn none(_: &mut SpawnOptions) {}
+
+#[test]
+fn decrqss_sgr_answers_with_the_cursor_attributes() {
+    // 굵게 + 빨강 + 물결 밑줄 뒤에 SGR을 묻는다
+    assert_eq!(
+        checksum_reply("\\033[1;31;4:3m", "\\033P$qm\\033\\\\", false, none),
+        hex_of("\x1bP1$r0;1;4:3;31m\x1b\\")
+    );
+    // 속성이 없으면 0m
+    assert_eq!(
+        checksum_reply("", "\\033P$qm\\033\\\\", false, none),
+        hex_of("\x1bP1$r0m\x1b\\")
+    );
+}
+
+#[test]
+fn decrqss_cursor_style_and_scroll_region() {
+    // DECSCUSR 6(가는 막대, 깜박이지 않음)
+    assert_eq!(
+        checksum_reply("\\033[6 q", "\\033P$q q\\033\\\\", false, none),
+        hex_of("\x1bP1$r6 q\x1b\\")
+    );
+    // DECSTBM: 화면은 10행(READY와 질의를 합쳐도 SGR은 영향이 없다)
+    assert_eq!(
+        checksum_reply("\\033[3;7r", "\\033P$qr\\033\\\\", false, none),
+        hex_of("\x1bP1$r3;7r\x1b\\")
+    );
+}
+
+#[test]
+fn decrqss_unknown_gets_dcs_zero_and_too_long_gets_nothing() {
+    assert_eq!(
+        checksum_reply("", "\\033P$qz\\033\\\\", false, none),
+        hex_of("\x1bP0$r\x1b\\")
+    );
+    // DECSLRM은 지원하지 않는다
+    assert_eq!(
+        checksum_reply("", "\\033P$qs\\033\\\\", false, none),
+        hex_of("\x1bP0$r\x1b\\")
+    );
+    // 세 글자부터는 잘못된 명령이라 답이 없다
+    assert_eq!(checksum_reply("", "\\033P$q\" q\\033\\\\", false, none), "");
+}
+
+#[test]
+fn xtgettcap_answers_known_names_only() {
+    // TN(544E)은 자식에게 준 TERM이다(기본 xterm-256color)
+    // (답이 한 줄(80열)을 넘으면 화면 글에 줄바꿈이 끼므로 지우고 비교한다)
+    assert_eq!(
+        checksum_reply("", "\\033P+q544E\\033\\\\", false, none).replace('\n', ""),
+        hex_of(&format!(
+            "\x1bP1+r544E={}\x1b\\",
+            hex_of("xterm-256color").to_uppercase()
+        ))
+    );
+    // 모르는 이름(who)은 답이 없고, 아는 이름(Tc)만 답한다. 두 이름을 한 번에 물어도 된다
+    assert_eq!(
+        checksum_reply("", "\\033P+q77686f;5463\\033\\\\", false, none),
+        hex_of("\x1bP1+r5463\x1b\\")
+    );
+    assert_eq!(checksum_reply("", "\\033P+q1B5D3532\\033\\\\", false, none), "");
+}
+
+#[test]
+fn dcs_answers_still_come_from_a_readonly_pane() {
+    // 읽기 전용 칸에서도 터미널의 답은 막지 않는다(ADR-018 결정 4)
+    assert_eq!(
+        checksum_reply("", "\\033P$qm\\033\\\\", true, none),
+        hex_of("\x1bP1$r0m\x1b\\")
+    );
+}
+
 // ---- DECRQCRA 체크섬 보고(#259) ----
 
 /// 셸이 `setup`을 찍고 READY를 보인 뒤(`readonly`면 칸을 읽기 전용으로 하고 1초 뒤) `query`를 찍고, 돌아온 바이트를 16진수로 돌려준다.
