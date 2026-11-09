@@ -12,7 +12,8 @@ pub mod text;
 
 pub use canvas::{Canvas, cells_alpha};
 pub use font::{
-    CellMetrics, CodepointFont, FontConfig, FontError, FontStyle, FontStyleName, Fonts, MetricAdjust, Variations,
+    CellMetrics, CodepointFont, FontConfig, FontError, FontStyle, FontStyleName, Fonts, MetricAdjust, SyntheticStyle,
+    Variations,
 };
 pub use grid::{CursorStyle, DrawCell, DrawCursor, GridView, draw_grid, draw_grid_rows};
 pub use text::{char_cells, draw_text, text_cells, truncate};

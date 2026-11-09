@@ -19,7 +19,7 @@ pub const DEFAULT_FAMILY: &str = "JetBrains Mono";
 const NERD_SYMBOLS: &str = "Symbols Nerd Font Mono";
 
 /// 셀 크기 보정
-pub use bt_core::config::{Adjust, CodepointFont, FontStyleName};
+pub use bt_core::config::{Adjust, CodepointFont, FontStyleName, SyntheticStyle};
 
 /// 셀 안 그림 자리·두께 보정(Ghostty `adjust-*`, #163). 값은 퍼센트 또는 픽셀
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
@@ -73,6 +73,11 @@ pub struct FontConfig {
     pub codepoint_map: Vec<CodepointFont>,
     /// 커서 칸에서 다듬기를 끊는다(#174, `font-shaping-break = cursor`). Ghostty 기본은 켬
     pub shaping_break_cursor: bool,
+    /// 글자 두껍게(#193, `font-thicken`)와 강도(0~255, `font-thicken-strength`)
+    pub thicken: bool,
+    pub thicken_strength: u8,
+    /// 없는 굵게·기울임 꼴을 합성할지(#193, `font-synthetic-style`)
+    pub synthetic: SyntheticStyle,
 }
 
 impl Default for FontConfig {
@@ -113,6 +118,9 @@ impl Default for FontConfig {
             styles: Default::default(),
             codepoint_map: Vec::new(),
             shaping_break_cursor: true,
+            thicken: false,
+            thicken_strength: 255,
+            synthetic: SyntheticStyle::default(),
         }
     }
 }
@@ -218,6 +226,10 @@ pub struct Fonts {
     mapped: Vec<Mapped>,
     /// 커서 칸에서 다듬기를 끊는가(#174)
     shaping_break_cursor: bool,
+    /// 꼴마다 합성할 것(#193, `font-synthetic-style`). 기본 글꼴의 네 꼴에만 쓴다
+    synth: [Synth; 4],
+    /// 모든 윤곽에 더하는 두껍게(px, #193 `font-thicken`). 끄면 0
+    thicken: f32,
 }
 
 /// `font-codepoint-map` 한 칸: 범위, 네 꼴의 글꼴, 넓은 글자 배율
@@ -375,6 +387,21 @@ impl Font {
         self.glyph_id(c) != 0
     }
 
+    /// 굵은 꼴인가: 글꼴이 알리는 굵기가 600 이상이거나, 굵기 축에 값을 줬다(#193)
+    fn is_bold(&self, vars: &[([u8; 4], f32)]) -> bool {
+        let f = self.font();
+        f.attributes().weight().0 >= 600 || (has_axis(&f, b"wght") && vars.iter().any(|(t, _)| t == b"wght"))
+    }
+
+    /// 기울임 꼴인가: 글꼴이 기울임·비스듬함이라 알리거나, 기울임 축(ital·slnt)에 값을 줬다(#193)
+    fn is_italic(&self, vars: &[([u8; 4], f32)]) -> bool {
+        let f = self.font();
+        f.attributes().style() != swash::Style::Normal
+            || [b"ital", b"slnt"]
+                .into_iter()
+                .any(|a| has_axis(&f, a) && vars.iter().any(|(t, _)| t == a))
+    }
+
     /// 글자의 나아가는 폭(px)
     fn advance(&self, c: char, px: f32) -> f32 {
         let f = self.font();
@@ -386,6 +413,32 @@ impl Font {
         let m = self.font().metrics(&[]).scale(px);
         (m.ascent, -m.descent.abs(), m.leading)
     }
+}
+
+fn has_axis(f: &swash::FontRef<'_>, tag: &[u8; 4]) -> bool {
+    f.variations().find_by_tag(swash::tag_from_bytes(tag)).is_some()
+}
+
+/// 글리프에 합성할 꼴(#193). 글꼴에 그 꼴이 없어서 윤곽을 부풀리거나(굵게) 기울인다(기울임)
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct Synth {
+    bold: bool,
+    italic: bool,
+}
+
+/// 합성 기울임의 각도(도). Ghostty의 값은 확인하지 못해 넣어 둔 JetBrains Mono 기울임(약 9도)과 비슷한 10도로 했다
+const SYNTH_ITALIC_DEGREES: f32 = 10.0;
+
+/// 합성 굵게로 윤곽을 부풀리는 양(px): 글자 크기의 1/90. swash의 `embolden` 강도가 글리프 먹을 늘리는 정도를 재어,
+/// JetBrains Mono 'a'가 보통 꼴보다 넣어 둔 굵은 꼴만큼(약 27%) 먹이 늘게 맞춘 값이다(한 글꼴 한 글자로 잰 값)
+fn synth_bold_px(px: f32) -> f32 {
+    px / 90.0
+}
+
+/// `font-thicken-strength`(0~255)를 부풀리는 양(px)으로: 0이 가장 약해도 0.015px, 255는 0.065px에 화면 배율을 곱한 값
+/// (배율 2에서 먹이 약 3%~12% 늘어난다, 한 글자로 잰 값). macOS의 두껍게 그리기(CoreText)와 같은 알고리즘이 아니라 비슷한 효과를 내는 근사다
+fn thicken_px(strength: u8, scale: f32) -> f32 {
+    (0.015 + 0.05 * strength as f32 / 255.0) * scale.max(1.0)
 }
 
 /// 읽어 둔 글꼴(#58). 글꼴은 크기와 상관없으므로, 설정을 다시 읽거나 글자 크기를 바꿀 때 같은 글꼴을 다시 읽지 않고 나눠 쓴다
@@ -519,6 +572,38 @@ impl Fonts {
                 merge_variations(&config.variation, own)
             }
         };
+        // 합성(#193): 글꼴 찾기가 이 꼴을 못 찾아 다른 꼴을 돌려줬을 때만. 꼴마다 글꼴·스타일 이름을 정했으면 그 꼴로 본다
+        let faces = [&regular, &bold, &italic, &bold_italic];
+        let flags = [
+            false,
+            config.synthetic.bold,
+            config.synthetic.italic,
+            config.synthetic.bold_italic,
+        ];
+        let own = [
+            &None,
+            &config.family_bold,
+            &config.family_italic,
+            &config.family_bold_italic,
+        ];
+        let synth: [Synth; 4] = std::array::from_fn(|i| {
+            let explicit = own[i].is_some() || matches!(config.styles[i], FontStyleName::Named(_));
+            if i == 0 || !flags[i] || explicit || config.styles[i] == FontStyleName::Disabled {
+                return Synth::default();
+            }
+            let empty = Vec::new();
+            let own_vars = [
+                &empty,
+                &config.variation_bold,
+                &config.variation_italic,
+                &config.variation_bold_italic,
+            ];
+            let v = vars(i, own_vars[i]);
+            Synth {
+                bold: matches!(i, 1 | 3) && !faces[i].is_bold(&v),
+                italic: matches!(i, 2 | 3) && !faces[i].is_italic(&v),
+            }
+        });
         let px = (config.size * config.scale).max(4.0);
         let metrics = cell_metrics(
             &regular,
@@ -585,6 +670,12 @@ impl Fonts {
             ],
             mapped,
             shaping_break_cursor: config.shaping_break_cursor,
+            synth,
+            thicken: if config.thicken {
+                thicken_px(config.thicken_strength, config.scale)
+            } else {
+                0.0
+            },
         })
     }
 
@@ -618,6 +709,7 @@ impl Fonts {
         }
         let idx = style as usize;
         let primary = &self.regular[idx];
+        let mut synth = Synth::default();
         let (font, px, vars) = if let Some(m) = mapped {
             let wide = crate::text::char_cells(ch) == 2;
             (
@@ -626,6 +718,7 @@ impl Fonts {
                 &[][..],
             )
         } else if primary.has(ch) {
+            synth = self.synth[idx];
             (primary.clone(), self.px, &self.variations[idx][..])
         } else if self.regular[0].has(ch) {
             (self.regular[0].clone(), self.px, &self.variations[0][..])
@@ -644,7 +737,7 @@ impl Fonts {
         let gid = font.glyph_id(ch);
         let mut render_at = |px: f32| {
             let mut scaler = ctx.builder(font.font()).size(px).hint(false).variations(vars).build();
-            swash::scale::Render::new(&[swash::scale::Source::Outline]).render(&mut scaler, gid)
+            self.render_outline(&mut scaler, gid, px, synth)
         };
         let img = render_at(px)?;
         let (mut left, mut top) = (img.placement.left, img.placement.top);
@@ -676,6 +769,29 @@ impl Fonts {
             bitmap: img.data,
             color: None,
         })
+    }
+
+    /// 윤곽 글리프 하나를 그린다. 두껍게(#193 `font-thicken`)와 합성 굵게는 윤곽을 부풀리고, 합성 기울임은 윤곽을 비튼다
+    fn render_outline(
+        &self,
+        scaler: &mut swash::scale::Scaler<'_>,
+        gid: u16,
+        px: f32,
+        synth: Synth,
+    ) -> Option<swash::scale::image::Image> {
+        let mut render = swash::scale::Render::new(&[swash::scale::Source::Outline]);
+        let grow = self.thicken + if synth.bold { synth_bold_px(px) } else { 0.0 };
+        if grow > 0.0 {
+            render.embolden(grow);
+        }
+        if synth.italic {
+            let skew = swash::zeno::Transform::skew(
+                swash::zeno::Angle::from_degrees(SYNTH_ITALIC_DEGREES),
+                swash::zeno::Angle::from_degrees(0.0),
+            );
+            render.transform(Some(skew));
+        }
+        render.render(scaler, gid)
     }
 
     /// 글자 범위로 정한 글꼴(`font-codepoint-map`, #174). 뒤에 쓴 것이 먼저 이기고, 그 글꼴에 글자가 없으면 건너뛴다
@@ -762,8 +878,7 @@ impl Fonts {
                 .hint(false)
                 .variations(&self.variations[style as usize])
                 .build();
-            swash::scale::Render::new(&[swash::scale::Source::Outline])
-                .render(&mut scaler, gid)
+            self.render_outline(&mut scaler, gid, self.px, self.synth[style as usize])
                 .map(|img| {
                     Rc::new(Glyph {
                         width: img.placement.width as usize,

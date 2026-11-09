@@ -1385,3 +1385,177 @@ fn icon_height_scales_nerd_icons_but_not_powerline() {
     let ps = small.glyph('\u{e0b0}', FontStyle::Regular).unwrap();
     assert_eq!((ps.width, ps.height, &ps.bitmap), (p.width, p.height, &p.bitmap));
 }
+
+// ---- #193: font-thicken, font-synthetic-style ----
+
+use bt_render::SyntheticStyle;
+
+/// 보통 꼴만 있는 JetBrains Mono(굵은·기울임 꼴이 없는 글꼴을 흉내 낸다). 시스템 글꼴을 읽지 않는다
+fn regular_only(config: FontConfig) -> Fonts {
+    let mut db = fontdb::Database::new();
+    db.load_font_data(include_bytes!("../../../assets/fonts/JetBrainsMono-Regular.ttf").to_vec());
+    let f = Fonts::with_database(&db, &config).unwrap();
+    assert_eq!(f.family_name, "JetBrains Mono");
+    f
+}
+
+fn glyph_ink(f: &mut Fonts, c: char, s: FontStyle) -> u32 {
+    f.glyph(c, s).unwrap().bitmap.iter().map(|&b| b as u32).sum()
+}
+
+/// 글리프 윗반과 아랫반의 무게중심 가로 위치 차(기울어졌으면 커진다)
+fn lean(f: &mut Fonts, c: char, s: FontStyle) -> f32 {
+    let g = f.glyph(c, s).unwrap();
+    let centroid = |rows: std::ops::Range<usize>| {
+        let (mut sum, mut w) = (0f32, 0f32);
+        for y in rows {
+            for x in 0..g.width {
+                let v = g.bitmap[y * g.width + x] as f32;
+                sum += v * x as f32;
+                w += v;
+            }
+        }
+        sum / w
+    };
+    centroid(0..g.height / 2) - centroid(g.height / 2..g.height)
+}
+
+fn no_synth() -> SyntheticStyle {
+    SyntheticStyle {
+        bold: false,
+        italic: false,
+        bold_italic: false,
+    }
+}
+
+/// 굵은 꼴이 없는 글꼴은 기본으로 굵게를 합성한다(윤곽을 부풀림). `no-bold`면 보통 꼴 그대로
+#[test]
+fn missing_bold_face_is_synthesized_by_default() {
+    let cfg = |synthetic| FontConfig {
+        scale: 2.0,
+        synthetic,
+        ..FontConfig::default()
+    };
+    let mut on = regular_only(cfg(SyntheticStyle::default()));
+    let regular = glyph_ink(&mut on, 'a', FontStyle::Regular);
+    let bold = glyph_ink(&mut on, 'a', FontStyle::Bold);
+    assert!(
+        bold * 100 < regular * 150,
+        "너무 굵지 않다(넣어 둔 굵은 꼴은 보통의 1.27배): {bold} / {regular}"
+    );
+    assert!(
+        bold * 100 > regular * 115,
+        "합성 굵게는 보통 꼴보다 먹이 15% 이상 많다: {bold} / {regular}"
+    );
+    let mut off = regular_only(cfg(SyntheticStyle {
+        bold: false,
+        ..SyntheticStyle::default()
+    }));
+    assert_eq!(
+        glyph_ink(&mut off, 'a', FontStyle::Bold),
+        regular,
+        "no-bold: 보통 꼴 그대로"
+    );
+    assert!(
+        glyph_ink(&mut off, 'a', FontStyle::BoldItalic) > regular,
+        "bold-italic은 따로 켜져 있다"
+    );
+}
+
+/// 기울임 꼴이 없으면 글자를 기울인다. 끄면 보통 꼴
+#[test]
+fn missing_italic_face_is_slanted_by_default() {
+    let cfg = |synthetic| FontConfig {
+        scale: 2.0,
+        synthetic,
+        ..FontConfig::default()
+    };
+    let mut on = regular_only(cfg(SyntheticStyle::default()));
+    let upright = lean(&mut on, 'H', FontStyle::Regular);
+    let slanted = lean(&mut on, 'H', FontStyle::Italic);
+    assert!(
+        slanted > upright + 1.0,
+        "윗반이 오른쪽으로 쏠린다: {slanted} / {upright}"
+    );
+    assert!(lean(&mut on, 'H', FontStyle::BoldItalic) > upright + 1.0);
+    let mut off = regular_only(cfg(SyntheticStyle {
+        italic: false,
+        ..SyntheticStyle::default()
+    }));
+    assert_eq!(lean(&mut off, 'H', FontStyle::Italic), upright);
+}
+
+/// `font-synthetic-style = false`면 아무것도 합성하지 않고 모두 보통 꼴
+#[test]
+fn synthetic_style_false_keeps_regular_for_every_style() {
+    let mut f = regular_only(FontConfig {
+        scale: 2.0,
+        synthetic: no_synth(),
+        ..FontConfig::default()
+    });
+    let regular = bitmap(&mut f, 'a', FontStyle::Regular);
+    for s in [FontStyle::Bold, FontStyle::Italic, FontStyle::BoldItalic] {
+        assert_eq!(bitmap(&mut f, 'a', s), regular, "{s:?}");
+    }
+}
+
+/// 글꼴에 그 꼴이 있으면 합성하지 않는다(설정과 상관없이 같은 글리프)
+#[test]
+fn native_faces_are_never_synthesized() {
+    let make = |synthetic| {
+        jb(FontConfig {
+            synthetic,
+            ..FontConfig::default()
+        })
+    };
+    let (Some(mut on), Some(mut off)) = (make(SyntheticStyle::default()), make(no_synth())) else {
+        return;
+    };
+    for s in [FontStyle::Bold, FontStyle::Italic, FontStyle::BoldItalic] {
+        assert_eq!(bitmap(&mut on, 'a', s), bitmap(&mut off, 'a', s), "{s:?}");
+    }
+}
+
+/// 합자로 다듬은 글리프(글리프 번호로 푼 것)도 같은 합성을 받는다
+#[test]
+fn synthetic_bold_applies_to_ligature_glyphs() {
+    let mut f = regular_only(FontConfig {
+        scale: 2.0,
+        ..FontConfig::default()
+    });
+    let ids = f.shape_run("->", FontStyle::Bold);
+    let mut sum = |style| -> u32 {
+        ids.iter()
+            .filter(|&&g| g != 0)
+            .map(|&g| {
+                f.glyph_by_id(g, style)
+                    .map_or(0, |g| g.bitmap.iter().map(|&b| b as u32).sum::<u32>())
+            })
+            .sum()
+    };
+    let (bold, reg) = (sum(FontStyle::Bold), sum(FontStyle::Regular));
+    assert!(reg > 0, "-> 합자 글리프가 있다");
+    assert!(bold > reg, "{bold} / {reg}");
+}
+
+/// `font-thicken`은 기본 끔. 켜면 먹이 늘고, 강도가 클수록 더 늘어난다(0도 켠 것이라 끈 것보다는 두껍다)
+#[test]
+fn thicken_adds_ink_scaled_by_strength() {
+    let make = |thicken, strength| {
+        jb(FontConfig {
+            scale: 2.0,
+            thicken,
+            thicken_strength: strength,
+            ..FontConfig::default()
+        })
+    };
+    let (Some(mut off), Some(mut light), Some(mut strong)) = (make(false, 255), make(true, 0), make(true, 255)) else {
+        return;
+    };
+    let (a, b, c) = (
+        glyph_ink(&mut off, 'a', FontStyle::Regular),
+        glyph_ink(&mut light, 'a', FontStyle::Regular),
+        glyph_ink(&mut strong, 'a', FontStyle::Regular),
+    );
+    assert!(a < b && b < c, "끔 {a} < 가장 약함 {b} < 가장 강함 {c}");
+}
