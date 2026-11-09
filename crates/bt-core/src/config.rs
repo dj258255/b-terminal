@@ -399,6 +399,8 @@ pub struct Config {
     pub font_synthetic_style: SyntheticStyle,
     /// 다듬기(합자)를 끊는 자리(#174, Ghostty `font-shaping-break`)
     pub font_shaping_break: ShapingBreak,
+    /// 탭 줄 제목 글꼴(#241, Ghostty `window-title-font-family`). 없으면 터미널 글꼴로 그린다
+    pub window_title_font_family: Option<String>,
     /// Nerd Font 아이콘 높이 보정(#174, Ghostty `adjust-icon-height`)
     pub adjust_icon_height: Option<Adjust>,
     pub theme: Theme,
@@ -1377,6 +1379,7 @@ impl Default for Config {
             font_thicken_strength: 255,
             font_synthetic_style: SyntheticStyle::default(),
             font_shaping_break: ShapingBreak::default(),
+            window_title_font_family: None,
             adjust_icon_height: None,
             theme: Theme::ghostty_default(),
             cursor_style: CursorStyle::Block,
@@ -2572,6 +2575,9 @@ impl Config {
                     bad(warnings);
                 }
             }
+            "window-title-font-family" => {
+                self.window_title_font_family = (!v.is_empty()).then(|| v.to_string());
+            }
             "font-thicken" => match parse_bool(v) {
                 Some(b) => self.font_thicken = b,
                 None => bad(warnings),
@@ -3312,6 +3318,9 @@ impl Config {
                 },
             );
         }
+        if let Some(f) = &self.window_title_font_family {
+            push("window-title-font-family", f.clone());
+        }
         if self.font_thicken {
             push("font-thicken", "true".into());
         }
@@ -3716,7 +3725,6 @@ const KNOWN_IGNORED: &[&str] = &[
     "alpha-blending",
     "freetype-load-flags",
     "window-vsync",
-    "window-title-font-family",
     "scrollback-compression",
     "drag-handle",
     // unsafe나 시스템 연동(AppleScript·단축어·보안 입력)이 필요하다
@@ -6045,6 +6053,26 @@ mod tests {
         assert!(again.font_thicken);
         assert_eq!(again.font_thicken_strength, 7);
         assert_eq!(again.font_synthetic_style, c.font_synthetic_style);
+    }
+
+    #[test]
+    fn window_title_font_family_is_read() {
+        assert_eq!(Config::default().window_title_font_family, None);
+        let c = Config::from_text("window-title-font-family = Helvetica Neue\n", true);
+        assert_eq!(c.window_title_font_family.as_deref(), Some("Helvetica Neue"));
+        assert!(c.warnings.is_empty(), "{:?}", c.warnings);
+        // 따옴표는 벗기고, 뒤에 쓴 값이 이기고, 빈 값은 지운다
+        let c = Config::from_text(
+            "window-title-font-family = \"Menlo\"\nwindow-title-font-family = Avenir\n",
+            true,
+        );
+        assert_eq!(c.window_title_font_family.as_deref(), Some("Avenir"));
+        let c = Config::from_text("window-title-font-family = Menlo\nwindow-title-font-family =\n", true);
+        assert_eq!(c.window_title_font_family, None);
+        // --show-config는 다시 읽어도 같은 값
+        let c = Config::from_text("window-title-font-family = Helvetica Neue\n", true);
+        let again = Config::from_text(&c.render(), true);
+        assert_eq!(again.window_title_font_family.as_deref(), Some("Helvetica Neue"));
     }
 
     #[test]

@@ -6,13 +6,14 @@ pub mod canvas;
 pub mod cluster;
 pub mod font;
 pub mod grid;
+pub mod proportional;
 pub mod scrollbar;
 mod sfnt;
 pub mod text;
 
 pub use canvas::{Canvas, cells_alpha};
 pub use font::{
-    CellMetrics, CodepointFont, FaceEntry, FaceSource, FontConfig, FontError, FontStyle, FontStyleName, Fonts,
+    CellMetrics, CodepointFont, FaceEntry, FaceSource, FontConfig, FontError, FontSet, FontStyle, FontStyleName, Fonts,
     MetricAdjust, SyntheticStyle, Variations, list_system_faces,
 };
 pub use grid::{CursorStyle, DrawCell, DrawCursor, GridView, draw_grid, draw_grid_rows};

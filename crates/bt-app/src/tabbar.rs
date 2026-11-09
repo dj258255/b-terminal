@@ -1,6 +1,7 @@
 //! 가로 탭 줄(Ghostty처럼). 탭이 둘 이상일 때만 창 위쪽에 그린다
 
 use bt_core::{Rgb, Theme};
+use bt_render::proportional::draw_text_proportional;
 use bt_render::{Canvas, Fonts, draw_text, text_cells, truncate};
 
 /// 탭 줄 한 칸
@@ -60,8 +61,17 @@ fn slots(fonts: &Fonts, width: u32, count: usize) -> Vec<(i32, u32)> {
     (0..count).map(|i| (i as i32 * w as i32, w)).collect()
 }
 
-/// 탭 줄을 `top`(창 위에서 내려온 픽셀)부터 그린다. 제목 막대 밑으로 콘텐츠가 들어가는 창에서는 `top`이 제목 막대 높이다(#192)
-pub fn draw(canvas: &mut Canvas, fonts: &mut Fonts, theme: &Theme, tabs: &[TabLabel], top: i32) {
+/// 탭 줄을 `top`(창 위에서 내려온 픽셀)부터 그린다. 제목 막대 밑으로 콘텐츠가 들어가는 창에서는 `top`이 제목 막대 높이다(#192).
+/// 제목 글꼴을 따로 쓰는 탭 줄(#241 `window-title-font-family`). `title_fonts`가 없으면 터미널 글꼴로 셀 격자에 맞춰 그린다.
+/// 있으면 글자마다 advance로 자리를 잡고(비례폭도 겹치지 않게) 잘림도 그 폭으로 센다. 탭 높이·너비·안 읽음 점 자리는 그대로다
+pub fn draw_with_title_font(
+    canvas: &mut Canvas,
+    fonts: &mut Fonts,
+    mut title_fonts: Option<&mut Fonts>,
+    theme: &Theme,
+    tabs: &[TabLabel],
+    top: i32,
+) {
     let m = fonts.metrics();
     let h = height_px(fonts);
     let bar = theme.background.mix(theme.foreground, 0.06);
@@ -78,20 +88,21 @@ pub fn draw(canvas: &mut Canvas, fonts: &mut Fonts, theme: &Theme, tabs: &[TabLa
         }
         canvas.fill_rect(x + w as i32 - 1, top + m.height as i32 / 4, 1, h - m.height / 2, border);
         // 가운데 맞춘 제목. 안 읽음 점 자리를 남긴다
-        let max_cells = ((w as i32 / cw) - 4).max(1) as usize;
-        let title = truncate(&tab.title, max_cells);
-        let tw = cw * text_cells(&title) as i32;
-        let tx = x + (w as i32 - tw) / 2;
-        let ty = top + (h as i32 - m.height as i32) / 2;
-        draw_text(
-            canvas,
-            fonts,
-            tx,
-            ty,
-            &title,
-            if tab.active { text } else { dim },
-            false,
-        );
+        let color = if tab.active { text } else { dim };
+        if let Some(tf) = title_fonts.as_deref_mut() {
+            let room_px = (w as i32 - 4 * cw).max(cw) as f32;
+            let (title, tw) = fit_title(&tab.title, room_px, |c| tf.advance(c));
+            let tx = x + (w as i32 - tw.round() as i32) / 2;
+            let ty = top + (h as i32 - tf.metrics().height as i32) / 2;
+            draw_text_proportional(canvas, tf, tx, ty, &title, color);
+        } else {
+            let max_cells = ((w as i32 / cw) - 4).max(1) as usize;
+            let title = truncate(&tab.title, max_cells);
+            let tw = cw * text_cells(&title) as i32;
+            let tx = x + (w as i32 - tw) / 2;
+            let ty = top + (h as i32 - m.height as i32) / 2;
+            draw_text(canvas, fonts, tx, ty, &title, color, false);
+        }
         if let Some(p) = tab.progress {
             draw_progress(
                 canvas,
@@ -107,6 +118,14 @@ pub fn draw(canvas: &mut Canvas, fonts: &mut Fonts, theme: &Theme, tabs: &[TabLa
             dot(canvas, x + cw, top + h as i32 / 2, (cw / 3).max(2), theme.palette[3]);
         }
     }
+}
+
+/// 제목 글꼴을 따로 쓸 때(#241) 탭 하나의 제목을 방 `room_px` 안에 맞춘다: (잘린 제목, 그린 폭 px).
+/// 폭은 글자마다의 advance 합이라 비례폭 글꼴에서도 글자가 겹치거나 탭 밖으로 나가지 않는다
+pub fn fit_title(title: &str, room_px: f32, mut advance: impl FnMut(char) -> f32) -> (String, f32) {
+    let fitted = bt_render::proportional::truncate_width(title, room_px, &mut advance);
+    let width = bt_render::proportional::text_width(&fitted, &mut advance);
+    (fitted, width)
 }
 
 /// 창 좌표가 몇 번째 탭인가
@@ -434,6 +453,71 @@ pub fn draw_resize_overlay(
 mod tests {
     use super::*;
 
+    /// 가짜 비례폭: i·l 3, W·M 12, 한글 16, `…` 10, 나머지 8
+    fn adv(c: char) -> f32 {
+        match c {
+            'i' | 'l' => 3.0,
+            'W' | 'M' => 12.0,
+            '…' => 10.0,
+            c if (c as u32) >= 0xAC00 => 16.0,
+            _ => 8.0,
+        }
+    }
+
+    #[test]
+    fn fit_title_measures_real_width() {
+        // 들어가면 그대로, 폭은 advance 합
+        assert_eq!(fit_title("iiW", 100.0, adv), ("iiW".to_string(), 18.0));
+        // 좁은 글자가 많은 제목은 같은 글자 수의 넓은 제목보다 더 남는다
+        let (narrow, nw) = fit_title("iiiiiiiiii", 25.0, adv);
+        let (wide, ww) = fit_title("WWWWWWWWWW", 25.0, adv);
+        assert_eq!((narrow.as_str(), nw), ("iiiii…", 25.0));
+        assert_eq!((wide.as_str(), ww), ("W…", 22.0));
+        // 한글은 16px씩
+        assert_eq!(fit_title("안녕하세요", 42.0, adv), ("안녕…".to_string(), 42.0));
+    }
+
+    #[test]
+    fn fit_title_width_never_exceeds_room() {
+        for t in ["iiiiiiiiiiii", "WWWWWWWWWWWW", "안녕하세요 abc", "Mixed Wiki 한글"] {
+            for room in [20.0, 33.0, 60.0, 101.0] {
+                let (out, w) = fit_title(t, room, adv);
+                assert!(w <= room, "{t:?} {room}: {out:?} {w}");
+                assert_eq!(w, out.chars().map(adv).sum::<f32>(), "{out:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn title_font_text_stays_inside_its_tab() {
+        let Ok(set) = Fonts::new_with_title(&bt_render::FontConfig::default(), Some("JetBrains Mono")) else {
+            return;
+        };
+        let (mut fonts, mut title) = (set.terminal, set.title);
+        assert!(title.is_some());
+        let theme = Theme::ghostty_default();
+        let (w, h) = (300u32, 60u32);
+        let mut buf = vec![0u32; (w * h) as usize];
+        let mut c = Canvas::new(&mut buf, w, h);
+        c.clear(theme.background);
+        let mk = |t: &str| TabLabel {
+            title: t.into(),
+            active: false,
+            unread: false,
+            progress: None,
+        };
+        let tabs = [mk(&"안녕 W".repeat(30)), mk("")];
+        draw_with_title_font(&mut c, &mut fonts, title.as_mut(), &theme, &tabs, 0);
+        // 둘째 탭(x 150..299)은 제목이 없으니 바탕·구분선·밑줄 말고는 아무것도 없어야 한다
+        let bar = theme.background.mix(theme.foreground, 0.06);
+        let bh = height_px(&fonts);
+        for y in 0..bh - 1 {
+            for x in 150..299 {
+                assert_eq!(c.pixel(x, y), bar, "({x},{y})에 첫 탭 제목이 넘어 나왔다");
+            }
+        }
+    }
+
     #[test]
     fn progress_is_ignored_when_style_is_off() {
         assert_eq!(accept_progress(true, 1, 40), Some((1, 40)));
@@ -459,7 +543,7 @@ mod tests {
             progress: None,
         }];
         let top = 40;
-        draw(&mut c, &mut fonts, &theme, &tabs, top);
+        draw_with_title_font(&mut c, &mut fonts, None, &theme, &tabs, top);
         let bar = theme.background.mix(theme.foreground, 0.06).to_u32();
         let at = |y: u32| buf[(y * w + 5) as usize] & 0xFF_FFFF;
         // 제목 막대 자리는 그대로, 그 밑부터 탭 줄 색
