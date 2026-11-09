@@ -20,8 +20,8 @@ use crate::keys;
 use crate::mouse;
 use crate::split::{Direction, Node, Rect, Slot};
 use crate::tabbar;
-use bt_core::config::NotifyOnFinish;
 use crate::undo::UndoStack;
+use bt_core::config::NotifyOnFinish;
 
 fn truncate_chars(s: &str, n: usize) -> String {
     if s.chars().count() <= n {
