@@ -124,6 +124,16 @@ impl WindowShowTabBar {
     }
 }
 
+/// 글자 묶음의 폭을 세는 방식(Ghostty `grapheme-width-method`, #180)
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum GraphemeWidthMethod {
+    /// 글자(코드포인트)마다 폭을 센다. 프로그램이 DECSET 2027을 켜면 그때부터 묶음 폭
+    Legacy,
+    /// 이모지 ZWJ 묶음·U+FE0F·국기·피부색 같은 글자 묶음을 한 묶음의 폭으로 센다(기본)
+    #[default]
+    Unicode,
+}
+
 /// 색 질의(OSC 4·10·11)에 답하는 꼴(Ghostty `osc-color-report-format`, #151)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum OscColorReportFormat {
@@ -485,6 +495,8 @@ pub struct Config {
     pub clipboard_write_limit_bytes: Option<usize>,
     /// 복사할 때 글자 바꾸기(Ghostty `clipboard-codepoint-map`, 여러 번, #176)
     pub clipboard_codepoint_map: Vec<CodepointRule>,
+    /// 글자 묶음의 폭을 세는 방식(Ghostty `grapheme-width-method`, #180). 새로 연 칸부터 적용
+    pub grapheme_width_method: GraphemeWidthMethod,
     /// 남는 자리를 네 변에 고르게(Ghostty `window-padding-balance`, #136)
     pub padding_balance: bool,
     /// 여백 색(Ghostty `window-padding-color`)
@@ -1020,6 +1032,7 @@ impl Default for Config {
             image_storage_limit: 320_000_000,
             clipboard_write_limit_bytes: Some(64 * 1024 * 1024),
             clipboard_codepoint_map: Vec::new(),
+            grapheme_width_method: GraphemeWidthMethod::Unicode,
             padding_balance: false,
             padding_color: PaddingColor::Background,
             cursor_opacity: 1.0,
@@ -2217,6 +2230,11 @@ impl Config {
                 "none" => self.osc_color_report_format = OscColorReportFormat::None,
                 "8-bit" => self.osc_color_report_format = OscColorReportFormat::Bit8,
                 "16-bit" => self.osc_color_report_format = OscColorReportFormat::Bit16,
+                _ => bad(warnings),
+            },
+            "grapheme-width-method" => match v {
+                "legacy" => self.grapheme_width_method = GraphemeWidthMethod::Legacy,
+                "unicode" => self.grapheme_width_method = GraphemeWidthMethod::Unicode,
                 _ => bad(warnings),
             },
             "cursor-click-to-move" => match parse_bool(v) {
@@ -3499,6 +3517,18 @@ mod tests {
             assert_eq!(c.warnings.len(), 1, "{bad}");
             assert!(c.clipboard_codepoint_map.is_empty(), "{bad}");
         }
+    }
+
+    #[test]
+    fn grapheme_width_method_like_ghostty() {
+        assert_eq!(Config::default().grapheme_width_method, GraphemeWidthMethod::Unicode);
+        let c = Config::from_text("grapheme-width-method = legacy\n", true);
+        assert_eq!(c.grapheme_width_method, GraphemeWidthMethod::Legacy);
+        let c = Config::from_text("grapheme-width-method = unicode\n", true);
+        assert_eq!(c.grapheme_width_method, GraphemeWidthMethod::Unicode);
+        let c = Config::from_text("grapheme-width-method = wide\n", true);
+        assert_eq!(c.warnings.len(), 1);
+        assert_eq!(c.grapheme_width_method, GraphemeWidthMethod::Unicode);
     }
 
     #[test]

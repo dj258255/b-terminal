@@ -1029,6 +1029,7 @@ impl App {
             vt_kam_allowed: self.config.vt_kam_allowed,
             vt_window_resize_allowed: self.config.vt_window_resize_allowed,
             image_storage_limit: Some(self.config.image_storage_limit),
+            grapheme_width_method: self.config.grapheme_width_method,
             ..options
         };
         // 칸 안의 btctl이 이 터미널과 이 칸을 찾게 한다
