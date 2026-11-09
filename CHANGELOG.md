@@ -4,6 +4,8 @@
 
 ## [아직 릴리스하지 않음]
 
+- 커서 키(Ghostty): `cursor-opacity`(0~1)로 커서를 칸 위에 섞어 그리고, `cursor-color`·`cursor-text`에 `cell-foreground`·`cell-background`를 주면 커서 칸의 색을 씁니다.
+
 ## [0.8.0] - 2026-11-09
 
 Ghostty 키 채우기. 크기 표시, 최소 명암비, 칸 제목 바꾸기, 화면을 파일로, 마우스·창의 작은 키. 추적 이슈 #121.

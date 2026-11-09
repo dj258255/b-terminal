@@ -41,7 +41,8 @@ config-file = ?~/.config/b-terminal/local   # ?가 붙으면 없어도 된다
 | `theme` | 테마 이름, 절대 경로, `light:…,dark:…` | 없음 | 찾는 곳: `~/.config/b-terminal/themes`, 그다음 앱에 넣어 둔 905개([assets/themes-README.md](../assets/themes-README.md), `b-terminal --list-themes`). 이름은 띄어쓰기·대소문자를 무시합니다(`Tokyo Night` = `TokyoNight`) |
 | `background` / `foreground` | `#rrggbb` | Ghostty 기본 | 테마 위에 덮습니다 |
 | `palette` | `N=#rrggbb`(0~15) | Ghostty 기본 | 16~255번은 xterm 표 |
-| `cursor-color` / `cursor-text` | `#rrggbb` | 글자색 / 바탕색 | |
+| `cursor-color` / `cursor-text` | `#rrggbb`, `cell-foreground`, `cell-background` | 글자색 / 바탕색 | `cell-*`는 커서 칸의 글자색·바탕색을 씁니다(예: `cursor-color = cell-foreground`, `cursor-text = cell-background`면 칸을 뒤집은 모양) |
+| `cursor-opacity` | `0`~`1` | `1` | 커서 불투명도. 1보다 작으면 칸 위에 섞어 그리고, 블록 커서 위 글자색도 그만큼 섞습니다 |
 | `selection-background` / `selection-foreground` | `#rrggbb` | 색 뒤집기 | |
 | `bold-is-bright` | `true` / `false` | `false` | Ghostty 기본과 같게 끔 |
 | `cursor-style` | `block` `bar` `underline` `block_hollow` | `block` | 프로그램이 바꾸면 그쪽이 이깁니다 |

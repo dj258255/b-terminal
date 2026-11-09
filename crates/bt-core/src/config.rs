@@ -125,6 +125,11 @@ pub struct Config {
     pub confirm_close: ConfirmClose,
     /// 퀵 터미널의 자리·크기·화면·자동 숨김·움직임(Ghostty `quick-terminal-*`, #110)
     pub quick: QuickTerminal,
+    /// 커서 불투명도(0~1, Ghostty `cursor-opacity`, #135)
+    pub cursor_opacity: f32,
+    /// 커서 색·커서 위 글자색을 칸 색에서(Ghostty `cursor-color = cell-foreground` 등). 없으면 테마 색
+    pub cursor_color_cell: Option<CellColor>,
+    pub cursor_text_cell: Option<CellColor>,
     /// 크기 표시(Ghostty `resize-overlay`·`-position`·`-duration`, #122)
     pub resize_overlay: ResizeOverlay,
     pub resize_overlay_position: OverlayPosition,
@@ -171,6 +176,23 @@ impl BellFeatures {
         }
         *self = next;
         true
+    }
+}
+
+/// 커서 색으로 쓸 칸의 색(Ghostty `cell-foreground`·`cell-background`)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CellColor {
+    Foreground,
+    Background,
+}
+
+impl CellColor {
+    fn parse(v: &str) -> Option<Self> {
+        match v {
+            "cell-foreground" => Some(CellColor::Foreground),
+            "cell-background" => Some(CellColor::Background),
+            _ => None,
+        }
     }
 }
 
@@ -414,6 +436,9 @@ impl Default for Config {
             bell_features: BellFeatures::default(),
             confirm_close: ConfirmClose::True,
             quick: QuickTerminal::default(),
+            cursor_opacity: 1.0,
+            cursor_color_cell: None,
+            cursor_text_cell: None,
             resize_overlay: ResizeOverlay::AfterFirst,
             resize_overlay_position: OverlayPosition::Center,
             resize_overlay_duration: std::time::Duration::from_millis(750),
@@ -678,8 +703,21 @@ impl Config {
         match e.key.as_str() {
             "background" => t.background = color().unwrap_or(t.background),
             "foreground" => t.foreground = color().unwrap_or(t.foreground),
-            "cursor-color" => t.cursor = color().unwrap_or(t.cursor),
-            "cursor-text" => t.cursor_text = color().unwrap_or(t.cursor_text),
+            // cell-foreground·cell-background(Ghostty 1.2): 커서 칸의 글자색·바탕색을 따른다(#135)
+            "cursor-color" => match CellColor::parse(v) {
+                Some(c) => self.cursor_color_cell = Some(c),
+                None => {
+                    self.cursor_color_cell = None;
+                    t.cursor = color().unwrap_or(t.cursor)
+                }
+            },
+            "cursor-text" => match CellColor::parse(v) {
+                Some(c) => self.cursor_text_cell = Some(c),
+                None => {
+                    self.cursor_text_cell = None;
+                    t.cursor_text = color().unwrap_or(t.cursor_text)
+                }
+            },
             "selection-background" => t.selection_background = color().unwrap_or(t.selection_background),
             "selection-foreground" => t.selection_foreground = color(),
             "palette" => {
@@ -860,6 +898,10 @@ impl Config {
             "window-save-state" => match v {
                 "default" | "always" => self.window_save_state = true,
                 "never" => self.window_save_state = false,
+                _ => bad(warnings),
+            },
+            "cursor-opacity" => match v.parse::<f32>() {
+                Ok(o) if o.is_finite() => self.cursor_opacity = o.clamp(0.0, 1.0),
                 _ => bad(warnings),
             },
             "resize-overlay" => match v {
@@ -1279,6 +1321,28 @@ mod tests {
         assert!(!Config::from_text("window-save-state = never\n", true).window_save_state);
         assert!(Config::from_text("window-save-state = always\n", true).window_save_state);
         assert_eq!(Config::from_text("window-save-state = maybe\n", true).warnings.len(), 1);
+    }
+
+    #[test]
+    fn cursor_keys_like_ghostty() {
+        let d = Config::default();
+        assert_eq!(
+            (d.cursor_opacity, d.cursor_color_cell, d.cursor_text_cell),
+            (1.0, None, None)
+        );
+        let c = Config::from_text(
+            "cursor-opacity = 0.4\ncursor-color = cell-foreground\ncursor-text = cell-background\n",
+            true,
+        );
+        assert!(c.warnings.is_empty(), "{:?}", c.warnings);
+        assert_eq!(c.cursor_opacity, 0.4);
+        assert_eq!(c.cursor_color_cell, Some(CellColor::Foreground));
+        assert_eq!(c.cursor_text_cell, Some(CellColor::Background));
+        // 나중에 색을 주면 칸 색 따르기를 끈다
+        let c = Config::from_text("cursor-color = cell-foreground\ncursor-color = #ff0000\n", true);
+        assert_eq!((c.cursor_color_cell, c.theme.cursor), (None, Rgb::new(255, 0, 0)));
+        assert_eq!(Config::from_text("cursor-opacity = 7\n", true).cursor_opacity, 1.0);
+        assert_eq!(Config::from_text("cursor-opacity = half\n", true).warnings.len(), 1);
     }
 
     #[test]

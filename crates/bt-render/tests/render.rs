@@ -78,6 +78,7 @@ fn render(fonts: &mut Fonts, bytes: &[u8], cols: u16, rows: u16, cursor: bool) -
             wide: s.cursor.wide,
             color: t.cursor,
             text_color: t.cursor_text,
+            opacity: 1.0,
         }),
         selection_bg: t.selection_background,
         selection_fg: t.selection_foreground,
@@ -250,6 +251,7 @@ fn view_of<'a>(s: &Screen, dc: &'a [DrawCell], t: &Theme) -> GridView<'a> {
             wide: s.cursor.wide,
             color: t.cursor,
             text_color: t.cursor_text,
+            opacity: 1.0,
         }),
         selection_bg: t.selection_background,
         selection_fg: t.selection_foreground,
@@ -635,4 +637,47 @@ fn minimum_contrast_turns_unreadable_text_white() {
     let (off, on) = (brightest(&mut f, 1.0), brightest(&mut f, 3.0));
     assert!(off <= 128 + 3 * 46, "끄면 짙은 파랑 그대로: {off}");
     assert!(on > 600, "켜면 흰 글자: {on}");
+}
+
+/// #135: cursor-opacity가 0.5면 블록 커서가 칸 바탕과 커서 색의 중간으로 칠해진다
+#[test]
+fn half_transparent_block_cursor_mixes_with_the_cell() {
+    let Some(mut f) = fonts(1.0) else { return };
+    let mut e = Emulator::new(GridSize::new(2, 1), Theme::default());
+    e.feed(b"\x1b[48;2;0;0;0m ");
+    let s = e.snapshot();
+    let dc = cells(&s);
+    let m = f.metrics();
+    let (w, h) = (m.width * 2, m.height);
+    let paint = |f: &mut Fonts, opacity: f32| {
+        let mut buf = vec![0u32; (w * h) as usize];
+        let t = Theme::default();
+        let view = GridView {
+            cols: s.cols,
+            rows: s.rows,
+            cells: &dc,
+            cursor: Some(DrawCursor {
+                col: 0,
+                row: 0,
+                style: CursorStyle::Block,
+                wide: false,
+                color: Rgb::new(200, 100, 0),
+                text_color: t.cursor_text,
+                opacity,
+            }),
+            selection_bg: t.selection_background,
+            selection_fg: t.selection_foreground,
+            preedit: None,
+            min_contrast: 1.0,
+        };
+        let mut c = Canvas::new(&mut buf, w, h);
+        draw_grid(&mut c, f, 0, 0, &view);
+        c.pixel(1, 1)
+    };
+    assert_eq!(paint(&mut f, 1.0), Rgb::new(200, 100, 0));
+    let half = paint(&mut f, 0.5);
+    assert!(
+        (half.r as i32 - 100).abs() <= 2 && (half.g as i32 - 50).abs() <= 2,
+        "{half:?}"
+    );
 }

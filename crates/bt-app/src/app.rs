@@ -129,6 +129,22 @@ impl Pane {
     }
 }
 
+/// 커서 색과 커서 위 글자색(#135): 설정이 칸 색을 따르라면 커서 칸의 글자색·바탕색, 아니면 테마 색
+fn cursor_colors(
+    color: Option<bt_core::config::CellColor>,
+    text: Option<bt_core::config::CellColor>,
+    theme: (bt_core::Rgb, bt_core::Rgb),
+    cell: (bt_core::Rgb, bt_core::Rgb),
+) -> (bt_core::Rgb, bt_core::Rgb) {
+    use bt_core::config::CellColor;
+    let pick = |c: Option<CellColor>, fallback| match c {
+        Some(CellColor::Foreground) => cell.0,
+        Some(CellColor::Background) => cell.1,
+        None => fallback,
+    };
+    (pick(color, theme.0), pick(text, theme.1))
+}
+
 /// 칸 제목(#124): 사람이 붙인 것 → 프로그램이 정한 것 → 전경 프로세스 이름 → "셸". 벨이 있으면 앞에 🔔
 fn title_of(user: Option<&str>, program: &str, fg: Option<&str>, bell: bool) -> String {
     let name = if let Some(u) = user.filter(|u| !u.is_empty()) {
@@ -2552,6 +2568,16 @@ impl App {
                     }
                 }
                 let hide = v.focused && blink_hidden;
+                let under = cells
+                    .get(screen.cursor.row * screen.cols + screen.cursor.col)
+                    .map(|c| (c.fg, c.bg))
+                    .unwrap_or((theme.foreground, theme.background));
+                let cursor_color = cursor_colors(
+                    self.config.cursor_color_cell,
+                    self.config.cursor_text_cell,
+                    (theme.cursor, theme.cursor_text),
+                    under,
+                );
                 let cursor = (screen.cursor.visible && !hide).then_some(DrawCursor {
                     col: screen.cursor.col,
                     row: screen.cursor.row,
@@ -2564,8 +2590,9 @@ impl App {
                         (true, CursorShape::HollowBlock) => CursorStyle::Hollow,
                     },
                     wide: screen.cursor.wide,
-                    color: theme.cursor,
-                    text_color: theme.cursor_text,
+                    color: cursor_color.0,
+                    text_color: cursor_color.1,
+                    opacity: self.config.cursor_opacity,
                 });
                 // IME 조합 글은 고른 칸에만 그린다(찾기 막대가 열려 있으면 막대에)
                 let pre = (v.focused && search.is_none() && palette.is_none() && !preedit.is_empty())
@@ -3556,6 +3583,21 @@ mod tests {
     use bt_term::search::SearchStatus;
 
     #[test]
+    fn cursor_can_take_the_cell_colors_like_ghostty() {
+        use bt_core::Rgb;
+        use bt_core::config::CellColor::{Background, Foreground};
+        let theme = (Rgb::new(1, 1, 1), Rgb::new(2, 2, 2));
+        let cell = (Rgb::new(200, 0, 0), Rgb::new(0, 0, 50));
+        assert_eq!(cursor_colors(None, None, theme, cell), theme);
+        // 흔한 짝: 커서는 칸 글자색, 그 위 글자는 칸 바탕색(뒤집어 보이게)
+        assert_eq!(
+            cursor_colors(Some(Foreground), Some(Background), theme, cell),
+            (cell.0, cell.1)
+        );
+        assert_eq!(cursor_colors(Some(Background), None, theme, cell), (cell.1, theme.1));
+    }
+
+    #[test]
     fn user_title_wins_over_program_title() {
         assert_eq!(title_of(None, "vim", Some("zsh"), false), "vim");
         assert_eq!(title_of(None, "", Some("zsh"), false), "zsh");
@@ -3714,6 +3756,7 @@ mod tests {
                 wide: false,
                 color: blank.fg,
                 text_color: blank.bg,
+                opacity: 1.0,
             })
         };
         let prev: PaneFrame = (1, cells.clone(), cur(0), None);
