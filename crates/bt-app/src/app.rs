@@ -217,6 +217,8 @@ struct Win {
     quick: bool,
     /// 퀵 터미널을 보인 때. 직후의 포커스 잃음(앱이 앞으로 오기 전)은 숨기지 않는다
     quick_shown: Option<Instant>,
+    /// 키 순서(`ctrl+a>n`)의 기다리는 앞 키들(#106)
+    keyseq: crate::keymap::Sequencer,
     /// 바뀐 것이 없어도 다음 그리기에서 창에 한 번 올린다(창이 다른 화면으로 옮겨 가면 그 화면의 색 공간으로, #97)
     force_present: bool,
     /// 들고 있는 프레임과 그 내용(바뀐 줄만 다시 그리려고, #40)
@@ -249,6 +251,7 @@ impl Win {
             palette: None,
             quick: false,
             quick_shown: None,
+            keyseq: Default::default(),
             force_present: false,
             frame: Vec::new(),
             last_frame: None,
@@ -1471,6 +1474,10 @@ impl App {
         // 키 묶음 경고도 설정 경고로 함께 보인다(btctl reload-config)
         next.warnings.extend(kw);
         self.keymap = keymap;
+        // 기다리던 키 순서는 옛 키 묶음의 것이라 버린다
+        for w in std::iter::once(&mut self.w).chain(&mut self.others) {
+            w.keyseq = Default::default();
+        }
         self.font_size = next.font_size;
         for t in &self.panes {
             t.session.set_theme(next.theme.clone());
@@ -2647,21 +2654,22 @@ impl ApplicationHandler<UserEvent> for App {
                 if self.palette_key(&event, event_loop) || self.search_key(&event) {
                     return;
                 }
-                let action = keys::trigger(&event, self.mods).and_then(|t| self.keymap.lookup(&t).cloned());
-                if let Some(action) = action {
-                    self.handle_action(action, event_loop);
-                    return;
-                }
+                // 키 묶음(키 순서 포함, #106): 앞 키는 기다리고, 순서가 깨지면 쌓은 키를 그대로 보낸다
+                let trigger = keys::trigger(&event, self.mods);
                 let modes = self.active_pane().map(|t| t.session.modes()).unwrap_or_default();
                 let meta = self.config.option_as_alt != bt_core::config::OptionAsAlt::None;
                 let bytes = keys::encode(&event, self.mods, modes, meta);
-                if self.config.mouse_hide_while_typing {
+                let out = self.w.keyseq.feed(&self.keymap, trigger, bytes);
+                if out.action.is_none() && self.config.mouse_hide_while_typing {
                     if let Some(g) = &self.w.gfx {
                         g.window.set_cursor_visible(false);
                     }
                 }
-                if !bytes.is_empty() {
-                    self.write_active(&bytes);
+                if !out.send.is_empty() {
+                    self.write_active(&out.send);
+                }
+                if let Some(action) = out.action {
+                    self.handle_action(action, event_loop);
                 }
             }
             WindowEvent::CursorMoved { position, .. } => {
