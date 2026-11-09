@@ -1204,8 +1204,14 @@ mod tests {
     fn minimum_contrast_key() {
         assert_eq!(Config::default().minimum_contrast, 1.0, "기본은 끔");
         assert_eq!(Config::from_text("minimum-contrast = 3\n", true).minimum_contrast, 3.0);
-        assert_eq!(Config::from_text("minimum-contrast = 50\n", true).minimum_contrast, 21.0);
-        assert_eq!(Config::from_text("minimum-contrast = 0.2\n", true).minimum_contrast, 1.0);
+        assert_eq!(
+            Config::from_text("minimum-contrast = 50\n", true).minimum_contrast,
+            21.0
+        );
+        assert_eq!(
+            Config::from_text("minimum-contrast = 0.2\n", true).minimum_contrast,
+            1.0
+        );
         let c = Config::from_text("minimum-contrast = high\n", true);
         assert_eq!((c.minimum_contrast, c.warnings.len()), (1.0, 1));
     }

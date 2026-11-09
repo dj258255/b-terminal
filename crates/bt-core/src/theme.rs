@@ -60,7 +60,11 @@ impl Rgb {
             return self;
         }
         let (white, black) = (Rgb::new(255, 255, 255), Rgb::new(0, 0, 0));
-        if white.contrast(bg) > black.contrast(bg) { white } else { black }
+        if white.contrast(bg) > black.contrast(bg) {
+            white
+        } else {
+            black
+        }
     }
 
     /// 두 색을 섞는다. t=0이면 self, t=1이면 other
