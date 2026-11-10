@@ -50,7 +50,14 @@ pub fn decide_kitty_read(
     if access == ClipboardAccess::Deny {
         return ClipVerdict::Deny;
     }
-    let access = if prompt_free { ClipboardAccess::Allow } else { access };
+    // 면제는 확인 막대만 건너뛴다. 보는 칸과 읽기 전용 검사는 그대로 지난다
+    if prompt_free {
+        return if watching && !readonly {
+            ClipVerdict::Allow
+        } else {
+            ClipVerdict::Deny
+        };
+    }
     decide_read(access, watching, readonly, bar_busy)
 }
 
@@ -264,6 +271,20 @@ mod tests {
         assert_eq!(decide_kitty_read(A::Ask, false, false, false, false), Deny);
         assert_eq!(decide_kitty_read(A::Ask, true, true, false, false), Deny);
         assert_eq!(decide_kitty_read(A::Ask, true, false, true, false), Deny);
+    }
+
+    #[test]
+    fn kitty_read_exemption_only_skips_the_bar_not_the_watching_and_readonly_checks() {
+        // 일회용 허가·목록 질의·빈 글도 보지 않는 칸과 읽기 전용 칸은 지나지 못한다
+        assert_eq!(decide_kitty_read(A::Ask, false, false, false, true), Deny);
+        assert_eq!(decide_kitty_read(A::Ask, true, true, false, true), Deny);
+        assert_eq!(decide_kitty_read(A::Allow, false, false, false, true), Deny);
+        assert_eq!(decide_kitty_read(A::Allow, true, true, false, true), Deny);
+        // 보는 칸이고 읽기 전용이 아니면 막대 없이 답한다(막대가 떠 있어도: 묻지 않으므로 막대와 부딪치지 않는다)
+        assert_eq!(decide_kitty_read(A::Ask, true, false, false, true), Allow);
+        assert_eq!(decide_kitty_read(A::Ask, true, false, true, true), Allow);
+        // 면제가 아닌 요청의 OSC 52 동작은 그대로다
+        assert_eq!(decide_kitty_read(A::Allow, false, false, false, false), Allow);
     }
 
     #[test]

@@ -264,7 +264,7 @@ fn paste_event_is_not_sent_while_mode_5522_is_off() {
 fn each_paste_event_mints_a_different_password() {
     let avail = vec!["text/plain".to_string()];
     let script = "stty raw -echo min 0 time 30; printf '\\033[?5522h'; \
-                  r=$(dd bs=2048 count=1 2>/dev/null | od -An -v -tx1 | tr -d ' \\n'); printf 'R[%s]\\n' \"$r\"; sleep 1";
+                  sleep 0.7; r=$(dd bs=2048 count=1 2>/dev/null | od -An -v -tx1 | tr -d ' \\n'); printf 'R[%s]\\n' \"$r\"; sleep 1";
     let (s, rx) = spawn(script, true, None);
     wait_mode(&s, true);
     assert!(s.kitty_paste_event(&avail));
