@@ -196,8 +196,8 @@ fn sum_rect<L: EventListener>(term: &Term<L>, rect: Option<Rect>, flags: Flags) 
 /// 지금 격자(보이는 화면, 스크롤백이 아님)에서 요청한 사각형의 체크섬을 구한다
 pub fn compute<L: EventListener>(term: &Term<L>, req: Request, flags: Flags) -> u16 {
     let margin = if term.mode().contains(TermMode::ORIGIN) {
-        // 왼쪽 여백(DECSLRM)은 alacritty에 없어 0이다
-        (term.scroll_region().start.0.max(0) as usize, 0)
+        // 원점 모드의 좌표는 위 여백(DECSTBM)과 왼쪽 여백(DECSLRM)에서 센다(#311)
+        (term.scroll_region().start.0.max(0) as usize, term.left_margin())
     } else {
         (0, 0)
     };
@@ -318,6 +318,23 @@ mod tests {
         assert_eq!(compute(&t, one, POS), b'd' as u16 + b'e' as u16 + b'f' as u16);
         // DECOM을 끄면 1행은 화면 맨 위다
         let t = term("abc\r\ndef\r\nghi\x1b[2;4r");
+        assert_eq!(compute(&t, one, POS), b'a' as u16 + b'b' as u16 + b'c' as u16);
+    }
+
+    #[test]
+    fn origin_mode_uses_the_left_margin_too() {
+        // DECSLRM 3~5열(0부터 2~4), DECOM 켬: 1열은 화면의 3열이다
+        let t = term("abcde\r\nfghij\x1b[?69h\x1b[3;5s\x1b[?6h");
+        let one = Request {
+            top: 1,
+            left: 1,
+            bottom: 1,
+            right: 3,
+            ..Request::default()
+        };
+        assert_eq!(compute(&t, one, POS), b'c' as u16 + b'd' as u16 + b'e' as u16);
+        // DECOM을 끄면 1열은 화면 맨 왼쪽이다
+        let t = term("abcde\r\nfghij\x1b[?69h\x1b[3;5s");
         assert_eq!(compute(&t, one, POS), b'a' as u16 + b'b' as u16 + b'c' as u16);
     }
 

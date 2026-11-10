@@ -5,8 +5,8 @@
 //! 만든 숫자뿐이고, XTGETTCAP 답의 이름은 우리가 아는 이름의 16진 표기뿐이다(ADR-023).
 
 use alacritty_terminal::event::EventListener;
-use alacritty_terminal::term::Term;
 use alacritty_terminal::term::cell::Flags as CellFlags;
+use alacritty_terminal::term::{Term, TermMode};
 use alacritty_terminal::vte::ansi::{Color, CursorShape};
 
 /// DECRQSS가 묻는 설정. 모르는 것은 `None`이고 `DCS 0 $ r ST`로 답한다
@@ -48,7 +48,12 @@ pub fn parse_decrqss(body: &[u8]) -> Option<Decrqss> {
 /// DECRQSS 답(`DCS 1 $ r 값 ST`, 모르면 `DCS 0 $ r ST`). 값은 모두 터미널의 상태에서 만든 숫자이고 요청 글은 들어가지 않는다
 pub fn encode_decrqss<L: EventListener>(q: Decrqss, term: &Term<L>) -> Vec<u8> {
     let value: Option<String> = match q {
-        Decrqss::None | Decrqss::Decslrm => None,
+        Decrqss::None => None,
+        // 좌우 여백 모드(69)가 켜져 있을 때만 `왼쪽;오른쪽s`(1부터, 둘 다 포함)로 답하고, 꺼져 있으면 DCS 0이다(Ghostty terminal_dcs.zig 297줄)(#311)
+        Decrqss::Decslrm => term
+            .mode()
+            .contains(TermMode::LEFT_RIGHT_MARGIN)
+            .then(|| format!("{};{}s", term.left_margin() + 1, term.right_margin() + 1)),
         Decrqss::Sgr => Some(format!("{}m", sgr_params(term))),
         Decrqss::Decscusr => {
             let style = term.cursor_style();
@@ -433,10 +438,18 @@ mod tests {
     }
 
     #[test]
-    fn decrqss_decslrm_is_unsupported() {
-        // 왼쪽·오른쪽 여백은 alacritty에 없다. Ghostty도 모드가 꺼져 있으면 DCS 0이다
+    fn decrqss_decslrm_answers_only_while_mode_69_is_on() {
+        // Ghostty: 모드가 꺼져 있으면 DCS 0, 켜져 있으면 `왼쪽;오른쪽s`(1부터, 둘 다 포함)
         assert_eq!(reply(Decrqss::Decslrm, ""), "\x1bP0$r\x1b\\");
-        assert_eq!(reply(Decrqss::Decslrm, "\x1b[?69h\x1b[3;70s"), "\x1bP0$r\x1b\\");
+        assert_eq!(reply(Decrqss::Decslrm, "\x1b[3;70s"), "\x1bP0$r\x1b\\");
+        assert_eq!(reply(Decrqss::Decslrm, "\x1b[?69h\x1b[3;70s"), "\x1bP1$r3;70s\x1b\\");
+        // 켠 채 여백을 정하지 않았으면 화면 전체
+        assert_eq!(reply(Decrqss::Decslrm, "\x1b[?69h"), "\x1bP1$r1;80s\x1b\\");
+        // 끄면 다시 DCS 0
+        assert_eq!(
+            reply(Decrqss::Decslrm, "\x1b[?69h\x1b[3;70s\x1b[?69l"),
+            "\x1bP0$r\x1b\\"
+        );
     }
 
     // ---- XTGETTCAP ----
@@ -523,7 +536,7 @@ mod tests {
 
     #[test]
     fn xtgettcap_does_not_list_what_bterminal_cannot_do() {
-        // DECSLRM 여백은 없어서 답하지 않는다
+        // DECSLRM 능력 이름(Enmg 등)은 아직 답하지 않는다(#311은 DECRQSS만 더했다)
         for name in ["Enmg", "Dsmg", "Cmg"] {
             assert_eq!(tcap(&hex(name)), "", "{name}");
         }

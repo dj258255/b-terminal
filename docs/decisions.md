@@ -582,7 +582,7 @@ macOS의 Carbon `EnableSecureEventInput`은 켜 있는 동안 키 입력이 다�
 ### Ghostty와 다른 점(알려진 것)
 - **쓰지 않은 칸**(#314에서 맞춤): alacritty 셀에 `Flags::WRITTEN`(`1 << 18`)을 더해 글자를 찍은 칸(`write_at_cursor`, DECALN)에만 켠다. 지우기(EL·ED·ECH)·밀기(ICH·DCH)·새 줄·탭이 지나간 칸에는 없다. XTCHECKSUM은 이 표시가 없는 칸을 Ghostty의 `!hasText()`처럼 쓰지 않은 칸으로 본다. 그래서 `printf ' '`로 찍은 빈칸은 쓴 칸이고(첫 칸이면 0x20을 더함), 색만 있는 지운 칸은 쓰지 않은 칸이다. 칸 크기와 `is_empty`는 그대로다. Ghostty는 셀의 내용 종류(`hasText`)로, 여기는 표시 한 비트로 가르므로 확인하지 못한 경로(DECCRA처럼 칸을 옮기는 쪽, 줄 크기 변경 뒤의 칸 합침)는 같은지 보지 않았다.
 - **깜박임·DECSCA 보호**(#314에서 맞춤): 속성 합에 보호 0x04와 깜박임 0x40을 더한다(Ghostty `attributes`와 같은 순서·값).
-- **왼쪽 여백(DECSLRM)**: alacritty에 없어 원점 모드의 왼쪽 여백은 0이다. 위 여백은 스크롤 영역에서 읽는다(vendor 패치 `Term::scroll_region()`, vendor/README.md).
+- **왼쪽 여백(DECSLRM)**: 원점 모드의 위 여백은 스크롤 영역에서(vendor 패치 `Term::scroll_region()`), 왼쪽 여백은 `Term::left_margin()`에서 읽는다(#311, vendor/README.md). 처음(#259)에는 alacritty에 좌우 여백이 없어 왼쪽 여백이 0이었다.
 - **DEC 선 그리기**: Ghostty도 변환된 코드포인트만 가지므로 같다(8비트 밖의 글자로 센다).
 - 결합 문자는 alacritty 격자의 `zerowidth`로 센다. Ghostty는 mode 2027(글자 묶음)일 때만 칸에 묶음을 두지만 b-terminal은 vendor 패치로 늘 묶는다(ADR-014).
 
@@ -633,7 +633,7 @@ macOS의 Carbon `EnableSecureEventInput`은 켜 있는 동안 키 입력이 다�
 
 ### 결정
 1. 답은 설정 없이 늘 켠다. Ghostty에도 설정이 없다. 답은 터미널이 가진 상태(커서 속성·모양·스크롤 영역)와 코드에 박은 목록에서 만든 숫자·16진수뿐이다.
-2. **DECRQSS 답에는 요청 글이 들어가지 않는다.** 요청은 `m`, `r`, `s`, ` q`(공백 다음 q) 넷만 알아보고 그 밖의 한두 바이트는 `DCS 0 $ r ST`(모르는 설정), 세 바이트 이상은 Ghostty처럼 잘못된 명령으로 보아 답하지 않는다. SGR은 `DCS 1 $ r 0;…m ST`, DECSCUSR는 `Ps SP q`(1~6), DECSTBM은 `위;아래 r`(1부터, 둘 다 포함), DECSLRM은 alacritty에 좌우 여백이 없어 늘 `DCS 0 $ r ST`다.
+2. **DECRQSS 답에는 요청 글이 들어가지 않는다.** 요청은 `m`, `r`, `s`, ` q`(공백 다음 q) 넷만 알아보고 그 밖의 한두 바이트는 `DCS 0 $ r ST`(모르는 설정), 세 바이트 이상은 Ghostty처럼 잘못된 명령으로 보아 답하지 않는다. SGR은 `DCS 1 $ r 0;…m ST`, DECSCUSR는 `Ps SP q`(1~6), DECSTBM은 `위;아래 r`(1부터, 둘 다 포함), DECSLRM은 처음에는 alacritty에 좌우 여백이 없어 늘 `DCS 0 $ r ST`였고, 지금(#311)은 69가 켜져 있을 때만 `DCS 1 $ r 왼쪽;오른쪽s ST`로 답한다.
 3. **XTGETTCAP 답의 이름은 요청에서 온 글이 아니다.** 요청 이름(16진수, 대소문자 무관)을 목록의 이름을 16진수로 바꾼 것과 비교해 같을 때만 그 목록의 이름과 값을 16진수로 만들어 답한다. 모르는 이름은 되돌려 넣지도 않고 Ghostty처럼 답도 하지 않는다(`DCS 0 + r`을 보내지 않는다). 형식은 이름마다 `DCS 1 + r 이름16진=값16진 ST`, 값 없는 불리언은 `DCS 1 + r 이름16진 ST`다(Ghostty `terminfo/Source.zig`의 원문으로 확인했다).
 4. 스캐너(`notify.rs`)가 OSC·APC와 따로 DCS를 모은다. 머리(매개변수·중간 바이트)는 열여섯 바이트까지, 중간 바이트가 `$`나 `+` 하나이고 끝 바이트가 `q`일 때만 본문을 모은다. 본문 상한은 모으기 전에 본다: DECRQSS 두 바이트, XTGETTCAP `MAX_XTGETTCAP`(4096바이트, Ghostty는 1MiB). 넘으면 그 DCS는 버리고 답하지 않는다. 한 요청에서 답하는 이름은 64개까지다(되풀이해 묻는 증폭을 막는다). 다른 DCS(sixel, tmux 패스스루 등)는 ST까지 흘려보내고 건드리지 않는다. tmux 패스스루 안의 겹친 ESC 때문에 안의 질의를 우리 것으로 읽지 않는다.
 5. 답은 읽기 전용 칸에서도 막지 않는다(ADR-018 결정 4).

@@ -52,6 +52,8 @@ fn is_regional_indicator(c: char) -> bool {
 
 /// b-terminal 패치(#180): 글자 묶음 폭 모드 번호(DECSET 2027).
 const GRAPHEME_CLUSTER_MODE: u16 = 2027;
+/// b-terminal(#311): DECLRMM(좌우 여백 모드)
+const LEFT_RIGHT_MARGIN_MODE: u16 = 69;
 /// b-terminal(#301): 키 입력 모드 번호. DECBKM, 키패드 NumLock 무시, Alt ESC 접두, Alt가 ESC 보냄
 const BACKARROW_KEY_MODE: u16 = 67;
 const IGNORE_KEYPAD_NUMLOCK_MODE: u16 = 1035;
@@ -123,6 +125,8 @@ bitflags! {
         const SEND_RECEIVE            = 1 << 46;
         // b-terminal(#312): xterm modifyOtherKeys 상태 2(`CSI > 4 ; 2 m`). 비트 50·51은 비워 둔다
         const MODIFY_OTHER_KEYS_2     = 1 << 49;
+        /// b-terminal(#311): DECLRMM(69), 좌우 여백 모드. 비트 47은 비워 둔다
+        const LEFT_RIGHT_MARGIN       = 1 << 48;
         // b-terminal(#300): X10 이벤트 모드(9)와 urxvt(1015)·SGR 픽셀(1016) 형식. 비트 35는 비워 둔다
         const MOUSE_X10               = 1 << 32;
         const URXVT_MOUSE             = 1 << 33;
@@ -358,6 +362,10 @@ pub struct Term<T> {
     /// Range going from top to bottom of the terminal, indexed from the top of the viewport.
     scroll_region: Range<Line>,
 
+    /// b-terminal(#311): 좌우 여백(DECSLRM). 0부터 세고 두 칸 모두 여백에 든다. 69가 꺼져 있거나 정하지 않았으면 (0, 마지막 칸)
+    margin_left: usize,
+    margin_right: usize,
+
     /// Modified terminal colors.
     colors: Colors,
 
@@ -478,7 +486,7 @@ impl<T> Term<T> {
     /// 커서 줄·칸은 그대로 돌려놓고 줄바꿈 대기는 푼다
     fn for_each_region_row(&mut self, mut op: impl FnMut(&mut Self)) {
         let line = self.grid.cursor.point.line;
-        if !self.scroll_region.contains(&line) {
+        if !self.scroll_region.contains(&line) || !self.cursor_in_margins() {
             return;
         }
         for l in self.scroll_region.start.0..self.scroll_region.end.0 {
@@ -532,6 +540,8 @@ impl<T> Term<T> {
         Term {
             inactive_grid,
             scroll_region,
+            margin_left: 0,
+            margin_right: num_cols.saturating_sub(1),
             event_proxy,
             damage,
             config,
@@ -811,6 +821,7 @@ impl<T> Term<T> {
 
         // Reset scrolling region.
         self.scroll_region = Line(0)..Line(self.screen_lines() as i32);
+        self.reset_margins(); // b-terminal(#311)
 
         // Resize damage information.
         self.damage.resize(num_cols, num_lines);
@@ -826,6 +837,159 @@ impl<T> Term<T> {
     #[inline]
     pub fn scroll_region(&self) -> &Range<Line> {
         &self.scroll_region
+    }
+
+    /// b-terminal(#311): 왼쪽 여백(0부터, 이 칸을 포함)
+    #[inline]
+    pub fn left_margin(&self) -> usize {
+        self.margin_left
+    }
+
+    /// b-terminal(#311): 오른쪽 여백(0부터, 이 칸을 포함)
+    #[inline]
+    pub fn right_margin(&self) -> usize {
+        self.margin_right
+    }
+
+    /// b-terminal(#311): 여백 기준이 아닌 화면 좌표로 가는 이동(CUU·CUD·CNL·CPL). 원점 모드에서는 위아래 여백 안에 머문다.
+    /// `goto`는 원점 모드에서 좌표에 여백을 더하므로 상대 이동에 쓰면 어긋난다
+    fn move_to_screen(&mut self, line: i32, col: usize) {
+        let (min_y, max_y) = if self.mode.contains(TermMode::ORIGIN) {
+            (self.scroll_region.start, self.scroll_region.end - 1)
+        } else {
+            (Line(0), self.bottommost_line())
+        };
+
+        self.damage_cursor();
+        self.grid.cursor.point.line = cmp::max(cmp::min(Line(line), max_y), min_y);
+        self.grid.cursor.point.column = cmp::min(Column(col), self.last_column());
+        self.damage_cursor();
+        self.grid.cursor.input_needs_wrap = false;
+    }
+
+    /// b-terminal(#311): 왼쪽으로 가는 이동(CUB·BS)이 멈추는 칸. 왼쪽 여백 안이면 그 여백, 여백보다 왼쪽이면 0이다
+    /// (Ghostty `cursorLeft`의 `left_margin`)
+    #[inline]
+    fn left_limit(&self) -> usize {
+        if self.grid.cursor.point.column.0 < self.margin_left { 0 } else { self.margin_left }
+    }
+
+    /// b-terminal(#311): 좌우 여백이 화면 전체 폭인가
+    #[inline]
+    fn margins_full(&self) -> bool {
+        self.margin_left == 0 && self.margin_right + 1 >= self.columns()
+    }
+
+    /// b-terminal(#311): 커서의 칸이 좌우 여백 안인가
+    #[inline]
+    fn cursor_in_margins(&self) -> bool {
+        let column = self.grid.cursor.point.column.0;
+        column >= self.margin_left && column <= self.margin_right
+    }
+
+    /// b-terminal(#311): `from..=to` 칸 사이에서 짝을 잃은 넓은 글자 반쪽(뒤 칸 없는 앞 칸, 앞 칸 없는 뒤 칸)을 빈 칸으로 만든다.
+    /// 여백 경계에서 칸을 밀거나 지운 뒤에 쓴다(Ghostty `rowWillBeShifted`·`insertBlanks`가 경계의 넓은 글자를 지우는 것과 같은 결과)
+    fn repair_wide_cells(&mut self, line: Line, from: usize, to: usize) {
+        let columns = self.columns();
+        let bg = self.grid.cursor.template.bg;
+        for c in from..=to.min(columns - 1) {
+            let flags = self.grid[line][Column(c)].flags;
+            let orphan = if flags.contains(Flags::WIDE_CHAR) {
+                c + 1 >= columns
+                    || !self.grid[line][Column(c + 1)].flags.contains(Flags::WIDE_CHAR_SPACER)
+            } else if flags.contains(Flags::WIDE_CHAR_SPACER) {
+                c == 0 || !self.grid[line][Column(c - 1)].flags.contains(Flags::WIDE_CHAR)
+            } else {
+                false
+            };
+            if orphan {
+                let wrap = flags.contains(Flags::WRAPLINE);
+                let cell = &mut self.grid[line][Column(c)];
+                *cell = bg.into();
+                cell.flags.set(Flags::WRAPLINE, wrap);
+            }
+        }
+    }
+
+    /// b-terminal(#311): 좌우 여백 사각형 안에서만 줄을 위(`down == false`, 지움)나 아래(삽입)로 `lines`줄 민다.
+    /// 여백 밖 칸과 줄 끝의 이어진 줄(WRAPLINE) 표시는 그대로 두고, 비는 칸은 현재 배경색으로 채운다.
+    /// 사각형은 `origin`부터 아래 여백까지다(Ghostty `insertLines`·`deleteLines`의 left_right 갈래)
+    fn scroll_rect(&mut self, origin: Line, lines: usize, down: bool) {
+        self.grapheme_anchor = None;
+        let columns = self.columns();
+        let left = self.margin_left;
+        let right = self.margin_right.min(columns - 1);
+        let top = origin.0;
+        let bottom = self.scroll_region.end.0;
+        let height = (bottom - top).max(0) as usize;
+        let count = cmp::min(lines, height);
+        if count == 0 {
+            return;
+        }
+        let count = count as i32;
+        let bg = self.grid.cursor.template.bg;
+
+        // 옮기기 전에 경계에 걸친 넓은 글자와 줄 끝의 앞 칸 자리 표시를 지운다(Ghostty `rowWillBeShifted`)
+        for y in top..bottom {
+            let line = Line(y);
+            if right + 1 == columns || left < 2 {
+                let last = &mut self.grid[line][Column(columns - 1)];
+                if last.flags.contains(Flags::LEADING_WIDE_CHAR_SPACER) {
+                    last.flags.remove(Flags::LEADING_WIDE_CHAR_SPACER);
+                }
+            }
+            if left > 0 && self.grid[line][Column(left)].flags.contains(Flags::WIDE_CHAR_SPACER) {
+                self.grid[line][Column(left - 1)] = bg.into();
+                self.grid[line][Column(left)] = bg.into();
+            }
+            if right + 1 < columns && self.grid[line][Column(right)].flags.contains(Flags::WIDE_CHAR) {
+                self.grid[line][Column(right)] = bg.into();
+                self.grid[line][Column(right + 1)] = bg.into();
+            }
+        }
+
+        let copy_row = |term: &mut Self, from: i32, to: i32| {
+            let cells: Vec<Cell> = term.grid[Line(from)][Column(left)..Column(right + 1)].to_vec();
+            for (i, cell) in cells.into_iter().enumerate() {
+                let dst = &mut term.grid[Line(to)][Column(left + i)];
+                let wrap = dst.flags.contains(Flags::WRAPLINE);
+                *dst = cell;
+                dst.flags.set(Flags::WRAPLINE, wrap);
+            }
+        };
+        let clear_row = |term: &mut Self, y: i32| {
+            for c in left..=right {
+                let dst = &mut term.grid[Line(y)][Column(c)];
+                let wrap = dst.flags.contains(Flags::WRAPLINE);
+                *dst = bg.into();
+                dst.flags.set(Flags::WRAPLINE, wrap);
+            }
+        };
+
+        if down {
+            for y in (top + count..bottom).rev() {
+                copy_row(self, y - count, y);
+            }
+            for y in top..top + count {
+                clear_row(self, y);
+            }
+        } else {
+            for y in top..bottom - count {
+                copy_row(self, y + count, y);
+            }
+            for y in bottom - count..bottom {
+                clear_row(self, y);
+            }
+        }
+
+        self.selection = None;
+        self.mark_fully_damaged();
+    }
+
+    /// b-terminal(#311): 좌우 여백을 화면 전체 폭으로 되돌린다
+    fn reset_margins(&mut self) {
+        self.margin_left = 0;
+        self.margin_right = self.columns().saturating_sub(1);
     }
 
     /// Swap primary and alternate screen buffer.
@@ -1108,7 +1272,10 @@ impl<T> Term<T> {
 
         trace!("Wrapping input");
 
-        self.grid.cursor_cell().flags.insert(Flags::WRAPLINE);
+        // b-terminal(#311): 이어진 줄 표시는 화면 끝 칸에서 넘어갈 때만 한다. 오른쪽 여백에서 넘어가면 표시하지 않는다(Ghostty `printWrap`)
+        if self.grid.cursor.point.column.0 + 1 == self.columns() {
+            self.grid.cursor_cell().flags.insert(Flags::WRAPLINE);
+        }
 
         if self.grid.cursor.point.line + 1 >= self.scroll_region.end {
             self.linefeed();
@@ -1117,7 +1284,8 @@ impl<T> Term<T> {
             self.grid.cursor.point.line += 1;
         }
 
-        self.grid.cursor.point.column = Column(0);
+        // 줄이 바뀌면 왼쪽 여백으로 간다
+        self.grid.cursor.point.column = Column(self.margin_left);
         self.grid.cursor.input_needs_wrap = false;
         self.damage_cursor();
     }
@@ -1137,6 +1305,9 @@ impl<T> Term<T> {
                 | TermMode::KEYBOARD_ACTION
                 | TermMode::MODIFY_OTHER_KEYS_2, // b-terminal(#312): Terminal.zig 5954줄
         );
+        // b-terminal(#311): 좌우 여백 모드(69)와 여백도 처음으로(Ghostty `softReset`의 reset_modes와 scrolling_region)
+        self.mode.remove(TermMode::LEFT_RIGHT_MARGIN);
+        self.reset_margins();
     }
 
     /// b-terminal(#302): 왼쪽으로 가는 길(Backspace·CUB)이 윗줄로 넘어가야 하는가. Ghostty `cursorLeft`의 `wrap_mode`:
@@ -1147,7 +1318,7 @@ impl<T> Term<T> {
     }
 
     /// b-terminal(#302): Ghostty `Terminal.cursorLeft`(2592~2696줄)의 역방향 줄바꿈 갈래.
-    /// 이 엔진에는 좌우 여백이 없어 왼쪽 여백은 0, 오른쪽 여백은 마지막 칸이다
+    /// b-terminal(#311): 좌우 여백을 따른다. 왼쪽 여백은 처음 칸이 여백보다 왼쪽이면 0이고, 윗줄로 넘어가면 오른쪽 여백 칸에 놓인다
     fn reverse_wrap_left(&mut self, count: usize) {
         let extended = self.mode.contains(TermMode::REVERSE_WRAP_EXTENDED);
         let cols = self.columns();
@@ -1165,19 +1336,21 @@ impl<T> Term<T> {
 
         let top = self.scroll_region.start.0;
         let bottom = self.scroll_region.end.0 - 1;
+        let right_margin = self.margin_right.min(cols - 1);
         let mut col = self.grid.cursor.point.column.0;
         let mut line = self.grid.cursor.point.line.0;
+        let left_margin = if col < self.margin_left { 0 } else { self.margin_left };
 
-        // 왼쪽 끝이고 확장이 아니면 위쪽 여백 위(또는 그 줄)에서는 여백의 왼쪽 위로 가서 끝낸다
-        if col == 0 && !extended && line <= top {
-            self.grid.cursor.point.column = Column(0);
+        // 왼쪽 여백이고 확장이 아니면 위쪽 여백 위(또는 그 줄)에서는 여백의 왼쪽 위로 가서 끝낸다
+        if col == left_margin && !extended && line <= top {
+            self.grid.cursor.point.column = Column(left_margin);
             self.grid.cursor.point.line = Line(top);
             self.damage_cursor();
             return;
         }
 
         loop {
-            let amount = col.min(count);
+            let amount = (col - left_margin).min(count);
             count -= amount;
             col -= amount;
             if count == 0 {
@@ -1187,8 +1360,8 @@ impl<T> Term<T> {
                 if !extended {
                     break;
                 }
-                // 맨 위에서 더 가면 아래 여백의 오른쪽 끝으로 돈다
-                col = cols - 1;
+                // 맨 위에서 더 가면 아래 여백의 오른쪽 여백 칸으로 돈다
+                col = right_margin;
                 line = bottom;
                 count -= 1;
                 continue;
@@ -1201,7 +1374,7 @@ impl<T> Term<T> {
             if !extended && !self.grid[Line(line - 1)][Column(cols - 1)].flags.contains(Flags::WRAPLINE) {
                 break;
             }
-            col = cols - 1;
+            col = right_margin;
             line -= 1;
             count -= 1;
         }
@@ -1469,21 +1642,23 @@ impl<T: EventListener> Handler for Term<T> {
             return;
         }
 
+        // b-terminal(#311): 오른쪽 여백 밖(오른쪽)에서 쓰면 화면 끝까지 쓴다. 줄을 바꾸면 안쪽의 오른쪽 여백으로 돌아온다
+        // (Ghostty `print`의 `right_limit`)
+        let columns = self.columns();
+        let margin_limit = self.margin_right.min(columns - 1) + 1;
+        let mut right_limit =
+            if self.grid.cursor.point.column.0 > self.margin_right { columns } else { margin_limit };
+
         // Move cursor to next line.
         if self.grid.cursor.input_needs_wrap {
             self.wrapline();
+            right_limit = margin_limit;
         }
 
         // If in insert mode, first shift cells to the right.
-        let columns = self.columns();
+        // b-terminal(#311): 오른쪽 여백까지만 민다. 여백 오른쪽이면 밀지 않는다(Ghostty `insertBlanks(width)`)
         if self.mode.contains(TermMode::INSERT) && self.grid.cursor.point.column + width < columns {
-            let line = self.grid.cursor.point.line;
-            let col = self.grid.cursor.point.column;
-            let row = &mut self.grid[line][..];
-
-            for col in (col.0..(columns - width)).rev() {
-                row.swap(col + width, col);
-            }
+            self.insert_blank(width);
         }
 
         // b-terminal 패치(#180): 이 글자가 놓인 첫 칸
@@ -1492,13 +1667,17 @@ impl<T: EventListener> Handler for Term<T> {
             base = self.grid.cursor.point;
             self.write_at_cursor(c);
         } else {
-            if self.grid.cursor.point.column + 1 >= columns {
+            if self.grid.cursor.point.column + 1 >= right_limit {
                 if self.mode.contains(TermMode::LINE_WRAP) {
                     // Insert placeholder before wide char if glyph does not fit in this row.
-                    self.grid.cursor.template.flags.insert(Flags::LEADING_WIDE_CHAR_SPACER);
+                    // b-terminal(#311): 앞 칸 자리 표시는 화면의 진짜 끝에서만 둔다. 오른쪽 여백에서는 일반 빈 칸이다(Ghostty print 2200줄)
+                    if right_limit == columns {
+                        self.grid.cursor.template.flags.insert(Flags::LEADING_WIDE_CHAR_SPACER);
+                    }
                     self.write_at_cursor(' ');
                     self.grid.cursor.template.flags.remove(Flags::LEADING_WIDE_CHAR_SPACER);
                     self.wrapline();
+                    right_limit = margin_limit;
                 } else {
                     // Prevent out of bounds crash when linewrapping is disabled.
                     self.grid.cursor.input_needs_wrap = true;
@@ -1520,7 +1699,7 @@ impl<T: EventListener> Handler for Term<T> {
             self.grid.cursor.template.flags.remove(Flags::WIDE_CHAR_SPACER);
         }
 
-        if self.grid.cursor.point.column + 1 < columns {
+        if self.grid.cursor.point.column + 1 < right_limit {
             self.grid.cursor.point.column += 1;
         } else {
             self.grid.cursor.input_needs_wrap = true;
@@ -1557,15 +1736,21 @@ impl<T: EventListener> Handler for Term<T> {
         let col = Column(col);
 
         trace!("Going to: line={line}, col={col}");
-        let (y_offset, max_y) = if self.mode.contains(TermMode::ORIGIN) {
-            (self.scroll_region.start, self.scroll_region.end - 1)
+        // b-terminal(#311): 원점 모드에서는 위아래 여백뿐 아니라 좌우 여백 기준이다(Ghostty `setCursorPos` 3235줄)
+        let (y_offset, max_y, x_offset, max_x) = if self.mode.contains(TermMode::ORIGIN) {
+            (
+                self.scroll_region.start,
+                self.scroll_region.end - 1,
+                self.margin_left,
+                self.margin_right.min(self.last_column().0),
+            )
         } else {
-            (Line(0), self.bottommost_line())
+            (Line(0), self.bottommost_line(), 0, self.last_column().0)
         };
 
         self.damage_cursor();
         self.grid.cursor.point.line = cmp::max(cmp::min(line + y_offset, max_y), Line(0));
-        self.grid.cursor.point.column = cmp::min(col, self.last_column());
+        self.grid.cursor.point.column = Column(cmp::min(col.saturating_add(x_offset), max_x));
         self.damage_cursor();
         self.grid.cursor.input_needs_wrap = false;
     }
@@ -1573,27 +1758,49 @@ impl<T: EventListener> Handler for Term<T> {
     #[inline]
     fn goto_line(&mut self, line: i32) {
         trace!("Going to line: {line}");
-        self.goto(line, self.grid.cursor.point.column.0)
+        // 원점 모드에서 칸은 왼쪽 여백 기준으로 바꿔 넘긴다(Ghostty `setCursorRow`)
+        let column = self.grid.cursor.point.column.0;
+        let column = if self.mode.contains(TermMode::ORIGIN) {
+            column.saturating_sub(self.margin_left)
+        } else {
+            column
+        };
+        self.goto(line, column)
     }
 
     #[inline]
     fn goto_col(&mut self, col: usize) {
         trace!("Going to column: {col}");
-        self.goto(self.grid.cursor.point.line.0, col)
+        // 원점 모드에서 줄은 위 여백 기준으로 바꿔 넘긴다(Ghostty `setCursorCol`)
+        let line = self.grid.cursor.point.line.0;
+        let line = if self.mode.contains(TermMode::ORIGIN) {
+            (line - self.scroll_region.start.0).max(0)
+        } else {
+            line
+        };
+        self.goto(line, col)
     }
 
     #[inline]
     fn insert_blank(&mut self, count: usize) {
         self.grapheme_anchor = None;
+        // b-terminal(#311): 대기 줄바꿈은 여백 검사보다 먼저 푼다(xterm, Ghostty `insertBlanks`)
+        self.grid.cursor.input_needs_wrap = false;
         let cursor = &self.grid.cursor;
         let bg = cursor.template.bg;
 
-        // Ensure inserting within terminal bounds
-        let count = cmp::min(count, self.columns() - cursor.point.column.0);
+        // 커서가 좌우 여백 밖이면 아무것도 안 한다
+        let right = self.margin_right.min(self.columns() - 1);
+        if cursor.point.column.0 < self.margin_left || cursor.point.column.0 > right {
+            return;
+        }
+
+        // Ensure inserting within the margins
+        let count = cmp::min(count, right + 1 - cursor.point.column.0);
 
         let source = cursor.point.column;
         let destination = cursor.point.column.0 + count;
-        let num_cells = self.columns() - destination;
+        let num_cells = right + 1 - destination;
 
         let line = cursor.point.line;
         self.damage.damage_line(line.0 as usize, 0, self.columns() - 1);
@@ -1609,6 +1816,7 @@ impl<T: EventListener> Handler for Term<T> {
         for cell in &mut row[source.0..destination] {
             *cell = bg.into();
         }
+        self.repair_wide_cells(line, source.0.saturating_sub(1), right + 1);
     }
 
     #[inline]
@@ -1617,7 +1825,7 @@ impl<T: EventListener> Handler for Term<T> {
 
         let line = self.grid.cursor.point.line - lines;
         let column = self.grid.cursor.point.column;
-        self.goto(line.0, column.0)
+        self.move_to_screen(line.0, column.0)
     }
 
     #[inline]
@@ -1626,13 +1834,19 @@ impl<T: EventListener> Handler for Term<T> {
 
         let line = self.grid.cursor.point.line + lines;
         let column = self.grid.cursor.point.column;
-        self.goto(line.0, column.0)
+        self.move_to_screen(line.0, column.0)
     }
 
     #[inline]
     fn move_forward(&mut self, cols: usize) {
         trace!("Moving forward: {cols}");
-        let last_column = cmp::min(self.grid.cursor.point.column + cols, self.last_column());
+        // b-terminal(#311): 오른쪽 여백 안이면 그 여백까지, 여백 오른쪽이면 화면 끝까지(Ghostty `cursorRight`)
+        let limit = if self.grid.cursor.point.column.0 <= self.margin_right {
+            Column(self.margin_right.min(self.last_column().0))
+        } else {
+            self.last_column()
+        };
+        let last_column = cmp::min(self.grid.cursor.point.column + cols, limit);
 
         let cursor_line = self.grid.cursor.point.line.0 as usize;
         self.damage.damage_line(cursor_line, self.grid.cursor.point.column.0, last_column.0);
@@ -1649,7 +1863,7 @@ impl<T: EventListener> Handler for Term<T> {
             self.reverse_wrap_left(cols);
             return;
         }
-        let column = self.grid.cursor.point.column.saturating_sub(cols);
+        let column = self.grid.cursor.point.column.saturating_sub(cols).max(self.left_limit());
 
         let cursor_line = self.grid.cursor.point.line.0 as usize;
         self.damage.damage_line(cursor_line, column, self.grid.cursor.point.column.0);
@@ -1738,7 +1952,16 @@ impl<T: EventListener> Handler for Term<T> {
             },
             6 => {
                 let pos = self.grid.cursor.point;
-                let text = format!("\x1b[{};{}R", pos.line + 1, pos.column + 1);
+                // b-terminal(#311): 원점 모드에서는 위 여백·왼쪽 여백 기준으로 답한다(Ghostty stream_handler.zig 854줄)
+                let (line, column) = if self.mode.contains(TermMode::ORIGIN) {
+                    (
+                        (pos.line.0 - self.scroll_region.start.0).max(0) as usize,
+                        pos.column.0.saturating_sub(self.margin_left),
+                    )
+                } else {
+                    (pos.line.0 as usize, pos.column.0)
+                };
+                let text = format!("\x1b[{};{}R", line + 1, column + 1);
                 self.event_proxy.send_event(Event::PtyWrite(text));
             },
             _ => debug!("unknown device status query: {arg}"),
@@ -1750,7 +1973,9 @@ impl<T: EventListener> Handler for Term<T> {
         trace!("Moving down and cr: {lines}");
 
         let line = self.grid.cursor.point.line + lines;
-        self.goto(line.0, 0)
+        let column = self.grid.cursor.point.column;
+        self.move_to_screen(line.0, column.0);
+        self.carriage_return();
     }
 
     #[inline]
@@ -1758,7 +1983,9 @@ impl<T: EventListener> Handler for Term<T> {
         trace!("Moving up and cr: {lines}");
 
         let line = self.grid.cursor.point.line - lines;
-        self.goto(line.0, 0)
+        let column = self.grid.cursor.point.column;
+        self.move_to_screen(line.0, column.0);
+        self.carriage_return();
     }
 
     /// Insert tab at cursor position.
@@ -1780,7 +2007,10 @@ impl<T: EventListener> Handler for Term<T> {
             }
 
             loop {
-                if (self.grid.cursor.point.column + 1) == self.columns() {
+                // b-terminal(#311): 오른쪽 여백까지만 간다. 여백 오른쪽에서는 움직이지 않는다(Ghostty `horizontalTab` 2958줄)
+                if (self.grid.cursor.point.column + 1) == self.columns()
+                    || self.grid.cursor.point.column.0 >= self.margin_right
+                {
                     break;
                 }
 
@@ -1804,7 +2034,7 @@ impl<T: EventListener> Handler for Term<T> {
             return;
         }
 
-        if self.grid.cursor.point.column > Column(0) {
+        if self.grid.cursor.point.column > Column(self.left_limit()) {
             let line = self.grid.cursor.point.line.0 as usize;
             let column = self.grid.cursor.point.column.0;
             self.grid.cursor.point.column -= 1;
@@ -1817,7 +2047,14 @@ impl<T: EventListener> Handler for Term<T> {
     #[inline]
     fn carriage_return(&mut self) {
         trace!("Carriage return");
-        let new_col = 0;
+        // b-terminal(#311): 원점 모드이거나 왼쪽 여백 오른쪽에 있으면 왼쪽 여백으로, 아니면 0으로(Ghostty `carriageReturn` 2516줄)
+        let new_col = if self.mode.contains(TermMode::ORIGIN)
+            || self.grid.cursor.point.column.0 >= self.margin_left
+        {
+            self.margin_left
+        } else {
+            0
+        };
         let line = self.grid.cursor.point.line.0 as usize;
         self.damage.damage_line(line, new_col, self.grid.cursor.point.column.0);
         self.grid.cursor.point.column = Column(new_col);
@@ -1830,7 +2067,11 @@ impl<T: EventListener> Handler for Term<T> {
         trace!("Linefeed");
         let next = self.grid.cursor.point.line + 1;
         if next == self.scroll_region.end {
-            self.scroll_up(1);
+            // b-terminal(#311): 아래 여백 줄에서는 커서가 좌우 여백 안일 때만 스크롤한다(밖이면 움직이지도 않는다).
+            // 좌우 여백이 있으면 사각형만 밀고 스크롤백에 쌓지 않는다(Ghostty `index` 3017줄)
+            if self.cursor_in_margins() {
+                self.scroll_up(1);
+            }
         } else if next < self.screen_lines() {
             self.damage_cursor();
             self.grid.cursor.point.line += 1;
@@ -1890,13 +2131,22 @@ impl<T: EventListener> Handler for Term<T> {
     #[inline]
     fn scroll_up(&mut self, lines: usize) {
         let origin = self.scroll_region.start;
-        self.scroll_up_relative(origin, lines);
+        // b-terminal(#311): 좌우 여백이 있으면 여백 사각형만 민다. 커서와 대기 줄바꿈은 그대로다(Ghostty `scrollUp` 3400줄)
+        if self.margins_full() {
+            self.scroll_up_relative(origin, lines);
+        } else {
+            self.scroll_rect(origin, lines, false);
+        }
     }
 
     #[inline]
     fn scroll_down(&mut self, lines: usize) {
         let origin = self.scroll_region.start;
-        self.scroll_down_relative(origin, lines);
+        if self.margins_full() {
+            self.scroll_down_relative(origin, lines);
+        } else {
+            self.scroll_rect(origin, lines, true);
+        }
     }
 
     #[inline]
@@ -1904,8 +2154,16 @@ impl<T: EventListener> Handler for Term<T> {
         trace!("Inserting blank {lines} lines");
 
         let origin = self.grid.cursor.point.line;
-        if self.scroll_region.contains(&origin) {
-            self.scroll_down_relative(origin, lines);
+        // b-terminal(#311): 커서가 좌우 여백 밖이면 아무것도 안 한다. 한 뒤에는 커서가 왼쪽 여백으로 가고 대기 줄바꿈이 풀린다
+        // (Ghostty `insertLines` 3699줄)
+        if self.scroll_region.contains(&origin) && self.cursor_in_margins() {
+            if self.margins_full() {
+                self.scroll_down_relative(origin, lines);
+            } else {
+                self.scroll_rect(origin, lines, true);
+            }
+            self.grid.cursor.point.column = Column(self.margin_left);
+            self.grid.cursor.input_needs_wrap = false;
         }
     }
 
@@ -1916,8 +2174,14 @@ impl<T: EventListener> Handler for Term<T> {
 
         trace!("Deleting {lines} lines");
 
-        if lines > 0 && self.scroll_region.contains(&origin) {
-            self.scroll_up_relative(origin, lines);
+        if lines > 0 && self.scroll_region.contains(&origin) && self.cursor_in_margins() {
+            if self.margins_full() {
+                self.scroll_up_relative(origin, lines);
+            } else {
+                self.scroll_rect(origin, lines, false);
+            }
+            self.grid.cursor.point.column = Column(self.margin_left);
+            self.grid.cursor.input_needs_wrap = false;
         }
     }
 
@@ -1953,27 +2217,29 @@ impl<T: EventListener> Handler for Term<T> {
         let cursor = &self.grid.cursor;
         let bg = cursor.template.bg;
 
-        // Ensure deleting within terminal bounds.
-        let count = cmp::min(count, columns);
-
+        // b-terminal(#311): 커서가 좌우 여백 밖이면 아무것도 안 하고, 안이면 오른쪽 여백까지만 당긴다(Ghostty `deleteChars`)
+        let right = self.margin_right.min(columns - 1);
         let start = cursor.point.column.0;
-        let end = cmp::min(start + count, columns - 1);
-        let num_cells = columns - end;
+        if start < self.margin_left || start > right {
+            return;
+        }
+
+        // Ensure deleting within the margins.
+        let count = cmp::min(count, right + 1 - start);
 
         let line = cursor.point.line;
         self.damage.damage_line(line.0 as usize, 0, self.columns() - 1);
         let row = &mut self.grid[line][..];
 
-        for offset in 0..num_cells {
-            row.swap(start + offset, end + offset);
+        for offset in 0..(right + 1 - start - count) {
+            row.swap(start + offset, start + count + offset);
         }
 
-        // Clear last `count` cells in the row. If deleting 1 char, need to delete
-        // 1 cell.
-        let end = columns - count;
-        for cell in &mut row[end..] {
+        // Clear the last `count` cells of the margin range.
+        for cell in &mut row[right + 1 - count..=right] {
             *cell = bg.into();
         }
+        self.repair_wide_cells(line, start.saturating_sub(1), right + 1);
     }
 
     #[inline]
@@ -1984,11 +2250,14 @@ impl<T: EventListener> Handler for Term<T> {
         for _ in 0..count {
             let mut col = self.grid.cursor.point.column;
 
-            if col == 0 {
+            // b-terminal(#311): 원점 모드에서는 왼쪽 여백이 한계다. 한계 안에서 탭 자리가 없으면 한계까지 간다(Ghostty `horizontalTabBack` 2971줄)
+            let left_limit = if self.mode.contains(TermMode::ORIGIN) { self.margin_left } else { 0 };
+            if col.0 <= left_limit {
                 break;
             }
 
-            for i in (0..(col.0)).rev() {
+            col = index::Column(left_limit);
+            for i in (left_limit..(self.grid.cursor.point.column.0)).rev() {
                 if self.tabs[index::Column(i)] {
                     col = index::Column(i);
                     break;
@@ -2010,11 +2279,12 @@ impl<T: EventListener> Handler for Term<T> {
         for _ in 0..count {
             let mut col = self.grid.cursor.point.column;
 
-            if col == num_cols - 1 {
+            // b-terminal(#311): 오른쪽 여백까지만 간다(Ghostty `horizontalTab`)
+            if col == num_cols - 1 || col.0 >= self.margin_right {
                 break;
             }
 
-            for i in col.0 + 1..num_cols {
+            for i in col.0 + 1..=self.margin_right.min(num_cols - 1) {
                 col = index::Column(i);
                 if self.tabs[col] {
                     break;
@@ -2283,6 +2553,7 @@ impl<T: EventListener> Handler for Term<T> {
         self.grid.reset();
         self.inactive_grid.reset();
         self.scroll_region = Line(0)..Line(self.screen_lines() as i32);
+        self.reset_margins(); // b-terminal(#311)
         self.tabs = TabStops::new(self.columns());
         self.title_stack = Vec::new();
         self.saved_private_modes.clear(); // b-terminal(#313)
@@ -2307,7 +2578,10 @@ impl<T: EventListener> Handler for Term<T> {
         trace!("Reversing index");
         // If cursor is at the top.
         if self.grid.cursor.point.line == self.scroll_region.start {
-            self.scroll_down(1);
+            // b-terminal(#311): 좌우 여백 밖이면 스크롤하지 않고 더 위로도 가지 않는다(Ghostty `reverseIndex` 3217줄)
+            if self.cursor_in_margins() {
+                self.scroll_down(1);
+            }
         } else {
             self.damage_cursor();
             self.grid.cursor.point.line = cmp::max(self.grid.cursor.point.line - 1, Line(0));
@@ -2391,6 +2665,11 @@ impl<T: EventListener> Handler for Term<T> {
             // b-terminal(#301): 키 입력 모드
             PrivateMode::Unknown(mode) if key_input_mode_bit(mode).is_some() => {
                 self.mode.insert(key_input_mode_bit(mode).unwrap_or(TermMode::NONE));
+                return;
+            },
+            // b-terminal(#311): DECLRMM
+            PrivateMode::Unknown(LEFT_RIGHT_MARGIN_MODE) => {
+                self.mode.insert(TermMode::LEFT_RIGHT_MARGIN);
                 return;
             },
             PrivateMode::Unknown(mode) => {
@@ -2497,6 +2776,12 @@ impl<T: EventListener> Handler for Term<T> {
                 self.mode.remove(key_input_mode_bit(mode).unwrap_or(TermMode::NONE));
                 return;
             },
+            // b-terminal(#311): DECLRMM을 끄면 여백을 화면 전체 폭으로 되돌린다(Ghostty stream_handler.zig 700줄)
+            PrivateMode::Unknown(LEFT_RIGHT_MARGIN_MODE) => {
+                self.mode.remove(TermMode::LEFT_RIGHT_MARGIN);
+                self.reset_margins();
+                return;
+            },
             PrivateMode::Unknown(mode) => {
                 debug!("Ignoring unknown mode {mode} in unset_private_mode");
                 return;
@@ -2538,7 +2823,11 @@ impl<T: EventListener> Handler for Term<T> {
             },
             NamedPrivateMode::AlternateScroll => self.mode.remove(TermMode::ALTERNATE_SCROLL),
             NamedPrivateMode::LineWrap => self.mode.remove(TermMode::LINE_WRAP),
-            NamedPrivateMode::Origin => self.mode.remove(TermMode::ORIGIN),
+            // b-terminal(#311): 끌 때도 커서를 원점으로 보낸다(Ghostty stream_handler.zig 698줄: 켜고 끌 때 `setCursorPos(1, 1)`)
+            NamedPrivateMode::Origin => {
+                self.mode.remove(TermMode::ORIGIN);
+                self.goto(0, 0);
+            },
             NamedPrivateMode::ColumnMode => self.deccolm(),
             NamedPrivateMode::BlinkingCursor => {
                 let style = self.cursor_style.get_or_insert(self.config.default_cursor_style);
@@ -2634,6 +2923,10 @@ impl<T: EventListener> Handler for Term<T> {
             // b-terminal(#301): 키 입력 모드
             PrivateMode::Unknown(mode) if key_input_mode_bit(mode).is_some() => {
                 self.mode.contains(key_input_mode_bit(mode).unwrap_or(TermMode::NONE)).into()
+            },
+            // b-terminal(#311)
+            PrivateMode::Unknown(LEFT_RIGHT_MARGIN_MODE) => {
+                self.mode.contains(TermMode::LEFT_RIGHT_MARGIN).into()
             },
             // b-terminal(#264): 모드 2048(크기 알림)의 DECRQM은 bt-term의 스캐너가 답한다. 여기서 0을 답하면 답이 둘 나간다
             // b-terminal(#296): 모드 2031(색 구성표 알림)도 같다
@@ -2785,6 +3078,33 @@ impl<T: EventListener> Handler for Term<T> {
         self.goto(0, 0);
     }
 
+    /// b-terminal(#311): `CSI s`. 69가 켜져 있으면 DECSLRM(0, 0)으로 여백을 되돌리고, 아니면 SCOSC(커서 저장)다
+    /// (Ghostty stream_handler.zig 309~315줄)
+    fn save_cursor_or_reset_margins(&mut self) {
+        if self.mode.contains(TermMode::LEFT_RIGHT_MARGIN) {
+            self.set_left_right_margins(0, 0);
+        } else {
+            self.save_cursor_position();
+        }
+    }
+
+    /// b-terminal(#311): DECSLRM. 69가 꺼져 있으면 아무것도 안 한다. 왼쪽이 오른쪽보다 작아야 하고, 정하면 커서를 원점으로 보낸다
+    /// (Ghostty Terminal.zig `setLeftAndRightMargin` 3346줄)
+    fn set_left_right_margins(&mut self, left: usize, right: usize) {
+        if !self.mode.contains(TermMode::LEFT_RIGHT_MARGIN) {
+            return;
+        }
+        let columns = self.columns();
+        let left = left.max(1);
+        let right = columns.min(if right == 0 { columns } else { right });
+        if left >= right {
+            return;
+        }
+        self.margin_left = left - 1;
+        self.margin_right = right - 1;
+        self.goto(0, 0);
+    }
+
     #[inline]
     fn set_keypad_application_mode(&mut self) {
         trace!("Setting keypad application mode");
@@ -2811,7 +3131,7 @@ impl<T: EventListener> Handler for Term<T> {
     }
 
     // b-terminal(#295): DECIC. 스크롤 영역 안 모든 줄의 커서 칸에 빈 칸을 넣는다. 커서가 영역 밖이면 아무것도 하지 않는다
-    // (좌우 여백이 없어 화면 전체 폭이 여백이다. Ghostty Terminal.zig insertColumns)
+    // (좌우 여백 안에서만 민다. b-terminal(#311). Ghostty Terminal.zig insertColumns)
     fn insert_columns(&mut self, count: usize) {
         self.for_each_region_row(|term| term.insert_blank(count));
     }
@@ -2824,23 +3144,29 @@ impl<T: EventListener> Handler for Term<T> {
     // b-terminal(#295): DECBI. 왼쪽 끝이면 열을 하나 넣고, 아니면 왼쪽으로 한 칸. 줄바꿈 대기는 풀린다
     fn back_index(&mut self) {
         self.grid.cursor.input_needs_wrap = false;
-        if self.grid.cursor.point.column == 0 {
+        // b-terminal(#311): 왼쪽 여백 칸이면 열을 넣고, 아니면 화면 왼쪽 끝까지 한 칸 왼쪽으로(여백을 넘어도 움직인다. Ghostty `backIndex` 4229줄)
+        if self.grid.cursor.point.column.0 == self.margin_left {
             self.insert_columns(1);
-        } else {
-            self.move_backward(1);
+        } else if self.grid.cursor.point.column.0 > 0 {
+            self.damage_cursor();
+            self.grid.cursor.point.column -= 1;
+            self.damage_cursor();
         }
     }
 
     // b-terminal(#295): DECFI. 오른쪽 끝이면 왼쪽 끝 열을 지우고 당기고, 아니면 오른쪽으로 한 칸. 줄바꿈 대기는 풀린다
     fn forward_index(&mut self) {
         self.grid.cursor.input_needs_wrap = false;
-        if self.grid.cursor.point.column == self.last_column() {
+        // b-terminal(#311): 오른쪽 여백 칸이면 왼쪽 여백 열을 지우고 당기며, 아니면 화면 오른쪽 끝까지 한 칸 오른쪽으로(Ghostty `forwardIndex` 4248줄)
+        if self.grid.cursor.point.column.0 == self.margin_right.min(self.last_column().0) {
             let column = self.grid.cursor.point.column;
-            self.grid.cursor.point.column = Column(0);
+            self.grid.cursor.point.column = Column(self.margin_left);
             self.delete_columns(1);
             self.grid.cursor.point.column = column;
-        } else {
-            self.move_forward(1);
+        } else if self.grid.cursor.point.column < self.last_column() {
+            self.damage_cursor();
+            self.grid.cursor.point.column += 1;
+            self.damage_cursor();
         }
     }
 

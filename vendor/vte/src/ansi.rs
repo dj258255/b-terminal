@@ -600,6 +600,14 @@ pub trait Handler {
     /// Save current cursor position.
     fn save_cursor_position(&mut self) {}
 
+    /// b-terminal(#311): `CSI s`(매개변수 없음). 좌우 여백 모드(69)가 켜져 있으면 여백을 되돌리고(DECSLRM), 아니면 커서를 저장한다(SCOSC)
+    fn save_cursor_or_reset_margins(&mut self) {
+        self.save_cursor_position();
+    }
+
+    /// b-terminal(#311): DECSLRM(`CSI Pl ; Pr s`). 1부터 세고 0은 기본값(왼쪽 1, 오른쪽 끝)이다
+    fn set_left_right_margins(&mut self, _left: usize, _right: usize) {}
+
     /// Restore cursor position.
     fn restore_cursor_position(&mut self) {}
 
@@ -1904,7 +1912,19 @@ where
                 }
             },
             ('S', []) => handler.scroll_up(next_param_or(1) as usize),
-            ('s', []) => handler.save_cursor_position(),
+            // b-terminal(#311): 매개변수가 없거나 0 하나면 DECSLRM(69 켬)이나 SCOSC(69 끔)을 Term이 가른다. vte는 `CSI s`와
+            // `CSI 0 s`를 구분하지 못한다(둘 다 `[0]`). 값이 있으면 DECSLRM(69가 꺼져 있으면 Term이 버린다)
+            ('s', []) => {
+                let left = next_param_or(0) as usize;
+                if params.len() <= 1 && left == 0 {
+                    handler.save_cursor_or_reset_margins();
+                } else if params.len() <= 2 {
+                    let right = next_param_or(0) as usize;
+                    handler.set_left_right_margins(left, right);
+                } else {
+                    unhandled!();
+                }
+            },
             // b-terminal(#313): XTSAVE
             ('s', [b'?']) => {
                 for param in params_iter.map(|param| param[0]) {
