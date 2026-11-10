@@ -12,7 +12,7 @@ use crate::vte::ansi::{Color, Hyperlink as VteHyperlink, NamedColor};
 bitflags! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
     #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-    pub struct Flags: u16 {
+    pub struct Flags: u32 { // b-terminal(#287): u16이 가득 차 u32로 넓힘
         const INVERSE                   = 0b0000_0000_0000_0001;
         const BOLD                      = 0b0000_0000_0000_0010;
         const ITALIC                    = 0b0000_0000_0000_0100;
@@ -32,6 +32,8 @@ bitflags! {
         const DASHED_UNDERLINE          = 0b0100_0000_0000_0000;
         /// b-terminal(#277): 윗줄(SGR 53)
         const OVERLINE                  = 0b1000_0000_0000_0000;
+        /// b-terminal(#287): 깜박임(SGR 5·6). DECRQSS 답에만 쓰고 그리지 않는다(Ghostty도 글자 깜박임은 그리지 않음)
+        const BLINK                     = 0b1_0000_0000_0000_0000;
         const ALL_UNDERLINES            = Self::UNDERLINE.bits() | Self::DOUBLE_UNDERLINE.bits()
                                         | Self::UNDERCURL.bits() | Self::DOTTED_UNDERLINE.bits()
                                         | Self::DASHED_UNDERLINE.bits();

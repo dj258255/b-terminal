@@ -2048,6 +2048,9 @@ impl<T: EventListener> Handler for Term<T> {
             // b-terminal(#277): 윗줄(SGR 53·55). Reset은 `flags = empty()`가 함께 지운다
             Attr::Overline => cursor.template.flags.insert(Flags::OVERLINE),
             Attr::CancelOverline => cursor.template.flags.remove(Flags::OVERLINE),
+            // b-terminal(#287): 깜박임(SGR 5·6, Ghostty는 둘 다 blink). 25가 끈다. 그리지는 않는다
+            Attr::BlinkSlow | Attr::BlinkFast => cursor.template.flags.insert(Flags::BLINK),
+            Attr::CancelBlink => cursor.template.flags.remove(Flags::BLINK),
             _ => {
                 debug!("Term got unhandled attr: {attr:?}");
             },

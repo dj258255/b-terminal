@@ -961,6 +961,19 @@ fn decrqss_sgr_answers_with_the_cursor_attributes() {
 }
 
 #[test]
+fn decrqss_sgr_reports_blink() {
+    // #287: 5는 53 뒤·7 앞. 25가 끄면 사라진다
+    assert_eq!(
+        checksum_reply("\\033[1;5;7m", "\\033P$qm\\033\\\\", false, none),
+        hex_of("\x1bP1$r0;1;5;7m\x1b\\")
+    );
+    assert_eq!(
+        checksum_reply("\\033[5;25m", "\\033P$qm\\033\\\\", false, none),
+        hex_of("\x1bP1$r0m\x1b\\")
+    );
+}
+
+#[test]
 fn decrqss_cursor_style_and_scroll_region() {
     // DECSCUSR 6(가는 막대, 깜박이지 않음)
     assert_eq!(

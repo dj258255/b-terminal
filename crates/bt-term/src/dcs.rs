@@ -109,6 +109,10 @@ fn sgr_params<L: EventListener>(term: &Term<L>) -> String {
     if f.contains(CellFlags::OVERLINE) {
         add("53");
     }
+    // 깜박임(5)은 53 뒤, 반전(7) 앞(#287). SGR 6도 Ghostty처럼 5로 답한다
+    if f.contains(CellFlags::BLINK) {
+        add("5");
+    }
     if f.contains(CellFlags::INVERSE) {
         add("7");
     }
@@ -352,15 +356,15 @@ mod tests {
 
     #[test]
     fn decrqss_sgr_largest_fits_the_limit() {
-        // Ghostty "DECRQSS largest response fits fixed buffer": 깜박임은 alacritty 격자에 없어 뺐다.
+        // Ghostty "DECRQSS largest response fits fixed buffer": 5는 53 뒤, 7 앞이다(#287).
         // 윗줄(53)은 Ghostty terminal_dcs.zig처럼 밑줄(4) 바로 뒤에 온다(#277)
         let r = reply(
             Decrqss::Sgr,
-            "\x1b[1;2;3;4:5;53;7;8;9m\x1b[38;2;255;255;255m\x1b[48;2;255;255;255m\x1b[58;2;255;255;255m",
+            "\x1b[1;2;3;4:5;53;5;7;8;9m\x1b[38;2;255;255;255m\x1b[48;2;255;255;255m\x1b[58;2;255;255;255m",
         );
         assert_eq!(
             r,
-            "\x1bP1$r0;1;2;3;4:5;53;7;8;9;38:2::255:255:255;48:2::255:255:255;58:2::255:255:255m\x1b\\"
+            "\x1bP1$r0;1;2;3;4:5;53;5;7;8;9;38:2::255:255:255;48:2::255:255:255;58:2::255:255:255m\x1b\\"
         );
         assert!(r.len() <= 256);
     }
@@ -373,6 +377,39 @@ mod tests {
         assert_eq!(reply(Decrqss::Sgr, "\x1b[3;53;9m"), "\x1bP1$r0;3;53;9m\x1b\\");
         assert_eq!(reply(Decrqss::Sgr, "\x1b[53;55m"), "\x1bP1$r0m\x1b\\");
         assert_eq!(reply(Decrqss::Sgr, "\x1b[53;0m"), "\x1bP1$r0m\x1b\\");
+    }
+
+    #[test]
+    fn decrqss_sgr_reports_blink_between_overline_and_inverse() {
+        // #287: Ghostty terminal_dcs.zig 순서는 4, 53, 5, 7. 6(빠른 깜박임)도 5로 답한다(terminal_sgr.zig)
+        assert_eq!(reply(Decrqss::Sgr, "\x1b[5m"), "\x1bP1$r0;5m\x1b\\");
+        assert_eq!(reply(Decrqss::Sgr, "\x1b[1;5;7m"), "\x1bP1$r0;1;5;7m\x1b\\");
+        assert_eq!(reply(Decrqss::Sgr, "\x1b[7;53;5;4m"), "\x1bP1$r0;4;53;5;7m\x1b\\");
+        assert_eq!(reply(Decrqss::Sgr, "\x1b[6m"), "\x1bP1$r0;5m\x1b\\");
+        // 25와 0은 끈다. 25 뒤에는 5가 없다
+        assert_eq!(reply(Decrqss::Sgr, "\x1b[1;5;25m"), "\x1bP1$r0;1m\x1b\\");
+        assert_eq!(reply(Decrqss::Sgr, "\x1b[5;0m"), "\x1bP1$r0m\x1b\\");
+    }
+
+    #[test]
+    fn engine_keeps_blink_in_the_cursor_template() {
+        use alacritty_terminal::term::cell::Flags;
+        let blink = |s: &str| term(s).grid().cursor.template.flags.contains(Flags::BLINK);
+        assert!(blink("\x1b[5m"));
+        assert!(blink("\x1b[6m"));
+        assert!(!blink("\x1b[5;25m"));
+        assert!(!blink("\x1b[5;0m"));
+        assert!(!blink("\x1b[5m\x1b[m"));
+        // 쓴 칸에도 남는다
+        let t = term("\x1b[5ma");
+        assert!(
+            t.grid()[alacritty_terminal::index::Point::new(
+                alacritty_terminal::index::Line(0),
+                alacritty_terminal::index::Column(0)
+            )]
+            .flags
+            .contains(Flags::BLINK)
+        );
     }
 
     #[test]
