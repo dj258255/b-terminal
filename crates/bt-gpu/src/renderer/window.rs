@@ -1,6 +1,6 @@
 //! 창 surface에 합친 프레임을 올린다(ADR-036). 안전한 API만 쓴다: `Instance::create_surface`에 `'static` 창 대상을 넘긴다
 
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use bt_render::Fonts;
 
@@ -239,7 +239,8 @@ impl GpuRenderer {
         self.timings.gpu_ms = t.elapsed().as_secs_f64() * 1000.0;
         if let Some(w) = self.window.as_mut() {
             w.visibility = w.visibility.after(true, false);
-            w.pacer.record_present(Instant::now());
+            w.pacer
+                .record_present_waited(Instant::now(), Duration::from_secs_f64(acquire_ms / 1000.0));
         }
         PresentOutcome::Presented
     }
