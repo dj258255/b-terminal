@@ -494,6 +494,191 @@ fn only_the_real_screen_edge_marks_the_line_as_wrapped() {
     assert_eq!(t.cursor(), (3, 1));
 }
 
+// ---- 4단계: ICH·DCH·IL·DL·DECIC·DECDC와 삽입 모드 ----
+
+#[test]
+fn il_with_only_a_left_margin_moves_cells_inside_the_margin() {
+    // "setLeftAndRightMargin left only": 왼쪽 여백 2(1), 커서 (줄 1, 열 2)
+    let mut t = T::new(5, 5);
+    abc_def_ghi(&mut t);
+    t.feed("\x1b[?69h\x1b[2s\x1b[1;2H\x1b[L");
+    assert_eq!(t.plain(), "A\nDBC\nGEF\n HI");
+}
+
+#[test]
+fn il_with_left_and_right_margins() {
+    // "setLeftAndRightMargin left and right": 여백 1~2열
+    let mut t = T::new(5, 5);
+    abc_def_ghi(&mut t);
+    t.feed("\x1b[?69h\x1b[1;2s\x1b[1;2H\x1b[L");
+    assert_eq!(t.plain(), "  C\nABF\nDEI\nGH");
+}
+
+#[test]
+fn il_in_a_left_right_scroll_region() {
+    // "insertLines left/right scroll region"
+    let mut t = T::new(6, 5);
+    t.feed("ABC123\r\nDEF456\r\nGHI789");
+    t.feed("\x1b[?69h\x1b[2;4s\x1b[2;2H\x1b[L");
+    assert_eq!(t.plain(), "ABC123\nD   56\nGEF489\n HI7");
+}
+
+#[test]
+fn dl_in_a_left_right_scroll_region() {
+    // scrollUp/deleteLines 시험과 같은 값: 여백 안에서만 위로 당긴다
+    let mut t = T::new(6, 5);
+    t.feed("ABC123\r\nDEF456\r\nGHI789");
+    t.feed("\x1b[?69h\x1b[2;4s\x1b[1;2H\x1b[M");
+    assert_eq!(t.plain(), "AEF423\nDHI756\nG   89");
+}
+
+#[test]
+fn il_and_dl_move_the_cursor_to_the_left_margin_and_clear_the_pending_wrap() {
+    // insertLines·deleteLines의 defer: `cursorAbsolute(left, start_y)`와 pending_wrap 해제
+    let mut t = T::new(6, 5);
+    t.feed("\x1b[?69h\x1b[3;5s\x1b[1;5HZ");
+    assert!(t.wrap_pending());
+    t.feed("\x1b[L");
+    assert_eq!(t.cursor(), (2, 0));
+    assert!(!t.wrap_pending());
+    t.feed("\x1b[1;4H\x1b[M");
+    assert_eq!(t.cursor(), (2, 0));
+    // 여백을 쓰지 않아도 왼쪽 끝(0열)으로 간다
+    let mut t = T::new(6, 5);
+    t.feed("ab\r\ncd\x1b[2;2H\x1b[L");
+    assert_eq!(t.cursor(), (0, 1));
+}
+
+#[test]
+fn il_and_dl_do_nothing_outside_the_margins() {
+    // 커서가 좌우 여백 밖이면 아무것도 안 하고 커서도 그대로다
+    let mut t = T::new(6, 5);
+    abc_def_ghi(&mut t);
+    t.feed("\x1b[?69h\x1b[3;5s\x1b[2;1H\x1b[L\x1b[M");
+    assert_eq!(t.plain(), "ABC\nDEF\nGHI");
+    assert_eq!(t.cursor(), (0, 1));
+}
+
+#[test]
+fn ich_inside_the_margins_shifts_up_to_the_right_margin() {
+    // "insertBlanks inside left/right scroll region"
+    let mut t = T::new(5, 3);
+    t.feed("\x1b[?69h\x1b[3;5s\x1b[1;3HABC\x1b[1;3H\x1b[2@X");
+    assert_eq!(t.plain(), "  X A");
+}
+
+#[test]
+fn ich_outside_the_margins_does_nothing_but_clears_the_pending_wrap() {
+    // "insertBlanks outside left/right scroll region"
+    let mut t = T::new(6, 3);
+    t.feed("\x1b[?69h\x1b[3;5s\x1b[1;6HZ");
+    assert!(t.wrap_pending());
+    t.feed("\x1b[2@");
+    assert!(!t.wrap_pending());
+    t.feed("X");
+    assert_eq!(t.plain(), "     X");
+}
+
+#[test]
+fn ich_with_a_large_count_clears_up_to_the_right_margin_in_origin_mode() {
+    // "insertBlanks left/right scroll region large count"
+    let mut t = T::new(10, 3);
+    t.feed("\x1b[?69h\x1b[3;5s\x1b[?6h\x1b[1;1H\x1b[140@X");
+    assert_eq!(t.plain(), "  X");
+}
+
+#[test]
+fn ich_does_not_leave_half_a_wide_char_at_the_right_margin() {
+    // "insertBlanks wide char straddling right margin": 머리가 여백 끝, 뒤 칸이 여백 밖
+    let mut t = T::new(10, 3);
+    t.feed("ABCD\u{6a4b}\x1b[?69h\x1b[1;5s\x1b[1;3H\x1b[@");
+    assert_eq!(t.plain(), "AB CD");
+}
+
+#[test]
+fn ich_clearing_the_whole_region_also_clears_a_wide_tail_beyond_the_margin() {
+    // "insertBlanks wide char spacer_tail orphaned beyond right margin"
+    let mut t = T::new(10, 3);
+    t.feed("\u{4e2d}\u{4e2d}\u{4e2d}\u{4e2d}\u{4e2d}\x1b[?69h\x1b[1;9sa\x1b[8@");
+    assert_eq!(t.plain(), "a");
+}
+
+#[test]
+fn dch_inside_the_margins() {
+    // "deleteChars inside scroll region"
+    let mut t = T::new(6, 3);
+    t.feed("ABC123\x1b[?69h\x1b[3;5s\x1b[1;4H\x1b[P");
+    assert_eq!(t.plain(), "ABC2 3");
+}
+
+#[test]
+fn dch_outside_the_margins_does_nothing() {
+    // "deleteChars outside scroll region": 대기 줄바꿈도 그대로
+    let mut t = T::new(6, 3);
+    t.feed("ABC123\x1b[?69h\x1b[3;5s\x1b[1;6H");
+    t.feed("\x1b[2P");
+    assert_eq!(t.plain(), "ABC123");
+}
+
+#[test]
+fn dch_splitting_a_wide_char_across_the_right_margin_clears_it() {
+    // "deleteChars wide char across right margin": xterm은 반쪽을 남기지만 Ghostty는 지운다
+    let mut t = T::new(8, 3);
+    t.feed("123456\u{6a4b}\x1b[?69h\x1b[2;7s\x1b[1;2H\x1b[P");
+    assert_eq!(t.plain(), "13456");
+}
+
+#[test]
+fn ech_ignores_the_margins() {
+    // Terminal.zig `eraseChars`는 오른쪽 여백이 아니라 줄 끝(cols)을 쓴다
+    let mut t = T::new(8, 3);
+    t.feed("ABCDEFGH\x1b[?69h\x1b[1;4s\x1b[1;3H\x1b[9X");
+    assert_eq!(t.plain(), "AB");
+}
+
+#[test]
+fn insert_mode_shifts_only_up_to_the_right_margin() {
+    // print의 `insertBlanks(width)`: 오른쪽 여백까지만 민다
+    let mut t = T::new(8, 3);
+    t.feed("abcdefgh\x1b[?69h\x1b[3;6s\x1b[4h\x1b[1;3HX");
+    assert_eq!(t.plain(), "abXcdegh");
+}
+
+#[test]
+fn insert_mode_right_of_the_right_margin_does_not_shift() {
+    let mut t = T::new(8, 3);
+    t.feed("abcdefgh\x1b[?69h\x1b[3;5s\x1b[4h\x1b[1;7HX");
+    assert_eq!(t.plain(), "abcdefXh");
+}
+
+#[test]
+fn decic_with_margins() {
+    // "insertColumns with margins"
+    let mut t = T::new(7, 4);
+    t.feed("abcdefg\r\nABCDEFG\r\nzyxwvut\r\nZYXWVUT");
+    t.feed("\x1b[?69h\x1b[2;5s\x1b[2;3r\x1b[2;3H\x1b['}");
+    assert_eq!(t.plain(), "abcdefg\nAB CDFG\nzy xwut\nZYXWVUT");
+    assert_eq!(t.cursor(), (2, 1), "커서는 그대로");
+}
+
+#[test]
+fn decic_outside_the_scrolling_region_does_nothing() {
+    // "insertColumns outside scrolling region"
+    let mut t = T::new(7, 4);
+    t.feed("abcdefg\r\nABCDEFG");
+    t.feed("\x1b[?69h\x1b[2;5s\x1b[1;1H\x1b[10'}\x1b[3;4r\x1b[1;3H\x1b[10'}");
+    assert_eq!(t.plain(), "abcdefg\nABCDEFG");
+}
+
+#[test]
+fn decdc_with_margins() {
+    // "deleteColumns with margins"
+    let mut t = T::new(7, 4);
+    t.feed("abcdefg\r\nABCDEFG\r\nzyxwvut\r\nZYXWVUT");
+    t.feed("\x1b[?69h\x1b[2;5s\x1b[2;3r\x1b[2;3H\x1b[99'~");
+    assert_eq!(t.plain(), "abcdefg\nAB   FG\nzy   ut\nZYXWVUT");
+}
+
 // ---- DECRQM(PTY) ----
 
 fn sh(script: &str, size: GridSize) -> (Session, Receiver<SessionEvent>) {

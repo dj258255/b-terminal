@@ -486,7 +486,7 @@ impl<T> Term<T> {
     /// 커서 줄·칸은 그대로 돌려놓고 줄바꿈 대기는 푼다
     fn for_each_region_row(&mut self, mut op: impl FnMut(&mut Self)) {
         let line = self.grid.cursor.point.line;
-        if !self.scroll_region.contains(&line) {
+        if !self.scroll_region.contains(&line) || !self.cursor_in_margins() {
             return;
         }
         for l in self.scroll_region.start.0..self.scroll_region.end.0 {
@@ -872,6 +872,118 @@ impl<T> Term<T> {
     #[inline]
     fn left_limit(&self) -> usize {
         if self.grid.cursor.point.column.0 < self.margin_left { 0 } else { self.margin_left }
+    }
+
+    /// b-terminal(#311): 좌우 여백이 화면 전체 폭인가
+    #[inline]
+    fn margins_full(&self) -> bool {
+        self.margin_left == 0 && self.margin_right + 1 >= self.columns()
+    }
+
+    /// b-terminal(#311): 커서의 칸이 좌우 여백 안인가
+    #[inline]
+    fn cursor_in_margins(&self) -> bool {
+        let column = self.grid.cursor.point.column.0;
+        column >= self.margin_left && column <= self.margin_right
+    }
+
+    /// b-terminal(#311): `from..=to` 칸 사이에서 짝을 잃은 넓은 글자 반쪽(뒤 칸 없는 앞 칸, 앞 칸 없는 뒤 칸)을 빈 칸으로 만든다.
+    /// 여백 경계에서 칸을 밀거나 지운 뒤에 쓴다(Ghostty `rowWillBeShifted`·`insertBlanks`가 경계의 넓은 글자를 지우는 것과 같은 결과)
+    fn repair_wide_cells(&mut self, line: Line, from: usize, to: usize) {
+        let columns = self.columns();
+        let bg = self.grid.cursor.template.bg;
+        for c in from..=to.min(columns - 1) {
+            let flags = self.grid[line][Column(c)].flags;
+            let orphan = if flags.contains(Flags::WIDE_CHAR) {
+                c + 1 >= columns
+                    || !self.grid[line][Column(c + 1)].flags.contains(Flags::WIDE_CHAR_SPACER)
+            } else if flags.contains(Flags::WIDE_CHAR_SPACER) {
+                c == 0 || !self.grid[line][Column(c - 1)].flags.contains(Flags::WIDE_CHAR)
+            } else {
+                false
+            };
+            if orphan {
+                let wrap = flags.contains(Flags::WRAPLINE);
+                let cell = &mut self.grid[line][Column(c)];
+                *cell = bg.into();
+                cell.flags.set(Flags::WRAPLINE, wrap);
+            }
+        }
+    }
+
+    /// b-terminal(#311): 좌우 여백 사각형 안에서만 줄을 위(`down == false`, 지움)나 아래(삽입)로 `lines`줄 민다.
+    /// 여백 밖 칸과 줄 끝의 이어진 줄(WRAPLINE) 표시는 그대로 두고, 비는 칸은 현재 배경색으로 채운다.
+    /// 사각형은 `origin`부터 아래 여백까지다(Ghostty `insertLines`·`deleteLines`의 left_right 갈래)
+    fn scroll_rect(&mut self, origin: Line, lines: usize, down: bool) {
+        self.grapheme_anchor = None;
+        let columns = self.columns();
+        let left = self.margin_left;
+        let right = self.margin_right.min(columns - 1);
+        let top = origin.0;
+        let bottom = self.scroll_region.end.0;
+        let height = (bottom - top).max(0) as usize;
+        let count = cmp::min(lines, height);
+        if count == 0 {
+            return;
+        }
+        let count = count as i32;
+        let bg = self.grid.cursor.template.bg;
+
+        // 옮기기 전에 경계에 걸친 넓은 글자와 줄 끝의 앞 칸 자리 표시를 지운다(Ghostty `rowWillBeShifted`)
+        for y in top..bottom {
+            let line = Line(y);
+            if right + 1 == columns || left < 2 {
+                let last = &mut self.grid[line][Column(columns - 1)];
+                if last.flags.contains(Flags::LEADING_WIDE_CHAR_SPACER) {
+                    last.flags.remove(Flags::LEADING_WIDE_CHAR_SPACER);
+                }
+            }
+            if left > 0 && self.grid[line][Column(left)].flags.contains(Flags::WIDE_CHAR_SPACER) {
+                self.grid[line][Column(left - 1)] = bg.into();
+                self.grid[line][Column(left)] = bg.into();
+            }
+            if right + 1 < columns && self.grid[line][Column(right)].flags.contains(Flags::WIDE_CHAR) {
+                self.grid[line][Column(right)] = bg.into();
+                self.grid[line][Column(right + 1)] = bg.into();
+            }
+        }
+
+        let copy_row = |term: &mut Self, from: i32, to: i32| {
+            let cells: Vec<Cell> = term.grid[Line(from)][Column(left)..Column(right + 1)].to_vec();
+            for (i, cell) in cells.into_iter().enumerate() {
+                let dst = &mut term.grid[Line(to)][Column(left + i)];
+                let wrap = dst.flags.contains(Flags::WRAPLINE);
+                *dst = cell;
+                dst.flags.set(Flags::WRAPLINE, wrap);
+            }
+        };
+        let clear_row = |term: &mut Self, y: i32| {
+            for c in left..=right {
+                let dst = &mut term.grid[Line(y)][Column(c)];
+                let wrap = dst.flags.contains(Flags::WRAPLINE);
+                *dst = bg.into();
+                dst.flags.set(Flags::WRAPLINE, wrap);
+            }
+        };
+
+        if down {
+            for y in (top + count..bottom).rev() {
+                copy_row(self, y - count, y);
+            }
+            for y in top..top + count {
+                clear_row(self, y);
+            }
+        } else {
+            for y in top..bottom - count {
+                copy_row(self, y + count, y);
+            }
+            for y in bottom - count..bottom {
+                clear_row(self, y);
+            }
+        }
+
+        self.selection = None;
+        self.mark_fully_damaged();
     }
 
     /// b-terminal(#311): 좌우 여백을 화면 전체 폭으로 되돌린다
@@ -1542,14 +1654,9 @@ impl<T: EventListener> Handler for Term<T> {
         }
 
         // If in insert mode, first shift cells to the right.
+        // b-terminal(#311): 오른쪽 여백까지만 민다. 여백 오른쪽이면 밀지 않는다(Ghostty `insertBlanks(width)`)
         if self.mode.contains(TermMode::INSERT) && self.grid.cursor.point.column + width < columns {
-            let line = self.grid.cursor.point.line;
-            let col = self.grid.cursor.point.column;
-            let row = &mut self.grid[line][..];
-
-            for col in (col.0..(columns - width)).rev() {
-                row.swap(col + width, col);
-            }
+            self.insert_blank(width);
         }
 
         // b-terminal 패치(#180): 이 글자가 놓인 첫 칸
@@ -1675,15 +1782,23 @@ impl<T: EventListener> Handler for Term<T> {
     #[inline]
     fn insert_blank(&mut self, count: usize) {
         self.grapheme_anchor = None;
+        // b-terminal(#311): 대기 줄바꿈은 여백 검사보다 먼저 푼다(xterm, Ghostty `insertBlanks`)
+        self.grid.cursor.input_needs_wrap = false;
         let cursor = &self.grid.cursor;
         let bg = cursor.template.bg;
 
-        // Ensure inserting within terminal bounds
-        let count = cmp::min(count, self.columns() - cursor.point.column.0);
+        // 커서가 좌우 여백 밖이면 아무것도 안 한다
+        let right = self.margin_right.min(self.columns() - 1);
+        if cursor.point.column.0 < self.margin_left || cursor.point.column.0 > right {
+            return;
+        }
+
+        // Ensure inserting within the margins
+        let count = cmp::min(count, right + 1 - cursor.point.column.0);
 
         let source = cursor.point.column;
         let destination = cursor.point.column.0 + count;
-        let num_cells = self.columns() - destination;
+        let num_cells = right + 1 - destination;
 
         let line = cursor.point.line;
         self.damage.damage_line(line.0 as usize, 0, self.columns() - 1);
@@ -1699,6 +1814,7 @@ impl<T: EventListener> Handler for Term<T> {
         for cell in &mut row[source.0..destination] {
             *cell = bg.into();
         }
+        self.repair_wide_cells(line, source.0.saturating_sub(1), right + 1);
     }
 
     #[inline]
@@ -2023,8 +2139,16 @@ impl<T: EventListener> Handler for Term<T> {
         trace!("Inserting blank {lines} lines");
 
         let origin = self.grid.cursor.point.line;
-        if self.scroll_region.contains(&origin) {
-            self.scroll_down_relative(origin, lines);
+        // b-terminal(#311): 커서가 좌우 여백 밖이면 아무것도 안 한다. 한 뒤에는 커서가 왼쪽 여백으로 가고 대기 줄바꿈이 풀린다
+        // (Ghostty `insertLines` 3699줄)
+        if self.scroll_region.contains(&origin) && self.cursor_in_margins() {
+            if self.margins_full() {
+                self.scroll_down_relative(origin, lines);
+            } else {
+                self.scroll_rect(origin, lines, true);
+            }
+            self.grid.cursor.point.column = Column(self.margin_left);
+            self.grid.cursor.input_needs_wrap = false;
         }
     }
 
@@ -2035,8 +2159,14 @@ impl<T: EventListener> Handler for Term<T> {
 
         trace!("Deleting {lines} lines");
 
-        if lines > 0 && self.scroll_region.contains(&origin) {
-            self.scroll_up_relative(origin, lines);
+        if lines > 0 && self.scroll_region.contains(&origin) && self.cursor_in_margins() {
+            if self.margins_full() {
+                self.scroll_up_relative(origin, lines);
+            } else {
+                self.scroll_rect(origin, lines, false);
+            }
+            self.grid.cursor.point.column = Column(self.margin_left);
+            self.grid.cursor.input_needs_wrap = false;
         }
     }
 
@@ -2072,27 +2202,29 @@ impl<T: EventListener> Handler for Term<T> {
         let cursor = &self.grid.cursor;
         let bg = cursor.template.bg;
 
-        // Ensure deleting within terminal bounds.
-        let count = cmp::min(count, columns);
-
+        // b-terminal(#311): 커서가 좌우 여백 밖이면 아무것도 안 하고, 안이면 오른쪽 여백까지만 당긴다(Ghostty `deleteChars`)
+        let right = self.margin_right.min(columns - 1);
         let start = cursor.point.column.0;
-        let end = cmp::min(start + count, columns - 1);
-        let num_cells = columns - end;
+        if start < self.margin_left || start > right {
+            return;
+        }
+
+        // Ensure deleting within the margins.
+        let count = cmp::min(count, right + 1 - start);
 
         let line = cursor.point.line;
         self.damage.damage_line(line.0 as usize, 0, self.columns() - 1);
         let row = &mut self.grid[line][..];
 
-        for offset in 0..num_cells {
-            row.swap(start + offset, end + offset);
+        for offset in 0..(right + 1 - start - count) {
+            row.swap(start + offset, start + count + offset);
         }
 
-        // Clear last `count` cells in the row. If deleting 1 char, need to delete
-        // 1 cell.
-        let end = columns - count;
-        for cell in &mut row[end..] {
+        // Clear the last `count` cells of the margin range.
+        for cell in &mut row[right + 1 - count..=right] {
             *cell = bg.into();
         }
+        self.repair_wide_cells(line, start.saturating_sub(1), right + 1);
     }
 
     #[inline]
