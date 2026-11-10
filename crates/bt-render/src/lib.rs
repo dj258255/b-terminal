@@ -10,6 +10,7 @@ pub mod proportional;
 pub mod scrollbar;
 mod sfnt;
 pub mod text;
+pub mod underline;
 
 pub use canvas::{Canvas, cells_alpha};
 pub use font::{
@@ -18,3 +19,4 @@ pub use font::{
 };
 pub use grid::{CursorStyle, DrawCell, DrawCursor, GridView, draw_grid, draw_grid_rows, lock_rects};
 pub use text::{char_cells, draw_text, text_cells, truncate};
+pub use underline::Underline;

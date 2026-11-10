@@ -4,6 +4,7 @@ use bt_core::Rgb;
 
 use crate::canvas::Canvas;
 use crate::font::{CellMetrics, FontStyle, Fonts};
+use crate::underline::Underline;
 
 /// 렌더러가 그리는 셀 한 칸. bt-term에 기대지 않으려고 따로 둔다(앱이 옮겨 담는다)
 #[derive(Debug, Clone, PartialEq)]
@@ -13,7 +14,7 @@ pub struct DrawCell {
     pub bg: Rgb,
     pub bold: bool,
     pub italic: bool,
-    pub underline: bool,
+    pub underline: Underline,
     pub strike: bool,
     pub wide: bool,
     pub spacer: bool,
@@ -25,6 +26,8 @@ pub struct DrawCell {
     pub cluster_cells: u16,
     /// 윗줄(SGR 53, #277). 글자색 줄을 칸 맨 위에 긋는다
     pub overline: bool,
+    /// 밑줄 색(SGR 58). 없으면 글자색(#276)
+    pub underline_color: Option<Rgb>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -184,6 +187,24 @@ fn draw_rows(
             } else {
                 fg
             };
+            // 밑줄은 글자보다 먼저 그려 글자 밑에 깐다(Ghostty와 같다. 색 밑줄이 내려가는 획과 겹쳐도 글자가 읽힌다, #276)
+            if cell.underline != Underline::None {
+                let color = cell.underline_color.unwrap_or(cell.fg);
+                // 넓은 글자는 칸마다 따로 긋는다(Ghostty도 칸마다 밑줄 조각을 얹는다)
+                for k in 0..span as i32 {
+                    crate::underline::draw(
+                        canvas,
+                        cell.underline,
+                        px + k * cw,
+                        py,
+                        m.width,
+                        m.height,
+                        m.underline_offset,
+                        m.underline_thickness,
+                        color,
+                    );
+                }
+            }
             // 윗줄(#277): 글자 앞에 글자색으로 긋는다(Ghostty generic.zig 3277줄, 밑줄 → 윗줄 → 글자 순서)
             if cell.overline {
                 canvas.fill_rect(
@@ -209,15 +230,6 @@ fn draw_rows(
                 }
                 (None, Some(g)) => canvas.draw_glyph(px, py + m.baseline as i32, &g, fg),
                 (None, None) => draw_cell_text(canvas, fonts, m, px, py, span, cell.ch, fg, cell.bold, cell.italic),
-            }
-            if cell.underline {
-                canvas.fill_rect(
-                    px,
-                    py + m.underline_offset as i32,
-                    m.width * span,
-                    m.underline_thickness,
-                    cell.fg,
-                );
             }
             if cell.strike {
                 canvas.fill_rect(

@@ -27,6 +27,10 @@ impl CellFlags {
     pub const MATCH_CURRENT: Self = Self(1 << 11);
     /// 윗줄(SGR 53, #277)
     pub const OVERLINE: Self = Self(1 << 12);
+    /// 밑줄 모양(SGR 4:2·4:4·4:5). 곧은 밑줄 `UNDERLINE`도 함께 켜진다. 물결은 `UNDERCURL`(#276)
+    pub const DOUBLE_UNDERLINE: Self = Self(1 << 13);
+    pub const DOTTED_UNDERLINE: Self = Self(1 << 14);
+    pub const DASHED_UNDERLINE: Self = Self(1 << 15);
 
     pub const fn empty() -> Self {
         Self(0)
@@ -59,6 +63,8 @@ pub struct Cell {
     pub flags: CellFlags,
     /// 프로그램이 OSC 8로 단 링크(`Screen::links`의 자리)
     pub link: Option<u32>,
+    /// 밑줄 색(SGR 58)을 RGB로 푼 것. 없으면 글자색(#276)
+    pub underline_color: Option<Rgb>,
 }
 
 impl Cell {
@@ -70,6 +76,7 @@ impl Cell {
             bg,
             flags: CellFlags::empty(),
             link: None,
+            underline_color: None,
         }
     }
 }

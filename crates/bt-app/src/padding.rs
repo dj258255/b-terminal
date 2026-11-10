@@ -130,7 +130,7 @@ mod tests {
             bg,
             bold: false,
             italic: false,
-            underline: false,
+            underline: bt_render::Underline::None,
             strike: false,
             wide: false,
             spacer: false,
@@ -139,6 +139,7 @@ mod tests {
             cluster: None,
             cluster_cells: 0,
             overline: false,
+            underline_color: None,
         }
     }
 

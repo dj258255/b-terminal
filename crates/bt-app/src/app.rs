@@ -4417,7 +4417,7 @@ impl App {
                     for sp in &hit.spans {
                         for c in sp.start..sp.end.min(screen.cols) {
                             if let Some(cell) = cells.get_mut(sp.row * screen.cols + c) {
-                                cell.underline = true;
+                                cell.underline = bt_render::Underline::Single;
                             }
                         }
                     }
@@ -4931,6 +4931,26 @@ fn clears_selection_after_copy(clear_on_copy: bool) -> bool {
     clear_on_copy
 }
 
+/// 칸의 밑줄 모양(#276). 숨김(SGR 8) 칸은 꾸밈도 그리지 않는다(Ghostty가 xterm을 따른다)
+fn underline_of(f: CellFlags) -> bt_render::Underline {
+    use bt_render::Underline;
+    if f.contains(CellFlags::HIDDEN) {
+        Underline::None
+    } else if f.contains(CellFlags::UNDERCURL) {
+        Underline::Curly
+    } else if f.contains(CellFlags::DOUBLE_UNDERLINE) {
+        Underline::Double
+    } else if f.contains(CellFlags::DOTTED_UNDERLINE) {
+        Underline::Dotted
+    } else if f.contains(CellFlags::DASHED_UNDERLINE) {
+        Underline::Dashed
+    } else if f.contains(CellFlags::UNDERLINE) {
+        Underline::Single
+    } else {
+        Underline::None
+    }
+}
+
 /// 화면 값을 렌더러 셀로. 찾기에 맞은 칸은 여기서 색을 바꾼다(`search-*` 색, 지금 고른 곳은 `search-selected-*`)
 pub fn to_draw_cells(s: &Screen, theme: &bt_core::Theme) -> Vec<DrawCell> {
     let mut cells: Vec<DrawCell> = s
@@ -4950,7 +4970,7 @@ pub fn to_draw_cells(s: &Screen, theme: &bt_core::Theme) -> Vec<DrawCell> {
                 bg,
                 bold: c.flags.contains(CellFlags::BOLD),
                 italic: c.flags.contains(CellFlags::ITALIC),
-                underline: c.flags.contains(CellFlags::UNDERLINE) || c.flags.contains(CellFlags::UNDERCURL),
+                underline: underline_of(c.flags),
                 strike: c.flags.contains(CellFlags::STRIKE),
                 wide: c.flags.contains(CellFlags::WIDE),
                 spacer: c.flags.contains(CellFlags::SPACER),
@@ -4959,6 +4979,8 @@ pub fn to_draw_cells(s: &Screen, theme: &bt_core::Theme) -> Vec<DrawCell> {
                 cluster: None,
                 cluster_cells: 0,
                 overline: c.flags.contains(CellFlags::OVERLINE),
+                // 숨김(SGR 8) 칸은 밑줄 색도 그리지 않는다. 색은 bt-term이 팔레트·OSC 4를 반영해 RGB로 푼 것
+                underline_color: c.underline_color.filter(|_| !c.flags.contains(CellFlags::HIDDEN)),
             }
         })
         .collect();
@@ -6239,7 +6261,7 @@ mod tests {
             bg: bt_core::Rgb::new(0, 0, 0),
             bold: false,
             italic: false,
-            underline: false,
+            underline: bt_render::Underline::None,
             strike: false,
             wide: false,
             spacer: false,
@@ -6248,6 +6270,7 @@ mod tests {
             cluster: None,
             cluster_cells: 0,
             overline: false,
+            underline_color: None,
         };
         let (cols, rows) = (4, 3);
         let cells = vec![blank.clone(); cols * rows];
