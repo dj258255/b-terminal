@@ -1318,7 +1318,7 @@ impl<T> Term<T> {
     }
 
     /// b-terminal(#302): Ghostty `Terminal.cursorLeft`(2592~2696줄)의 역방향 줄바꿈 갈래.
-    /// 이 엔진에는 좌우 여백이 없어 왼쪽 여백은 0, 오른쪽 여백은 마지막 칸이다
+    /// b-terminal(#311): 좌우 여백을 따른다. 왼쪽 여백은 처음 칸이 여백보다 왼쪽이면 0이고, 윗줄로 넘어가면 오른쪽 여백 칸에 놓인다
     fn reverse_wrap_left(&mut self, count: usize) {
         let extended = self.mode.contains(TermMode::REVERSE_WRAP_EXTENDED);
         let cols = self.columns();
@@ -1336,19 +1336,21 @@ impl<T> Term<T> {
 
         let top = self.scroll_region.start.0;
         let bottom = self.scroll_region.end.0 - 1;
+        let right_margin = self.margin_right.min(cols - 1);
         let mut col = self.grid.cursor.point.column.0;
         let mut line = self.grid.cursor.point.line.0;
+        let left_margin = if col < self.margin_left { 0 } else { self.margin_left };
 
-        // 왼쪽 끝이고 확장이 아니면 위쪽 여백 위(또는 그 줄)에서는 여백의 왼쪽 위로 가서 끝낸다
-        if col == 0 && !extended && line <= top {
-            self.grid.cursor.point.column = Column(0);
+        // 왼쪽 여백이고 확장이 아니면 위쪽 여백 위(또는 그 줄)에서는 여백의 왼쪽 위로 가서 끝낸다
+        if col == left_margin && !extended && line <= top {
+            self.grid.cursor.point.column = Column(left_margin);
             self.grid.cursor.point.line = Line(top);
             self.damage_cursor();
             return;
         }
 
         loop {
-            let amount = col.min(count);
+            let amount = (col - left_margin).min(count);
             count -= amount;
             col -= amount;
             if count == 0 {
@@ -1358,8 +1360,8 @@ impl<T> Term<T> {
                 if !extended {
                     break;
                 }
-                // 맨 위에서 더 가면 아래 여백의 오른쪽 끝으로 돈다
-                col = cols - 1;
+                // 맨 위에서 더 가면 아래 여백의 오른쪽 여백 칸으로 돈다
+                col = right_margin;
                 line = bottom;
                 count -= 1;
                 continue;
@@ -1372,7 +1374,7 @@ impl<T> Term<T> {
             if !extended && !self.grid[Line(line - 1)][Column(cols - 1)].flags.contains(Flags::WRAPLINE) {
                 break;
             }
-            col = cols - 1;
+            col = right_margin;
             line -= 1;
             count -= 1;
         }
@@ -3129,7 +3131,7 @@ impl<T: EventListener> Handler for Term<T> {
     }
 
     // b-terminal(#295): DECIC. 스크롤 영역 안 모든 줄의 커서 칸에 빈 칸을 넣는다. 커서가 영역 밖이면 아무것도 하지 않는다
-    // (좌우 여백이 없어 화면 전체 폭이 여백이다. Ghostty Terminal.zig insertColumns)
+    // (좌우 여백 안에서만 민다. b-terminal(#311). Ghostty Terminal.zig insertColumns)
     fn insert_columns(&mut self, count: usize) {
         self.for_each_region_row(|term| term.insert_blank(count));
     }
@@ -3142,23 +3144,29 @@ impl<T: EventListener> Handler for Term<T> {
     // b-terminal(#295): DECBI. 왼쪽 끝이면 열을 하나 넣고, 아니면 왼쪽으로 한 칸. 줄바꿈 대기는 풀린다
     fn back_index(&mut self) {
         self.grid.cursor.input_needs_wrap = false;
-        if self.grid.cursor.point.column == 0 {
+        // b-terminal(#311): 왼쪽 여백 칸이면 열을 넣고, 아니면 화면 왼쪽 끝까지 한 칸 왼쪽으로(여백을 넘어도 움직인다. Ghostty `backIndex` 4229줄)
+        if self.grid.cursor.point.column.0 == self.margin_left {
             self.insert_columns(1);
-        } else {
-            self.move_backward(1);
+        } else if self.grid.cursor.point.column.0 > 0 {
+            self.damage_cursor();
+            self.grid.cursor.point.column -= 1;
+            self.damage_cursor();
         }
     }
 
     // b-terminal(#295): DECFI. 오른쪽 끝이면 왼쪽 끝 열을 지우고 당기고, 아니면 오른쪽으로 한 칸. 줄바꿈 대기는 풀린다
     fn forward_index(&mut self) {
         self.grid.cursor.input_needs_wrap = false;
-        if self.grid.cursor.point.column == self.last_column() {
+        // b-terminal(#311): 오른쪽 여백 칸이면 왼쪽 여백 열을 지우고 당기며, 아니면 화면 오른쪽 끝까지 한 칸 오른쪽으로(Ghostty `forwardIndex` 4248줄)
+        if self.grid.cursor.point.column.0 == self.margin_right.min(self.last_column().0) {
             let column = self.grid.cursor.point.column;
-            self.grid.cursor.point.column = Column(0);
+            self.grid.cursor.point.column = Column(self.margin_left);
             self.delete_columns(1);
             self.grid.cursor.point.column = column;
-        } else {
-            self.move_forward(1);
+        } else if self.grid.cursor.point.column < self.last_column() {
+            self.damage_cursor();
+            self.grid.cursor.point.column += 1;
+            self.damage_cursor();
         }
     }
 

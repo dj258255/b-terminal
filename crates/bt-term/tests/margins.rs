@@ -800,6 +800,116 @@ fn wrap_at_the_right_margin_on_the_last_row_scrolls_only_the_rectangle() {
     assert_eq!(t.plain(), "ahijef\ngWXYkl\n Z");
 }
 
+// ---- 6단계: DECBI·DECFI(#295)와 역방향 줄바꿈(#302) ----
+
+const FIVE_ROWS: &str = " abcde\r\n fghij\r\n klmno\r\n pqrst\r\n uvwxy";
+
+#[test]
+fn decbi_moves_left_and_stops_at_the_screen_edge_left_of_the_margin() {
+    // "backIndex moves cursor left": 왼쪽 여백 왼쪽에서도 움직이지만 화면 끝에서 멈춘다
+    let mut t = T::new(10, 5);
+    t.feed("\x1b[2;5H\x1b6");
+    assert_eq!(t.cursor(), (3, 1));
+    t.feed("\x1b[?69h\x1b[3;5s\x1b[1;2H\x1b6");
+    assert_eq!(t.cursor().0, 0);
+    t.feed("\x1b6");
+    assert_eq!(t.cursor().0, 0);
+}
+
+#[test]
+fn decbi_at_the_left_margin_inserts_a_column() {
+    // "backIndex scrolls at left margin"
+    let mut t = T::new(6, 5);
+    t.feed(FIVE_ROWS);
+    t.feed("\x1b[?69h\x1b[3;5s\x1b[2;4r\x1b[3;3H\x1b6");
+    assert_eq!(t.cursor(), (2, 2));
+    assert_eq!(t.plain(), " abcde\n f ghj\n k lmo\n p qrt\n uvwxy");
+}
+
+#[test]
+fn decfi_moves_right_and_stops_at_the_screen_edge_right_of_the_margin() {
+    // "forwardIndex moves cursor right"
+    let mut t = T::new(8, 5);
+    t.feed("\x1b[2;5H\x1b9");
+    assert_eq!(t.cursor(), (5, 1));
+    t.feed("\x1b[?69h\x1b[3;5s\x1b[1;7H\x1b9");
+    assert_eq!(t.cursor().0, 7);
+    t.feed("\x1b9");
+    assert_eq!(t.cursor().0, 7);
+}
+
+#[test]
+fn decfi_at_the_right_margin_deletes_the_left_margin_column() {
+    // "forwardIndex scrolls at right margin"
+    let mut t = T::new(6, 5);
+    t.feed(FIVE_ROWS);
+    t.feed("\x1b[?69h\x1b[3;5s\x1b[2;4r\x1b[3;5H\x1b9");
+    assert_eq!(t.cursor(), (4, 2));
+    assert_eq!(t.plain(), " abcde\n fhi j\n kmn o\n prs t\n uvwxy");
+}
+
+#[test]
+fn decfi_at_the_right_edge_without_margins_scrolls_the_whole_screen() {
+    // "forwardIndex scrolls whole screen at right edge"
+    let mut t = T::new(4, 3);
+    t.feed("abcd");
+    assert!(t.wrap_pending());
+    t.feed("\x1b9");
+    assert!(!t.wrap_pending());
+    assert_eq!(t.cursor().0, 3);
+    assert_eq!(t.plain(), "bcd");
+}
+
+#[test]
+fn reverse_wrap_lands_on_the_right_margin_of_the_wrapped_line() {
+    // cursorLeft: 윗줄로 넘어가면 `cursorAbsolute(right_margin, y - 1)`
+    let mut t = T::new(10, 4);
+    t.feed("\x1b[?45h0123456789ab\x1b[?69h\x1b[3;8s\x1b[2;3H\x1b[D");
+    assert_eq!(t.cursor(), (7, 0));
+    // 넘어간 뒤에도 남은 칸수만큼 왼쪽으로 간다(왼쪽 여백까지)
+    t.feed("\x1b[2;3H\x1b[3D");
+    assert_eq!(t.cursor(), (5, 0));
+    t.feed("\x1b[2;3H\x08");
+    assert_eq!(t.cursor(), (7, 0));
+}
+
+#[test]
+fn reverse_wrap_stops_at_the_left_margin_not_at_zero() {
+    let mut t = T::new(10, 4);
+    t.feed("\x1b[?45h\x1b[?69h\x1b[3;8s\x1b[1;6H\x1b[1D");
+    assert_eq!(t.cursor(), (4, 0));
+    t.feed("\x1b[99D");
+    assert_eq!(t.cursor(), (2, 0), "맨 윗줄에서는 왼쪽 여백에서 멈춘다");
+}
+
+#[test]
+fn reverse_wrap_above_the_top_margin_goes_to_the_top_left_margin_corner() {
+    // "cursorLeft reverse wrap before left margin": 위 여백 위·왼쪽 여백에서는 여백의 왼쪽 위로 간다
+    let mut t = T::new(10, 5);
+    t.feed("\x1b[?45h\x1b[?69h\x1b[3;8s\x1b[3;5r\x1b[1;3H\x1b[D");
+    assert_eq!(t.cursor(), (2, 2));
+}
+
+#[test]
+fn extended_reverse_wrap_from_the_top_goes_to_the_bottom_right_margin() {
+    let mut t = T::new(10, 6);
+    t.feed("\x1b[?1045h\x1b[?69h\x1b[3;8s\x1b[2;4r\x1b[2;3H\x1b[D");
+    assert_eq!(t.cursor(), (7, 3));
+}
+
+#[test]
+fn reverse_wrap_with_pending_wrap_above_the_top_margin() {
+    // "cursorLeft reverse wrap with pending wrap above top margin"
+    let mut t = T::new(10, 6);
+    t.feed("\x1b[?45h\x1b[?69h\x1b[1;2sAB\x1b7\x1b[2;5s\x1b[3;5r\x1b8");
+    assert!(t.wrap_pending());
+    t.feed("\x1b[D");
+    assert!(!t.wrap_pending());
+    assert_eq!(t.cursor(), (1, 0));
+    t.feed("X");
+    assert_eq!(t.plain(), "AX");
+}
+
 // ---- DECRQM(PTY) ----
 
 fn sh(script: &str, size: GridSize) -> (Session, Receiver<SessionEvent>) {
