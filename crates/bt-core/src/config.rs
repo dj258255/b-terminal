@@ -307,6 +307,15 @@ pub enum MacTitlebarProxyIcon {
     Hidden,
 }
 
+/// `macos-dock-drop-behavior`(Ghostty): Dock 아이콘에 폴더·파일을 놓았을 때 여는 곳(#279)
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum MacDockDropBehavior {
+    /// 지금 창의 새 탭(창이 없으면 새 창)
+    #[default]
+    NewTab,
+    NewWindow,
+}
+
 /// `macos-hidden`(Ghostty): Dock과 앱 전환기에서 숨기는가
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum MacHidden {
@@ -433,8 +442,10 @@ pub struct Config {
     pub macos_window_shadow: bool,
     /// 창의 밝음·어두움(Ghostty `window-theme`, #192)
     pub window_theme: WindowTheme,
-    /// 제목 막대 폴더 아이콘(Ghostty `macos-titlebar-proxy-icon`, #192). 지금은 받기만 한다
+    /// 제목 막대 폴더 아이콘(Ghostty `macos-titlebar-proxy-icon`, #192·#279)
     pub macos_titlebar_proxy_icon: MacTitlebarProxyIcon,
+    /// Dock 아이콘에 놓은 폴더·파일을 여는 곳(Ghostty `macos-dock-drop-behavior`, #279)
+    pub macos_dock_drop_behavior: MacDockDropBehavior,
     /// `theme = light:…,dark:…`처럼 밝은·어두운 테마를 따로 정했는가(`window-theme = auto`가 system처럼 된다)
     pub theme_split: bool,
     /// 첫 창 자리(Ghostty `window-position-x`·`-y`, #148). 둘 다 있어야 쓴다
@@ -1482,6 +1493,7 @@ impl Default for Config {
             macos_window_shadow: true,
             window_theme: WindowTheme::Auto,
             macos_titlebar_proxy_icon: MacTitlebarProxyIcon::Visible,
+            macos_dock_drop_behavior: MacDockDropBehavior::NewTab,
             theme_split: false,
             macos_hidden: MacHidden::Never,
             window_position_x: None,
@@ -2817,6 +2829,12 @@ impl Config {
                 "hidden" => self.macos_titlebar_proxy_icon = MacTitlebarProxyIcon::Hidden,
                 _ => bad(warnings),
             },
+            // 옛 값 `window`는 Ghostty처럼 new-window로 읽는다
+            "macos-dock-drop-behavior" => match v {
+                "new-tab" => self.macos_dock_drop_behavior = MacDockDropBehavior::NewTab,
+                "new-window" | "window" => self.macos_dock_drop_behavior = MacDockDropBehavior::NewWindow,
+                _ => bad(warnings),
+            },
             "macos-hidden" => match v {
                 "never" => self.macos_hidden = MacHidden::Never,
                 "always" => self.macos_hidden = MacHidden::Always,
@@ -3773,6 +3791,14 @@ impl Config {
             }
             .into(),
         );
+        push(
+            "macos-dock-drop-behavior",
+            match self.macos_dock_drop_behavior {
+                MacDockDropBehavior::NewTab => "new-tab",
+                MacDockDropBehavior::NewWindow => "new-window",
+            }
+            .into(),
+        );
         for r in &self.key_remap {
             push("key-remap", r.to_string());
         }
@@ -3807,8 +3833,6 @@ const KNOWN_IGNORED: &[&str] = &[
     "gtk-titlebar",
     "gtk-single-instance",
     // 받기만 하는 키(#196). 이유는 docs/configuration.md "받기만 하고 쓰지 않는 Ghostty 키"
-    // Dock에 놓은 파일 동작: winit 0.30이 그 이벤트를 주지 않는다
-    "macos-dock-drop-behavior",
     // 이름 그림이 없어 custom만 그린다. custom-style의 그림 설정도 쓸 곳이 없다
     "macos-icon-frame",
     "macos-icon-ghost-color",
@@ -4326,6 +4350,31 @@ mod tests {
         assert_eq!(c.warnings.len(), 2, "{:?}", c.warnings);
     }
 
+    /// `macos-dock-drop-behavior`(#279): new-tab·new-window와 Ghostty의 옛 값 window. 틀린 값은 경고하고 기본을 지킨다
+    #[test]
+    fn dock_drop_behavior_parses() {
+        for (v, want) in [
+            ("new-tab", MacDockDropBehavior::NewTab),
+            ("new-window", MacDockDropBehavior::NewWindow),
+            ("window", MacDockDropBehavior::NewWindow),
+        ] {
+            let c = Config::from_text(&format!("macos-dock-drop-behavior = {v}\n"), true);
+            assert_eq!((c.macos_dock_drop_behavior, c.warnings.len()), (want, 0), "{v}");
+        }
+        let c = Config::from_text("macos-dock-drop-behavior = tab\n", true);
+        assert_eq!(
+            (c.macos_dock_drop_behavior, c.warnings.len()),
+            (MacDockDropBehavior::NewTab, 1)
+        );
+        let r = Config::from_text("macos-dock-drop-behavior = new-window\n", true).render();
+        assert!(r.contains("macos-dock-drop-behavior = new-window"), "{r}");
+        assert!(
+            Config::default()
+                .render()
+                .contains("macos-dock-drop-behavior = new-tab")
+        );
+    }
+
     #[test]
     fn bad_values_warn_and_keep_defaults() {
         let c = Config::from_text("font-size = huge\ncursor-style = triangle\npalette = x\n", true);
@@ -4543,6 +4592,7 @@ mod tests {
         assert!(d.macos_window_shadow);
         assert_eq!(d.window_theme, WindowTheme::Auto);
         assert_eq!(d.macos_titlebar_proxy_icon, MacTitlebarProxyIcon::Visible);
+        assert_eq!(d.macos_dock_drop_behavior, MacDockDropBehavior::NewTab);
         assert!(!d.theme_split);
         for (v, want) in [
             ("auto", WindowDecoration::Auto),
@@ -5255,7 +5305,6 @@ mod tests {
             "macos-icon-frame = chrome",
             "macos-icon-ghost-color = #fff",
             "macos-icon-screen-color = #000,#111",
-            "macos-dock-drop-behavior = new-window",
             "class = x",
             "x11-instance-name = x",
             "language = de",

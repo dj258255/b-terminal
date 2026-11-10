@@ -22,7 +22,7 @@ use objc2_foundation::{
     ns_string, CGFloat, MainThreadMarker, NSArray, NSCopying, NSDictionary, NSKeyValueChangeKey,
     NSKeyValueChangeNewKey, NSKeyValueChangeOldKey, NSKeyValueObservingOptions, NSObject,
     NSObjectNSDelayedPerforming, NSObjectNSKeyValueObserverRegistration, NSObjectProtocol, NSPoint,
-    NSRect, NSSize, NSString,
+    NSRect, NSSize, NSString, NSURL,
 };
 use tracing::{trace, warn};
 
@@ -1915,5 +1915,15 @@ fn theme_to_appearance(theme: Option<Theme>) -> Option<Retained<NSAppearance>> {
         warn!(?theme, "could not find appearance for theme");
         // Assume system appearance in this case
         None
+    }
+}
+
+impl WindowDelegate {
+    // b-terminal(#279): title bar proxy icon (the folder icon). `None` removes it.
+    pub(crate) fn set_represented_path(&self, path: Option<&std::path::Path>) {
+        let url = path
+            .and_then(|p| p.to_str())
+            .map(|p| unsafe { NSURL::fileURLWithPath_isDirectory(&NSString::from_str(p), true) });
+        unsafe { self.window().setRepresentedURL(url.as_deref()) }
     }
 }

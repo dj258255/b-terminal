@@ -122,7 +122,8 @@ config-file = ?~/.config/b-terminal/local   # ?가 붙으면 없어도 된다
 | `macos-titlebar-style` | `native` `transparent` `tabs` `hidden` | `transparent` | `native`는 보통 제목 막대, `transparent`는 제목 막대가 투명해 바탕색이 비치고 탭 줄·격자는 그 밑에서 시작합니다. `tabs`는 b-terminal이 탭 막대를 직접 그리므로 `transparent`와 같습니다(Ghostty의 제목 막대 속 탭 막대는 아님). `hidden`은 둥근 틀은 두고 제목 막대와 신호등 단추를 감춥니다(창 끌기는 되지 않을 수 있음). 새 창부터 적용합니다. 제목 막대 높이는 28pt로 가정한 재지 않은 값입니다 |
 | `macos-window-shadow` | `true` `false` | `true` | macOS 창 그림자. 설정을 다시 읽을 때 열린 창에도 적용합니다 |
 | `window-theme` | `auto` `system` `light` `dark` `ghostty` | `auto` | 창(제목 막대·신호등 단추)의 밝음·어두움. `auto`는 바탕색 밝기로 정하되(macOS에서는 `transparent`·`tabs`일 때만) `theme = light:…,dark:…`이면 `system`과 같습니다. `ghostty`는 Linux 전용 값이라 `auto`처럼 봅니다`system`이거나 `light:…,dark:…`와 함께인 `auto`는 시스템 모양을 따라 바뀝니다. `light`·`dark`(또는 `set_window_theme`)로 고정한 창은 시스템 모양을 따르지 않으므로 그때는 색 테마도 다시 고르지 않습니다 |
-| `macos-titlebar-proxy-icon` | `visible` `hidden` | `visible` | 받기만 합니다. 제목 막대 폴더 아이콘은 `NSWindow`를 얻어야 해서(winit이 노출하지 않음) `unsafe`가 필요합니다 |
+| `macos-titlebar-proxy-icon` | `visible` `hidden` | `visible` | 제목 막대의 폴더 아이콘(그 칸의 작업 폴더, 셸 통합이 OSC 7로 알린 값). 초점 칸이 바뀌거나 작업 폴더가 바뀌면 따라가고, 작업 폴더를 모르면 없앱니다. 호스트가 이 컴퓨터가 아닌 OSC 7(ssh 안의 셸)은 받지 않으므로 마지막 로컬 폴더가 남습니다(Ghostty와 같음). `hidden`이면 늘 없앱니다. 아이콘은 제목이 보이는 제목 막대에서만 보입니다: `macos-titlebar-style = hidden`·`window-decoration = none`에서는 보이지 않습니다(실제 창에서 보지 않았음) |
+| `macos-dock-drop-behavior` | `new-tab` `new-window` | `new-tab` | Dock 아이콘(과 Finder의 "다음으로 열기")에 놓은 폴더·파일을 여는 곳. `new-tab`은 지금 창의 새 탭(창이 없으면 새 창), `new-window`는 늘 새 창. 폴더는 그 폴더에서 새 칸을 엽니다. **파일은 창 위쪽 확인 막대에서 `y`를 눌러야 실행합니다**(↩은 허용이 아닙니다). 허용하면 부모 폴더에서 새 칸을 열어 작은따옴표로 감싼 경로와 `; exit`를 셸에 치고, 끝나도 칸을 남깁니다. 경로에 셸에 안전하게 넘길 수 없는 글자(허용: 글자·숫자(한글·일본어 이름 포함)·빈칸(U+0020)·`/ . _ - + , @ % : = ( ) [ ] # ~` 밖. 예: `it's.sh`, `a&b.sh`, `$`·`!`·`\`가 든 이름)가 하나라도 있으면 열지 않고 알립니다(sh·bash·zsh·fish·tcsh·nushell 어디서나 따옴표 안의 글이 그대로가 되게 하려는 것). 앱 묶음(`scripts/bundle-macos.sh`)의 Info.plist 문서 유형이 있어야 Dock이 받습니다. 옛 값 `window`는 `new-window`로 읽습니다 |
 | `macos-hidden` | `never` `always` | `never` | `always`면 Dock과 앱 전환기에서 앱을 숨깁니다(`NSApplication` 활성화 정책 Accessory). 다시 읽으면 바로 적용합니다. 메뉴 막대는 앱이 앞에 있을 때만 보입니다 |
 | `window-subtitle` | `false` `working-directory` | `false` | 받기만 합니다. Ghostty에서도 GTK 전용 키이고, macOS의 창 부제목은 winit이 노출하지 않아 safe로 정할 수 없습니다 |
 | `window-titlebar-background` `window-titlebar-foreground` | 색 | (없음) | 받기만 합니다. Ghostty에서도 GTK 앱 런타임 전용이고, macOS 제목 막대 색은 winit·objc2의 safe 함수로 정할 수 없습니다 |
@@ -220,7 +221,6 @@ config-file = ?~/.config/b-terminal/local   # ?가 붙으면 없어도 된다
 | 키 | 이유 |
 |---|---|
 | `macos-applescript` `macos-shortcuts` | AppleScript 사전과 단축어(App Intents)는 앱 꾸러미와 Objective-C 클래스 정의가 필요한데 지금 b-terminal에는 그 기능이 없습니다 |
-| `macos-dock-drop-behavior` | Dock 아이콘에 파일·폴더를 놓으면 앱 델리게이트의 `application:openURLs:`가 불리는데 winit 0.30은 그 이벤트를 주지 않습니다. 창에 놓은 파일(`DroppedFile`)만 옵니다 |
 | `macos-icon-frame` `macos-icon-ghost-color` `macos-icon-screen-color` | `macos-icon = custom-style` 전용입니다. 그 그림 틀(유령·화면 그라데이션)이 b-terminal에 없습니다 |
 | `class` `x11-instance-name` `language` | GTK·X11 전용입니다 |
 | `gtk-custom-css` `gtk-horizontal-tab-scroll` `gtk-opengl-debug` `gtk-quick-terminal-layer` `gtk-quick-terminal-namespace` `gtk-tabs-inverted` `gtk-tabs-location` `gtk-titlebar-hide-when-maximized` `gtk-titlebar-style` `gtk-toolbar-style` `gtk-wide-tabs` | GTK 전용입니다(`gtk-titlebar`·`gtk-single-instance`는 앞서 받기만 하던 것) |

@@ -74,6 +74,9 @@ pub enum UserEvent {
         bt_core::proto::Request,
         std::sync::mpsc::SyncSender<bt_core::proto::Response>,
     ),
+    /// Dock·Finder가 열라고 한 경로(#279). macOS에만 온다
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    OpenFile(std::path::PathBuf),
 }
 
 /// 앱 설정: 설정 파일(bt_core::Config, Ghostty 문법)을 그대로 쓴다(#13)
@@ -166,6 +169,8 @@ pub struct Pane {
     mouse_reporting_over: Option<bool>,
     /// PTY의 termios로 알아챈 암호 입력(#258). 자물쇠 커서를 그린다
     password: bool,
+    /// 명령이 끝나도 칸을 남긴다: Dock에 놓은 파일을 실행한 칸(#279). `wait-after-command`와 같다
+    wait_after_exit: bool,
 }
 
 impl Pane {
@@ -335,12 +340,21 @@ enum Pending {
         pane: u64,
         text: String,
     },
+    /// Dock에 놓은 파일을 실행한다(#279): `cwd`(부모 폴더)에서 새 칸을 띄워 `input`을 셸에 친다
+    OpenFile {
+        cwd: std::path::PathBuf,
+        input: String,
+    },
 }
 
 impl Pending {
     /// 프로그램의 출력이 띄운 막대인가. 이런 막대는 Enter로 허용하지 않는다(ADR-019)
     fn is_program_prompt(&self) -> bool {
-        matches!(self, Pending::ClipboardRead { .. } | Pending::ClipboardWrite { .. })
+        // Dock에 놓은 파일도 다른 프로그램이 `open -a`로 띄울 수 있어(키보드를 치는 중에 막대가 뜬다) 같은 규칙을 쓴다(ADR-026)
+        matches!(
+            self,
+            Pending::ClipboardRead { .. } | Pending::ClipboardWrite { .. } | Pending::OpenFile { .. }
+        )
     }
 }
 
@@ -354,7 +368,7 @@ impl Pending {
             | Pending::Paste { pane: id, .. }
             | Pending::ClipboardRead { pane: id, .. }
             | Pending::ClipboardWrite { pane: id, .. } => leaves.contains(id),
-            Pending::CloseWindow | Pending::CloseAllWindows | Pending::Quit => false,
+            Pending::CloseWindow | Pending::CloseAllWindows | Pending::Quit | Pending::OpenFile { .. } => false,
         }
     }
 }
@@ -660,6 +674,8 @@ struct Win {
     blink_wanted: bool,
     /// 이 창의 바탕이 `toggle_background_opacity`로 불투명해졌다(#209)
     opaque: bool,
+    /// 제목 막대 폴더 아이콘에 마지막으로 올린 폴더(#279). 같으면 다시 올리지 않는다
+    proxy_icon: Option<std::path::PathBuf>,
 }
 
 impl Win {
@@ -704,6 +720,7 @@ impl Win {
             blink_next: Instant::now(),
             blink_wanted: false,
             opaque: false,
+            proxy_icon: None,
         }
     }
 
@@ -1355,7 +1372,11 @@ impl App {
         options.env.extend(self.config.env.iter().cloned());
         // 시작 입력: 읽지 못하거나 상한을 넘으면 경고하고 하나도 보내지 않는다. 모든 새 칸에 보낸다
         match bt_core::config::resolve_input(&self.config.input) {
-            Ok(bytes) => options.input = bytes,
+            // 부른 쪽이 정한 시작 입력(Dock에 놓은 파일, #279)은 설정의 input 뒤에 보낸다
+            Ok(mut bytes) => {
+                bytes.append(&mut options.input);
+                options.input = bytes;
+            }
             Err(why) => log::warn!("input을 보내지 않습니다: {why}"),
         }
         match Session::spawn(options, size, self.config.theme.clone(), self.sink(id)) {
@@ -1381,6 +1402,7 @@ impl App {
                 password: false,
                 running: None,
                 last_command: None,
+                wait_after_exit: false,
             }),
             Err(e) => {
                 log::error!("셸을 띄우지 못했습니다: {e}");
@@ -1731,7 +1753,10 @@ impl App {
             Pending::CloseWindow => self.w.tabs.iter().flat_map(|g| g.layout.leaves()).collect(),
             Pending::CloseAllWindows | Pending::Quit => self.panes.iter().map(|p| p.id).collect(),
             // 붙여넣기는 묻기로 정한 뒤에 ask로 온다
-            Pending::Paste { .. } | Pending::ClipboardRead { .. } | Pending::ClipboardWrite { .. } => Vec::new(),
+            Pending::Paste { .. }
+            | Pending::ClipboardRead { .. }
+            | Pending::ClipboardWrite { .. }
+            | Pending::OpenFile { .. } => Vec::new(),
         };
         let busy: Vec<u64> = ids.into_iter().filter(|&id| self.pane_needs_confirm(id)).collect();
         if busy.is_empty() {
@@ -1768,7 +1793,10 @@ impl App {
             Pending::CloseWindow => (format!("이 창에서 {which} 칸이 {n}개 있습니다. 창을 닫을까요?"), "닫기"),
             Pending::CloseAllWindows => (format!("{which} 칸이 {n}개 있습니다. 모든 창을 닫을까요?"), "닫기"),
             Pending::Quit => (format!("{which} 칸이 {n}개 있습니다. 끝낼까요?"), "끝내기"),
-            Pending::Paste { .. } | Pending::ClipboardRead { .. } | Pending::ClipboardWrite { .. } => return,
+            Pending::Paste { .. }
+            | Pending::ClipboardRead { .. }
+            | Pending::ClipboardWrite { .. }
+            | Pending::OpenFile { .. } => return,
         };
         self.ask(pending, message, yes);
     }
@@ -2033,6 +2061,68 @@ impl App {
             Pending::Paste { pane, text } => self.paste_into(pane, &text),
             Pending::ClipboardRead { pane, reply, text } => self.answer_clipboard_read(pane, &reply, &text),
             Pending::ClipboardWrite { pane, text } => self.answer_clipboard_write(pane, text),
+            Pending::OpenFile { cwd, input } => self.open_dropped(event_loop, cwd, Some(input)),
+        }
+    }
+
+    /// Dock에 놓은 폴더·파일을 새 탭이나 새 창으로 연다(#279). `input`이 있으면(파일) 셸에 치고 끝나도 칸을 남긴다
+    fn open_dropped(&mut self, event_loop: &ActiveEventLoop, cwd: std::path::PathBuf, input: Option<String>) {
+        let mut opts = self.default_spawn();
+        opts.cwd = Some(cwd);
+        if let Some(text) = &input {
+            opts.input = text.as_bytes().to_vec();
+        }
+        let tab = match crate::dock_open::placement(self.config.macos_dock_drop_behavior, self.windowless()) {
+            crate::dock_open::Placement::NewTab => self.open_tab(opts),
+            crate::dock_open::Placement::NewWindow => self.open_window(event_loop, opts),
+        };
+        // 스크립트는 곧 끝나므로 `wait-after-command`처럼 끝나도 칸을 남긴다(Ghostty `waitAfterCommand`)
+        if let (Some(id), true) = (tab, input.is_some()) {
+            if let Some(i) = self.pane_index(id) {
+                self.panes[i].wait_after_exit = true;
+            }
+        }
+    }
+
+    /// Dock·Finder가 열라고 한 경로(#279). 폴더는 바로 열고, 파일은 확인 막대를 거친다
+    fn on_open_file(&mut self, event_loop: &ActiveEventLoop, path: std::path::PathBuf) {
+        use crate::dock_open::{Plan, Refusal, kind_of, plan};
+        if let Some(w) = self.last_focused {
+            self.switch_to(w);
+        }
+        match plan(&path, kind_of(&path)) {
+            Plan::Folder { cwd } => self.open_dropped(event_loop, cwd, None),
+            Plan::File { cwd, input, shown } => {
+                // 확인 막대는 창에 뜬다. 창이 하나도 없으면 기본 셸 창을 먼저 연다
+                if self.windowless() && self.open_window(event_loop, self.default_spawn()).is_none() {
+                    log::warn!("파일을 열 창을 만들지 못했습니다: {path:?}");
+                    return;
+                }
+                if self.w.confirm.is_some() {
+                    log::warn!("확인할 일이 있어 끌어놓은 파일을 열지 않았습니다: {path:?}");
+                    self.toast("확인할 일이 있어 끌어놓은 파일을 열지 않았습니다".into());
+                    return;
+                }
+                self.ask(
+                    Pending::OpenFile { cwd, input },
+                    format!("끌어놓은 파일을 실행할까요? {shown}"),
+                    "실행",
+                );
+            }
+            Plan::Refuse(why) => {
+                // `{:?}`는 숨은 제어 문자를 \x1b처럼 보이게 한다
+                log::warn!("끌어놓은 경로를 열지 않았습니다({why:?}): {path:?}");
+                if !self.windowless() {
+                    self.toast(
+                        match why {
+                            Refusal::UnsafeChars => "셸에 안전하게 넘길 수 없는 글자가 있어 열지 않았습니다",
+                            Refusal::NotUtf8 => "경로를 글자로 읽을 수 없어 실행하지 않았습니다",
+                            Refusal::Missing | Refusal::NotAbsolute => "열 수 없는 경로입니다",
+                        }
+                        .into(),
+                    );
+                }
+            }
         }
     }
 
@@ -4381,6 +4471,11 @@ impl App {
             .map(|t| t.display_title_in(self.w.tabs.get(self.w.active).and_then(|g| g.title.as_deref())))
             .unwrap_or_else(|| "b-terminal".into());
         let title = window_title_of(self.config.title.as_deref(), self.w.window_title.as_deref(), &tab_title);
+        // 제목 막대 폴더 아이콘(#279): 초점 칸의 작업 폴더(OSC 7). 모르면 없앤다
+        let proxy = crate::dock_open::proxy_icon_path(
+            self.config.macos_titlebar_proxy_icon,
+            self.active_pane().and_then(|p| p.cwd.as_deref()),
+        );
         let preedit = self.w.preedit.clone();
         let hover = self.w.hover.clone();
         let link_previews = self.config.link_previews;
@@ -4797,6 +4892,11 @@ impl App {
                 .collect(),
         });
         gfx.window.set_title(&title);
+        if self.w.proxy_icon != proxy {
+            #[cfg(target_os = "macos")]
+            winit::platform::macos::set_represented_path(&gfx.window, proxy.as_deref());
+            self.w.proxy_icon = proxy;
+        }
         // 바뀐 것이 없으면 창에 올리지 않는다(올리기만 약 10ms, 실험 E2)
         let force_present = std::mem::take(&mut self.w.force_present);
         if !full && repainted_rows == 0 && !force_present {
@@ -5131,6 +5231,7 @@ impl ApplicationHandler<UserEvent> for App {
                 Some(crate::menu::MenuCommand::ToggleSecureKeyboardEntry) => self.toggle_global_secure_input(),
                 None => {}
             },
+            UserEvent::OpenFile(path) => self.on_open_file(event_loop, path),
             UserEvent::Control(req, reply) => {
                 let req_id = req.id;
                 let timeout = match &req.call {
@@ -5188,7 +5289,7 @@ impl ApplicationHandler<UserEvent> for App {
                         self.panes[idx].exited = Some(code);
                         let runtime = self.panes[idx].created.elapsed();
                         let action = crate::lifecycle::exit_action(
-                            self.config.wait_after_command,
+                            self.config.wait_after_command || self.panes[idx].wait_after_exit,
                             runtime,
                             self.config.abnormal_command_exit_runtime,
                             code,
@@ -5918,6 +6019,18 @@ mod tests {
         let cells = to_draw_cells(&s, &theme);
         assert_eq!((cells[1].fg, cells[1].bg), (theme.background, red));
         assert_eq!((cells[2].fg, cells[2].bg), (Rgb::new(9, 9, 9), Rgb::new(1, 2, 3)));
+    }
+
+    /// Dock에 놓은 파일을 실행하는 확인(#279)은 Enter로 허용하지 않고, 어느 칸에도 매이지 않는다
+    #[test]
+    fn dropped_file_prompt_needs_y_and_binds_to_no_pane() {
+        let p = Pending::OpenFile {
+            cwd: "/tmp".into(),
+            input: "'/tmp/a.sh'; exit\n".into(),
+        };
+        assert!(p.is_program_prompt());
+        assert!(!p.binds_to(&[1, 2, 3]));
+        assert!(!Pending::Quit.is_program_prompt());
     }
 
     #[test]
