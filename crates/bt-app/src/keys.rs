@@ -1,6 +1,9 @@
 //! winit 키 이벤트를 PTY 바이트로 바꾼다. 앱 단축키(Cmd-…)는 여기서 거른다
 
-use bt_term::{Mods as TermMods, NamedKey, encode_char_kitty, encode_named, encode_named_kitty, encode_text};
+use bt_term::{
+    KeyModes, Mods as TermMods, NamedKey, encode_char_kitty, encode_named_kitty, encode_named_with, encode_text,
+    encode_text_with,
+};
 
 use crate::keymap::{Mods, Trigger, normalize_key};
 use bt_core::config::{KeyRemap, ModKind, ModSide, SidedMods, apply_key_remap};
@@ -135,6 +138,20 @@ fn ctrl_text_replaced(raw: ModifiersState, mods: ModifiersState) -> bool {
     raw.control_key() && !mods.control_key()
 }
 
+/// 인코딩에 쓸 키 입력 모드. kitty 키보드 프로토콜이 켜져 있으면 DECBKM(67)과 1036을 무시한다
+/// (Ghostty `key_encode.zig`의 `kitty()`는 두 옵션을 읽지 않는다. Backspace는 늘 0x7f)
+fn effective_key_modes(modes: &bt_term::Modes) -> KeyModes {
+    if modes.kitty.active() {
+        KeyModes {
+            backarrow_key: false,
+            alt_esc_prefix: true,
+            ..modes.key
+        }
+    } else {
+        modes.key
+    }
+}
+
 /// 키 이벤트를 PTY 바이트로. 보낼 것이 없으면 빈 벡터. `mods`는 `key-remap`을 적용한 상태, `raw`는 바꾸기 전 상태
 pub fn encode(
     event: &KeyEvent,
@@ -145,6 +162,7 @@ pub fn encode(
 ) -> Vec<u8> {
     let app_cursor = modes.app_cursor;
     let kitty = modes.kitty;
+    let km = effective_key_modes(&modes);
     let m = term_mods(mods, option_gate(option_as_alt, raw));
     if let Key::Named(named) = &event.logical_key {
         let key = match named {
@@ -174,7 +192,7 @@ pub fn encode(
             WKey::F10 => Some(NamedKey::F(10)),
             WKey::F11 => Some(NamedKey::F(11)),
             WKey::F12 => Some(NamedKey::F(12)),
-            WKey::Space => return encode_text(" ", m),
+            WKey::Space => return encode_text_with(" ", m, km),
             _ => None,
         };
         // 프로그램이 kitty 키보드 프로토콜을 켰으면 Shift+Enter 같은 키를 CSI u로(#41)
@@ -183,7 +201,7 @@ pub fn encode(
                 return bytes;
             }
         }
-        return key.map(|k| encode_named(k, m, app_cursor)).unwrap_or_default();
+        return key.map(|k| encode_named_with(k, m, app_cursor, km)).unwrap_or_default();
     }
     if kitty.active() {
         use winit::platform::modifier_supplement::KeyEventExtModifierSupplement;
@@ -199,7 +217,7 @@ pub fn encode(
     // Ctrl·Alt 조합은 수식 키를 뺀 글자로 만든다(Option이 만드는 ∫ 같은 글자 대신 b)
     if m.ctrl || m.alt {
         if let Key::Character(s) = &event.logical_key {
-            return encode_text(s, m);
+            return encode_text_with(s, m, km);
         }
     }
     if ctrl_text_replaced(raw, mods) {
@@ -257,6 +275,46 @@ mod tests {
         // Ctrl이 Alt가 되면 ESC c(Alt-c)
         let remaps = [KeyRemap::parse("ctrl=alt").unwrap()];
         assert_eq!(bytes(remapped_state(&remaps, ctrl)), vec![0x1b, b'c']);
+    }
+
+    #[test]
+    fn kitty_protocol_ignores_decbkm_and_mode_1036() {
+        let mut modes = bt_term::Modes::default();
+        modes.key.backarrow_key = true;
+        modes.key.alt_esc_prefix = false;
+        // kitty가 꺼져 있으면 모드를 그대로 쓴다
+        assert!(effective_key_modes(&modes).backarrow_key);
+        assert!(!effective_key_modes(&modes).alt_esc_prefix);
+        // 켜져 있으면 무시(Ghostty `kitty()`는 backarrow_key_mode·alt_esc_prefix를 읽지 않는다)
+        modes.kitty.disambiguate = true;
+        let k = effective_key_modes(&modes);
+        assert!(!k.backarrow_key && k.alt_esc_prefix);
+        // 1035·1039는 그대로 넘긴다
+        modes.key.alt_sends_escape = true;
+        assert!(effective_key_modes(&modes).alt_sends_escape);
+    }
+
+    #[test]
+    fn default_modes_keep_option_as_alt_bytes_unchanged() {
+        // 기본(1036 켬, 67 꺼짐)에서 Option-as-Alt 바이트는 모드를 넣기 전과 같다
+        let km = effective_key_modes(&bt_term::Modes::default());
+        let alt = TermMods {
+            alt: true,
+            ..TermMods::default()
+        };
+        for t in ["b", "f", "界", "é", "."] {
+            assert_eq!(encode_text_with(t, alt, km), encode_text(t, alt), "{t}");
+            assert_eq!(encode_text_with(t, alt, km)[0], 0x1b);
+        }
+        assert_eq!(
+            encode_named_with(NamedKey::Backspace, TermMods::default(), false, km),
+            vec![0x7f]
+        );
+        // Option-as-Alt가 꺼지면 Alt가 아니라서 1036이 켜져 있어도 ESC가 없다
+        assert!(!option_gate(false, ModifiersState::ALT));
+        let m = term_mods(ModifiersState::ALT, option_gate(false, ModifiersState::ALT));
+        assert!(!m.alt);
+        assert_eq!(encode_text_with("b", m, km), b"b");
     }
 
     #[test]

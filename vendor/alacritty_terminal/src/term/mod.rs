@@ -52,6 +52,22 @@ fn is_regional_indicator(c: char) -> bool {
 
 /// b-terminal 패치(#180): 글자 묶음 폭 모드 번호(DECSET 2027).
 const GRAPHEME_CLUSTER_MODE: u16 = 2027;
+/// b-terminal(#301): 키 입력 모드 번호. DECBKM, 키패드 NumLock 무시, Alt ESC 접두, Alt가 ESC 보냄
+const BACKARROW_KEY_MODE: u16 = 67;
+const IGNORE_KEYPAD_NUMLOCK_MODE: u16 = 1035;
+const ALT_ESC_PREFIX_MODE: u16 = 1036;
+const ALT_SENDS_ESCAPE_MODE: u16 = 1039;
+
+/// b-terminal(#301): 키 입력 모드 번호를 비트로. 아니면 없다
+fn key_input_mode_bit(mode: u16) -> Option<TermMode> {
+    Some(match mode {
+        BACKARROW_KEY_MODE => TermMode::BACKARROW_KEY,
+        IGNORE_KEYPAD_NUMLOCK_MODE => TermMode::IGNORE_KEYPAD_NUMLOCK,
+        ALT_ESC_PREFIX_MODE => TermMode::ALT_ESC_PREFIX,
+        ALT_SENDS_ESCAPE_MODE => TermMode::ALT_SENDS_ESCAPE,
+        _ => return None,
+    })
+}
 
 /// Max size of the keyboard modes.
 const KEYBOARD_MODE_STACK_MAX_DEPTH: usize = TITLE_STACK_MAX_DEPTH;
@@ -91,6 +107,11 @@ bitflags! {
         // b-terminal(#296): DECSET 2026이 켜진 동안(DECRQM 답용), DECSET 1048을 켰다(DECRQM 답용)
         const SYNC_UPDATE             = 1 << 24;
         const SAVE_CURSOR_MODE        = 1 << 25;
+        // b-terminal(#301): 키 입력 모드. DECBKM(67), 1035, 1036, 1039
+        const BACKARROW_KEY           = 1 << 36;
+        const IGNORE_KEYPAD_NUMLOCK   = 1 << 37;
+        const ALT_ESC_PREFIX          = 1 << 38;
+        const ALT_SENDS_ESCAPE        = 1 << 39;
         const MOUSE_MODE              = Self::MOUSE_REPORT_CLICK.bits() | Self::MOUSE_MOTION.bits() | Self::MOUSE_DRAG.bits();
         const KITTY_KEYBOARD_PROTOCOL = Self::DISAMBIGUATE_ESC_CODES.bits()
                                       | Self::REPORT_EVENT_TYPES.bits()
@@ -130,6 +151,9 @@ impl Default for TermMode {
             | TermMode::LINE_WRAP
             | TermMode::ALTERNATE_SCROLL
             | TermMode::URGENCY_HINTS
+            // b-terminal(#301): Ghostty modes.zig의 기본 켬(1035, 1036)
+            | TermMode::IGNORE_KEYPAD_NUMLOCK
+            | TermMode::ALT_ESC_PREFIX
     }
 }
 
@@ -2236,6 +2260,11 @@ impl<T: EventListener> Handler for Term<T> {
                 self.mode.insert(TermMode::GRAPHEME_CLUSTER);
                 return;
             },
+            // b-terminal(#301): 키 입력 모드
+            PrivateMode::Unknown(mode) if key_input_mode_bit(mode).is_some() => {
+                self.mode.insert(key_input_mode_bit(mode).unwrap_or(TermMode::NONE));
+                return;
+            },
             PrivateMode::Unknown(mode) => {
                 debug!("Ignoring unknown mode {mode} in set_private_mode");
                 return;
@@ -2310,6 +2339,11 @@ impl<T: EventListener> Handler for Term<T> {
             PrivateMode::Unknown(GRAPHEME_CLUSTER_MODE) => {
                 self.mode.remove(TermMode::GRAPHEME_CLUSTER);
                 self.grapheme_anchor = None;
+                return;
+            },
+            // b-terminal(#301): 키 입력 모드
+            PrivateMode::Unknown(mode) if key_input_mode_bit(mode).is_some() => {
+                self.mode.remove(key_input_mode_bit(mode).unwrap_or(TermMode::NONE));
                 return;
             },
             PrivateMode::Unknown(mode) => {
@@ -2416,6 +2450,10 @@ impl<T: EventListener> Handler for Term<T> {
             },
             PrivateMode::Unknown(GRAPHEME_CLUSTER_MODE) => {
                 self.mode.contains(TermMode::GRAPHEME_CLUSTER).into()
+            },
+            // b-terminal(#301): 키 입력 모드
+            PrivateMode::Unknown(mode) if key_input_mode_bit(mode).is_some() => {
+                self.mode.contains(key_input_mode_bit(mode).unwrap_or(TermMode::NONE)).into()
             },
             // b-terminal(#264): 모드 2048(크기 알림)의 DECRQM은 bt-term의 스캐너가 답한다. 여기서 0을 답하면 답이 둘 나간다
             // b-terminal(#296): 모드 2031(색 구성표 알림)도 같다

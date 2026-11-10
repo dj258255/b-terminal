@@ -116,6 +116,8 @@ pub struct Modes {
     pub alternate_scroll: bool,
     /// kitty 키보드 프로토콜 단계
     pub kitty: crate::input::KittyFlags,
+    /// 키 입력 모드(DECBKM 67, 1035, 1036, 1039, #301)
+    pub key: crate::input::KeyModes,
 }
 
 /// 화면에 보이는 kitty 그림 하나(#76)

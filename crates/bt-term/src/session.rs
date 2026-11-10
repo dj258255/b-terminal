@@ -1419,6 +1419,12 @@ fn modes_of(m: TermMode) -> Modes {
             disambiguate: m.contains(TermMode::DISAMBIGUATE_ESC_CODES),
             all_as_escapes: m.contains(TermMode::REPORT_ALL_KEYS_AS_ESC),
         },
+        key: crate::input::KeyModes {
+            backarrow_key: m.contains(TermMode::BACKARROW_KEY),
+            ignore_keypad_with_numlock: m.contains(TermMode::IGNORE_KEYPAD_NUMLOCK),
+            alt_esc_prefix: m.contains(TermMode::ALT_ESC_PREFIX),
+            alt_sends_escape: m.contains(TermMode::ALT_SENDS_ESCAPE),
+        },
     }
 }
 
