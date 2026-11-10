@@ -3657,6 +3657,7 @@ impl App {
                 mouse::reports_to_program(
                     crate::toggles::mouse_reporting_on(self.config.mouse_reporting, pane.mouse_reporting_over),
                     self.config.mouse_shift_capture,
+                    pane.session.mouse_shift_capture(),
                     self.mods.shift_key(),
                 )
             })

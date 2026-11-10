@@ -529,6 +529,15 @@ pub trait Handler {
     /// Report device status.
     fn device_status(&mut self, _: usize) {}
 
+    /// b-terminal(#327): DECXCPR(`CSI ? 6 n`). 답은 `ESC [ ? 행 ; 열 ; 1 R`(쪽 번호는 늘 1)
+    fn report_cursor_position_extended(&mut self) {}
+
+    /// b-terminal(#327): XTSHIFTESCAPE(`CSI > Ps s`). Shift 마우스를 보고에 넣을지 프로그램이 정한다
+    fn set_mouse_shift_capture(&mut self, _capture: bool) {}
+
+    /// b-terminal(#327): ED 22(`CSI 22 J`). 보이는 화면을 스크롤백으로 밀고 지운다
+    fn clear_screen_scroll_complete(&mut self) {}
+
     /// Move cursor forward `cols`.
     fn move_forward(&mut self, _col: usize) {}
 
@@ -1727,6 +1736,10 @@ where
                 }
             },
             ('I', []) => handler.move_forward_tabs(next_param_or(1)),
+            // b-terminal(#327): ED 22(Ghostty stream.zig 1924줄 `scroll_complete`)
+            ('J', []) if params.len() == 1 && params.iter().next() == Some(&[22][..]) => {
+                handler.clear_screen_scroll_complete();
+            },
             ('J', []) => {
                 let mode = match next_param_or(0) {
                     0 => ClearMode::Below,
@@ -1856,6 +1869,8 @@ where
                 }
             },
             ('n', []) => handler.device_status(next_param_or(0) as usize),
+            // b-terminal(#327): DECXCPR. 매개변수가 정확히 하나이고 6일 때만(Ghostty stream.zig 2391·2405줄, device_status.zig 110줄)
+            ('n', [b'?']) if params.len() == 1 && next_param_or(0) == 6 => handler.report_cursor_position_extended(),
             // b-terminal(#312): `CSI > Ps n`은 modifyOtherKeys를 되돌린다(Ghostty stream.zig 2362~2368줄: 켜짐 없는 기본으로)
             ('n', [b'>']) => handler.set_modify_other_keys(ModifyOtherKeys::Reset),
             ('P', []) => handler.delete_chars(next_param_or(1) as usize),
@@ -1923,6 +1938,18 @@ where
                     handler.set_left_right_margins(left, right);
                 } else {
                     unhandled!();
+                }
+            },
+            // b-terminal(#327): XTSHIFTESCAPE. 매개변수가 없거나 0이면 거짓, 1이면 참, 그 밖은 버린다(Ghostty stream.zig 2632줄)
+            ('s', [b'>']) => {
+                if params.len() > 1 {
+                    unhandled!();
+                    return;
+                }
+                match next_param_or(0) {
+                    0 => handler.set_mouse_shift_capture(false),
+                    1 => handler.set_mouse_shift_capture(true),
+                    _ => unhandled!(),
                 }
             },
             // b-terminal(#313): XTSAVE

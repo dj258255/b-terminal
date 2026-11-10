@@ -33,6 +33,7 @@
 - [ADR-028 마우스 보고 바이트는 한 곳(`mouse::encode`)에서 Ghostty처럼 만들고, 형식은 하나만 켜며, 1016은 격자 원점 기준 실제 픽셀을 보낸다](#adr-028-마우스-보고-바이트는-한-곳mouseencode에서-ghostty처럼-만들고-형식은-하나만-켜며-1016은-격자-원점-기준-실제-픽셀을-보낸다)
 - [ADR-029 키패드 응용 모드 바이트와 modifyOtherKeys 상태 2는 Ghostty 표대로 키 바이트를 바꾸고, 기본값과 kitty 키보드 프로토콜이 켜진 동안은 건드리지 않는다](#adr-029-키패드-응용-모드-바이트와-modifyotherkeys-상태-2는-ghostty-표대로-키-바이트를-바꾸고-기본값과-kitty-키보드-프로토콜이-켜진-동안은-건드리지-않는다)
 - [ADR-030 kitty 클립보드 프로토콜(OSC 5522)과 붙여넣기 이벤트(모드 5522)는 OSC 52와 같은 정책을 따르고, 상한은 모으기 전에 보며, 암호 허가는 방향·위치별로 한 번만 쓴다](#adr-030-kitty-클립보드-프로토콜osc-5522과-붙여넣기-이벤트모드-5522는-osc-52와-같은-정책을-따르고-상한은-모으기-전에-보며-암호-허가는-방향위치별로-한-번만-쓴다)
+- [ADR-031 XTSHIFTESCAPE는 프로그램이 Shift 클릭을 보고로 보낼지 정하게 하되, always·never가 정한 것은 바꾸지 못한다](#adr-031-xtshiftescape는-프로그램이-shift-클릭을-보고로-보낼지-정하게-하되-alwaysnever가-정한-것은-바꾸지-못한다)
 
 ## ADR-001 VT 엔진은 alacritty_terminal로 시작하고, bt-term 밖으로 엔진 타입을 내보내지 않는다
 
@@ -814,3 +815,21 @@ macOS의 Carbon `EnableSecureEventInput`은 켜 있는 동안 키 입력이 다�
 ### 결과
 - 기본 동작은 바뀌지 않는다(읽기 `deny`라 5522 읽기는 `EPERM`). `clipboard-write = allow` 기본이므로 5522로도 보는 칸에서 글을 쓸 수 있고 알림 띠가 뜬다.
 - 한계: 시험은 바이트와 PTY 단위이고 실제 창·클립보드는 보지 않았다. 쓰기 크기는 Ghostty 기본(64MiB)이 아니라 1MiB가 상한이다. 한 OSC가 8KiB를 넘는 큰 조각은 버린다(kitty는 조각을 4KiB로 나눠 보낸다). 확인 막대를 다른 일로 닫으면(칸 이동 등) 프로그램이 답을 받지 못한다. 그림 등 글 밖의 종류는 읽고 쓰지 않는다. 빈 클립보드에서는 붙여넣기 이벤트를 보내지 않는다.
+
+## ADR-031 XTSHIFTESCAPE는 프로그램이 Shift 클릭을 보고로 보낼지 정하게 하되, always·never가 정한 것은 바꾸지 못한다
+
+상태: 채택
+관련: [#327](https://github.com/dj258255/b-terminal/issues/327), ADR-028(마우스 보고), ADR-018(읽기 전용 칸)
+
+### 맥락
+- Shift를 누른 클릭이 프로그램(마우스 보고)으로 가는지 고르기로 가는지는 입력 경로다. 지금까지는 설정 `mouse-shift-capture`만 정했고(`true`는 `always`, `false`는 `never`처럼 굳음) 프로그램의 `CSI > Ps s`(XTSHIFTESCAPE)는 버렸다.
+- 터미널에 찍힌 글이 이 시퀀스를 보낼 수 있으므로, 프로그램이 사용자의 Shift 고르기를 가로챌 수 있는 범위를 적어 둔다.
+
+### 결정
+1. 프로그램이 `CSI > 1 s`를 보내면 Shift 클릭을 보고로 보내고, `CSI > 0 s`·`CSI > s`는 고르기로 둔다. 그 밖의 값과 매개변수가 둘 이상인 것은 버린다(Ghostty `stream.zig` 2632~2650줄). 값은 터미널 상태 하나(`Option<bool>`, 정한 적 없음 포함)이고 RIS가 지운다.
+2. 설정과의 관계는 Ghostty `Surface.zig` `mouseShiftCapture`와 같다. `always`는 늘 보고로, `never`는 늘 고르기로 간다(프로그램이 못 바꿈). `true`·`false`는 프로그램이 정했으면 그 값을, 아니면 설정 값을 따른다(`MouseShiftCapture::allows`).
+3. 결정 자리는 `App::mouse_reporting` 하나이고(`mouse::reports_to_program`), `mouse-reporting` 끔과 읽기 전용 칸이 거르는 것은 그대로다. 프로그램은 마우스 보고 모드를 이미 켠 경우에만 Shift 클릭을 받는다.
+
+### 결과
+- 기본 동작이 바뀐다: 설정이 `false`·`true`이면 프로그램이 Shift 클릭의 가는 곳을 바꿀 수 있다. 사용자가 늘 고르기를 원하면 `mouse-shift-capture = never`로 막는다. 프로그램이 얻는 것은 마우스 보고를 켰을 때 이미 받는 클릭에 Shift 수식 비트가 붙는 것뿐이고 새 정보는 아니다.
+- 한계: 시험은 결정 함수와 터미널 상태 단위로 했고 실제 Shift 클릭은 창에서 보지 않았다. 프로그램이 값을 정하고 끝나면 값이 남는다(Ghostty와 같다, `reset`으로 지운다).

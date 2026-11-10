@@ -4,9 +4,10 @@ use bt_core::config::{MiddleClickAction, MouseShiftCapture};
 use std::time::Duration;
 
 /// 이 클릭·움직임·휠을 프로그램(마우스 보고)에 보내는가. `mouse-reporting`을 끄면 늘 아니오.
-/// Shift를 누르면 `mouse-shift-capture`가 `true`·`always`일 때만 프로그램이 받고, 아니면 고르기가 받는다
-pub fn reports_to_program(reporting: bool, capture: MouseShiftCapture, shift: bool) -> bool {
-    reporting && (!shift || capture.sends_shift())
+/// Shift를 누르면 `mouse-shift-capture`가 정한다: `always`는 프로그램이, `never`는 고르기가 받고, `true`·`false`는
+/// 프로그램이 XTSHIFTESCAPE로 정한 값(`program`)이 있으면 그 값을, 없으면 설정 값을 따른다(#327)
+pub fn reports_to_program(reporting: bool, capture: MouseShiftCapture, program: Option<bool>, shift: bool) -> bool {
+    reporting && (!shift || capture.allows(program))
 }
 
 /// 두 번·세 번 누르기 간격. 설정이 0이면 플랫폼 값(macOS는 OS 설정, 그 밖에는 500ms)
@@ -313,18 +314,24 @@ mod tests {
         use MouseShiftCapture::*;
         // 보고를 끄면 Shift와 상관없이 프로그램에 보내지 않는다
         for c in [False, True, Always, Never] {
-            assert!(!reports_to_program(false, c, false));
-            assert!(!reports_to_program(false, c, true));
+            assert!(!reports_to_program(false, c, None, false));
+            assert!(!reports_to_program(false, c, Some(true), true));
         }
         // Shift 없이는 켜 있으면 보낸다
         for c in [False, True, Always, Never] {
-            assert!(reports_to_program(true, c, false));
+            assert!(reports_to_program(true, c, None, false));
+            assert!(reports_to_program(true, c, Some(false), false));
         }
         // Shift를 누르면 true·always만 보낸다(기본 false는 고르기)
-        assert!(!reports_to_program(true, False, true));
-        assert!(!reports_to_program(true, Never, true));
-        assert!(reports_to_program(true, True, true));
-        assert!(reports_to_program(true, Always, true));
+        assert!(!reports_to_program(true, False, None, true));
+        assert!(!reports_to_program(true, Never, None, true));
+        assert!(reports_to_program(true, True, None, true));
+        assert!(reports_to_program(true, Always, None, true));
+        // 프로그램이 XTSHIFTESCAPE로 정하면 true·false는 따르고, always·never는 따르지 않는다(#327)
+        assert!(reports_to_program(true, False, Some(true), true));
+        assert!(!reports_to_program(true, True, Some(false), true));
+        assert!(!reports_to_program(true, Never, Some(true), true));
+        assert!(reports_to_program(true, Always, Some(false), true));
     }
 
     #[test]
