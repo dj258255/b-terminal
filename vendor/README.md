@@ -28,6 +28,13 @@ winit이 같은 문제를 고친 판을 내면 패치를 지우고 그 판으로
 - 원본: crates.io `softbuffer 0.4.8`(MIT 또는 Apache-2.0, `vendor/softbuffer/LICENSE-*`). 벤치마크는 뺐습니다.
 - 연결: 루트 `Cargo.toml`의 `[patch.crates-io]`.
 - 고친 곳: `src/lib.rs` 끝의 `set_native_color_space`·`set_transparent`(스위치 둘)와 `src/backends/cg.rs`의 색 공간 만들기·알파 형식 두 군데. `b-terminal(ADR-009)`·`b-terminal(#78)`로 찾을 수 있습니다. 투명 창이면 그림을 곱한 알파(ARGB)로 넘깁니다. `b-terminal(#79)`: Core Animation이 다 쓰고 돌려준 그림 버퍼를 버리지 않고 다음 프레임에 다시 씁니다(같은 크기, 최대 3개, 실험 E4). `b-terminal(#97)`: 색 공간을 주 화면이 아니라 창이 있는 화면(`NSScreenNumber`)에서 가져오고, 올릴 때 창의 NSScreen이 바뀌었으면 그 화면의 색 공간으로 바꿉니다. 기능 플래그 `CGDirectDisplay`·`CGDisplayConfiguration`을 더했습니다(`Cargo.toml`).
+- 더한 곳(#346, ADR-034): macOS에서 프레임을 IOSurface로 올리는 길. `b-terminal(#346)`로 찾을 수 있습니다(자동 보안 검토가 vendor를 건너뛰므로 줄 범위를 적습니다).
+  - `src/backends/cg.rs`: `present_iosurface`·`create_iosurface`·`new_iosurface`·`refresh_color_space`(#97 블록을 옮김)·`SendSurface`·시험 `iosurface_tests`(`cg.rs` 13~18·118~124줄 필드와 가져오기, 291~300줄 `buffer_mut`, 311~452줄 `refresh_color_space`·`present_iosurface`·`create_iosurface`·`new_iosurface`, 454~495줄 시험, 540~569줄 `pixels_mut`·`present`, 649~659줄 `present_frame`, 683~702줄 `SendSurface`). IOSurface를 만들거나 잠그지 못하면 그 그림판은 CGImage 길로 돌아갑니다(`io_failed`). 묶음(같은 크기·색 공간, 최대 3개)에서 `IOSurfaceIsInUse`가 아니고 지금 레이어 `contents`가 아닌 것을 골라 잠그고, 줄마다 `bytesPerRow`를 지켜 복사한 뒤 풀고 `CATransaction`(암묵 애니메이션 끔) 안에서 레이어 `contents`로 넣습니다. 불투명 창은 알파 바이트를 `0xff`로 채우고(캔버스는 0RGB를 그린다) 투명 창은 곱한 알파 그대로입니다. 크기나 색 공간이 바뀌면 묶음을 비웁니다.
+  - `src/iosurface_pool.rs`(새 파일): 위의 고르기·비우기·줄 복사를 창 없이 시험할 수 있게 뺀 순수 함수. `crates/bt-app/tests/iosurface_pool.rs`가 부릅니다.
+  - `src/lib.rs` 끝: `set_iosurface`(스위치, 기본 켬, 환경 변수 `BT_E5_CGIMAGE`가 있으면 앱이 끔)와 `Buffer::present_frame`(프레임을 버퍼를 거치지 않고 올림, 다른 백엔드는 복사 뒤 `present`). `src/backend_interface.rs`·`src/backend_dispatch.rs`에 `present_frame`을 더했습니다.
+  - `Cargo.toml`: `objc2-io-surface 0.3.2`(잠금 파일에 이미 있던 크레이트, 새 외부 크레이트 아님)를 macOS 의존성으로 더하고 `objc2-core-foundation`에 `CFBase`·`CFDictionary`·`CFNumber`·`CFPropertyList`·`CFString` 기능을 더했습니다.
+  - 이유: 실험 E3·E4에서 큰 창에서 바뀐 줄 하나뿐인 프레임도 올리기까지 약 3~5ms였고 대부분이 프레임을 softbuffer 버퍼로 옮기는 일이었습니다. IOSurface에 곧장 쓰면 그 복사가 한 번으로 줄고 Ghostty와 같은 올리기 길이 됩니다. 실험 E5가 재기 전까지 이 길이 더 빠르다는 것은 확인하지 않았습니다.
+  - 되돌릴 조건: 실험 E5에서 올리기가 줄지 않으면 기본을 `BT_E5_CGIMAGE` 쪽(CGImage)으로 두거나 이 패치를 지웁니다. GPU 렌더러가 레이어를 직접 소유하게 되면 softbuffer와 함께 지웁니다.
 
 ### 왜
 

@@ -212,6 +212,16 @@ macro_rules! make_dispatch {
                     )*
                 }
             }
+
+            // b-terminal(#346)
+            fn present_frame(self, frame: &[u32]) -> Result<(), SoftBufferError> {
+                match self {
+                    $(
+                        $(#[$attr])*
+                        Self::$name(inner) => inner.present_frame(frame),
+                    )*
+                }
+            }
         }
 
         impl<D: fmt::Debug, W: fmt::Debug> fmt::Debug for BufferDispatch<'_, D, W> {

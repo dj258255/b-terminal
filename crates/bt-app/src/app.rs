@@ -3721,6 +3721,8 @@ impl App {
         softbuffer::set_transparent(transparent);
         // 실험 E4: BT_E4_NO_REUSE가 있으면 버퍼 다시 쓰기를 끈다(견주어 재려고)
         softbuffer::set_reuse_buffers(std::env::var_os("BT_E4_NO_REUSE").is_none());
+        // 실험 E5: BT_E5_CGIMAGE가 있으면 예전 CGImage 길로 올린다(기본은 IOSurface, 견주어 재려고)
+        softbuffer::set_iosurface(std::env::var_os("BT_E5_CGIMAGE").is_none());
         // 창 모양(#192): window-decoration·macos-titlebar-style·macos-window-shadow·window-theme
         let look = crate::windeco::window_look(
             quick,
@@ -5218,15 +5220,14 @@ impl App {
             return;
         }
         let t_buffer = Instant::now();
-        let Ok(mut buffer) = gfx.surface.buffer_mut() else {
+        let Ok(buffer) = gfx.surface.buffer_mut() else {
             return;
         };
         let t_copy = Instant::now();
-        // macOS의 softbuffer는 프레임마다 빈 버퍼를 준다(age 0). 들고 있는 프레임을 통째로 옮긴다.
-        // 투명 창의 알파는 캔버스가 이미 곱한 알파로 그렸다(#86)
-        buffer.copy_from_slice(&self.w.frame);
+        // macOS의 softbuffer는 프레임마다 빈 버퍼를 준다(age 0). 들고 있는 프레임을 통째로 올린다.
+        // 투명 창의 알파는 캔버스가 이미 곱한 알파로 그렸다(#86). macOS 기본은 프레임을 IOSurface로 곧장 옮긴다(#346)
         let t_present = Instant::now();
-        let _ = buffer.present();
+        let _ = buffer.present_frame(&self.w.frame);
         let ms = |a: Instant, b: Instant| (b - a).as_secs_f64() * 1000.0;
         let end = Instant::now();
         log::debug!(

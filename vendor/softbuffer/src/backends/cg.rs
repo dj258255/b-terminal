@@ -5,10 +5,17 @@ use crate::{util, Rect, SoftBufferError};
 use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, Bool};
 use objc2::{define_class, msg_send, AllocAnyThread, DefinedClass, MainThreadMarker, Message};
-use objc2_core_foundation::{CFRetained, CGPoint};
+use objc2_core_foundation::{CFDictionary, CFNumber, CFRetained, CFString, CFType, CGPoint};
 use objc2_core_graphics::{
     CGBitmapInfo, CGColorRenderingIntent, CGColorSpace, CGDataProvider, CGImage, CGImageAlphaInfo,
     CGImageByteOrderInfo, CGImageComponentInfo, CGImagePixelFormatInfo,
+};
+// b-terminal(#346)
+use crate::iosurface_pool::{self, Pick, SlotInfo};
+use objc2_core_graphics::kCGColorSpaceSRGB;
+use objc2_io_surface::{
+    kIOSurfaceBytesPerElement, kIOSurfaceColorSpace, kIOSurfaceHeight, kIOSurfacePixelFormat,
+    kIOSurfaceWidth, IOSurfaceLockOptions, IOSurfaceRef,
 };
 use objc2_foundation::{
     ns_string, NSDictionary, NSKeyValueChangeKey, NSKeyValueChangeNewKey,
@@ -108,6 +115,12 @@ pub struct CGImpl<D, W> {
     display: u32,
     /// b-terminal(#97): 마지막으로 본 창의 NSScreen 객체 자리. 같으면 화면 번호를 다시 묻지 않는다
     screen: usize,
+    /// b-terminal(#346): IOSurface 묶음(최대 3개)과 각 칸의 색 공간 열쇠
+    pool: Vec<(SendSurface, u64)>,
+    /// b-terminal(#346): IOSurface로 올리다 실패했으면 이 그림판은 CGImage 길로 간다(프레임을 잃지 않으려고)
+    io_failed: bool,
+    /// b-terminal(#346): 지금 레이어 `contents`인 IOSurface의 자리(다시 쓰지 않는다)
+    current: usize,
     /// The width of the underlying buffer.
     width: usize,
     /// The height of the underlying buffer.
@@ -254,6 +267,9 @@ impl<D: HasDisplayHandle, W: HasWindowHandle> SurfaceInterface<D, W> for CGImpl<
             color_space,
             display,
             screen: 0,
+            pool: Vec::new(),
+            io_failed: false,
+            current: 0,
             width,
             height,
             _display: PhantomData,
@@ -276,11 +292,202 @@ impl<D: HasDisplayHandle, W: HasWindowHandle> SurfaceInterface<D, W> for CGImpl<
         // b-terminal(#79): Core Animation이 다 쓰고 돌려준 버퍼를 다시 쓴다. 새로 잡으면 0으로 채운 쪽마다
         // 처음 쓸 때 쪽 부재가 나 큰 창에서 약 2ms가 든다(실험 E3·E4). 내용은 정해지지 않는다(age 0, 원래와 같음)
         let n = self.width * self.height;
-        let reused = if crate::reuse_buffers() { take_spare(n) } else { None };
+        // b-terminal(#346): IOSurface 길은 프레임을 곧장 IOSurface에 옮기므로 버퍼를 잡지 않는다(`present_frame`).
+        // 픽셀을 직접 쓰는 쪽(`pixels_mut`)이 있으면 그때 잡는다
+        let reused = if crate::iosurface() {
+            Some(Vec::new())
+        } else if crate::reuse_buffers() {
+            take_spare(n)
+        } else {
+            None
+        };
         Ok(BufferImpl {
             buffer: util::PixelBuffer(reused.unwrap_or_else(|| vec![0; n])),
             imp: self,
         })
+    }
+}
+
+impl<D: HasDisplayHandle, W: HasWindowHandle> CGImpl<D, W> {
+    /// b-terminal(#97): 창이 다른 화면으로 옮겨 갔으면 그 화면의 색 공간으로 바꾼다(화면 색 공간을 쓸 때만).
+    /// NSScreen 객체가 그대로면 번호를 묻지 않는다(deviceDescription은 프레임마다 묻기에 비싸다)
+    fn refresh_color_space(&mut self) {
+        if crate::native_color_space() {
+            if let Some(screen) = screen_of(&self.window_handle) {
+                let at = Retained::as_ptr(&screen) as usize;
+                if at != self.screen {
+                    self.screen = at;
+                    if let Some(d) = screen_number(&screen).filter(|d| *d != self.display) {
+                        self.color_space = objc2_core_graphics::CGDisplayCopyColorSpace(d);
+                        self.display = d;
+                    }
+                }
+            }
+        }
+    }
+
+    /// b-terminal(#346): 프레임을 IOSurface에 줄마다 `bytesPerRow`를 지켜 옮기고 레이어 `contents`로 넣는다.
+    /// 묶음에서 사용 중이 아닌 같은 크기·색 공간의 것을 고르고(없으면 새로 만든다), 잠그고 쓴 뒤 푼다
+    fn present_iosurface(&mut self, frame: &[u32]) -> Result<(), SoftBufferError> {
+        self.refresh_color_space();
+        let native = crate::native_color_space();
+        let space = iosurface_pool::color_space_key(native, self.display);
+        let (width, height) = (self.width, self.height);
+
+        // 크기나 색 공간이 바뀌었으면 묶음을 비운다
+        let infos: Vec<SlotInfo> = self
+            .pool
+            .iter()
+            .map(|(s, key)| SlotInfo {
+                width: s.width(),
+                height: s.height(),
+                space: *key,
+                in_use: false,
+            })
+            .collect();
+        let mut keep = iosurface_pool::retain_mask(&infos, width, height, space).into_iter();
+        self.pool.retain(|_| keep.next().unwrap_or(false));
+
+        // 지금 화면에 올라간 것과 Core Animation이 쥔 것은 건드리지 않는다(찢어짐)
+        let current = self.current;
+        let infos: Vec<SlotInfo> = self
+            .pool
+            .iter()
+            .map(|(s, key)| SlotInfo {
+                width: s.width(),
+                height: s.height(),
+                space: *key,
+                in_use: s.is_in_use() || (&**s as *const IOSurfaceRef as usize) == current,
+            })
+            .collect();
+        let index = match iosurface_pool::pick_slot(&infos, width, height, space) {
+            Pick::Reuse(i) => i,
+            Pick::New => {
+                let surface = self.create_iosurface(width, height, native).ok_or_else(|| {
+                    SoftBufferError::PlatformError(Some("IOSurface를 만들지 못했다".to_string()), None)
+                })?;
+                let evict = iosurface_pool::evict_for_new(self.pool.len());
+                self.pool.drain(..evict);
+                self.pool.push((SendSurface(surface), space));
+                self.pool.len() - 1
+            }
+        };
+        let surface = self.pool[index].0 .0.clone();
+
+        // SAFETY: 잠금(옵션 0 = 읽기·쓰기)을 잡은 동안만 기준 주소를 쓰고, 끝나면 바로 푼다. `alloc_size`가 그 메모리의 크기다.
+        // 시드는 쓰지 않으므로 NULL
+        let copied = unsafe {
+            if surface.lock(IOSurfaceLockOptions(0), ptr::null_mut()) != 0 {
+                return Err(SoftBufferError::PlatformError(
+                    Some("IOSurface를 잠그지 못했다".to_string()),
+                    None,
+                ));
+            }
+            let dst = std::slice::from_raw_parts_mut(
+                surface.base_address().as_ptr().cast::<u8>(),
+                surface.alloc_size(),
+            );
+            let ok = iosurface_pool::copy_frame(
+                dst,
+                surface.bytes_per_row(),
+                frame,
+                width,
+                height,
+                // 불투명 창은 알파 바이트를 늘 0xff로 채운다(CGImage 길의 NoneSkipFirst가 알파를 무시하던 것과 같다).
+                // 투명 창은 캔버스가 곱한 알파로 그린 그대로
+                !crate::transparent(),
+            );
+            surface.unlock(IOSurfaceLockOptions(0), ptr::null_mut());
+            ok
+        };
+        if !copied {
+            return Err(SoftBufferError::PlatformError(
+                Some("IOSurface에 프레임을 옮기지 못했다".to_string()),
+                None,
+            ));
+        }
+        self.current = (&*surface as *const IOSurfaceRef) as usize;
+
+        // CGImage 길과 같다: 레이어 contents를 바꾸는 암묵 애니메이션(0.25초 페이드)을 끈다
+        CATransaction::begin();
+        CATransaction::setDisableActions(true);
+        // SAFETY: IOSurface는 `contents`로 쓸 수 있는 클래스다(Core Animation이 받는다)
+        unsafe { self.layer.setContents(Some(surface.as_ref())) };
+        CATransaction::commit();
+        Ok(())
+    }
+
+    /// b-terminal(#346): 32BGRA IOSurface를 만들고 색 공간을 붙인다. 색 공간은 화면 자신의 것(기본) 또는 sRGB(`window-colorspace = srgb`)
+    fn create_iosurface(&self, width: usize, height: usize, native: bool) -> Option<CFRetained<IOSurfaceRef>> {
+        let space = if native {
+            self.color_space.property_list()
+        } else {
+            CGColorSpace::with_name(Some(unsafe { kCGColorSpaceSRGB })).and_then(|c| c.property_list())
+        };
+        new_iosurface(width, height, space.as_deref())
+    }
+}
+
+/// b-terminal(#346): 32BGRA(`'BGRA'`, 원소 4바이트) IOSurface를 만들고 색 공간 속성을 붙인다(Ghostty의 IOSurface와 같은 꼴)
+fn new_iosurface(width: usize, height: usize, space: Option<&CFType>) -> Option<CFRetained<IOSurfaceRef>> {
+    let w = CFNumber::new_i64(width as i64);
+    let h = CFNumber::new_i64(height as i64);
+    let bpe = CFNumber::new_i32(4);
+    let format = CFNumber::new_i32(0x4247_5241); // 'BGRA'
+    // SAFETY: 키는 CFString 상수, 값은 CFNumber라 CFDictionary의 CFType 콜백이 맞다
+    let (keys, values): ([&CFString; 4], [&CFType; 4]) = unsafe {
+        (
+            [kIOSurfaceWidth, kIOSurfaceHeight, kIOSurfaceBytesPerElement, kIOSurfacePixelFormat],
+            [w.as_ref(), h.as_ref(), bpe.as_ref(), format.as_ref()],
+        )
+    };
+    let props = CFDictionary::<CFString, CFType>::from_slices(&keys, &values);
+    // SAFETY: 위 딕셔너리는 IOSurface가 받는 키와 CFNumber 값만 있다
+    let surface = unsafe { IOSurfaceRef::new(props.as_ref()) }?;
+    if let Some(plist) = space {
+        // SAFETY: 색 공간 속성 목록은 `kIOSurfaceColorSpace`가 받는 CFPropertyList다
+        unsafe { surface.set_value(kIOSurfaceColorSpace, plist) };
+    }
+    Some(surface)
+}
+
+#[cfg(test)]
+mod iosurface_tests {
+    use super::*;
+
+    /// 창 없이 진짜 IOSurface를 만들어 잠그고, 줄 간격(`bytesPerRow`)을 지켜 옮긴 바이트를 읽어 본다
+    #[test]
+    fn real_iosurface_copy_respects_bytes_per_row() {
+        let (w, h) = (37usize, 5usize); // 폭×4 = 148, 시스템이 줄 간격을 더 키울 수 있는 폭
+        let srgb = CGColorSpace::with_name(Some(unsafe { kCGColorSpaceSRGB })).unwrap();
+        let plist = srgb.property_list();
+        let surface = new_iosurface(w, h, plist.as_deref()).expect("IOSurface 만들기");
+        assert_eq!((surface.width(), surface.height()), (w, h));
+        assert_eq!(surface.bytes_per_element(), 4);
+        assert_eq!(surface.pixel_format(), 0x4247_5241);
+        assert!(surface.value(unsafe { kIOSurfaceColorSpace }).is_some(), "색 공간이 붙는다");
+        let bpr = surface.bytes_per_row();
+        assert!(bpr >= w * 4);
+        eprintln!("bytesPerRow = {bpr} (폭×4 = {})", w * 4);
+        assert!(!surface.is_in_use());
+
+        let frame: Vec<u32> = (0..(w * h) as u32).map(|i| 0x0010_0000 + i).collect();
+        unsafe {
+            assert_eq!(surface.lock(IOSurfaceLockOptions(0), ptr::null_mut()), 0);
+            let dst = std::slice::from_raw_parts_mut(surface.base_address().as_ptr().cast::<u8>(), surface.alloc_size());
+            assert!(iosurface_pool::copy_frame(dst, bpr, &frame, w, h, true));
+            surface.unlock(IOSurfaceLockOptions(0), ptr::null_mut());
+            assert_eq!(surface.lock(IOSurfaceLockOptions::ReadOnly, ptr::null_mut()), 0);
+            let src = std::slice::from_raw_parts(surface.base_address().as_ptr().cast::<u8>(), surface.alloc_size());
+            for y in 0..h {
+                for x in 0..w {
+                    let o = y * bpr + x * 4;
+                    let px = u32::from_le_bytes([src[o], src[o + 1], src[o + 2], src[o + 3]]);
+                    assert_eq!(px, frame[y * w + x] | 0xff00_0000, "({x},{y})");
+                }
+            }
+            surface.unlock(IOSurfaceLockOptions::ReadOnly, ptr::null_mut());
+        }
     }
 }
 
@@ -333,6 +540,10 @@ impl<D: HasDisplayHandle, W: HasWindowHandle> BufferInterface for BufferImpl<'_,
 
     #[inline]
     fn pixels_mut(&mut self) -> &mut [u32] {
+        // b-terminal(#346): IOSurface 길은 버퍼를 비워 두었다. 픽셀을 직접 쓰려 하면 그때 잡는다
+        if self.buffer.is_empty() {
+            self.buffer.0.resize(self.imp.width * self.imp.height, 0);
+        }
         &mut self.buffer
     }
 
@@ -340,7 +551,23 @@ impl<D: HasDisplayHandle, W: HasWindowHandle> BufferInterface for BufferImpl<'_,
         0
     }
 
-    fn present(self) -> Result<(), SoftBufferError> {
+    fn present(mut self) -> Result<(), SoftBufferError> {
+        // b-terminal(#346): IOSurface 길(기본). 비어 있는 버퍼는 0으로 채운 프레임으로 본다(CGImage 길과 같다)
+        if crate::iosurface() && !self.imp.io_failed {
+            let n = self.imp.width * self.imp.height;
+            let mut buffer = self.buffer.0;
+            if buffer.len() != n {
+                buffer.clear();
+                buffer.resize(n, 0);
+            }
+            if self.imp.present_iosurface(&buffer).is_ok() {
+                return Ok(());
+            }
+            // 실패: 이 그림판은 이제 CGImage 길로 간다. 같은 프레임을 그 길로 올린다
+            self.imp.io_failed = true;
+            self.buffer = util::PixelBuffer(buffer);
+        }
+
         unsafe extern "C-unwind" fn release(
             _info: *mut c_void,
             data: NonNull<c_void>,
@@ -383,20 +610,7 @@ impl<D: HasDisplayHandle, W: HasWindowHandle> BufferInterface for BufferImpl<'_,
                 | CGImagePixelFormatInfo::Packed.0,
         );
 
-        // b-terminal(#97): 창이 다른 화면으로 옮겨 갔으면 그 화면의 색 공간으로 바꾼다(화면 색 공간을 쓸 때만).
-        // NSScreen 객체가 그대로면 번호를 묻지 않는다(deviceDescription은 프레임마다 묻기에 비싸다)
-        if crate::native_color_space() {
-            if let Some(screen) = screen_of(&self.imp.window_handle) {
-                let at = Retained::as_ptr(&screen) as usize;
-                if at != self.imp.screen {
-                    self.imp.screen = at;
-                    if let Some(d) = screen_number(&screen).filter(|d| *d != self.imp.display) {
-                        self.imp.color_space = objc2_core_graphics::CGDisplayCopyColorSpace(d);
-                        self.imp.display = d;
-                    }
-                }
-            }
-        }
+        self.imp.refresh_color_space();
 
         let image = unsafe {
             CGImage::new(
@@ -431,6 +645,18 @@ impl<D: HasDisplayHandle, W: HasWindowHandle> BufferInterface for BufferImpl<'_,
     fn present_with_damage(self, _damage: &[Rect]) -> Result<(), SoftBufferError> {
         self.present()
     }
+
+    // b-terminal(#346): 프레임을 IOSurface로 한 번만 옮긴다(버퍼를 거치지 않는다)
+    fn present_frame(mut self, frame: &[u32]) -> Result<(), SoftBufferError> {
+        if crate::iosurface() && !self.imp.io_failed && frame.len() == self.imp.width * self.imp.height {
+            if self.imp.present_iosurface(frame).is_ok() {
+                return Ok(());
+            }
+            self.imp.io_failed = true;
+        }
+        self.pixels_mut().copy_from_slice(frame);
+        self.present()
+    }
 }
 
 /// b-terminal(#79): 다시 쓸 버퍼들. release는 Core Animation의 다른 스레드에서 불릴 수 있어 잠근다
@@ -451,6 +677,27 @@ fn put_spare(buf: Vec<u32>) {
         if spare.len() < MAX_SPARE {
             spare.push(buf);
         }
+    }
+}
+
+/// b-terminal(#346): IOSurface는 프로세스 사이에서 공유하려고 만든 스레드 안전한 객체다(Apple 문서). `Surface`가 `Send`여야 해서 감싼다
+struct SendSurface(CFRetained<IOSurfaceRef>);
+
+impl std::fmt::Debug for SendSurface {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SendSurface").finish_non_exhaustive()
+    }
+}
+
+// SAFETY: IOSurfaceRef는 스레드 사이에서 쓰도록 만든 객체다(참조 세기·잠금이 안전하다).
+unsafe impl Send for SendSurface {}
+// SAFETY: 위와 같다.
+unsafe impl Sync for SendSurface {}
+
+impl Deref for SendSurface {
+    type Target = IOSurfaceRef;
+    fn deref(&self) -> &Self::Target {
+        &self.0
     }
 }
 

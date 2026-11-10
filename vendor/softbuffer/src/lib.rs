@@ -270,6 +270,13 @@ impl<D: HasDisplayHandle, W: HasWindowHandle> Buffer<'_, D, W> {
     pub fn present_with_damage(self, damage: &[Rect]) -> Result<(), SoftBufferError> {
         self.buffer_impl.present_with_damage(damage)
     }
+
+    /// b-terminal(#346): 완성한 프레임(폭×높이 픽셀, `buffer`의 크기와 같다)을 올린다.
+    /// 버퍼에 복사한 뒤 [`Self::present`]를 부르는 것과 같지만, macOS는 IOSurface로 곧장 한 번만 옮긴다.
+    /// 이 길을 쓰면 버퍼의 픽셀(`Deref`)은 건드리지 않는다
+    pub fn present_frame(self, frame: &[u32]) -> Result<(), SoftBufferError> {
+        self.buffer_impl.present_frame(frame)
+    }
 }
 
 impl<D: HasDisplayHandle, W: HasWindowHandle> ops::Deref for Buffer<'_, D, W> {
@@ -414,3 +421,19 @@ pub fn set_reuse_buffers(on: bool) {
 pub(crate) fn reuse_buffers() -> bool {
     REUSE.load(core::sync::atomic::Ordering::Relaxed)
 }
+
+/// b-terminal(#346): macOS에서 프레임을 IOSurface로 올릴지(실험 E5). 기본 켬. 끄면 예전 CGImage 길
+static IOSURFACE: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(true);
+
+/// b-terminal(#346): IOSurface 올리기를 켜고 끈다(재기용). 다음 올리기부터 따른다
+pub fn set_iosurface(on: bool) {
+    IOSURFACE.store(on, core::sync::atomic::Ordering::Relaxed);
+}
+
+#[allow(dead_code)]
+pub(crate) fn iosurface() -> bool {
+    IOSURFACE.load(core::sync::atomic::Ordering::Relaxed)
+}
+
+/// b-terminal(#346): IOSurface 묶음 고르기·줄 복사의 순수 논리(창 없이 시험한다)
+pub mod iosurface_pool;
