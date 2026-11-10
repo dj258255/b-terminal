@@ -61,7 +61,7 @@ const INITIAL_TABSTOPS: usize = 8;
 
 bitflags! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-    pub struct TermMode: u32 {
+    pub struct TermMode: u64 { // b-terminal(#304): u32에서 넓힘
         const NONE                    = 0;
         const SHOW_CURSOR             = 1;
         const APP_CURSOR              = 1 << 1;
@@ -97,7 +97,7 @@ bitflags! {
                                       | Self::REPORT_ALTERNATE_KEYS.bits()
                                       | Self::REPORT_ALL_KEYS_AS_ESC.bits()
                                       | Self::REPORT_ASSOCIATED_TEXT.bits();
-         const ANY                    = u32::MAX;
+         const ANY                    = u64::MAX;
     }
 }
 
