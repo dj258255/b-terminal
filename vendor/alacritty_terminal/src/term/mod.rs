@@ -30,6 +30,7 @@ use crate::vte::ansi::{
 pub mod cell;
 pub mod color;
 pub mod search;
+pub mod semantic; // b-terminal(#329)
 
 /// Minimum number of columns.
 ///
@@ -421,6 +422,8 @@ pub struct Term<T> {
 
     /// b-terminal(#327): XTSHIFTESCAPE로 프로그램이 정한 값(`None`은 정한 적 없음). Ghostty `flags.mouse_shift_capture`
     mouse_shift_capture: Option<bool>,
+    /// b-terminal(#329): OSC 133 상태(커서의 글 종류, 지우기 규칙, 다시 그리기)
+    semantic: semantic::SemanticState,
 }
 
 /// b-terminal 패치(#180): 한 칸의 결합 문자 목록에 이어 붙이는 글자 수 상한(join_grapheme)
@@ -577,6 +580,7 @@ impl<T> Term<T> {
             grapheme_anchor: None,
             protected_iso: false,
             mouse_shift_capture: None,
+            semantic: Default::default(), // b-terminal(#329)
             mode,
         }
     }
@@ -847,6 +851,9 @@ impl<T> Term<T> {
 
         // Resize damage information.
         self.damage.resize(num_cols, num_lines);
+
+        // b-terminal(#329): 프롬프트에 있으면 프롬프트 줄을 비워 셸이 다시 그리게 한다
+        self.semantic_clear_prompt_for_redraw();
     }
 
     /// Active terminal modes.
@@ -1329,6 +1336,8 @@ impl<T> Term<T> {
 
         trace!("Wrapping input");
 
+        let semantic = self.semantic_state(); // b-terminal(#329)
+
         // b-terminal(#311): 이어진 줄 표시는 화면 끝 칸에서 넘어갈 때만 한다. 오른쪽 여백에서 넘어가면 표시하지 않는다(Ghostty `printWrap`)
         if self.grid.cursor.point.column.0 + 1 == self.columns() {
             self.grid.cursor_cell().flags.insert(Flags::WRAPLINE);
@@ -1345,6 +1354,7 @@ impl<T> Term<T> {
         self.grid.cursor.point.column = Column(self.margin_left);
         self.grid.cursor.input_needs_wrap = false;
         self.damage_cursor();
+        self.semantic_after_wrap(semantic); // b-terminal(#329)
     }
 
     /// b-terminal(#294): 소프트 리셋(DECSTR)이 보호 켬과 마지막 보호 방식을 모두 끈다(Ghostty `softReset`).
@@ -1477,6 +1487,7 @@ impl<T> Term<T> {
                 self.selection = self.selection.take().filter(|s| !s.intersects_range(range));
             },
             ansi::ClearMode::All => {
+                self.semantic_scroll_clear_at_prompt(); // b-terminal(#329): 프롬프트면 먼저 스크롤
                 for line in 0..screen_lines {
                     self.clear_unprotected(Line(line), Column(0)..Column(columns));
                 }
@@ -1554,7 +1565,8 @@ impl<T> Term<T> {
         cursor_cell.c = c;
         cursor_cell.fg = fg;
         cursor_cell.bg = bg;
-        cursor_cell.flags = flags | Flags::WRITTEN; // b-terminal(#314)
+        // b-terminal(#314): 쓴 칸 표시. b-terminal(#329): 0번 칸에 둔 줄의 프롬프트 표시는 덮어써도 남긴다
+        cursor_cell.flags = flags | Flags::WRITTEN | (cursor_cell.flags & (Flags::ROW_PROMPT | Flags::ROW_PROMPT_CONTINUATION));
         cursor_cell.extra = extra;
     }
 
@@ -2030,7 +2042,7 @@ impl<T: EventListener> Handler for Term<T> {
         self.mouse_shift_capture = Some(capture);
     }
 
-    // b-terminal(#327): ED 22. 보이는 화면을 스크롤백으로 밀고 지운다(`ClearMode::All`이 하는 일과 같다). Ghostty `scrollClear`는
+    // b-terminal(#327): ED 22. 보이는 화면을 스크롤백으로 밀고 지운다(프롬프트의 ED 2와 같은 `scroll_clear_viewport`). Ghostty `scrollClear`는
     // 보호 칸을 가리지 않아 ISO 보호를 잠시 끈다. 대기 줄바꿈은 푼다(Terminal.zig 4459줄).
     // 그림(kitty)은 내용을 따라 스크롤백에 남고 보이는 자리에서만 사라진다(세션이 줄 번호로 쥔다)
     #[inline]
@@ -2039,9 +2051,17 @@ impl<T: EventListener> Handler for Term<T> {
         let blank = (0..self.screen_lines() as i32)
             .all(|l| self.grid[Line(l)][..].iter().all(crate::grid::GridCell::is_empty));
         if !blank {
-            let iso = mem::replace(&mut self.protected_iso, false);
-            Handler::clear_screen(self, ansi::ClearMode::All);
-            self.protected_iso = iso;
+            if self.mode.contains(TermMode::ALT_SCREEN) {
+                // 대체 화면은 스크롤백이 없어 지우기만 한다
+                let iso = mem::replace(&mut self.protected_iso, false);
+                Handler::clear_screen(self, ansi::ClearMode::All);
+                self.protected_iso = iso;
+            } else {
+                // b-terminal(#329): ED 2는 이제 프롬프트에서만 올리므로, ED 22는 늘 올리는 길을 직접 부른다
+                self.scroll_clear_viewport();
+                self.selection = None;
+                self.mark_fully_damaged();
+            }
         }
         self.grid.cursor.input_needs_wrap = false;
     }
@@ -2155,6 +2175,7 @@ impl<T: EventListener> Handler for Term<T> {
             self.grid.cursor.point.line += 1;
             self.damage_cursor();
         }
+        self.semantic_after_index(); // b-terminal(#329)
     }
 
     /// Set current position as a tabstop.
@@ -2574,18 +2595,10 @@ impl<T: EventListener> Handler for Term<T> {
                 self.selection = self.selection.take().filter(|s| !s.intersects_range(range));
             },
             ansi::ClearMode::All => {
-                if self.mode.contains(TermMode::ALT_SCREEN) {
+                // b-terminal(#329): 프롬프트에서 받았을 때만 화면을 스크롤백으로 올린다(Ghostty `eraseDisplay`의 "Clearing at a prompt").
+                // 그렇지 않으면 스크롤백에 쌓지 않고 지운다(alacritty 원래 동작은 언제나 올렸다)
+                if !self.semantic_scroll_clear_at_prompt() {
                     self.grid.reset_region(..);
-                } else {
-                    let old_offset = self.grid.display_offset();
-
-                    self.grid.clear_viewport();
-
-                    // Compute number of lines scrolled by clearing the viewport.
-                    let lines = self.grid.display_offset().saturating_sub(old_offset);
-
-                    self.vi_mode_cursor.point.line =
-                        (self.vi_mode_cursor.point.line - lines).grid_clamp(self, Boundary::Grid);
                 }
 
                 self.selection = None;
@@ -2629,6 +2642,7 @@ impl<T: EventListener> Handler for Term<T> {
         self.cursor_style = None;
         self.protected_iso = false; // b-terminal(#294)
         self.mouse_shift_capture = None; // b-terminal(#327)
+        self.semantic_reset(); // b-terminal(#329)
         self.grid.reset();
         self.inactive_grid.reset();
         self.scroll_region = Line(0)..Line(self.screen_lines() as i32);

@@ -335,7 +335,13 @@ mod tests {
     fn command_marks_are_still_sent_without_features() {
         each_shell(|sh| {
             let out = run_script(sh, Some(""), None, prompt_then_command(sh));
-            assert!(out.contains("\x1b]133;A\x07"), "{sh:?}: {out:?}");
+            // bash는 줄 편집기가 마지막 줄만 다시 그리므로 redraw=last를 알린다(Ghostty ghostty.bash 188줄, #329). zsh는 기본값(1)
+            let a = if matches!(sh, Shell::Bash) {
+                "\x1b]133;A;redraw=last\x07"
+            } else {
+                "\x1b]133;A\x07"
+            };
+            assert!(out.contains(a), "{sh:?}: {out:?}");
             assert!(out.contains("\x1b]133;C\x07"), "{sh:?}: {out:?}");
             assert!(out.contains("\x1b]633;E;"), "{sh:?}: {out:?}");
         });

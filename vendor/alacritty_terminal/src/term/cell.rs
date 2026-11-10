@@ -39,7 +39,11 @@ bitflags! {
         /// b-terminal(#314): 글자를 찍은 칸(`write_at_cursor`·DECALN). 지우기·밀기·새 줄은 이 표시가 없는 칸을 만든다.
         /// XTCHECKSUM이 "쓴 적 없는 칸"(Ghostty의 `!hasText`)을 가린다. 그리지 않고 `is_empty`에도 넣지 않는다
         const WRITTEN                   = 0b100_0000_0000_0000_0000;
-        const ALL_UNDERLINES            = Self::UNDERLINE.bits() | Self::DOUBLE_UNDERLINE.bits()
+        /// b-terminal(#329): 이 줄은 셸 프롬프트의 첫 줄이다(OSC 133;A·P). 줄의 0번 칸에만 둔다. 그리지 않고 `is_empty`에도 넣지 않는다
+        const ROW_PROMPT                = 0b1000_0000_0000_0000_0000;
+        /// b-terminal(#329): 이 줄은 이어진 프롬프트·입력 줄이다(k=c·s, 프롬프트 중 줄바꿈). 줄의 0번 칸에만 둔다
+        const ROW_PROMPT_CONTINUATION   = 0b1_0000_0000_0000_0000_0000;
+        const ALL_UNDERLINES           = Self::UNDERLINE.bits() | Self::DOUBLE_UNDERLINE.bits()
                                         | Self::UNDERCURL.bits() | Self::DOTTED_UNDERLINE.bits()
                                         | Self::DASHED_UNDERLINE.bits();
     }

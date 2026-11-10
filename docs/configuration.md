@@ -390,6 +390,9 @@ Ghostty 설정에 흔한 아래 동작은 `keybind`에 써도 경고가 나지 �
 탭에서 띄우는 zsh·bash에 셸 통합을 자동으로 싣습니다(Ghostty와 같은 방식, 사용자 설정은 그대로 읽힘. [assets/shell-integration](../assets/shell-integration/README.md)). 셸이 명령의 시작·끝·종료 코드(OSC 133)와 명령 글(OSC 633;E)을 알려 주면 터미널이 이렇게 씁니다.
 
 - Cmd-↑ / Cmd-↓: 앞·뒤 프롬프트로 스크롤
+- 프롬프트에서 화면 지우기(`clear`·Ctrl-L이 보내는 `CSI 2 J`): 지우기 전에 화면을 스크롤백으로 올립니다(Ghostty와 같음). 마지막 글 줄이 프롬프트(OSC 133;A·P)일 때만이고, 명령 출력이 아래에 있거나 셸 통합이 없으면 스크롤백에 쌓지 않고 지웁니다
+- 창 크기를 바꿀 때: 커서가 프롬프트에 있으면 프롬프트 줄을 비워 셸이 다시 그리게 합니다. 셸이 `OSC 133;A;redraw=0`을 보내면 하지 않고, `redraw=last`는 커서 줄만 비웁니다. 싣는 bash 스크립트는 `redraw=last`를 보내고 zsh는 기본값(전부 다시 그림)을 씁니다
+- OSC 133의 `L`(fresh-line), `N`, `P`, `I`와 `k=`(프롬프트 종류)·`aid=`도 읽습니다. `click_events=`·`cl=`은 읽기만 하고 프롬프트 클릭 동작은 아직 없습니다
 - 기본은 창을 보지 않을 때 10초(`notify-command-seconds`) 넘게 걸린 명령이 끝나면 데스크톱 알림. 실패하면 "명령이 실패했습니다". `notify-on-command-finish`를 적으면 Ghostty처럼 그 키들(`-action`, `-after`)을 따릅니다
 - `btctl run -- <명령>`: 그 탭에서 명령을 돌리고 끝날 때까지 기다려 출력을 찍고 그 종료 코드로 끝납니다. 에이전트가 다른 탭을 도구로 쓰는 길입니다. `btctl last`는 마지막으로 끝난 명령
 

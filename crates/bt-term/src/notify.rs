@@ -100,6 +100,8 @@ pub enum Signal {
     KittyPasteEvents(bool),
     /// 모드 5522의 DECRQM(`CSI ? 5522 $ p`)(#325)
     KittyPasteQuery,
+    /// OSC 133의 명령 하나를 옵션까지 읽은 것(#329). 같은 OSC에서 `Prompt`보다 먼저 나온다. 세션이 엔진 줄 표시·fresh-line에 적용한다
+    Semantic(crate::osc133::SemanticPrompt),
 }
 
 /// OSC 22 이름의 길이 상한(바이트). 가장 긴 이름("bottom_right_corner")보다 넉넉하다
@@ -467,6 +469,10 @@ impl Scanner {
     fn finish(&mut self, out: &mut Vec<(usize, Signal)>, at: usize, bel: bool) {
         let raw = std::mem::take(&mut self.buf);
         let text = String::from_utf8_lossy(&raw);
+        // OSC 133(#329): 옵션까지 읽은 신호를 먼저 낸다. 엔진이 fresh-line으로 커서를 옮긴 뒤에 `Prompt`가 그 줄을 적는다
+        if let Some(sp) = text.strip_prefix("133;").and_then(crate::osc133::parse) {
+            out.push((at, Signal::Semantic(sp)));
+        }
         if let Some(mut sig) = parse_osc(&text) {
             if let Signal::KittyColor { bel: b, .. } | Signal::KittyClipboard { bel: b, .. } = &mut sig {
                 *b = bel;
@@ -619,8 +625,11 @@ fn parse_osc(s: &str) -> Option<Signal> {
             let mut parts = rest.split(';');
             let kind = parts.next()?;
             Some(match kind {
+                // N(#329)은 A와 같고, I는 B와 같다(Ghostty `new_command`·`end_prompt_start_input_terminate_eol`)
                 "A" => Signal::Prompt(PromptMark::PromptStart),
+                "N" if code == "133" => Signal::Prompt(PromptMark::PromptStart),
                 "B" => Signal::Prompt(PromptMark::CommandStart),
+                "I" if code == "133" => Signal::Prompt(PromptMark::CommandStart),
                 "C" => Signal::Prompt(PromptMark::CommandExecuted),
                 "D" => Signal::Prompt(PromptMark::CommandFinished(
                     parts.next().and_then(|c| c.trim().parse().ok()),
@@ -1023,16 +1032,65 @@ mod tests {
     #[test]
     fn shell_integration_marks_and_their_positions() {
         let input = b"out\x1b]133;C\x07hello\n\x1b]133;D;2\x1b\\\x1b]133;A\x07$ \x1b]633;E;git commit -m a\\x3bb\x07";
-        let got = Scanner::default().feed_at(input);
+        // 133의 옵션을 읽은 신호(Semantic)는 따로 시험한다(#329)
+        let got: Vec<_> = Scanner::default()
+            .feed_at(input)
+            .into_iter()
+            .filter(|(_, s)| !matches!(s, Signal::Semantic(_)))
+            .collect();
         assert_eq!(got[0], (11, Signal::Prompt(PromptMark::CommandExecuted)));
         assert_eq!(&input[11..17], b"hello\n", "C가 끝난 자리부터 출력이다");
         assert_eq!(got[1].1, Signal::Prompt(PromptMark::CommandFinished(Some(2))));
         assert_eq!(got[2].1, Signal::Prompt(PromptMark::PromptStart));
         assert_eq!(got[3].1, Signal::CommandLine("git commit -m a;b".into()));
+        let d = Scanner::default().feed(b"\x1b]133;D\x07");
+        assert_eq!(d.last(), Some(&Signal::Prompt(PromptMark::CommandFinished(None))));
+    }
+
+    #[test]
+    fn osc133_emits_the_parsed_command_before_the_legacy_mark() {
+        use crate::osc133::{Action, PromptKind, Redraw};
+        let got = Scanner::default().feed(b"\x1b]133;A;aid=3;k=s;redraw=last\x07");
+        assert_eq!(got.len(), 2);
+        let Signal::Semantic(sp) = &got[0] else {
+            panic!("Semantic이 먼저다: {:?}", got[0]);
+        };
+        assert_eq!(sp.action, Action::FreshLineNewPrompt);
+        assert_eq!(sp.aid.as_deref(), Some("3"));
+        assert_eq!(sp.kind, Some(PromptKind::Secondary));
+        assert_eq!(sp.redraw, Some(Redraw::Last));
+        assert_eq!(got[1], Signal::Prompt(PromptMark::PromptStart));
+        // L·P는 탭 수준의 표지(프롬프트 목록·명령 알림)에는 영향이 없다
+        for osc in [&b"\x1b]133;L\x07"[..], b"\x1b]133;P;k=r\x07"] {
+            let got = Scanner::default().feed(osc);
+            assert_eq!(got.len(), 1);
+            assert!(matches!(got[0], Signal::Semantic(_)));
+        }
+        // N은 A처럼, I는 B처럼 탭 수준 표지에 알린다
         assert_eq!(
-            Scanner::default().feed(b"\x1b]133;D\x07"),
-            vec![Signal::Prompt(PromptMark::CommandFinished(None))]
+            Scanner::default().feed(b"\x1b]133;N;aid=x\x07")[1],
+            Signal::Prompt(PromptMark::PromptStart)
         );
+        assert_eq!(
+            Scanner::default().feed(b"\x1b]133;I\x07")[1],
+            Signal::Prompt(PromptMark::CommandStart)
+        );
+        // 잘못된 OSC는 아무것도 내지 않는다. 633은 예전 그대로 A~D만 읽는다
+        assert!(Scanner::default().feed(b"\x1b]133;Ax\x07").is_empty());
+        assert!(Scanner::default().feed(b"\x1b]133;L;x\x07").is_empty());
+        assert_eq!(
+            Scanner::default().feed(b"\x1b]633;A\x07"),
+            vec![Signal::Prompt(PromptMark::PromptStart)]
+        );
+        assert!(Scanner::default().feed(b"\x1b]633;N\x07").is_empty());
+    }
+
+    #[test]
+    fn osc133_split_across_reads_and_with_st_end() {
+        let mut s = Scanner::default();
+        assert!(s.feed(b"\x1b]133;A;k").is_empty());
+        let got = s.feed(b"=c\x1b\\");
+        assert!(matches!(&got[0], Signal::Semantic(sp) if sp.kind == Some(crate::osc133::PromptKind::Continuation)));
     }
 
     #[test]
