@@ -851,6 +851,29 @@ impl<T> Term<T> {
         self.margin_right
     }
 
+    /// b-terminal(#311): 여백 기준이 아닌 화면 좌표로 가는 이동(CUU·CUD·CNL·CPL). 원점 모드에서는 위아래 여백 안에 머문다.
+    /// `goto`는 원점 모드에서 좌표에 여백을 더하므로 상대 이동에 쓰면 어긋난다
+    fn move_to_screen(&mut self, line: i32, col: usize) {
+        let (min_y, max_y) = if self.mode.contains(TermMode::ORIGIN) {
+            (self.scroll_region.start, self.scroll_region.end - 1)
+        } else {
+            (Line(0), self.bottommost_line())
+        };
+
+        self.damage_cursor();
+        self.grid.cursor.point.line = cmp::max(cmp::min(Line(line), max_y), min_y);
+        self.grid.cursor.point.column = cmp::min(Column(col), self.last_column());
+        self.damage_cursor();
+        self.grid.cursor.input_needs_wrap = false;
+    }
+
+    /// b-terminal(#311): 왼쪽으로 가는 이동(CUB·BS)이 멈추는 칸. 왼쪽 여백 안이면 그 여백, 여백보다 왼쪽이면 0이다
+    /// (Ghostty `cursorLeft`의 `left_margin`)
+    #[inline]
+    fn left_limit(&self) -> usize {
+        if self.grid.cursor.point.column.0 < self.margin_left { 0 } else { self.margin_left }
+    }
+
     /// b-terminal(#311): 좌우 여백을 화면 전체 폭으로 되돌린다
     fn reset_margins(&mut self) {
         self.margin_left = 0;
@@ -1589,15 +1612,21 @@ impl<T: EventListener> Handler for Term<T> {
         let col = Column(col);
 
         trace!("Going to: line={line}, col={col}");
-        let (y_offset, max_y) = if self.mode.contains(TermMode::ORIGIN) {
-            (self.scroll_region.start, self.scroll_region.end - 1)
+        // b-terminal(#311): 원점 모드에서는 위아래 여백뿐 아니라 좌우 여백 기준이다(Ghostty `setCursorPos` 3235줄)
+        let (y_offset, max_y, x_offset, max_x) = if self.mode.contains(TermMode::ORIGIN) {
+            (
+                self.scroll_region.start,
+                self.scroll_region.end - 1,
+                self.margin_left,
+                self.margin_right.min(self.last_column().0),
+            )
         } else {
-            (Line(0), self.bottommost_line())
+            (Line(0), self.bottommost_line(), 0, self.last_column().0)
         };
 
         self.damage_cursor();
         self.grid.cursor.point.line = cmp::max(cmp::min(line + y_offset, max_y), Line(0));
-        self.grid.cursor.point.column = cmp::min(col, self.last_column());
+        self.grid.cursor.point.column = Column(cmp::min(col.saturating_add(x_offset), max_x));
         self.damage_cursor();
         self.grid.cursor.input_needs_wrap = false;
     }
@@ -1605,13 +1634,27 @@ impl<T: EventListener> Handler for Term<T> {
     #[inline]
     fn goto_line(&mut self, line: i32) {
         trace!("Going to line: {line}");
-        self.goto(line, self.grid.cursor.point.column.0)
+        // 원점 모드에서 칸은 왼쪽 여백 기준으로 바꿔 넘긴다(Ghostty `setCursorRow`)
+        let column = self.grid.cursor.point.column.0;
+        let column = if self.mode.contains(TermMode::ORIGIN) {
+            column.saturating_sub(self.margin_left)
+        } else {
+            column
+        };
+        self.goto(line, column)
     }
 
     #[inline]
     fn goto_col(&mut self, col: usize) {
         trace!("Going to column: {col}");
-        self.goto(self.grid.cursor.point.line.0, col)
+        // 원점 모드에서 줄은 위 여백 기준으로 바꿔 넘긴다(Ghostty `setCursorCol`)
+        let line = self.grid.cursor.point.line.0;
+        let line = if self.mode.contains(TermMode::ORIGIN) {
+            (line - self.scroll_region.start.0).max(0)
+        } else {
+            line
+        };
+        self.goto(line, col)
     }
 
     #[inline]
@@ -1649,7 +1692,7 @@ impl<T: EventListener> Handler for Term<T> {
 
         let line = self.grid.cursor.point.line - lines;
         let column = self.grid.cursor.point.column;
-        self.goto(line.0, column.0)
+        self.move_to_screen(line.0, column.0)
     }
 
     #[inline]
@@ -1658,13 +1701,19 @@ impl<T: EventListener> Handler for Term<T> {
 
         let line = self.grid.cursor.point.line + lines;
         let column = self.grid.cursor.point.column;
-        self.goto(line.0, column.0)
+        self.move_to_screen(line.0, column.0)
     }
 
     #[inline]
     fn move_forward(&mut self, cols: usize) {
         trace!("Moving forward: {cols}");
-        let last_column = cmp::min(self.grid.cursor.point.column + cols, self.last_column());
+        // b-terminal(#311): 오른쪽 여백 안이면 그 여백까지, 여백 오른쪽이면 화면 끝까지(Ghostty `cursorRight`)
+        let limit = if self.grid.cursor.point.column.0 <= self.margin_right {
+            Column(self.margin_right.min(self.last_column().0))
+        } else {
+            self.last_column()
+        };
+        let last_column = cmp::min(self.grid.cursor.point.column + cols, limit);
 
         let cursor_line = self.grid.cursor.point.line.0 as usize;
         self.damage.damage_line(cursor_line, self.grid.cursor.point.column.0, last_column.0);
@@ -1681,7 +1730,7 @@ impl<T: EventListener> Handler for Term<T> {
             self.reverse_wrap_left(cols);
             return;
         }
-        let column = self.grid.cursor.point.column.saturating_sub(cols);
+        let column = self.grid.cursor.point.column.saturating_sub(cols).max(self.left_limit());
 
         let cursor_line = self.grid.cursor.point.line.0 as usize;
         self.damage.damage_line(cursor_line, column, self.grid.cursor.point.column.0);
@@ -1770,7 +1819,16 @@ impl<T: EventListener> Handler for Term<T> {
             },
             6 => {
                 let pos = self.grid.cursor.point;
-                let text = format!("\x1b[{};{}R", pos.line + 1, pos.column + 1);
+                // b-terminal(#311): 원점 모드에서는 위 여백·왼쪽 여백 기준으로 답한다(Ghostty stream_handler.zig 854줄)
+                let (line, column) = if self.mode.contains(TermMode::ORIGIN) {
+                    (
+                        (pos.line.0 - self.scroll_region.start.0).max(0) as usize,
+                        pos.column.0.saturating_sub(self.margin_left),
+                    )
+                } else {
+                    (pos.line.0 as usize, pos.column.0)
+                };
+                let text = format!("\x1b[{};{}R", line + 1, column + 1);
                 self.event_proxy.send_event(Event::PtyWrite(text));
             },
             _ => debug!("unknown device status query: {arg}"),
@@ -1782,7 +1840,9 @@ impl<T: EventListener> Handler for Term<T> {
         trace!("Moving down and cr: {lines}");
 
         let line = self.grid.cursor.point.line + lines;
-        self.goto(line.0, 0)
+        let column = self.grid.cursor.point.column;
+        self.move_to_screen(line.0, column.0);
+        self.carriage_return();
     }
 
     #[inline]
@@ -1790,7 +1850,9 @@ impl<T: EventListener> Handler for Term<T> {
         trace!("Moving up and cr: {lines}");
 
         let line = self.grid.cursor.point.line - lines;
-        self.goto(line.0, 0)
+        let column = self.grid.cursor.point.column;
+        self.move_to_screen(line.0, column.0);
+        self.carriage_return();
     }
 
     /// Insert tab at cursor position.
@@ -1812,7 +1874,10 @@ impl<T: EventListener> Handler for Term<T> {
             }
 
             loop {
-                if (self.grid.cursor.point.column + 1) == self.columns() {
+                // b-terminal(#311): 오른쪽 여백까지만 간다. 여백 오른쪽에서는 움직이지 않는다(Ghostty `horizontalTab` 2958줄)
+                if (self.grid.cursor.point.column + 1) == self.columns()
+                    || self.grid.cursor.point.column.0 >= self.margin_right
+                {
                     break;
                 }
 
@@ -1836,7 +1901,7 @@ impl<T: EventListener> Handler for Term<T> {
             return;
         }
 
-        if self.grid.cursor.point.column > Column(0) {
+        if self.grid.cursor.point.column > Column(self.left_limit()) {
             let line = self.grid.cursor.point.line.0 as usize;
             let column = self.grid.cursor.point.column.0;
             self.grid.cursor.point.column -= 1;
@@ -1849,7 +1914,14 @@ impl<T: EventListener> Handler for Term<T> {
     #[inline]
     fn carriage_return(&mut self) {
         trace!("Carriage return");
-        let new_col = 0;
+        // b-terminal(#311): 원점 모드이거나 왼쪽 여백 오른쪽에 있으면 왼쪽 여백으로, 아니면 0으로(Ghostty `carriageReturn` 2516줄)
+        let new_col = if self.mode.contains(TermMode::ORIGIN)
+            || self.grid.cursor.point.column.0 >= self.margin_left
+        {
+            self.margin_left
+        } else {
+            0
+        };
         let line = self.grid.cursor.point.line.0 as usize;
         self.damage.damage_line(line, new_col, self.grid.cursor.point.column.0);
         self.grid.cursor.point.column = Column(new_col);
@@ -2016,11 +2088,14 @@ impl<T: EventListener> Handler for Term<T> {
         for _ in 0..count {
             let mut col = self.grid.cursor.point.column;
 
-            if col == 0 {
+            // b-terminal(#311): 원점 모드에서는 왼쪽 여백이 한계다. 한계 안에서 탭 자리가 없으면 한계까지 간다(Ghostty `horizontalTabBack` 2971줄)
+            let left_limit = if self.mode.contains(TermMode::ORIGIN) { self.margin_left } else { 0 };
+            if col.0 <= left_limit {
                 break;
             }
 
-            for i in (0..(col.0)).rev() {
+            col = index::Column(left_limit);
+            for i in (left_limit..(self.grid.cursor.point.column.0)).rev() {
                 if self.tabs[index::Column(i)] {
                     col = index::Column(i);
                     break;
@@ -2042,11 +2117,12 @@ impl<T: EventListener> Handler for Term<T> {
         for _ in 0..count {
             let mut col = self.grid.cursor.point.column;
 
-            if col == num_cols - 1 {
+            // b-terminal(#311): 오른쪽 여백까지만 간다(Ghostty `horizontalTab`)
+            if col == num_cols - 1 || col.0 >= self.margin_right {
                 break;
             }
 
-            for i in col.0 + 1..num_cols {
+            for i in col.0 + 1..=self.margin_right.min(num_cols - 1) {
                 col = index::Column(i);
                 if self.tabs[col] {
                     break;
@@ -2582,7 +2658,11 @@ impl<T: EventListener> Handler for Term<T> {
             },
             NamedPrivateMode::AlternateScroll => self.mode.remove(TermMode::ALTERNATE_SCROLL),
             NamedPrivateMode::LineWrap => self.mode.remove(TermMode::LINE_WRAP),
-            NamedPrivateMode::Origin => self.mode.remove(TermMode::ORIGIN),
+            // b-terminal(#311): 끌 때도 커서를 원점으로 보낸다(Ghostty stream_handler.zig 698줄: 켜고 끌 때 `setCursorPos(1, 1)`)
+            NamedPrivateMode::Origin => {
+                self.mode.remove(TermMode::ORIGIN);
+                self.goto(0, 0);
+            },
             NamedPrivateMode::ColumnMode => self.deccolm(),
             NamedPrivateMode::BlinkingCursor => {
                 let style = self.cursor_style.get_or_insert(self.config.default_cursor_style);

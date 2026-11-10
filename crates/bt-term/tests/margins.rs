@@ -60,7 +60,8 @@ impl T {
                 if cell.flags.contains(Flags::WIDE_CHAR_SPACER) {
                     continue;
                 }
-                s.push(cell.c);
+                // alacritty는 탭이 지나간 빈 칸에 탭 글자를 남긴다(복사용). Ghostty 시험과 맞추려고 공백으로 본다
+                s.push(if cell.c == '\t' { ' ' } else { cell.c });
             }
             lines.push(s.trim_end().to_string());
         }
@@ -73,6 +74,9 @@ impl T {
     fn cursor(&self) -> (usize, usize) {
         let p = self.term.grid().cursor.point;
         (p.column.0, p.line.0 as usize)
+    }
+    fn wrap_pending(&self) -> bool {
+        self.term.grid().cursor.input_needs_wrap
     }
     fn margins(&self) -> (usize, usize) {
         (self.term.left_margin(), self.term.right_margin())
@@ -199,6 +203,176 @@ fn ris_clears_the_margins_and_mode() {
     assert_eq!(t.margins(), (0, 5), "RIS가 69도 껐다");
 }
 
+// ---- 2단계: 커서 이동, CR, 원점 모드, 탭 ----
+
+#[test]
+fn carriage_return_goes_to_the_left_margin_in_origin_mode() {
+    // "carriage return origin mode moves to left margin"
+    let mut t = T::new(5, 5);
+    t.feed("\x1b[?69h\x1b[3;5s\x1b[?6h\x1b[1;1H");
+    assert_eq!(t.cursor(), (2, 0));
+    t.feed("\x1b[2C\r");
+    assert_eq!(t.cursor(), (2, 0));
+}
+
+#[test]
+fn carriage_return_left_of_the_left_margin_goes_to_zero() {
+    // "carriage return left of left margin moves to zero"
+    let mut t = T::new(5, 5);
+    t.feed("\x1b[?69h\x1b[3;5s\x1b[1;2H\r");
+    assert_eq!(t.cursor(), (0, 0));
+}
+
+#[test]
+fn carriage_return_right_of_the_left_margin_goes_to_the_left_margin() {
+    // "carriage return right of left margin moves to left margin"
+    let mut t = T::new(5, 5);
+    t.feed("\x1b[?69h\x1b[3;5s\x1b[1;4H\r");
+    assert_eq!(t.cursor(), (2, 0));
+    // 오른쪽 여백 밖(여백이 3~4칸이고 커서가 5번째 칸)에서도 왼쪽 여백보다 오른쪽이면 왼쪽 여백이다
+    let mut t = T::new(6, 5);
+    t.feed("\x1b[?69h\x1b[3;4s\x1b[1;6H\r");
+    assert_eq!(t.cursor(), (2, 0));
+}
+
+#[test]
+fn carriage_return_clears_the_pending_wrap_and_cnl_cpl_use_it() {
+    let mut t = T::new(5, 5);
+    t.feed("hello");
+    assert!(t.wrap_pending());
+    t.feed("\r");
+    assert!(!t.wrap_pending());
+    // CNL(`CSI E`)은 내려가서 CR이다: 왼쪽 여백으로 간다
+    let mut t = T::new(6, 5);
+    t.feed("\x1b[?69h\x1b[3;5s\x1b[1;5H\x1b[E");
+    assert_eq!(t.cursor(), (2, 1));
+    t.feed("\x1b[4G\x1b[F");
+    assert_eq!(t.cursor(), (2, 0));
+}
+
+#[test]
+fn cursor_forward_stops_at_the_right_margin_and_runs_to_the_edge_outside_it() {
+    // Terminal.zig `cursorRight`: 여백 안이면 오른쪽 여백까지, 오른쪽 여백 밖이면 화면 끝까지
+    let mut t = T::new(10, 3);
+    t.feed("\x1b[?69h\x1b[3;5s\x1b[1;4H\x1b[99C");
+    assert_eq!(t.cursor(), (4, 0));
+    t.feed("\x1b[1;7H\x1b[99C");
+    assert_eq!(t.cursor(), (9, 0));
+}
+
+#[test]
+fn cursor_back_and_backspace_stop_at_the_left_margin_and_run_to_zero_outside_it() {
+    // Terminal.zig `cursorLeft`(역방향 줄바꿈이 꺼진 갈래): 왼쪽 여백 안이면 왼쪽 여백까지, 왼쪽 여백 왼쪽이면 0까지
+    let mut t = T::new(10, 3);
+    t.feed("\x1b[?69h\x1b[3;8s\x1b[1;6H\x1b[99D");
+    assert_eq!(t.cursor(), (2, 0));
+    t.feed("\x08");
+    assert_eq!(t.cursor(), (2, 0));
+    t.feed("\x1b[1;2H\x1b[99D");
+    assert_eq!(t.cursor(), (0, 0));
+    t.feed("\x1b[1;2H\x08");
+    assert_eq!(t.cursor(), (0, 0));
+}
+
+#[test]
+fn cup_is_relative_to_the_margins_in_origin_mode() {
+    // "cursorPos relative to origin with left/right": 위 2~3줄(0부터), 좌우 2~4칸
+    let mut t = T::new(5, 5);
+    t.feed("\x1b[3;4r\x1b[?69h\x1b[3;5s\x1b[?6h\x1b[1;1HX");
+    assert_eq!(t.plain(), "\n\n  X");
+}
+
+#[test]
+fn cup_is_limited_to_the_margins_in_origin_mode() {
+    // "cursorPos limits with full scroll region"
+    let mut t = T::new(5, 5);
+    t.feed("\x1b[3;4r\x1b[?69h\x1b[3;5s\x1b[?6h\x1b[500;500HX");
+    assert_eq!(t.plain(), "\n\n\n    X");
+}
+
+#[test]
+fn cha_and_vpa_are_relative_in_origin_mode() {
+    // Ghostty `setCursorCol`·`setCursorRow`는 setCursorPos를 거친다: 원점 모드에서는 여백 기준이다
+    let mut t = T::new(10, 6);
+    t.feed("\x1b[3;5r\x1b[?69h\x1b[4;8s\x1b[?6h\x1b[2G");
+    assert_eq!(t.cursor(), (4, 2), "CHA 2는 왼쪽 여백(3) 다음 칸, 줄은 그대로");
+    t.feed("\x1b[3d");
+    assert_eq!(t.cursor(), (4, 4), "VPA 3은 위 여백(2)에서 둘 아래, 칸은 그대로");
+    t.feed("\x1b[99G");
+    assert_eq!(t.cursor().0, 7, "오른쪽 여백에서 멈춘다");
+}
+
+#[test]
+fn cuu_and_cud_move_by_screen_lines_in_origin_mode() {
+    // 원점 모드에서도 CUU·CUD는 지금 줄에서 상대로 움직인다(여백 칸을 다시 더하지 않는다)
+    let mut t = T::new(10, 6);
+    t.feed("\x1b[3;6r\x1b[?69h\x1b[4;8s\x1b[?6h\x1b[2;2H");
+    assert_eq!(t.cursor(), (4, 3));
+    t.feed("\x1b[A");
+    assert_eq!(t.cursor(), (4, 2));
+    t.feed("\x1b[2B");
+    assert_eq!(t.cursor(), (4, 4));
+}
+
+#[test]
+fn decstbm_and_decom_home_the_cursor_to_the_margin_corner_in_origin_mode() {
+    let mut t = T::new(5, 5);
+    t.feed("\x1b[?69h\x1b[3;5s\x1b[?6h");
+    assert_eq!(t.cursor(), (2, 0));
+    t.feed("\x1b[2;4r");
+    assert_eq!(t.cursor(), (2, 1));
+    // 원점 모드를 끄면 Ghostty처럼 화면 원점으로 간다
+    t.feed("\x1b[?6l");
+    assert_eq!(t.cursor(), (0, 0));
+}
+
+#[test]
+fn horizontal_tab_stops_at_the_right_margin() {
+    // "horizontal tabs with right margin": 여백 2~5, 탭 자리가 여백 안에 없으면 오른쪽 여백까지
+    let mut t = T::new(20, 3);
+    t.feed("\x1b[?69h\x1b[3;6s");
+    t.feed("X\tA");
+    assert_eq!(t.plain(), "X    A");
+}
+
+#[test]
+fn horizontal_tab_right_of_the_right_margin_does_not_move() {
+    // Terminal.zig `horizontalTab`: `while x < right`라 여백 오른쪽에서는 움직이지 않는다
+    let mut t = T::new(20, 3);
+    t.feed("\x1b[?69h\x1b[3;6s\x1b[1;8H\t");
+    assert_eq!(t.cursor(), (7, 0));
+}
+
+#[test]
+fn horizontal_tab_back_stops_at_the_left_margin_in_origin_mode() {
+    // "horizontal tabs with left margin in origin mode"
+    let mut t = T::new(10, 3);
+    t.feed("\x1b[?69h\x1b[3;6s\x1b[?6h\x1b[1;2HX\x1b[ZA");
+    assert_eq!(t.plain(), "  AX");
+}
+
+#[test]
+fn horizontal_tab_back_ignores_the_margin_outside_origin_mode() {
+    let mut t = T::new(20, 3);
+    t.feed("\x1b[?69h\x1b[3;6s\x1b[1;4H\x1b[Z");
+    assert_eq!(t.cursor(), (0, 0));
+}
+
+#[test]
+fn horizontal_tab_back_with_cursor_before_the_left_margin() {
+    // "horizontal tab back with cursor before left margin": 여백 왼쪽 칸에서는 움직이지 않는다
+    let mut t = T::new(10, 3);
+    t.feed("\x1b7\x1b[?6h\x1b[?69h\x1b[5s\x1b8\x1b[ZX");
+    assert_eq!(t.plain(), "X");
+}
+
+#[test]
+fn cht_stops_at_the_right_margin() {
+    let mut t = T::new(30, 3);
+    t.feed("\x1b[?69h\x1b[3;12s\x1b[1;1H\x1b[3I");
+    assert_eq!(t.cursor(), (11, 0));
+}
+
 // ---- DECRQM(PTY) ----
 
 fn sh(script: &str, size: GridSize) -> (Session, Receiver<SessionEvent>) {
@@ -249,4 +423,26 @@ fn decrqm_reports_mode_69_off_on_off() {
     let got: Vec<&str> = line["ans=".len()..].split(',').collect();
     let want = |state: u8| hex(&format!("\x1b[?69;{state}$y"));
     assert_eq!(got, [want(2), want(1), want(2)]);
+}
+
+#[test]
+fn cursor_position_report_is_relative_to_the_margins_in_origin_mode() {
+    // Ghostty stream_handler.zig `cursorReportPos`(854줄): 원점 모드에서는 위 여백·왼쪽 여백 기준으로 답한다
+    // CUP 3;4를 보냈으니 원점 기준 3;4로 답한다(절대 좌표면 4;6)
+    let want = "\x1b[3;4R";
+    let n = want.len();
+    let read = format!("$(dd bs=1 count={n} 2>/dev/null | od -An -tx1 | tr -d ' \\n')");
+    let script = format!(
+        "stty raw -echo; printf '\\033[2;4r\\033[?69h\\033[3;8s\\033[?6h\\033[3;4H\\033[6n'; a={read}; stty sane; printf 'ans=%s\\n' \"$a\""
+    );
+    let (s, rx) = sh(&script, GridSize::new(80, 8));
+    wait_exit(&rx);
+    let text = s.snapshot().text();
+    // 여백 안에서 찍혀 줄 앞에 공백이 붙는다
+    let line = text
+        .lines()
+        .map(str::trim_start)
+        .find(|l| l.starts_with("ans="))
+        .unwrap_or_else(|| panic!("답이 없다: {text}"));
+    assert_eq!(&line["ans=".len()..], hex(want));
 }
