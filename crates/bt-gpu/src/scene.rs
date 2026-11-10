@@ -12,8 +12,8 @@
 use bt_core::Rgb;
 use bt_render::font::CellMetrics;
 use bt_render::{
-    CursorStyle, DrawCell, DrawCursor, FontStyle, Fonts, GridView, Underline, char_cells, lock_rects, sprite,
-    text_color,
+    CursorStyle, DrawCell, DrawCursor, FontStyle, Fonts, GridView, Underline, char_cells, ligatures, lock_rects,
+    sprite, text_color,
 };
 
 use crate::glyphs::{Entry, GlyphCache, Key};
@@ -63,6 +63,8 @@ pub struct Scene {
     pub rects: Vec<RectInst>,
     /// `rects[..rects_pre]`는 글자 앞(배경), 나머지는 글자 뒤(커서)
     pub rects_pre: usize,
+    /// `rects[..rects_bg]`는 칸 바탕(`rects_pre`의 앞쪽). 이 사각형은 아래 픽셀을 덮어쓴다(CPU `fill_rect`와 같다)
+    pub rects_bg: usize,
     pub glyphs: Vec<GlyphInst>,
     /// `glyphs[..glyphs_pre]`는 칸의 글자, 나머지는 상자 커서 안의 글자
     pub glyphs_pre: usize,
@@ -70,6 +72,8 @@ pub struct Scene {
     see_through: Option<(Rgb, u8)>,
     /// `background-opacity-cells`(CPU `Canvas::set_cells_alpha`): 색 바탕 칸의 알파
     cells_alpha: Option<u8>,
+    /// 배경 그림 층(CPU `Canvas::set_backdrop`): 이 색 바탕은 아래층의 그림 그대로 두므로 그리지 않는다
+    backdrop: Option<Rgb>,
 }
 
 fn rgba(c: Rgb, a: u8) -> [u8; 4] {
@@ -80,6 +84,11 @@ impl Scene {
     /// 투명 창: 앞으로 `bg` 바탕은 `alpha`만큼만 덮는다(CPU `Canvas::set_see_through`와 같다)
     pub fn set_see_through(&mut self, bg: Rgb, alpha: u8) {
         self.see_through = Some((bg, alpha));
+    }
+
+    /// 배경 그림 층이 아래층에 깔렸다(CPU `Canvas::set_backdrop`와 같다): `bg` 바탕은 그리지 않고 그림이 보이게 둔다
+    pub fn set_backdrop(&mut self, bg: Option<Rgb>) {
+        self.backdrop = bg;
     }
 
     /// 투명 창을 끈다
@@ -97,6 +106,11 @@ impl Scene {
         self.see_through.is_some() || self.cells_alpha.is_some()
     }
 
+    /// CPU `Canvas::is_default_bg`: 투명 창·배경 그림이 기본 바탕색으로 다루는 색인가
+    fn is_default_bg(&self, c: Rgb) -> bool {
+        self.see_through.is_some_and(|(bg, _)| bg == c) || self.backdrop == Some(c)
+    }
+
     /// CPU `Canvas::solid`: 투명 창의 기본 바탕색이면 그 알파, 아니면 불투명
     fn solid_alpha(&self, c: Rgb) -> u8 {
         match self.see_through {
@@ -108,7 +122,7 @@ impl Scene {
     /// CPU `Canvas::fill_rect_cell`: 색 바탕 칸은 `cells_alpha`, 기본 바탕색은 `solid_alpha`
     fn cell_alpha(&self, c: Rgb) -> u8 {
         match self.cells_alpha {
-            Some(a) if self.see_through.is_none_or(|(bg, _)| bg != c) => a,
+            Some(a) if !self.is_default_bg(c) => a,
             _ => self.solid_alpha(c),
         }
     }
@@ -117,6 +131,7 @@ impl Scene {
         self.rects.clear();
         self.glyphs.clear();
         self.rects_pre = 0;
+        self.rects_bg = 0;
         self.glyphs_pre = 0;
     }
 
@@ -176,11 +191,14 @@ impl Scene {
                 } else {
                     (cell.bg, self.cell_alpha(cell.bg))
                 };
-                if transparent || color != clear {
+                // 배경 그림 층이 있으면 그 바탕색 칸은 아래층의 그림 그대로 둔다(CPU `fill_rect`가 층을 베끼는 자리다)
+                let shows_backdrop = self.backdrop == Some(color);
+                if (transparent || color != clear) && !shows_backdrop {
                     self.rect(col as i32 * cw, row as i32 * ch, m.width, m.height, color, alpha);
                 }
             }
         }
+        self.rects_bg = self.rects.len();
         // 2) 윗줄·취소선(글자색 줄)
         for row in 0..view.rows {
             let py = row as i32 * ch;
@@ -220,6 +238,9 @@ impl Scene {
         for row in 0..view.rows {
             let py = row as i32 * ch;
             let mut skip_until = 0;
+            // 묶음 다듬기(합자)는 CPU와 같은 함수가 정한다(#96, #359). 커서 칸에서 끊는 것도 같다
+            let cursor_col = view.cursor.filter(|c| c.row == row).map(|c| c.col);
+            let subs = ligatures(fonts, &view.cells[row * view.cols..(row + 1) * view.cols], cursor_col);
             for col in 0..view.cols {
                 let cell = &view.cells[row * view.cols + col];
                 if cell.spacer || col < skip_until {
@@ -272,12 +293,19 @@ impl Scene {
                 } else {
                     None
                 };
-                match emoji {
-                    Some(e) => {
+                // 합자 글리프는 칸 자리에 그대로 둔다(앞 칸으로 넘쳐 그리는 것이 글꼴의 뜻이다, CPU와 같다)
+                let style = FontStyle::from_flags(cell.bold, cell.italic);
+                let lig = match subs.get(col) {
+                    Some(&gid) if gid != 0 => cache.get(Key::GlyphId(gid, style), || fonts.glyph_by_id(gid, style)),
+                    _ => None,
+                };
+                match (emoji, lig) {
+                    (Some(e), _) => {
                         let ox = (m.width as i32 * span as i32 - e.w as i32) / 2;
                         self.glyph(px + ox, py + m.baseline as i32, e, cell.fg);
                     }
-                    None => self.cell_text(cache, fonts, m, px, py, span, cell, fg),
+                    (None, Some(e)) => self.glyph(px, py + m.baseline as i32, e, fg),
+                    (None, None) => self.cell_text(cache, fonts, m, px, py, span, cell, fg),
                 }
             }
         }

@@ -276,8 +276,9 @@ pub(crate) fn stroke_missing_glyph(canvas: &mut Canvas, px: i32, py: i32, w: u32
 
 /// 한 줄에서 합자로 바꿀 글리프 번호(칸마다, 0은 그대로, #96).
 /// 같은 꼴이고 기본 글꼴에 있는 한 칸 글자가 이어진 묶음만 다듬는다. 공백·넓은 글자·이모지·커서 칸에서 끊는다
-/// (커서 밑의 합자는 풀어 보인다. Ghostty와 같다). 공백에서 끊으므로 같은 낱말은 캐시에서 꺼낸다
-fn ligatures(fonts: &mut Fonts, row: &[DrawCell], cursor_col: Option<usize>) -> Vec<u16> {
+/// (커서 밑의 합자는 풀어 보인다. Ghostty와 같다). 공백에서 끊으므로 같은 낱말은 캐시에서 꺼낸다.
+/// GPU 렌더러도 이 함수를 쓴다(묶음 규칙은 한 벌, #359)
+pub fn ligatures(fonts: &mut Fonts, row: &[DrawCell], cursor_col: Option<usize>) -> Vec<u16> {
     let mut subs = vec![0u16; row.len()];
     // `font-shaping-break`에서 `cursor`를 끄면 커서 칸도 묶음에 넣는다(#174)
     let cursor_col = cursor_col.filter(|_| fonts.breaks_shaping_at_cursor());

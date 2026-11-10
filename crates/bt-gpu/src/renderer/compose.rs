@@ -43,6 +43,8 @@ pub(super) struct LayerTex {
 
 /// 칸 하나가 인스턴스 목록에서 차지하는 구간(글자 앞 사각형, 글자, 글자 뒤 사각형, 상자 커서 안 글자 차례)
 struct Segment {
+    /// 칸 바탕(아래층 위에 덮어쓴다)
+    rects_bg: Range<usize>,
     rects_pre: Range<usize>,
     rects_post: Range<usize>,
     glyphs_pre: Range<usize>,
@@ -321,7 +323,8 @@ impl GpuRenderer {
             ls.glyphs.extend_from_slice(&self.scene.glyphs);
             shift_instances(&mut ls.rects[r0..], &mut ls.glyphs[g0..], p.x, p.y);
             ls.segments.push(Segment {
-                rects_pre: r0..r0 + self.scene.rects_pre,
+                rects_bg: r0..r0 + self.scene.rects_bg,
+                rects_pre: r0 + self.scene.rects_bg..r0 + self.scene.rects_pre,
                 rects_post: r0 + self.scene.rects_pre..ls.rects.len(),
                 glyphs_pre: g0..g0 + self.scene.glyphs_pre,
                 glyphs_post: g0 + self.scene.glyphs_pre..ls.glyphs.len(),
@@ -395,12 +398,16 @@ impl GpuRenderer {
                 pass.draw(0..3, 0..1);
             }
             pass.set_bind_group(0, &self.bind_group, &[]);
+            let draw_rects_with =
+                |pass: &mut wgpu::RenderPass<'_>, pipeline: &wgpu::RenderPipeline, range: &Range<usize>| {
+                    if let (Some(buf), false) = (&self.rect_buf, range.is_empty()) {
+                        pass.set_pipeline(pipeline);
+                        pass.set_vertex_buffer(0, buf.slice(..));
+                        pass.draw(0..6, range.start as u32..range.end as u32);
+                    }
+                };
             let draw_rects = |pass: &mut wgpu::RenderPass<'_>, range: &Range<usize>| {
-                if let (Some(buf), false) = (&self.rect_buf, range.is_empty()) {
-                    pass.set_pipeline(&self.rect_pipeline);
-                    pass.set_vertex_buffer(0, buf.slice(..));
-                    pass.draw(0..6, range.start as u32..range.end as u32);
-                }
+                draw_rects_with(pass, &self.rect_pipeline, range)
             };
             let draw_glyphs = |pass: &mut wgpu::RenderPass<'_>, range: &Range<usize>| {
                 if let (Some(buf), false) = (&self.glyph_buf, range.is_empty()) {
@@ -410,6 +417,7 @@ impl GpuRenderer {
                 }
             };
             for s in &ls.segments {
+                draw_rects_with(&mut pass, &self.rect_replace_pipeline, &s.rects_bg);
                 draw_rects(&mut pass, &s.rects_pre);
                 draw_glyphs(&mut pass, &s.glyphs_pre);
                 draw_rects(&mut pass, &s.rects_post);

@@ -937,8 +937,6 @@ macOS의 Carbon `EnableSecureEventInput`은 켜 있는 동안 키 입력이 다�
 5. 허락한 의존성은 `wgpu`(기능은 `std`·`parking_lot`·`wgpu-core`·`wgsl`·`metal`·`vulkan`만)와 `pollster`(어댑터 요청을 막아 기다림)다. wgpu 30이 러스트 1.87을 요구해 작업 공간 `rust-version`을 1.85에서 1.87로 올렸다. 이 때문에 clippy가 `is_multiple_of`를 권하기 시작해 `bt-core`와 `bt-term`의 두 줄을 그렇게 고쳤다.
 
 ### 하지 않은 것(CPU 렌더러가 하지만 GPU 렌더러에 없는 것)
-- 합자(`ligatures`, 같은 글꼴의 낱말을 이어 다듬기). 글자를 칸마다 따로 그린다. 글리프 번호로 그리는 길(`glyph_by_id`)을 아틀라스 열쇠에 더해야 해서 남겼다
-- 배경 그림 층(`set_backdrop`). 층을 베끼는 일은 칸을 그리기 전에 층을 합치는 렌더러 쪽 일이라 앱 연결(ADR-036)과 함께 다룬다
 - 바뀐 줄만 다시 그리기(`draw_grid_rows`). 늘 통째로 그린다
 - kitty 그림, 스크롤바, 탭 막대, 팔레트 같은 덧그림, 사용자 셰이더, Linux에서의 실행(Linux는 시험하지 않았다)
 - 알려진 어긋남: 글자색·커서색이 투명 창의 기본 바탕색과 정확히 같을 때 CPU는 줄·커서를 반투명으로 "덮어쓰고" GPU는 불투명으로 "얹는다"(실제 화면에서 거의 나오지 않는 경우). 취소선은 CPU가 글자 뒤에, GPU가 글자 앞에 긋는다(0.29부터)
@@ -983,6 +981,14 @@ macOS의 Carbon `EnableSecureEventInput`은 켜 있는 동안 키 입력이 다�
 5. **창 surface.** `GpuRenderer::new_for_window(Arc<Window>)`: wgpu `Instance::create_surface`에 `'static` 대상을 넘긴다(안전한 API, `create_surface_unsafe`를 쓰지 않는다). 그래서 `Gfx`의 창이 `Rc<Window>`에서 `Arc<Window>`가 됐다. 꼴은 surface가 주는 것 가운데 sRGB가 아닌 첫 번째(`Bgra8Unorm`)다. 이유는 ADR-035 결정 2와 같다(CPU의 감마 없는 섞기와 같은 값). 없으면 CPU로 돌아간다. 알파 모드는 `Opaque`, 크기가 바뀌면 그 프레임에 `configure`하고 `Outdated`·`Lost`는 한 번 다시 설정해 다시 얻는다.
 6. **올리기 방식은 `Fifo`.** 모든 곳이 지원하고(보장된 유일한 방식), 화면 주사율에 맞춰 올려 찢김이 없다. 지금 CPU 길도 합성기가 화면 주사율에 맞춰 가져가므로 비슷한 간격이다. `Mailbox`·`Immediate`는 필요 없이 프레임을 더 만들어 전력을 쓴다. 바뀐 것이 없으면 CPU 길처럼 아무것도 올리지 않는다.
 7. **투명 창·배경 그림·색 공간.** 이번 판은 불투명 창만 GPU로 그린다. `background-opacity < 1`, `background-image`, `window-colorspace = srgb`이면 CPU 길로 돌아간다(로그 한 줄). 이유: 곱한 알파로 투명 창을 합치려면 surface에 투명 알파 모드(`PostMultiplied`)를 쓰고 투명 창이 CALayer에 올라가는 방식(ADR-034 결정 4)과 맞춰 봐야 하는데 실제 창 없이는 확인할 수 없다. 배경 그림은 층 합성기가 아래층에서 해야 하는데 투명과 함께 보아야 한다. 색 공간은 기본(`display-p3`, 화면 색 공간으로 그대로)이 CPU 길과 같게 나오는지를 실제 창에서 봐야 한다: wgpu는 `Auto` 색 공간에서 Metal 레이어 색 공간을 비운다(`wgpu-hal` metal `surface.rs`가 "레이어의 기본, sRGB로 다룬다"고 주석을 단다). 문서가 말하는 "sRGB로 다룬다"가 CPU 길의 "화면 색 공간 그대로"와 같은지는 확인하지 못했다. `srgb` 설정은 레이어에 sRGB 이름을 붙이는 안전한 API를 찾지 못해 CPU로 돌아간다.
+**0.31에 바꾼 것(#359).** 위 7번의 "불투명 창만" 결정을 다음으로 바꿨다. 실제 창에서는 아직 보지 않았다(창 없이 합친 프레임을 CPU 캔버스와 견준 것까지).
+- 합자: CPU `draw_grid`가 쓰는 묶음 다듬기(`bt_render::ligatures`)를 공개해 GPU `Scene::build`가 줄마다 같은 함수로 글리프 번호를 받는다. 그 번호는 아틀라스 열쇠(`Key::GlyphId(번호, 꼴)`)로 들어가고, 칸 자리 그대로 그린다. 커서 칸에서 묶음을 끊는 규칙도 그 함수 안이라 같다. 규칙은 한 벌이다. 창 없이 CPU와 견주니 `->`·`!=`·`===`·`<!--` 등이 든 4줄, 커서가 합자 위에 있는 경우 모두 다른 픽셀 0이었다.
+- 투명 창: 창 surface 알파 모드를 surface가 주는 것에서 고른다(`pick_alpha_mode`). 곱한 알파로 합친 결과를 그대로 내므로 `PreMultiplied`가 있으면 그것, 없으면 macOS에서만 `PostMultiplied`(wgpu의 Metal 면은 그 모드에서 레이어를 불투명이 아니게만 한다: `wgpu-hal` 30.0.1 `metal/surface.rs` 270~271줄. CoreAnimation이 그 레이어를 곱한 알파로 합성한다는 것은 소스에서 확인한 것이 아니라 추정이므로 실제 창에서 확인해야 한다), 둘 다 없으면 창을 열지 못해 CPU 길로 돌아간다. Metal 뒷단이 내는 목록은 `[Opaque, PostMultiplied]`다(`wgpu-hal` `metal/adapter.rs` 468~471줄을 읽었다. 창이 없어 실제 surface로 불러 보지는 않았다). 투명으로 열지 않은 창은 나중에 설정이 바뀌어도 불투명으로 그린다.
+- 칸 바탕은 아래층 픽셀을 덮어쓴다(CPU `fill_rect`처럼). 칸 바탕 전용 파이프라인(블렌드 없음, 곱한 알파로 냄)이 이를 맡고, 글자·커서·밑줄은 이전처럼 위에 얹는다. 칸 알파(`background-opacity-cells`)는 #353의 `set_cells_alpha`를 앱이 연결한다.
+- 배경 그림: 아래층을 그리는 캔버스에 `set_backdrop`을 쓰고(CPU 길과 같은 층, 앱의 `backdrop.rs`가 두 길을 함께 만든다), GPU 격자는 기본 바탕색 칸을 그리지 않는다(`Scene::set_backdrop`). 그 칸은 아래층에 이미 그림이 있다.
+- `render_path`에서 투명·배경 그림 조건을 뺐다. 남은 것은 `window-colorspace = srgb`다. wgpu 30의 안전한 `SurfaceColorSpace`를 `wgpu-types`·`wgpu-hal` metal `surface.rs`에서 읽었다: `Auto`·`Srgb`는 레이어 색 공간을 비운다(기본, 화면 색 공간 그대로), `DisplayP3`는 레이어에 Display P3 이름을 붙이고, 확장·HDR 값은 다른 뜻이다. CPU 길의 `srgb`(레이어에 sRGB 이름을 붙여 화면으로 바꿔 보이게 함)에 해당하는 값이 없다. 그래서 `srgb`는 CPU로 돌아가는 것을 그대로 둔다. 기본(`display-p3` 설정, 화면 색 공간 그대로)이 `Srgb`(레이어를 비움)와 같은 화면인지는 실제 창에서 확인해야 한다.
+- 남은 차이: 위층(덧그림)은 투명 바탕의 별도 캔버스에 그리므로, 덧그림 색이 창 기본 바탕색과 같을 때 CPU 길은 그 색을 반투명으로 칠하지만 GPU 길은 불투명이다. 조합 중 글 바탕이 기본 바탕색과 같은 경우의 칸 바탕 덮어쓰기도 같다(칸 바탕 파이프라인은 글자 앞 사각형만 맡는다).
+
 8. 시험: 창 없이 같은 합치기(`GpuRenderer::compose`: 아래층 → 자리가 다른 두 칸 → 위층, 반투명 흐림·그림 포함)를 읽어 낸 프레임을 CPU 캔버스에 같은 순서로 그린 프레임과 견준다. 창에 올리는 `present`는 같은 준비·그리기 코드를 쓰고 대상만 다르다.
 9. 로그: GPU 길도 E5와 같은 머리의 한 줄을 남긴다(`다시 그리기: 통째|바뀐 줄 N줄 그리기 Xms, 올리기까지 Yms`). 그리기는 CPU가 층을 그린 시간, 올리기까지는 창에 올리기를 부탁한 시점까지다. **GPU가 끝나길 기다리지 않으므로** CPU 길의 올리기까지와 같은 뜻은 아니다(E7에서 짚는다).
 

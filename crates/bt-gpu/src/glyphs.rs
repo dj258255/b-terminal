@@ -13,6 +13,8 @@ use crate::atlas::Atlas;
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Key {
     Char(char, FontStyle),
+    /// 합자로 다듬은 글리프 번호(`bt_render::ligatures`, #359). 같은 번호도 꼴마다 다른 그림이다
+    GlyphId(u16, FontStyle),
     /// 이모지 모양(U+FE0F), 차지하는 칸 수
     Emoji(char, u32),
     Cluster(Arc<str>),

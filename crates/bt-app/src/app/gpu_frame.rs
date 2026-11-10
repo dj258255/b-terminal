@@ -84,6 +84,18 @@ impl App {
             proxy,
         } = f;
 
+        // 투명 창·배경 그림(#359): CPU 길(`redraw`)과 같은 값. 투명으로 열지 않은 창은 설정이 나중에 바뀌어도 불투명으로 그린다
+        // (surface의 알파 모드는 열 때 정해진다)
+        let opacity = if gpu.window_transparent() {
+            crate::toggles::effective_opacity(self.config.background_opacity, self.w.opaque)
+        } else {
+            1.0
+        };
+        let win_bg = views
+            .iter()
+            .find(|v| v.focused && v.screen.modes.reverse_colors)
+            .map_or(theme.background, |v| v.screen.background);
+
         let full = chrome.overlay
             || self.w.last_frame.as_ref().is_none_or(|l| l.chrome != chrome)
             || self.w.frame.len() != n
@@ -97,9 +109,22 @@ impl App {
             if self.w.upper.len() != n {
                 self.w.upper = vec![0; n];
             }
-            // 아래층: 격자 밑에 깔리는 것. 불투명이다(투명 창·배경 그림은 CPU 길로 돌아가는 설정이라 여기 오지 않는다.
-            // 열려 있는 창의 설정이 나중에 바뀌어도 이 창은 불투명으로 그린다)
+            // 아래층: 격자 밑에 깔리는 것. 투명 창이면 곱한 알파, 배경 그림이 있으면 그 층을 깐다(CPU 길과 같은 캔버스 설정)
+            super::backdrop::refresh(
+                &mut self.w.backdrop,
+                self.bg_image.as_deref(),
+                &self.config,
+                (sw, sh),
+                win_bg,
+                opacity,
+            );
             let mut lower = Canvas::new(&mut self.w.frame, sw, sh);
+            if let Some((_, layer)) = &self.w.backdrop {
+                lower.set_backdrop(win_bg, layer);
+            }
+            if opacity < 1.0 {
+                lower.set_see_through(win_bg, (opacity * 255.0).round() as u8);
+            }
             let bg = views
                 .iter()
                 .find(|v| v.focused)
@@ -300,6 +325,14 @@ impl App {
                     min_contrast: self.config.minimum_contrast,
                 })
                 .collect();
+            // 격자 칸 바탕의 알파도 CPU 길과 같게(#359)
+            if opacity < 1.0 {
+                gpu.set_see_through(win_bg, (opacity * 255.0).round() as u8);
+            } else {
+                gpu.clear_see_through();
+            }
+            gpu.set_cells_alpha(bt_render::cells_alpha(opacity, self.config.background_opacity_cells));
+            gpu.set_backdrop(self.w.backdrop.as_ref().map(|_| win_bg));
             let panes: Vec<bt_gpu::PaneDraw> = views
                 .iter()
                 .zip(&grid_views)
