@@ -1464,3 +1464,19 @@ fn replies_keep_their_order_when_no_color_was_changed() {
     );
     assert_eq!(kitty_reply("", &ask, false, |_| {}), hex_of(&want));
 }
+
+/// #278: 고른 영역이 칸을 품는가(오른쪽 클릭 메뉴가 고른 것을 그대로 둘지 정한다)
+#[test]
+fn selection_contains_reports_cells_inside_the_selection() {
+    let (s, rx) = sh("printf 'abcdef\\nghijkl\\n'", GridSize::new(20, 5));
+    wait_exit(&rx);
+    wait_until(&s, |t| t.contains("ghijkl"));
+    assert!(!s.selection_contains(1, 0), "고른 것이 없으면 거짓");
+    s.select_start(1, 0, bt_term::SelectKind::Simple);
+    s.select_update(3, 0);
+    assert!(s.selection_contains(1, 0));
+    assert!(s.selection_contains(3, 0));
+    assert!(!s.selection_contains(0, 0), "앞 칸은 밖");
+    assert!(!s.selection_contains(4, 0), "뒤 칸은 밖");
+    assert!(!s.selection_contains(2, 1), "다른 줄은 밖");
+}

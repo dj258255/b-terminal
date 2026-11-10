@@ -1755,6 +1755,19 @@ impl Emulator {
     }
 }
 
+impl Session {
+    /// 고른 영역이 화면 좌표 `(col, row)` 칸을 품는가(오른쪽 클릭 메뉴가 고른 것을 그대로 둘지 정한다, #278)
+    pub fn selection_contains(&self, col: usize, row: usize) -> bool {
+        let g = self.inner.lock();
+        let point = viewport_point(&g.term, col, row);
+        g.term
+            .selection
+            .as_ref()
+            .and_then(|s| s.to_range(&g.term))
+            .is_some_and(|r| r.contains(point))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

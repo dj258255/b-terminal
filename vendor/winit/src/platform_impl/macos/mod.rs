@@ -46,6 +46,22 @@ pub fn set_secure_event_input(enable: bool) -> bool {
     status == 0
 }
 
+/// b-terminal(#278): shows an `NSMenu` at the mouse pointer and returns when it is dismissed (tracking is modal).
+/// The menu is owned by the caller (muda's `ContextMenu::ns_menu()`); it is only borrowed for the call.
+/// Returns `false` off the main thread, for a null pointer, or when the menu was dismissed without a choice.
+pub fn popup_context_menu(ns_menu: *mut std::ffi::c_void) -> bool {
+    use objc2_app_kit::{NSEvent, NSMenu};
+    if ns_menu.is_null() || objc2_foundation::MainThreadMarker::new().is_none() {
+        return false;
+    }
+    // SAFETY: the caller passes a live `NSMenu` (documented contract, checked non-null above) and we are on the
+    // main thread, which AppKit menu tracking requires. With no view, the location is in screen coordinates.
+    unsafe {
+        let menu: &NSMenu = &*ns_menu.cast::<NSMenu>();
+        menu.popUpMenuPositioningItem_atLocation_inView(None, NSEvent::mouseLocation(), None)
+    }
+}
+
 #[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct DeviceId;
 

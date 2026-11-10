@@ -545,3 +545,10 @@ pub enum OptionAsAlt {
 pub fn set_secure_event_input(enable: bool) -> bool {
     crate::platform_impl::set_secure_event_input(enable)
 }
+
+/// Shows an `NSMenu` (for example `muda::ContextMenu::ns_menu()`) at the mouse pointer. The call blocks until the menu is
+/// dismissed. `ns_menu` must point to a live `NSMenu` that outlives the call. Call it on the main thread (otherwise it
+/// returns `false`). b-terminal(#278)
+pub fn popup_context_menu(ns_menu: *mut c_void) -> bool {
+    crate::platform_impl::popup_context_menu(ns_menu)
+}
