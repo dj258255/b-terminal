@@ -378,3 +378,216 @@ fn layers_stay_when_only_the_grid_changes() {
     assert_close("격자만 바뀐 프레임", &want, &got);
     assert_ne!(first, got);
 }
+
+/// 진행 막대 같은 작은 덧그림: 칸 A 맨 위 몇 줄에 `width`픽셀 폭의 띠
+fn bar_ops(c: &mut Canvas, l: &Layout, width: u32) {
+    c.blend_rect(l.a.0, l.a.1, width, 3, Rgb::new(40, 200, 90), 200);
+}
+
+/// 올리기 뒤 층 텍스처에 남은 것이 CPU 프레임과 같아야 한다(부분 올리기가 옛 픽셀을 남기면 실패)
+#[test]
+fn partial_layer_upload_keeps_every_frame_equal_to_the_cpu_frame() {
+    let Some(mut g) = gpu() else { return };
+    let mut fx = fixture();
+    let (va, vb) = (view(&fx.sa, &fx.ca, &fx.t), view(&fx.sb, &fx.cb, &fx.t));
+    let panes = [
+        PaneDraw {
+            x: fx.l.a.0,
+            y: fx.l.a.1,
+            view: &va,
+            clear: fx.sa.background,
+        },
+        PaneDraw {
+            x: fx.l.b.0,
+            y: fx.l.b.1,
+            view: &vb,
+            clear: fx.sb.background,
+        },
+    ];
+    let size = (fx.l.w, fx.l.h);
+    let full_bytes = 2 * (size.0 * size.1 * 4) as usize;
+    let upper_with = |l: &Layout, width: u32| {
+        let mut u = vec![0u32; (l.w * l.h) as usize];
+        if width > 0 {
+            bar_ops(&mut Canvas::new(&mut u, l.w, l.h), l, width);
+        }
+        u
+    };
+    let reference = |f: &mut Fonts, l: &Layout, bg: Rgb, width: u32| {
+        let mut buf = cpu_reference(f, l, bg, [&va, &vb], false);
+        if width > 0 {
+            bar_ops(&mut Canvas::new(&mut buf, l.w, l.h), l, width);
+        }
+        buf
+    };
+
+    // 1. 덧그림 켬(첫 프레임이라 통째)
+    let up1 = upper_with(&fx.l, 40);
+    let got = g.compose(
+        &mut fx.f,
+        size,
+        LayerUpdate {
+            lower: Some(&fx.lower),
+            upper: Some(&up1),
+        },
+        &panes,
+    );
+    assert_close("1. 덧그림 켬", &reference(&mut fx.f, &fx.l, fx.sa.background, 40), &got);
+    assert_eq!(g.timings().upload_bytes, full_bytes, "첫 프레임은 두 층 통째");
+
+    // 2. 진행 막대 값만 바뀜: 아래층은 같고(같은 내용으로 다시 넘긴다) 위층은 띠 끝만 달라진다
+    let up2 = upper_with(&fx.l, 90);
+    let got = g.compose(
+        &mut fx.f,
+        size,
+        LayerUpdate {
+            lower: Some(&fx.lower),
+            upper: Some(&up2),
+        },
+        &panes,
+    );
+    assert_close(
+        "2. 막대 값 바뀜",
+        &reference(&mut fx.f, &fx.l, fx.sa.background, 90),
+        &got,
+    );
+    let bytes = g.timings().upload_bytes;
+    assert!(
+        bytes > 0 && bytes <= (90 * 3 * 4) as usize,
+        "바뀐 띠만 올라야 한다: {bytes}바이트(통째 {full_bytes})"
+    );
+
+    // 3. 막대가 줄어듦: 줄어든 끝의 옛 픽셀이 남으면 안 된다
+    let up3 = upper_with(&fx.l, 25);
+    let got = g.compose(
+        &mut fx.f,
+        size,
+        LayerUpdate {
+            lower: Some(&fx.lower),
+            upper: Some(&up3),
+        },
+        &panes,
+    );
+    assert_close(
+        "3. 막대 줄어듦",
+        &reference(&mut fx.f, &fx.l, fx.sa.background, 25),
+        &got,
+    );
+
+    // 4. 덧그림 끔: 위층이 비었다. 그리지도 올리지도 않고, 옛 막대가 남지 않는다
+    let up4 = upper_with(&fx.l, 0);
+    let got = g.compose(
+        &mut fx.f,
+        size,
+        LayerUpdate {
+            lower: Some(&fx.lower),
+            upper: Some(&up4),
+        },
+        &panes,
+    );
+    assert_close("4. 덧그림 끔", &reference(&mut fx.f, &fx.l, fx.sa.background, 0), &got);
+    assert!(g.timings().upload_bytes <= (25 * 3 * 4) as usize);
+
+    // 5. 빈 채로 한 번 더, 그리고 다시 켬(비었다가 켜지는 프레임)
+    let got = g.compose(
+        &mut fx.f,
+        size,
+        LayerUpdate {
+            lower: Some(&fx.lower),
+            upper: Some(&up4),
+        },
+        &panes,
+    );
+    assert_close("5. 빈 채로", &reference(&mut fx.f, &fx.l, fx.sa.background, 0), &got);
+    assert_eq!(g.timings().upload_bytes, 0, "같은 층을 다시 넘기면 올릴 것이 없다");
+    let got = g.compose(
+        &mut fx.f,
+        size,
+        LayerUpdate {
+            lower: Some(&fx.lower),
+            upper: Some(&up1),
+        },
+        &panes,
+    );
+    assert_close("5. 다시 켬", &reference(&mut fx.f, &fx.l, fx.sa.background, 40), &got);
+
+    // 6. 아래층 한 곳만 바뀜(탭 막대 글자 자리 같은 곳): 그 곳만 올라가고 다른 곳은 그대로
+    let mut lower2 = fx.lower.clone();
+    Canvas::new(&mut lower2, size.0, size.1).fill_rect(100, 5, 20, 8, Rgb::new(200, 50, 50));
+    let got = g.compose(
+        &mut fx.f,
+        size,
+        LayerUpdate {
+            lower: Some(&lower2),
+            upper: Some(&up1),
+        },
+        &panes,
+    );
+    let mut want = reference(&mut fx.f, &fx.l, fx.sa.background, 40);
+    Canvas::new(&mut want, size.0, size.1).fill_rect(100, 5, 20, 8, Rgb::new(200, 50, 50));
+    assert_close("6. 아래층 한 곳", &want, &got);
+    assert!(g.timings().upload_bytes <= (20 * 8 * 4) as usize);
+}
+
+/// 층 올리기 비용 재기(E8 준비, 창 없이): `cargo test -p bt-gpu --release --test compose -- --ignored --nocapture upload_cost`
+#[test]
+#[ignore = "시간을 재는 시험(--ignored로 돌린다)"]
+fn upload_cost_2000x1360() {
+    let Some(mut g) = gpu() else { return };
+    let mut f = fonts();
+    let (w, h) = (2000u32, 1360u32);
+    let mut lower = vec![0u32; (w * h) as usize];
+    for (i, p) in lower.iter_mut().enumerate() {
+        *p = 0xff00_0000 | (i as u32).wrapping_mul(2654435761) >> 8;
+    }
+    let median = |mut v: Vec<f64>| {
+        v.sort_by(|a, b| a.total_cmp(b));
+        v[v.len() / 2]
+    };
+    let mut run = |name: &str, frames: &mut dyn FnMut(usize) -> Vec<u32>, lower: &[u32]| {
+        let (mut ms, mut bytes) = (Vec::new(), Vec::new());
+        for i in 0..40 {
+            let up = frames(i);
+            g.compose(
+                &mut f,
+                (w, h),
+                LayerUpdate {
+                    lower: Some(lower),
+                    upper: Some(&up),
+                },
+                &[],
+            );
+            if i >= 5 {
+                ms.push(g.timings().upload_ms);
+                bytes.push(g.timings().upload_bytes as f64);
+            }
+        }
+        eprintln!(
+            "{name}: 층 올리기 중앙값 {:.3}ms, 올린 바이트 중앙값 {}",
+            median(ms),
+            median(bytes) as usize
+        );
+    };
+    // 시나리오 B: 진행 막대(칸 맨 위 3줄)가 매 프레임 바뀐다
+    run(
+        "B 진행 막대",
+        &mut |i| {
+            let mut u = vec![0u32; (w * h) as usize];
+            Canvas::new(&mut u, w, h).blend_rect(0, 0, 100 + (i as u32 * 37) % 1800, 6, Rgb::new(40, 200, 90), 200);
+            u
+        },
+        &lower,
+    );
+    // 덧그림 없음, 층 그대로
+    run("덧그림 없음 층 그대로", &mut |_| vec![0u32; (w * h) as usize], &lower);
+    // 위층 전체가 매번 바뀜(흐림 두께가 바뀌는 최악)
+    run(
+        "위층 통째 바뀜",
+        &mut |i| {
+            let mut u = vec![0u32; (w * h) as usize];
+            Canvas::new(&mut u, w, h).blend_rect(0, 0, w, h, Rgb::new(0, 0, 0), 20 + (i as u8 % 50));
+            u
+        },
+        &lower,
+    );
+}

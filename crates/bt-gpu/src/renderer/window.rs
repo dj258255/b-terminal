@@ -99,11 +99,17 @@ impl GpuRenderer {
         }
         self.prepare_compose(fonts, size, layers, panes);
         let t = Instant::now();
+        let mut acquire_ms = 0.0;
         for attempt in 0..2 {
             let Some(win) = self.window.as_mut() else {
                 return PresentOutcome::Skipped("창 surface가 없다");
             };
-            let frame = match win.surface.get_current_texture() {
+            // 그림판 얻기는 준비(층 올리기·인스턴스) 뒤로 미뤄 두었다. Fifo에서 여기서 화면 주사율을 기다릴 수 있어
+            // 따로 잰다(ADR-037)
+            let t_acquire = Instant::now();
+            let acquired = win.surface.get_current_texture();
+            acquire_ms += t_acquire.elapsed().as_secs_f64() * 1000.0;
+            let frame = match acquired {
                 wgpu::CurrentSurfaceTexture::Success(f) => f,
                 wgpu::CurrentSurfaceTexture::Suboptimal(f) => {
                     win.stale = true;
@@ -122,10 +128,19 @@ impl GpuRenderer {
                 }
                 wgpu::CurrentSurfaceTexture::Validation => return PresentOutcome::Skipped("surface 검증 오류"),
             };
+            let t_encode = Instant::now();
             let view = frame.texture.create_view(&wgpu::TextureViewDescriptor::default());
             let cb = self.encode_compose(&view);
+            let encode_ms = t_encode.elapsed().as_secs_f64() * 1000.0;
+            let t_submit = Instant::now();
             self.queue.submit([cb]);
+            let submit_ms = t_submit.elapsed().as_secs_f64() * 1000.0;
+            let t_present = Instant::now();
             self.queue.present(frame);
+            self.timings.present_ms = t_present.elapsed().as_secs_f64() * 1000.0;
+            self.timings.acquire_ms = acquire_ms;
+            self.timings.encode_ms = encode_ms;
+            self.timings.submit_ms = submit_ms;
             self.timings.gpu_ms = t.elapsed().as_secs_f64() * 1000.0;
             return PresentOutcome::Presented;
         }
