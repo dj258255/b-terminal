@@ -700,3 +700,89 @@ fn grant_is_scoped_to_the_location_it_was_made_for() {
     let Action::Read(r) = &out[0] else { panic!() };
     assert!(!r.granted, "다른 위치에는 허가가 없다");
 }
+
+// ---------- 앱이 쓰는 답·글 변환 ----------
+
+fn rreq(mimes: &[&str], list: bool) -> ReadRequest {
+    ReadRequest {
+        primary: false,
+        id: "i".into(),
+        mimes: mimes.iter().map(|m| m.to_string()).collect(),
+        list,
+        pw: String::new(),
+        name: String::new(),
+        granted: false,
+        bel: false,
+    }
+}
+
+#[test]
+fn clipboard_listing_is_text_plain_only_when_there_is_text() {
+    assert_eq!(clipboard_listing(Some("hi")), vec!["text/plain".to_string()]);
+    assert!(clipboard_listing(Some("")).is_empty());
+    assert!(clipboard_listing(None).is_empty());
+}
+
+#[test]
+fn answer_read_serves_text_under_the_requested_name_and_skips_the_rest() {
+    let out = answer_read(
+        &rreq(&["text/plain;charset=utf-8", "image/png", "text/html"], true),
+        Some("Ghostty"),
+    );
+    let text = String::from_utf8(out).unwrap();
+    // 요청한 이름 그대로 싣는다. 그림·html은 없는 종류라 DATA가 없다
+    assert!(
+        text.contains(&format!("mime={}", b64_encode(b"text/plain;charset=utf-8"))),
+        "{text}"
+    );
+    assert!(text.contains(&b64_encode(b"Ghostty")));
+    assert!(!text.contains(&b64_encode(b"image/png")) && !text.contains(&b64_encode(b"text/html")));
+    // 목록 요청도 함께
+    assert!(text.contains(&format!("mime=Lg==;{}", b64_encode(b"text/plain\n"))));
+    assert!(text.starts_with("\x1b]5522;type=read:status=OK:id=i\x1b\\") && text.ends_with("status=DONE:id=i\x1b\\"));
+}
+
+#[test]
+fn answer_read_with_an_empty_clipboard_is_ok_and_done_without_data() {
+    let out = String::from_utf8(answer_read(&rreq(&["text/plain"], true), Some(""))).unwrap();
+    assert_eq!(
+        out,
+        "\x1b]5522;type=read:status=OK:id=i\x1b\\\x1b]5522;type=read:status=DATA:id=i:mime=Lg==\x1b\\\x1b]5522;type=read:status=DONE:id=i\x1b\\"
+    );
+    let none = String::from_utf8(answer_read(&rreq(&["text/plain"], false), None)).unwrap();
+    assert_eq!(
+        none,
+        "\x1b]5522;type=read:status=OK:id=i\x1b\\\x1b]5522;type=read:status=DONE:id=i\x1b\\"
+    );
+}
+
+#[test]
+fn answer_read_never_echoes_raw_request_bytes() {
+    // 요청한 종류에 제어 문자가 섞여 있어도 답에는 base64로만 간다
+    let mut r = rreq(&["text/plain\u{1b}]52;c;x\u{7}"], false);
+    r.id = "ok".into();
+    let out = answer_read(&r, Some("x"));
+    assert!(
+        !out.windows(3).any(|w| w == b"]52"),
+        "{:?}",
+        String::from_utf8_lossy(&out)
+    );
+    // 글 종류가 아니면 서비스하지 않으므로 애초에 싣지 않는다
+    assert!(!String::from_utf8_lossy(&out).contains("DATA"));
+}
+
+#[test]
+fn write_text_picks_the_first_text_mime() {
+    assert_eq!(write_text(&[]), WriteText::Clear);
+    let c = |m: &str, d: &[u8]| (m.to_string(), d.to_vec());
+    assert_eq!(
+        write_text(&[c("image/png", b"x"), c("text/plain", b"hi")]),
+        WriteText::Text("hi".into())
+    );
+    assert_eq!(write_text(&[c("image/png", b"x")]), WriteText::Unsupported);
+    assert_eq!(write_text(&[c("text/plain", &[0xff, 0xfe])]), WriteText::BadUtf8);
+    assert_eq!(
+        write_text(&[c("text/plain;charset=utf-8", "한글".as_bytes())]),
+        WriteText::Text("한글".into())
+    );
+}

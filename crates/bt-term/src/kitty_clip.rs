@@ -578,6 +578,66 @@ pub fn is_text_mime(mime: &str) -> bool {
     m == "text/plain" || m == "text/plain;charset=utf-8"
 }
 
+/// 클립보드가 가진 종류의 목록. arboard는 글만 다루므로 글이 있으면 `text/plain` 하나, 없으면 빈 목록이다
+pub fn clipboard_listing(text: Option<&str>) -> Vec<String> {
+    match text {
+        Some(t) if !t.is_empty() => vec!["text/plain".to_string()],
+        _ => Vec::new(),
+    }
+}
+
+/// 읽기 요청에 대한 성공 답(OK, 목록, DATA, DONE)을 만든다. 글 종류(`text/plain` 계열)만 내용을 싣고, 다른 종류나 빈 글은
+/// DATA 패킷이 없다(프로토콜이 "없는 종류"를 알리는 방식이다). 요청의 바이트는 id(걸러 낸 것)와 요청한 종류 이름(base64로)만 답에 들어간다
+pub fn answer_read(req: &ReadRequest, clip_text: Option<&str>) -> Vec<u8> {
+    let text = clip_text.unwrap_or("");
+    let available = clipboard_listing(clip_text);
+    let contents: Vec<(String, Vec<u8>)> = if text.is_empty() {
+        Vec::new()
+    } else {
+        req.mimes
+            .iter()
+            .filter(|m| is_text_mime(m))
+            .map(|m| (m.clone(), text.as_bytes().to_vec()))
+            .collect()
+    };
+    ReadSuccess {
+        primary: req.primary,
+        id: &req.id,
+        list: req.list,
+        available: &available,
+        contents: &contents,
+        bel: req.bel,
+        ..Default::default()
+    }
+    .encode()
+}
+
+/// 쓰기 거래의 내용을 클립보드에 넣을 글로 바꾼 결과
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WriteText {
+    /// 넣을 글
+    Text(String),
+    /// 아무 종류도 없는 거래: 클립보드를 비운다(Ghostty와 같다)
+    Clear,
+    /// 글 종류가 하나도 없다(그림 등): 이 터미널은 글만 쓴다
+    Unsupported,
+    /// 글 종류인데 UTF-8이 아니다
+    BadUtf8,
+}
+
+pub fn write_text(contents: &[(String, Vec<u8>)]) -> WriteText {
+    if contents.is_empty() {
+        return WriteText::Clear;
+    }
+    match contents.iter().find(|c| is_text_mime(&c.0)) {
+        None => WriteText::Unsupported,
+        Some((_, data)) => match String::from_utf8(data.clone()) {
+            Ok(t) => WriteText::Text(t),
+            Err(_) => WriteText::BadUtf8,
+        },
+    }
+}
+
 // ---------- 쓰기 거래 ----------
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
