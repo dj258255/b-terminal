@@ -195,6 +195,34 @@ impl Screen {
         s.trim_end().to_string()
     }
 
+    /// b-terminal(#324): 격자가 창보다 넓을 때(DECCOLM 132열) 앞쪽 `cols`열만 남긴다. 그리는 쪽이 창 밖으로 넘치지 않게 한다.
+    /// 잘린 자리에 넓은 글자의 앞 칸이 남으면 뒤 칸이 없으니 빈 칸으로 바꾼다. 커서가 잘린 열에 있으면 숨긴다.
+    /// 이미 `cols` 이하면 아무것도 하지 않는다
+    pub fn crop_columns(&mut self, cols: usize) {
+        let cols = cols.max(1);
+        if self.cols <= cols {
+            return;
+        }
+        let old = self.cols;
+        let mut cells = Vec::with_capacity(cols * self.rows);
+        for row in 0..self.rows {
+            let line = &self.cells[row * old..row * old + cols];
+            cells.extend(line.iter().cloned());
+            if let Some(last) = cells.last_mut()
+                && last.flags.contains(CellFlags::WIDE)
+            {
+                *last = Cell::blank(last.fg, last.bg);
+            }
+        }
+        self.cells = cells;
+        self.cols = cols;
+        if self.cursor.col >= cols {
+            self.cursor.visible = false;
+            self.cursor.col = cols - 1;
+        }
+        // 잘린 열에 걸친 그림은 그리는 쪽이 격자 사각형으로 자른다
+    }
+
     /// 화면 전체를 글로 꺼낸다. 끝의 빈 줄은 뺀다
     pub fn text(&self) -> String {
         let mut lines: Vec<String> = (0..self.rows).map(|r| self.row_text(r)).collect();
