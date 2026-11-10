@@ -220,3 +220,52 @@ fn tail_text_counts_from_the_last_written_line() {
     assert_eq!(e.tail_text(2), "three\n$");
     assert_eq!(e.tail_text(100), "one\ntwo\nthree\n$");
 }
+
+#[test]
+fn kitty_color_set_query_and_reset_work_without_a_pty() {
+    let mut e = emu(20, 3);
+    let t = Theme::default();
+    e.feed(b"\x1b]21;background=#ff0000;5=#010203\x1b\\");
+    assert_eq!(e.snapshot().background, Rgb::new(255, 0, 0));
+    e.feed(b"\x1b]21;background=?;5=?\x07");
+    assert_eq!(e.take_replies(), b"\x1b]21;background=rgb:ff/00/00;5=rgb:01/02/03\x07");
+    e.feed(b"\x1b]21;background=;5=\x1b\\\x1b]21;background=?\x1b\\");
+    assert_eq!(e.snapshot().background, t.background);
+    let b = t.background;
+    let want = format!("\x1b]21;background=rgb:{:02x}/{:02x}/{:02x}\x1b\\", b.r, b.g, b.b);
+    assert_eq!(e.take_replies(), want.as_bytes());
+}
+
+#[test]
+fn ris_and_soft_reset_put_the_palette_back_but_not_foreground_or_background() {
+    // Ghostty(Terminal.zig fullReset·softReset)는 팔레트만 되돌린다. OSC 4와 OSC 21이 같은 자리라 둘 다 따른다
+    for reset in [&b"\x1bc"[..], &b"\x1b[!p"[..]] {
+        let mut e = emu(20, 3);
+        let t = Theme::default();
+        e.feed(b"\x1b]21;5=#010203;background=#ff0000\x1b\\\x1b]4;6;rgb:aa/bb/cc\x07");
+        e.feed(reset);
+        e.feed(b"\x1b]21;5=?;background=?\x1b\\");
+        let p = t.palette[5];
+        let want = format!(
+            "\x1b]21;5=rgb:{:02x}/{:02x}/{:02x};background=rgb:ff/00/00\x1b\\",
+            p.r, p.g, p.b
+        );
+        assert_eq!(e.take_replies(), want.as_bytes(), "{reset:?}");
+        // OSC 4로 바꾼 6번도 돌아왔다(그리기 쪽 값)
+        e.feed(b"\x1b[46m \x1b[0m");
+        assert_eq!(e.snapshot().cell(0, 0).bg, t.palette[6], "{reset:?}");
+    }
+}
+
+#[test]
+fn kitty_color_over_the_item_limit_changes_nothing() {
+    let mut e = emu(20, 3);
+    let mut req = String::from("\x1b]21;background=#ff0000");
+    for _ in 0..600 {
+        req.push_str(";0=?");
+    }
+    req.push_str("\x1b\\");
+    e.feed(req.as_bytes());
+    assert_eq!(e.snapshot().background, Theme::default().background);
+    assert!(e.take_replies().is_empty());
+}

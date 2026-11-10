@@ -5,6 +5,7 @@ pub mod csi_query;
 pub mod dcs;
 pub mod graphics;
 pub mod input;
+pub mod kitty_color;
 pub mod links;
 pub mod mouse_shape;
 pub mod notify;

@@ -74,6 +74,11 @@ pub enum Signal {
     InBandSizeQuery,
     /// DCS 질의(DECRQSS, XTGETTCAP). 세션이 그 자리의 상태로 답한다(#265)
     DcsQuery(crate::dcs::Query),
+    /// kitty 색 프로토콜(OSC 21)의 요청들. `bel`은 요청이 BEL로 끝났는가(답도 같은 끝맺음으로 한다)(#266)
+    KittyColor {
+        requests: Vec<crate::kitty_color::Request>,
+        bel: bool,
+    },
 }
 
 /// OSC 22 이름의 길이 상한(바이트). 가장 긴 이름("bottom_right_corner")보다 넉넉하다
@@ -396,7 +401,7 @@ impl Scanner {
                 }
                 (St::Csi, _) => St::Csi,
                 (St::Osc, 0x07) => {
-                    self.finish(&mut out, i + 1);
+                    self.finish(&mut out, i + 1, true);
                     St::Ground
                 }
                 (St::Osc, 0x1b) => St::OscEsc,
@@ -410,7 +415,7 @@ impl Scanner {
                     }
                 }
                 (St::OscEsc, b'\\') => {
-                    self.finish(&mut out, i + 1);
+                    self.finish(&mut out, i + 1, false);
                     St::Ground
                 }
                 // ESC 뒤가 \가 아니면 OSC가 끊긴 것이다. 새 이스케이프의 시작으로 본다
@@ -429,10 +434,13 @@ impl Scanner {
         out
     }
 
-    fn finish(&mut self, out: &mut Vec<(usize, Signal)>, at: usize) {
+    fn finish(&mut self, out: &mut Vec<(usize, Signal)>, at: usize, bel: bool) {
         let raw = std::mem::take(&mut self.buf);
         let text = String::from_utf8_lossy(&raw);
-        if let Some(sig) = parse_osc(&text) {
+        if let Some(mut sig) = parse_osc(&text) {
+            if let Signal::KittyColor { bel: b, .. } = &mut sig {
+                *b = bel;
+            }
             out.push((at, sig));
         }
     }
@@ -609,6 +617,9 @@ fn parse_osc(s: &str) -> Option<Signal> {
             })
         }
         "22" => mouse_shape_signal(rest),
+        "21" => crate::kitty_color::parse(rest)
+            .filter(|r| !r.is_empty())
+            .map(|requests| Signal::KittyColor { requests, bel: false }),
         _ => None,
     }
 }
@@ -1010,6 +1021,28 @@ mod tests {
         assert!(s.buf.capacity() <= MAX_OSC * 2);
         // 뒤따르는 정상 OSC는 받는다
         assert_eq!(s.feed(b"\x1b]9;ok\x07"), vec![n("", "ok")]);
+    }
+
+    #[test]
+    fn osc21_becomes_a_kitty_color_signal_remembering_the_terminator() {
+        use crate::kitty_color::{Key, Request, Special};
+        let mut s = Scanner::default();
+        assert_eq!(
+            s.feed(b"\x1b]21;foreground=?\x1b\\"),
+            vec![Signal::KittyColor {
+                requests: vec![Request::Query(Key::Special(Special::Foreground))],
+                bel: false
+            }]
+        );
+        assert_eq!(
+            s.feed(b"\x1b]21;background=#102030\x07"),
+            vec![Signal::KittyColor {
+                requests: vec![Request::Set(Key::Special(Special::Background), (0x10, 0x20, 0x30))],
+                bel: true
+            }]
+        );
+        // 알아볼 항목이 하나도 없으면 신호도 없다
+        assert!(s.feed(b"\x1b]21;nope=?\x07").is_empty());
     }
 }
 

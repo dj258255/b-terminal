@@ -85,7 +85,7 @@ config-file = ?~/.config/b-terminal/local   # ?가 붙으면 없어도 된다
 | `scroll-to-bottom` | `keystroke` `output` (쉼표로 이음, 앞에 `no-`를 붙이면 끔), `true` `false` | `keystroke, no-output` | Ghostty 값. 스크롤해 올라가 있을 때 언제 맨 아래로 돌아갈지. `keystroke`는 키를 치거나 붙여넣어 칸에 글을 보낼 때(앱 단축키·수식 키만 누른 것은 아님), `output`은 새 출력이 올 때. `output`을 켜면 로그를 거슬러 읽는 중에도 출력이 오면 맨 아래로 끌려갑니다. 적지 않은 쪽은 기본값, 모르는 이름이 있으면 경고하고 기본값 |
 | `title-report` | `true` `false` | `false` | 프로그램이 창 제목을 묻는 질의(CSI 21 t)에 제목으로 답합니다(제어 문자는 지움). 제목은 출력이 정하므로 답이 셸 입력이 되어 명령이 될 수 있어 기본으로 끕니다. 새로 연 칸부터 적용 |
 | `grapheme-width-method` | `unicode` `legacy` | `unicode` | Ghostty 값. 이모지 묶음(👨‍👩‍👧 ZWJ, ❤️ U+FE0F, 🇰🇷 국기, 👍🏽 피부색)의 폭을 어떻게 셀지. `unicode`는 묶음 하나를 한 글자처럼 두 칸으로 세고, `legacy`는 글자(코드포인트)마다 센 옛 폭입니다. 프로그램이 DECSET 2027(`ESC[?2027h`)로 켜고 DECRST로 끌 수 있고 DECRQM(`ESC[?2027$p`)으로 상태를 물을 수 있으며, 이 값은 그 처음 상태를 정합니다. 새로 연 칸부터 적용 |
-| `osc-color-report-format` | `none` `8-bit` `16-bit` | `16-bit` | 프로그램이 색을 묻는 질의(OSC 4·10·11)에 답하는 꼴. `none`은 답하지 않고, `8-bit`는 `rgb:RR/GG/BB`, `16-bit`는 `rgb:RRRR/GGGG/BBBB`입니다. 새로 연 칸부터 적용 |
+| `osc-color-report-format` | `none` `8-bit` `16-bit` | `16-bit` | 프로그램이 색을 묻는 질의(OSC 4·10·11)에 답하는 꼴. kitty 색 OSC 21의 답은 이 설정과 상관없이 늘 8비트 꼴로 답합니다(Ghostty와 같음). `none`은 답하지 않고, `8-bit`는 `rgb:RR/GG/BB`, `16-bit`는 `rgb:RRRR/GGGG/BBBB`입니다. 새로 연 칸부터 적용 |
 | `enquiry-response` | 글(따옴표로 감싸도 됨) | (빈 값) | 프로그램이 ENQ(0x05)를 보내면 PTY로 돌려보낼 글. 비어 있으면 답하지 않습니다. 글은 설정이 정하고 출력이 정하지 못합니다. 줄바꿈 같은 이스케이프는 풀지 않고 적은 그대로 보냅니다. 새로 연 칸부터 적용 |
 | `vt-kam-allowed` | `true` `false` | `false` | 프로그램이 키보드 잠금 모드(KAM, `CSI 2 h`)로 사람의 키 입력을 막을 수 있게 합니다. `CSI 2 l`이나 초기화(RIS)로 풀리고, 잠가 놓고 죽은 프로그램이 있으면 그 탭은 입력을 받지 못하니(탭 닫기·앱 단축키는 됩니다) 필요한 사람만 켜세요. 새로 연 칸부터 적용 |
 | `vt-window-resize-allowed` | `true` `false` | `false` | 프로그램이 `CSI 8 ; 행 ; 열 t`로 창 크기를 바꾸게 합니다. 0이나 빠진 쪽은 그대로 두고, 40열 × 10행보다 작게는 줄이지 않고 화면보다 크게는 키우지 않습니다. 창에 탭이 하나이고 분할이 없고 퀵 터미널·전체 화면·최대화가 아닐 때만 따릅니다. 새로 연 칸부터 적용 |
@@ -373,6 +373,16 @@ Ghostty 설정에 흔한 아래 동작은 `keybind`에 써도 경고가 나지 �
 - 마우스 보고 모드(X10·버튼·움직임, `?1000h` 등)를 켜거나 끄면 프로그램이 앞서 정한 모양을 지웁니다(Ghostty는 이때 모양을 `default`·`text`로 바꿉니다). 모드를 바꾼 뒤에 정한 모양은 남습니다. 같은 상태의 모드를 다시 켜는 것은 모드가 바뀌지 않아 지우지 않습니다.
 - Shift를 누르면 마우스가 고르기를 하게 될 때(마우스 보고가 꺼져 있거나, 켜져 있어도 Shift가 보고를 끊을 때. `mouse-shift-capture`) 포인터가 I자(`text`)가 되고, 떼면 프로그램이 정한 모양(없으면 화살표)으로 돌아갑니다. Shift를 눌러도 프로그램이 마우스를 계속 받으면(`mouse-shift-capture = true`·`always`) 모양을 바꾸지 않습니다. 링크 위의 손가락이 가장 앞서고, 입력 중 마우스 숨김(`mouse-hide-while-typing`)으로 포인터가 숨은 동안은 Shift가 모양을 바꾸지 않습니다. 수식 키를 누르거나 뗄 때 모양을 다시 정합니다.
 - Ghostty와 다른 점: Ghostty는 기본 모양이 I자(`text`)이지만 b-terminal은 정한 모양이 없으면 화살표입니다(바꾸지 않음). 그래서 모드를 끄거나 `OSC 22 ; BEL`로 지울 때도 `text`가 아니라 화살표로 돌아갑니다. Ghostty는 macOS에서 Alt를 누르면 사각 고르기용 `crosshair`로 바꾸지만 b-terminal에는 사각 고르기가 없어(고르기는 글자·낱말·줄뿐) 넣지 않았습니다.
+
+## kitty 색 프로토콜(OSC 21)
+
+설정 키는 없고, 프로그램이 `OSC 21 ; 키=값 ; 키=값 … ST`(또는 BEL)로 터미널 색을 묻고 바꿉니다. `osc-color-report-format`과 상관없이 답합니다(Ghostty도 그 설정을 OSC 4·10·11에만 씁니다). 색 글은 Ghostty와 같게 `#`과 16진수 3·6·9·12자리, `#` 없는 16진수 3·6자리, `rgb:`·`rgbi:`, X11 색 이름(대소문자와 빈칸 무시)을 받습니다.
+
+- 키: `foreground`, `background`, `cursor`, 팔레트 번호 `0`~`255`. Ghostty처럼 `selection_foreground`·`selection_background`·`cursor_text`·`visual_bell`·`second_transparent_background`도 받지만 들고 있는 색이 없어 설정·되돌리기는 무시하고, 질의에는 그 키를 빼고 답합니다(그 키만 물으면 `ESC ] 21`과 끝맺음만 갑니다).
+- 값: `?`는 질의, 비면(`cursor=` 또는 `=` 없이 `cursor`) 되돌리기, 그 밖에는 색(`#rrggbb`, `rgb:r/g/b`, `rgbi:0.5/0.5/0.5`, X11 색 이름). 색이 틀리거나 키를 모르는 항목은 그 항목만 버립니다.
+- 답은 한 번에 `ESC ] 21 ; foreground=rgb:rr/gg/bb ; …` 꼴이고 끝맺음은 요청을 따릅니다. 질의는 앞에서 바꾼 값을 봅니다(`background=#102030;background=?` → `102030`). 팔레트 키는 `02`로 물어도 `2`로 답합니다.
+- 설정한 색은 OSC 4·10·11·12와 같은 자리에 남습니다. 설정을 다시 읽어도 남고, 초기화(RIS)와 소프트 리셋은 팔레트만 되돌립니다(전경·바탕·커서는 그대로).
+- 요청 하나는 항목 526개(`(255+8)*2`)까지입니다. 넘으면 요청 전체를 버리고, 스캐너의 OSC 상한(8KiB)을 넘는 요청도 버립니다.
 
 ## 셸 통합
 
