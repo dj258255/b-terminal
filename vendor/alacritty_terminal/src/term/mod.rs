@@ -52,6 +52,8 @@ fn is_regional_indicator(c: char) -> bool {
 
 /// b-terminal 패치(#180): 글자 묶음 폭 모드 번호(DECSET 2027).
 const GRAPHEME_CLUSTER_MODE: u16 = 2027;
+/// b-terminal(#311): DECLRMM(좌우 여백 모드)
+const LEFT_RIGHT_MARGIN_MODE: u16 = 69;
 /// b-terminal(#301): 키 입력 모드 번호. DECBKM, 키패드 NumLock 무시, Alt ESC 접두, Alt가 ESC 보냄
 const BACKARROW_KEY_MODE: u16 = 67;
 const IGNORE_KEYPAD_NUMLOCK_MODE: u16 = 1035;
@@ -123,6 +125,8 @@ bitflags! {
         const SEND_RECEIVE            = 1 << 46;
         // b-terminal(#312): xterm modifyOtherKeys 상태 2(`CSI > 4 ; 2 m`). 비트 50·51은 비워 둔다
         const MODIFY_OTHER_KEYS_2     = 1 << 49;
+        /// b-terminal(#311): DECLRMM(69), 좌우 여백 모드. 비트 47은 비워 둔다
+        const LEFT_RIGHT_MARGIN       = 1 << 48;
         // b-terminal(#300): X10 이벤트 모드(9)와 urxvt(1015)·SGR 픽셀(1016) 형식. 비트 35는 비워 둔다
         const MOUSE_X10               = 1 << 32;
         const URXVT_MOUSE             = 1 << 33;
@@ -358,6 +362,10 @@ pub struct Term<T> {
     /// Range going from top to bottom of the terminal, indexed from the top of the viewport.
     scroll_region: Range<Line>,
 
+    /// b-terminal(#311): 좌우 여백(DECSLRM). 0부터 세고 두 칸 모두 여백에 든다. 69가 꺼져 있거나 정하지 않았으면 (0, 마지막 칸)
+    margin_left: usize,
+    margin_right: usize,
+
     /// Modified terminal colors.
     colors: Colors,
 
@@ -532,6 +540,8 @@ impl<T> Term<T> {
         Term {
             inactive_grid,
             scroll_region,
+            margin_left: 0,
+            margin_right: num_cols.saturating_sub(1),
             event_proxy,
             damage,
             config,
@@ -811,6 +821,7 @@ impl<T> Term<T> {
 
         // Reset scrolling region.
         self.scroll_region = Line(0)..Line(self.screen_lines() as i32);
+        self.reset_margins(); // b-terminal(#311)
 
         // Resize damage information.
         self.damage.resize(num_cols, num_lines);
@@ -826,6 +837,24 @@ impl<T> Term<T> {
     #[inline]
     pub fn scroll_region(&self) -> &Range<Line> {
         &self.scroll_region
+    }
+
+    /// b-terminal(#311): 왼쪽 여백(0부터, 이 칸을 포함)
+    #[inline]
+    pub fn left_margin(&self) -> usize {
+        self.margin_left
+    }
+
+    /// b-terminal(#311): 오른쪽 여백(0부터, 이 칸을 포함)
+    #[inline]
+    pub fn right_margin(&self) -> usize {
+        self.margin_right
+    }
+
+    /// b-terminal(#311): 좌우 여백을 화면 전체 폭으로 되돌린다
+    fn reset_margins(&mut self) {
+        self.margin_left = 0;
+        self.margin_right = self.columns().saturating_sub(1);
     }
 
     /// Swap primary and alternate screen buffer.
@@ -1137,6 +1166,9 @@ impl<T> Term<T> {
                 | TermMode::KEYBOARD_ACTION
                 | TermMode::MODIFY_OTHER_KEYS_2, // b-terminal(#312): Terminal.zig 5954줄
         );
+        // b-terminal(#311): 좌우 여백 모드(69)와 여백도 처음으로(Ghostty `softReset`의 reset_modes와 scrolling_region)
+        self.mode.remove(TermMode::LEFT_RIGHT_MARGIN);
+        self.reset_margins();
     }
 
     /// b-terminal(#302): 왼쪽으로 가는 길(Backspace·CUB)이 윗줄로 넘어가야 하는가. Ghostty `cursorLeft`의 `wrap_mode`:
@@ -2283,6 +2315,7 @@ impl<T: EventListener> Handler for Term<T> {
         self.grid.reset();
         self.inactive_grid.reset();
         self.scroll_region = Line(0)..Line(self.screen_lines() as i32);
+        self.reset_margins(); // b-terminal(#311)
         self.tabs = TabStops::new(self.columns());
         self.title_stack = Vec::new();
         self.saved_private_modes.clear(); // b-terminal(#313)
@@ -2393,6 +2426,11 @@ impl<T: EventListener> Handler for Term<T> {
                 self.mode.insert(key_input_mode_bit(mode).unwrap_or(TermMode::NONE));
                 return;
             },
+            // b-terminal(#311): DECLRMM
+            PrivateMode::Unknown(LEFT_RIGHT_MARGIN_MODE) => {
+                self.mode.insert(TermMode::LEFT_RIGHT_MARGIN);
+                return;
+            },
             PrivateMode::Unknown(mode) => {
                 debug!("Ignoring unknown mode {mode} in set_private_mode");
                 return;
@@ -2495,6 +2533,12 @@ impl<T: EventListener> Handler for Term<T> {
             // b-terminal(#301): 키 입력 모드
             PrivateMode::Unknown(mode) if key_input_mode_bit(mode).is_some() => {
                 self.mode.remove(key_input_mode_bit(mode).unwrap_or(TermMode::NONE));
+                return;
+            },
+            // b-terminal(#311): DECLRMM을 끄면 여백을 화면 전체 폭으로 되돌린다(Ghostty stream_handler.zig 700줄)
+            PrivateMode::Unknown(LEFT_RIGHT_MARGIN_MODE) => {
+                self.mode.remove(TermMode::LEFT_RIGHT_MARGIN);
+                self.reset_margins();
                 return;
             },
             PrivateMode::Unknown(mode) => {
@@ -2634,6 +2678,10 @@ impl<T: EventListener> Handler for Term<T> {
             // b-terminal(#301): 키 입력 모드
             PrivateMode::Unknown(mode) if key_input_mode_bit(mode).is_some() => {
                 self.mode.contains(key_input_mode_bit(mode).unwrap_or(TermMode::NONE)).into()
+            },
+            // b-terminal(#311)
+            PrivateMode::Unknown(LEFT_RIGHT_MARGIN_MODE) => {
+                self.mode.contains(TermMode::LEFT_RIGHT_MARGIN).into()
             },
             // b-terminal(#264): 모드 2048(크기 알림)의 DECRQM은 bt-term의 스캐너가 답한다. 여기서 0을 답하면 답이 둘 나간다
             // b-terminal(#296): 모드 2031(색 구성표 알림)도 같다
@@ -2782,6 +2830,33 @@ impl<T: EventListener> Handler for Term<T> {
         let screen_lines = Line(self.screen_lines() as i32);
         self.scroll_region.start = cmp::min(start, screen_lines);
         self.scroll_region.end = cmp::min(end, screen_lines);
+        self.goto(0, 0);
+    }
+
+    /// b-terminal(#311): `CSI s`. 69가 켜져 있으면 DECSLRM(0, 0)으로 여백을 되돌리고, 아니면 SCOSC(커서 저장)다
+    /// (Ghostty stream_handler.zig 309~315줄)
+    fn save_cursor_or_reset_margins(&mut self) {
+        if self.mode.contains(TermMode::LEFT_RIGHT_MARGIN) {
+            self.set_left_right_margins(0, 0);
+        } else {
+            self.save_cursor_position();
+        }
+    }
+
+    /// b-terminal(#311): DECSLRM. 69가 꺼져 있으면 아무것도 안 한다. 왼쪽이 오른쪽보다 작아야 하고, 정하면 커서를 원점으로 보낸다
+    /// (Ghostty Terminal.zig `setLeftAndRightMargin` 3346줄)
+    fn set_left_right_margins(&mut self, left: usize, right: usize) {
+        if !self.mode.contains(TermMode::LEFT_RIGHT_MARGIN) {
+            return;
+        }
+        let columns = self.columns();
+        let left = left.max(1);
+        let right = columns.min(if right == 0 { columns } else { right });
+        if left >= right {
+            return;
+        }
+        self.margin_left = left - 1;
+        self.margin_right = right - 1;
         self.goto(0, 0);
     }
 
