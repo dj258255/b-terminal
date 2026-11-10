@@ -31,6 +31,7 @@
 - [ADR-026 Dock에 놓은 파일은 확인 막대에서 y를 눌러야 실행하고, 경로 글자는 허용 목록으로 좁히고 목록 밖이면 거부하며, 통과한 경로만 작은따옴표로 감싼다](#adr-026-dock에-놓은-파일은-확인-막대에서-y를-눌러야-실행하고-경로-글자는-허용-목록으로-좁히고-목록-밖이면-거부하며-통과한-경로만-작은따옴표로-감싼다)
 - [ADR-027 키 입력 모드(DECBKM 67, 1035, 1036, 1039)는 Ghostty처럼 PTY로 가는 키 바이트를 바꾸고, kitty 키보드 프로토콜이 켜져 있으면 무시한다](#adr-027-키-입력-모드decbkm-67-1035-1036-1039는-ghostty처럼-pty로-가는-키-바이트를-바꾸고-kitty-키보드-프로토콜이-켜져-있으면-무시한다)
 - [ADR-028 마우스 보고 바이트는 한 곳(`mouse::encode`)에서 Ghostty처럼 만들고, 형식은 하나만 켜며, 1016은 격자 원점 기준 실제 픽셀을 보낸다](#adr-028-마우스-보고-바이트는-한-곳mouseencode에서-ghostty처럼-만들고-형식은-하나만-켜며-1016은-격자-원점-기준-실제-픽셀을-보낸다)
+- [ADR-029 키패드 응용 모드 바이트와 modifyOtherKeys 상태 2는 Ghostty 표대로 키 바이트를 바꾸고, 기본값과 kitty 키보드 프로토콜이 켜진 동안은 건드리지 않는다](#adr-029-키패드-응용-모드-바이트와-modifyotherkeys-상태-2는-ghostty-표대로-키-바이트를-바꾸고-기본값과-kitty-키보드-프로토콜이-켜진-동안은-건드리지-않는다)
 
 ## ADR-001 VT 엔진은 alacritty_terminal로 시작하고, bt-term 밖으로 엔진 타입을 내보내지 않는다
 
@@ -768,3 +769,24 @@ macOS의 Carbon `EnableSecureEventInput`은 켜 있는 동안 키 입력이 다�
 ### 결과
 - 기본 동작이 바뀐다: 1005에서 223칸을 넘는 좌표를 보낸다. 1015·1016·9를 쓰는 프로그램이 이제 동작한다. 1002에서 끌기가 보고된다. 움직임은 칸이 바뀔 때만 보낸다(전에는 픽셀마다). 뒤로·앞으로 단추와 가로 휠을 보고 중에 보낸다(단추 8·9는 코드 128·129, 가로 휠은 66·67).
 - 한계: 시험은 바이트와 모드 단위로 했고 실제 클릭·휠은 창에서 보지 않았다. 형식이 겹칠 때 DECRQM이 "마지막에 켠 것만 켬"으로 답하는 것은 Ghostty가 모드를 따로 두는 것과 다를 수 있다(확인하지 않았다).
+
+## ADR-029 키패드 응용 모드 바이트와 modifyOtherKeys 상태 2는 Ghostty 표대로 키 바이트를 바꾸고, 기본값과 kitty 키보드 프로토콜이 켜진 동안은 건드리지 않는다
+
+상태: 채택
+관련: [#312](https://github.com/dj258255/b-terminal/issues/312), ADR-027(키 입력 모드. 5번과 한계에서 미룬 것을 이 ADR이 한다)
+
+### 맥락
+- 키 입력은 PTY에 쓰는 바이트다. 프로그램이 `ESC =`(DECKPAM)이나 `CSI > 4 ; 2 m`(modifyOtherKeys)을 보내면 같은 키가 다른 바이트로 가야 한다. 그동안 b-terminal은 숫자 키패드를 일반 숫자 키와 구분하지 않았고 modifyOtherKeys는 vte가 해석해도 아무것도 하지 않았다.
+- 입력 경로의 바이트가 바뀌므로 ADR을 남긴다. 새로 생기는 보안 경계는 없다: 바이트는 사용자가 누른 키와 고정 글자로만 만들고 터미널에 찍힌 글(OSC 등)은 들어가지 않는다.
+
+### 결정
+1. 키패드 키는 winit `KeyEvent::location == KeyLocation::Numpad`로 가른다(숫자·`.`·`/`·`*`·`-`·`+`·Enter). 키패드가 응용 모드인 때는 DECKPAM(`TermMode::APP_KEYPAD`)이 켜져 있고 1035가 꺼져 있을 때뿐이다(Ghostty `pcStyleFunctionKey`: 1035가 켜져 있으면 늘 숫자 키패드. 1035 기본 켬이라 기본값에서는 `ESC =` 뒤에도 숫자다). 응용 모드의 바이트는 `function_keys.zig`의 `kpKeys` 표(`0`~`9`가 `p`~`y`, `.`이 `n`, `/`가 `o`, `*`이 `j`, `-`가 `m`, `+`가 `k`, Enter가 `M`)로 `ESC O 끝글자`, 수식 키가 있으면 `ESC O 번호 끝글자`(번호 = 1 + Shift + 2·Alt + 4·Ctrl + 8·Super)다. 숫자 모드는 수식 키와 상관없이 그 글자다.
+2. modifyOtherKeys는 `CSI > 4 ; 2 m`만 상태 2(`TermMode::MODIFY_OTHER_KEYS_2`, 49비트)를 켜고 그 밖의 값(`CSI > 4 ; 0 m`·`> 4 ; 1 m`·`> 4 m`·`> m`·`> 0~2 m`·`CSI > 4 n`)은 끈다. 지원하지 않는 첫 매개변수와 세 매개변수 이상은 버린다(Ghostty `stream.zig`·`stream_handler.zig`). RIS와 DECSTR이 끈다(Ghostty `Terminal.zig` 5954줄). `CSI ? 4 m`은 Ghostty처럼 답하지 않는다.
+3. 상태 2에서는 수식 키가 붙은 글자 하나를 `CSI 27 ; 수식 ; 코드 ~`로 보낸다. 대상은 xterm `IsControlInput`(0x40~0x7F)이거나 Shift 말고 다른 수식 키가 있을 때이고, Shift만이면 공백뿐이다(Ghostty `key_encode.zig` 386~440줄). Ctrl→제어 문자 바이트보다 먼저 본다. Enter·Tab·Backspace·Escape는 `function_keys.zig` 표대로 수식 키가 있으면 `CSI 27 ; 번호 ; 코드 ~`(Backspace의 Ctrl 혼자는 0x08 그대로)다.
+4. kitty 키보드 프로토콜이 켜져 있으면 둘 다 쓰지 않고 kitty 길이 그대로다(Ghostty처럼 kitty가 우선). 기본값(1035 켬, modifyOtherKeys 꺼짐)의 바이트는 바뀌지 않는다.
+5. IME 조합 중(`preedit`이 있는 동안)에 눌린 키는 modifyOtherKeys로 바꾸지 않는다. IME 확정 글자는 `Ime::Commit`으로 PTY에 직접 가서 이 경로를 지나지 않으므로 `CSI 27`이 붙지 않는다(AGENTS.md: 확정만 PTY로).
+6. Cmd(Super)는 이 두 길에서 수식 키로 센다(Ghostty `mods.binding()`). kitty 길의 `sup`은 지금처럼 그대로 둔다.
+
+### 결과
+- 기본 동작은 바뀌지 않는다. 프로그램이 모드를 켜면 키패드·글자·Enter 등의 바이트가 달라진다. 모드를 켜 둔 채 끝난 프로그램은 `reset`(RIS)으로 되돌린다.
+- 한계: 시험은 바이트와 모드 단위(Ghostty 시험 값)로 했고 실제 키는 창에서 보지 않았다. macOS 키패드가 winit에서 `Numpad` 위치로 오는지는 확인하지 못했다. NumLock이 꺼진 키패드가 이름 키(화살표·Home)로 오는 것은 커서 키와 같은 바이트라 따로 다루지 않았다. 상태 2에서 Ctrl이 붙은 키패드 숫자 등 Ghostty가 키패드 표를 먼저 보는 갈래는 따랐지만, 그 밖의 옛 꼴(Enter·Tab에 수식 키가 있을 때 기본값)은 Ghostty와 다른 채로 두었다.
