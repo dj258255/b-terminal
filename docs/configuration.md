@@ -412,3 +412,11 @@ fish·elvish는 아직 스크립트가 없습니다. 끄려면 `shell-integratio
 | `ssh-terminfo` | 끔 | 받기만 합니다. b-terminal은 자기 terminfo가 없고, 원격 호스트에 무엇을 설치하는 동작은 하지 않습니다 |
 
 `cursor`와 `title`은 zsh·bash 모두에서 `precmd`·`preexec`(bash는 `PROMPT_COMMAND`·DEBUG 덫) 훅으로 보냅니다. zsh의 `zle` 위젯(줄 편집 중 모양 바꾸기)은 쓰지 않아, 줄 편집 도중 프로그램이 모양을 바꾸면 다음 프롬프트까지 그대로입니다.
+
+## 시험용 환경 변수
+
+설정 파일의 키가 아니라 환경 변수입니다. 실험을 위한 것이라 이름과 동작이 예고 없이 바뀔 수 있습니다.
+
+| 변수 | 뜻 |
+|---|---|
+| `BT_GPU=1` | 창을 wgpu(GPU)로 그립니다. 기본은 지금까지의 CPU 그리기입니다. CPU가 격자 밖의 것(창 바탕·탭 막대·칸 바탕, 그리고 kitty 그림·흐림·막대·팔레트 등 격자 위의 것)을 두 층으로 그리고 GPU가 층과 칸마다의 격자를 합칩니다. `background-opacity`가 1보다 작거나 `background-image`가 있거나 `window-colorspace = srgb`이면, 또는 GPU 어댑터·창 surface를 열지 못하면 로그에 이유를 한 줄 남기고 CPU로 그립니다. 창을 열 때 정하므로 설정을 다시 읽어도 열려 있는 창의 길은 바뀌지 않습니다. 합자는 아직 그리지 않아, 합자가 있는 글꼴(`->`·`!=`)은 CPU 길과 다르게 보입니다. 시험용입니다 |

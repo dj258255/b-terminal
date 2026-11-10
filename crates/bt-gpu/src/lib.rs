@@ -7,3 +7,4 @@ pub mod scene;
 
 pub use atlas::{Atlas, Full};
 pub use renderer::{FrameTimings, GpuRenderer};
+pub use renderer::{LayerUpdate, PaneDraw, PresentOutcome};

@@ -326,6 +326,7 @@ dependencies = [
  "anyhow",
  "arboard",
  "bt-core",
+ "bt-gpu",
  "bt-render",
  "bt-term",
  "env_logger",

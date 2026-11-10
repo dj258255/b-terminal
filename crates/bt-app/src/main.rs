@@ -21,6 +21,7 @@ mod padding;
 mod palette;
 mod pointer;
 mod quick;
+mod render_path;
 mod secure_input;
 mod shellint;
 mod split;
