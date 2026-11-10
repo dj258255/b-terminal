@@ -975,6 +975,31 @@ fn decrqss_cursor_style_and_scroll_region() {
 }
 
 #[test]
+fn decstr_returns_the_cursor_style_to_the_configured_one() {
+    // cursor-style = bar, cursor-style-blink = false 이면 설정 모양은 6(가는 막대, 깜박이지 않음)
+    let bar = |o: &mut SpawnOptions| {
+        o.cursor_shape = Some(bt_term::CursorShape::Beam);
+        o.cursor_blink = false;
+    };
+    let ask = "\\033P$q q\\033\\\\";
+    // 프로그램이 4(밑줄, 깜박이지 않음)로 바꾼 뒤 DECSTR(CSI ! p)
+    assert_eq!(
+        checksum_reply("\\033[4 q\\033[!p", ask, false, bar),
+        hex_of("\x1bP1$r6 q\x1b\\")
+    );
+    // 바꾸고 DECSTR을 하지 않으면 바꾼 모양 그대로
+    assert_eq!(
+        checksum_reply("\\033[4 q", ask, false, bar),
+        hex_of("\x1bP1$r4 q\x1b\\")
+    );
+    // DECSCUSR 0은 같은 길로 설정 모양
+    assert_eq!(
+        checksum_reply("\\033[4 q\\033[0 q", ask, false, bar),
+        hex_of("\x1bP1$r6 q\x1b\\")
+    );
+}
+
+#[test]
 fn decrqss_unknown_gets_dcs_zero_and_too_long_gets_nothing() {
     assert_eq!(
         checksum_reply("", "\\033P$qz\\033\\\\", false, none),
@@ -1432,6 +1457,56 @@ fn ris_returns_the_palette_to_the_theme_for_osc_4_queries() {
     assert_eq!(
         kitty_reply(&set, "\\033]4;1;?\\007", false, |_| {}),
         hex_of(&format!("\x1b]4;1;{}\x07", rgb16(p.r, p.g, p.b)))
+    );
+}
+
+// ---- OSC 12 질의: 커서 색을 정하지 않았으면 지금 글자색으로 답한다(#286) ----
+
+#[test]
+fn osc_12_query_follows_the_foreground_the_program_set() {
+    // Ghostty stream_handler.zig: 커서 색은 `cursor.get() orelse foreground.get()`. 둘 다 지금 값이다
+    let set = format!("\\033]10;#123456{ST}");
+    assert_eq!(
+        kitty_reply(&set, "\\033]12;?\\007", false, |_| {}),
+        hex_of(&format!("\x1b]12;{}\x07", rgb16(0x12, 0x34, 0x56)))
+    );
+    // 8비트 보고 꼴도 같은 색이다
+    let bit8 = |o: &mut SpawnOptions| o.osc_color_report_format = bt_core::config::OscColorReportFormat::Bit8;
+    assert_eq!(
+        kitty_reply(&set, "\\033]12;?\\007", false, bit8),
+        hex_of("\x1b]12;rgb:12/34/56\x07")
+    );
+    // OSC 21의 cursor 질의도 같다
+    assert_eq!(
+        kitty_reply(&set, &format!("\\033]21;cursor=?{ST}"), false, |_| {}),
+        hex_of("\x1b]21;cursor=rgb:12/34/56\x1b\\")
+    );
+}
+
+#[test]
+fn osc_12_set_color_wins_over_the_foreground_and_osc_112_goes_back_to_it() {
+    let fg = format!("\\033]10;#123456{ST}");
+    let cur = format!("\\033]12;#0000ff{ST}");
+    let ask = "\\033]12;?\\007";
+    assert_eq!(
+        kitty_reply(&format!("{fg}{cur}"), ask, false, |_| {}),
+        hex_of(&format!("\x1b]12;{}\x07", rgb16(0, 0, 255)))
+    );
+    // 순서가 반대여도 정한 커서 색이다
+    assert_eq!(
+        kitty_reply(&format!("{cur}{fg}"), ask, false, |_| {}),
+        hex_of(&format!("\x1b]12;{}\x07", rgb16(0, 0, 255)))
+    );
+    // OSC 112로 되돌리면 지금 글자색
+    assert_eq!(
+        kitty_reply(&format!("{fg}{cur}\\033]112{ST}"), ask, false, |_| {}),
+        hex_of(&format!("\x1b]12;{}\x07", rgb16(0x12, 0x34, 0x56)))
+    );
+    // OSC 110으로 글자색도 되돌리면 테마 글자색
+    let t = Theme::default();
+    assert_eq!(
+        kitty_reply(&format!("{fg}\\033]110{ST}"), ask, false, |_| {}),
+        hex_of(&format!("\x1b]12;{}\x07", rgb16(t.cursor.r, t.cursor.g, t.cursor.b)))
     );
 }
 

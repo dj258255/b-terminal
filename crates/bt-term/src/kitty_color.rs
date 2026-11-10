@@ -211,7 +211,11 @@ fn current<L: EventListener>(term: &Term<L>, theme: &Theme, key: Key) -> Option<
         Key::Palette(n) => theme.indexed(n),
         Key::Special(Special::Foreground) => theme.foreground,
         Key::Special(Special::Background) => theme.background,
-        _ => theme.cursor,
+        // 커서 색을 정하지 않았으면 지금 글자색(OSC 12 질의와 같다, #286). 테마가 커서 색을 따로 정했으면 그 색
+        _ => match term.colors()[NamedColor::Foreground as usize] {
+            Some(c) if theme.cursor == theme.foreground => bt_core::Rgb::new(c.r, c.g, c.b),
+            _ => theme.cursor,
+        },
     };
     Some((c.r, c.g, c.b))
 }
@@ -222,6 +226,13 @@ pub fn reset_palette<L: EventListener>(term: &mut Term<L>) {
     for i in 0..256 {
         Handler::reset_color(term, i);
     }
+}
+
+/// 소프트 리셋(DECSTR, `CSI ! p`): 팔레트를 되돌리고 커서 모양·깜박임을 설정 값으로 되돌린다.
+/// 모양은 DECSCUSR 0과 같은 길(`set_cursor_style(None)`)이다. Ghostty `Terminal.zig`의 `softReset`도 `setCursorStyle(.default)`를 부른다
+pub fn soft_reset<L: EventListener>(term: &mut Term<L>) {
+    reset_palette(term);
+    Handler::set_cursor_style(term, None);
 }
 
 /// 요청을 차례로 적용하고, 질의가 있으면 답 바이트를 돌려준다.

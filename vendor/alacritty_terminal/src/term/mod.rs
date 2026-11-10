@@ -1794,6 +1794,8 @@ impl<T: EventListener> Handler for Term<T> {
         self.event_proxy.send_event(Event::ColorRequest(
             index,
             self.colors[index], // b-terminal(#272): 프로그램이 바꾼 색(없으면 None)을 사건에 싣는다
+            // b-terminal(#286): 커서 색(OSC 12)은 정하지 않았으면 지금 글자색을 따르므로 바꾼 글자색도 싣는다
+            if index == NamedColor::Cursor as usize { self.colors[NamedColor::Foreground as usize] } else { None },
             Arc::new(move |color| {
                 format!(
                     "\x1b]{};rgb:{1:02x}{1:02x}/{2:02x}{2:02x}/{3:02x}{3:02x}{4}",

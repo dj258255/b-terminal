@@ -295,3 +295,18 @@ fn overline_is_set_by_sgr_53_and_cleared_by_55_and_0() {
     e.feed(b"\x1b[53m   ");
     assert!(e.snapshot().cell(1, 0).flags.contains(CellFlags::OVERLINE));
 }
+
+#[test]
+fn soft_reset_returns_the_cursor_style_like_decscusr_0() {
+    // DECSCUSR 4(밑줄, 깜박이지 않음) 뒤 DECSTR는 DECSCUSR 0과 같이 설정 모양(기본은 깜박이는 블록)으로 돌아간다(#286)
+    let mut e = emu(10, 2);
+    e.feed(b"\x1b[4 q");
+    assert_eq!(e.snapshot().cursor.shape, CursorShape::Underline);
+    e.feed(b"\x1b[!p");
+    let soft = e.snapshot().cursor;
+    let mut z = emu(10, 2);
+    z.feed(b"\x1b[4 q\x1b[0 q");
+    let zero = z.snapshot().cursor;
+    assert_eq!(soft.shape, CursorShape::Block);
+    assert_eq!((soft.shape, soft.blinking), (zero.shape, zero.blinking));
+}
