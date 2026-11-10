@@ -284,8 +284,8 @@ impl GpuRenderer {
         let Some(target) = self.target.as_ref() else {
             return Vec::new();
         };
-        let cb = self.encode_compose(&target.view);
-        self.queue.submit([cb]);
+        let cbs = self.encode_frame(&target.view);
+        self.queue.submit(cbs);
         let _ = self.device.poll(wgpu::PollType::wait_indefinitely());
         self.timings.gpu_ms = t.elapsed().as_secs_f64() * 1000.0;
         self.drawn = true;
@@ -367,6 +367,7 @@ impl GpuRenderer {
             upload_bytes,
             ..FrameTimings::default()
         };
+        self.prepare_custom(size);
     }
 
     /// 한 번의 그리기 패스로 아래층 → 칸마다(바탕, 글자, 커서) → 위층을 `view`에 그리는 명령을 만든다

@@ -225,10 +225,10 @@ impl GpuRenderer {
         };
         let t_encode = Instant::now();
         let view = frame.texture.create_view(&wgpu::TextureViewDescriptor::default());
-        let cb = self.encode_compose(&view);
+        let cbs = self.encode_frame(&view);
         let encode_ms = t_encode.elapsed().as_secs_f64() * 1000.0;
         let t_submit = Instant::now();
-        self.queue.submit([cb]);
+        self.queue.submit(cbs);
         let submit_ms = t_submit.elapsed().as_secs_f64() * 1000.0;
         let t_present = Instant::now();
         self.queue.present(frame);

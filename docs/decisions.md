@@ -42,6 +42,7 @@
 - [ADR-037 GPU 길의 층은 앞서 올린 것과 줄 단위로 견줘 달라진 사각형만 올리고, 빈 위층은 그리지 않는다](#adr-037-gpu-길의-층은-앞서-올린-것과-줄-단위로-견줘-달라진-사각형만-올리고-빈-위층은-그리지-않는다)
 - [ADR-038 GPU 길은 그림판이 막힐 것 같으면 그 프레임을 미루고, 가려진 창에는 층을 올리지 않으며, 층 입력이 같으면 층을 그리지도 견주지도 않는다](#adr-038-gpu-길은-그림판이-막힐-것-같으면-그-프레임을-미루고-가려진-창에는-층을-올리지-않으며-층-입력이-같으면-층을-그리지도-견주지도-않는다)
 - [ADR-039 macOS는 GPU 길을 기본으로 그리고, `BT_GPU=0`이면 CPU 길로, 그 밖의 OS는 CPU 길을 기본으로 둔다](#adr-039-macos는-gpu-길을-기본으로-그리고-bt_gpu0이면-cpu-길로-그-밖의-os는-cpu-길을-기본으로-둔다)
+- [ADR-040 사용자 셰이더는 GPU 길에서 naga로 shadertoy 꼴 GLSL을 읽어 합친 화면 뒤에 패스로 돌린다](#adr-040-사용자-셰이더는-gpu-길에서-naga로-shadertoy-꼴-glsl을-읽어-합친-화면-뒤에-패스로-돌린다)
 
 ## ADR-001 VT 엔진은 alacritty_terminal로 시작하고, bt-term 밖으로 엔진 타입을 내보내지 않는다
 
@@ -1161,3 +1162,66 @@ E8의 실제 창 로그에서 10ms 넘는 GPU 프레임은 세 가지였다. (1)
 
 ### 보안
 새로 여는 입력·파일·네트워크 경계는 없다. 환경 변수 `BT_GPU`는 그리기 길만 고른다.
+
+## ADR-040 사용자 셰이더는 GPU 길에서 naga로 shadertoy 꼴 GLSL을 읽어 합친 화면 뒤에 패스로 돌린다
+
+상태: 채택(엔진만. 설정 키·앱 연결은 이어지는 이슈)
+관련: [#372](https://github.com/dj258255/b-terminal/issues/372)(엔진), #373(설정 키와 유니폼 값), ADR-036(창 길)
+
+### 맥락
+- Ghostty `custom-shader`는 shadertoy 꼴 GLSL(`mainImage(out vec4 fragColor, in vec2 fragCoord)`)을 합친 화면에 후처리로 건다. Ghostty는 앞에 `shadertoy_prefix.glsl`을 붙이고 glslang(GLSL→SPIR-V)과 SPIRV-Cross(→MSL)로 바꾼다(`shadertoy.zig`).
+- bt-gpu는 합친 화면을 창 surface에 바로 그려 셰이더를 끼울 중간 텍스처가 없었고, wgpu의 `glsl` 기능이 꺼져 있었다.
+- 앱 연결(설정에서 파일 읽기, 유니폼 값, 다시 그리기 요청)은 이번 일이 아니다. 이번에는 창 없이 시험할 수 있는 엔진까지다.
+
+### 검토한 선택지
+| 방식 | 판단 |
+|---|---|
+| **wgpu `glsl` 기능(naga GLSL 읽기)으로 prelude+사용자 소스를 fragment로 읽기** | 채택. 새 외부 크레이트는 이 기능이 끌어오는 `pp-rs`(전처리기)·`termcolor`·`unicode-xid`뿐이고, 이미 있는 naga를 쓴다. glslang(C++)·SPIRV-Cross를 들이지 않는다 |
+| glslang을 FFI로 | 기각. C++ 빌드와 `unsafe`가 든다(작업 공간은 `unsafe_code = "deny"`) |
+| 셰이더를 WGSL로 받기 | 기각. Ghostty·shadertoy 셰이더를 그대로 쓰지 못한다 |
+
+### 결정
+1. `shadertoy::PRELUDE`(사용자 소스 앞)와 `EPILOGUE`(뒤)를 붙여 fragment로 읽고, naga 검증을 통과한 모듈만 `ShaderSource::Naga`로 wgpu에 넘긴다. 읽기·검증 오류는 `Result`로 돌려주고 오류 문구에 셰이더 이름과 naga 메시지(사용자 소스의 줄 번호)를 넣는다. 그래도 wgpu가 오류를 내면(바인딩이 안 맞는 것 등) 오류 범위(`push_error_scope`)로 잡는다. 잘못된 셰이더가 앱을 패닉시키지 않는다. 컴파일에 실패한 셰이더는 건너뛰고 오류 문구만 돌려준다(Ghostty: 실패한 셰이더는 무시하고 로그만).
+2. 유니폼 블록 `Globals`의 필드 순서·이름·타입은 Ghostty와 같다(사용자 셰이더가 이름으로 쓴다). 값은 `ShaderUniforms`로 받고 `to_std140`이 바이트로 만든다. 해상도는 렌더러가 채운다(`iResolution` = 창 크기, 1; `iChannelResolution[0]` 같은 값). 오프셋 표는 naga가 prelude에서 계산한 오프셋과 견주는 시험이 있다.
+3. 셰이더가 있으면 합친 화면(`encode_compose`)을 창 크기 중간 텍스처에 그리고, 셰이더를 적은 순서대로 돌린다. 앞 출력이 다음 `iChannel0`이다(앞뒤 텍스처 둘을 번갈아 쓴다, Ghostty `CustomShaderState`). 마지막 셰이더는 창 surface(창 없는 `compose`는 대상 텍스처)에 그린다. 패스는 섞지 않고(blend 없음) 투명으로 지운 뒤 셰이더 출력을 그대로 쓴다(알파 포함). 화면 전체를 덮는 삼각형 하나로 그린다. wgpu의 fragment 좌표는 Metal처럼 위가 0이라 `gl_FragCoord`를 뒤집지 않는다(Ghostty `custom_shader_y_is_down = true`).
+4. 샘플러는 Ghostty와 같다: 선형 확대·축소, 가장자리 고정(`Metal.zig`의 `samplerOptions`). 중간 텍스처는 창 크기가 바뀌면 다시 만든다.
+5. 셰이더가 없으면 지금 길을 그대로 탄다(`encode_frame`이 `encode_compose` 하나를 부른다).
+
+### Ghostty prelude에서 naga가 받지 않아 바꾼 것
+| Ghostty 원문 | naga | 바꾼 꼴 |
+|---|---|---|
+| `#version 430 core` | `Invalid version: 430` | `#version 450 core` |
+| 블록 안 `uniform vec3 iResolution;` 한정자 | `Expected Void, Struct or a type, found Uniform` | 한정자를 뺌(필드 이름·순서·타입은 같다) |
+| `layout(binding = 0) uniform sampler2D iChannel0;`(합친 샘플러) | `Not implemented: variable qualifier` | `uniform texture2D`+`uniform sampler`를 따로 선언하고 `#define iChannel0 sampler2D(texture, sampler)`. 사용자의 `texture(iChannel0, uv)`는 그대로 된다 |
+| `#define texture2D texture`가 타입 이름 `texture2D`와 부딪힘 | 정의를 앞에 두면 `Not implemented: variable qualifier` | 타입 선언을 먼저 하고 `#define texture2D texture`를 그 뒤에 둠 |
+| 함수 `mainImage`의 앞 선언과 `main`을 사용자 소스 앞에 둠 | 함수가 둘 이상인 셰이더(`test_shadertoy_crt.glsl`)에서 검증 오류(`[0] of kind Function depends on [2] ... not processed yet`) | `main`을 사용자 소스 뒤(`EPILOGUE`)로 옮김. 부수 효과로 `mainImage`가 없는 셰이더는 읽기 단계에서 `Unknown function 'mainImage'`로 거절된다(앞 선언만 있으면 통과해 버린다) |
+| `layout(binding = N)`에 `set` 없음 | 읽기는 통과했다(바인딩 그룹이 어디로 가는지 확인하지 않았다) | `set = 0`을 적음 |
+| `layout(location = 0) in vec4 gl_FragCoord;` 다시 선언 | 읽기는 통과했다(쓰지 않았다) | 선언을 빼고 내장 `gl_FragCoord`를 씀 |
+| `float iChannelTime[4];`(std140에서 원소 stride 16) | 읽기·검증은 통과하고 **Metal에서 뒤의 필드가 모두 밀린다**(`iChannelResolution`부터 모든 값이 0이거나 엉뚱한 값: 시험에서 확인) | 같은 바이트(오프셋 32, 64바이트)의 `vec4 _bt_iChannelTime[4]`로 선언하고, `const float iChannelTime[4]`를 0으로 채워 따로 둠. Ghostty도 `iChannelTime`을 쓰지 않아 0이므로 사용자 셰이더가 보는 값은 같다. 이름 `_bt_iChannelTime`은 블록 필드 이름이 달라진 유일한 곳이다 |
+
+마지막 줄의 원인(naga의 MSL 쓰기가 std140 스칼라 배열 stride를 지키지 않는 것)은 naga IR의 오프셋이 맞는데도 값이 밀리는 것으로만 확인했고 naga 소스는 읽지 않았다. Linux(Vulkan)에서는 같은 문제가 있는지 보지 않았다(vec4 배열이라 어느 쪽이든 안전하다).
+
+### Ghostty와 다르게 한 것
+- 변환 길이 다르다: Ghostty는 glslang+SPIRV-Cross, 여기는 naga 한 길이다. 그래서 어떤 셰이더는 Ghostty에서는 되고 여기서는 오류이거나 그 반대일 수 있다. Ghostty 시험 셰이더 셋(crt·focus·invalid)만 견줬다.
+- 오류 문구와 줄 번호는 naga의 것이다.
+- 컴파일 실패는 오류 문구를 돌려주고 앱이 로그로 남긴다(Ghostty도 실패한 셰이더는 건너뛴다).
+
+### 감수한 트레이드오프
+- 셰이더 패스마다 창 크기 텍스처 한 장을 읽고 쓴다. 중간 텍스처 둘(창 크기 × 4바이트)의 메모리를 더 쓴다. 셰이더가 없으면 만들지 않는다.
+- 합친 화면을 중간 텍스처에 그렸다가 다시 읽으므로, 셰이더가 하나라도 있으면 그리는 데 패스가 더 든다.
+- 무한 반복 같은 셰이더가 GPU를 오래 붙드는 것은 막지 않는다(naga 검증은 시간을 보지 않는다). 파일은 사용자가 설정에 적은 것이다.
+
+### 하지 않은 것
+- 설정 키(`custom-shader`)·파일 읽기·애니메이션 판단·다시 그리기 요청(#373과 앱 연결), `iChannel1~3`(Ghostty도 쓰지 않는다), CPU 길의 셰이더(GPU 길 전용), 셰이더 파일 바뀜 감시.
+
+### 시험
+- `tests/custom_shader.rs`(창 없이, 어댑터가 없으면 건너뜀): 항등 셰이더는 셰이더 없는 `compose`와 픽셀이 모두 같다, 색 뒤집기는 모든 픽셀이 뒤집힌 값(허용치 1), 둘을 이으면 항등과 순서(왼쪽만 빨강·빨강/파랑 맞바꾸기 두 순서), 유니폼 값이 셰이더에 닿는다(스칼라·정수·vec4·`vec3` 뒤 필드·팔레트 배열·해상도·쓰지 않는 필드), `gl_FragCoord`가 위에서 0, Ghostty `crt`·`focus` 시험 셰이더 컴파일과 화면 변화, `invalid`는 패닉 없이 오류 문구(이름·naga 메시지)를 내고 다른 셰이더와 같이 주면 그것만 건너뜀, 껐다 켜도(빈 목록) 같음과 창 크기 바뀜, 투명 창에서 알파 유지.
+- `shadertoy.rs` 단위 시험: 오프셋 표가 naga 계산과 같다, `to_std140`이 모든 필드를 오프셋에 쓴다.
+- 오프셋이 naga IR과 같아도 Metal에서 값이 밀린 일이 있었으므로(위 표) 값이 셰이더에 닿는지는 창 없는 GPU 시험이 본다.
+
+### 비용(창 없이 한 번 잰 값, Apple M2 Pro, release)
+- 컴파일(읽기+검증+파이프라인): 프로세스에서 처음 약 115ms, 이어지는 컴파일은 0.3~0.9ms. 처음 값이 Metal 셰이더 컴파일러가 처음 도는 값인지는 가르지 않았다.
+- 패스: 2000×1360에서 `compose`의 gpu_ms 중앙값 0.81ms(셰이더 없음) → 0.95(항등 1패스) → 1.04(crt 1패스) → 1.68(crt 3패스). 한 번 잰 값이고 GPU 타임스탬프가 아니라 명령 인코딩·제출·완료 기다림을 합한 시간이다. 실제 창에서는 재지 않았다.
+
+### 보안
+사용자가 설정에 적은 셰이더 파일의 GLSL이 GPU에서 돈다. 파일이 새 입력 경로를 열지는 않는다(PTY·OSC·소켓 경계는 그대로). naga 검증을 통과한 코드만 장치에 넘기고, 검증 실패는 오류 문구로 돌려 패닉하지 않는다. 시간 제한은 없다.
