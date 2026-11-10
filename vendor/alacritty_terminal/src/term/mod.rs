@@ -2420,6 +2420,8 @@ impl<T: EventListener> Handler for Term<T> {
             // b-terminal(#264): 모드 2048(크기 알림)의 DECRQM은 bt-term의 스캐너가 답한다. 여기서 0을 답하면 답이 둘 나간다
             // b-terminal(#296): 모드 2031(색 구성표 알림)도 같다
             PrivateMode::Unknown(2048 | 2031) => return,
+            // b-terminal(#303): 모드 2033(가시성 보고)도 같다
+            PrivateMode::Unknown(2033) => return,
             PrivateMode::Unknown(_) => ModeState::NotSupported,
         };
 
