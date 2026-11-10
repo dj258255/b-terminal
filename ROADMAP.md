@@ -493,6 +493,20 @@ DECCOLM과 kitty 클립보드. 추적 이슈 [#323](https://github.com/dj258255/
 - 셸 스크립트를 바꾸는 PR은 시험(`bash -c`)만이 아니라 실제 대화형 셸을 PTY에 띄워 바이트를 읽어 보면 좋습니다. 그렇게 해서 #50부터 있던 bash 빈 Enter 문제를 찾았습니다.
 - 에이전트가 "원문 동작은 확인하지 못했다"고 남긴 자리(넓은 글자의 뒤 칸)는 주 세션이 받아 둔 원문으로 바로 확인할 수 있었습니다. 보고에 모르는 것을 모른다고 적게 한 덕입니다.
 
+## 0.29.0 (2026-11-11)
+
+GPU 렌더러 1단계. 추적 이슈 [#345](https://github.com/dj258255/b-terminal/issues/345). 범수 님이 0.28 다음 판을 GPU 렌더러로, 라이브러리를 wgpu로 정했습니다(안전한 API라 `unsafe_code = "deny"`를 지키고, 사용자 셰이더 GLSL을 naga로 읽을 수 있음). Ghostty가 macOS에서 IOSurface를 레이어에 올리는 것을 원본으로 확인하고 두 단계로 나눴습니다. 0.28.0처럼 에이전트 둘이 각자 worktree에서 구현·커밋하고, 주 세션이 검토·원본 대조·실험 E5 측정·옮기기·병합을 했습니다. ADR 번호(034·035)와 실험 번호(E5·E6)는 프롬프트에서 미리 나눴습니다. 병합 시각(KST)은 추적 이슈를 연 22:50부터 마지막 병합 다음 날 00:53까지입니다.
+
+| 이슈 | 내용 | 예상 | 실제 | PR | 주 세션이 한 것 |
+|---|---|---|---|---|---|
+| [#346](https://github.com/dj258255/b-terminal/issues/346) | macOS 화면 올리기를 IOSurface로 | 4~8시간 | 에이전트 약 13분(병합 23:52) | [#348](https://github.com/dj258255/b-terminal/pull/348) | vendor unsafe 읽기, Ghostty 대조, 격리한 실제 창에서 실험 E5(다섯 쌍), 두 길의 화면 그림을 픽셀로 비교(기본·srgb·투명) |
+| [#347](https://github.com/dj258255/b-terminal/issues/347) | wgpu 셀 렌더러 1단계(창 없이) | 1~2일 | 에이전트 약 15분(병합 다음 날 00:53) | [#349](https://github.com/dj258255/b-terminal/pull/349) | 읽기·아틀라스 검토, #348 위로 옮기기, GPU 시험과 E6를 직접 다시 돌림 |
+
+이번에 배운 것:
+
+- 작업 공간 규칙(`unsafe_code = "deny"`)이 라이브러리 고르기를 바꿨습니다. 이슈를 연 뒤 공통 지시를 쓰다가 알아채 범수 님께 다시 여쭸습니다. 큰 일은 이슈를 열기 전에 규칙(unsafe, 의존성, CI)을 먼저 훑습니다.
+- 창이 있어야 재는 값은 에이전트가 잴 수 없으니, 에이전트에게는 견주는 스위치(`BT_E5_CGIMAGE`)와 잴 명령을 만들게 하고 주 세션이 쟀습니다. 측정 스크립트는 소켓을 못 찾으면 멈추게 해야 합니다(첫 스크립트가 측정 창 열 개를 끄지 못했습니다).
+
 ## 다음
 
 - 범수 님이 직접 해야 할 것: 키보드·마우스 확인(한글 2벌식 "안녕 하세요⏎", Claude Code의 Shift+Enter, Cmd-D·Cmd-F·Cmd-클릭·Cmd-N·Cmd-Shift-P, 메뉴, 창 닫기 단추, vim·htop, kitty icat·yazi, 투명 창), Developer ID 계정으로 `scripts/bundle-macos.sh --sign … --notarize … --dmg`
@@ -523,4 +537,6 @@ DECCOLM과 kitty 클립보드. 추적 이슈 [#323](https://github.com/dj258255/
 - 범수 님이 확인할 것(0.26): 클립보드 내용을 백업한 뒤 `printf '\033]5522;type=write:id=1\033\\\033]5522;type=wdata:mime=%s;%s\033\\\033]5522;type=wdata\033\\' "$(printf text/plain|base64)" "$(printf hello|base64)"`로 클립보드가 `hello`가 되고 알림 띠가 뜨는지, `clipboard-read = ask`에서 같은 꼴의 읽기에 확인 막대가 뜨고 `n`이면 `EPERM`인지, `printf '\033[?5522h'` 뒤 Cmd+V가 글 대신 `OK:pw=…` 패킷이 되는지(끝은 `printf '\033[?5522l'`), 화면을 나눈 칸에서 `printf '\033[?40h\033[?3h'`(끝은 `printf '\033[?40l'`)
 - 범수 님이 확인할 것(0.27): zsh에서 출력 뒤 Ctrl-L로 지운 내용이 스크롤백에 남는지, bash(여러 줄 PS1)에서 창 크기를 바꿀 때 프롬프트 윗줄이 남는지, `printf 'abc'` 뒤 프롬프트가 새 줄에서 시작하는지, vim(`:set mouse=a`)에서 `printf '\033[>1s'` 뒤 Shift 클릭이 vim으로 가는지(끝은 `printf '\033[>0s'`), `printf '\033]7;\033\\'` 뒤 Cmd-T의 새 탭 폴더
 - 범수 님이 확인할 것(0.28): 셸 통합 zsh에서 `echo 가나다 abc`를 치고 `가`와 `c`를 눌러 커서가 그 글자로 가는지, 두 줄 프롬프트에서 입력 앞의 프롬프트 글을 누르면 입력 맨 앞에서 멈추는지, `\` 뒤 둘째 줄(PS2)을 누를 때, bash(`shell-integration = bash`)에서 같은 것, vim 안에서 누르면 아무것도 가지 않는지, 셸 통합을 끄면 클릭 이동이 꺼지는지, bash에서 빈 Enter 뒤 탭 제목이 `_bt_status`로 바뀌지 않는지(`shell-integration-features`에 `title`)
-- 큰 일로 남긴 것: GPU(또는 IOSurface) 렌더러
+- 범수 님이 확인할 것(0.29): IOSurface로 바뀐 뒤 창을 끌어 크기를 바꿀 때 깜빡임이나 옛 그림이 남는지, 외부 화면으로 옮길 때 색, `yes | head -c 20000000` 같은 빠른 출력에서 화면이 찢어지는지, 이상하면 `BT_E5_CGIMAGE=1`로 띄워 견주기
+- 다음 판(GPU 2단계): wgpu 렌더러를 창 surface에 연결하고(설정 키 또는 환경 변수로 고름), 빠진 그리기(밑줄 모양·상자 글자·선택·preedit·투명 창·그림)를 채운 뒤 기본으로 바꿀지 잰다. 그 위에 사용자 셰이더(`custom-shader`)
+- 큰 일로 남긴 것: GPU 렌더러를 앱 창에 연결하기(IOSurface 올리기와 창 없는 wgpu 렌더러는 0.29.0에서 함)
