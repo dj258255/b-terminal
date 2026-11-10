@@ -347,6 +347,24 @@ Ghostty 받기만 하던 키와 시퀀스 채우기. 추적 이슈 [#237](https:
 - 커밋 보안 hook은 두 커밋이 몇 초 차이로 들어오면 판정 줄만으로는 어느 커밋의 것인지 가리기 어렵습니다. 또 `&&`로 이은 긴 명령의 커밋을 "실패"로 잘못 읽고 건너뛰기도 했습니다. 판정 수와 시작 수를 맞춰 보고, 건너뛴 커밋은 직접 읽고 PR에 적었습니다.
 - 실제 창에서만 보이는 것이 또 나왔습니다: 탭이 둘일 때 배지가 탭 줄과 겹침. 에이전트가 보고에 "겹칠 수 있다"고 적은 곳을 먼저 봤습니다.
 
+## 0.20.0 (2026-11-10)
+
+Ghostty가 답하는 VT 질의. 추적 이슈 [#263](https://github.com/dj258255/b-terminal/issues/263). 에이전트 넷이 각자 worktree에서 구현·커밋하고, 주 세션이 옮기고 검토·병합했습니다. 하위 이슈 둘(#269, #272)은 진행 중에 주 세션이 찾아 더했습니다. 병합 시각(KST)은 추적 이슈를 연 07:43부터 마지막 병합 09:16까지입니다.
+
+| 이슈 | 내용 | 예상 | 실제 | PR | 주 세션이 한 것 |
+|---|---|---|---|---|---|
+| [#264](https://github.com/dj258255/b-terminal/issues/264) | CSI 질의: XTVERSION, DA1·DA2, `CSI 16·19 t`, 모드 2048(보안 경계) | 2~4시간 | 에이전트 약 11분(병합 08:05) | [#267](https://github.com/dj258255/b-terminal/pull/267) | 0.19.0을 격리한 창에서 질의해 빈칸을 찾음, Ghostty 원본(stream_handler.zig 등)을 받아 넘김, 실제 창(답이 한 번만 가는지) |
+| [#265](https://github.com/dj258255/b-terminal/issues/265) | DCS 질의: DECRQSS, XTGETTCAP(보안 경계) | 2~4시간 | 에이전트 약 15분(병합 08:18) | [#268](https://github.com/dj258255/b-terminal/pull/268) | #264 위로 옮김, XTGETTCAP 형식을 terminfo/Source.zig 원문과 대조, #264가 생긴 뒤의 `RV`·`rv`·`XR`·`xr`을 테스트 먼저 더함, 실제 창 |
+| [#269](https://github.com/dj258255/b-terminal/issues/269) | OSC 22 테스트가 셸이 빨리 뜨면 첫 단언에서 실패(버그) | 없음(버그 양식) | 주 세션 약 15분(병합 08:21) | [#270](https://github.com/dj258255/b-terminal/pull/270) | #268의 CI에서 봄, 0.5초 지연을 넣어 같은 실패를 재현, `read`로 순서를 정해 고침 |
+| [#266](https://github.com/dj258255/b-terminal/issues/266) | kitty 색 프로토콜 OSC 21(보안 경계) | 2~4시간 | 에이전트 약 15분(병합 09:04) | [#271](https://github.com/dj258255/b-terminal/pull/271) | 색 글 해석을 `RGB.parse` 원문에 맞춤, `osc-color-report-format`의 범위를 Ghostty에 맞춤, 실제 창(바탕을 빨강으로), CI의 새 clippy 경고 |
+| [#272](https://github.com/dj258255/b-terminal/issues/272) | OSC 4·10·11·12 질의가 바꾼 색이 아니라 테마 색으로 답함(버그) | 없음(버그 양식) | 에이전트 약 6분(병합 09:16) | [#273](https://github.com/dj258255/b-terminal/pull/273) | #266 에이전트가 남긴 기존 문제를 격리한 창에서 재서 이슈로 엶, 답의 순서를 지키라는 제약을 프롬프트에 적음, 실제 창(순서 포함) |
+
+이번에 배운 것:
+
+- 에이전트가 원문 없이 짠 해석(색 글)은 테스트가 다 통과해도 원문과 달랐습니다(`#` 없는 16진수, 버림). 데이터만이 아니라 해석 규칙도 원문과 대조합니다.
+- CI의 clippy가 로컬보다 새것이라 로컬에서 깨끗한 코드가 CI에서 막혔습니다(`question_mark`). 내보낸 뒤 CI 출력까지 봅니다.
+- 흔들리는 테스트는 기다리는 시간을 늘리지 않고, 셸이 테스트의 신호를 받은 뒤에 움직이게 해서 순서를 정했습니다. 실패를 재현하려고 일부러 지연을 넣어 봤습니다.
+
 ## 다음
 
 - 범수 님이 직접 해야 할 것: 키보드·마우스 확인(한글 2벌식 "안녕 하세요⏎", Claude Code의 Shift+Enter, Cmd-D·Cmd-F·Cmd-클릭·Cmd-N·Cmd-Shift-P, 메뉴, 창 닫기 단추, vim·htop, kitty icat·yazi, 투명 창), Developer ID 계정으로 `scripts/bundle-macos.sh --sign … --notarize … --dmg`
@@ -368,4 +386,5 @@ Ghostty 받기만 하던 키와 시퀀스 채우기. 추적 이슈 [#237](https:
 - 범수 님이 확인할 것(0.18): 셸에서 마우스를 칸 위에 두고 Shift를 누르면 I자가 되는지, `printf '\033]22;progress\007'` 뒤 `printf '\033[?1000h'`로 모양이 화살표로 돌아오는지
 - 범수 님이 정할 것(0.18): OSC 22를 받기 전 기본 포인터를 Ghostty처럼 I자로 할지(지금 화살표)
 - 범수 님이 확인할 것(0.19): 셸에서 `sudo -k; sudo true`의 암호 프롬프트에서 커서가 자물쇠가 되고 창 오른쪽 위 배지가 뜨는지, 앱 메뉴 `b-terminal › 보안 키보드 입력`을 켜고 다른 앱으로 갔다 와 보기(그 앱의 단축키 도구가 다시 동작하는지), `keybind = ctrl+shift+s=toggle_secure_input`
+- 범수 님이 확인할 것(0.20): vim·neovim을 켜서 색·배경 판단이 그대로인지(DA1·DA2 값과 OSC 11 답이 바뀜), tmux 안에서 `tmux info`의 `Tc`·`Smulx`·`Sync`가 잡히는지(XTGETTCAP), 창 크기를 끌어 바꾸며 모드 2048을 쓰는 프로그램이 따라오는지
 - 큰 일로 남긴 것: GPU(또는 IOSurface) 렌더러
