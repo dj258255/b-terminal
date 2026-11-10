@@ -1036,6 +1036,13 @@ impl Session {
         *self.size.lock()
     }
 
+    /// b-terminal(#324): VT 엔진 격자의 실제 (열, 줄). 보통 `size()`와 같지만 DECCOLM(모드 40을 켠 뒤 `CSI ? 3 h`)이면 열이 132·80이다.
+    /// 마우스 좌표·전체 선택은 이 값으로 자른다
+    pub fn grid_cells(&self) -> (usize, usize) {
+        let g = self.inner.lock();
+        (g.term.columns(), g.term.screen_lines())
+    }
+
     /// PTY에 바이트를 그대로 쓴다. 보던 자리는 건드리지 않는다(응답·초점 알림·마우스 보고 같은 것)
     /// 읽기 전용 칸(`toggle_readonly`)에는 아무것도 쓰지 않는다. 앱이 PTY에 쓰는 길은 모두 여기를 지나므로
     /// (키·붙여넣기·IME·마우스·초점·`text:` 동작·`btctl send`) 막는 곳은 이 한 곳이다. 프로그램이 물은 것에 터미널이

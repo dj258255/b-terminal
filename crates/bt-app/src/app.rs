@@ -2623,13 +2623,10 @@ impl App {
         let m = self.fonts.as_ref()?.metrics();
         let pane = self.panes.get(idx)?;
         let r = self.inner_rect(self.pane_rect(pane.id)?);
-        let size = pane.session.size();
+        let (cols, rows) = pane_cells(&pane.session);
         let col = ((pos.x - r.x as f64) / m.width as f64).floor().max(0.0) as usize;
         let row = ((pos.y - r.y as f64) / m.height as f64).floor().max(0.0) as usize;
-        Some((
-            col.min((size.cols as usize).saturating_sub(1)),
-            row.min((size.rows as usize).saturating_sub(1)),
-        ))
+        Some((col.min(cols.saturating_sub(1)), row.min(rows.saturating_sub(1))))
     }
 
     /// 링크를 짚는 수식 키: macOS는 Cmd, 그 밖에는 Ctrl(Ghostty와 같다)
@@ -3249,9 +3246,9 @@ impl App {
             }
             Action::SelectAll => {
                 if let Some(t) = self.active_pane() {
-                    let size = t.session.size();
+                    let (cols, rows) = pane_cells(&t.session);
                     t.session.select_start(0, 0, SelectKind::Line);
-                    t.session.select_update(size.cols as usize - 1, size.rows as usize - 1);
+                    t.session.select_update(cols.saturating_sub(1), rows.saturating_sub(1));
                 }
             }
             Action::ReloadConfig => self.reload_config(),
@@ -3480,7 +3477,7 @@ impl App {
         let Some(fonts) = self.fonts.as_ref() else { return };
         let (cw, ch) = (fonts.metrics().width as f64, fonts.metrics().height as f64);
         let inner = self.inner_rect(rect);
-        let size = self.panes[idx].session.size();
+        let (grid_cols, grid_rows) = pane_cells(&self.panes[idx].session);
         // 좌표는 칸(창) 왼쪽 위에서 잰 실제 픽셀이다(배율을 곱한 픽셀. Ghostty도 표면 픽셀을 그대로 쓴다).
         // 1016은 거기서 격자 원점(여백을 뺀 자리)까지 뺀 값을 보낸다
         let geometry = mouse::Geometry {
@@ -3490,8 +3487,8 @@ impl App {
             cell_h: ch,
             pad_left: (inner.x - rect.x) as f64,
             pad_top: (inner.y - rect.y) as f64,
-            cols: size.cols as usize,
-            rows: size.rows as usize,
+            cols: grid_cols,
+            rows: grid_rows,
         };
         let opts = mouse::Options {
             event,
@@ -4482,7 +4479,12 @@ impl App {
                     id: *id,
                     outer: *outer,
                     inner: self.inner_rect(*outer),
-                    screen: p.session.snapshot(),
+                    screen: {
+                        // 격자가 창보다 넓으면(DECCOLM 132열, #324) 창 밖은 잘라 그린다. 좁으면 그대로 그리고 오른쪽은 바탕이다
+                        let mut screen = p.session.snapshot();
+                        screen.crop_columns(p.session.size().cols as usize);
+                        screen
+                    },
                     focused: Some(*id) == focus,
                     progress: p.live_progress().filter(|_| self.config.progress_style),
                 })
@@ -5088,6 +5090,14 @@ struct Chrome {
 struct FrameMemo {
     chrome: Chrome,
     panes: Vec<PaneFrame>,
+}
+
+/// 칸의 (열, 줄) 수 가운데 마우스·선택이 가리킬 수 있는 것: 엔진 격자와 창 격자 중 작은 쪽(#324).
+/// 격자가 창보다 넓으면 창 밖 열은 보이지 않고, 좁으면 격자 밖 열에는 칸이 없다
+fn pane_cells(session: &bt_term::Session) -> (usize, usize) {
+    let size = session.size();
+    let (cols, rows) = session.grid_cells();
+    (cols.min(size.cols as usize).max(1), rows.min(size.rows as usize).max(1))
 }
 
 /// 앞 프레임과 견줘 다시 그릴 줄. 앞 프레임이 없거나 크기가 다르면 모두

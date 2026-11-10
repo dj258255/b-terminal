@@ -54,6 +54,8 @@ fn is_regional_indicator(c: char) -> bool {
 const GRAPHEME_CLUSTER_MODE: u16 = 2027;
 /// b-terminal(#311): DECLRMM(좌우 여백 모드)
 const LEFT_RIGHT_MARGIN_MODE: u16 = 69;
+/// b-terminal(#324): DEC 모드 40(DECCOLM 허용)
+const ENABLE_MODE_3_MODE: u16 = 40;
 /// b-terminal(#301): 키 입력 모드 번호. DECBKM, 키패드 NumLock 무시, Alt ESC 접두, Alt가 ESC 보냄
 const BACKARROW_KEY_MODE: u16 = 67;
 const IGNORE_KEYPAD_NUMLOCK_MODE: u16 = 1035;
@@ -127,6 +129,10 @@ bitflags! {
         const MODIFY_OTHER_KEYS_2     = 1 << 49;
         /// b-terminal(#311): DECLRMM(69), 좌우 여백 모드. 비트 47은 비워 둔다
         const LEFT_RIGHT_MARGIN       = 1 << 48;
+        /// b-terminal(#324): 모드 40(DECCOLM 허용). 꺼져 있으면 `CSI ? 3 h·l`은 아무 일도 하지 않는다
+        const ENABLE_MODE_3           = 1 << 47;
+        /// b-terminal(#324): 모드 3(132열). DECRQM 답용이고 창 크기가 바뀌어도 그대로 둔다(Ghostty)
+        const COLUMN_132              = 1 << 50;
         // b-terminal(#300): X10 이벤트 모드(9)와 urxvt(1015)·SGR 픽셀(1016) 형식. 비트 35는 비워 둔다
         const MOUSE_X10               = 1 << 32;
         const URXVT_MOUSE             = 1 << 33;
@@ -382,6 +388,10 @@ pub struct Term<T> {
     /// term is set.
     title_stack: Vec<Option<String>>,
 
+    /// b-terminal(#324): 창이 정한 격자 크기(열, 줄). `resize`가 받은 값이다. DECCOLM이 격자를 132·80열로 바꿔도 이 값은 그대로이고,
+    /// 모드 40을 바꾸거나 창 크기가 바뀌면 격자가 이 값으로 돌아간다
+    window_size: (usize, usize),
+
     /// b-terminal(#313): XTSAVE로 저장한 DEC 모드 값(모드 번호별 마지막 하나). RIS가 지운다
     saved_private_modes: std::collections::HashMap<u16, bool>,
 
@@ -555,6 +565,7 @@ impl<T> Term<T> {
             cursor_style: Default::default(),
             colors: color::Colors::default(),
             title_stack: Default::default(),
+            window_size: (num_cols, num_lines),
             saved_private_modes: Default::default(),
             private_mode_probe: None,
             is_focused: Default::default(),
@@ -775,6 +786,13 @@ impl<T> Term<T> {
 
     /// Resize terminal to new dimensions.
     pub fn resize<S: Dimensions>(&mut self, size: S) {
+        // b-terminal(#324): 창 크기를 적어 둔다. 격자가 DECCOLM으로 132·80열이어도 창이 바뀌면 창 크기로 돌아간다
+        self.window_size = (size.columns(), size.screen_lines());
+        self.resize_grid(size);
+    }
+
+    /// b-terminal(#324): 격자 크기만 바꾼다(`resize`가 하던 일). DECCOLM과 모드 40이 창 크기를 건드리지 않고 쓴다
+    fn resize_grid<S: Dimensions>(&mut self, size: S) {
         let old_cols = self.columns();
         let old_lines = self.screen_lines();
 
@@ -1096,17 +1114,32 @@ impl<T> Term<T> {
         self.mark_fully_damaged();
     }
 
-    fn deccolm(&mut self)
+    /// b-terminal(#324): DECCOLM. 모드 40이 꺼져 있으면 모드 3을 끄고 아무것도 하지 않는다. 켜져 있으면 격자를 132·80열로(줄은 그대로)
+    /// 바꾸고 화면을 지운 뒤 커서를 1;1로 보낸다(Ghostty Terminal.zig `deccolm` 4837줄). PTY 크기는 알리지 않는다
+    fn deccolm(&mut self, wide: bool)
     where
         T: EventListener,
     {
-        // Setting 132 column font makes no sense, but run the other side effects.
-        // Clear scrolling region.
-        self.set_scrolling_region(1, None);
+        if !self.mode.contains(TermMode::ENABLE_MODE_3) {
+            self.mode.remove(TermMode::COLUMN_132);
+            return;
+        }
+        self.mode.set(TermMode::COLUMN_132, wide);
+
+        let lines = self.screen_lines();
+        self.resize_grid(GridDims { columns: if wide { 132 } else { 80 }, lines });
 
         // Clear grid.
         self.grid.reset_region(..);
+        self.goto(0, 0);
         self.mark_fully_damaged();
+    }
+
+    /// b-terminal(#324): 모드 40을 켜거나 끌 때. 격자를 창이 정한 크기로 되돌린다(Ghostty stream_handler.zig 732줄)
+    fn set_mode_40(&mut self, on: bool) {
+        self.mode.set(TermMode::ENABLE_MODE_3, on);
+        let (columns, lines) = self.window_size;
+        self.resize_grid(GridDims { columns, lines });
     }
 
     #[inline]
@@ -2672,6 +2705,11 @@ impl<T: EventListener> Handler for Term<T> {
                 self.mode.insert(TermMode::LEFT_RIGHT_MARGIN);
                 return;
             },
+            // b-terminal(#324): 모드 40
+            PrivateMode::Unknown(ENABLE_MODE_3_MODE) => {
+                self.set_mode_40(true);
+                return;
+            },
             PrivateMode::Unknown(mode) => {
                 debug!("Ignoring unknown mode {mode} in set_private_mode");
                 return;
@@ -2735,7 +2773,7 @@ impl<T: EventListener> Handler for Term<T> {
                 self.mode.insert(TermMode::ORIGIN);
                 self.goto(0, 0);
             },
-            NamedPrivateMode::ColumnMode => self.deccolm(),
+            NamedPrivateMode::ColumnMode => self.deccolm(true),
             NamedPrivateMode::BlinkingCursor => {
                 let style = self.cursor_style.get_or_insert(self.config.default_cursor_style);
                 style.blinking = true;
@@ -2780,6 +2818,11 @@ impl<T: EventListener> Handler for Term<T> {
             PrivateMode::Unknown(LEFT_RIGHT_MARGIN_MODE) => {
                 self.mode.remove(TermMode::LEFT_RIGHT_MARGIN);
                 self.reset_margins();
+                return;
+            },
+            // b-terminal(#324): 모드 40
+            PrivateMode::Unknown(ENABLE_MODE_3_MODE) => {
+                self.set_mode_40(false);
                 return;
             },
             PrivateMode::Unknown(mode) => {
@@ -2828,7 +2871,7 @@ impl<T: EventListener> Handler for Term<T> {
                 self.mode.remove(TermMode::ORIGIN);
                 self.goto(0, 0);
             },
-            NamedPrivateMode::ColumnMode => self.deccolm(),
+            NamedPrivateMode::ColumnMode => self.deccolm(false),
             NamedPrivateMode::BlinkingCursor => {
                 let style = self.cursor_style.get_or_insert(self.config.default_cursor_style);
                 style.blinking = false;
@@ -2907,7 +2950,7 @@ impl<T: EventListener> Handler for Term<T> {
                     self.mode.contains(TermMode::SAVE_CURSOR_MODE).into()
                 },
                 NamedPrivateMode::KeypadApplication => self.mode.contains(TermMode::APP_KEYPAD).into(),
-                NamedPrivateMode::ColumnMode => ModeState::NotSupported,
+                NamedPrivateMode::ColumnMode => self.mode.contains(TermMode::COLUMN_132).into(), // b-terminal(#324)
                 // b-terminal(#302)
                 NamedPrivateMode::ReverseColors => self.mode.contains(TermMode::REVERSE_COLORS).into(),
                 NamedPrivateMode::ReverseWrap => self.mode.contains(TermMode::REVERSE_WRAP).into(),
@@ -2928,6 +2971,8 @@ impl<T: EventListener> Handler for Term<T> {
             PrivateMode::Unknown(LEFT_RIGHT_MARGIN_MODE) => {
                 self.mode.contains(TermMode::LEFT_RIGHT_MARGIN).into()
             },
+            // b-terminal(#324)
+            PrivateMode::Unknown(ENABLE_MODE_3_MODE) => self.mode.contains(TermMode::ENABLE_MODE_3).into(),
             // b-terminal(#264): 모드 2048(크기 알림)의 DECRQM은 bt-term의 스캐너가 답한다. 여기서 0을 답하면 답이 둘 나간다
             // b-terminal(#296): 모드 2031(색 구성표 알림)도 같다
             PrivateMode::Unknown(2048 | 2031) => return,
@@ -2972,7 +3017,7 @@ impl<T: EventListener> Handler for Term<T> {
         if matches!(mode, PrivateMode::Named(NamedPrivateMode::SyncUpdate)) {
             return;
         }
-        // 엔진이 아는 모드만. 모르는 모드와 DECCOLM(3)은 건너뛴다
+        // 엔진이 아는 모드만. 모르는 모드는 건너뛴다(b-terminal(#324): 3·40도 안다)
         self.private_mode_probe = Some(None);
         self.report_private_mode(mode);
         if self.private_mode_probe.take().flatten().is_none() {
@@ -3250,6 +3295,26 @@ impl<T: EventListener> Handler for Term<T> {
 /// (7 자동 줄바꿈, 25 커서 보임, 1007 대체 스크롤, 1035, 1036)
 fn private_mode_default(mode: u16) -> bool {
     matches!(mode, 7 | 25 | 1007 | 1035 | 1036)
+}
+
+/// b-terminal(#324): 줄 수와 열 수만 가진 크기(DECCOLM과 모드 40이 `resize_grid`에 넘긴다)
+struct GridDims {
+    columns: usize,
+    lines: usize,
+}
+
+impl Dimensions for GridDims {
+    fn total_lines(&self) -> usize {
+        self.lines
+    }
+
+    fn screen_lines(&self) -> usize {
+        self.lines
+    }
+
+    fn columns(&self) -> usize {
+        self.columns
+    }
 }
 
 /// The state of the [`Mode`] and [`PrivateMode`].
@@ -4175,7 +4240,8 @@ mod tests {
         assert!(term.damage.full);
         term.reset_damage();
 
-        term.deccolm();
+        term.mode.insert(TermMode::ENABLE_MODE_3);
+        term.deccolm(true);
         assert!(term.damage.full);
         term.reset_damage();
 
