@@ -931,6 +931,9 @@ impl PrivateMode {
             6 => Self::Named(NamedPrivateMode::Origin),
             7 => Self::Named(NamedPrivateMode::LineWrap),
             12 => Self::Named(NamedPrivateMode::BlinkingCursor),
+            // b-terminal(#296): 옛 대체 화면 47·1047, 커서 저장 1048, DECNKM 66
+            47 => Self::Named(NamedPrivateMode::SwapScreenLegacy),
+            66 => Self::Named(NamedPrivateMode::KeypadApplication),
             25 => Self::Named(NamedPrivateMode::ShowCursor),
             1000 => Self::Named(NamedPrivateMode::ReportMouseClicks),
             1002 => Self::Named(NamedPrivateMode::ReportCellMouseMotion),
@@ -940,6 +943,8 @@ impl PrivateMode {
             1006 => Self::Named(NamedPrivateMode::SgrMouse),
             1007 => Self::Named(NamedPrivateMode::AlternateScroll),
             1042 => Self::Named(NamedPrivateMode::UrgencyHints),
+            1047 => Self::Named(NamedPrivateMode::SwapScreenAndClear),
+            1048 => Self::Named(NamedPrivateMode::SaveRestoreCursor),
             1049 => Self::Named(NamedPrivateMode::SwapScreenAndSetRestoreCursor),
             2004 => Self::Named(NamedPrivateMode::BracketedPaste),
             2026 => Self::Named(NamedPrivateMode::SyncUpdate),
@@ -990,6 +995,14 @@ pub enum NamedPrivateMode {
     SgrMouse = 1006,
     AlternateScroll = 1007,
     UrgencyHints = 1042,
+    /// b-terminal(#296): 옛 대체 화면(47). 화면만 바꾼다.
+    SwapScreenLegacy = 47,
+    /// b-terminal(#296): DECNKM(66). `ESC =`·`ESC >`와 같은 키패드 모드.
+    KeypadApplication = 66,
+    /// b-terminal(#296): 1047. 나갈 때 대체 화면을 지운다.
+    SwapScreenAndClear = 1047,
+    /// b-terminal(#296): 1048. 커서만 저장·복원한다.
+    SaveRestoreCursor = 1048,
     SwapScreenAndSetRestoreCursor = 1049,
     BracketedPaste = 2004,
     /// The mode is handled automatically by [`Processor`].

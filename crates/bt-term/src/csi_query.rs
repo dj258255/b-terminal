@@ -102,9 +102,21 @@ pub fn private_gt(fin: u8, params: &[u8]) -> Option<Signal> {
     }
 }
 
-/// 중간 바이트가 하나인 CSI: `CSI ? 2048 $ p`(DECRQM)만
+/// DECRQM 답: 모드 2031. 켜짐이면 1, 꺼짐이면 2(#296)
+pub fn mode_2031_report(on: bool) -> &'static str {
+    if on { "\x1b[?2031;1$y" } else { "\x1b[?2031;2$y" }
+}
+
+/// 중간 바이트가 하나인 CSI: `CSI ? 2048 $ p`·`CSI ? 2031 $ p`(DECRQM)만
 pub fn inter(inter: u8, fin: u8, params: &[u8]) -> Option<Signal> {
-    (inter == b'$' && fin == b'p' && params == b"?2048").then_some(Signal::InBandSizeQuery)
+    if inter != b'$' || fin != b'p' {
+        return None;
+    }
+    match params {
+        b"?2048" => Some(Signal::InBandSizeQuery),
+        b"?2031" => Some(Signal::ColorSchemeModeQuery),
+        _ => None,
+    }
 }
 
 #[cfg(test)]
@@ -224,6 +236,10 @@ mod tests {
         );
         assert_eq!(signals(b"\x1b[?20480h"), vec![]);
         assert_eq!(signals(b"\x1b[?2048;1$p"), vec![]);
+        assert_eq!(signals(b"\x1b[?2031$p"), vec![Signal::ColorSchemeModeQuery]);
+        assert_eq!(signals(b"\x1b[?2031;1$p"), vec![]);
+        assert_eq!(mode_2031_report(true), "\x1b[?2031;1$y");
+        assert_eq!(mode_2031_report(false), "\x1b[?2031;2$y");
         assert_eq!(signals(b"\x1b[2048$p"), vec![]);
     }
 
