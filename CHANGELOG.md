@@ -4,10 +4,23 @@
 
 ## [아직 릴리스하지 않음]
 
-- 좌우 여백을 Ghostty처럼 받습니다: DECLRMM(`CSI ? 69 h`)을 켜면 DECSLRM(`CSI 왼쪽 ; 오른쪽 s`)이 여백을 정하고 커서를 원점으로 보냅니다. 69를 끄거나 DECSTR·RIS·크기 변경이면 여백이 화면 전체로 돌아갑니다. 69가 켜진 채 `CSI s`는 여백을 되돌리고, 꺼져 있으면 전처럼 커서 저장(SCOSC)입니다. DECRQM(`?69`)은 전에 `0`이었고 이제 켬 1·끔 2로 답하며, DECRQSS `s`도 69가 켜졌을 때 `왼쪽;오른쪽s`로 답합니다. 여백이 있으면 글자 쓰기(오른쪽 여백에서 줄바꿈, 여백 오른쪽은 화면 끝까지)·삽입 모드·CR·CUF·CUB·Backspace·HT·CHT·ICH·DCH·IL·DL·SU·SD·LF·IND·NEL·RI·DECIC·DECDC·DECBI·DECFI·역방향 줄바꿈이 여백을 따르고(여백 안에서만 스크롤하며 스크롤백에 쌓지 않음), 원점 모드의 CUP·CHA·VPA·CPR·DECRQCRA는 위 여백과 왼쪽 여백 기준입니다. ECH는 Ghostty처럼 여백을 보지 않습니다. **기본 동작이 바뀝니다**: 여백을 쓰지 않아도 IL·DL이 끝나면 커서가 0열로 가고 ICH가 대기 줄바꿈을 풀며, 원점 모드를 끌 때도 커서가 원점으로 가고, 원점 모드에서 CUU·CUD·CNL·CPL이 좌표에 위 여백을 한 번 더 더하던 어긋남과 CHA·VPA가 줄·칸을 어긋나게 잡던 것이 고쳐집니다. `CSI 0 s`는 `CSI s`와 같이 다룹니다(vte가 둘을 구분하지 못함, Ghostty는 69가 꺼진 채 `CSI 0 s`를 버립니다). 한계: 글자 묶음(모드 2027)이 여백 가까이에서 넓어지는 경우, HPR·VPR의 여백 한계는 Ghostty와 다를 수 있습니다. 격자 단위 테스트(Ghostty `Terminal.zig` 시험 값)와 `/bin/sh`·`printf` PTY 테스트로 확인했고 실제 창에서는 보지 않았습니다. #311
-- 키패드 응용 모드 바이트와 modifyOtherKeys를 Ghostty처럼 받습니다. 숫자 키패드(winit `KeyLocation::Numpad`)는 DECKPAM(`ESC =`)을 켜고 1035(`CSI ? 1035 l`)를 끄면 `ESC O p`~`ESC O y`·`ESC O M` 등으로 가고(수식 키가 있으면 `ESC O 5 q`처럼 번호가 끼입니다), `CSI > 4 ; 2 m`을 켜면 수식 키가 붙은 글자와 Enter·Tab·Backspace·Escape가 `CSI 27 ; 수식 ; 코드 ~`로 갑니다(`CSI > 4 ; 0 m`·`CSI > m`·`CSI > 4 n`·RIS·DECSTR이 끕니다). 기본값(1035 켬, modifyOtherKeys 꺼짐)의 바이트는 그대로이고 kitty 키보드 프로토콜이 켜져 있으면 둘 다 쓰지 않습니다. 실제 창에서 키패드 키가 `Numpad` 위치로 오는지는 보지 않았습니다. #312
-- XTSAVE(`CSI ? Pm s`)·XTRESTORE(`CSI ? Pm r`)를 Ghostty처럼 받습니다. DEC 모드를 모드마다 마지막 값 하나씩 저장하고, 복원은 DECSET·DECRST와 같은 길로 해서 대체 화면 전환이나 원점 모드의 커서 이동 같은 부수 효과도 같습니다. 저장하지 않은 모드를 복원하면 그 모드의 기본값(7·25·1007·1035·1036은 켬, 나머지는 끔)이 됩니다. 2031·2033·2048도 저장·복원합니다. 전에는 두 시퀀스를 버렸습니다. 한계: 2026은 저장하지 않고, 메뉴의 터미널 초기화는 2031·2033·2048의 저장 값을 지우지 않습니다. 실제 창에서는 보지 않았습니다. #313
-- XTCHECKSUM 계산을 Ghostty `xt_checksum.zig` 원문에 맞춥니다: 속성 합에 깜박임(0x40)·DECSCA 보호(0x04)를 더하고, alacritty 셀에 "글자를 찍은 칸" 표시(`Flags::WRITTEN`, `1 << 18`)를 더해 찍은 평범한 빈칸은 쓴 칸으로, 지우기·밀기·탭이 만든 칸은 쓴 적 없는 칸으로 셉니다(전에는 색·속성 없는 빈칸을 모두 쓴 적 없는 칸으로 봐서 기본 계산에서 첫 칸이 빈칸이면 합이 달랐습니다). **기본은 꺼짐(`vt-xt-checksum-report`)이라 기본 동작은 바뀌지 않습니다.** 켠 뒤에만 DECRQCRA 답의 합이 달라집니다. 단위 테스트로 확인했고 실제 창에서는 보지 않았습니다. 왼쪽 여백은 이 줄의 일이 아닙니다. #314
+## [0.25.0] - 2026-11-10
+
+좌우 여백과 남은 입력 모드. DECLRMM·DECSLRM(69) 좌우 여백, 키패드 응용 모드 바이트와 modifyOtherKeys, XTSAVE·XTRESTORE, XTCHECKSUM 계산을 Ghostty 원문에 맞춤. 추적 이슈 #310.
+
+- 좌우 여백을 Ghostty처럼 받습니다: DECLRMM(`CSI ? 69 h`)을 켜면 DECSLRM(`CSI 왼쪽 ; 오른쪽 s`)이 여백을 정하고 커서를 원점으로 보냅니다. 69를 끄거나 DECSTR·RIS·크기 변경이면 여백이 화면 전체로 돌아갑니다. 69가 켜진 채 `CSI s`는 여백을 되돌리고, 꺼져 있으면 전처럼 커서 저장(SCOSC)입니다. DECRQM(`?69`)은 전에 `0`이었고 이제 켬 1·끔 2로 답하며, DECRQSS `s`도 69가 켜졌을 때 `왼쪽;오른쪽s`로 답합니다. 여백이 있으면 글자 쓰기(오른쪽 여백에서 줄바꿈, 여백 오른쪽은 화면 끝까지)·삽입 모드·CR·CUF·CUB·Backspace·HT·CHT·ICH·DCH·IL·DL·SU·SD·LF·IND·NEL·RI·DECIC·DECDC·DECBI·DECFI·역방향 줄바꿈이 여백을 따르고(여백 안에서만 스크롤하며 스크롤백에 쌓지 않음), 원점 모드의 CUP·CHA·VPA·CPR·DECRQCRA는 위 여백과 왼쪽 여백 기준입니다. ECH는 Ghostty처럼 여백을 보지 않습니다. **기본 동작이 바뀝니다**: 여백을 쓰지 않아도 IL·DL이 끝나면 커서가 0열로 가고 ICH가 대기 줄바꿈을 풀며, 원점 모드를 끌 때도 커서가 원점으로 가고, 원점 모드에서 CUU·CUD·CNL·CPL이 좌표에 위 여백을 한 번 더 더하던 어긋남과 CHA·VPA가 줄·칸을 어긋나게 잡던 것이 고쳐집니다. `CSI 0 s`는 `CSI s`와 같이 다룹니다(vte가 둘을 구분하지 못함, Ghostty는 69가 꺼진 채 `CSI 0 s`를 버립니다). 한계: 글자 묶음(모드 2027)이 여백 가까이에서 넓어지는 경우, HPR·VPR의 여백 한계는 Ghostty와 다를 수 있습니다. 격자 단위 테스트(Ghostty `Terminal.zig` 시험 값), `/bin/sh`·`printf` PTY 테스트, 격리한 실제 창(DECRQM `?69`, DECRQSS `s`, 여백 안 줄바꿈, 여백 사각형 안 IL·SU, 69를 끈 `CSI s`)에서 확인했습니다. #311
+- 키패드 응용 모드 바이트와 modifyOtherKeys를 Ghostty처럼 받습니다. 숫자 키패드(winit `KeyLocation::Numpad`)는 DECKPAM(`ESC =`)을 켜고 1035(`CSI ? 1035 l`)를 끄면 `ESC O p`~`ESC O y`·`ESC O M` 등으로 가고(수식 키가 있으면 `ESC O 5 q`처럼 번호가 끼입니다), `CSI > 4 ; 2 m`을 켜면 수식 키가 붙은 글자와 Enter·Tab·Backspace·Escape가 `CSI 27 ; 수식 ; 코드 ~`로 갑니다(`CSI > 4 ; 0 m`·`CSI > m`·`CSI > 4 n`·RIS·DECSTR이 끕니다). 기본값(1035 켬, modifyOtherKeys 꺼짐)의 바이트는 그대로이고 kitty 키보드 프로토콜이 켜져 있으면 둘 다 쓰지 않습니다. 바이트 단위 테스트로 확인했고, 실제 창에서 키를 눌러 보지 않았습니다(키패드 키가 `Numpad` 위치로 오는지 포함). #312
+- XTSAVE(`CSI ? Pm s`)·XTRESTORE(`CSI ? Pm r`)를 Ghostty처럼 받습니다. DEC 모드를 모드마다 마지막 값 하나씩 저장하고, 복원은 DECSET·DECRST와 같은 길로 해서 대체 화면 전환이나 원점 모드의 커서 이동 같은 부수 효과도 같습니다. 저장하지 않은 모드를 복원하면 그 모드의 기본값(7·25·1007·1035·1036은 켬, 나머지는 끔)이 됩니다. 2031·2033·2048도 저장·복원합니다. 전에는 두 시퀀스를 버렸습니다. 한계: 2026은 저장하지 않고, 메뉴의 터미널 초기화는 2031·2033·2048의 저장 값을 지우지 않습니다. PTY 테스트와 격리한 실제 창의 DECRQM 답(25·1000·7·2004·2031·여러 모드 한 줄·1049 복원 뒤 주 화면)으로 확인했습니다. #313
+- XTCHECKSUM 계산을 Ghostty `xt_checksum.zig` 원문에 맞춥니다: 속성 합에 깜박임(0x40)·DECSCA 보호(0x04)를 더하고, alacritty 셀에 "글자를 찍은 칸" 표시(`Flags::WRITTEN`, `1 << 18`)를 더해 찍은 평범한 빈칸은 쓴 칸으로, 지우기·밀기·탭이 만든 칸은 쓴 적 없는 칸으로 셉니다(전에는 색·속성 없는 빈칸을 모두 쓴 적 없는 칸으로 봐서 기본 계산에서 첫 칸이 빈칸이면 합이 달랐습니다). **기본은 꺼짐(`vt-xt-checksum-report`)이라 기본 동작은 바뀌지 않습니다.** 켠 뒤에만 DECRQCRA 답의 합이 달라집니다. 단위 테스트(Ghostty 원문 시험)와 격리한 실제 창(찍은 빈칸·깜박임·보호·지운 줄·바탕색으로 지운 줄의 합)으로 확인했습니다. #314
+
+### 알려진 한계
+
+- 기본 동작이 바뀐 것: 여백을 쓰지 않아도 IL·DL 뒤 커서가 0열, ICH가 대기 줄바꿈을 풂, 원점 모드를 끌 때 커서가 원점으로, 원점 모드의 CUU·CUD·CNL·CPL·CHA·VPA·CPR 좌표, DECBI·DECFI가 화면 끝까지, CBT가 왼쪽에 탭 자리가 없으면 0열. 전에 버리던 `CSI ? Pm s`·`r`이 모드를 저장·복원합니다.
+- `CSI 0 s`를 `CSI s`와 같이 다룹니다(Ghostty는 69가 꺼진 채 버림). HPR·VPR과 글자 묶음(2027)의 여백 한계는 Ghostty와 다를 수 있습니다. 여백 스크롤 때 선택 영역은 비웁니다. 여백 스크롤의 속도는 재지 않았습니다.
+- XTQMODKEYS(`CSI ? 4 m`)는 Ghostty처럼 답하지 않습니다. 기본 모드의 Ctrl+키패드 숫자는 지금 바이트 그대로입니다(Ghostty는 숫자).
+- XTSAVE는 2026을 저장하지 않고, 메뉴의 터미널 초기화는 2031·2033·2048의 저장 값을 지우지 않습니다.
+- DECRQM이 아직 `0`으로 답하는 Ghostty 모드: 3(DECCOLM), 40, 5522.
+- 실제로 보지 않은 것: 키패드 응용 모드와 modifyOtherKeys의 실제 키(키를 흉내 내지 않음), vttest·esctest, Linux.
 
 ## [0.24.0] - 2026-11-10
 
