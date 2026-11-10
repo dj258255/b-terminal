@@ -1325,6 +1325,11 @@ impl Session {
         modes_of(*self.inner.lock().term.mode())
     }
 
+    /// 프롬프트 클릭(#338)이 PTY에 보낼 바이트. 셸이 `cl=`·`click_events=`를 밝힌 화면에서, 프롬프트에서 눌렀을 때만 있다
+    pub fn prompt_click(&self, col: usize, row: usize) -> Option<Vec<u8>> {
+        crate::prompt_click::prompt_click(&self.inner.lock().term, col, row)
+    }
+
     /// 프로그램이 XTSHIFTESCAPE로 정한 Shift 마우스 보고 여부. 정한 적이 없으면 `None`(#327)
     pub fn mouse_shift_capture(&self) -> Option<bool> {
         self.inner.lock().term.mouse_shift_capture()

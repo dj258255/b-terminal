@@ -2448,28 +2448,17 @@ impl App {
         }
     }
 
-    /// 셸 통합이 있는 칸의 프롬프트에서, 커서 줄을 누르면 그 칸까지 ←·→를 보낸다(#137).
-    /// 명령이 도는 중·대체 화면·스크롤해 올라가 있으면 하지 않는다
+    /// 프롬프트를 누르면 셸이 밝힌 방식으로 PTY에 보낸다(#137, #338). 셸이 OSC 133;A에 `cl=`나 `click_events=`를 밝힌 화면에서만이고,
+    /// 무엇을 보낼지는 `Session::prompt_click`이 정한다(Ghostty `maybePromptClick`). 읽기 전용 칸과 명령이 도는 중에는 보내지 않는다
     fn click_to_move(&mut self, idx: usize, col: usize, row: usize) {
-        let Some(p) = self.panes.get(idx).filter(|p| !p.session.readonly()) else {
+        let Some(p) = self
+            .panes
+            .get(idx)
+            .filter(|p| !p.session.readonly() && p.running.is_none())
+        else {
             return;
         };
-        let modes = p.session.modes();
-        if !p.session.has_shell_integration() || p.running.is_some() || modes.alt_screen {
-            return;
-        }
-        let screen = p.session.snapshot();
-        if screen.display_offset != 0 || screen.cursor.row != row {
-            return;
-        }
-        let cells: Vec<(char, bool)> = (0..screen.cols)
-            .map(|c| {
-                let cell = screen.cell(c, row);
-                (cell.ch, cell.flags.contains(CellFlags::SPACER))
-            })
-            .collect();
-        let bytes = crate::mouse::click_to_move(&cells, screen.cursor.col, col, modes.app_cursor);
-        if !bytes.is_empty() {
+        if let Some(bytes) = p.session.prompt_click(col, row) {
             p.session.select_clear();
             p.session.write(&bytes);
         }

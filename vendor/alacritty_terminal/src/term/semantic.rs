@@ -33,6 +33,31 @@ pub enum Redraw {
     Last,
 }
 
+/// `click_events=`(Ghostty `semantic_prompt.ClickEvents`): 1은 화면 좌표, 2는 프롬프트 기준 줄
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClickEvents {
+    Absolute,
+    Relative,
+}
+
+/// `cl=`(Ghostty `semantic_prompt.Click`)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Click {
+    Line,
+    Multiple,
+    ConservativeVertical,
+    SmartVertical,
+}
+
+/// 화면이 기억하는 프롬프트 클릭 방식(Ghostty `Screen.SemanticClick`). 셸이 밝히기 전에는 `None`이고 클릭은 아무것도 하지 않는다
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SemanticClick {
+    #[default]
+    None,
+    ClickEvents(ClickEvents),
+    Cl(Click),
+}
+
 /// 줄의 프롬프트 표시(Ghostty `row.semantic_prompt`)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RowPrompt {
@@ -48,6 +73,7 @@ pub(super) struct SemanticState {
     /// 이 터미널이 프롬프트·입력 표지를 받은 적이 있는가(없으면 ED 2는 그냥 지운다. Ghostty `semantic_prompt.seen`)
     pub(super) seen: bool,
     pub(super) redraw: Redraw,
+    pub(super) click: SemanticClick,
 }
 
 const ROW_MARKS: Flags = Flags::ROW_PROMPT.union(Flags::ROW_PROMPT_CONTINUATION);
@@ -69,6 +95,11 @@ impl<T> Term<T> {
 
     pub fn semantic_seen(&self) -> bool {
         self.semantic.seen
+    }
+
+    /// 셸이 `133;A`의 `click_events=`·`cl=`로 밝힌 클릭 방식
+    pub fn semantic_click(&self) -> SemanticClick {
+        self.semantic.click
     }
 
     pub fn semantic_redraw(&self) -> Redraw {
@@ -261,11 +292,20 @@ impl<T: EventListener> Term<T> {
     }
 
     /// `A`·`N`: fresh-line을 한 뒤 프롬프트 글을 시작한다. `redraw=`가 있으면 기억한다
-    pub fn semantic_new_prompt(&mut self, kind: Option<PromptKind>, redraw: Option<Redraw>) {
+    pub fn semantic_new_prompt(
+        &mut self,
+        kind: Option<PromptKind>,
+        redraw: Option<Redraw>,
+        click: Option<SemanticClick>,
+    ) {
         self.semantic_fresh_line();
         self.semantic_prompt_start(kind);
         if let Some(redraw) = redraw {
             self.semantic.redraw = redraw;
+        }
+        // click_events가 먼저이고 없으면 cl이다. 둘 다 없으면 지난 값을 그대로 둔다(Ghostty `semanticPrompt`의 `click:` 블록)
+        if let Some(click) = click {
+            self.semantic.click = click;
         }
     }
 }

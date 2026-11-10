@@ -174,8 +174,9 @@ fn input_ended_at_eol_stops_marking_after_one_linefeed() {
 }
 
 #[test]
-fn soft_wrap_marks_only_prompt_content_rows_as_continuation() {
-    // printWrap: 프롬프트 글이 넘어가면 이어진 줄, 입력 글이 넘어가면 표시하지 않는다(상태는 그대로)
+fn soft_wrap_marks_prompt_and_input_rows_as_continuation() {
+    // printWrap은 `index`를 부르고, `index`는 입력 글(I가 아닌 B)의 새 줄도 이어진 프롬프트로 표시한다(Ghostty 3025~3050줄). 상태는 그대로.
+    // #338: 스크롤 없이 한 줄 내려가는 길도 `index`처럼 표시하게 고쳤다(그 전에는 입력 줄이 표시되지 않았다)
     let mut t = T::new(5, 5);
     t.osc("A").feed("abcdefgh");
     assert_eq!(t.marks(), vec![P, C, N, N, N]);
@@ -183,7 +184,7 @@ fn soft_wrap_marks_only_prompt_content_rows_as_continuation() {
 
     let mut t = T::new(5, 5);
     t.osc("A").feed("$ ").osc("B").feed("abcdefgh");
-    assert_eq!(t.marks(), vec![P, N, N, N, N]);
+    assert_eq!(t.marks(), vec![P, C, N, N, N]);
     assert_eq!(t.term.semantic_content(), SemanticContent::Input);
 }
 

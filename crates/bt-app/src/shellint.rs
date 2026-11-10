@@ -220,7 +220,7 @@ mod tests {
     // zsh는 훅 함수를 직접 부르고, bash는 DEBUG 덫이 명령 앞에서 preexec를 부르게 `: 글`을 실행한다
     fn prompt_then_command(shell: Shell) -> &'static str {
         match shell {
-            Shell::Zsh => "_bt_precmd; _bt_preexec 'ls -l'",
+            Shell::Zsh => "_bt_precmd; _bt_precmd_prompt; _bt_preexec 'ls -l'",
             Shell::Bash => "_bt_precmd; : ls -l",
         }
     }
@@ -277,7 +277,7 @@ mod tests {
             }
             // 명령 글에 든 제어 문자는 공백으로: 제목 OSC를 끊고 다른 OSC를 끼우지 못한다
             let body = match sh {
-                Shell::Zsh => "_bt_precmd; _bt_preexec $'x\\e]0;evil\\a\\ey'",
+                Shell::Zsh => "_bt_precmd; _bt_precmd_prompt; _bt_preexec $'x\\e]0;evil\\a\\ey'",
                 Shell::Bash => "_bt_precmd; : $'x\\e]0;evil\\ay'",
             };
             let out = run_script(sh, Some("title"), None, body);
@@ -335,15 +335,87 @@ mod tests {
     fn command_marks_are_still_sent_without_features() {
         each_shell(|sh| {
             let out = run_script(sh, Some(""), None, prompt_then_command(sh));
-            // bash는 줄 편집기가 마지막 줄만 다시 그리므로 redraw=last를 알린다(Ghostty ghostty.bash 188줄, #329). zsh는 기본값(1)
-            let a = if matches!(sh, Shell::Bash) {
-                "\x1b]133;A;redraw=last\x07"
-            } else {
-                "\x1b]133;A\x07"
-            };
-            assert!(out.contains(a), "{sh:?}: {out:?}");
+            // bash는 줄 편집기가 마지막 줄만 다시 그리므로 redraw=last를 알린다(Ghostty ghostty.bash 188줄, #329). 둘 다 cl=line으로
+            // 줄 안 클릭 이동을 받는다고 밝힌다(#338). zsh는 A를 PS1 안에 넣으므로 표준 출력에는 나오지 않는다(아래 시험)
+            if matches!(sh, Shell::Bash) {
+                assert!(out.contains("\x1b]133;A;redraw=last;cl=line\x07"), "{sh:?}: {out:?}");
+            }
             assert!(out.contains("\x1b]133;C\x07"), "{sh:?}: {out:?}");
             assert!(out.contains("\x1b]633;E;"), "{sh:?}: {out:?}");
         });
+    }
+
+    /// `PS1=<ps1>`로 둔 뒤 `body`를 돌리고 PS1을 찍어 되읽는다. 표지가 들어 있는지 본다
+    fn ps1_after(sh: Shell, ps1: &str, body: &str) -> String {
+        let show = match sh {
+            Shell::Zsh => "print -r -- \"PS1=$PS1\"",
+            // 찍는 명령이 사람이 친 명령으로 읽혀 PS1이 되돌려지지 않게 덫이 부르는 함수를 먼저 비운다(함수 정의는 덫에 걸리지 않는다)
+            Shell::Bash => "_bt_preexec() { :; }\nprintf 'PS1=%s\\n' \"$PS1\"",
+        };
+        let out = run_script(sh, Some(""), None, &format!("PS1='{ps1}'; {body}; {show}"));
+        // PS1 안에 줄바꿈이 있을 수 있으니 마지막 `PS1=` 뒤를 통째로 읽는다
+        out.rsplit_once("PS1=")
+            .map(|(_, v)| v.strip_suffix('\n').unwrap_or(v).to_string())
+            .unwrap_or_default()
+    }
+
+    fn precmd_only(sh: Shell) -> &'static str {
+        match sh {
+            Shell::Zsh => "_bt_precmd; _bt_precmd_prompt",
+            Shell::Bash => "_bt_precmd",
+        }
+    }
+
+    /// 입력 칸을 가르는 표지(#338): PS1 끝에 `133;B`, 앞에 `133;A;cl=line`(zsh) 또는 `133;P;k=i`(bash는 A를 한 번 따로 찍는다)
+    #[test]
+    fn prompt_marks_open_the_input_area_at_the_end_of_ps1() {
+        each_shell(|sh| {
+            let ps1 = ps1_after(sh, "$ ", precmd_only(sh));
+            match sh {
+                Shell::Zsh => assert_eq!(ps1, "%{\x1b]133;A;cl=line\x07%}$ %{\x1b]133;B\x07%}"),
+                Shell::Bash => assert_eq!(ps1, "\\[\\e]133;P;k=i\\a\\]$ \\[\\e]133;B\\a\\]"),
+            }
+        });
+    }
+
+    #[test]
+    fn prompt_marks_are_not_added_twice_and_are_removed_before_the_command() {
+        each_shell(|sh| {
+            let marked = ps1_after(sh, "$ ", precmd_only(sh));
+            // 명령 없이 프롬프트가 다시 와도(빈 줄에서 Enter) 같은 값이다
+            let again = ps1_after(sh, "$ ", &format!("{0}; {0}", precmd_only(sh)));
+            assert_eq!(again, marked, "{sh:?}: 표지가 두 번 들어감");
+            // 명령 앞에서는 표지를 더하기 전의 PS1로 돌아간다
+            let body = match sh {
+                Shell::Zsh => "_bt_precmd; _bt_precmd_prompt; _bt_preexec 'ls'",
+                Shell::Bash => "_bt_precmd; : ls",
+            };
+            assert_eq!(ps1_after(sh, "$ ", body), "$ ", "{sh:?}");
+        });
+    }
+
+    #[test]
+    fn multiline_prompts_mark_following_lines_as_continuation() {
+        each_shell(|sh| match sh {
+            Shell::Zsh => {
+                let ps1 = ps1_after(sh, "~\n$ ", precmd_only(sh));
+                assert!(ps1.contains("~\n%{\x1b]133;P;k=s\x07%}$ "), "{ps1:?}");
+            }
+            Shell::Bash => {
+                // bash는 글자 그대로의 `\n`(프롬프트 이스케이프)만 바꾼다
+                let ps1 = ps1_after(sh, "~\\n$ ", precmd_only(sh));
+                assert!(ps1.contains("\\n\\[\\e]133;P;k=s\\a\\]$ "), "{ps1:?}");
+            }
+        });
+    }
+
+    /// zsh: PS1이 홀로 `%`로 끝나면 표지의 `%{`와 붙어 표지를 삼킨다. `%%`로 쓴다
+    #[test]
+    fn zsh_trailing_percent_in_ps1_does_not_swallow_the_mark() {
+        if !have("zsh") {
+            return;
+        }
+        let ps1 = ps1_after(Shell::Zsh, "x%", precmd_only(Shell::Zsh));
+        assert!(ps1.contains("x%%%{\x1b]133;B\x07%}"), "{ps1:?}");
     }
 }
