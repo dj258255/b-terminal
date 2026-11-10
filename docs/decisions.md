@@ -692,7 +692,7 @@ macOS의 Carbon `EnableSecureEventInput`은 켜 있는 동안 키 입력이 다�
 - 기본 동작이 바뀐다: 윗줄이 그려지고, DECRQSS 답과 XTGETTCAP이 윗줄을 알린다.
 - 읽기·쓰기 경계는 그대로다: 윗줄은 칸의 표시일 뿐이고 PTY로 쓰는 바이트가 늘지 않는다. 답에 들어가는 것은 고정 숫자 `53`과 고정 문자열이다.
 - 깜박임(SGR 5)은 여전히 격자에 없다. Ghostty도 글자 깜박임은 그리지 않는다(`generic.zig`의 blink는 커서뿐이라고 이슈에 적혀 있다).
-- 테스트: vte 해석(`53`, `55`, `1;53`, 밑줄 모양과 섞기), 엔진 셀 표시(`53` 켬, `55`·`0` 끔, 공백 칸), 렌더 픽셀(위치·두께·글자색·두 칸 폭), DECRQSS·XTGETTCAP 답. 실제 창에서는 이 변경 시점에 확인하지 않았다.
+- 테스트: vte 해석(`53`, `55`, `1;53`, 밑줄 모양과 섞기), 엔진 셀 표시(`53` 켬, `55`·`0` 끔, 공백 칸), 렌더 픽셀(위치·두께·글자색·두 칸 폭), DECRQSS·XTGETTCAP 답. 실제 창(격리한 디버그 빌드, 한 번)에서 `OVER`·두 칸 글자·빨간 글자·밑줄과 함께 그린 윗줄을 스크린샷으로 봤고, DECRQSS `m`은 `0;53m`, XTGETTCAP `Smol`은 `\E[53m`으로 답했다.
 
 ### 되돌릴 조건
 - upstream vte가 SGR 53·55를 해석하면(`Attr`에 윗줄이 생기면) `vendor/vte`를 지우고 `[patch.crates-io]`의 줄을 뺀다. 그때 alacritty_terminal의 `terminal_attribute`가 새 `Attr` 이름에 맞는지 먼저 본다. vte를 올릴 때는 `diff`로 `ansi.rs`를 먼저 비교한다.
