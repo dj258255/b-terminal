@@ -21,6 +21,8 @@ pub enum Signal {
         host: String,
         path: PathBuf,
     },
+    /// 작업 폴더를 모른다고 되돌린다(빈 OSC 7, #328). Ghostty처럼 알려진 폴더를 지운다
+    CwdReset,
     /// 셸 통합 표지(OSC 133, 또는 VS Code의 OSC 633 A~D)
     Prompt(PromptMark),
     /// 셸이 알린, 지금 실행하는 명령 글(OSC 633;E)
@@ -546,6 +548,10 @@ fn csi_signal(fin: u8, params: &[u8]) -> Option<Signal> {
 }
 
 fn parse_osc(s: &str) -> Option<Signal> {
+    // `OSC 7 ST`처럼 번호만 있는 문자열은 빈 OSC 7이다(Ghostty report_pwd.zig는 `7;`만 보지만 같은 뜻)
+    if s == "7" {
+        return Some(Signal::CwdReset);
+    }
     let (code, rest) = s.split_once(';')?;
     match code {
         "9" => {
@@ -634,11 +640,22 @@ fn parse_osc(s: &str) -> Option<Signal> {
             })
         }
         "7" => {
-            // 7;file://호스트/경로 (경로는 퍼센트 인코딩)
-            let rest = rest.strip_prefix("file://")?;
+            // 7; 빈 값은 알려진 작업 폴더를 지운다(Ghostty stream_handler.zig reportPwd)
+            if rest.is_empty() {
+                return Some(Signal::CwdReset);
+            }
+            // 7;file://호스트/경로 (경로는 퍼센트 인코딩), 7;kitty-shell-cwd://호스트/경로 (경로는 인코딩하지 않은 그대로)
+            let (rest, raw) = match rest.strip_prefix("file://") {
+                Some(r) => (r, false),
+                None => (rest.strip_prefix("kitty-shell-cwd://")?, true),
+            };
             let slash = rest.find('/')?;
             let host = clean(&rest[..slash], 255);
-            let decoded = percent_decode(&rest[slash..])?;
+            let decoded = if raw {
+                rest[slash..].to_string()
+            } else {
+                percent_decode(&rest[slash..])?
+            };
             (decoded.starts_with('/') && !decoded.contains('\0')).then(|| Signal::Cwd {
                 host,
                 path: PathBuf::from(decoded),
@@ -1016,6 +1033,49 @@ mod tests {
             Scanner::default().feed(b"\x1b]133;D\x07"),
             vec![Signal::Prompt(PromptMark::CommandFinished(None))]
         );
+    }
+
+    #[test]
+    fn osc7_empty_value_resets_cwd() {
+        // Ghostty report_pwd.zig: `7;`도 빈 값이고, 지우는 신호다. `OSC 7 ST`(세미콜론 없음)도 같다
+        assert_eq!(notes(b"\x1b]7;\x07"), vec![Signal::CwdReset]);
+        assert_eq!(notes(b"\x1b]7;\x1b\\"), vec![Signal::CwdReset]);
+        assert_eq!(notes(b"\x1b]7\x07"), vec![Signal::CwdReset]);
+        assert_eq!(notes(b"\x1b]7\x1b\\"), vec![Signal::CwdReset]);
+        // 7로 시작하는 다른 번호는 아니다
+        assert!(notes(b"\x1b]70\x07").is_empty());
+    }
+
+    #[test]
+    fn osc7_kitty_shell_cwd_uses_raw_path() {
+        // kitty-shell-cwd는 인코딩하지 않은 경로를 보낸다: %는 그대로, 공백도 그대로
+        assert_eq!(
+            notes(b"\x1b]7;kitty-shell-cwd://mac.local/Users/me/My Dir/100%\x07"),
+            vec![Signal::Cwd {
+                host: "mac.local".into(),
+                path: PathBuf::from("/Users/me/My Dir/100%")
+            }]
+        );
+        assert_eq!(
+            notes(b"\x1b]7;kitty-shell-cwd://h/a%20b\x1b\\"),
+            vec![Signal::Cwd {
+                host: "h".into(),
+                path: PathBuf::from("/a%20b")
+            }]
+        );
+        // 같은 검증: 경로가 없거나 NUL이 들면 버린다
+        assert!(notes(b"\x1b]7;kitty-shell-cwd://host\x07").is_empty());
+        assert!(notes(b"\x1b]7;kitty-shell-cwd://h/a\0b\x07").is_empty());
+        // file 스킴의 퍼센트 해독은 그대로다
+        assert_eq!(
+            notes(b"\x1b]7;file://h/a%20b\x07"),
+            vec![Signal::Cwd {
+                host: "h".into(),
+                path: PathBuf::from("/a b")
+            }]
+        );
+        assert!(notes(b"\x1b]7;file://h/a%00b\x07").is_empty());
+        assert!(notes(b"\x1b]7;kitty-cwd://h/a\x07").is_empty());
     }
 
     #[test]

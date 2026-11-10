@@ -154,6 +154,8 @@ pub enum SessionEvent {
         host: String,
         path: PathBuf,
     },
+    /// 빈 OSC 7: 작업 폴더를 모른다고 되돌린다(#328)
+    CwdReset,
     /// 진행 표시(OSC 9;4). 상태 0은 지움
     Progress {
         state: u8,
@@ -1399,6 +1401,7 @@ fn signal_event(sig: Signal) -> SessionEvent {
     match sig {
         Signal::Notify(n) => SessionEvent::Notification(n),
         Signal::Cwd { host, path } => SessionEvent::Cwd { host, path },
+        Signal::CwdReset => SessionEvent::CwdReset,
         Signal::Progress { state, percent } => SessionEvent::Progress { state, percent },
         // 셸 통합 표지와 그래픽은 읽기 스레드가 따로 다룬다
         Signal::Prompt(_)
