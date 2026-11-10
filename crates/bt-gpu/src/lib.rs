@@ -1,0 +1,9 @@
+//! wgpu로 셀 격자를 그린다(ADR-035). 창을 모르고, 텍스처에 그려 `Vec<u32>`(CPU 캔버스와 같은 꼴)로 읽어 낸다
+
+pub mod atlas;
+pub mod glyphs;
+mod renderer;
+pub mod scene;
+
+pub use atlas::{Atlas, Full};
+pub use renderer::{FrameTimings, GpuRenderer};

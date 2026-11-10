@@ -162,7 +162,7 @@ pub fn parse_color(s: &str) -> Option<(u8, u8, u8)> {
     }
     let thirds = |hex: &str| -> Option<(u8, u8, u8)> {
         let n = hex.len();
-        if n == 0 || n % 3 != 0 || n > 12 || !hex.is_ascii() {
+        if n == 0 || !n.is_multiple_of(3) || n > 12 || !hex.is_ascii() {
             return None;
         }
         let w = n / 3;

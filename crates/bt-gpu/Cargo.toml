@@ -1,0 +1,21 @@
+[package]
+name = "bt-gpu"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+bt-core = { version = "0.28.0", path = "../bt-core" }
+bt-render = { version = "0.28.0", path = "../bt-render" }
+# 창 없는 1단계(ADR-035): 장치·큐·텍스처만 쓴다. 창 surface가 필요한 다음 판에서 기능을 더한다
+wgpu = { version = "30", default-features = false, features = ["std", "parking_lot", "wgpu-core", "wgsl", "metal", "vulkan"] }
+pollster = "0.4"
+log.workspace = true
+
+[dev-dependencies]
+bt-term = { path = "../bt-term" }
+
+[lints]
+workspace = true
