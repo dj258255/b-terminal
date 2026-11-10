@@ -1348,6 +1348,8 @@ impl<T> Term<T> {
         } else {
             self.damage_cursor();
             self.grid.cursor.point.line += 1;
+            // b-terminal(#338): 스크롤 없이 한 줄 내려가도 Ghostty `index`처럼 입력 줄을 이어진 프롬프트로 표시한다
+            self.semantic_after_index();
         }
 
         // 줄이 바뀌면 왼쪽 여백으로 간다
@@ -1540,6 +1542,7 @@ impl<T> Term<T> {
         let flags = self.grid.cursor.template.flags;
         let extra = self.grid.cursor.template.extra.clone();
 
+        let input_content = self.semantic.content == semantic::SemanticContent::Input; // b-terminal(#338)
         let mut cursor_cell = self.grid.cursor_cell();
 
         // Clear all related cells when overwriting a fullwidth cell.
@@ -1567,6 +1570,10 @@ impl<T> Term<T> {
         cursor_cell.bg = bg;
         // b-terminal(#314): 쓴 칸 표시. b-terminal(#329): 0번 칸에 둔 줄의 프롬프트 표시는 덮어써도 남긴다
         cursor_cell.flags = flags | Flags::WRITTEN | (cursor_cell.flags & (Flags::ROW_PROMPT | Flags::ROW_PROMPT_CONTINUATION));
+        // b-terminal(#338): 커서의 글 종류가 입력이면 입력 칸으로 쓴다(Ghostty `printCell`의 `semantic_content`)
+        if input_content {
+            cursor_cell.flags.insert(Flags::SEMANTIC_INPUT);
+        }
         cursor_cell.extra = extra;
     }
 

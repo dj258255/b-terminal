@@ -14,6 +14,7 @@ pub mod notify;
 pub mod osc133;
 pub mod plain;
 pub mod process;
+pub mod prompt_click;
 pub mod screen;
 pub mod search;
 mod session;

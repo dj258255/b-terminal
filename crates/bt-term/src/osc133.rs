@@ -2,7 +2,7 @@
 //! 기준: Ghostty `osc/parsers/semantic_prompt.zig`(동작 8개 A·B·C·D·I·L·N·P, 옵션 읽기 규칙)와 `Terminal.semanticPrompt`.
 //!
 //! 옵션은 `;`로 나눈 `키=값`이고, 모르는 것·잘못된 것은 무시한다. 같은 키가 둘이면 먼저 나온 것을 읽고, 값이 틀렸으면 없는 것으로 본다
-//! (Ghostty `Option.read`). `click_events`와 `cl`은 읽기만 하고 아무 동작도 하지 않는다(프롬프트 클릭을 PTY에 보내는 일은 입력 경계라 따로 정한다).
+//! (Ghostty `Option.read`). `click_events`와 `cl`은 읽기만 하고 아무 동작도 하지 않는다(프롬프트 클릭은 `prompt_click` 모듈이 쓴다, #338).
 
 use alacritty_terminal::event::EventListener;
 use alacritty_terminal::term::Term;
@@ -29,21 +29,7 @@ pub enum Action {
     EndCommand,
 }
 
-/// `click_events=`(읽기만 한다)
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ClickEvents {
-    Absolute,
-    Relative,
-}
-
-/// `cl=`(읽기만 한다)
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Click {
-    Line,
-    Multiple,
-    ConservativeVertical,
-    SmartVertical,
-}
+pub use alacritty_terminal::term::semantic::{Click, ClickEvents, SemanticClick};
 
 /// 읽어 낸 OSC 133 명령 하나
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -132,12 +118,17 @@ fn clean_aid(v: &str) -> String {
 }
 
 impl SemanticPrompt {
+    /// `click_events=`가 먼저, 없거나 틀렸으면 `cl=`(Ghostty `semanticPrompt`의 `click:` 블록). 둘 다 없으면 None
+    fn click(&self) -> Option<SemanticClick> {
+        self.click_events.map(SemanticClick::ClickEvents).or(self.cl.map(SemanticClick::Cl))
+    }
+
     /// 엔진에 적용한다(Ghostty `Terminal.semanticPrompt`, 2784~2902줄).
     /// N은 A와 같다(Ghostty도 열린 명령을 따로 세지 않는다). `click_events`·`cl`은 쓰지 않는다
     pub fn apply<T: EventListener>(&self, term: &mut Term<T>) {
         match self.action {
             Action::FreshLine => term.semantic_fresh_line(),
-            Action::FreshLineNewPrompt | Action::NewCommand => term.semantic_new_prompt(self.kind, self.redraw),
+            Action::FreshLineNewPrompt | Action::NewCommand => term.semantic_new_prompt(self.kind, self.redraw, self.click()),
             Action::PromptStart => term.semantic_prompt_start(self.kind),
             Action::EndPromptStartInput => term.semantic_input(false),
             Action::EndPromptStartInputTerminateEol => term.semantic_input(true),
