@@ -20,7 +20,7 @@ pub enum Refusal {
     Missing,
     NotAbsolute,
     NotUtf8,
-    ControlChars,
+    UnsafeChars,
 }
 
 /// 놓은 것으로 할 일
@@ -46,18 +46,23 @@ pub enum Placement {
     NewWindow,
 }
 
-/// 경로에 제어 문자(C0 `\x00`~`\x1f`, DEL, C1 `\x80`~`\x9f`)가 하나라도 있는가
-pub fn has_control_chars(s: &str) -> bool {
-    s.chars().any(char::is_control)
+/// 허용 목록 글자인가: 글자·숫자(`char::is_alphanumeric`, 한글·일본어 이름을 막지 않으려고), 빈칸(U+0020),
+/// `/ . _ - + , @ % : = ( ) [ ] # ~`
+fn is_allowed_char(c: char) -> bool {
+    c.is_alphanumeric() || c == ' ' || "/._-+,@%:=()[]#~".contains(c)
 }
 
-/// 셸에 한 낱말로 넘길 수 있게 작은따옴표로 감싼다. 안의 작은따옴표는 `'\''`로 바꾼다.
-/// 제어 문자는 따옴표가 막지 못하므로 있으면 `None`(줄바꿈 포함)
+/// 셸에 친 글이 어떤 흔한 셸(sh·bash·zsh·fish·tcsh·nushell)에서도 작은따옴표 안의 글자 그대로가 되는가.
+/// 작은따옴표 규칙이 셸마다 다르다(fish는 `\'`·`\\`를 해석하고 tcsh는 `!`를 펼친다). 그래서 따옴표를 빠져나갈
+/// 수 있는 글자(`'`·`\`·`!`·`$`·`` ` ``)와 제어 문자·서식 문자·빈칸이 아닌 공백을 모두 허용 목록 밖으로 둔다
+pub fn is_shell_safe(s: &str) -> bool {
+    s.chars().all(is_allowed_char)
+}
+
+/// 셸에 한 낱말로 넘길 수 있게 작은따옴표로 감싼다. 허용 목록 밖의 글자가 있으면 `None`.
+/// 허용 목록에는 작은따옴표가 없으므로 안을 따로 고치지 않는다
 pub fn shell_quote(s: &str) -> Option<String> {
-    if has_control_chars(s) {
-        return None;
-    }
-    Some(format!("'{}'", s.replace('\'', "'\\''")))
+    is_shell_safe(s).then(|| format!("'{s}'"))
 }
 
 /// 셸에 칠 글: `<따옴표로 감싼 경로>; exit\n`
@@ -111,9 +116,9 @@ pub fn plan(path: &Path, kind: Kind) -> Plan {
             let Some(text) = path.to_str() else {
                 return Plan::Refuse(Refusal::NotUtf8);
             };
-            // 제어 문자는 따옴표로 막을 수 없다(키처럼 먹힌다). 허용하지 않는다
+            // 허용 목록 밖의 글자는 셸마다 따옴표 규칙이 달라 막을 수 없다. 실행하지 않고 거부한다
             let Some(input) = file_input(text) else {
-                return Plan::Refuse(Refusal::ControlChars);
+                return Plan::Refuse(Refusal::UnsafeChars);
             };
             let cwd = path.parent().map_or_else(|| PathBuf::from("/"), Path::to_path_buf);
             Plan::File {
@@ -174,57 +179,60 @@ mod tests {
     use super::*;
 
     #[test]
-    fn control_chars_are_detected() {
-        for bad in [
-            "/a\x00b",
-            "/a\x01b",
-            "/a\x1bb",
-            "/a\nb",
-            "/a\rb",
-            "/a\tb",
-            "/a\x7fb",
-            "/a\u{80}b",
-            "/a\u{9b}b",
-            "/a\u{9f}b",
-        ] {
-            assert!(has_control_chars(bad), "{bad:?}");
-        }
-        for ok in [
-            "/a b",
-            "/한글/파일.sh",
-            "/a'b",
-            "/a$b`c`",
-            "/😀",
-            "/a\u{a0}b",
-            "/a\u{2028}b",
-        ] {
-            assert!(!has_control_chars(ok), "{ok:?}");
-        }
-    }
-
-    #[test]
-    fn quote_wraps_in_single_quotes() {
+    fn quote_wraps_allowed_paths_literally() {
         assert_eq!(shell_quote("/a/b.sh").as_deref(), Some("'/a/b.sh'"));
         assert_eq!(shell_quote("/a b/c d.sh").as_deref(), Some("'/a b/c d.sh'"));
-        assert_eq!(shell_quote("/a/$HOME`id`$(id)").as_deref(), Some("'/a/$HOME`id`$(id)'"));
-        assert_eq!(shell_quote("/a/it's").as_deref(), Some(r"'/a/it'\''s'"));
-        assert_eq!(shell_quote("/a/''").as_deref(), Some(r"'/a/'\'''\'''"));
-        assert_eq!(shell_quote("/a/;rm -rf ~&|").as_deref(), Some("'/a/;rm -rf ~&|'"));
-        assert_eq!(shell_quote("/한글 폴더/a!b*").as_deref(), Some("'/한글 폴더/a!b*'"));
+        assert_eq!(
+            shell_quote("/Users/범수/스크립트 (1).sh").as_deref(),
+            Some("'/Users/범수/스크립트 (1).sh'")
+        );
+        assert_eq!(
+            shell_quote("/Users/me/~backup/a#1 [x]+y,z@w%v:u=t_s-r.sh").as_deref(),
+            Some("'/Users/me/~backup/a#1 [x]+y,z@w%v:u=t_s-r.sh'")
+        );
+        assert_eq!(
+            shell_quote("/日本語/ファイル.sh").as_deref(),
+            Some("'/日本語/ファイル.sh'")
+        );
     }
 
     #[test]
-    fn quote_refuses_control_chars() {
-        for bad in ["/a\nb", "/a\x15ls\rb", "/a\x00b", "/a\x7f", "/a\u{85}b"] {
-            assert_eq!(shell_quote(bad), None, "{bad:?}");
-            assert_eq!(file_input(bad), None, "{bad:?}");
+    fn quote_refuses_chars_outside_the_allow_list() {
+        // 셸마다 작은따옴표 안의 규칙이 다르다: fish는 \'와 \\를 해석하고, tcsh는 !를 펼친다
+        let bad = [
+            "/a/x\\'; touch /tmp/pwned; echo \\'.sh",
+            "/a/it's.sh",
+            "/a/a\\b.sh",
+            "/a/a!b.sh",
+            "/a/$HOME",
+            "/a/`id`",
+            "/a/a\"b",
+            "/a/a;b",
+            "/a/a&b.sh",
+            "/a/a|b",
+            "/a/a<b>c",
+            "/a/a*b?",
+            "/a/{a,b}",
+            "/a/\u{202e}gnp.sh",
+            "/a/a\u{a0}b",
+            "/a/a\u{3000}b",
+            "/a/a\u{200b}b",
+            "/a/a\u{301}b",
+            "/a/a\tb",
+            "/a/a\nb",
+            "/a/\x1b[2J",
+        ];
+        for p in bad {
+            assert_eq!(shell_quote(p), None, "{p:?}");
+            assert_eq!(file_input(p), None, "{p:?}");
+            assert!(!is_shell_safe(p), "{p:?}");
         }
     }
 
     #[test]
     fn file_input_is_quoted_path_then_exit() {
         assert_eq!(file_input("/a b/c.sh").as_deref(), Some("'/a b/c.sh'; exit\n"));
-        assert_eq!(file_input("/it's.sh").as_deref(), Some("'/it'\\''s.sh'; exit\n"));
+        assert_eq!(file_input("/it's.sh"), None);
     }
 
     #[test]
@@ -267,11 +275,19 @@ mod tests {
         assert_eq!(plan(Path::new("rel"), Kind::Dir), Plan::Refuse(Refusal::NotAbsolute));
         assert_eq!(
             plan(Path::new("/a/b\nls"), Kind::File),
-            Plan::Refuse(Refusal::ControlChars)
+            Plan::Refuse(Refusal::UnsafeChars)
+        );
+        assert_eq!(
+            plan(Path::new("/a/it's.sh"), Kind::File),
+            Plan::Refuse(Refusal::UnsafeChars)
+        );
+        assert_eq!(
+            plan(Path::new("/a/a&b.sh"), Kind::File),
+            Plan::Refuse(Refusal::UnsafeChars)
         );
         assert_eq!(
             plan(Path::new("/a/\x15ls\r.sh"), Kind::File),
-            Plan::Refuse(Refusal::ControlChars)
+            Plan::Refuse(Refusal::UnsafeChars)
         );
         // 루트 바로 아래 파일의 부모는 /
         assert_eq!(

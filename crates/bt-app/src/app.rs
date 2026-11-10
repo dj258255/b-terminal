@@ -2115,7 +2115,7 @@ impl App {
                 if !self.windowless() {
                     self.toast(
                         match why {
-                            Refusal::ControlChars => "경로에 제어 문자가 있어 실행하지 않았습니다",
+                            Refusal::UnsafeChars => "셸에 안전하게 넘길 수 없는 글자가 있어 열지 않았습니다",
                             Refusal::NotUtf8 => "경로를 글자로 읽을 수 없어 실행하지 않았습니다",
                             Refusal::Missing | Refusal::NotAbsolute => "열 수 없는 경로입니다",
                         }
