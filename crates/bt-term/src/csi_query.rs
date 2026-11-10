@@ -57,6 +57,16 @@ pub fn mode_2048_report(on: bool) -> &'static str {
     if on { "\x1b[?2048;1$y" } else { "\x1b[?2048;2$y" }
 }
 
+/// DECRQM 답: 모드 2033. 켜짐이면 1, 꺼짐이면 2(#303)
+pub fn mode_2033_report(on: bool) -> &'static str {
+    if on { "\x1b[?2033;1$y" } else { "\x1b[?2033;2$y" }
+}
+
+/// 가시성 보고(Ghostty `device_status.zig` `encodeVisibilityReport`): 보이면 `CSI ? 999 ; 1 n`, 안 보이면 `CSI ? 999 ; 2 n`(#303)
+pub fn visibility_report(visible: bool) -> &'static str {
+    if visible { "\x1b[?999;1n" } else { "\x1b[?999;2n" }
+}
+
 fn size_param(params: &[u8]) -> Option<&str> {
     std::str::from_utf8(params).ok()
 }
@@ -107,7 +117,21 @@ pub fn mode_2031_report(on: bool) -> &'static str {
     if on { "\x1b[?2031;1$y" } else { "\x1b[?2031;2$y" }
 }
 
-/// 중간 바이트가 하나인 CSI: `CSI ? 2048 $ p`·`CSI ? 2031 $ p`(DECRQM)만
+/// 가시성 보고 모드(2033)를 켜고 끄는 CSI(`CSI ? … 2033 … h|l`). 여러 모드 중 하나여도 읽는다(#303)
+pub fn visibility(fin: u8, params: &[u8]) -> Option<Signal> {
+    if !matches!(fin, b'h' | b'l') {
+        return None;
+    }
+    let text = size_param(params.strip_prefix(b"?")?)?;
+    if text.contains('?') {
+        return None;
+    }
+    text.split(';')
+        .any(|p| p == "2033")
+        .then_some(Signal::VisibilityReports(fin == b'h'))
+}
+
+/// 중간 바이트가 하나인 CSI: `CSI ? 2048 $ p`·`CSI ? 2031 $ p`·`CSI ? 2033 $ p`(DECRQM)만
 pub fn inter(inter: u8, fin: u8, params: &[u8]) -> Option<Signal> {
     if inter != b'$' || fin != b'p' {
         return None;
@@ -115,6 +139,7 @@ pub fn inter(inter: u8, fin: u8, params: &[u8]) -> Option<Signal> {
     match params {
         b"?2048" => Some(Signal::InBandSizeQuery),
         b"?2031" => Some(Signal::ColorSchemeModeQuery),
+        b"?2033" => Some(Signal::VisibilityQuery),
         _ => None,
     }
 }
@@ -241,6 +266,28 @@ mod tests {
         assert_eq!(mode_2031_report(true), "\x1b[?2031;1$y");
         assert_eq!(mode_2031_report(false), "\x1b[?2031;2$y");
         assert_eq!(signals(b"\x1b[2048$p"), vec![]);
+    }
+
+    #[test]
+    fn visibility_report_bytes_are_ghosttys() {
+        assert_eq!(visibility_report(true), "\x1b[?999;1n");
+        assert_eq!(visibility_report(false), "\x1b[?999;2n");
+        assert_eq!(mode_2033_report(true), "\x1b[?2033;1$y");
+        assert_eq!(mode_2033_report(false), "\x1b[?2033;2$y");
+    }
+
+    #[test]
+    fn mode_2033_set_reset_and_query_are_parsed() {
+        assert_eq!(signals(b"\x1b[?2033h"), vec![Signal::VisibilityReports(true)]);
+        assert_eq!(signals(b"\x1b[?2033l"), vec![Signal::VisibilityReports(false)]);
+        assert_eq!(signals(b"\x1b[?2033$p"), vec![Signal::VisibilityQuery]);
+        assert_eq!(
+            signals(b"\x1b[?2048;2033h"),
+            vec![Signal::InBandSizeReports(true), Signal::VisibilityReports(true)]
+        );
+        assert_eq!(signals(b"\x1b[?20330h"), vec![]);
+        assert_eq!(signals(b"\x1b[?2033;1$p"), vec![]);
+        assert_eq!(signals(b"\x1b[2033$p"), vec![]);
     }
 
     #[test]

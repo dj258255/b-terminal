@@ -432,6 +432,10 @@ pub struct Session {
     mouse_shape: Arc<std::sync::atomic::AtomicU8>,
     /// 프로그램이 크기 알림(모드 2048)을 켜 두었는가(#264)
     in_band_size: Arc<std::sync::atomic::AtomicBool>,
+    /// 이 칸이 보이는가. 앱이 알리기 전에는 보인다고 본다(Ghostty `Surface.visible` 기본값 true)(#303)
+    visible: Arc<std::sync::atomic::AtomicBool>,
+    /// 프로그램이 가시성 보고(모드 2033)를 켜 두었는가(#303)
+    visibility_reports: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl Session {
@@ -446,6 +450,21 @@ impl Session {
             let _ = w.write_all(scheme_report(light));
             let _ = w.flush();
         }
+    }
+
+    /// 이 칸이 보이는지 알린다. 값이 달라졌고 모드 2033이 켜져 있을 때만 `CSI ? 999 ; 1|2 n`을 PTY에 쓴다
+    /// (Ghostty `Surface.occlusionCallback`, 3437~3463줄). 터미널의 답이라 읽기 전용 칸에서도 쓴다(#303)
+    pub fn set_visible(&self, visible: bool) {
+        use std::sync::atomic::Ordering::{AcqRel, Acquire};
+        let changed = self.visible.swap(visible, AcqRel) != visible;
+        if changed && self.visibility_reports.load(Acquire) {
+            write_reply(&self.writer, crate::csi_query::visibility_report(visible).as_bytes());
+        }
+    }
+
+    /// 이 칸이 보이는가(알리지 않았으면 보인다고 본다)(#303)
+    pub fn visible(&self) -> bool {
+        self.visible.load(std::sync::atomic::Ordering::Acquire)
     }
 
     /// 프로그램이 크기 알림(모드 2048)을 켜 두었는가(#264)
@@ -649,6 +668,10 @@ impl Session {
         let thread_scheme_light = scheme_light.clone();
         let in_band_size = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let thread_in_band_size = in_band_size.clone();
+        let visible = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let thread_visible = visible.clone();
+        let visibility_reports = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let thread_visibility_reports = visibility_reports.clone();
         let thread_size = size_cell.clone();
         let da1_clipboard = options.clipboard_write;
         let thread_inner = inner.clone();
@@ -737,6 +760,8 @@ impl Session {
                                             thread_kam_locked.store(false, std::sync::atomic::Ordering::Release);
                                             thread_scheme_updates.store(false, std::sync::atomic::Ordering::Release);
                                             thread_in_band_size.store(false, std::sync::atomic::Ordering::Release);
+                                            thread_visibility_reports
+                                                .store(false, std::sync::atomic::Ordering::Release);
                                             thread_mouse_shape.store(0, std::sync::atomic::Ordering::Release);
                                         }
                                     }
@@ -852,6 +877,22 @@ impl Session {
                                         let on = thread_scheme_updates.load(std::sync::atomic::Ordering::Acquire);
                                         write_reply(&thread_writer, crate::csi_query::mode_2031_report(on).as_bytes());
                                     }
+                                    // 모드 2033을 켜면 지금 상태를 강제로 한 번 보고하고, 그 뒤로는 `Session::set_visible`이 바뀔 때마다 보낸다
+                                    // (Ghostty `stream_handler.zig` 764줄)
+                                    Signal::VisibilityReports(on) => {
+                                        thread_visibility_reports.store(on, std::sync::atomic::Ordering::Release);
+                                        if on {
+                                            let now = thread_visible.load(std::sync::atomic::Ordering::Acquire);
+                                            write_reply(
+                                                &thread_writer,
+                                                crate::csi_query::visibility_report(now).as_bytes(),
+                                            );
+                                        }
+                                    }
+                                    Signal::VisibilityQuery => {
+                                        let on = thread_visibility_reports.load(std::sync::atomic::Ordering::Acquire);
+                                        write_reply(&thread_writer, crate::csi_query::mode_2033_report(on).as_bytes());
+                                    }
                                     Signal::InBandSizeQuery => {
                                         let on = thread_in_band_size.load(std::sync::atomic::Ordering::Acquire);
                                         write_reply(&thread_writer, crate::csi_query::mode_2048_report(on).as_bytes());
@@ -914,6 +955,8 @@ impl Session {
             scheme_light,
             mouse_shape,
             in_band_size,
+            visible,
+            visibility_reports,
         })
     }
 
@@ -1063,6 +1106,8 @@ impl Session {
         self.kam_locked.store(false, std::sync::atomic::Ordering::Release);
         self.scheme_updates.store(false, std::sync::atomic::Ordering::Release);
         self.in_band_size.store(false, std::sync::atomic::Ordering::Release);
+        self.visibility_reports
+            .store(false, std::sync::atomic::Ordering::Release);
         self.mouse_shape.store(0, std::sync::atomic::Ordering::Release);
     }
 
@@ -1264,6 +1309,8 @@ fn signal_event(sig: Signal) -> SessionEvent {
         | Signal::InBandSizeReports(_)
         | Signal::InBandSizeQuery
         | Signal::ColorSchemeModeQuery
+        | Signal::VisibilityReports(_)
+        | Signal::VisibilityQuery
         | Signal::DcsQuery(_)
         | Signal::KittyColor { .. }
         | Signal::WindowResize { .. } => SessionEvent::Output,

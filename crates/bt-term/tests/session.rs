@@ -1297,6 +1297,74 @@ fn reset_turns_mode_2048_off() {
     assert_eq!(got, hex_of("\x1b[48;10;80;160;640t"));
 }
 
+// ---- 가시성 보고(모드 2033, #303) ----
+
+#[test]
+fn decrqm_2033_says_reset_then_set_and_reports_once_when_turned_on() {
+    assert_eq!(reply_to("\\033[?2033$p", |_| {}), hex_of("\x1b[?2033;2$y"));
+    // 켜는 순간 지금 상태(보임)를 한 번 보고하고, 그 뒤 DECRQM은 켜짐이다
+    assert_eq!(
+        reply_to("\\033[?2033h\\033[?2033$p", |_| {}),
+        hex_of("\x1b[?999;1n\x1b[?2033;1$y")
+    );
+    assert_eq!(
+        reply_to("\\033[?2033h\\033[?2033l\\033[?2033$p", |_| {}),
+        hex_of("\x1b[?999;1n\x1b[?2033;2$y")
+    );
+}
+
+#[test]
+fn mode_2033_reports_each_visibility_change_but_not_when_off() {
+    let got = notified_after("\\033[?2033h", |s| {
+        s.set_visible(true); // 같은 상태는 보고하지 않는다
+        s.set_visible(false);
+        s.set_visible(false);
+        s.set_visible(true);
+    });
+    assert_eq!(got, hex_of("\x1b[?999;1n\x1b[?999;2n\x1b[?999;1n"));
+    assert_eq!(notified_after("", |s| s.set_visible(false)), "");
+    let got = notified_after("\\033[?2033h\\033[?2033l", |s| s.set_visible(false));
+    assert_eq!(got, hex_of("\x1b[?999;1n"));
+}
+
+#[test]
+fn mode_2033_when_turned_on_while_hidden_reports_hidden() {
+    let (tx, rx) = channel();
+    let tx = std::sync::Mutex::new(tx);
+    let sink = Arc::new(move |e: SessionEvent| {
+        let _ = tx.lock().unwrap().send(e);
+    });
+    // 테스트가 "가려짐"을 알리고 `g`를 쓴 뒤에야 셸이 2033을 켠다
+    let script = "stty raw -echo min 0 time 30; printf READY; dd bs=1 count=1 >/dev/null 2>&1; printf '\\033[?2033h'; printf GO; \
+         r=$(dd bs=1 count=256 2>/dev/null | od -An -v -tx1 | tr -d ' \\n'); printf 'R[%s]\\n' \"$r\"";
+    let o = SpawnOptions {
+        program: Some("/bin/sh".into()),
+        args: vec!["-c".into(), script.into()],
+        cwd: Some(std::env::temp_dir()),
+        ..Default::default()
+    };
+    let s = Session::spawn(o, GridSize::new(80, 10), Theme::default(), sink).expect("spawn");
+    wait_until(&s, |t| t.contains("READY"));
+    s.set_visible(false);
+    s.write(b"g");
+    wait_exit(&rx);
+    let text = s.snapshot().text();
+    let start = text.find("R[").unwrap_or_else(|| panic!("답 줄이 없다:\n{text}")) + 2;
+    let end = text[start..].find(']').expect("닫는 ]") + start;
+    assert_eq!(&text[start..end], hex_of("\x1b[?999;2n"));
+}
+
+#[test]
+fn reset_turns_mode_2033_off() {
+    let got = notified_after("\\033[?2033h\\033c", |s| s.set_visible(false));
+    assert_eq!(got, hex_of("\x1b[?999;1n"));
+    let got = notified_after("\\033[?2033h", |s| {
+        s.reset();
+        s.set_visible(false);
+    });
+    assert_eq!(got, hex_of("\x1b[?999;1n"));
+}
+
 // ---- kitty 색 프로토콜(OSC 21, #266) ----
 
 fn rgb8(c: bt_core::Rgb) -> String {

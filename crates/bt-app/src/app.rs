@@ -676,6 +676,8 @@ struct Win {
     opaque: bool,
     /// 제목 막대 폴더 아이콘에 마지막으로 올린 폴더(#279). 같으면 다시 올리지 않는다
     proxy_icon: Option<std::path::PathBuf>,
+    /// 창이 다른 창에 가려졌거나 최소화됐다(`WindowEvent::Occluded`, #303). 알리기 전에는 보인다고 본다
+    occluded: bool,
 }
 
 impl Win {
@@ -721,6 +723,7 @@ impl Win {
             blink_wanted: false,
             opaque: false,
             proxy_icon: None,
+            occluded: false,
         }
     }
 
@@ -4332,6 +4335,22 @@ impl App {
         }
     }
 
+    /// 칸마다 보이는지(가림 상태 + 앞에 있는 탭에 든 칸인가)를 세션에 알린다. 모드 2033을 켠 프로그램은 달라진 때만 보고를 받는다
+    /// (Ghostty macOS는 창의 가림 상태를 창 안 모든 칸에 알리고, 탭은 따로 창이라 앞이 아닌 탭은 안 보임이다, #303)
+    fn sync_visibility(&self) {
+        for w in std::iter::once(&self.w).chain(&self.others) {
+            let front = w.tabs.get(w.active);
+            for g in &w.tabs {
+                let shown = !w.occluded && front.is_some_and(|f| std::ptr::eq(f, g));
+                for id in g.layout.leaves() {
+                    if let Some(p) = self.panes.iter().find(|p| p.id == id) {
+                        p.session.set_visible(shown);
+                    }
+                }
+            }
+        }
+    }
+
     /// 모든 창을 다시 그리게 한다
     fn request_redraw_all(&self) {
         for w in std::iter::once(&self.w).chain(&self.others) {
@@ -5365,6 +5384,10 @@ impl ApplicationHandler<UserEvent> for App {
                 self.resize_all();
             }
             WindowEvent::RedrawRequested => self.redraw(),
+            WindowEvent::Occluded(occluded) => {
+                self.w.occluded = occluded;
+                self.sync_visibility();
+            }
             WindowEvent::ThemeChanged(theme) => self.system_look_changed(theme == winit::window::Theme::Dark),
             WindowEvent::ModifiersChanged(m) => {
                 self.raw_mods = keys::sided_mods(&m);
@@ -5823,6 +5846,8 @@ impl ApplicationHandler<UserEvent> for App {
             }
             self.next_poll = now + Duration::from_secs(1);
         }
+        // 탭을 옮기거나 창으로 옮긴 칸이 보이는 상태가 달라졌으면 알린다(#303). 같은 상태는 세션이 걸러 낸다
+        self.sync_visibility();
         // 암호 입력 살피기(#258): 앱이 앞이고 창에 초점이 있을 때만 200ms마다 깨운다
         if self.any_window_focused() && now >= self.next_secure_poll {
             self.next_secure_poll = now + SECURE_POLL;
