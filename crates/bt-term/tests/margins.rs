@@ -679,6 +679,127 @@ fn decdc_with_margins() {
     assert_eq!(t.plain(), "abcdefg\nAB   FG\nzy   ut\nZYXWVUT");
 }
 
+// ---- 5단계: SU·SD와 줄바꿈으로 인한 스크롤(IND·LF·NEL·RI) ----
+
+#[test]
+fn su_scrolls_only_the_rectangle_and_keeps_the_cursor() {
+    // "scrollUp left/right scroll region"
+    let mut t = T::new(6, 5);
+    t.feed("ABC123\r\nDEF456\r\nGHI789");
+    t.feed("\x1b[?69h\x1b[2;4s\x1b[2;2H\x1b[S");
+    assert_eq!(t.plain(), "AEF423\nDHI756\nG   89");
+    assert_eq!(t.cursor(), (1, 1));
+}
+
+#[test]
+fn su_with_top_bottom_and_left_right_margins() {
+    // "scrollUp full top/bottomleft/right scroll region"
+    let mut t = T::new(5, 5);
+    t.feed("top\x1b[5;1HABCDE\x1b[?69h\x1b[2;5r\x1b[2;4s\x1b[4S");
+    assert_eq!(t.plain(), "top\n\n\n\nA   E");
+}
+
+#[test]
+fn sd_scrolls_only_the_rectangle_and_keeps_the_cursor() {
+    // "scrollDown left/right scroll region"
+    let mut t = T::new(6, 5);
+    t.feed("ABC123\r\nDEF456\r\nGHI789");
+    t.feed("\x1b[?69h\x1b[2;4s\x1b[2;2H\x1b[T");
+    assert_eq!(t.plain(), "A   23\nDBC156\nGEF489\n HI7");
+    assert_eq!(t.cursor(), (1, 1));
+}
+
+#[test]
+fn sd_works_when_the_cursor_is_outside_the_margins() {
+    // "scrollDown outside of left/right scroll region": 커서는 그대로
+    let mut t = T::new(6, 5);
+    t.feed("ABC123\r\nDEF456\r\nGHI789");
+    t.feed("\x1b[?69h\x1b[2;4s\x1b[1;1H\x1b[T");
+    assert_eq!(t.plain(), "A   23\nDBC156\nGEF489\n HI7");
+    assert_eq!(t.cursor(), (0, 0));
+}
+
+#[test]
+fn su_and_sd_keep_the_pending_wrap() {
+    // "scrollDown preserves pending wrap"
+    let mut t = T::new(6, 5);
+    t.feed("\x1b[?69h\x1b[2;4s\x1b[1;6HZ");
+    assert!(t.wrap_pending());
+    t.feed("\x1b[S");
+    assert!(t.wrap_pending());
+    t.feed("\x1b[T");
+    assert!(t.wrap_pending());
+    assert_eq!(t.cursor(), (5, 0));
+}
+
+#[test]
+fn reverse_index_at_the_top_inside_the_margins_scrolls_the_rectangle() {
+    // "reverseIndex left/right margins"
+    let mut t = T::new(5, 5);
+    t.feed("ABC\x1b[2;1HDEF\x1b[3;1HGHI\x1b[?69h\x1b[2;3s\x1b[1;2H\x1bM");
+    assert_eq!(t.plain(), "A\nDBC\nGEF\n HI");
+}
+
+#[test]
+fn reverse_index_at_the_top_outside_the_margins_does_nothing() {
+    // "reverseIndex outside left/right margins"
+    let mut t = T::new(5, 5);
+    t.feed("ABC\x1b[2;1HDEF\x1b[3;1HGHI\x1b[?69h\x1b[2;3s\x1b[1;1H\x1bM");
+    assert_eq!(t.plain(), "ABC\nDEF\nGHI");
+    assert_eq!(t.cursor(), (0, 0));
+}
+
+#[test]
+fn index_at_the_bottom_inside_the_margins_scrolls_the_rectangle() {
+    // "index inside left/right margin"
+    let mut t = T::new(6, 3);
+    t.feed("AAAAAA\r\nAAAAAA\r\nAAAAAA\x1b[?69h\x1b[1;3r\x1b[1;3s\x1b[3;1H\x1bD");
+    assert_eq!(t.cursor(), (0, 2));
+    assert_eq!(t.plain(), "AAAAAA\nAAAAAA\n   AAA");
+}
+
+#[test]
+fn index_at_the_bottom_outside_the_margins_does_not_move_or_scroll() {
+    // "index outside left/right margin"
+    let mut t = T::new(8, 3);
+    t.feed("\x1b[?69h\x1b[1;3r\x1b[4;6s\x1b[3;3HA\x1b[3;1H\x1bDX");
+    assert_eq!(t.plain(), "\n\nX A");
+}
+
+#[test]
+fn linefeed_inside_the_margins_scrolls_the_rectangle_without_scrollback() {
+    // 여백이 화면 전체 폭이 아니면 위로 밀린 줄은 스크롤백에 쌓이지 않는다(Ghostty `index`의 느린 길 → `scrollUp`)
+    let mut t = T::new(3, 3);
+    t.feed("abc\r\ndef\r\nghi\x1b[?69h\x1b[2;3s\x1b[3;2H\n");
+    assert_eq!(t.plain(), "aef\ndhi\ng");
+    assert_eq!(t.term.grid().history_size(), 0);
+}
+
+#[test]
+fn linefeed_with_full_width_margins_still_makes_scrollback() {
+    let mut t = T::new(5, 3);
+    t.feed("abc\r\ndef\r\nghi\x1b[?69h\x1b[1;5s\x1b[3;1H\n");
+    assert_eq!(t.term.grid().history_size(), 1);
+    assert_eq!(t.plain(), "def\nghi");
+}
+
+#[test]
+fn pending_wrap_from_outside_the_margins_on_the_bottom_row_stays_on_the_row() {
+    // index()는 여백 밖 칸에서 아랫줄 끝이면 움직이지 않고, printWrap은 그래도 왼쪽 여백으로 간다
+    let mut t = T::new(6, 3);
+    t.feed("\x1b[?69h\x1b[2;4s\x1b[3;6HXY");
+    assert_eq!(t.cursor(), (2, 2));
+    assert_eq!(t.plain(), "\n\n Y   X");
+}
+
+#[test]
+fn wrap_at_the_right_margin_on_the_last_row_scrolls_only_the_rectangle() {
+    let mut t = T::new(6, 3);
+    t.feed("abcdef\r\nghijkl\x1b[3;1H\x1b[?69h\x1b[2;4s\x1b[3;2HWXYZ");
+    // W X Y는 2~4열, Z에서 줄바꿈: 사각형(2~4열)만 위로 밀려 윗줄 가운데가 위로 가고 Z가 왼쪽 여백에 놓인다
+    assert_eq!(t.plain(), "ahijef\ngWXYkl\n Z");
+}
+
 // ---- DECRQM(PTY) ----
 
 fn sh(script: &str, size: GridSize) -> (Session, Receiver<SessionEvent>) {

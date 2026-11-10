@@ -2065,7 +2065,11 @@ impl<T: EventListener> Handler for Term<T> {
         trace!("Linefeed");
         let next = self.grid.cursor.point.line + 1;
         if next == self.scroll_region.end {
-            self.scroll_up(1);
+            // b-terminal(#311): 아래 여백 줄에서는 커서가 좌우 여백 안일 때만 스크롤한다(밖이면 움직이지도 않는다).
+            // 좌우 여백이 있으면 사각형만 밀고 스크롤백에 쌓지 않는다(Ghostty `index` 3017줄)
+            if self.cursor_in_margins() {
+                self.scroll_up(1);
+            }
         } else if next < self.screen_lines() {
             self.damage_cursor();
             self.grid.cursor.point.line += 1;
@@ -2125,13 +2129,22 @@ impl<T: EventListener> Handler for Term<T> {
     #[inline]
     fn scroll_up(&mut self, lines: usize) {
         let origin = self.scroll_region.start;
-        self.scroll_up_relative(origin, lines);
+        // b-terminal(#311): 좌우 여백이 있으면 여백 사각형만 민다. 커서와 대기 줄바꿈은 그대로다(Ghostty `scrollUp` 3400줄)
+        if self.margins_full() {
+            self.scroll_up_relative(origin, lines);
+        } else {
+            self.scroll_rect(origin, lines, false);
+        }
     }
 
     #[inline]
     fn scroll_down(&mut self, lines: usize) {
         let origin = self.scroll_region.start;
-        self.scroll_down_relative(origin, lines);
+        if self.margins_full() {
+            self.scroll_down_relative(origin, lines);
+        } else {
+            self.scroll_rect(origin, lines, true);
+        }
     }
 
     #[inline]
@@ -2563,7 +2576,10 @@ impl<T: EventListener> Handler for Term<T> {
         trace!("Reversing index");
         // If cursor is at the top.
         if self.grid.cursor.point.line == self.scroll_region.start {
-            self.scroll_down(1);
+            // b-terminal(#311): 좌우 여백 밖이면 스크롤하지 않고 더 위로도 가지 않는다(Ghostty `reverseIndex` 3217줄)
+            if self.cursor_in_margins() {
+                self.scroll_down(1);
+            }
         } else {
             self.damage_cursor();
             self.grid.cursor.point.line = cmp::max(self.grid.cursor.point.line - 1, Line(0));
