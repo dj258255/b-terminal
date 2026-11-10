@@ -387,9 +387,12 @@ impl App {
         }
         let draw_ms = started.elapsed().as_secs_f64() * 1000.0;
 
-        // 바뀐 것이 없으면 창에 올리지 않는다(CPU 길과 같다)
+        // 바뀐 것이 없으면 창에 올리지 않는다(CPU 길과 같다). 사용자 셰이더가 움직이는 중이면 시간이 흐르므로 늘 올린다(#376)
         let force_present = std::mem::take(&mut self.w.force_present);
-        let skip = !full && repainted_rows == 0 && !force_present;
+        let shaders = gpu.has_custom_shaders();
+        let animates =
+            super::shader_inputs::shader_animates(shaders, self.config.custom_shader_animation, self.w.focused);
+        let skip = !full && repainted_rows == 0 && !force_present && !animates;
         let mut outcome = None;
         if !skip {
             let grid_views: Vec<GridView> = views
@@ -428,6 +431,18 @@ impl App {
                 lower: full.then_some(&self.w.frame[..]),
                 upper: full.then_some(&self.w.upper[..]),
             };
+            if shaders {
+                let u = shader_frame(
+                    &mut self.w.shader,
+                    &theme,
+                    &m,
+                    views,
+                    &drawn,
+                    self.w.focused,
+                    full || repainted_rows > 0,
+                );
+                gpu.set_shader_uniforms(&u);
+            }
             outcome = Some(gpu.present(fonts, (sw, sh), layers, &panes));
         }
         let end = Instant::now();
@@ -480,4 +495,57 @@ impl App {
             gfx.first.presented("GPU");
         }
     }
+}
+
+/// 사용자 셰이더에 넘길 이번 프레임의 값(#376). 셰이더는 창 전체에 한 번 돈다: 커서는 고른 칸의 것이고(여백·칸 자리를 더한 창 픽셀),
+/// 초점은 창의 초점이다. 색은 테마에 칸이 바꾼 바탕색(OSC 11)을 얹는다. OSC 4·10·12로 바뀐 색은 VT 엔진이 화면 상태로 내보내지 않아
+/// 테마 값이다
+fn shader_frame(
+    state: &mut super::shader_inputs::ShaderState,
+    theme: &bt_core::Theme,
+    m: &bt_render::font::CellMetrics,
+    views: &[PaneView],
+    drawn: &[(Vec<DrawCell>, Option<DrawCursor>, Option<String>)],
+    focused: bool,
+    dirty: bool,
+) -> bt_gpu::ShaderUniforms {
+    use super::shader_inputs as si;
+    let pane = views.iter().zip(drawn).find(|(v, _)| v.focused);
+    let metrics = si::CursorMetrics {
+        cell_w: m.width,
+        cell_h: m.height,
+        cursor_h: m.cursor_height,
+        beam: m.cursor_beam,
+        stroke: m.stroke,
+    };
+    let cursor = pane.map_or(
+        si::FrameCursor {
+            style: 0,
+            visible: false,
+            glyph: None,
+        },
+        |(v, (_, c, _))| si::FrameCursor {
+            style: si::screen_style_code(v.screen.cursor.shape),
+            visible: v.screen.cursor.visible,
+            glyph: c.map(|c| {
+                (
+                    si::cursor_rect(c.col, c.row, c.wide, c.style, (v.inner.x, v.inner.y), metrics),
+                    si::cursor_rgba(c.color, c.opacity, focused),
+                )
+            }),
+        },
+    );
+    let overrides = si::ColorOverrides {
+        background: pane.map(|(v, _)| v.screen.background),
+        ..Default::default()
+    };
+    state
+        .frame(
+            Instant::now(),
+            dirty,
+            focused,
+            &cursor,
+            &si::shader_colors(theme, &overrides),
+        )
+        .to_uniforms()
 }

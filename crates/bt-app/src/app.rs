@@ -661,6 +661,21 @@ struct PaneView {
     progress: Option<(u8, u8)>,
 }
 
+/// 창에 사용자 셰이더를 건다(#376). GPU 길이면 컴파일하고 실패한 것의 오류 문구를, CPU 길이면 쓰지 못한다는 문구를 돌려준다
+/// (둘 다 로그에 남는다. GPU 쪽 컴파일 경고는 렌더러가 남긴다)
+fn apply_shaders(g: &mut Gfx, shaders: &[bt_gpu::CustomShaderSource]) -> Vec<String> {
+    match g.gpu.as_mut() {
+        Some(gpu) => gpu.set_custom_shaders(shaders),
+        None if shaders.is_empty() => Vec::new(),
+        None => {
+            let e =
+                "CPU 길(BT_GPU=0, 또는 GPU 길이 맞추지 못하는 설정)에서는 사용자 셰이더를 쓰지 않습니다".to_string();
+            log::warn!("custom-shader: {e}");
+            vec![e]
+        }
+    }
+}
+
 struct Gfx {
     /// 창을 만들 때 정해진 제목 막대 밑 비움 높이(논리 점, #192). 제목 막대 모양은 새 창에만 적용되므로 창마다 따로 든다
     inset_points: f32,
@@ -800,6 +815,8 @@ struct Win {
     occluded: bool,
     /// GPU 길(ADR-038): 그림판 얻기가 막힐 것 같아 미룬 프레임을 다시 그릴 때
     pace_wake: Option<Instant>,
+    /// 사용자 셰이더(#376): 시간·커서·초점과 애니메이션 깨우기. 셰이더를 다시 걸면 새로 만든다
+    shader: shader_inputs::ShaderState,
     /// GPU 길: 앞 프레임의 층 입력. 같으면 층을 그리지도 견주지도 않는다
     layer_key: Option<gpu_pace::LayerKey>,
     /// GPU 길 로그에 남기는 누적 수(ADR-038): 미룬 프레임, 가려져 건너뛴 프레임, 층 견주기를 건너뛴 프레임
@@ -853,6 +870,7 @@ impl Win {
             proxy_icon: None,
             occluded: false,
             pace_wake: None,
+            shader: Default::default(),
             layer_key: None,
             pace_stats: Default::default(),
         }
@@ -916,6 +934,8 @@ pub struct App {
     written_files: Vec<std::path::PathBuf>,
     /// 풀어 둔 배경 그림(background-image, #134)
     bg_image: Option<Arc<bt_render::background::BgImage>>,
+    /// 읽어 둔 사용자 셰이더(`custom-shader`, #376). GPU 길 창마다 장치가 따로라 창을 만들 때 각자 컴파일한다
+    shaders: Vec<bt_gpu::CustomShaderSource>,
     hotkey_registered: Vec<global_hotkey::hotkey::HotKey>,
     hotkey_actions: std::collections::HashMap<u32, Action>,
     /// 닫고 들고 있는 칸·탭(`undo-timeout`, #164)과 되살린 것을 다시 닫는 일(`redo`)
@@ -987,6 +1007,7 @@ impl App {
             last_bell_audio: None,
             written_files: Vec::new(),
             bg_image: None,
+            shaders: Vec::new(),
             hotkey_registered: Vec::new(),
             hotkey_actions: std::collections::HashMap::new(),
             undo: UndoStack::default(),
@@ -3605,6 +3626,34 @@ impl App {
         }
     }
 
+    /// `custom-shader` 파일을 읽어 열린 GPU 길 창마다 다시 건다(#376). 읽기·컴파일 오류는 로그와 설정 경고로 남기고
+    /// 그 셰이더만 건너뛴다. 창의 셰이더 시간은 0부터 다시 간다
+    fn load_shaders(&mut self) {
+        let (files, warnings) = shader_inputs::load_shader_files(&self.config.custom_shader);
+        for w in warnings {
+            log::warn!("설정: {w}");
+            self.config.warnings.push(w);
+        }
+        self.shaders = files
+            .into_iter()
+            .map(|(name, glsl)| bt_gpu::CustomShaderSource { name, glsl })
+            .collect();
+        let mut errors = Vec::new();
+        for w in std::iter::once(&mut self.w).chain(&mut self.others) {
+            let Some(g) = w.gfx.as_mut() else { continue };
+            for e in apply_shaders(g, &self.shaders) {
+                if !errors.contains(&e) {
+                    errors.push(e);
+                }
+            }
+            w.shader = Default::default();
+            g.window.request_redraw();
+        }
+        self.config
+            .warnings
+            .extend(errors.into_iter().map(|e| format!("custom-shader: {e}")));
+    }
+
     fn reload_config(&mut self) {
         let next = AppConfig::load_with(
             self.config_extra.as_deref(),
@@ -3651,6 +3700,7 @@ impl App {
         apply_hidden_from_dock(self.config.macos_hidden);
         icon::apply(self.config.macos_icon, self.config.macos_custom_icon.as_deref());
         self.load_background();
+        self.load_shaders();
         self.load_fonts();
         self.for_each_window(|app| app.resize_all());
         self.register_hotkeys();
@@ -3883,26 +3933,30 @@ impl App {
                 "그리기 길: GPU(장치 열기 {:.1}ms)",
                 t_open.elapsed().as_secs_f64() * 1000.0
             );
-            return Some(Gfx {
+            let mut g = Gfx {
                 inset_points: look.inset_points,
                 window,
                 surface: None,
                 _context: None,
                 gpu,
                 first: FirstFrame::new(made),
-            });
+            };
+            apply_shaders(&mut g, &self.shaders);
+            return Some(g);
         }
         log::info!("그리기 길: CPU");
         let context = softbuffer::Context::new(window.clone()).ok()?;
         let surface = softbuffer::Surface::new(&context, window.clone()).ok()?;
-        Some(Gfx {
+        let mut g = Gfx {
             inset_points: look.inset_points,
             window,
             surface: Some(surface),
             _context: Some(context),
             gpu: None,
             first: FirstFrame::new(made),
-        })
+        };
+        apply_shaders(&mut g, &self.shaders);
+        Some(g)
     }
 
     /// 지금 설정과 바탕색으로 `window-theme`이 창에 강제할 모양(없으면 시스템을 따른다, #192)
@@ -5611,6 +5665,7 @@ impl ApplicationHandler<UserEvent> for App {
             return;
         }
         self.load_background();
+        self.load_shaders();
         self.apply_initial_size();
         self.register_hotkeys();
         if self.shell_integration_dir.is_none() && self.config.shell_integration != "none" {
@@ -6415,6 +6470,25 @@ impl ApplicationHandler<UserEvent> for App {
             }
         }
         let anim_next = animating.then(|| now + QUICK_FRAME);
+        // 사용자 셰이더 애니메이션(#376): 움직이는 창은 8ms마다 다시 그린다(Ghostty `draw_interval_ms`). 가려진 창은 깨우지 않는다
+        let mut shader_next: Option<Instant> = None;
+        for w in std::iter::once(&mut self.w).chain(self.others.iter_mut()) {
+            let has = w
+                .gfx
+                .as_ref()
+                .and_then(|g| g.gpu.as_ref())
+                .is_some_and(|g| g.has_custom_shaders());
+            let animates =
+                !w.occluded && shader_inputs::shader_animates(has, self.config.custom_shader_animation, w.focused);
+            let (fire, next) = shader_inputs::shader_wake(w.shader.wake, now, animates);
+            w.shader.wake = next;
+            if fire {
+                if let Some(g) = &w.gfx {
+                    g.window.request_redraw();
+                }
+            }
+            shader_next = shader_next.into_iter().chain(next).min();
+        }
         let blink_next = std::iter::once(&self.w)
             .chain(&self.others)
             .filter(|w| w.blink_wanted)
@@ -6428,6 +6502,7 @@ impl ApplicationHandler<UserEvent> for App {
             .chain([self.next_poll])
             .chain(blink_next)
             .chain(anim_next)
+            .chain(shader_next)
             .chain(overlay_next)
             .chain(self.undo.next_deadline())
             .chain(self.redo.next_deadline())
@@ -6450,6 +6525,8 @@ impl ApplicationHandler<UserEvent> for App {
                 // 움직이는 중이면 다음 프레임에 다시 깨어난다(기한이 이미 지나 잠들어 버리지 않게)
                 event_loop.set_control_flow(if animating {
                     ControlFlow::WaitUntil(Instant::now() + QUICK_FRAME)
+                } else if let Some(t) = shader_next {
+                    ControlFlow::WaitUntil(t.max(Instant::now()))
                 } else {
                     ControlFlow::Wait
                 });

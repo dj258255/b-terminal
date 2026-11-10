@@ -1,10 +1,8 @@
-//! 사용자 셰이더(`custom-shader`)에 넘길 값을 앱 상태에서 만드는 순수한 부분(#373).
+//! 사용자 셰이더(`custom-shader`)에 넘길 값을 앱 상태에서 만드는 순수한 부분(#373, 앱 연결 #376).
 //! 렌더러(bt-gpu)와 창에 기대지 않아 시계·창 없이 시험한다. 값의 규칙은 Ghostty의 `generic.zig`
 //! (`updateCustomShaderUniformsFromState`·`updateCustomShaderUniformsForFrame`·`setFocus`·`animationWake`)를 따른다.
-//!
-//! 아직 앱에 이어지지 않았다. 주 세션이 `ShaderInputs`를 `bt_gpu::ShaderUniforms`로 옮겨 잇고 다시 그리기 길에서
-//! 부르면 아래 `allow(dead_code)`를 뗀다.
-#![allow(dead_code)]
+//! 앱은 GPU 프레임마다 `ShaderState::frame`으로 값을 모아 `to_uniforms`로 렌더러에 넘기고(`gpu_frame.rs`),
+//! `about_to_wait`가 `shader_wake`로 움직이는 창을 깨운다.
 
 use std::io::Read;
 use std::time::Instant;
@@ -214,17 +212,6 @@ impl ShaderClock {
     }
 }
 
-/// b-terminal 커서 모양을 셰이더의 번호로: 0 블록, 1 빈 블록, 2 막대, 3 밑줄, 4 자물쇠
-pub fn cursor_style_code(s: CursorStyle) -> i32 {
-    match s {
-        CursorStyle::Block => 0,
-        CursorStyle::Hollow => 1,
-        CursorStyle::Beam => 2,
-        CursorStyle::Underline => 3,
-        CursorStyle::Lock => 4,
-    }
-}
-
 /// 커서 자리 `[x, y, 폭, 높이]`(픽셀). Ghostty(generic.zig 2473~2522줄, y가 아래로 자라는 Metal 길)와 같은 꼴이다:
 /// x는 커서 글리프의 왼쪽 모서리, y는 **아래쪽(+Y) 모서리**(칸 위쪽에서 잰 글리프 위쪽에 글리프 높이를 더한 값),
 /// 여백(`origin`은 격자 왼쪽 위의 픽셀, 여백 포함)을 더한다. 글리프 크기는 bt-render가 그리는 모양을 따른다:
@@ -252,13 +239,6 @@ pub fn cursor_rect(
         }
     };
     [x as f32, (top + dy as i32 + h as i32) as f32, w as f32, h as f32]
-}
-
-/// y가 위로 자라는 좌표계(GL)로 옮긴다: 위쪽 모서리를 화면 아래에서 잰다(generic.zig 2487~2515줄의 `!custom_shader_y_is_down` 갈래).
-/// macOS의 Metal은 y가 아래로 자라 이 함수가 필요 없다
-pub fn rect_y_up(r: [f32; 4], screen_h: f32) -> [f32; 4] {
-    let top = r[1] - r[3];
-    [r[0], screen_h - top, r[2], r[3]]
 }
 
 /// 커서 색(0~1, a 포함). Ghostty: 초점이 없으면 255, 있으면 `ceil(255 * cursor-opacity)`(generic.zig 3561~3564줄)
@@ -381,6 +361,100 @@ pub fn shader_animates(has_shaders: bool, setting: CustomShaderAnimation, focuse
         }
 }
 
+/// b-terminal 화면의 커서 모양(터미널 상태)을 셰이더 번호로. Ghostty는 `iCurrentCursorStyle`에 터미널의 모양을 넣는다
+/// (`fromTerminal(cursor.visual_style)`, generic.zig 2427줄): 초점이 없을 때의 빈 블록이나 암호 입력의 자물쇠처럼
+/// 렌더러가 바꿔 그리는 모양이 아니다
+pub fn screen_style_code(s: bt_term::CursorShape) -> i32 {
+    match s {
+        bt_term::CursorShape::Block => 0,
+        bt_term::CursorShape::HollowBlock => 1,
+        bt_term::CursorShape::Beam => 2,
+        bt_term::CursorShape::Underline => 3,
+    }
+}
+
+/// 고른 칸의 커서: 터미널 상태(모양 번호, 보임)와 이번 프레임에 그려지는 커서(자리, 색). 그려지지 않으면(숨김·깜빡임) `glyph`가 없다
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct FrameCursor {
+    pub style: i32,
+    pub visible: bool,
+    pub glyph: Option<([f32; 4], [f32; 4])>,
+}
+
+/// 창 하나의 셰이더 상태(#376). 셰이더를 다시 걸면 새로 만든다(시간이 0부터 다시 간다)
+#[derive(Debug, Default, Clone, Copy)]
+pub struct ShaderState {
+    pub clock: ShaderClock,
+    pub cursor: CursorTracker,
+    pub focus: FocusTracker,
+    /// 셰이더가 움직이는 동안 다음에 그리기를 깨울 때
+    pub wake: Option<Instant>,
+}
+
+impl ShaderState {
+    /// 한 프레임의 값. `dirty`는 화면 내용이 바뀐 프레임이다: Ghostty는 터미널 상태가 dirty일 때만 커서 모양·보임을 옮기고
+    /// (`updateCustomShaderUniformsFromState`, 2343~2348줄) 그때마다 앞 모양을 지금 모양으로 민다.
+    /// 시간·커서 자리·초점은 프레임마다(`updateCustomShaderUniformsForFrame`)
+    pub fn frame(
+        &mut self,
+        now: Instant,
+        dirty: bool,
+        focused: bool,
+        cursor: &FrameCursor,
+        colors: &ShaderColors,
+    ) -> ShaderInputs {
+        let clock = self.clock.frame(now);
+        if dirty {
+            self.cursor.set_state(cursor.style, cursor.visible);
+        }
+        let (rect, color) = cursor.glyph.map_or((None, [0.0; 4]), |(r, c)| (Some(r), c));
+        self.cursor.set_glyph(clock.0, rect, color);
+        self.focus.set_focus(focused);
+        let focus = self.focus.frame(clock.0);
+        ShaderInputs::assemble(clock, &self.cursor, focus, colors)
+    }
+}
+
+impl ShaderInputs {
+    /// 렌더러가 받는 값으로 옮긴다(같은 이름·같은 타입)
+    pub fn to_uniforms(self) -> bt_gpu::ShaderUniforms {
+        bt_gpu::ShaderUniforms {
+            time: self.time,
+            time_delta: self.time_delta,
+            frame: self.frame,
+            current_cursor: self.current_cursor,
+            previous_cursor: self.previous_cursor,
+            current_cursor_color: self.current_cursor_color,
+            previous_cursor_color: self.previous_cursor_color,
+            current_cursor_style: self.current_cursor_style,
+            previous_cursor_style: self.previous_cursor_style,
+            cursor_visible: self.cursor_visible,
+            time_cursor_change: self.time_cursor_change,
+            time_focus: self.time_focus,
+            focus: self.focus,
+            palette: self.palette,
+            background: self.background,
+            foreground: self.foreground,
+            cursor_color: self.cursor_color,
+            cursor_text: self.cursor_text,
+            selection_background: self.selection_background,
+            selection_foreground: self.selection_foreground,
+        }
+    }
+}
+
+/// 셰이더 애니메이션 깨우기(창 하나). 움직이지 않으면 깨우지 않는다. 움직이면 깨울 때가 됐거나 처음이면 지금 그리기를 요청하고
+/// 다음을 `DRAW_INTERVAL_MS` 뒤로 잡는다. 돌려주는 값: (지금 그리기를 요청할지, 다음 깨울 때)
+pub fn shader_wake(next: Option<Instant>, now: Instant, animates: bool) -> (bool, Option<Instant>) {
+    if !animates {
+        return (false, None);
+    }
+    match next {
+        Some(t) if t > now => (false, Some(t)),
+        _ => (true, Some(now + std::time::Duration::from_millis(DRAW_INTERVAL_MS))),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -420,15 +494,6 @@ mod tests {
     }
 
     // ---- 커서 ----
-
-    #[test]
-    fn cursor_shape_codes() {
-        assert_eq!(cursor_style_code(CursorStyle::Block), 0);
-        assert_eq!(cursor_style_code(CursorStyle::Hollow), 1);
-        assert_eq!(cursor_style_code(CursorStyle::Beam), 2);
-        assert_eq!(cursor_style_code(CursorStyle::Underline), 3);
-        assert_eq!(cursor_style_code(CursorStyle::Lock), 4);
-    }
 
     fn metrics() -> CursorMetrics {
         CursorMetrics {
@@ -487,13 +552,6 @@ mod tests {
             ..metrics()
         };
         assert_eq!(cursor_rect(0, 0, false, CursorStyle::Block, (0, 0), m)[3], 20.0);
-    }
-
-    #[test]
-    fn cursor_rect_y_up_flips_against_the_screen_height() {
-        // y 위쪽 좌표계에서는 위쪽 모서리를 화면 아래에서 잰다: 화면 100, 위쪽 모서리 y=30 -> 70
-        let down = [4.0, 50.0, 10.0, 20.0];
-        assert_eq!(rect_y_up(down, 100.0), [4.0, 70.0, 10.0, 20.0]);
     }
 
     #[test]
@@ -779,5 +837,161 @@ mod tests {
         assert!(files.is_empty());
         assert_eq!(warns.len(), 2, "{warns:?}");
         let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn screen_cursor_shape_codes_follow_ghostty() {
+        use bt_term::CursorShape as S;
+        assert_eq!(
+            [S::Block, S::HollowBlock, S::Beam, S::Underline].map(screen_style_code),
+            [0, 1, 2, 3]
+        );
+    }
+
+    fn colors() -> ShaderColors {
+        shader_colors(&Theme::default(), &ColorOverrides::default())
+    }
+
+    fn cur(style: i32, glyph: Option<([f32; 4], [f32; 4])>) -> FrameCursor {
+        FrameCursor {
+            style,
+            visible: true,
+            glyph,
+        }
+    }
+
+    #[test]
+    fn state_frame_counts_time_and_frames_and_takes_colors() {
+        let t0 = Instant::now();
+        let mut s = ShaderState::default();
+        let a = s.frame(t0, true, true, &cur(0, None), &colors());
+        assert_eq!((a.time, a.time_delta, a.frame), (0.0, 0.0, 1));
+        let b = s.frame(t0 + Duration::from_millis(500), false, true, &cur(0, None), &colors());
+        assert!(
+            (b.time - 0.5).abs() < 1e-6 && (b.time_delta - 0.5).abs() < 1e-6,
+            "{b:?}"
+        );
+        assert_eq!(b.frame, 2);
+        assert_eq!(b.background, colors().background);
+        assert_eq!(b.palette[196], colors().palette[196]);
+    }
+
+    #[test]
+    fn state_frame_moves_cursor_style_only_on_dirty_frames_like_ghostty() {
+        let t0 = Instant::now();
+        let mut s = ShaderState::default();
+        s.frame(t0, true, true, &cur(0, None), &colors());
+        // 모양이 막대로 바뀐 dirty 프레임: 앞 0, 지금 2
+        let a = s.frame(t0, true, true, &cur(2, None), &colors());
+        assert_eq!((a.previous_cursor_style, a.current_cursor_style), (0, 2));
+        // 바뀌지 않은 프레임은 그대로 둔다
+        let b = s.frame(t0, false, true, &cur(2, None), &colors());
+        assert_eq!((b.previous_cursor_style, b.current_cursor_style), (0, 2));
+        // 다음 dirty 프레임에서 앞 모양도 2가 된다(Ghostty는 dirty마다 민다)
+        let c = s.frame(t0, true, true, &cur(2, None), &colors());
+        assert_eq!((c.previous_cursor_style, c.current_cursor_style), (2, 2));
+        // 보임은 dirty 프레임에서 옮긴다
+        let hidden = FrameCursor {
+            visible: false,
+            ..cur(2, None)
+        };
+        assert_eq!(s.frame(t0, false, true, &hidden, &colors()).cursor_visible, 1);
+        assert_eq!(s.frame(t0, true, true, &hidden, &colors()).cursor_visible, 0);
+    }
+
+    #[test]
+    fn state_frame_stamps_cursor_change_and_focus_gain() {
+        let t0 = Instant::now();
+        let mut s = ShaderState::default();
+        let r1 = ([10.0, 40.0, 8.0, 16.0], [1.0, 1.0, 1.0, 1.0]);
+        let r2 = ([18.0, 40.0, 8.0, 16.0], [1.0, 1.0, 1.0, 1.0]);
+        s.frame(t0, true, true, &cur(0, Some(r1)), &colors());
+        let a = s.frame(t0 + Duration::from_secs(1), true, true, &cur(0, Some(r2)), &colors());
+        assert_eq!((a.previous_cursor, a.current_cursor), (r1.0, r2.0));
+        assert!((a.time_cursor_change - 1.0).abs() < 1e-6, "{a:?}");
+        // 깜빡여 그려지지 않는 프레임은 자리를 바꾸지 않는다
+        let b = s.frame(t0 + Duration::from_secs(2), false, true, &cur(0, None), &colors());
+        assert_eq!((b.current_cursor, b.time_cursor_change), (r2.0, a.time_cursor_change));
+        // 초점: 잃으면 0, 시각은 그대로. 다시 얻으면 그 프레임의 time
+        let c = s.frame(t0 + Duration::from_secs(3), false, false, &cur(0, None), &colors());
+        assert_eq!((c.focus, c.time_focus), (0, 0.0));
+        let d = s.frame(t0 + Duration::from_secs(4), false, true, &cur(0, None), &colors());
+        assert_eq!(d.focus, 1);
+        assert!((d.time_focus - 4.0).abs() < 1e-6, "{d:?}");
+    }
+
+    #[test]
+    fn to_uniforms_copies_every_field() {
+        let mut i = ShaderInputs {
+            time: 1.5,
+            time_delta: 0.25,
+            frame: 7,
+            current_cursor: [1.0, 2.0, 3.0, 4.0],
+            previous_cursor: [5.0, 6.0, 7.0, 8.0],
+            current_cursor_color: [0.1, 0.2, 0.3, 0.4],
+            previous_cursor_color: [0.5, 0.6, 0.7, 0.8],
+            current_cursor_style: 2,
+            previous_cursor_style: 3,
+            cursor_visible: 1,
+            time_cursor_change: 1.25,
+            time_focus: 0.75,
+            focus: 1,
+            background: [0.01, 0.02, 0.03],
+            foreground: [0.04, 0.05, 0.06],
+            cursor_color: [0.07, 0.08, 0.09],
+            cursor_text: [0.11, 0.12, 0.13],
+            selection_background: [0.14, 0.15, 0.16],
+            selection_foreground: [0.17, 0.18, 0.19],
+            ..ShaderInputs::default()
+        };
+        i.palette[0] = [0.9, 0.8, 0.7];
+        i.palette[255] = [0.3, 0.2, 0.1];
+        let u = i.to_uniforms();
+        let back = ShaderInputs {
+            time: u.time,
+            time_delta: u.time_delta,
+            frame: u.frame,
+            current_cursor: u.current_cursor,
+            previous_cursor: u.previous_cursor,
+            current_cursor_color: u.current_cursor_color,
+            previous_cursor_color: u.previous_cursor_color,
+            current_cursor_style: u.current_cursor_style,
+            previous_cursor_style: u.previous_cursor_style,
+            cursor_visible: u.cursor_visible,
+            time_cursor_change: u.time_cursor_change,
+            time_focus: u.time_focus,
+            focus: u.focus,
+            palette: u.palette,
+            background: u.background,
+            foreground: u.foreground,
+            cursor_color: u.cursor_color,
+            cursor_text: u.cursor_text,
+            selection_background: u.selection_background,
+            selection_foreground: u.selection_foreground,
+        };
+        assert_eq!(back, i);
+    }
+
+    #[test]
+    fn wake_fires_now_then_every_8ms_and_stops_when_not_animating() {
+        let t0 = Instant::now();
+        let ms = Duration::from_millis;
+        assert_eq!(shader_wake(None, t0, false), (false, None));
+        assert_eq!(
+            shader_wake(Some(t0), t0, false),
+            (false, None),
+            "멈추면 깨우기를 지운다"
+        );
+        assert_eq!(shader_wake(None, t0, true), (true, Some(t0 + ms(8))), "처음이면 바로");
+        assert_eq!(
+            shader_wake(Some(t0 + ms(8)), t0 + ms(3), true),
+            (false, Some(t0 + ms(8))),
+            "때가 안 됐으면 기다린다"
+        );
+        assert_eq!(
+            shader_wake(Some(t0 + ms(8)), t0 + ms(9), true),
+            (true, Some(t0 + ms(17))),
+            "때가 지났으면 지금부터 8ms"
+        );
     }
 }
