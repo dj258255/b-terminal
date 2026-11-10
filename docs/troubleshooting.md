@@ -35,7 +35,7 @@
 
 ## 6. PTY 시험이 가끔 `Session::spawn`에서 실패한다 (원인 미확인)
 
-- 언제: 0.28.0부터 릴리스 시험마다 한 번꼴. `cargo test --workspace` 안에서 bt-term PTY 시험 하나가 `expect("spawn")`에서 패닉했고 같은 파일만 다시 돌리면 통과했다. 오류 본문은 남지 않았다(#365)
+- 언제: 0.28.0부터 릴리스 시험마다 한 번꼴. `cargo test --workspace` 안에서 bt-term PTY 시험 하나가 `expect("spawn")`에서 패닉했고 같은 파일만 다시 돌리면 통과했다. 0.31까지는 오류 본문을 남기지 않았다(#365). 2026-11-11 #364 작업 중 한 번 `kitty_clip_session::full_reset_turns_mode_5522_off`가 `spawn: failed to openpty`로 실패했다(openpty 단계. errno는 보고에 없었다). 그 무렵 #365 재현 작업이 pty를 한도까지 여는 실험을 했는지 시각을 맞춰 보지 않아, 이 한 번이 그 실험 때문인지는 모른다
 - 재현 시도(2026-11-11, macOS 26, M2 Pro): `cargo test --workspace` 3번, bt-term 시험 바이너리 19개를 동시에 30번(570개 프로세스 실행), 한 프로세스에서 16스레드가 `Session::spawn`을 2400번. 모두 실패 0번. 재현하지 못했다
 - 확인한 것: 시험 전체가 쓰는 pty는 최대 약 9개(`/dev/ttys*` 24개에서 33개)이고 `kern.tty.ptmx_max`는 511이다. 일부러 세션을 쥔 채 511개를 넘기면 `failed to openpty: Device not configured`(ENXIO)가 난다. portable-pty는 없는 작업 폴더를 홈으로 바꾸므로 작업 폴더 문제는 띄우기 실패가 아니다
 - 짐작(확인 안 함): 같은 기계에서 다른 작업이 pty나 프로세스 한도를 거의 채웠을 때 일시적으로 `openpty`/`fork`가 실패. 또는 portable-pty `pre_exec`의 `setsid`/`TIOCSCTTY` 경쟁
