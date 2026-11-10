@@ -3707,7 +3707,7 @@ impl Config {
         );
         push("notify-on-command-finish-after", {
             let ms = self.notify_on_command_finish_after.as_millis();
-            if ms % 1000 == 0 {
+            if ms.is_multiple_of(1000) {
                 format!("{}s", ms / 1000)
             } else {
                 format!("{ms}ms")
