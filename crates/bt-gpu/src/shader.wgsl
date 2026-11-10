@@ -48,6 +48,12 @@ fn rect_fs(in: RectOut) -> @location(0) vec4<f32> {
     return in.color;
 }
 
+// 칸 바탕(덮어쓰기): 곱한 알파로 낸다. 알파 255면 `rect_fs`와 같다
+@fragment
+fn rect_fs_premul(in: RectOut) -> @location(0) vec4<f32> {
+    return vec4<f32>(in.color.rgb * in.color.a, in.color.a);
+}
+
 // 글리프: 회색조(kind 0)는 덮음 정도에 글자색을, 색(kind 1)은 RGBA를 그대로(곱하지 않은 알파) 낸다
 struct GlyphIn {
     @builtin(vertex_index) vi: u32,

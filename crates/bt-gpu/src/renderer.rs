@@ -64,6 +64,8 @@ pub struct GpuRenderer {
     device: wgpu::Device,
     queue: wgpu::Queue,
     rect_pipeline: wgpu::RenderPipeline,
+    /// 칸 바탕: 아래 픽셀을 덮어쓴다(곱한 알파로 낸다). 합칠 때 칸 바탕 알파가 아래층과 섞이지 않게(#359)
+    rect_replace_pipeline: wgpu::RenderPipeline,
     glyph_pipeline: wgpu::RenderPipeline,
     layout: wgpu::BindGroupLayout,
     globals: wgpu::Buffer,
@@ -188,7 +190,12 @@ impl GpuRenderer {
         let rect_attrs = wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32x2, 2 => Unorm8x4];
         let glyph_attrs =
             wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32x2, 2 => Float32x2, 3 => Unorm8x4, 4 => Uint32];
-        let pipeline = |label: &str, vs: &str, fs: &str, stride: usize, attrs: &[wgpu::VertexAttribute]| {
+        let pipeline = |label: &str,
+                        vs: &str,
+                        fs: &str,
+                        stride: usize,
+                        attrs: &[wgpu::VertexAttribute],
+                        blend: Option<wgpu::BlendState>| {
             device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some(label),
                 layout: Some(&pl),
@@ -208,7 +215,7 @@ impl GpuRenderer {
                     compilation_options: Default::default(),
                     targets: &[Some(wgpu::ColorTargetState {
                         format,
-                        blend: Some(blend_over()),
+                        blend,
                         write_mask: wgpu::ColorWrites::ALL,
                     })],
                 }),
@@ -219,8 +226,30 @@ impl GpuRenderer {
                 cache: None,
             })
         };
-        let rect_pipeline = pipeline("bt-gpu rects", "rect_vs", "rect_fs", RECT_STRIDE, &rect_attrs);
-        let glyph_pipeline = pipeline("bt-gpu glyphs", "glyph_vs", "glyph_fs", GLYPH_STRIDE, &glyph_attrs);
+        let rect_pipeline = pipeline(
+            "bt-gpu rects",
+            "rect_vs",
+            "rect_fs",
+            RECT_STRIDE,
+            &rect_attrs,
+            Some(blend_over()),
+        );
+        let rect_replace_pipeline = pipeline(
+            "bt-gpu cell backgrounds",
+            "rect_vs",
+            "rect_fs_premul",
+            RECT_STRIDE,
+            &rect_attrs,
+            None,
+        );
+        let glyph_pipeline = pipeline(
+            "bt-gpu glyphs",
+            "glyph_vs",
+            "glyph_fs",
+            GLYPH_STRIDE,
+            &glyph_attrs,
+            Some(blend_over()),
+        );
 
         let globals = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("bt-gpu globals"),
@@ -236,6 +265,7 @@ impl GpuRenderer {
             device,
             queue,
             rect_pipeline,
+            rect_replace_pipeline,
             glyph_pipeline,
             layout,
             globals,
@@ -671,6 +701,12 @@ impl GpuRenderer {
     /// 투명 창을 끈다(다시 불투명 `clear`로 지우고 알파는 ff)
     pub fn clear_see_through(&mut self) {
         self.scene.clear_see_through();
+    }
+
+    /// 배경 그림 층(CPU `Canvas::set_backdrop`와 같다): 아래층에 그림이 깔려 있으니 `bg` 바탕 칸은 그리지 않고 그림이 보이게 둔다.
+    /// 없애려면 `None`
+    pub fn set_backdrop(&mut self, bg: Option<Rgb>) {
+        self.scene.set_backdrop(bg);
     }
 
     /// `background-opacity-cells`(CPU `Canvas::set_cells_alpha`와 같다): 색 바탕 칸의 알파
