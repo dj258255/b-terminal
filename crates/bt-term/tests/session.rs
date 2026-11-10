@@ -1568,3 +1568,16 @@ fn selection_contains_reports_cells_inside_the_selection() {
     assert!(!s.selection_contains(4, 0), "뒤 칸은 밖");
     assert!(!s.selection_contains(2, 1), "다른 줄은 밖");
 }
+
+/// #294: `/bin/sh`와 `printf`로 DECSCA·DECSEL이 PTY 바이트로도 먹는다
+#[test]
+fn decsel_keeps_a_decsca_protected_cell_from_a_real_pty() {
+    let (s, rx) = sh(
+        "printf 'ab\\033[1\"qXY\\033[0\"qcd\\033[1;1H\\033[?K\\033[2;1Hdone'; exit 0",
+        GridSize::new(20, 4),
+    );
+    assert_eq!(wait_exit(&rx), Some(0));
+    let screen = s.snapshot();
+    assert_eq!(screen.row_text(0), "  XY");
+    assert_eq!(screen.row_text(1), "done");
+}

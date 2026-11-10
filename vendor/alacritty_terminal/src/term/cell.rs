@@ -34,6 +34,8 @@ bitflags! {
         const OVERLINE                  = 0b1000_0000_0000_0000;
         /// b-terminal(#287): 깜박임(SGR 5·6). DECRQSS 답에만 쓰고 그리지 않는다(Ghostty도 글자 깜박임은 그리지 않음)
         const BLINK                     = 0b1_0000_0000_0000_0000;
+        /// b-terminal(#294): 보호 칸(DECSCA 1, SPA). 선택 지우기(DECSED·DECSEL)와 ISO 보호가 건너뛴다. 그리지 않는다
+        const PROTECTED                 = 0b10_0000_0000_0000_0000;
         const ALL_UNDERLINES            = Self::UNDERLINE.bits() | Self::DOUBLE_UNDERLINE.bits()
                                         | Self::UNDERCURL.bits() | Self::DOTTED_UNDERLINE.bits()
                                         | Self::DASHED_UNDERLINE.bits();
@@ -235,6 +237,7 @@ impl GridCell for Cell {
                 Flags::INVERSE
                     | Flags::ALL_UNDERLINES
                     | Flags::OVERLINE // b-terminal(#277)
+                    | Flags::PROTECTED // b-terminal(#294)
                     | Flags::STRIKEOUT
                     | Flags::WRAPLINE
                     | Flags::WIDE_CHAR_SPACER

@@ -609,6 +609,15 @@ pub trait Handler {
     /// Clear screen.
     fn clear_screen(&mut self, _mode: ClearMode) {}
 
+    /// b-terminal(#294): DECSED(`CSI ? Ps J`). Clear screen, keeping protected cells.
+    fn selective_clear_screen(&mut self, _mode: ClearMode) {}
+
+    /// b-terminal(#294): DECSEL(`CSI ? Ps K`). Clear line, keeping protected cells.
+    fn selective_clear_line(&mut self, _mode: LineClearMode) {}
+
+    /// b-terminal(#294): DECSCA(`CSI Ps " q`), SPA(`ESC V`) and EPA(`ESC W`).
+    fn set_protected_mode(&mut self, _mode: ProtectedMode) {}
+
     /// Clear tab stops.
     fn clear_tabs(&mut self, _mode: TabulationClearMode) {}
 
@@ -998,6 +1007,17 @@ pub enum LineClearMode {
     Left,
     /// Clear entire line.
     All,
+}
+
+/// b-terminal(#294): Character protection mode (Ghostty `ansi.ProtectedMode`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProtectedMode {
+    /// New cells are not protected (DECSCA 0 or 2, EPA).
+    Off,
+    /// ISO protection (SPA): erase operations keep protected cells.
+    Iso,
+    /// DEC protection (DECSCA 1): only selective erases keep protected cells.
+    Dec,
 }
 
 /// Mode for clearing terminal.
@@ -1680,6 +1700,35 @@ where
             // b-terminal(#295): HPB는 CUB, VPB는 CUU와 같다(Ghostty stream.zig 'j'·'k')
             ('j', []) => handler.move_backward(next_param_or(1) as usize),
             ('k', []) => handler.move_up(next_param_or(1) as usize),
+            // b-terminal(#294): DECSED(`CSI ? Ps J`). Ghostty stream.zig: 0..=3 like ED.
+            ('J', [b'?']) => {
+                let mode = match next_param_or(0) {
+                    0 => ClearMode::Below,
+                    1 => ClearMode::Above,
+                    2 => ClearMode::All,
+                    3 => ClearMode::Saved,
+                    _ => {
+                        unhandled!();
+                        return;
+                    },
+                };
+
+                handler.selective_clear_screen(mode);
+            },
+            // b-terminal(#294): DECSEL(`CSI ? Ps K`).
+            ('K', [b'?']) => {
+                let mode = match next_param_or(0) {
+                    0 => LineClearMode::Right,
+                    1 => LineClearMode::Left,
+                    2 => LineClearMode::All,
+                    _ => {
+                        unhandled!();
+                        return;
+                    },
+                };
+
+                handler.selective_clear_line(mode);
+            },
             ('k', [b' ']) => {
                 // SCP control.
                 let char_path = match next_param_or(0) {
@@ -1751,6 +1800,19 @@ where
             ('p', [b'?', b'$']) => {
                 let mode = next_param_or(0);
                 handler.report_private_mode(PrivateMode::new(mode));
+            },
+            // b-terminal(#294): DECSCA(`CSI Ps " q`). Ghostty stream.zig: 0 and 2 off, 1 DEC protected.
+            ('q', [b'"']) => {
+                let mode = match next_param_or(0) {
+                    0 | 2 => ProtectedMode::Off,
+                    1 => ProtectedMode::Dec,
+                    _ => {
+                        unhandled!();
+                        return;
+                    },
+                };
+
+                handler.set_protected_mode(mode);
             },
             ('q', [b' ']) => {
                 // DECSCUSR (CSI Ps SP q) -- Set Cursor Style.
@@ -1859,6 +1921,9 @@ where
             },
             (b'H', []) => self.handler.set_horizontal_tabstop(),
             (b'M', []) => self.handler.reverse_index(),
+            // b-terminal(#294): SPA (start of guarded area) and EPA (end of guarded area).
+            (b'V', []) => self.handler.set_protected_mode(ProtectedMode::Iso),
+            (b'W', []) => self.handler.set_protected_mode(ProtectedMode::Off),
             (b'Z', []) => self.handler.identify_terminal(None),
             (b'c', []) => self.handler.reset_state(),
             (b'0', intermediates) => {

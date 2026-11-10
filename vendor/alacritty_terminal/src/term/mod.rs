@@ -23,8 +23,8 @@ use crate::term::color::Colors;
 use crate::vi_mode::{ViModeCursor, ViMotion};
 use crate::vte::ansi::{
     self, Attr, CharsetIndex, Color, CursorShape, CursorStyle, Handler, Hyperlink, KeyboardModes,
-    KeyboardModesApplyBehavior, NamedColor, NamedMode, NamedPrivateMode, PrivateMode, Rgb,
-    StandardCharset,
+    KeyboardModesApplyBehavior, NamedColor, NamedMode, NamedPrivateMode, PrivateMode,
+    ProtectedMode, Rgb, StandardCharset,
 };
 
 pub mod cell;
@@ -344,6 +344,11 @@ pub struct Term<T> {
 
     /// b-terminal 패치(#180): 방금 찍은 글자 칸. 다음 글자가 같은 묶음이면 그 칸에 잇는다.
     grapheme_anchor: Option<GraphemeAnchor>,
+
+    /// b-terminal(#294): 마지막으로 켠 보호 방식이 ISO(SPA)인가. ISO면 일반 ED·EL·ECH도 보호 칸을 건너뛴다
+    /// (Ghostty `Screen.protected_mode == .iso`). 보호를 꺼도(EPA·DECSCA 0) 이 값은 남고, DECSCA 1(DEC)이 거짓으로,
+    /// RIS·DECSTR이 거짓으로 되돌린다.
+    protected_iso: bool,
 }
 
 /// b-terminal 패치(#180): 한 칸의 결합 문자 목록에 이어 붙이는 글자 수 상한(join_grapheme)
@@ -493,6 +498,7 @@ impl<T> Term<T> {
             selection: Default::default(),
             title: Default::default(),
             grapheme_anchor: None,
+            protected_iso: false,
             mode,
         }
     }
@@ -1039,6 +1045,91 @@ impl<T> Term<T> {
         self.grid.cursor.point.column = Column(0);
         self.grid.cursor.input_needs_wrap = false;
         self.damage_cursor();
+    }
+
+    /// b-terminal(#294): 소프트 리셋(DECSTR)이 보호 켬과 마지막 보호 방식을 모두 끈다(Ghostty `softReset`).
+    pub fn reset_protected(&mut self) {
+        self.grid.cursor.template.flags.remove(Flags::PROTECTED);
+        self.protected_iso = false;
+    }
+
+    /// b-terminal(#294): 보호 칸을 건너뛰고 `range` 칸을 지운다
+    fn clear_unprotected(&mut self, line: Line, range: Range<Column>) {
+        let bg = self.grid.cursor.template.bg;
+        for cell in &mut self.grid[line][range] {
+            if !cell.flags.contains(Flags::PROTECTED) {
+                *cell = bg.into();
+            }
+        }
+    }
+
+    /// b-terminal(#294): ED·DECSED 중 보호 칸을 남기는 쪽. 화면을 히스토리로 밀지 않고 제자리에서 지운다(Ghostty `clearRows`)
+    fn erase_display_keeping_protected(&mut self, mode: ansi::ClearMode) {
+        let cursor = self.grid.cursor.point;
+        let columns = self.columns();
+        let screen_lines = self.screen_lines() as i32;
+        match mode {
+            ansi::ClearMode::Above => {
+                for line in 0..cursor.line.0 {
+                    self.clear_unprotected(Line(line), Column(0)..Column(columns));
+                }
+                let end = cmp::min(cursor.column + 1, Column(columns));
+                self.clear_unprotected(cursor.line, Column(0)..end);
+
+                let range = Line(0)..=cursor.line;
+                self.selection = self.selection.take().filter(|s| !s.intersects_range(range));
+            },
+            ansi::ClearMode::Below => {
+                self.clear_unprotected(cursor.line, cursor.column..Column(columns));
+                for line in (cursor.line.0 + 1)..screen_lines {
+                    self.clear_unprotected(Line(line), Column(0)..Column(columns));
+                }
+
+                let range = cursor.line..Line(screen_lines);
+                self.selection = self.selection.take().filter(|s| !s.intersects_range(range));
+            },
+            ansi::ClearMode::All => {
+                for line in 0..screen_lines {
+                    self.clear_unprotected(Line(line), Column(0)..Column(columns));
+                }
+                self.selection = None;
+            },
+            // 히스토리는 보호 칸이 없다(clear_screen이 처리한다)
+            ansi::ClearMode::Saved => (),
+        }
+
+        self.mark_fully_damaged();
+    }
+
+    /// b-terminal(#294): EL·DECSEL. `keep_protected`면 보호 칸을 건너뛴다
+    fn erase_line(&mut self, mode: ansi::LineClearMode, keep_protected: bool) {
+        self.grapheme_anchor = None;
+        trace!("Clearing line: {mode:?}");
+
+        let cursor = &self.grid.cursor;
+        let bg = cursor.template.bg;
+        let point = cursor.point;
+
+        let (left, right) = match mode {
+            ansi::LineClearMode::Right if cursor.input_needs_wrap => return,
+            ansi::LineClearMode::Right => (point.column, Column(self.columns())),
+            ansi::LineClearMode::Left => (Column(0), point.column + 1),
+            ansi::LineClearMode::All => (Column(0), Column(self.columns())),
+        };
+
+        self.damage.damage_line(point.line.0 as usize, left.0, right.0 - 1);
+
+        if keep_protected {
+            self.clear_unprotected(point.line, left..right);
+        } else {
+            let row = &mut self.grid[point.line];
+            for cell in &mut row[left..right] {
+                *cell = bg.into();
+            }
+        }
+
+        let range = self.grid.cursor.point.line..=self.grid.cursor.point.line;
+        self.selection = self.selection.take().filter(|s| !s.intersects_range(range));
     }
 
     /// Write `c` to the cell at the cursor position.
@@ -1668,6 +1759,11 @@ impl<T: EventListener> Handler for Term<T> {
         let bg = self.grid.cursor.template.bg;
         let line = cursor.point.line;
         self.damage.damage_line(line.0 as usize, start.0, end.0);
+        if self.protected_iso {
+            // b-terminal(#294): ISO 보호 칸은 건너뛴다
+            self.clear_unprotected(line, start..end);
+            return;
+        }
         let row = &mut self.grid[line];
         for cell in &mut row[start..end] {
             *cell = bg.into();
@@ -1774,29 +1870,44 @@ impl<T: EventListener> Handler for Term<T> {
 
     #[inline]
     fn clear_line(&mut self, mode: ansi::LineClearMode) {
+        // b-terminal(#294): 마지막 보호 방식이 ISO면 보호 칸을 건너뛴다
+        self.erase_line(mode, self.protected_iso);
+    }
+
+    // b-terminal(#294): DECSEL은 보호 방식과 상관없이 보호 칸을 남긴다
+    #[inline]
+    fn selective_clear_line(&mut self, mode: ansi::LineClearMode) {
+        self.erase_line(mode, true);
+    }
+
+    // b-terminal(#294): DECSED
+    #[inline]
+    fn selective_clear_screen(&mut self, mode: ansi::ClearMode) {
         self.grapheme_anchor = None;
-        trace!("Clearing line: {mode:?}");
-
-        let cursor = &self.grid.cursor;
-        let bg = cursor.template.bg;
-        let point = cursor.point;
-
-        let (left, right) = match mode {
-            ansi::LineClearMode::Right if cursor.input_needs_wrap => return,
-            ansi::LineClearMode::Right => (point.column, Column(self.columns())),
-            ansi::LineClearMode::Left => (Column(0), point.column + 1),
-            ansi::LineClearMode::All => (Column(0), Column(self.columns())),
-        };
-
-        self.damage.damage_line(point.line.0 as usize, left.0, right.0 - 1);
-
-        let row = &mut self.grid[point.line];
-        for cell in &mut row[left..right] {
-            *cell = bg.into();
+        trace!("Selective clearing screen: {mode:?}");
+        match mode {
+            // 히스토리는 보호 칸이 없어 ED 3과 같다
+            ansi::ClearMode::Saved => Handler::clear_screen(self, mode),
+            _ => self.erase_display_keeping_protected(mode),
         }
+    }
 
-        let range = self.grid.cursor.point.line..=self.grid.cursor.point.line;
-        self.selection = self.selection.take().filter(|s| !s.intersects_range(range));
+    // b-terminal(#294): DECSCA·SPA·EPA. Ghostty `setProtectedMode`: 끔은 마지막 방식을 지우지 않는다
+    #[inline]
+    fn set_protected_mode(&mut self, mode: ProtectedMode) {
+        trace!("Setting protected mode: {mode:?}");
+        let flags = &mut self.grid.cursor.template.flags;
+        match mode {
+            ProtectedMode::Off => flags.remove(Flags::PROTECTED),
+            ProtectedMode::Iso => {
+                flags.insert(Flags::PROTECTED);
+                self.protected_iso = true;
+            },
+            ProtectedMode::Dec => {
+                flags.insert(Flags::PROTECTED);
+                self.protected_iso = false;
+            },
+        }
     }
 
     /// Set the indexed color value.
@@ -1895,6 +2006,13 @@ impl<T: EventListener> Handler for Term<T> {
     fn clear_screen(&mut self, mode: ansi::ClearMode) {
         self.grapheme_anchor = None;
         trace!("Clearing screen: {mode:?}");
+
+        // b-terminal(#294): 마지막 보호 방식이 ISO면 보호 칸을 건너뛴다(히스토리 지우기는 그대로)
+        if self.protected_iso && !matches!(mode, ansi::ClearMode::Saved) {
+            self.erase_display_keeping_protected(mode);
+            return;
+        }
+
         let bg = self.grid.cursor.template.bg;
 
         let screen_lines = self.screen_lines();
@@ -1985,6 +2103,7 @@ impl<T: EventListener> Handler for Term<T> {
         self.active_charset = Default::default();
         self.single_shift = None;
         self.cursor_style = None;
+        self.protected_iso = false; // b-terminal(#294)
         self.grid.reset();
         self.inactive_grid.reset();
         self.scroll_region = Line(0)..Line(self.screen_lines() as i32);
@@ -2037,7 +2156,8 @@ impl<T: EventListener> Handler for Term<T> {
             Attr::Reset => {
                 cursor.template.fg = Color::Named(NamedColor::Foreground);
                 cursor.template.bg = Color::Named(NamedColor::Background);
-                cursor.template.flags = Flags::empty();
+                // b-terminal(#294): 보호(DECSCA)는 SGR이 아니라 SGR 0이 지우지 않는다
+                cursor.template.flags &= Flags::PROTECTED;
                 cursor.template.set_underline_color(None);
             },
             Attr::Reverse => cursor.template.flags.insert(Flags::INVERSE),
