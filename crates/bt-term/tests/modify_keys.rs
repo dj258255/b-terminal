@@ -79,9 +79,13 @@ fn csi_gt_4_2_m_turns_state_2_on_and_others_turn_it_off() {
 #[test]
 fn ris_and_decstr_turn_modify_other_keys_off() {
     let mut e = emu();
-    e.feed(b"\x1b[>4;2m\x1b[!p");
+    e.feed(b"\x1b[>4;2m");
+    assert!(mok(&mut e), "켠 뒤에 꺼지는지 봐야 한다");
+    e.feed(b"\x1b[!p");
     assert!(!mok(&mut e), "DECSTR(Ghostty softReset)");
-    e.feed(b"\x1b[>4;2m\x1bc");
+    e.feed(b"\x1b[>4;2m");
+    assert!(mok(&mut e));
+    e.feed(b"\x1bc");
     assert!(!mok(&mut e), "RIS");
 }
 
