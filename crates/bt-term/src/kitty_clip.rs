@@ -440,64 +440,94 @@ pub enum Dir {
     Write,
 }
 
+/// 한 방향 허가: 일회용인가, 어느 위치(표준 클립보드·primary)에 낸 것인가
+#[derive(Debug, Clone, Copy)]
+struct Slot {
+    one_time: bool,
+    primary: bool,
+}
+
 #[derive(Debug)]
 struct Grant {
     pw: String,
-    read: bool,
-    write: bool,
-    one_time: bool,
+    read: Option<Slot>,
+    write: Option<Slot>,
 }
 
-/// 암호로 묶는 허가. 일회용은 확인하는 순간 사라진다(방향이 달라도)
+impl Grant {
+    fn slot(&mut self, dir: Dir) -> &mut Option<Slot> {
+        match dir {
+            Dir::Read => &mut self.read,
+            Dir::Write => &mut self.write,
+        }
+    }
+}
+
+/// 암호로 묶는 허가. 일회용 여부는 방향마다 따로 쥐고, 쓰인 방향의 허가만 사라진다.
+/// 허가는 낼 때의 위치(표준 클립보드·primary)에만 듣는다.
+/// (Ghostty 원문은 암호 하나에 일회용 표시 하나를 두고 방향·위치를 가리지 않는다. 한 방향의 허가가 다른 방향의 수명을 바꾸지 못하게 좁혔다, ADR-030)
 #[derive(Debug, Default)]
 pub struct Grants {
     entries: Vec<Grant>,
 }
 
 impl Grants {
+    /// 표준 클립보드에 대한 허가
     pub fn grant(&mut self, pw: &str, dir: Dir, one_time: bool) {
+        self.grant_at(pw, dir, one_time, false);
+    }
+
+    pub fn grant_at(&mut self, pw: &str, dir: Dir, one_time: bool, primary: bool) {
         if pw.is_empty() || pw.len() > MAX_PW_LEN {
             return;
         }
         let idx = match self.entries.iter().position(|e| e.pw == pw) {
-            Some(i) => {
-                self.entries[i].one_time &= one_time;
-                i
-            }
+            Some(i) => i,
             None => {
                 if self.entries.len() >= MAX_GRANTS {
                     self.entries.remove(0);
                 }
                 self.entries.push(Grant {
                     pw: pw.to_string(),
-                    read: false,
-                    write: false,
-                    one_time,
+                    read: None,
+                    write: None,
                 });
                 self.entries.len() - 1
             }
         };
-        match dir {
-            Dir::Read => self.entries[idx].read = true,
-            Dir::Write => self.entries[idx].write = true,
-        }
+        let slot = self.entries[idx].slot(dir);
+        // 같은 방향·같은 위치에 다시 내면 일회용 표시를 합친다(둘 다 일회용일 때만 일회용). 위치가 다르면 새 것으로 바꾼다
+        let one_time = match slot {
+            Some(old) if old.primary == primary => old.one_time && one_time,
+            _ => one_time,
+        };
+        *slot = Some(Slot { one_time, primary });
     }
 
     pub fn consume(&mut self, pw: &str, dir: Dir) -> bool {
+        self.consume_at(pw, dir, false)
+    }
+
+    /// 허가가 이 방향·이 위치에 있으면 true. 일회용이면 이 방향의 허가만 지운다. 맞지 않는 요청은 허가를 닳게 하지 않는다
+    pub fn consume_at(&mut self, pw: &str, dir: Dir, primary: bool) -> bool {
         if pw.is_empty() {
             return false;
         }
         let Some(i) = self.entries.iter().position(|e| e.pw == pw) else {
             return false;
         };
-        let allowed = match dir {
-            Dir::Read => self.entries[i].read,
-            Dir::Write => self.entries[i].write,
-        };
-        if self.entries[i].one_time {
+        let slot = self.entries[i].slot(dir);
+        let Some(s) = *slot else { return false };
+        if s.primary != primary {
+            return false;
+        }
+        if s.one_time {
+            *slot = None;
+        }
+        if self.entries[i].read.is_none() && self.entries[i].write.is_none() {
             self.entries.swap_remove(i);
         }
-        allowed
+        true
     }
 
     pub fn len(&self) -> usize {
@@ -662,11 +692,12 @@ impl WriteState {
     }
 
     /// 거래를 끝낸다(MIME 없는 wdata). 마지막 줄기의 패딩이 틀렸으면 `Invalid`
-    pub fn commit(&mut self) -> Result<Committed, Invalid> {
+    pub fn commit(&mut self) -> Result<Committed, WriteError> {
         if let Some(i) = self.current.take() {
-            self.dec.finish()?;
+            self.dec.finish().map_err(|_| WriteError::Invalid)?;
             self.entries[i].len = self.spool.len() - self.entries[i].start;
         }
+        let mut total: usize = self.entries.iter().map(|e| e.len).sum();
         let mut contents: Vec<(String, Vec<u8>)> = self
             .entries
             .iter()
@@ -674,9 +705,16 @@ impl WriteState {
             .collect();
         // 별칭은 적은 차례대로 지금까지의 표에 적용한다. 대상이 없으면 버리고, 이미 있는 이름이면 덮는다
         for (alias, target) in &self.aliases {
-            let Some(data) = contents.iter().find(|c| &c.0 == target).map(|c| c.1.clone()) else {
+            let Some(data) = contents.iter().find(|c| &c.0 == target).map(|c| &c.1) else {
                 continue;
             };
+            // 별칭은 대상 데이터의 사본이다. 사본까지 합친 크기가 상한을 넘으면 복사하기 전에 거래를 끝낸다(메모리 증폭 방지)
+            let old = contents.iter().find(|c| &c.0 == alias).map_or(0, |c| c.1.len());
+            total = total - old + data.len();
+            if total > self.max_size {
+                return Err(WriteError::TooLarge);
+            }
+            let data = data.clone();
             match contents.iter_mut().find(|c| &c.0 == alias) {
                 Some(c) => c.1 = data,
                 None => contents.push((alias.clone(), data)),
@@ -816,11 +854,19 @@ impl Engine {
         let Some(mut state) = self.write.take() else {
             return Vec::new();
         };
-        let Ok(c) = state.commit() else {
-            return vec![Action::Reply(status_reply(Op::Write, Status::Einval, &state.id, bel))];
+        let c = match state.commit() {
+            Ok(c) => c,
+            Err(e) => {
+                let status = if e == WriteError::TooLarge {
+                    Status::Efbig
+                } else {
+                    Status::Einval
+                };
+                return vec![Action::Reply(status_reply(Op::Write, status, &state.id, bel))];
+            }
         };
         let pw = if c.name.is_empty() { String::new() } else { c.pw };
-        let granted = self.grants.lock().consume(&pw, Dir::Write);
+        let granted = self.grants.lock().consume_at(&pw, Dir::Write, c.primary);
         vec![Action::Write(WriteRequest {
             primary: c.primary,
             id: c.id,
@@ -858,7 +904,7 @@ impl Engine {
             meta.pw.clone()
         };
         // 목록만 묻는 요청은 허가를 쓰지 않는다(붙여넣기 이벤트의 일회용 암호가 뒤따르는 데이터 읽기 전에 닳지 않게)
-        let granted = !mimes.is_empty() && self.grants.lock().consume(&pw, Dir::Read);
+        let granted = !mimes.is_empty() && self.grants.lock().consume_at(&pw, Dir::Read, meta.primary);
         vec![Action::Read(ReadRequest {
             primary: meta.primary,
             id: meta.id.clone(),

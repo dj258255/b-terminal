@@ -244,10 +244,12 @@ fn paste_event_lists_at_most_sixteen_types() {
 // ---------- 허가 ----------
 
 #[test]
-fn grants_one_time_is_consumed_even_for_the_wrong_direction() {
+fn grants_one_time_is_consumed_only_in_the_used_direction() {
     let mut g = Grants::default();
     g.grant("pw1", Dir::Read, true);
-    assert!(!g.consume("pw1", Dir::Write), "방향이 달라도 한 번 쓰면 사라진다");
+    // 방향이 맞지 않는 확인은 허가를 닳게 하지 않는다(쓰인 방향의 허가만 사라진다)
+    assert!(!g.consume("pw1", Dir::Write));
+    assert!(g.consume("pw1", Dir::Read));
     assert!(!g.consume("pw1", Dir::Read));
     g.grant("pw2", Dir::Read, true);
     assert!(g.consume("pw2", Dir::Read));
@@ -366,7 +368,7 @@ fn write_padding_rules() {
     // 패딩이 모자란 줄기는 commit(또는 종류 바꿈)에서 걸린다
     let mut s = begin("", 1 << 20);
     s.data(&wmeta("text/plain"), b"SGVsbG8").unwrap();
-    assert_eq!(s.commit(), Err(Invalid));
+    assert_eq!(s.commit(), Err(WriteError::Invalid));
     let mut s = begin("", 1 << 20);
     s.data(&wmeta("text/plain"), b"SGVsbG8").unwrap();
     assert_eq!(s.data(&wmeta("text/html"), b"PGI+aGk8L2I+"), Err(WriteError::Invalid));
@@ -651,4 +653,50 @@ fn text_mime_names() {
     assert!(!is_text_mime("text/html"));
     assert!(!is_text_mime("image/png"));
     assert!(!is_text_mime("."));
+}
+
+// ---------- 보안 검토 세 건(#325) ----------
+
+#[test]
+fn one_time_is_kept_per_direction() {
+    // 읽기 일회용 허가에 같은 암호의 쓰기 허가가 와도 읽기 허가의 수명은 그대로다
+    let mut g = Grants::default();
+    g.grant("pw", Dir::Read, true);
+    g.grant("pw", Dir::Write, false);
+    assert!(g.consume("pw", Dir::Read));
+    assert!(!g.consume("pw", Dir::Read), "읽기 허가는 여전히 일회용이다");
+    assert!(g.consume("pw", Dir::Write), "쓰기 허가는 남아 있다");
+    assert!(g.consume("pw", Dir::Write));
+}
+
+#[test]
+fn aliases_count_against_the_write_limit() {
+    // 별칭이 대상 데이터를 복사하므로 별칭까지 합한 크기가 상한을 넘으면 거래를 끝낸다(메모리 증폭 방지)
+    let mut s = begin("", 10);
+    s.data(&wmeta("text/plain"), b"SGVsbG8=").unwrap(); // 5바이트
+    s.alias(&wmeta("text/plain"), b64_encode(b"a/1 a/2 a/3").as_bytes())
+        .unwrap();
+    assert_eq!(
+        s.commit(),
+        Err(WriteError::TooLarge),
+        "5 + 5 x 3 = 20바이트가 상한 10을 넘는다"
+    );
+    // 상한 안이면 된다
+    let mut s = begin("", 10);
+    s.data(&wmeta("text/plain"), b"SGVsbG8=").unwrap();
+    s.alias(&wmeta("text/plain"), b64_encode(b"a/1").as_bytes()).unwrap();
+    assert_eq!(s.commit().unwrap().contents.len(), 2);
+}
+
+#[test]
+fn grant_is_scoped_to_the_location_it_was_made_for() {
+    // 붙여넣기 이벤트의 암호는 표준 클립보드용이다. loc=primary 읽기에는 쓸 수 없다
+    let (mut e, g) = engine(true, 1 << 20);
+    g.lock().grant("secret", Dir::Read, true);
+    let out = e.handle(
+        &packet("type=read:loc=primary:pw=c2VjcmV0:name=YXBw", b"text/plain"),
+        false,
+    );
+    let Action::Read(r) = &out[0] else { panic!() };
+    assert!(!r.granted, "다른 위치에는 허가가 없다");
 }
