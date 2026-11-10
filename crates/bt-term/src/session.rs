@@ -17,6 +17,7 @@ use alacritty_terminal::term::{Config, Osc52, Term, TermMode};
 use alacritty_terminal::vte::ansi::{
     CursorShape as VtCursorShape, CursorStyle as VtCursorStyle, NamedColor, Processor, Rgb as VtRgb,
 };
+use anyhow::Context as _;
 use bt_core::Theme;
 use bt_core::config::OscColorReportFormat;
 use parking_lot::Mutex;
@@ -587,7 +588,7 @@ impl Session {
     /// 프로그램을 PTY로 띄운다. `sink`는 읽기 스레드에서 불린다
     pub fn spawn(mut options: SpawnOptions, size: GridSize, theme: Theme, sink: EventSink) -> anyhow::Result<Self> {
         let pty = native_pty_system();
-        let pair = pty.openpty(size.pty())?;
+        let pair = pty.openpty(size.pty()).context("PTY 열기(openpty)")?;
 
         let mut cmd = match &options.program {
             Some(p) => {
@@ -628,11 +629,19 @@ impl Session {
             cmd.env(k, v);
         }
 
-        let mut child = pair.slave.spawn_command(cmd)?;
+        let what = format!(
+            "프로그램 띄우기: {} (작업 폴더 {})",
+            options.program.as_deref().unwrap_or("로그인 셸"),
+            options
+                .cwd
+                .as_ref()
+                .map_or_else(|| "홈".to_string(), |c| c.display().to_string()),
+        );
+        let mut child = pair.slave.spawn_command(cmd).context(what)?;
         drop(pair.slave);
         let pid = child.process_id();
-        let mut reader = pair.master.try_clone_reader()?;
-        let writer: Writer = Arc::new(Mutex::new(pair.master.take_writer()?));
+        let mut reader = pair.master.try_clone_reader().context("PTY 읽기 끝 복제")?;
+        let writer: Writer = Arc::new(Mutex::new(pair.master.take_writer().context("PTY 쓰기 끝 얻기")?));
         let readonly = Arc::new(std::sync::atomic::AtomicBool::new(false));
         if !options.input.is_empty() {
             send_startup_input(&writer, std::mem::take(&mut options.input), readonly.clone());

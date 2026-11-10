@@ -24,7 +24,7 @@ fn spawn(script: &str, clipboard_write: bool, limit: Option<usize>) -> (Session,
         ..Default::default()
     };
     (
-        Session::spawn(o, GridSize::new(100, 40), Theme::default(), sink).expect("spawn"),
+        Session::spawn(o, GridSize::new(100, 40), Theme::default(), sink).unwrap_or_else(|e| panic!("spawn: {e:#}")),
         rx,
     )
 }

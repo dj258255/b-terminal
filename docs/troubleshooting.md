@@ -32,3 +32,11 @@
 - 언제: 2026-11-10, #338(프롬프트 클릭) 검토 중 macOS `/bin/bash` 3.2.57을 PTY에 띄워 셸 통합 바이트를 한 번 읽음. 빈 Enter 뒤에 `OSC 633;E;_bt_status`, `OSC 133;C`, `OSC 133;D;0`이 나왔다. 셸 통합을 처음 넣은 #50의 스크립트도 같은 덫 구조다(코드로 읽었고 그 판을 돌려 보지는 않았다)
 - 원인: bash는 빈 Enter에서 명령 없이 `PROMPT_COMMAND`(`_bt_status;…;_bt_precmd`)를 다시 돌린다. DEBUG 덫 `_bt_preexec`는 그 첫 명령 `_bt_status` 앞에서도 불리는데, 프롬프트에 있다는 표시(`_bt_at_prompt`)가 켜져 있어 사람이 친 명령으로 셌다. 명령 글이 `_bt_status`인 짧은 명령이 하나 생겨 제목 기능과 명령 경계에 들어갔다
 - b-terminal: 덫이 `_bt_status` 앞에서 불리면 PS1만 표지 전 값으로 되돌리고 명령 표지를 보내지 않는다(#342). Ghostty가 bash 4.4 미만에서 쓰는 `bash-preexec.sh`도 `PROMPT_COMMAND` 안의 명령에서는 preexec를 부르지 않는다(`__bp_in_prompt_command`)
+
+## 6. PTY 시험이 가끔 `Session::spawn`에서 실패한다 (원인 미확인)
+
+- 언제: 0.28.0부터 릴리스 시험마다 한 번꼴. `cargo test --workspace` 안에서 bt-term PTY 시험 하나가 `expect("spawn")`에서 패닉했고 같은 파일만 다시 돌리면 통과했다. 오류 본문은 남지 않았다(#365)
+- 재현 시도(2026-11-11, macOS 26, M2 Pro): `cargo test --workspace` 3번, bt-term 시험 바이너리 19개를 동시에 30번(570개 프로세스 실행), 한 프로세스에서 16스레드가 `Session::spawn`을 2400번. 모두 실패 0번. 재현하지 못했다
+- 확인한 것: 시험 전체가 쓰는 pty는 최대 약 9개(`/dev/ttys*` 24개에서 33개)이고 `kern.tty.ptmx_max`는 511이다. 일부러 세션을 쥔 채 511개를 넘기면 `failed to openpty: Device not configured`(ENXIO)가 난다. portable-pty는 없는 작업 폴더를 홈으로 바꾸므로 작업 폴더 문제는 띄우기 실패가 아니다
+- 짐작(확인 안 함): 같은 기계에서 다른 작업이 pty나 프로세스 한도를 거의 채웠을 때 일시적으로 `openpty`/`fork`가 실패. 또는 portable-pty `pre_exec`의 `setsid`/`TIOCSCTTY` 경쟁
+- b-terminal: 원인을 모르므로 조용히 다시 시도하지 않는다. 대신 다음에 나면 원인이 남게 했다. 띄우기 오류에 단계와 프로그램·작업 폴더를 붙이고(`Session::spawn`) 시험은 `{e:#}`로 사슬 전체를 찍는다

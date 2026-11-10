@@ -20,7 +20,8 @@ fn run(script: &str, cols: u16, opts: impl FnOnce(&mut SpawnOptions)) -> Screen 
         ..Default::default()
     };
     opts(&mut o);
-    let s = Session::spawn(o, GridSize::new(cols, 6), Theme::default(), sink).expect("spawn");
+    let s =
+        Session::spawn(o, GridSize::new(cols, 6), Theme::default(), sink).unwrap_or_else(|e| panic!("spawn: {e:#}"));
     wait_exit(&rx);
     s.snapshot()
 }
