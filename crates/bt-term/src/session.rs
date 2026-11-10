@@ -1471,6 +1471,15 @@ fn snapshot_of<T: EventListener>(
         if f.contains(Flags::UNDERCURL) {
             flags.insert(CellFlags::UNDERCURL);
         }
+        if f.contains(Flags::DOUBLE_UNDERLINE) {
+            flags.insert(CellFlags::DOUBLE_UNDERLINE);
+        }
+        if f.contains(Flags::DOTTED_UNDERLINE) {
+            flags.insert(CellFlags::DOTTED_UNDERLINE);
+        }
+        if f.contains(Flags::DASHED_UNDERLINE) {
+            flags.insert(CellFlags::DASHED_UNDERLINE);
+        }
         if f.contains(Flags::STRIKEOUT) {
             flags.insert(CellFlags::STRIKE);
         }
@@ -1523,6 +1532,7 @@ fn snapshot_of<T: EventListener>(
             bg,
             flags,
             link,
+            underline_color: color::underline_rgb(theme, overrides, src.underline_color(), f, bg),
         };
     }
 

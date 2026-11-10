@@ -40,6 +40,14 @@ pub(crate) fn resolve(theme: &Theme, overrides: &Colors, color: Color) -> Rgb {
     }
 }
 
+/// 밑줄 색(SGR 58)을 RGB로 푼다. 팔레트 번호는 글자색과 같은 길(OSC 4로 바꾼 팔레트 포함)로 푼다.
+/// 반전(SGR 7)은 밑줄 색을 바꾸지 않는다(Ghostty `Style.underlineColor`는 반전을 보지 않는다).
+/// 흐림(SGR 2)은 글자처럼 `faint-opacity`로 바탕색 쪽으로 섞는다(Ghostty는 밑줄에도 같은 알파를 준다). `bg`는 칸의 바탕색
+pub(crate) fn underline_rgb(theme: &Theme, overrides: &Colors, color: Option<Color>, flags: Flags, bg: Rgb) -> Option<Rgb> {
+    let rgb = resolve(theme, overrides, color?);
+    Some(if flags.contains(Flags::DIM) { rgb.mix(bg, 1.0 - theme.faint_opacity) } else { rgb })
+}
+
 /// 셀 하나의 전경·배경을 꾸밈까지 반영해 푼다
 pub(crate) fn cell_colors(theme: &Theme, overrides: &Colors, fg: Color, bg: Color, flags: Flags) -> (Rgb, Rgb) {
     // 굵은 글자의 0~7번을 밝은 8~15번으로 올리는 것은 설정(bold-is-bright 또는 bold-color)을 따른다. Ghostty 기본은 끔.

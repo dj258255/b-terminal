@@ -63,6 +63,8 @@ pub struct Cell {
     pub flags: CellFlags,
     /// 프로그램이 OSC 8로 단 링크(`Screen::links`의 자리)
     pub link: Option<u32>,
+    /// 밑줄 색(SGR 58)을 RGB로 푼 것. 없으면 글자색(#276)
+    pub underline_color: Option<Rgb>,
 }
 
 impl Cell {
@@ -74,6 +76,7 @@ impl Cell {
             bg,
             flags: CellFlags::empty(),
             link: None,
+            underline_color: None,
         }
     }
 }

@@ -29,10 +29,22 @@ fn cells(s: &Screen) -> Vec<DrawCell> {
             bg: c.bg,
             bold: c.flags.contains(CellFlags::BOLD),
             italic: c.flags.contains(CellFlags::ITALIC),
-            underline: if c.flags.contains(CellFlags::UNDERLINE) {
-                bt_render::Underline::Single
-            } else {
-                bt_render::Underline::None
+            underline: {
+                use bt_render::Underline;
+                let f = c.flags;
+                if f.contains(CellFlags::UNDERCURL) {
+                    Underline::Curly
+                } else if f.contains(CellFlags::DOUBLE_UNDERLINE) {
+                    Underline::Double
+                } else if f.contains(CellFlags::DOTTED_UNDERLINE) {
+                    Underline::Dotted
+                } else if f.contains(CellFlags::DASHED_UNDERLINE) {
+                    Underline::Dashed
+                } else if f.contains(CellFlags::UNDERLINE) {
+                    Underline::Single
+                } else {
+                    Underline::None
+                }
             },
             strike: c.flags.contains(CellFlags::STRIKE),
             wide: c.flags.contains(CellFlags::WIDE),
@@ -42,7 +54,7 @@ fn cells(s: &Screen) -> Vec<DrawCell> {
             cluster: None,
             cluster_cells: 0,
             overline: c.flags.contains(CellFlags::OVERLINE),
-            underline_color: None,
+            underline_color: c.underline_color,
         })
         .collect();
     bt_render::cluster::mark(&mut cells, s.cols, |i| {
@@ -1810,4 +1822,60 @@ fn adjust_underline_thickness_applies_to_every_shape() {
             ink(&a)
         );
     }
+}
+
+#[test]
+fn sgr_4_variants_and_58_reach_the_screen_cells() {
+    let mut e = Emulator::new(GridSize::new(10, 1), Theme::default());
+    // 4:2 이중(빨강 RGB), 4:3 물결(256색 2번), 4:4 점, 4:5 파선, 4 곧은 줄(색 없음), 59로 색 되돌리기
+    e.feed(b"\x1b[4:2;58:2::255:0:0ma\x1b[4:3;58;5;2mb\x1b[4:4mc\x1b[4:5;59md\x1b[4;24me");
+    let s = e.snapshot();
+    let c = |i: usize| (s.cells[i].flags, s.cells[i].underline_color);
+    assert!(c(0).0.contains(CellFlags::DOUBLE_UNDERLINE));
+    assert_eq!(c(0).1, Some(Rgb::new(255, 0, 0)));
+    assert!(c(1).0.contains(CellFlags::UNDERCURL));
+    assert_eq!(c(1).1, Some(Theme::default().indexed(2)), "256색 번호는 지금 팔레트");
+    assert!(c(2).0.contains(CellFlags::DOTTED_UNDERLINE));
+    assert!(c(3).0.contains(CellFlags::DASHED_UNDERLINE));
+    assert_eq!(c(3).1, None, "59는 밑줄 색을 되돌린다");
+    assert!(!c(4).0.contains(CellFlags::UNDERLINE), "24는 밑줄을 끈다");
+}
+
+#[test]
+fn underline_color_index_follows_osc4_palette_and_ignores_inverse() {
+    let mut e = Emulator::new(GridSize::new(4, 1), Theme::default());
+    e.feed(b"\x1b]4;2;rgb:11/22/33\x07\x1b[4;58;5;2;7ma\x1b[0m");
+    let s = e.snapshot();
+    assert_eq!(s.cells[0].underline_color, Some(Rgb::new(0x11, 0x22, 0x33)), "OSC 4로 바꾼 색");
+    // 반전은 글자·바탕을 맞바꾸지만 밑줄 색은 그대로(Ghostty `underlineColor`는 반전을 보지 않는다)
+    assert_eq!(s.cells[0].fg, Theme::default().background);
+}
+
+#[test]
+fn faint_mixes_underline_color_toward_the_background() {
+    let mut e = Emulator::new(GridSize::new(4, 1), Theme::default());
+    e.feed(b"\x1b[4;58:2::255:0:0;2ma\x1b[0m");
+    let t = Theme::default();
+    let s = e.snapshot();
+    assert_eq!(
+        s.cells[0].underline_color,
+        Some(Rgb::new(255, 0, 0).mix(t.background, 1.0 - t.faint_opacity))
+    );
+}
+
+#[test]
+fn undercurl_from_the_vt_draws_a_wave_in_its_color() {
+    let Some(mut f) = fonts(1.0) else {
+        return;
+    };
+    let fr = render(&mut f, b"\x1b[4:3;58:2::255:0:0m  ", 2, 1, false);
+    let reddish = fr.buf.iter().filter(|p| {
+        let c = Rgb::from_u32(**p);
+        c.r > c.g + 60
+    });
+    assert!(reddish.count() > 0, "빨간 물결 픽셀");
+    assert!(
+        fr.buf.iter().all(|p| Rgb::from_u32(*p).g < 200),
+        "글자색(밝은 쪽)으로 그어진 픽셀은 없다"
+    );
 }

@@ -4980,7 +4980,7 @@ pub fn to_draw_cells(s: &Screen, theme: &bt_core::Theme) -> Vec<DrawCell> {
                 cluster_cells: 0,
                 overline: c.flags.contains(CellFlags::OVERLINE),
                 // 숨김(SGR 8) 칸은 밑줄 색도 그리지 않는다. 색은 bt-term이 팔레트·OSC 4를 반영해 RGB로 푼 것
-                underline_color: None,
+                underline_color: c.underline_color.filter(|_| !c.flags.contains(CellFlags::HIDDEN)),
             }
         })
         .collect();
