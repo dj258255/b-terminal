@@ -228,11 +228,13 @@ pub fn reset_palette<L: EventListener>(term: &mut Term<L>) {
     }
 }
 
-/// 소프트 리셋(DECSTR, `CSI ! p`): 팔레트를 되돌리고 커서 모양·깜박임을 설정 값으로 되돌린다.
+/// 소프트 리셋(DECSTR, `CSI ! p`): 팔레트를 되돌리고 커서 모양·깜박임을 설정 값으로 되돌리고 보호(DECSCA)를 끈다.
 /// 모양은 DECSCUSR 0과 같은 길(`set_cursor_style(None)`)이다. Ghostty `Terminal.zig`의 `softReset`도 `setCursorStyle(.default)`를 부른다
 pub fn soft_reset<L: EventListener>(term: &mut Term<L>) {
     reset_palette(term);
     Handler::set_cursor_style(term, None);
+    // 보호 켬과 마지막 보호 방식도 끈다(Ghostty `softReset`, Terminal.zig 5944~5947줄)(#294)
+    term.reset_protected();
 }
 
 /// 요청을 차례로 적용하고, 질의가 있으면 답 바이트를 돌려준다.

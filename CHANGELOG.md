@@ -5,6 +5,7 @@
 ## [아직 릴리스하지 않음]
 
 - 열 삽입·삭제(DECIC `CSI Ps ' }`, DECDC `CSI Ps ' ~`), DECBI(`ESC 6`)·DECFI(`ESC 9`), CTC(`CSI 0·2·5 W`), HPB(`CSI j`)·VPB(`CSI k`), 문자 집합 바꿈(LS2·LS3 `ESC n`·`ESC o`, SS2·SS3 `ESC N`·`ESC O`, LS1R~LS3R은 받기만)과 영국 문자 집합(`ESC ( A`, `#`이 `£`)을 Ghostty처럼 받습니다. 전에는 모두 버렸습니다. **기본 동작이 바뀝니다**(이 시퀀스를 보내던 프로그램의 화면이 달라집니다). 좌우 여백(DECSLRM)이 없어 화면 전체 폭이 여백이고, 커서가 스크롤 영역 밖이면 DECIC·DECDC는 아무 일도 하지 않습니다. 엔진 단위 테스트로 확인했고 실제 창에서는 보지 않았습니다. #295
+- 보호 칸과 선택 지우기를 Ghostty처럼 받습니다: `CSI 1 " q`(DECSCA, 0·2는 끔), `ESC V`·`ESC W`(SPA·EPA), `CSI ? Ps J`·`CSI ? Ps K`(DECSED·DECSEL). **기본 동작이 바뀝니다**: 전에는 이 시퀀스를 모두 버려 `ABCDEFGH` 뒤 `CSI ? K`가 줄을 그대로 두었는데, 이제 보호하지 않은 칸만 지웁니다. 마지막 보호 방식이 ISO(SPA)이면 일반 ED·EL·ECH도 보호 칸을 건너뛰고, DEC(DECSCA)이면 선택 지우기만 건너뜁니다. DECSC·DECRC가 보호 상태를 함께 저장하고 RIS·DECSTR이 끕니다. 보호 칸은 화면에 다르게 그리지 않고 DECRQSS `"q`는 Ghostty처럼 답하지 않습니다. 단위 테스트와 `/bin/sh`·`printf` PTY 테스트로 확인했고 실제 창에서는 보지 않았습니다. #294
 
 ## [0.22.0] - 2026-11-10
 

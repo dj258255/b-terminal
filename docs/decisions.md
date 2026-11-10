@@ -578,7 +578,7 @@ macOS의 Carbon `EnableSecureEventInput`은 켜 있는 동안 키 입력이 다�
 
 ### Ghostty와 다른 점(알려진 것)
 - **쓰지 않은 칸**: alacritty 격자에는 "한 번도 쓰지 않은 칸" 표시가 없다. 색과 속성이 없는 빈칸 한 글자를 쓰지 않은 칸으로 본다. 그래서 `printf ' '`로 찍은 평범한 빈칸도 쓰지 않은 칸이다. 이 구분이 합을 바꾸는 경우는 DEC 기본 계산(`trim` 켬, `undrawn` 끔)에서 사각형 첫 칸이 평범한 빈칸일 때뿐이다(Ghostty는 찍은 빈칸이면 0x20을 더한다). `no-trim`이나 `undrawn`이면 쓰지 않은 칸도 빈칸으로 세므로 Ghostty와 같다. esctest가 쓰는 `no-trim` 조합에는 영향이 없다.
-- **깜박임·DECSCA 보호**: alacritty 격자에 표시가 없어 속성 합에서 0x40·0x04가 빠진다.
+- **깜박임·DECSCA 보호**: 격자에 깜박임(#287)·보호(#294) 표시가 생겼지만 속성 합에는 아직 더하지 않아 0x40·0x04가 빠진다(Ghostty `xt_checksum.zig` 원본을 보고 맞추지 않았다).
 - **왼쪽 여백(DECSLRM)**: alacritty에 없어 원점 모드의 왼쪽 여백은 0이다. 위 여백은 스크롤 영역에서 읽는다(vendor 패치 `Term::scroll_region()`, vendor/README.md).
 - **DEC 선 그리기**: Ghostty도 변환된 코드포인트만 가지므로 같다(8비트 밖의 글자로 센다).
 - 결합 문자는 alacritty 격자의 `zerowidth`로 센다. Ghostty는 mode 2027(글자 묶음)일 때만 칸에 묶음을 두지만 b-terminal은 vendor 패치로 늘 묶는다(ADR-014).

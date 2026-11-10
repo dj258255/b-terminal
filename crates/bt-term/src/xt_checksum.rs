@@ -128,7 +128,7 @@ fn value(cell: &Cell, flags: Flags) -> Value {
     })
 }
 
-/// xterm이 칸마다 더하는 VT100 표시. alacritty 격자에는 깜박임과 DECSCA 보호 표시가 없어 0x40·0x04는 더해지지 않는다
+/// xterm이 칸마다 더하는 VT100 표시. 깜박임·DECSCA 보호 표시는 격자에 있지만(#287·#294) 원본을 보고 맞추지 않아 0x40·0x04는 더하지 않는다
 fn attributes(cell: &Cell) -> u16 {
     let f = cell.flags;
     let mut n = 0;
@@ -385,7 +385,7 @@ mod tests {
         );
     }
 
-    // Ghostty "attributes". 깜박임(0x40)과 DECSCA 보호(0x04)는 alacritty 격자에 없어 뺐다
+    // Ghostty "attributes". 깜박임(0x40)과 DECSCA 보호(0x04)는 합에 더하지 않는다
     #[test]
     fn attributes_added_per_cell() {
         // a: 굵게+밑줄, ' ': 반전, b: 숨김
