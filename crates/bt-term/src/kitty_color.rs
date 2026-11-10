@@ -193,10 +193,8 @@ pub fn parse_color(s: &str) -> Option<(u8, u8, u8)> {
     }
     let (rest, scale): (&str, fn(&str) -> Option<u8>) = if let Some(r) = s.strip_prefix("rgbi:") {
         (r, scale_fraction)
-    } else if let Some(r) = s.strip_prefix("rgb:") {
-        (r, scale_hex)
     } else {
-        return None;
+        (s.strip_prefix("rgb:")?, scale_hex)
     };
     let mut it = rest.splitn(3, '/');
     let (r, g, b) = (it.next()?, it.next()?, it.next()?);
