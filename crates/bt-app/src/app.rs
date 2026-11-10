@@ -1,7 +1,6 @@
 //! 창 하나, 탭 여럿. winit 이벤트를 받아 PTY에 쓰고 화면을 그린다
 
 use std::num::NonZeroU32;
-use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
@@ -14,6 +13,8 @@ use winit::event::{ElementState, Ime, MouseButton, MouseScrollDelta, WindowEvent
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoopProxy};
 use winit::keyboard::ModifiersState;
 use winit::window::{CursorIcon, Window, WindowId};
+
+mod gpu_frame;
 
 use crate::icon;
 use crate::keymap::{Action, Keymap, SplitTarget};
@@ -660,9 +661,12 @@ struct PaneView {
 struct Gfx {
     /// 창을 만들 때 정해진 제목 막대 밑 비움 높이(논리 점, #192). 제목 막대 모양은 새 창에만 적용되므로 창마다 따로 든다
     inset_points: f32,
-    window: Rc<Window>,
-    surface: softbuffer::Surface<Rc<Window>, Rc<Window>>,
-    _context: softbuffer::Context<Rc<Window>>,
+    window: Arc<Window>,
+    /// CPU 길의 올릴 곳. GPU 길(`BT_GPU=1`)이면 없다: 한 창에는 한 가지 surface만 붙일 수 있다
+    surface: Option<softbuffer::Surface<Arc<Window>, Arc<Window>>>,
+    _context: Option<softbuffer::Context<Arc<Window>>>,
+    /// GPU 길(ADR-036): 창 surface에 층과 격자를 합쳐 올리는 렌더러
+    gpu: Option<Box<bt_gpu::GpuRenderer>>,
 }
 
 /// 창 하나의 상태(#36). 칸(셸)은 모든 창이 App에서 함께 든다
@@ -724,6 +728,8 @@ struct Win {
     force_present: bool,
     /// 들고 있는 프레임과 그 내용(바뀐 줄만 다시 그리려고, #40)
     frame: Vec<u32>,
+    /// GPU 길의 위층(격자 위에 겹치는 것, 곱한 알파). 아래층은 `frame`이 든다
+    upper: Vec<u32>,
     last_frame: Option<FrameMemo>,
     /// 커서 깜빡임: 지금 보이는가, 다음에 바꿀 때, 깜빡일 커서가 있는가
     blink_on: bool,
@@ -775,6 +781,7 @@ impl Win {
             backdrop: None,
             force_present: false,
             frame: Vec::new(),
+            upper: Vec::new(),
             last_frame: None,
             blink_on: true,
             blink_next: Instant::now(),
@@ -3769,7 +3776,7 @@ impl App {
                 .with_has_shadow(look.shadow)
         };
         let window = match event_loop.create_window(attrs) {
-            Ok(w) => Rc::new(w),
+            Ok(w) => Arc::new(w),
             Err(e) => {
                 log::error!("창을 만들지 못했습니다: {e}");
                 return None;
@@ -3779,13 +3786,36 @@ impl App {
         // 창 뒤 흐림(#238). 퀵 터미널 창도 이 길로 만들어진다
         crate::blur::apply(&window, self.config.background_blur, self.config.background_opacity);
         self.scale = window.scale_factor();
+        // 그리기 길 고르기(ADR-036): BT_GPU=1이고 GPU 길이 맞출 수 있는 설정이면 wgpu surface를, 아니면 softbuffer를 붙인다
+        let inputs = crate::render_path::PathInputs {
+            opacity: self.config.background_opacity,
+            backdrop_image: self.bg_image.is_some(),
+            colorspace_srgb: self.config.colorspace_srgb,
+        };
+        let size = window.inner_size();
+        let (gpu, fallback) = crate::render_path::choose(std::env::var("BT_GPU").ok().as_deref(), &inputs, || {
+            bt_gpu::GpuRenderer::new_for_window(window.clone(), (size.width, size.height)).map(Box::new)
+        });
+        if let Some(why) = fallback {
+            log::warn!("BT_GPU=1이지만 CPU 길로 그린다: {why}");
+        }
+        if gpu.is_some() {
+            return Some(Gfx {
+                inset_points: look.inset_points,
+                window,
+                surface: None,
+                _context: None,
+                gpu,
+            });
+        }
         let context = softbuffer::Context::new(window.clone()).ok()?;
         let surface = softbuffer::Surface::new(&context, window.clone()).ok()?;
         Some(Gfx {
             inset_points: look.inset_points,
             window,
-            surface,
-            _context: context,
+            surface: Some(surface),
+            _context: Some(context),
+            gpu: None,
         })
     }
 
@@ -4910,6 +4940,38 @@ impl App {
             theme: (theme.background, theme.foreground),
             dim: (dim_alpha, dim_fill, divider_color),
         };
+        // GPU 길(`BT_GPU=1`, ADR-036): 층과 격자를 합쳐 창 surface에 올린다. 아래는 CPU 길
+        if gfx.gpu.is_some() {
+            self.redraw_gpu(gpu_frame::GpuFrame {
+                views: &views,
+                drawn,
+                pads: &pads,
+                bars: &bars,
+                labels: &labels,
+                chrome,
+                toast: &toast,
+                secure_badge,
+                badge_top,
+                confirm: &confirm,
+                title_prompt: &title_prompt,
+                hover: &hover,
+                link_previews,
+                palette: &palette,
+                search: &search,
+                preedit: &preedit,
+                resize_overlays: &resize_overlays,
+                dividers: &dividers,
+                divider_color,
+                dim_alpha,
+                dim_fill,
+                split,
+                single_tab,
+                top_inset,
+                title: &title,
+                proxy,
+            });
+            return;
+        }
         let started = Instant::now();
         let n = (size.width * size.height) as usize;
         let full =
@@ -5216,11 +5278,12 @@ impl App {
             return;
         };
         let t_resize = Instant::now();
-        if gfx.surface.resize(w, h).is_err() {
+        let Some(surface) = gfx.surface.as_mut() else { return };
+        if surface.resize(w, h).is_err() {
             return;
         }
         let t_buffer = Instant::now();
-        let Ok(buffer) = gfx.surface.buffer_mut() else {
+        let Ok(buffer) = surface.buffer_mut() else {
             return;
         };
         let t_copy = Instant::now();

@@ -10,6 +10,11 @@ use crate::atlas::Atlas;
 use crate::glyphs::GlyphCache;
 use crate::scene::{GLYPH_STRIDE, GlyphInst, RECT_STRIDE, RectInst, Scene};
 
+mod compose;
+mod window;
+pub use compose::{LayerUpdate, PaneDraw};
+pub use window::PresentOutcome;
+
 /// 한 프레임의 구간별 시간(ms). 마지막으로 그린 프레임의 값이다
 #[derive(Debug, Clone, Copy, Default)]
 pub struct FrameTimings {
@@ -19,6 +24,8 @@ pub struct FrameTimings {
     pub gpu_ms: f64,
     /// 텍스처를 버퍼로 복사해 읽어 `Vec<u32>`로 바꾸기
     pub readback_ms: f64,
+    /// 층(아래·위) 픽셀을 GPU 텍스처로 올리기. 올릴 층이 없는 프레임은 0(`compose`·`present`)
+    pub upload_ms: f64,
 }
 
 /// 그림이 그려지는 텍스처 꼴. sRGB가 아니다: CPU 렌더러는 0~255 값을 그대로 섞으므로(감마 없이)
@@ -61,6 +68,22 @@ pub struct GpuRenderer {
     timings: FrameTimings,
     /// 그리고 나서 아직 읽지 않은 프레임이 있는지
     drawn: bool,
+    /// 그리는 대상(텍스처·창 surface)의 꼴
+    format: wgpu::TextureFormat,
+    layers: compose::Layers,
+    window: Option<window::WindowSurface>,
+}
+
+/// 어댑터를 고른다. 진짜 GPU가 없으면 소프트웨어 어댑터(lavapipe 등)를 찾는다. `surface`가 있으면 그것을 그릴 수 있는 것만
+fn pick_adapter(instance: &wgpu::Instance, surface: Option<&wgpu::Surface<'_>>) -> Option<wgpu::Adapter> {
+    let ask = |fallback: bool| {
+        pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+            force_fallback_adapter: fallback,
+            compatible_surface: surface,
+            ..Default::default()
+        }))
+    };
+    ask(false).or_else(|_| ask(true)).ok()
 }
 
 fn atlas_texture(device: &wgpu::Device, size: u32, format: wgpu::TextureFormat, label: &str) -> AtlasTexture {
@@ -107,15 +130,17 @@ impl GpuRenderer {
     /// 아틀라스 처음 크기(한 변, 픽셀)를 정해 연다. 시험에서 작게 잡아 넘침을 일으킨다
     pub fn with_atlas_size(initial: u32) -> Option<Self> {
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
-        let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default()))
-            .or_else(|_| {
-                // 진짜 GPU가 없으면 소프트웨어 어댑터(lavapipe 등)를 찾는다
-                pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
-                    force_fallback_adapter: true,
-                    ..Default::default()
-                }))
-            })
-            .ok()?;
+        let adapter = pick_adapter(&instance, None)?;
+        Self::build(adapter, TARGET_FORMAT, initial, None)
+    }
+
+    /// 어댑터에서 장치·파이프라인·아틀라스를 만든다. `format`은 그리는 대상의 꼴
+    fn build(
+        adapter: wgpu::Adapter,
+        format: wgpu::TextureFormat,
+        initial: u32,
+        window: Option<window::WindowSurface>,
+    ) -> Option<Self> {
         let info = adapter.get_info();
         let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default()))
             .map_err(|e| log::warn!("GPU 장치를 열지 못했다: {e}"))
@@ -171,7 +196,7 @@ impl GpuRenderer {
                     entry_point: Some(fs),
                     compilation_options: Default::default(),
                     targets: &[Some(wgpu::ColorTargetState {
-                        format: TARGET_FORMAT,
+                        format,
                         blend: Some(blend_over()),
                         write_mask: wgpu::ColorWrites::ALL,
                     })],
@@ -194,6 +219,7 @@ impl GpuRenderer {
         let gray_tex = atlas_texture(&device, initial, wgpu::TextureFormat::R8Unorm, "bt-gpu gray atlas");
         let color_tex = atlas_texture(&device, initial, wgpu::TextureFormat::Rgba8Unorm, "bt-gpu color atlas");
         let bind_group = make_bind_group(&device, &layout, &globals, &gray_tex, &color_tex);
+        let layers = compose::Layers::new(&device, format);
         Some(Self {
             adapter_name: info.name,
             device,
@@ -213,6 +239,9 @@ impl GpuRenderer {
             bytes: Vec::new(),
             timings: FrameTimings::default(),
             drawn: false,
+            layers,
+            format,
+            window,
         })
     }
 
@@ -340,6 +369,7 @@ impl GpuRenderer {
             prepare_ms: prepare.as_secs_f64() * 1000.0,
             gpu_ms: t1.elapsed().as_secs_f64() * 1000.0,
             readback_ms: 0.0,
+            upload_ms: 0.0,
         };
         self.drawn = true;
     }
@@ -386,13 +416,19 @@ impl GpuRenderer {
         let mapped = rx.recv().is_ok_and(|r| r.is_ok());
         if let (true, Ok(data)) = (mapped, slice.get_mapped_range()) {
             let (w, h) = (target.width as usize, target.height as usize);
+            // 대상이 Bgra면 바이트 차례가 0xAARRGGBB 그대로(B, G, R)이고, Rgba면 R, G, B
+            let bgra = matches!(
+                self.format,
+                wgpu::TextureFormat::Bgra8Unorm | wgpu::TextureFormat::Bgra8UnormSrgb
+            );
             out.reserve(w * h);
             for row in 0..h {
                 let line = &data[row * target.padded_row as usize..][..w * 4];
                 out.extend(line.chunks_exact(4).map(|p| {
                     // 투명 창이면 텍스처의 곱한 알파를 그대로 낸다(CPU `Canvas`와 같은 꼴, #353)
                     let alpha = if transparent { p[3] as u32 } else { 0xff };
-                    alpha << 24 | (p[0] as u32) << 16 | (p[1] as u32) << 8 | p[2] as u32
+                    let (r, b) = if bgra { (p[2], p[0]) } else { (p[0], p[2]) };
+                    alpha << 24 | (r as u32) << 16 | (p[1] as u32) << 8 | b as u32
                 }));
             }
             drop(data);
@@ -422,7 +458,7 @@ impl GpuRenderer {
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
-            format: TARGET_FORMAT,
+            format: self.format,
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
             view_formats: &[],
         });
