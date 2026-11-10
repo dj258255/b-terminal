@@ -125,6 +125,8 @@ pub struct SpawnOptions {
     pub vt_xt_checksum_report: bool,
     /// 체크섬 계산 방식의 기본(설정 vt-xt-checksum-extension, #259). 프로그램이 XTCHECKSUM으로 바꾼 것은 초기화(RIS·DECSTR)에서 이 값으로 돌아온다
     pub vt_xt_checksum_extension: bt_core::config::XtChecksumExtension,
+    /// kitty 클립보드 쓰기 한 번의 상한(설정 clipboard-write-limit-bytes, `None`은 unlimited). 고정 1MiB보다 크게 늘리지 못한다(#325)
+    pub clipboard_write_limit_bytes: Option<usize>,
 }
 
 /// 창 크기 바꾸기 요청(CSI 8 ; 행 ; 열 t)이 가리키는 칸 수를 정한다. 인자와 결과는 모두 (열, 행)이다. 0은 그 쪽을 그대로 두고,
@@ -172,6 +174,10 @@ pub enum SessionEvent {
     },
     /// 프로세스가 끝났다. 종료 코드를 모르면 없다
     Exited(Option<u32>),
+    /// 프로그램이 kitty 클립보드 프로토콜(OSC 5522)로 클립보드를 읽으려 한다(#325). 정책을 보고 답하는 것은 앱이다
+    KittyClipboardRead(crate::kitty_clip::ReadRequest),
+    /// 프로그램이 kitty 클립보드 프로토콜로 쓰기 거래를 끝냈다(#325). 상한은 이미 지났고 정책은 앱이 본다
+    KittyClipboardWrite(crate::kitty_clip::WriteRequest),
 }
 
 pub type EventSink = Arc<dyn Fn(SessionEvent) + Send + Sync>;
@@ -436,6 +442,10 @@ pub struct Session {
     visible: Arc<std::sync::atomic::AtomicBool>,
     /// 프로그램이 가시성 보고(모드 2033)를 켜 두었는가(#303)
     visibility_reports: Arc<std::sync::atomic::AtomicBool>,
+    /// 프로그램이 붙여넣기 이벤트(모드 5522)를 켜 두었는가(#325)
+    kitty_paste: Arc<std::sync::atomic::AtomicBool>,
+    /// kitty 클립보드 프로토콜의 암호 허가. 붙여넣기 이벤트가 일회용 읽기 허가를 더하고 읽기 스레드가 쓴다(#325)
+    kitty_grants: Arc<Mutex<crate::kitty_clip::Grants>>,
 }
 
 impl Session {
@@ -480,6 +490,34 @@ impl Session {
     /// 프로그램이 OSC 22로 정한 마우스 포인터 모양. 정한 것이 없으면 `None`(#239)
     pub fn mouse_shape(&self) -> Option<crate::MouseShape> {
         crate::MouseShape::from_code(self.mouse_shape.load(std::sync::atomic::Ordering::Acquire))
+    }
+
+    /// 프로그램이 붙여넣기 이벤트(모드 5522)를 켜 두었는가(#325)
+    pub fn kitty_paste_mode(&self) -> bool {
+        self.kitty_paste.load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    /// 사람이 붙여넣을 때 모드 5522가 켜져 있으면 글 대신 종류 목록과 일회용 암호를 프로그램에 보낸다(#325).
+    /// 보냈으면 true, 모드가 꺼져 있거나 난수를 못 얻었으면 false(그때는 아무것도 보내지 않는다)
+    pub fn kitty_paste_event(&self, available: &[String]) -> bool {
+        if !self.kitty_paste_mode() {
+            return false;
+        }
+        let Some(otp) = crate::kitty_clip::generate_otp() else {
+            log::warn!("붙여넣기 이벤트: 운영체제 난수를 얻지 못해 보내지 않습니다");
+            return false;
+        };
+        // 허가는 이벤트가 프로그램에 닿기 전에 적는다. 한 번만 쓰이고 표준 클립보드 읽기에만 듣는다
+        self.kitty_grants.lock().grant(&otp, crate::kitty_clip::Dir::Read, true);
+        let bytes = crate::kitty_clip::paste_event(false, &otp, available);
+        let mut w = self.writer.lock();
+        if let Err(e) = w.write_all(&bytes).and_then(|_| w.flush()) {
+            log::debug!("pty write failed: {e}");
+            drop(w);
+            self.kitty_grants.lock().consume(&otp, crate::kitty_clip::Dir::Read);
+            return false;
+        }
+        true
     }
 
     /// 이 칸이 읽기 전용인가
@@ -672,6 +710,18 @@ impl Session {
         let thread_visible = visible.clone();
         let visibility_reports = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let thread_visibility_reports = visibility_reports.clone();
+        let kitty_paste = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let thread_kitty_paste = kitty_paste.clone();
+        let kitty_grants = Arc::new(Mutex::new(crate::kitty_clip::Grants::default()));
+        // 쓰기 한 번의 상한은 OSC 52와 같은 규칙: 고정 1MiB와 설정 중 작은 쪽(ADR-013). 모으기 전에 본다
+        let kitty_max_write = options
+            .clipboard_write_limit_bytes
+            .map_or(bt_core::config::OSC52_WRITE_CAP, |l| {
+                l.min(bt_core::config::OSC52_WRITE_CAP)
+            });
+        let mut kitty_engine =
+            crate::kitty_clip::Engine::new(kitty_grants.clone(), options.clipboard_write, kitty_max_write);
+        let thread_kitty_grants = kitty_grants.clone();
         let thread_size = size_cell.clone();
         let da1_clipboard = options.clipboard_write;
         let thread_inner = inner.clone();
@@ -700,7 +750,7 @@ impl Session {
             // 지금 체크섬 계산 방식(XTCHECKSUM). 읽기 스레드만 쓴다
             let mut xt_flags = xt_default;
             // XTSAVE로 저장한 스캐너 모드(2031·2033·2048)의 값. 엔진이 모르는 모드라 여기서 쥔다(#313)
-            let mut saved_modes: [Option<bool>; 3] = [None; 3];
+            let mut saved_modes: [Option<bool>; 4] = [None; 4];
             loop {
                 match reader.read(&mut buf) {
                     Ok(0) => break,
@@ -727,6 +777,7 @@ impl Session {
                                         let (slot, on) = match m {
                                             2031 => (0, thread_scheme_updates.load(Acquire)),
                                             2033 => (1, thread_visibility_reports.load(Acquire)),
+                                            5522 => (3, thread_kitty_paste.load(Acquire)),
                                             _ => (2, thread_in_band_size.load(Acquire)),
                                         };
                                         saved_modes[slot] = Some(on);
@@ -735,6 +786,7 @@ impl Session {
                                     Signal::ModeRestore(m) => match m {
                                         2031 => Signal::ColorSchemeUpdates(saved_modes[0].unwrap_or(false)),
                                         2033 => Signal::VisibilityReports(saved_modes[1].unwrap_or(false)),
+                                        5522 => Signal::KittyPasteEvents(saved_modes[3].unwrap_or(false)),
                                         _ => Signal::InBandSizeReports(saved_modes[2].unwrap_or(false)),
                                     },
                                     other => other,
@@ -779,7 +831,10 @@ impl Session {
                                         if visible && scrollback {
                                             crate::kitty_color::reset_palette(&mut g.term);
                                             xt_flags = xt_default;
-                                            saved_modes = [None; 3];
+                                            saved_modes = [None; 4];
+                                            // 초기화는 붙여넣기 이벤트 모드를 끄고 암호 허가를 지운다(Ghostty `fullReset`)(#325)
+                                            thread_kitty_paste.store(false, std::sync::atomic::Ordering::Release);
+                                            thread_kitty_grants.lock().clear();
                                             thread_kam_locked.store(false, std::sync::atomic::Ordering::Release);
                                             thread_scheme_updates.store(false, std::sync::atomic::Ordering::Release);
                                             thread_in_band_size.store(false, std::sync::atomic::Ordering::Release);
@@ -912,6 +967,30 @@ impl Session {
                                             );
                                         }
                                     }
+                                    Signal::KittyPasteEvents(on) => {
+                                        thread_kitty_paste.store(on, std::sync::atomic::Ordering::Release);
+                                    }
+                                    Signal::KittyPasteQuery => {
+                                        let on = thread_kitty_paste.load(std::sync::atomic::Ordering::Acquire);
+                                        write_reply(&thread_writer, crate::csi_query::mode_5522_report(on).as_bytes());
+                                    }
+                                    // kitty 클립보드(OSC 5522): 해석·상한·거래는 엔진이, 정책과 클립보드는 앱이 한다.
+                                    // 엔진의 즉석 답(EPERM·EFBIG·EINVAL)은 터미널의 답이라 읽기 전용 칸에서도 쓴다(#325)
+                                    Signal::KittyClipboard { packet, bel } => {
+                                        for action in kitty_engine.handle(&packet, bel) {
+                                            match action {
+                                                crate::kitty_clip::Action::Reply(bytes) => {
+                                                    write_reply(&thread_writer, &bytes)
+                                                }
+                                                crate::kitty_clip::Action::Read(r) => {
+                                                    events.push(SessionEvent::KittyClipboardRead(r))
+                                                }
+                                                crate::kitty_clip::Action::Write(w) => {
+                                                    events.push(SessionEvent::KittyClipboardWrite(w))
+                                                }
+                                            }
+                                        }
+                                    }
                                     Signal::VisibilityQuery => {
                                         let on = thread_visibility_reports.load(std::sync::atomic::Ordering::Acquire);
                                         write_reply(&thread_writer, crate::csi_query::mode_2033_report(on).as_bytes());
@@ -980,6 +1059,8 @@ impl Session {
             in_band_size,
             visible,
             visibility_reports,
+            kitty_paste,
+            kitty_grants,
         })
     }
 
@@ -1337,6 +1418,9 @@ fn signal_event(sig: Signal) -> SessionEvent {
         | Signal::ColorSchemeModeQuery
         | Signal::VisibilityReports(_)
         | Signal::VisibilityQuery
+        | Signal::KittyClipboard { .. }
+        | Signal::KittyPasteEvents(_)
+        | Signal::KittyPasteQuery
         | Signal::ModeSave(_)
         | Signal::ModeRestore(_)
         | Signal::DcsQuery(_)

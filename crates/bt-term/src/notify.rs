@@ -89,6 +89,15 @@ pub enum Signal {
         requests: Vec<crate::kitty_color::Request>,
         bel: bool,
     },
+    /// kitty 클립보드 프로토콜(OSC 5522)의 패킷 하나: `5522;` 뒤의 `메타데이터[;페이로드]`. 해석은 `kitty_clip`이 한다(#325)
+    KittyClipboard {
+        packet: String,
+        bel: bool,
+    },
+    /// 붙여넣기 이벤트 모드(DEC 모드 5522)를 켜거나(`CSI ? 5522 h`) 껐다(`CSI ? 5522 l`)(#325)
+    KittyPasteEvents(bool),
+    /// 모드 5522의 DECRQM(`CSI ? 5522 $ p`)(#325)
+    KittyPasteQuery,
 }
 
 /// OSC 22 이름의 길이 상한(바이트). 가장 긴 이름("bottom_right_corner")보다 넉넉하다
@@ -367,6 +376,9 @@ impl Scanner {
                         if let Some(sig) = crate::csi_query::visibility(b, &self.csi) {
                             out.push((i + 1, sig));
                         }
+                        if let Some(sig) = crate::csi_query::kitty_paste(b, &self.csi) {
+                            out.push((i + 1, sig));
+                        }
                         for sig in crate::csi_query::save_restore(b, &self.csi) {
                             out.push((i + 1, sig));
                         }
@@ -454,7 +466,7 @@ impl Scanner {
         let raw = std::mem::take(&mut self.buf);
         let text = String::from_utf8_lossy(&raw);
         if let Some(mut sig) = parse_osc(&text) {
-            if let Signal::KittyColor { bel: b, .. } = &mut sig {
+            if let Signal::KittyColor { bel: b, .. } | Signal::KittyClipboard { bel: b, .. } = &mut sig {
                 *b = bel;
             }
             out.push((at, sig));
@@ -633,6 +645,11 @@ fn parse_osc(s: &str) -> Option<Signal> {
             })
         }
         "22" => mouse_shape_signal(rest),
+        // 5522: 상한(MAX_OSC)은 모으기 전에 이미 지났다. 해석은 세션이 쥔 거래 상태와 함께 한다(#325)
+        "5522" => Some(Signal::KittyClipboard {
+            packet: rest.to_string(),
+            bel: false,
+        }),
         "21" => crate::kitty_color::parse(rest)
             .filter(|r| !r.is_empty())
             .map(|requests| Signal::KittyColor { requests, bel: false }),
