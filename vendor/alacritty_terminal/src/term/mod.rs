@@ -1793,6 +1793,7 @@ impl<T: EventListener> Handler for Term<T> {
         let terminator = terminator.to_owned();
         self.event_proxy.send_event(Event::ColorRequest(
             index,
+            self.colors[index], // b-terminal(#272): 프로그램이 바꾼 색(없으면 None)을 사건에 싣는다
             Arc::new(move |color| {
                 format!(
                     "\x1b]{};rgb:{1:02x}{1:02x}/{2:02x}{2:02x}/{3:02x}{3:02x}{4}",
