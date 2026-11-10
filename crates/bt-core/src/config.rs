@@ -67,7 +67,7 @@ pub enum RightClickAction {
 }
 
 /// `mouse-shift-capture`(Ghostty): Shift를 누른 클릭을 프로그램(마우스 보고)이 받는가
-/// XTSHIFTESCAPE(프로그램이 바꾸는 길)는 받지 않아 `True`는 `Always`, `False`는 `Never`와 같게 동작한다
+/// 프로그램은 XTSHIFTESCAPE(`CSI > 1 s`·`CSI > 0 s`)로 `True`·`False`를 덮어쓴다. `Always`·`Never`는 덮어쓰지 못한다(#327)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum MouseShiftCapture {
     #[default]
@@ -81,6 +81,15 @@ impl MouseShiftCapture {
     /// Shift를 누른 클릭을 프로그램에 보내는가
     pub fn sends_shift(self) -> bool {
         matches!(self, MouseShiftCapture::True | MouseShiftCapture::Always)
+    }
+
+    /// Shift를 누른 클릭을 프로그램에 보내는가. `program`은 프로그램이 XTSHIFTESCAPE로 정한 값(#327)
+    pub fn allows(self, program: Option<bool>) -> bool {
+        match self {
+            MouseShiftCapture::Always => true,
+            MouseShiftCapture::Never => false,
+            MouseShiftCapture::True | MouseShiftCapture::False => program.unwrap_or(self == MouseShiftCapture::True),
+        }
     }
 }
 
@@ -4168,6 +4177,17 @@ mod tests {
         );
         assert!(MouseShiftCapture::True.sends_shift() && MouseShiftCapture::Always.sends_shift());
         assert!(!MouseShiftCapture::False.sends_shift() && !MouseShiftCapture::Never.sends_shift());
+        // XTSHIFTESCAPE(#327): always·never는 프로그램이 못 바꾸고, true·false는 프로그램이 정했으면 그 값, 아니면 설정 값
+        for program in [None, Some(false), Some(true)] {
+            assert!(MouseShiftCapture::Always.allows(program));
+            assert!(!MouseShiftCapture::Never.allows(program));
+        }
+        assert!(!MouseShiftCapture::False.allows(None));
+        assert!(!MouseShiftCapture::False.allows(Some(false)));
+        assert!(MouseShiftCapture::False.allows(Some(true)));
+        assert!(MouseShiftCapture::True.allows(None));
+        assert!(MouseShiftCapture::True.allows(Some(true)));
+        assert!(!MouseShiftCapture::True.allows(Some(false)));
         for bad in [
             "mouse-reporting = maybe",
             "mouse-shift-capture = sometimes",

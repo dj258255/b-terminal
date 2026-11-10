@@ -1318,6 +1318,11 @@ impl Session {
         modes_of(*self.inner.lock().term.mode())
     }
 
+    /// 프로그램이 XTSHIFTESCAPE로 정한 Shift 마우스 보고 여부. 정한 적이 없으면 `None`(#327)
+    pub fn mouse_shift_capture(&self) -> Option<bool> {
+        self.inner.lock().term.mouse_shift_capture()
+    }
+
     /// 화면 좌표(보이는 줄 기준)로 고르기를 시작한다
     pub fn select_start(&self, col: usize, row: usize, kind: SelectKind) {
         let mut g = self.inner.lock();

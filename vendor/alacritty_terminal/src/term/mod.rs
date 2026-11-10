@@ -418,6 +418,9 @@ pub struct Term<T> {
     /// (Ghostty `Screen.protected_mode == .iso`). 보호를 꺼도(EPA·DECSCA 0) 이 값은 남고, DECSCA 1(DEC)이 거짓으로,
     /// RIS·DECSTR이 거짓으로 되돌린다.
     protected_iso: bool,
+
+    /// b-terminal(#327): XTSHIFTESCAPE로 프로그램이 정한 값(`None`은 정한 적 없음). Ghostty `flags.mouse_shift_capture`
+    mouse_shift_capture: Option<bool>,
 }
 
 /// b-terminal 패치(#180): 한 칸의 결합 문자 목록에 이어 붙이는 글자 수 상한(join_grapheme)
@@ -573,6 +576,7 @@ impl<T> Term<T> {
             title: Default::default(),
             grapheme_anchor: None,
             protected_iso: false,
+            mouse_shift_capture: None,
             mode,
         }
     }
@@ -855,6 +859,26 @@ impl<T> Term<T> {
     #[inline]
     pub fn scroll_region(&self) -> &Range<Line> {
         &self.scroll_region
+    }
+
+    /// b-terminal(#327): 커서 위치 보고에 쓰는 (줄, 칸)(0부터). 원점 모드에서는 위 여백·왼쪽 여백 기준이다
+    /// (Ghostty stream_handler.zig `cursorReportPos` 854줄). DSR 6과 DECXCPR가 함께 쓴다
+    fn cursor_report_pos(&self) -> (usize, usize) {
+        let pos = self.grid.cursor.point;
+        if self.mode.contains(TermMode::ORIGIN) {
+            (
+                (pos.line.0 - self.scroll_region.start.0).max(0) as usize,
+                pos.column.0.saturating_sub(self.margin_left),
+            )
+        } else {
+            (pos.line.0 as usize, pos.column.0)
+        }
+    }
+
+    /// b-terminal(#327): XTSHIFTESCAPE로 프로그램이 정한 값. 정한 적이 없으면 `None`
+    #[inline]
+    pub fn mouse_shift_capture(&self) -> Option<bool> {
+        self.mouse_shift_capture
     }
 
     /// b-terminal(#311): 왼쪽 여백(0부터, 이 칸을 포함)
@@ -1984,21 +2008,42 @@ impl<T: EventListener> Handler for Term<T> {
                 self.event_proxy.send_event(Event::PtyWrite(text));
             },
             6 => {
-                let pos = self.grid.cursor.point;
-                // b-terminal(#311): 원점 모드에서는 위 여백·왼쪽 여백 기준으로 답한다(Ghostty stream_handler.zig 854줄)
-                let (line, column) = if self.mode.contains(TermMode::ORIGIN) {
-                    (
-                        (pos.line.0 - self.scroll_region.start.0).max(0) as usize,
-                        pos.column.0.saturating_sub(self.margin_left),
-                    )
-                } else {
-                    (pos.line.0 as usize, pos.column.0)
-                };
+                let (line, column) = self.cursor_report_pos();
                 let text = format!("\x1b[{};{}R", line + 1, column + 1);
                 self.event_proxy.send_event(Event::PtyWrite(text));
             },
             _ => debug!("unknown device status query: {arg}"),
         };
+    }
+
+    // b-terminal(#327): DECXCPR. 쪽 번호는 늘 1이다(Ghostty stream_handler.zig 889~902줄)
+    #[inline]
+    fn report_cursor_position_extended(&mut self) {
+        let (line, column) = self.cursor_report_pos();
+        let text = format!("\x1b[?{};{};1R", line + 1, column + 1);
+        self.event_proxy.send_event(Event::PtyWrite(text));
+    }
+
+    // b-terminal(#327): XTSHIFTESCAPE
+    #[inline]
+    fn set_mouse_shift_capture(&mut self, capture: bool) {
+        self.mouse_shift_capture = Some(capture);
+    }
+
+    // b-terminal(#327): ED 22. 보이는 화면을 스크롤백으로 밀고 지운다(`ClearMode::All`이 하는 일과 같다). Ghostty `scrollClear`는
+    // 보호 칸을 가리지 않아 ISO 보호를 잠시 끈다. 대기 줄바꿈은 푼다(Terminal.zig 4459줄).
+    // 그림(kitty)은 내용을 따라 스크롤백에 남고 보이는 자리에서만 사라진다(세션이 줄 번호로 쥔다)
+    #[inline]
+    fn clear_screen_scroll_complete(&mut self) {
+        // 빈 화면은 스크롤백에 아무것도 밀지 않는다(`Grid::clear_viewport`는 빈 화면에서도 한 줄을 민다)
+        let blank = (0..self.screen_lines() as i32)
+            .all(|l| self.grid[Line(l)][..].iter().all(crate::grid::GridCell::is_empty));
+        if !blank {
+            let iso = mem::replace(&mut self.protected_iso, false);
+            Handler::clear_screen(self, ansi::ClearMode::All);
+            self.protected_iso = iso;
+        }
+        self.grid.cursor.input_needs_wrap = false;
     }
 
     #[inline]
@@ -2583,6 +2628,7 @@ impl<T: EventListener> Handler for Term<T> {
         self.single_shift = None;
         self.cursor_style = None;
         self.protected_iso = false; // b-terminal(#294)
+        self.mouse_shift_capture = None; // b-terminal(#327)
         self.grid.reset();
         self.inactive_grid.reset();
         self.scroll_region = Line(0)..Line(self.screen_lines() as i32);
