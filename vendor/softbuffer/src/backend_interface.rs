@@ -42,4 +42,13 @@ pub(crate) trait BufferInterface {
     fn age(&self) -> u8;
     fn present_with_damage(self, damage: &[Rect]) -> Result<(), SoftBufferError>;
     fn present(self) -> Result<(), SoftBufferError>;
+    /// b-terminal(#346): 완성한 프레임(폭×높이 픽셀)을 올린다. 기본은 버퍼에 복사한 뒤 `present`.
+    /// macOS 백엔드는 이를 덮어 프레임을 IOSurface로 곧장 옮긴다(복사 한 번)
+    fn present_frame(mut self, frame: &[u32]) -> Result<(), SoftBufferError>
+    where
+        Self: Sized,
+    {
+        self.pixels_mut().copy_from_slice(frame);
+        self.present()
+    }
 }

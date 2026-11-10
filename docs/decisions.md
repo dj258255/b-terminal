@@ -36,6 +36,7 @@
 - [ADR-031 XTSHIFTESCAPE는 프로그램이 Shift 클릭을 보고로 보낼지 정하게 하되, always·never가 정한 것은 바꾸지 못한다](#adr-031-xtshiftescape는-프로그램이-shift-클릭을-보고로-보낼지-정하게-하되-alwaysnever가-정한-것은-바꾸지-못한다)
 - [ADR-032 OSC 7은 빈 값으로 폴더를 지우고 kitty-shell-cwd도 받으며, 지운 칸은 프로세스 폴더로 되돌아가지 않는다](#adr-032-osc-7은-빈-값으로-폴더를-지우고-kitty-shell-cwd도-받으며-지운-칸은-프로세스-폴더로-되돌아가지-않는다)
 - [ADR-033 프롬프트 클릭은 셸이 OSC 133으로 밝힌 화면에서만 입력 칸을 세어 PTY에 보내고, 보내는 바이트는 숫자와 고정 글자뿐이다](#adr-033-프롬프트-클릭은-셸이-osc-133으로-밝힌-화면에서만-입력-칸을-세어-pty에-보내고-보내는-바이트는-숫자와-고정-글자뿐이다)
+- [ADR-034 macOS 화면 올리기는 프레임을 IOSurface에 곧장 복사해 레이어 contents로 넣는다(softbuffer vendor 패치, ADR-009를 잇는다)](#adr-034-macos-화면-올리기는-프레임을-iosurface에-곧장-복사해-레이어-contents로-넣는다softbuffer-vendor-패치-adr-009를-잇는다)
 
 ## ADR-001 VT 엔진은 alacritty_terminal로 시작하고, bt-term 밖으로 엔진 타입을 내보내지 않는다
 
@@ -880,3 +881,30 @@ macOS의 Carbon `EnableSecureEventInput`은 켜 있는 동안 키 입력이 다�
 - 보안: 클릭 바이트는 사용자의 클릭이 있을 때만 나가고 위 조건 안에서만이다. 출력이 할 수 있는 것은 `cl=`·`click_events=`를 밝혀 **다음 클릭 한 번이 화살표나 SGR 클릭을 셸에 보내게** 하는 것까지다. 클릭이 일으키는 입력은 사용자가 방향키나 마우스를 쓴 것과 같은 종류이고, 글을 넣을 수는 없다. `click_events`를 밝힌 출력은 프롬프트로 보이는 줄 아래 어디를 눌러도 SGR 한 줄을 받는다(Ghostty와 같다. 셸이 처리하지 못하면 줄 편집기가 무시한다).
 - 기본 동작이 바뀐다: 표지를 밝히지 않는 셸은 클릭 이동이 꺼진다. 대신 입력 칸 밖의 프롬프트 글에 엇나가지 않고, 여러 줄 입력의 다른 줄과 스크롤해 올라간 화면의 프롬프트도 옮긴다.
 - 한계: 시험은 엔진 상태·바이트 함수·셸 스크립트 단위로 했고 실제 클릭은 창에서 보지 않았다. 넓은 글자는 Ghostty와 다르게 센다. Ghostty는 넓은 글자의 뒤 칸을 커서 템플릿으로 써서(`Terminal.zig` `print`) 뒤 칸도 입력 칸이 되고, `promptClickLine`은 입력 칸을 모두 세므로 넓은 글자 하나에 화살표를 두 번 보낸다(원문으로 읽었고 Ghostty를 돌려 보지는 않았다). zsh·bash 줄 편집기는 화살표 한 번에 글자 하나를 옮기므로 b-terminal은 뒤 칸을 세지 않는다. `promptIterator` 원문이 없어 "커서의 프롬프트"는 위로 올라가며 처음 만나는 프롬프트 표시 줄로 추정했다.
+
+## ADR-034 macOS 화면 올리기는 프레임을 IOSurface에 곧장 복사해 레이어 contents로 넣는다(softbuffer vendor 패치, ADR-009를 잇는다)
+
+상태: 채택
+관련: [#346](https://github.com/dj258255/b-terminal/issues/346), ADR-009, [실험 E5](experiments/2026-11-10-e5-iosurface.md), [vendor/README.md](../vendor/README.md)
+
+### 맥락
+- 실험 E3·E4(2026-11-06)에서 큰 창(2000×1360px)의 바뀐 줄 하나짜리 프레임도 올리기까지 약 3~5ms였고, 대부분이 프레임을 softbuffer 버퍼로 옮기는 일이었다. Core Animation이 넘겨받은 버퍼를 쓰기 시 복사로 묶는 것으로 짐작한다(가리지 않았다).
+- softbuffer(macOS)는 프레임마다 `CGDataProvider`·`CGImage`를 만들어 레이어 `contents`에 넣는다. Ghostty는 IOSurface(32BGRA, 원소 4바이트, 색 공간 속성을 붙임)를 만들어 레이어 `contents`에 직접 넣는다(`IOSurfaceLayer.zig`의 `setSurface`·`contentsGravity` topLeft, `pkg_macos_iosurface_iosurface.zig`의 만들기와 `CGColorSpaceCopyPropertyList` → `kIOSurfaceColorSpace`).
+- 다음 판의 GPU 렌더러가 같은 IOSurface에 그릴 수 있어야 하고, CPU 그리기와 픽셀 시험은 그대로여야 한다.
+
+### 결정
+1. vendor softbuffer의 macOS 백엔드에 IOSurface 올리기 길을 더한다(ADR-004·009와 같은 vendor 방식). FFI(IOSurface 잠금·기준 주소)는 vendor 안에만 둔다. 작업 공간 크레이트에는 unsafe를 넣지 않는다.
+2. 올릴 때마다 같은 크기·같은 색 공간의 IOSurface 묶음(최대 3개)에서 `IOSurfaceIsInUse`가 아니고 지금 레이어 `contents`도 아닌 것을 고른다. 없으면 새로 만든다. 잠그고 줄마다 `bytesPerRow`(시스템이 폭×4보다 크게 잡는다. 이 기기에서 2000px 폭은 8064바이트)를 지켜 복사하고 푼 뒤, 암묵 애니메이션을 끈 `CATransaction` 안에서 `contents`로 넣는다. 크기나 색 공간이 바뀌면 묶음을 비운다.
+3. 앱은 `Buffer::present_frame(프레임)`으로 프레임을 한 번만 복사한다(버퍼에 복사한 뒤 IOSurface로 다시 복사하지 않는다).
+4. 알파: 캔버스는 불투명 프레임의 높은 바이트를 `0`으로 둔다(0RGB). CGImage 길의 `NoneSkipFirst`는 그것을 무시했지만 IOSurface `BGRA`는 알파를 읽으므로, 불투명 창은 복사 중에 알파 바이트를 `0xff`로 채운다. 투명 창(`background-opacity < 1`)은 캔버스가 곱한 알파로 그린 그대로 넘긴다(#78·#86).
+5. 색 공간: 기본(`window-colorspace = display-p3`)은 창이 있는 화면의 색 공간(`CGDisplayCopyColorSpace`)의 속성 목록을 `kIOSurfaceColorSpace`로 붙이고, 창이 다른 화면으로 가면(#97) 그 화면의 것으로 바꾸며 묶음을 비운다. `srgb`는 sRGB 색 공간을 붙인다. CGImage 길의 "기기 RGB"와 달리 이름 있는 sRGB다.
+6. 환경 변수 `BT_E5_CGIMAGE`가 있으면 예전 CGImage 길로 올린다(실험 E5가 견주려고). 기본은 IOSurface다. 실험 E5(창 1000×680pt, 바뀐 줄 1줄, 번갈아 다섯 쌍)에서 올리기까지 중앙값이 CGImage 2.26ms에서 IOSurface 1.37ms로 줄었고 다섯 쌍 모두 짧았다. 기본 색 공간과 투명 창은 두 길의 화면 그림이 픽셀까지 같았다.
+
+### 감수한 트레이드오프
+- macOS 전용 vendor 코드가 늘고 `objc2-io-surface`가 직접 의존성이 된다(잠금 파일에는 이미 있던 크레이트).
+- `IOSurfaceIsInUse`가 Core Animation의 사용을 얼마나 빨리 반영하는지는 문서에 없다. 그래서 지금 `contents`인 것은 따로 쓰지 않는다. 빠른 출력 중 실패 로그는 없었지만 찢어짐은 눈으로 보지 않았다.
+- `window-colorspace = srgb`는 이전(기기 RGB)과 일부 픽셀이 채널 최대 2 다르다(실험 E5 화면 그림, 바탕은 둘 다 테마 값 그대로).
+- 보안: 새로 여는 경계는 없다. 입력·출력 길이 아니고 화면에 올리는 길만 바뀐다. 잠금 동안만 기준 주소를 쓰고 `alloc_size` 안에서만 쓴다.
+
+### 되돌릴 조건
+- 실험 E5에서 올리기까지 중앙값이 줄지 않거나 색·투명·크기 바꿈이 이전과 다르면 기본을 CGImage로 되돌리고 이 패치를 지운다.
