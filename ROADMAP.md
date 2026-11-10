@@ -382,6 +382,21 @@ Ghostty가 답하는 VT 질의. 추적 이슈 [#263](https://github.com/dj258255
 - 같은 구조체(`DrawCell`)·비트 표(`CellFlags`)·목록(`CAPS`)에 여러 에이전트가 끝에 덧붙이면 충돌은 기계적이지만 비트 번호는 사람이 다시 매겨야 했습니다.
 - Ghostty와 같은 동작(따옴표로 감싼 경로를 셸에 침)도 사용자 셸이 POSIX가 아니면 안전하지 않았습니다. 커밋 보안 검토가 이것을 잡았고, Ghostty보다 좁게 막았습니다.
 
+## 0.22.0 (2026-11-10)
+
+VT 세부 맞추기. 추적 이슈 [#285](https://github.com/dj258255/b-terminal/issues/285). 주 세션이 Ghostty Config.zig·Binding.zig와 견줘 설정 키·키 묶음 동작이 모두 맞는 것을 확인하고, 0.21.0을 격리한 창에서 남은 VT 차이를 쟀습니다. 에이전트 둘이 각자 worktree에서 구현·커밋하고, 하나는 주 세션이 직접 했습니다. 병합 시각(KST)은 추적 이슈를 연 13:25부터 마지막 병합 13:47까지입니다.
+
+| 이슈 | 내용 | 예상 | 실제 | PR | 주 세션이 한 것 |
+|---|---|---|---|---|---|
+| [#288](https://github.com/dj258255/b-terminal/issues/288) | 밑줄 친 링크를 이중 밑줄로 | 2~4시간 | 주 세션 약 15분(병합 13:32) | [#289](https://github.com/dj258255/b-terminal/pull/289) | 직접 구현(app.rs 한 곳), 테스트 먼저 |
+| [#286](https://github.com/dj258255/b-terminal/issues/286) | OSC 12 질의와 DECSTR의 커서 되돌림 | 2~4시간 | 에이전트 약 6분(병합 13:39) | [#290](https://github.com/dj258255/b-terminal/pull/290) | 격리한 창에서 차이를 잼, 옮김, 실제 창(OSC 12 다섯 경우·DECSTR) |
+| [#287](https://github.com/dj258255/b-terminal/issues/287) | 깜박임 DECRQSS, alacritty `Flags` u32 | 2~4시간 | 에이전트 약 6분(병합 13:47) | [#291](https://github.com/dj258255/b-terminal/pull/291) | 옮김, vendor의 닿지 않는 갈래 경고를 고침, 실제 창 |
+
+이번에 배운 것:
+
+- vendor 크레이트의 경고는 `cargo clippy -- -D warnings`가 잡지 않고 빌드 출력에만 보였습니다(작업 공간 밖이라 clippy 인자가 가지 않음). 합친 뒤 빌드 출력의 `warning`도 봅니다.
+- 고칠 자리가 한 곳인 이슈는 에이전트에게 넘기는 비용(프롬프트·옮기기)이 구현보다 컸습니다. 주 세션이 직접 했습니다.
+
 ## 다음
 
 - 범수 님이 직접 해야 할 것: 키보드·마우스 확인(한글 2벌식 "안녕 하세요⏎", Claude Code의 Shift+Enter, Cmd-D·Cmd-F·Cmd-클릭·Cmd-N·Cmd-Shift-P, 메뉴, 창 닫기 단추, vim·htop, kitty icat·yazi, 투명 창), Developer ID 계정으로 `scripts/bundle-macos.sh --sign … --notarize … --dmg`
@@ -405,4 +420,5 @@ Ghostty가 답하는 VT 질의. 추적 이슈 [#263](https://github.com/dj258255
 - 범수 님이 확인할 것(0.19): 셸에서 `sudo -k; sudo true`의 암호 프롬프트에서 커서가 자물쇠가 되고 창 오른쪽 위 배지가 뜨는지, 앱 메뉴 `b-terminal › 보안 키보드 입력`을 켜고 다른 앱으로 갔다 와 보기(그 앱의 단축키 도구가 다시 동작하는지), `keybind = ctrl+shift+s=toggle_secure_input`
 - 범수 님이 확인할 것(0.20): vim·neovim을 켜서 색·배경 판단이 그대로인지(DA1·DA2 값과 OSC 11 답이 바뀜), tmux 안에서 `tmux info`의 `Tc`·`Smulx`·`Sync`가 잡히는지(XTGETTCAP), 창 크기를 끌어 바꾸며 모드 2048을 쓰는 프로그램이 따라오는지
 - 범수 님이 확인할 것(0.21): 셸에서 단어 위 오른쪽 클릭 → 단어가 골라지고 메뉴(복사·붙여넣기·나누기·닫기·초기화·읽기 전용·제목)가 뜨는지, 메뉴 붙여넣기에서 두 줄 글이면 보호 막대, Ctrl+왼쪽 클릭, vim 안에서는 메뉴가 뜨지 않는지. `scripts/bundle-macos.sh`로 만든 앱을 Dock에 두고 폴더를 끌어놓으면 새 탭, `.sh`를 끌어놓으면 확인 막대가 뜨고 Enter가 아니라 `y`로만 실행되는지, `it's.sh`는 실행하지 않고 알림 띠만 뜨는지, 앱이 꺼진 채로 끌어놓았을 때
+- 범수 님이 확인할 것(0.22): `printf '\e]8;;https://example.com\e\\\e[4mlink\e[0m\e]8;;\e\\\n'` 뒤 Cmd를 누르고 `link`에 올리면 이중 밑줄, nvim에서 커서 색이 테마와 어울리는지
 - 큰 일로 남긴 것: GPU(또는 IOSurface) 렌더러
