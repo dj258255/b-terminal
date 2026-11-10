@@ -430,6 +430,23 @@ VT 시퀀스 빈칸 메우기. 추적 이슈 [#293](https://github.com/dj258255/
 - 화면 반전은 테스트가 모두 통과했지만 실제 창에서 제목 막대가 흰색이 되는 것을 보았습니다. 창 테두리처럼 터미널 격자 밖에 그리는 것은 실제 창으로만 보였습니다.
 - 실제 창 스크린샷은 늘 창 번호(`-l`)를 줍니다. 이번에 한 번 빠뜨려 전체 화면을 찍었고, 보지 않고 바로 지웠습니다.
 
+## 0.25.0 (2026-11-10)
+
+좌우 여백과 남은 입력 모드. 추적 이슈 [#310](https://github.com/dj258255/b-terminal/issues/310). 0.24.0을 쌓은 브랜치(c8fb66c)에서 에이전트 넷이 각자 worktree에서 구현·커밋하고, 주 세션이 검토·원본 대조·옮기기·실제 창·병합을 했습니다. 비트 번호(TermMode 48·49, 셀 표시 18)와 ADR 번호(029)는 프롬프트에서 미리 나눴습니다. 병합 시각(KST)은 추적 이슈를 연 15:10부터 마지막 병합 15:57까지입니다.
+
+| 이슈 | 내용 | 예상 | 실제 | PR | 주 세션이 한 것 |
+|---|---|---|---|---|---|
+| [#314](https://github.com/dj258255/b-terminal/issues/314) | XTCHECKSUM 깜박임·보호·쓴 적 없는 칸 | 2~4시간 | 에이전트 약 5분(병합 15:34) | [#318](https://github.com/dj258255/b-terminal/pull/318) | 새 셀 표시가 셀 비교에 걸리지 않는지 찾음, 실제 창(합 다섯) |
+| [#313](https://github.com/dj258255/b-terminal/issues/313) | XTSAVE·XTRESTORE | 2~4시간 | 에이전트 약 7분(병합 15:48) | [#319](https://github.com/dj258255/b-terminal/pull/319) | 실제 창(DECRQM 아홉, 1049 복원 뒤 화면) |
+| [#312](https://github.com/dj258255/b-terminal/issues/312) | 키패드 응용 모드 바이트와 modifyOtherKeys | 2~4시간 | 에이전트 약 9분(병합 15:53) | [#320](https://github.com/dj258255/b-terminal/pull/320) | Ghostty `should_modify` 대조, 되돌려도 통과하던 RIS·DECSTR 시험에 켜짐 단언을 더함. 실제 키는 누르지 않음 |
+| [#311](https://github.com/dj258255/b-terminal/issues/311) | 좌우 여백(DECLRMM·DECSLRM) | 2~4시간 | 에이전트 약 29분, 6단계(병합 15:57) | [#321](https://github.com/dj258255/b-terminal/pull/321) | 여백 없을 때 빠른 스크롤 경로와 크기 변경 확인, ECH를 Ghostty 원문으로 확인, #313 위로 옮기며 `CSI s` 갈래를 손으로 풂, 실제 창(넷) |
+
+이번에 배운 것:
+
+- 같은 vte 자리(`CSI s`)를 두 이슈가 다른 뜻으로 고치면(XTSAVE의 `?` 갈래, DECSLRM의 맨 갈래) 자동 "양쪽 살리기"로는 괄호가 맞지 않았습니다. 그런 충돌은 손으로 풀고 바로 빌드했습니다.
+- 에이전트가 "되돌려도 통과하는 시험"을 스스로 보고해 주어 바로 고칠 수 있었습니다. 보고 항목에 넣어 둔 덕입니다.
+- 실제 창 시험 글은 줄마다 달라야 합니다. 모든 줄의 4~10열이 같은 글이면 IL이 사각형을 밀었는지 화면으로 가릴 수 없었습니다.
+
 ## 다음
 
 - 범수 님이 직접 해야 할 것: 키보드·마우스 확인(한글 2벌식 "안녕 하세요⏎", Claude Code의 Shift+Enter, Cmd-D·Cmd-F·Cmd-클릭·Cmd-N·Cmd-Shift-P, 메뉴, 창 닫기 단추, vim·htop, kitty icat·yazi, 투명 창), Developer ID 계정으로 `scripts/bundle-macos.sh --sign … --notarize … --dmg`
@@ -456,4 +473,5 @@ VT 시퀀스 빈칸 메우기. 추적 이슈 [#293](https://github.com/dj258255/
 - 범수 님이 확인할 것(0.22): `printf '\e]8;;https://example.com\e\\\e[4mlink\e[0m\e]8;;\e\\\n'` 뒤 Cmd를 누르고 `link`에 올리면 이중 밑줄, nvim에서 커서 색이 테마와 어울리는지
 - 범수 님이 확인할 것(0.23): vim·less·옛 curses 프로그램(47·1047을 쓰는 것)을 켜고 끈 뒤 셸 화면이 그대로인지
 - 범수 님이 확인할 것(0.24): vim·htop·tmux에서 마우스 클릭·끌기·휠(가로 휠 방향 포함), `printf '\033[?1003h\033[?1016h'` 뒤 마우스를 움직여 픽셀 좌표가 오는지(끝은 `printf '\033[?1003l\033[?1016l'`), `printf '\033[?67h'` 뒤 `cat -v`에서 Backspace가 `^H`인지, `macos-option-as-alt = true`에서 `printf '\033[?1036l'` 뒤 Option 글자, 다른 창으로 칸을 다 가렸을 때 2033 보고, `printf '\033[?5h'`로 화면 반전 뒤 제목 막대와 창 여백
+- 범수 님이 확인할 것(0.25): `printf '\033=\033[?1035l'; cat -v` 뒤 키패드 `1`·Enter·`+`가 `^[Oq`·`^[OM`·`^[Ok`인지, `printf '\033[>4;2m'; cat -v` 뒤 Ctrl+a·Ctrl+Enter·Shift+Tab이 `^[[27;5;97~`·`^[[27;5;13~`·`^[[27;2;9~`인지와 그 상태에서 한글 조합 확정이 그대로 들어가는지(끝은 `printf '\033[>4;0m'`), vim·tmux가 좌우 여백을 쓰는 화면(세로 분할 스크롤)
 - 큰 일로 남긴 것: GPU(또는 IOSurface) 렌더러
