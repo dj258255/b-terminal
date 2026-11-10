@@ -108,7 +108,11 @@ pub fn system_is_dark() -> bool {
     }
 }
 
+/// 앱을 띄운 때. 창의 첫 프레임 로그가 이때부터 잰다(실험 E10)
+pub(crate) static STARTED: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+
 fn main() -> anyhow::Result<()> {
+    STARTED.get_or_init(std::time::Instant::now);
     // `+동작`(Ghostty의 `ghostty +동작`)은 창 없이 돌고 끝난다. 출력에 로그가 섞이지 않게 로거보다 먼저
     let argv: Vec<String> = std::env::args().skip(1).collect();
     #[cfg(target_os = "macos")]
