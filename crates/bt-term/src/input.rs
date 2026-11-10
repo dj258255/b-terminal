@@ -144,6 +144,79 @@ pub fn encode_named_with(key: NamedKey, mods: Mods, app_cursor: bool, km: KeyMod
     }
 }
 
+/// 숫자 키패드 키(#312). winit에서는 `KeyLocation::Numpad`로 가린다
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KeypadKey {
+    /// 0~9
+    Digit(u8),
+    Decimal,
+    Divide,
+    Multiply,
+    Subtract,
+    Add,
+    Enter,
+}
+
+/// 키패드가 응용 모드인가. DECKPAM(`ESC =`)을 켰고 1035가 꺼져 있을 때만 그렇다
+/// (Ghostty `pcStyleFunctionKey`: 1035가 켜져 있으면 늘 숫자 키패드)
+pub fn keypad_application(app_keypad: bool, km: KeyModes) -> bool {
+    app_keypad && !km.ignore_keypad_with_numlock
+}
+
+/// 키패드 키 하나를 바이트로 바꾼다(Ghostty `function_keys.zig`의 `kpKeys`).
+/// 응용 모드면 `ESC O 끝글자`, 수식 키가 있으면 `ESC O 번호 끝글자`. 숫자 모드면 수식 키와 상관없이 그 글자 그대로
+pub fn encode_keypad(key: KeypadKey, mods: Mods, application: bool) -> Vec<u8> {
+    let (suffix, normal) = match key {
+        KeypadKey::Digit(n) => (b'p' + n.min(9), b'0' + n.min(9)),
+        KeypadKey::Decimal => (b'n', b'.'),
+        KeypadKey::Divide => (b'o', b'/'),
+        KeypadKey::Multiply => (b'j', b'*'),
+        KeypadKey::Subtract => (b'm', b'-'),
+        KeypadKey::Add => (b'k', b'+'),
+        KeypadKey::Enter => (b'M', b'\r'),
+    };
+    if !application {
+        return vec![normal];
+    }
+    let code = kitty_mods(mods);
+    if code == 1 {
+        vec![0x1b, b'O', suffix]
+    } else {
+        format!("\x1bO{code}{}", suffix as char).into_bytes()
+    }
+}
+
+/// xterm modifyOtherKeys 상태 2(`CSI > 4 ; 2 m`)의 글자 인코딩 `ESC [ 27 ; 수식 ; 코드 ~`(Ghostty `legacy`의 `modify_other_keys_state_2`).
+/// 보낼 것이 없으면(수식 키가 없거나 xterm이 옛 꼴로 두는 글자) 없다
+pub fn encode_modify_other_char(ch: char, mods: Mods) -> Option<Vec<u8>> {
+    let code = kitty_mods(mods);
+    if code == 1 {
+        return None;
+    }
+    let cp = ch as u32;
+    // xterm IsControlInput(0x40~0x7F), Shift 말고 다른 수식 키가 있을 때, Shift만이면 공백만
+    let should_modify = (0x40..=0x7f).contains(&cp) || mods.ctrl || mods.alt || mods.sup || ch == ' ';
+    should_modify.then(|| format!("\x1b[27;{code};{cp}~").into_bytes())
+}
+
+/// modifyOtherKeys 상태 2에서 Enter·Tab·Backspace·Escape(Ghostty `function_keys.zig`의 `set_other` 항목과 수식 키 표).
+/// 수식 키가 있으면 `ESC [ 27 ; 번호 ; 코드 ~`. Backspace의 Ctrl 혼자는 옛 꼴(0x08)이라 없다
+pub fn encode_named_modify_other(key: NamedKey, mods: Mods) -> Option<Vec<u8>> {
+    let code = kitty_mods(mods);
+    if code == 1 {
+        return None;
+    }
+    let cp = match key {
+        NamedKey::Enter => 13,
+        NamedKey::Tab => 9,
+        NamedKey::Escape => 27,
+        NamedKey::Backspace if mods.ctrl && !mods.shift && !mods.alt && !mods.sup => return None,
+        NamedKey::Backspace => 127,
+        _ => return None,
+    };
+    Some(format!("\x1b[27;{code};{cp}~").into_bytes())
+}
+
 /// kitty 키보드 프로토콜 단계(프로그램이 `CSI > 플래그 u`로 켠다). <https://sw.kovidgoyal.net/kitty/keyboard-protocol/>
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct KittyFlags {

@@ -1459,6 +1459,7 @@ fn modes_of(m: TermMode) -> Modes {
             alt_sends_escape: m.contains(TermMode::ALT_SENDS_ESCAPE),
         },
         reverse_colors: m.contains(TermMode::REVERSE_COLORS),
+        modify_other_keys: m.contains(TermMode::MODIFY_OTHER_KEYS_2),
     }
 }
 

@@ -1824,11 +1824,18 @@ where
                     attrs_from_sgr_parameters(*handler, &mut params_iter);
                 }
             },
+            // b-terminal(#312): Ghostty stream.zig 2323~2360줄. 매개변수가 없거나 0·1·2면 끄고, 4는 두 번째 값으로 정한다.
+            // 매개변수가 셋 이상이거나 그 밖의 첫 값이면 버린다
             ('m', [b'>']) => {
-                let mode = match (next_param_or(1) == 4).then(|| next_param_or(0)) {
-                    Some(0) => ModifyOtherKeys::Reset,
-                    Some(1) => ModifyOtherKeys::EnableExceptWellDefined,
-                    Some(2) => ModifyOtherKeys::EnableAll,
+                let first = params.iter().next().map(|p| p[0]);
+                let second = params.iter().nth(1).map(|p| p[0]);
+                let mode = match (params.len() <= 2, first) {
+                    (true, None | Some(0..=2)) => ModifyOtherKeys::Reset,
+                    (true, Some(4)) => match second {
+                        Some(1) => ModifyOtherKeys::EnableExceptWellDefined,
+                        Some(2) => ModifyOtherKeys::EnableAll,
+                        _ => ModifyOtherKeys::Reset,
+                    },
                     _ => return unhandled!(),
                 };
                 handler.set_modify_other_keys(mode);
@@ -1841,6 +1848,8 @@ where
                 }
             },
             ('n', []) => handler.device_status(next_param_or(0) as usize),
+            // b-terminal(#312): `CSI > Ps n`은 modifyOtherKeys를 되돌린다(Ghostty stream.zig 2362~2368줄: 켜짐 없는 기본으로)
+            ('n', [b'>']) => handler.set_modify_other_keys(ModifyOtherKeys::Reset),
             ('P', []) => handler.delete_chars(next_param_or(1) as usize),
             ('p', [b'$']) => {
                 let mode = next_param_or(0);

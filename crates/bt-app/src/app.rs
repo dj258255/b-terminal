@@ -5601,7 +5601,11 @@ impl ApplicationHandler<UserEvent> for App {
                 }
                 // 키 묶음(키 순서 포함, #106): 앞 키는 기다리고, 순서가 깨지면 쌓은 키를 그대로 보낸다
                 let trigger = keys::trigger(&event, self.mods);
-                let modes = self.active_pane().map(|t| t.session.modes()).unwrap_or_default();
+                let mut modes = self.active_pane().map(|t| t.session.modes()).unwrap_or_default();
+                // IME 조합 중에 눌린 키는 modifyOtherKeys로 바꾸지 않는다(확정 글자만 PTY로 간다, #312)
+                if !self.w.preedit.is_empty() {
+                    modes.modify_other_keys = false;
+                }
                 let meta = self.config.option_as_alt != bt_core::config::OptionAsAlt::None;
                 let bytes = keys::encode(&event, self.mods, keys::to_state(self.raw_mods), modes, meta);
                 // performable: 묶음은 동작을 지금 할 수 있을 때만 키를 먹는다

@@ -121,6 +121,8 @@ bitflags! {
         const KEYBOARD_ACTION         = 1 << 45;
         /// ANSI 모드 12(SRM). Ghostty 기본 켬이라 `TermMode::default()`에 들어 있다
         const SEND_RECEIVE            = 1 << 46;
+        // b-terminal(#312): xterm modifyOtherKeys 상태 2(`CSI > 4 ; 2 m`). 비트 50·51은 비워 둔다
+        const MODIFY_OTHER_KEYS_2     = 1 << 49;
         // b-terminal(#300): X10 이벤트 모드(9)와 urxvt(1015)·SGR 픽셀(1016) 형식. 비트 35는 비워 둔다
         const MOUSE_X10               = 1 << 32;
         const URXVT_MOUSE             = 1 << 33;
@@ -1130,7 +1132,10 @@ impl<T> Term<T> {
     /// (Ghostty `softReset`의 `reset_modes`, Terminal.zig 5919~5931줄).
     pub fn reset_screen_modes_soft(&mut self) {
         self.mode.remove(
-            TermMode::REVERSE_WRAP | TermMode::REVERSE_WRAP_EXTENDED | TermMode::KEYBOARD_ACTION,
+            TermMode::REVERSE_WRAP
+                | TermMode::REVERSE_WRAP_EXTENDED
+                | TermMode::KEYBOARD_ACTION
+                | TermMode::MODIFY_OTHER_KEYS_2, // b-terminal(#312): Terminal.zig 5954줄
         );
     }
 
@@ -1706,6 +1711,12 @@ impl<T: EventListener> Handler for Term<T> {
         // Reload active mode.
         let mode = self.keyboard_mode_stack.last().copied().unwrap_or(KeyboardModes::NO_MODE);
         self.set_keyboard_mode(mode.into(), KeyboardModesApplyBehavior::Replace);
+    }
+
+    /// b-terminal(#312): `CSI > 4 ; 2 m`만 상태 2를 켠다. 나머지는 모두 끈다(Ghostty `setModifyKeyFormat`)
+    #[inline]
+    fn set_modify_other_keys(&mut self, mode: ansi::ModifyOtherKeys) {
+        self.mode.set(TermMode::MODIFY_OTHER_KEYS_2, mode == ansi::ModifyOtherKeys::EnableAll);
     }
 
     #[inline]
