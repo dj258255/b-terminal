@@ -462,6 +462,22 @@ DECCOLM과 kitty 클립보드. 추적 이슈 [#323](https://github.com/dj258255/
 - "확인 없이 답해도 되는 요청"을 정책 값(`allow`)으로 올리면, 그 값이 건너뛰는 다른 검사(보는 칸·읽기 전용)까지 같이 건너뜁니다. 면제는 확인 막대만 건너뛰게 따로 둡니다.
 - 다른 판(0.27) 에이전트를 같이 돌리니, 검토하다 판 사이에 부딪치는 자리(#327 ED 22가 기대는 엔진 갈래를 #329가 바꿈)를 병합 전에 찾았습니다.
 
+## 0.27.0 (2026-11-10)
+
+셸 통합 마무리와 작은 질의. 추적 이슈 [#326](https://github.com/dj258255/b-terminal/issues/326). 0.26 조사에서 Ghostty가 받는데 b-terminal이 버리던 것을 골랐습니다. 0.25.0에서 에이전트 셋이 0.26 에이전트와 함께 각자 worktree에서 구현·커밋하고, 주 세션이 0.26 릴리스 뒤 검토·원본 대조·옮기기·실제 창·병합을 했습니다. ADR 번호(031·032)는 프롬프트에서 미리 나누고 병합 순서를 그에 맞췄습니다. 병합 시각(KST)은 추적 이슈를 연 19:44부터 마지막 병합 20:43까지입니다.
+
+| 이슈 | 내용 | 예상 | 실제 | PR | 주 세션이 한 것 |
+|---|---|---|---|---|---|
+| [#327](https://github.com/dj258255/b-terminal/issues/327) | DECXCPR, ED 22, XTSHIFTESCAPE | 2~4시간 | 에이전트 약 8분(병합 20:26) | [#333](https://github.com/dj258255/b-terminal/pull/333) | 실제 창(DECXCPR 셋, ED 22), 0.26.0 위로 옮기며 CHANGELOG·ADR 목차의 빠진 빈 줄을 넣음 |
+| [#328](https://github.com/dj258255/b-terminal/issues/328) | OSC 7 빈 값과 `kitty-shell-cwd://` | 2~4시간 | 에이전트 약 5분(병합 20:33) | [#334](https://github.com/dj258255/b-terminal/pull/334) | 실제 창(`btctl list`로 다섯 경우), 옮기기 전후 코드 패치가 같은지 비교 |
+| [#329](https://github.com/dj258255/b-terminal/issues/329) | OSC 133 확장 | 2~4시간 | 에이전트 약 17분 + 후속 약 6분(병합 20:43) | [#335](https://github.com/dj258255/b-terminal/pull/335) | ED 2 조건과 다시 그리기를 Ghostty 원문으로 확인, ED 2 뒤 그림이 남는 것과 bash `redraw=last`를 찾아 돌려보냄, #327 ED 22와 부딪치는 자리를 맞춤, 실제 창(DECCOLM으로 리사이즈를 일으켜 `redraw` 셋) |
+
+이번에 배운 것:
+
+- 두 판의 에이전트를 함께 돌리면, 앞 판 병합 전에 뒤 판끼리 부딪치는 자리(#329가 바꾼 ED 2 갈래를 #327 ED 22가 기댐)를 검토에서 찾을 수 있었습니다. 옮긴 직후 #327 시험이 실패해 바로 확인됐습니다.
+- 배포 도구가 커밋 보안 검토 기록에서 "이 커밋 뒤의 첫 판정"을 읽어, 판정이 없던 커밋(검토할 소스 파일 없음)에 다른 커밋의 판정을 붙였습니다. #335는 그 상태로 병합됐고(커밋마다의 판정은 미리 확인함), 도구는 다음 커밋의 시작이나 "검토할 소스 파일 없음"을 만나면 판정 없음으로 멈추게 고쳤습니다.
+- 창 크기를 바꾸지 않고 리사이즈 갈래를 보려면 DECCOLM(모드 40)으로 격자 크기를 바꾸면 됩니다.
+
 ## 다음
 
 - 범수 님이 직접 해야 할 것: 키보드·마우스 확인(한글 2벌식 "안녕 하세요⏎", Claude Code의 Shift+Enter, Cmd-D·Cmd-F·Cmd-클릭·Cmd-N·Cmd-Shift-P, 메뉴, 창 닫기 단추, vim·htop, kitty icat·yazi, 투명 창), Developer ID 계정으로 `scripts/bundle-macos.sh --sign … --notarize … --dmg`
@@ -490,4 +506,5 @@ DECCOLM과 kitty 클립보드. 추적 이슈 [#323](https://github.com/dj258255/
 - 범수 님이 확인할 것(0.24): vim·htop·tmux에서 마우스 클릭·끌기·휠(가로 휠 방향 포함), `printf '\033[?1003h\033[?1016h'` 뒤 마우스를 움직여 픽셀 좌표가 오는지(끝은 `printf '\033[?1003l\033[?1016l'`), `printf '\033[?67h'` 뒤 `cat -v`에서 Backspace가 `^H`인지, `macos-option-as-alt = true`에서 `printf '\033[?1036l'` 뒤 Option 글자, 다른 창으로 칸을 다 가렸을 때 2033 보고, `printf '\033[?5h'`로 화면 반전 뒤 제목 막대와 창 여백
 - 범수 님이 확인할 것(0.25): `printf '\033=\033[?1035l'; cat -v` 뒤 키패드 `1`·Enter·`+`가 `^[Oq`·`^[OM`·`^[Ok`인지, `printf '\033[>4;2m'; cat -v` 뒤 Ctrl+a·Ctrl+Enter·Shift+Tab이 `^[[27;5;97~`·`^[[27;5;13~`·`^[[27;2;9~`인지와 그 상태에서 한글 조합 확정이 그대로 들어가는지(끝은 `printf '\033[>4;0m'`), vim·tmux가 좌우 여백을 쓰는 화면(세로 분할 스크롤)
 - 범수 님이 확인할 것(0.26): 클립보드 내용을 백업한 뒤 `printf '\033]5522;type=write:id=1\033\\\033]5522;type=wdata:mime=%s;%s\033\\\033]5522;type=wdata\033\\' "$(printf text/plain|base64)" "$(printf hello|base64)"`로 클립보드가 `hello`가 되고 알림 띠가 뜨는지, `clipboard-read = ask`에서 같은 꼴의 읽기에 확인 막대가 뜨고 `n`이면 `EPERM`인지, `printf '\033[?5522h'` 뒤 Cmd+V가 글 대신 `OK:pw=…` 패킷이 되는지(끝은 `printf '\033[?5522l'`), 화면을 나눈 칸에서 `printf '\033[?40h\033[?3h'`(끝은 `printf '\033[?40l'`)
+- 범수 님이 확인할 것(0.27): zsh에서 출력 뒤 Ctrl-L로 지운 내용이 스크롤백에 남는지, bash(여러 줄 PS1)에서 창 크기를 바꿀 때 프롬프트 윗줄이 남는지, `printf 'abc'` 뒤 프롬프트가 새 줄에서 시작하는지, vim(`:set mouse=a`)에서 `printf '\033[>1s'` 뒤 Shift 클릭이 vim으로 가는지(끝은 `printf '\033[>0s'`), `printf '\033]7;\033\\'` 뒤 Cmd-T의 새 탭 폴더
 - 큰 일로 남긴 것: GPU(또는 IOSurface) 렌더러
