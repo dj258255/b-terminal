@@ -924,7 +924,10 @@ fn sh(script: &str, size: GridSize) -> (Session, Receiver<SessionEvent>) {
         cwd: Some(std::env::temp_dir()),
         ..Default::default()
     };
-    (Session::spawn(opts, size, Theme::default(), sink).expect("spawn"), rx)
+    (
+        Session::spawn(opts, size, Theme::default(), sink).unwrap_or_else(|e| panic!("spawn: {e:#}")),
+        rx,
+    )
 }
 
 fn wait_exit(rx: &Receiver<SessionEvent>) {

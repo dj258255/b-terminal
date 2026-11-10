@@ -216,7 +216,7 @@ fn pty_size_stays_at_window_size() {
         cwd: Some(std::env::temp_dir()),
         ..Default::default()
     };
-    let s = Session::spawn(o, GridSize::new(80, 6), Theme::default(), sink).expect("spawn");
+    let s = Session::spawn(o, GridSize::new(80, 6), Theme::default(), sink).unwrap_or_else(|e| panic!("spawn: {e:#}"));
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
         assert!(Instant::now() < deadline, "10초 안에 끝나지 않았다");

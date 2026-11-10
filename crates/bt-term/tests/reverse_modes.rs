@@ -165,7 +165,7 @@ fn session_screen(script: &str) -> Screen {
         cwd: Some(std::env::temp_dir()),
         ..Default::default()
     };
-    let s = Session::spawn(o, GridSize::new(80, 6), Theme::default(), sink).expect("spawn");
+    let s = Session::spawn(o, GridSize::new(80, 6), Theme::default(), sink).unwrap_or_else(|e| panic!("spawn: {e:#}"));
     wait_exit(&rx);
     s.snapshot()
 }

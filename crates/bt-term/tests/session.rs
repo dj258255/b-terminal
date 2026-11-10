@@ -19,7 +19,10 @@ fn sh(script: &str, size: GridSize) -> (Session, Receiver<SessionEvent>) {
         cwd: Some(std::env::temp_dir()),
         ..Default::default()
     };
-    (Session::spawn(opts, size, Theme::default(), sink).expect("spawn"), rx)
+    (
+        Session::spawn(opts, size, Theme::default(), sink).unwrap_or_else(|e| panic!("spawn: {e:#}")),
+        rx,
+    )
 }
 
 fn wait_exit(rx: &Receiver<SessionEvent>) -> Option<u32> {
@@ -227,7 +230,8 @@ fn word_selection_follows_selection_word_chars() {
             word_chars: chars.map(str::to_string),
             ..Default::default()
         };
-        let s = Session::spawn(opts, GridSize::new(40, 5), Theme::default(), sink).expect("spawn");
+        let s = Session::spawn(opts, GridSize::new(40, 5), Theme::default(), sink)
+            .unwrap_or_else(|e| panic!("spawn: {e:#}"));
         wait_exit(&rx);
         wait_until(&s, |t| t.contains("baz"));
         s.select_start(1, 0, bt_term::SelectKind::Word);
@@ -341,7 +345,8 @@ fn offset_after_new_output(scroll_on_output: bool) -> usize {
         scroll_on_output,
         ..Default::default()
     };
-    let s = Session::spawn(opts, GridSize::new(40, 5), Theme::default(), sink).expect("spawn");
+    let s =
+        Session::spawn(opts, GridSize::new(40, 5), Theme::default(), sink).unwrap_or_else(|e| panic!("spawn: {e:#}"));
     wait_until(&s, |t| t.contains("row29"));
     s.scroll(10);
     assert!(s.snapshot().display_offset > 0, "위로 올라가 있어야 한다");
@@ -408,7 +413,7 @@ fn reply_to(query: &str, opts: impl FnOnce(&mut SpawnOptions)) -> String {
         ..Default::default()
     };
     opts(&mut o);
-    let s = Session::spawn(o, GridSize::new(80, 10), Theme::default(), sink).expect("spawn");
+    let s = Session::spawn(o, GridSize::new(80, 10), Theme::default(), sink).unwrap_or_else(|e| panic!("spawn: {e:#}"));
     wait_exit(&rx);
     let text = s.snapshot().text();
     let start = text.find("R[").unwrap_or_else(|| panic!("답 줄이 없다:\n{text}")) + 2;
@@ -521,7 +526,7 @@ fn typed_after(setup: &str, opts: impl FnOnce(&mut SpawnOptions)) -> String {
         ..Default::default()
     };
     opts(&mut o);
-    let s = Session::spawn(o, GridSize::new(80, 10), Theme::default(), sink).expect("spawn");
+    let s = Session::spawn(o, GridSize::new(80, 10), Theme::default(), sink).unwrap_or_else(|e| panic!("spawn: {e:#}"));
     wait_until(&s, |t| t.contains("READY"));
     s.write_input(b"x", false);
     wait_exit(&rx);
@@ -561,7 +566,8 @@ fn resize_events(script: &str, allow: bool) -> Vec<(u16, u16)> {
         vt_window_resize_allowed: allow,
         ..Default::default()
     };
-    let _s = Session::spawn(o, GridSize::new(80, 10), Theme::default(), sink).expect("spawn");
+    let _s =
+        Session::spawn(o, GridSize::new(80, 10), Theme::default(), sink).unwrap_or_else(|e| panic!("spawn: {e:#}"));
     let mut got = Vec::new();
     let deadline = Instant::now() + Duration::from_secs(10);
     while Instant::now() < deadline {
@@ -614,7 +620,7 @@ fn sh_with(script: &str, opts: impl FnOnce(&mut SpawnOptions)) -> (Session, Rece
     };
     opts(&mut o);
     (
-        Session::spawn(o, GridSize::new(80, 10), Theme::default(), sink).expect("spawn"),
+        Session::spawn(o, GridSize::new(80, 10), Theme::default(), sink).unwrap_or_else(|e| panic!("spawn: {e:#}")),
         rx,
     )
 }
@@ -835,7 +841,7 @@ fn notified_after(setup: &str, act: impl FnOnce(&Session)) -> String {
         cwd: Some(std::env::temp_dir()),
         ..Default::default()
     };
-    let s = Session::spawn(o, GridSize::new(80, 10), Theme::default(), sink).expect("spawn");
+    let s = Session::spawn(o, GridSize::new(80, 10), Theme::default(), sink).unwrap_or_else(|e| panic!("spawn: {e:#}"));
     wait_until(&s, |t| t.contains("READY"));
     act(&s);
     wait_exit(&rx);
@@ -1133,7 +1139,7 @@ fn checksum_reply(setup: &str, query: &str, readonly: bool, opts: impl FnOnce(&m
         ..Default::default()
     };
     opts(&mut o);
-    let s = Session::spawn(o, GridSize::new(80, 10), Theme::default(), sink).expect("spawn");
+    let s = Session::spawn(o, GridSize::new(80, 10), Theme::default(), sink).unwrap_or_else(|e| panic!("spawn: {e:#}"));
     wait_until(&s, |t| t.contains("READY"));
     if readonly {
         s.set_readonly(true);
@@ -1400,7 +1406,7 @@ fn mode_2033_when_turned_on_while_hidden_reports_hidden() {
         cwd: Some(std::env::temp_dir()),
         ..Default::default()
     };
-    let s = Session::spawn(o, GridSize::new(80, 10), Theme::default(), sink).expect("spawn");
+    let s = Session::spawn(o, GridSize::new(80, 10), Theme::default(), sink).unwrap_or_else(|e| panic!("spawn: {e:#}"));
     wait_until(&s, |t| t.contains("READY"));
     s.set_visible(false);
     s.write(b"g");

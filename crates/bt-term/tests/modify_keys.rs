@@ -230,7 +230,7 @@ fn run_sh(script: String, size: GridSize) -> Session {
         cwd: Some(std::env::temp_dir()),
         ..Default::default()
     };
-    let sess = Session::spawn(o, size, Theme::default(), sink).expect("spawn");
+    let sess = Session::spawn(o, size, Theme::default(), sink).unwrap_or_else(|e| panic!("spawn: {e:#}"));
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
         assert!(Instant::now() < deadline, "10초 안에 끝나지 않았다");
