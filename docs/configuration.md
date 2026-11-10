@@ -62,8 +62,8 @@ config-file = ?~/.config/b-terminal/local   # ?가 붙으면 없어도 된다
 | `font-size` | 포인트 | `13` | Cmd-= / Cmd-- / Cmd-0 |
 | `adjust-cell-height` / `adjust-cell-width` | `10%` 또는 포인트(`2`, `-1`) | 없음 | 높이를 바꾸면 글자를 가운데에 둡니다 |
 | `adjust-font-baseline` | `10%` 또는 포인트 | 없음 | 셀 아래에서 기준선까지의 거리를 바꿉니다. 늘리면 글자가 위로 올라갑니다 |
-| `adjust-underline-position` / `adjust-strikethrough-position` / `adjust-overline-position` | `10%` 또는 포인트 | 없음 | 셀 위에서 그 줄 위 가장자리까지의 거리. 늘리면 줄이 아래로 내려가고, 줄이 셀 안에 들어가게 자릅니다. 윗줄(SGR 53)은 아직 그리지 않아서 키만 받습니다 |
-| `adjust-underline-thickness` / `adjust-strikethrough-thickness` / `adjust-overline-thickness` | `10%` 또는 포인트 | 없음 | 줄 두께. 1픽셀 아래로는 내려가지 않습니다. 윗줄은 키만 받습니다 |
+| `adjust-underline-position` / `adjust-strikethrough-position` / `adjust-overline-position` | `10%` 또는 포인트 | 없음 | 셀 위에서 그 줄 위 가장자리까지의 거리. 늘리면 줄이 아래로 내려가고, 줄이 셀 안에 들어가게 자릅니다. 윗줄(SGR 53)의 기본 자리는 셀 맨 위입니다 |
+| `adjust-underline-thickness` / `adjust-strikethrough-thickness` / `adjust-overline-thickness` | `10%` 또는 포인트 | 없음 | 줄 두께. 1픽셀 아래로는 내려가지 않습니다. 윗줄(SGR 53)은 글자색으로 긋고 SGR 55·0이 끕니다 |
 | `adjust-cursor-height` | `10%` 또는 포인트 | 없음 | 모든 커서 꼴의 높이. 셀 가운데에 두고 셀 높이를 넘기지 않습니다. 밑줄 커서는 커서 아래에 붙습니다 |
 | `adjust-cursor-thickness` | `10%` 또는 포인트 | 없음 | 막대 커서와 속 빈 네모 커서의 선 두께. 밑줄 커서 두께는 바꾸지 않습니다 |
 | `adjust-box-thickness` | `10%` 또는 포인트 | 없음 | 상자 선(`─` `│` 등)의 선 두께 |

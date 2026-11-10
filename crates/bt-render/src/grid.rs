@@ -23,6 +23,8 @@ pub struct DrawCell {
     /// 이모지 묶음의 첫 칸이면 묶음 글과 차지한 칸 수(#87). 한 글리프로 다듬어지면 그 칸들 가운데에 그린다
     pub cluster: Option<std::sync::Arc<str>>,
     pub cluster_cells: u16,
+    /// 윗줄(SGR 53, #277). 글자색 줄을 칸 맨 위에 긋는다
+    pub overline: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -182,6 +184,16 @@ fn draw_rows(
             } else {
                 fg
             };
+            // 윗줄(#277): 글자 앞에 글자색으로 긋는다(Ghostty generic.zig 3277줄, 밑줄 → 윗줄 → 글자 순서)
+            if cell.overline {
+                canvas.fill_rect(
+                    px,
+                    py + m.overline_offset as i32,
+                    m.width * span,
+                    m.overline_thickness,
+                    cell.fg,
+                );
+            }
             // U+FE0F가 붙은 글자는 그 칸 안에 색 이모지로(색 글꼴에 없으면 글자로)
             let emoji = cell.emoji.then(|| fonts.emoji_glyph(cell.ch, span)).flatten();
             let style = FontStyle::from_flags(cell.bold, cell.italic);

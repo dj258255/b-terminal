@@ -37,6 +37,7 @@ fn cells(s: &Screen) -> Vec<DrawCell> {
             emoji: c.combining.contains(&'\u{fe0f}'),
             cluster: None,
             cluster_cells: 0,
+            overline: c.flags.contains(CellFlags::OVERLINE),
         })
         .collect();
     bt_render::cluster::mark(&mut cells, s.cols, |i| {
@@ -924,6 +925,7 @@ fn blank(ch: char) -> DrawCell {
         emoji: false,
         cluster: None,
         cluster_cells: 0,
+        overline: false,
     }
 }
 
@@ -1004,6 +1006,55 @@ fn strikethrough_is_drawn_at_adjusted_row_and_thickness() {
     let rows = lit_rows(&b, w, h, 0);
     assert_eq!(rows.first().copied(), Some(m0.strike_offset - 3));
     assert_eq!(rows.len() as u32, m0.strike_thickness + 2);
+}
+
+/// #277: 윗줄은 칸 맨 위(`overline_offset`)에 `overline_thickness` 두께로 글자색 줄을 긋는다
+#[test]
+fn overline_is_drawn_at_adjusted_row_and_thickness() {
+    let mut cell = blank(' ');
+    cell.overline = true;
+    let plain = blank(' ');
+    let mut f = fonts_with(MetricAdjust::default());
+    let m0 = f.metrics();
+    let (b, w, h) = draw_row(&mut f, &[cell.clone()], None);
+    let base = lit_rows(&b, w, h, 0);
+    assert_eq!(base.first().copied(), Some(m0.overline_offset));
+    assert_eq!(base.len() as u32, m0.overline_thickness);
+    // 켜지 않은 칸에는 줄이 없다
+    let (b, w, h) = draw_row(&mut f, &[plain], None);
+    assert!(lit_rows(&b, w, h, 0).is_empty());
+
+    let mut f = fonts_with(MetricAdjust {
+        overline_position: Some(Adjust::Points(2.0)),
+        overline_thickness: Some(Adjust::Points(2.0)),
+        ..Default::default()
+    });
+    let (b, w, h) = draw_row(&mut f, &[cell], None);
+    let rows = lit_rows(&b, w, h, 0);
+    assert_eq!(rows.first().copied(), Some(m0.overline_offset + 2));
+    assert_eq!(rows.len() as u32, m0.overline_thickness + 2);
+}
+
+/// #277: 윗줄 색은 글자색이다(밑줄·가운데줄과 같다). 두 칸 글자는 두 칸 폭으로 긋는다
+#[test]
+fn overline_uses_the_cell_foreground_and_spans_wide_cells() {
+    let red = Rgb::new(250, 10, 10);
+    let mut cell = blank(' ');
+    cell.overline = true;
+    cell.fg = red;
+    let mut f = fonts_with(MetricAdjust::default());
+    let m = f.metrics();
+    let (b, w, _h) = draw_row(&mut f, &[cell.clone()], None);
+    assert_eq!(Rgb::from_u32(b[(m.overline_offset * w) as usize]), red);
+    let mut wide = cell;
+    wide.wide = true;
+    let mut spacer = blank(' ');
+    spacer.spacer = true;
+    let (b, w, _h) = draw_row(&mut f, &[wide, spacer], None);
+    assert_eq!(
+        Rgb::from_u32(b[(m.overline_offset * w + 2 * m.width - 1) as usize]),
+        red
+    );
 }
 
 fn cursor_at(style: CursorStyle) -> DrawCursor {

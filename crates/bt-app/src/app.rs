@@ -4958,6 +4958,7 @@ pub fn to_draw_cells(s: &Screen, theme: &bt_core::Theme) -> Vec<DrawCell> {
                 emoji: c.combining.contains(&'\u{fe0f}'),
                 cluster: None,
                 cluster_cells: 0,
+                overline: c.flags.contains(CellFlags::OVERLINE),
             }
         })
         .collect();
@@ -6246,6 +6247,7 @@ mod tests {
             emoji: false,
             cluster: None,
             cluster_cells: 0,
+            overline: false,
         };
         let (cols, rows) = (4, 3);
         let cells = vec![blank.clone(); cols * rows];

@@ -25,6 +25,8 @@ impl CellFlags {
     pub const MATCH: Self = Self(1 << 10);
     /// 지금 고른 맞은 곳(Enter로 옮겨 다니는 것)
     pub const MATCH_CURRENT: Self = Self(1 << 11);
+    /// 윗줄(SGR 53, #277)
+    pub const OVERLINE: Self = Self(1 << 12);
 
     pub const fn empty() -> Self {
         Self(0)

@@ -2043,6 +2043,9 @@ impl<T: EventListener> Handler for Term<T> {
             Attr::CancelHidden => cursor.template.flags.remove(Flags::HIDDEN),
             Attr::Strike => cursor.template.flags.insert(Flags::STRIKEOUT),
             Attr::CancelStrike => cursor.template.flags.remove(Flags::STRIKEOUT),
+            // b-terminal(#277): 윗줄(SGR 53·55). Reset은 `flags = empty()`가 함께 지운다
+            Attr::Overline => cursor.template.flags.insert(Flags::OVERLINE),
+            Attr::CancelOverline => cursor.template.flags.remove(Flags::OVERLINE),
             _ => {
                 debug!("Term got unhandled attr: {attr:?}");
             },

@@ -27,6 +27,7 @@
 - [ADR-022 CSI 질의는 고정 바이트와 검사한 숫자로만 늘 답하고, DA는 Ghostty 값으로 바꾸며 엔진의 옛 답은 끈다](#adr-022-csi-질의는-고정-바이트와-검사한-숫자로만-늘-답하고-da는-ghostty-값으로-바꾸며-엔진의-옛-답은-끈다)
 - [ADR-023 DCS 질의(DECRQSS·XTGETTCAP)는 터미널 상태와 고정 목록으로만 답하고, 요청 글은 답에 넣지 않는다](#adr-023-dcs-질의decrqssxtgettcap는-터미널-상태와-고정-목록으로만-답하고-요청-글은-답에-넣지-않는다)
 - [ADR-024 kitty 색 프로토콜(OSC 21)은 엔진이 바꾼 색 칸에 설정하고, 답은 알아본 키를 우리 이름으로 다시 적는다](#adr-024-kitty-색-프로토콜osc-21은-엔진이-바꾼-색-칸에-설정하고-답은-알아본-키를-우리-이름으로-다시-적는다)
+- [ADR-025 윗줄(SGR 53·55)은 vte를 vendor로 들여와 해석하고, 격자 빈 비트 하나로 들고, 글자색으로 긋는다](#adr-025-윗줄sgr-5355은-vte를-vendor로-들여와-해석하고-격자-빈-비트-하나로-들고-글자색으로-긋는다)
 
 ## ADR-001 VT 엔진은 alacritty_terminal로 시작하고, bt-term 밖으로 엔진 타입을 내보내지 않는다
 
@@ -636,13 +637,14 @@ macOS의 Carbon `EnableSecureEventInput`은 켜 있는 동안 키 입력이 다�
 ### XTGETTCAP 목록(b-terminal이 실제로 하는 것만)
 - 답한다: `TN`(TERM 값, 기본 `xterm-256color`), `Co`·`colors`(256), `RGB`(8), `Tc`, `am`, `xenl`, `bce`, `AX`, `Smulx`, `Ss`, `Se`, `Ms`, `Sync`, `BD`·`BE`·`PS`·`PE`(괄호 붙여넣기), `XM`·`xm`(SGR 마우스), `fe`·`fd`·`kxIN`·`kxOUT`(초점 보고), `E3`(스크롤백 지우기).
 - `TN`은 자식에게 준 TERM(`term` 설정, 기본 `xterm-256color`)과 같은 값이다. Ghostty는 자기 terminfo의 첫 이름(`xterm-ghostty`)을 답해 TERM과 맞는다. TERM이 `xterm-256color`인데 `b-terminal`이라고 답하면 앱이 TN으로 능력 목록을 고르다가 둘이 어긋나므로 TERM과 맞췄다.
+- 답한다(#277): `Smol`·`Rmol`(윗줄 켜기·끄기, 값은 Ghostty terminfo 그대로).
 - 답한다(#264가 XTVERSION·DA2에 답하게 된 뒤 주 세션이 더함): `XR`·`xr`·`RV`·`rv`(값은 Ghostty terminfo 그대로).
-- 뺀다: `Su`·`Setulc`(밑줄 색: 격자는 색을 들고 있지만 그리지 않는다), `Smol`·`Rmol`(윗줄: 격자에 없다), `Enmg`·`Dsmg`·`Clmg`·`Cmg`(DECSLRM: 없다), `fullkbd`(kitty 키보드 프로토콜의 모든 단계를 확인하지 않았다), `cols`·`lines`·`it`·`pairs`(크기·정적 값은 terminfo 파일의 일이다), `kcuu1` 같은 키 능력(키는 설정으로 바뀐다), 나머지 `bold`·`cup` 등 정적 문자열 능력(`xterm-256color` terminfo 파일이 답한다. Ghostty의 목록은 자기 terminfo 전체다).
+- 뺀다: `Su`·`Setulc`(밑줄 색: 격자는 색을 들고 있지만 그리지 않는다), `Enmg`·`Dsmg`·`Clmg`·`Cmg`(DECSLRM: 없다), `fullkbd`(kitty 키보드 프로토콜의 모든 단계를 확인하지 않았다), `cols`·`lines`·`it`·`pairs`(크기·정적 값은 terminfo 파일의 일이다), `kcuu1` 같은 키 능력(키는 설정으로 바뀐다), 나머지 `bold`·`cup` 등 정적 문자열 능력(`xterm-256color` terminfo 파일이 답한다. Ghostty의 목록은 자기 terminfo 전체다).
 - `Smulx`는 `4:3`(물결)만 그려지고 점선·이중선은 보통 밑줄로 그려진다. `Ms`는 `clipboard-write`가 `deny`여도 답한다(능력은 있고 허용은 별개다).
 
 ### 결과
 - 기본 동작이 바뀐다: `DCS $ q`와 `DCS + q`에 답한다(전에는 답이 없었다).
-- DECRQSS SGR은 alacritty 커서 템플릿(`grid.cursor.template`)에서 읽는다. 깜박임(5)과 윗줄(53)은 격자에 없어 답에 빠진다. 밑줄 색은 있으면 `58`로 답한다(Ghostty 테스트 값에는 없다). 새 칸의 DECSCUSR는 설정의 `cursor-style`이 아니라 alacritty 기본(깜박이지 않는 블록, `2`)을 답한다.
+- DECRQSS SGR은 alacritty 커서 템플릿(`grid.cursor.template`)에서 읽는다. 깜박임(5)은 격자에 없어 답에 빠진다(윗줄 53은 #277에서 더했다. Ghostty처럼 밑줄 바로 뒤). 밑줄 색은 있으면 `58`로 답한다(Ghostty 테스트 값에는 없다). 새 칸의 DECSCUSR는 설정의 `cursor-style`이 아니라 alacritty 기본(깜박이지 않는 블록, `2`)을 답한다.
 - 프로그램이 `DCS 0 + r`을 기다리면 모르는 이름에 시간 초과가 날 수 있다(Ghostty와 같다).
 - 테스트: Ghostty `dcs.zig` 테스트 값(DECRQSS 응답 인코딩, 큰 응답, 이름 해석, 대소문자 섞임, 여러 이름, 잘못된 값), 스캐너 단위 테스트, `/bin/sh`와 `printf`로 띄운 PTY 통합 테스트. 격리한 실제 창에서 셸이 `/dev/tty`에 질의를 쓰고 `dd`로 답을 읽어, DECRQSS 네 갈래와 XTGETTCAP(한 이름, 여러 이름, 끝 표시를 끼운 이름)의 답이 테스트와 같은 것을 한 번 봤다.
 
@@ -670,3 +672,27 @@ macOS의 Carbon `EnableSecureEventInput`은 켜 있는 동안 키 입력이 다�
 - 프로그램이 바꾼 색은 OSC 4·10·11처럼 그 칸에 남는다.
 - 기존 OSC 4·10·11·12 질의의 답은 이 변경에서는 아직 테마 색으로 답해 OSC 21 질의와 어긋났다. #272에서 고쳤다: vendor 엔진이 질의 사건에 프로그램이 바꾼 색을 실어 보내고, 바꾼 적 없는 색만 테마로 답한다.
 - PTY 통합 테스트(`/bin/sh`와 `printf`)와 단위 테스트로 확인했다. 격리한 실제 창에서 셸이 `/dev/tty`에 질의를 쓰고 `dd`로 답을 읽어 질의·설정·되돌리기·RIS의 답이 테스트와 같은 것을 한 번 봤고, 바탕을 `#ff0000`으로 바꾸면 창 전체가 빨강으로 그려지는 것을 스크린샷으로 봤다.
+
+## ADR-025 윗줄(SGR 53·55)은 vte를 vendor로 들여와 해석하고, 격자 빈 비트 하나로 들고, 글자색으로 긋는다
+
+상태: 채택
+관련: [#277](https://github.com/dj258255/b-terminal/issues/277), ADR-014, ADR-023
+
+### 맥락
+- `CSI 53 m`(윗줄)을 보내도 그려지지 않았다. 원인은 둘이다: vte 0.15(`ansi.rs`의 `attrs_from_sgr_parameters`)가 53·55를 해석하지 않고, alacritty 셀 표시(`Flags: u16`)에 윗줄이 없다. Ghostty는 SGR `overline`을 스타일에 들고(`terminal/style.zig`), 칸 맨 위에 글자색 줄을 긋는다(`font/sprite/draw/special.zig`의 `overline`, `renderer/generic.zig`의 `addOverline`).
+- vte는 crates.io 판이라 `[patch.crates-io]`로 우리 사본을 가리켜야 고칠 수 있다. alacritty_terminal·winit·softbuffer는 이미 그렇게 하고 있다.
+
+### 결정
+1. **vte 0.15.0을 `vendor/vte`로 들여온다.** 원본 그대로 한 커밋, 패치는 다음 커밋이다. 고친 곳은 `src/ansi.rs` 한 파일: `Attr`에 `Overline`·`CancelOverline`을 **끝에** 더하고 `[53]`·`[55]` 해석 두 줄을 더했다(`b-terminal(#277)`). 새 크레이트는 없다. 잠금 파일에서 `vte`의 `source`·`checksum` 두 줄이 빠지는 것이 변화의 전부다.
+2. vendor `alacritty_terminal`: `Flags`의 마지막 빈 비트(`0b1000_0000_0000_0000`)에 `OVERLINE`을 두고 `terminal_attribute`가 켜고 끈다. SGR 0(Reset)은 `flags = empty()`로 함께 지운다. 윗줄만 있는 공백 칸이 빈 칸으로 취급되지 않게 `is_empty`의 표시 목록에도 더했다. 이 비트로 `Flags: u16`이 가득 찬다(다음 표시가 필요하면 `u32`로 넓혀야 한다).
+3. bt-term의 `CellFlags::OVERLINE`을 거쳐 그리는 쪽의 `DrawCell.overline`이 된다. 그리기는 칸 맨 위(`overline_offset`)에 `overline_thickness` 두께로 **글자색**(밑줄·가운데줄과 같은 `cell.fg`) 줄을 긋는다. 순서는 밑줄 다음, 글자 앞이다(Ghostty generic.zig). 위치·두께는 `adjust-overline-position`·`-thickness`가 정한다(이미 있던 설정).
+4. DECRQSS `m` 답에 `53`을 Ghostty와 같은 자리(밑줄 `4` 바로 뒤, 깜박임 `5` 앞, `terminal/dcs.zig` 테스트의 `0;1;2;3;4:5;53;5;7;8;9`)에 넣는다. XTGETTCAP `Smol`(`\E[53m`)·`Rmol`(`\E[55m`)을 Ghostty terminfo 값 그대로 목록 끝에 더한다.
+
+### 결과
+- 기본 동작이 바뀐다: 윗줄이 그려지고, DECRQSS 답과 XTGETTCAP이 윗줄을 알린다.
+- 읽기·쓰기 경계는 그대로다: 윗줄은 칸의 표시일 뿐이고 PTY로 쓰는 바이트가 늘지 않는다. 답에 들어가는 것은 고정 숫자 `53`과 고정 문자열이다.
+- 깜박임(SGR 5)은 여전히 격자에 없다. Ghostty도 글자 깜박임은 그리지 않는다(`generic.zig`의 blink는 커서뿐이라고 이슈에 적혀 있다).
+- 테스트: vte 해석(`53`, `55`, `1;53`, 밑줄 모양과 섞기), 엔진 셀 표시(`53` 켬, `55`·`0` 끔, 공백 칸), 렌더 픽셀(위치·두께·글자색·두 칸 폭), DECRQSS·XTGETTCAP 답. 실제 창(격리한 디버그 빌드, 한 번)에서 `OVER`·두 칸 글자·빨간 글자·밑줄과 함께 그린 윗줄을 스크린샷으로 봤고, DECRQSS `m`은 `0;53m`, XTGETTCAP `Smol`은 `\E[53m`으로 답했다.
+
+### 되돌릴 조건
+- upstream vte가 SGR 53·55를 해석하면(`Attr`에 윗줄이 생기면) `vendor/vte`를 지우고 `[patch.crates-io]`의 줄을 뺀다. 그때 alacritty_terminal의 `terminal_attribute`가 새 `Attr` 이름에 맞는지 먼저 본다. vte를 올릴 때는 `diff`로 `ansi.rs`를 먼저 비교한다.

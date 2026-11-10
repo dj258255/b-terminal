@@ -138,6 +138,7 @@ mod tests {
             emoji: false,
             cluster: None,
             cluster_cells: 0,
+            overline: false,
         }
     }
 

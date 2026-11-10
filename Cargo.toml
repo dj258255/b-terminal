@@ -36,8 +36,9 @@ todo = "warn"
 lto = "thin"
 codegen-units = 1
 
-# 고쳐 쓰는 외부 크레이트(vendor/README.md): winit(한글 IME), softbuffer(색 공간), alacritty_terminal(글자 묶음 폭)
+# 고쳐 쓰는 외부 크레이트(vendor/README.md): winit(한글 IME), softbuffer(색 공간), alacritty_terminal(글자 묶음 폭), vte(윗줄 SGR 53·55)
 [patch.crates-io]
 winit = { path = "vendor/winit" }
 softbuffer = { path = "vendor/softbuffer" }
 alacritty_terminal = { path = "vendor/alacritty_terminal" }
+vte = { path = "vendor/vte" }
