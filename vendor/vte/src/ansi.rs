@@ -675,6 +675,12 @@ pub trait Handler {
     /// DECRPM - report private mode.
     fn report_private_mode(&mut self, _mode: PrivateMode) {}
 
+    /// XTSAVE (`CSI ? Pm s`) - save a private mode's state. b-terminal(#313)
+    fn save_private_mode(&mut self, _mode: PrivateMode) {}
+
+    /// XTRESTORE (`CSI ? Pm r`) - restore a private mode saved by XTSAVE. b-terminal(#313)
+    fn restore_private_mode(&mut self, _mode: PrivateMode) {}
+
     /// DECSTBM - Set the terminal scrolling region.
     fn set_scrolling_region(&mut self, _top: usize, _bottom: Option<usize>) {}
 
@@ -1882,8 +1888,20 @@ where
 
                 handler.set_scrolling_region(top, bottom);
             },
+            // b-terminal(#313): XTRESTORE. Ghostty stream.zig는 `?`가 붙은 `r`·`s`의 매개변수마다 모드 하나씩 처리한다
+            ('r', [b'?']) => {
+                for param in params_iter.map(|param| param[0]) {
+                    handler.restore_private_mode(PrivateMode::new(param))
+                }
+            },
             ('S', []) => handler.scroll_up(next_param_or(1) as usize),
             ('s', []) => handler.save_cursor_position(),
+            // b-terminal(#313): XTSAVE
+            ('s', [b'?']) => {
+                for param in params_iter.map(|param| param[0]) {
+                    handler.save_private_mode(PrivateMode::new(param))
+                }
+            },
             ('T', []) => handler.scroll_down(next_param_or(1) as usize),
             ('t', []) => match next_param_or(1) as usize {
                 14 => handler.text_area_size_pixels(),

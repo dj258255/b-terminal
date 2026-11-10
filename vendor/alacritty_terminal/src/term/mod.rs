@@ -372,6 +372,13 @@ pub struct Term<T> {
     /// term is set.
     title_stack: Vec<Option<String>>,
 
+    /// b-terminal(#313): XTSAVE로 저장한 DEC 모드 값(모드 번호별 마지막 하나). RIS가 지운다
+    saved_private_modes: std::collections::HashMap<u16, bool>,
+
+    /// b-terminal(#313): `Some`이면 `report_private_mode`가 답을 쓰지 않고 모드의 지금 상태(켬 `Some(true)`, 끔 `Some(false)`,
+    /// 모르거나 다른 곳이 쥠 `None`)를 여기에 적는다. XTSAVE가 DECRQM과 같은 표로 상태를 읽으려는 길이다
+    private_mode_probe: Option<Option<bool>>,
+
     /// The stack for the keyboard modes.
     keyboard_mode_stack: Vec<KeyboardModes>,
 
@@ -536,6 +543,8 @@ impl<T> Term<T> {
             cursor_style: Default::default(),
             colors: color::Colors::default(),
             title_stack: Default::default(),
+            saved_private_modes: Default::default(),
+            private_mode_probe: None,
             is_focused: Default::default(),
             selection: Default::default(),
             title: Default::default(),
@@ -2265,6 +2274,7 @@ impl<T: EventListener> Handler for Term<T> {
         self.scroll_region = Line(0)..Line(self.screen_lines() as i32);
         self.tabs = TabStops::new(self.columns());
         self.title_stack = Vec::new();
+        self.saved_private_modes.clear(); // b-terminal(#313)
         self.title = None;
         self.selection = None;
         self.vi_mode_cursor = Default::default();
@@ -2622,11 +2632,55 @@ impl<T: EventListener> Handler for Term<T> {
             PrivateMode::Unknown(_) => ModeState::NotSupported,
         };
 
+        // b-terminal(#313): XTSAVE의 읽기. 답은 쓰지 않는다
+        if let Some(probe) = self.private_mode_probe.as_mut() {
+            *probe = match state {
+                ModeState::Set => Some(true),
+                ModeState::Reset => Some(false),
+                ModeState::NotSupported => None,
+            };
+            return;
+        }
+
         self.event_proxy.send_event(Event::PtyWrite(format!(
             "\x1b[?{};{}$y",
             mode.raw(),
             state as u8,
         )));
+    }
+
+    /// b-terminal(#313): XTSAVE(`CSI ? Pm s`). 모드마다 마지막 값 하나만 둔다(Ghostty modes.zig `save`).
+    /// 모르는 모드와 2026(모으기는 vte의 Processor가 쥐고 값만 바꾸면 어긋남)은 저장하지 않는다
+    fn save_private_mode(&mut self, mode: PrivateMode) {
+        if matches!(mode, PrivateMode::Named(NamedPrivateMode::SyncUpdate)) {
+            return;
+        }
+        self.private_mode_probe = Some(None);
+        self.report_private_mode(mode);
+        if let Some(Some(on)) = self.private_mode_probe.take() {
+            self.saved_private_modes.insert(mode.raw(), on);
+        }
+    }
+
+    /// b-terminal(#313): XTRESTORE(`CSI ? Pm r`). 저장한 값을 DECSET·DECRST와 같은 길로 다시 적용한다. 저장한 적이 없으면
+    /// 모드의 기본값이다(Ghostty modes.zig는 저장 표도 모드의 기본값으로 시작한다)
+    fn restore_private_mode(&mut self, mode: PrivateMode) {
+        if matches!(mode, PrivateMode::Named(NamedPrivateMode::SyncUpdate)) {
+            return;
+        }
+        // 엔진이 아는 모드만. 모르는 모드와 DECCOLM(3)은 건너뛴다
+        self.private_mode_probe = Some(None);
+        self.report_private_mode(mode);
+        if self.private_mode_probe.take().flatten().is_none() {
+            return;
+        }
+        let raw = mode.raw();
+        let on = self.saved_private_modes.get(&raw).copied().unwrap_or_else(|| private_mode_default(raw));
+        if on {
+            self.set_private_mode(mode);
+        } else {
+            self.unset_private_mode(mode);
+        }
     }
 
     #[inline]
@@ -2853,6 +2907,12 @@ impl<T: EventListener> Handler for Term<T> {
         let text = format!("\x1b[8;{};{}t", self.screen_lines(), self.columns());
         self.event_proxy.send_event(Event::PtyWrite(text));
     }
+}
+
+/// b-terminal(#313): 저장하지 않은 모드를 XTRESTORE할 때의 값. Ghostty modes.zig의 `.default = true`인 DEC 모드
+/// (7 자동 줄바꿈, 25 커서 보임, 1007 대체 스크롤, 1035, 1036)
+fn private_mode_default(mode: u16) -> bool {
+    matches!(mode, 7 | 25 | 1007 | 1035 | 1036)
 }
 
 /// The state of the [`Mode`] and [`PrivateMode`].
