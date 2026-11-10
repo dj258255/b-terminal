@@ -11,6 +11,7 @@ use crate::glyphs::GlyphCache;
 use crate::scene::{GLYPH_STRIDE, GlyphInst, RECT_STRIDE, RectInst, Scene};
 
 mod compose;
+mod layer_diff;
 mod window;
 pub use compose::{LayerUpdate, PaneDraw};
 pub use window::PresentOutcome;
@@ -26,6 +27,16 @@ pub struct FrameTimings {
     pub readback_ms: f64,
     /// 층(아래·위) 픽셀을 GPU 텍스처로 올리기. 올릴 층이 없는 프레임은 0(`compose`·`present`)
     pub upload_ms: f64,
+    /// 이번 프레임에 층 텍스처로 올린 바이트(아래층 + 위층). 올리지 않았으면 0
+    pub upload_bytes: usize,
+    /// 창 길(`present`)에서 그림판을 얻은 시간(`get_current_texture`, 화면 주사율을 기다릴 수 있다)
+    pub acquire_ms: f64,
+    /// 창 길에서 그리기 명령을 만든 시간
+    pub encode_ms: f64,
+    /// 창 길에서 명령을 제출한 시간(`queue.submit`)
+    pub submit_ms: f64,
+    /// 창 길에서 `queue.present`에 든 시간
+    pub present_ms: f64,
 }
 
 /// 그림이 그려지는 텍스처 꼴. sRGB가 아니다: CPU 렌더러는 0~255 값을 그대로 섞으므로(감마 없이)
@@ -370,6 +381,7 @@ impl GpuRenderer {
             gpu_ms: t1.elapsed().as_secs_f64() * 1000.0,
             readback_ms: 0.0,
             upload_ms: 0.0,
+            ..FrameTimings::default()
         };
         self.drawn = true;
     }

@@ -8,6 +8,7 @@ use std::time::Instant;
 use bt_core::Rgb;
 use bt_render::{Fonts, GridView};
 
+use super::layer_diff::{Rect, changed_rects};
 use super::{FrameTimings, GpuRenderer, upload_instances};
 use crate::scene::{GLYPH_STRIDE, GlyphInst, RECT_STRIDE, RectInst};
 
@@ -34,6 +35,10 @@ pub(super) struct LayerTex {
     bind_group: wgpu::BindGroup,
     width: u32,
     height: u32,
+    /// 텍스처에 올라가 있는 픽셀의 사본. 다음 층과 견줘 달라진 사각형만 올린다(ADR-037)
+    shadow: Vec<u32>,
+    /// `shadow`에서 0이 아닌 픽셀 수. 0이면 층이 비었다(그리지 않는다)
+    nonzero: usize,
 }
 
 /// 칸 하나가 인스턴스 목록에서 차지하는 구간(글자 앞 사각형, 글자, 글자 뒤 사각형, 상자 커서 안 글자 차례)
@@ -140,79 +145,111 @@ impl Layers {
         }
     }
 
-    /// 층 하나를 올린다. 같은 크기의 텍스처가 있으면 다시 쓴다. 픽셀이 모자라면 앞의 것을 그대로 둔다
-    fn upload(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, upper: bool, px: &[u32], (w, h): (u32, u32)) {
+    /// 층 하나를 올린다. 같은 크기의 텍스처가 있으면 앞서 올린 것과 견줘 달라진 사각형만 올리고, 없으면(처음, 창 크기가
+    /// 바뀜) 새로 만들어 통째로 올린다. 픽셀이 모자라면 앞의 것을 그대로 둔다. 올린 바이트를 돌려 준다
+    fn upload(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        upper: bool,
+        px: &[u32],
+        (w, h): (u32, u32),
+    ) -> usize {
         if w == 0 || h == 0 || px.len() < w as usize * h as usize {
             log::warn!("층 픽셀이 창 크기보다 모자란다: {} < {w}×{h}", px.len());
-            return;
+            return 0;
         }
-        self.scratch.resize(w as usize * h as usize * 4, 0);
-        for (dst, src) in self.scratch.chunks_exact_mut(4).zip(px) {
-            dst.copy_from_slice(&src.to_le_bytes());
-        }
+        let px = &px[..w as usize * h as usize];
         let slot = if upper { &mut self.upper } else { &mut self.lower };
-        if slot.as_ref().is_none_or(|t| (t.width, t.height) != (w, h)) {
-            let texture = device.create_texture(&wgpu::TextureDescriptor {
-                label: Some(if upper {
-                    "bt-gpu upper layer"
-                } else {
-                    "bt-gpu lower layer"
-                }),
-                size: wgpu::Extent3d {
+        let rects = match slot.as_ref().filter(|t| (t.width, t.height) == (w, h)) {
+            Some(t) => changed_rects(&t.shadow, px, w, h),
+            None => {
+                let texture = device.create_texture(&wgpu::TextureDescriptor {
+                    label: Some(if upper {
+                        "bt-gpu upper layer"
+                    } else {
+                        "bt-gpu lower layer"
+                    }),
+                    size: wgpu::Extent3d {
+                        width: w,
+                        height: h,
+                        depth_or_array_layers: 1,
+                    },
+                    mip_level_count: 1,
+                    sample_count: 1,
+                    dimension: wgpu::TextureDimension::D2,
+                    format: wgpu::TextureFormat::Bgra8Unorm,
+                    usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+                    view_formats: &[],
+                });
+                let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+                let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("bt-gpu layer bind group"),
+                    layout: &self.layout,
+                    entries: &[wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::TextureView(&view),
+                    }],
+                });
+                *slot = Some(LayerTex {
+                    texture,
+                    bind_group,
                     width: w,
                     height: h,
-                    depth_or_array_layers: 1,
-                },
-                mip_level_count: 1,
-                sample_count: 1,
-                dimension: wgpu::TextureDimension::D2,
-                format: wgpu::TextureFormat::Bgra8Unorm,
-                usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-                view_formats: &[],
-            });
-            let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-            let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("bt-gpu layer bind group"),
-                layout: &self.layout,
-                entries: &[wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::TextureView(&view),
-                }],
-            });
-            *slot = Some(LayerTex {
-                texture,
-                bind_group,
-                width: w,
-                height: h,
-            });
-        }
-        if let Some(t) = slot {
+                    shadow: vec![0; w as usize * h as usize],
+                    nonzero: 0,
+                });
+                vec![Rect { x: 0, y: 0, w, h }]
+            }
+        };
+        let Some(t) = slot else { return 0 };
+        let mut bytes = 0;
+        for r in rects {
+            let (rw, rh) = (r.w as usize, r.h as usize);
+            self.scratch.resize(rw * rh * 4, 0);
+            let (mut old_nz, mut new_nz) = (0, 0);
+            for (row, dst_row) in self.scratch.chunks_exact_mut(rw * 4).enumerate() {
+                let at = (r.y as usize + row) * w as usize + r.x as usize;
+                let src = &px[at..at + rw];
+                let shadow = &mut t.shadow[at..at + rw];
+                old_nz += shadow.iter().filter(|p| **p != 0).count();
+                new_nz += src.iter().filter(|p| **p != 0).count();
+                shadow.copy_from_slice(src);
+                for (dst, p) in dst_row.chunks_exact_mut(4).zip(src) {
+                    dst.copy_from_slice(&p.to_le_bytes());
+                }
+            }
+            t.nonzero = t.nonzero + new_nz - old_nz;
             queue.write_texture(
                 wgpu::TexelCopyTextureInfo {
                     texture: &t.texture,
                     mip_level: 0,
-                    origin: wgpu::Origin3d::ZERO,
+                    origin: wgpu::Origin3d { x: r.x, y: r.y, z: 0 },
                     aspect: wgpu::TextureAspect::All,
                 },
                 &self.scratch,
                 wgpu::TexelCopyBufferLayout {
                     offset: 0,
-                    bytes_per_row: Some(w * 4),
-                    rows_per_image: Some(h),
+                    bytes_per_row: Some(r.w * 4),
+                    rows_per_image: Some(r.h),
                 },
                 wgpu::Extent3d {
-                    width: w,
-                    height: h,
+                    width: r.w,
+                    height: r.h,
                     depth_or_array_layers: 1,
                 },
             );
+            bytes += rw * rh * 4;
         }
+        bytes
     }
 
     /// 지금 크기와 같은 층만
     fn visible(&self, upper: bool) -> Option<&LayerTex> {
         let t = if upper { &self.upper } else { &self.lower };
-        t.as_ref().filter(|t| (t.width, t.height) == self.size)
+        // 비어 있는 위층은 그리지 않는다(칸마다 화면을 한 번 덮는 일을 아낀다)
+        t.as_ref()
+            .filter(|t| (t.width, t.height) == self.size && !(upper && t.nonzero == 0))
     }
 }
 
@@ -263,11 +300,12 @@ impl GpuRenderer {
     ) {
         let t0 = Instant::now();
         self.layers.size = size;
+        let mut upload_bytes = 0;
         if let Some(px) = layers.lower {
-            self.layers.upload(&self.device, &self.queue, false, px, size);
+            upload_bytes += self.layers.upload(&self.device, &self.queue, false, px, size);
         }
         if let Some(px) = layers.upper {
-            self.layers.upload(&self.device, &self.queue, true, px, size);
+            upload_bytes += self.layers.upload(&self.device, &self.queue, true, px, size);
         }
         let upload = t0.elapsed();
 
@@ -323,6 +361,7 @@ impl GpuRenderer {
         self.timings = FrameTimings {
             prepare_ms: t1.elapsed().as_secs_f64() * 1000.0,
             upload_ms: upload.as_secs_f64() * 1000.0,
+            upload_bytes,
             ..FrameTimings::default()
         };
     }
