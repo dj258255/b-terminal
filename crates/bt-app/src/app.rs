@@ -4507,12 +4507,13 @@ impl App {
             .map(|v| {
                 let screen = &v.screen;
                 let mut cells = to_draw_cells(screen, &theme);
-                // Cmd를 누른 채 올라간 링크에 밑줄
+                // Cmd를 누른 채 올라간 링크에 밑줄. 이미 곧은 밑줄이면 이중(#288)
                 if let Some((_, hit)) = hover.as_ref().filter(|(h, _)| *h == v.id) {
                     for sp in &hit.spans {
                         for c in sp.start..sp.end.min(screen.cols) {
-                            if let Some(cell) = cells.get_mut(sp.row * screen.cols + c) {
-                                cell.underline = bt_render::Underline::Single;
+                            let i = sp.row * screen.cols + c;
+                            if let (Some(cell), Some(src)) = (cells.get_mut(i), screen.cells.get(i)) {
+                                cell.underline = link_underline(src.flags);
                             }
                         }
                     }
@@ -5048,6 +5049,18 @@ fn underline_of(f: CellFlags) -> bt_render::Underline {
         Underline::Single
     } else {
         Underline::None
+    }
+}
+
+/// Cmd를 누른 채 올라간 링크 칸의 밑줄 모양(#288). Ghostty renderer/generic.zig 3245~3258줄:
+/// 글자의 밑줄이 곧은 줄이면 이중으로 그려 링크를 구분하고, 그 밖(없음·이중·물결·점·파선)은 곧은 줄.
+/// 숨김(SGR 8) 칸은 Ghostty처럼 꾸밈을 그리지 않는다
+fn link_underline(f: CellFlags) -> bt_render::Underline {
+    use bt_render::Underline;
+    match underline_of(f) {
+        _ if f.contains(CellFlags::HIDDEN) => Underline::None,
+        Underline::Single => Underline::Double,
+        _ => Underline::Single,
     }
 }
 
@@ -5947,6 +5960,37 @@ fn apply_hidden_from_dock(hidden: bt_core::config::MacHidden) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hovered_link_underline_is_double_only_over_a_single_underline_like_ghostty() {
+        use bt_render::Underline as U;
+        let f = |flags: &[CellFlags]| flags.iter().fold(CellFlags::empty(), |a, &b| a | b);
+        assert_eq!(link_underline(f(&[])), U::Single, "밑줄 없는 칸은 곧은 줄");
+        assert_eq!(
+            link_underline(f(&[CellFlags::UNDERLINE])),
+            U::Double,
+            "곧은 밑줄 칸은 이중"
+        );
+        for shape in [
+            CellFlags::DOUBLE_UNDERLINE,
+            CellFlags::UNDERCURL,
+            CellFlags::DOTTED_UNDERLINE,
+            CellFlags::DASHED_UNDERLINE,
+        ] {
+            // 엔진은 모양 밑줄에도 UNDERLINE을 함께 켠다
+            assert_eq!(
+                link_underline(f(&[CellFlags::UNDERLINE, shape])),
+                U::Single,
+                "{shape:?}"
+            );
+        }
+        assert_eq!(
+            link_underline(f(&[CellFlags::HIDDEN, CellFlags::UNDERLINE])),
+            U::None,
+            "숨김 칸은 링크여도 꾸밈 없음"
+        );
+        assert_eq!(link_underline(f(&[CellFlags::HIDDEN])), U::None);
+    }
     use bt_term::search::SearchStatus;
 
     #[test]
