@@ -1495,6 +1495,7 @@ fn snapshot_of<T: EventListener>(
     // 화면 반전(DECSCNM, ?5): Ghostty처럼 기본 글자색·바탕색만 맞바꾼다. 칸에 정한 색(팔레트·RGB)은 그대로다.
     // 푸는 길을 하나로 두려고 테마와 OSC 10·11로 바꾼 값을 같이 맞바꾼 사본으로 아래 전부를 푼다(#302)
     let reversed = content.mode.contains(TermMode::REVERSE_COLORS);
+    let chrome_background = color::named(theme, content.colors, NamedColor::Background);
     let swapped_theme;
     let swapped_colors;
     let (theme, overrides) = if reversed {
@@ -1648,6 +1649,7 @@ fn snapshot_of<T: EventListener>(
         display_offset: content.display_offset,
         history: term.grid().history_size(),
         background,
+        chrome_background,
         links,
         images: graphics.map(|g| visible_images(term, g)).unwrap_or_default(),
     }

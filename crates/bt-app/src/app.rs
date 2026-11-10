@@ -234,6 +234,18 @@ fn reversed_cursor_defaults(theme: &bt_core::Theme, reversed: bool) -> (bt_core:
     (color, text)
 }
 
+/// 화면 반전(DECSCNM) 중 투명 제목 막대 영역을 칠할 색(#302). Ghostty의 제목 막대 색은 `surface.backgroundColor ?? 설정 바탕색`이라
+/// reverse_colors를 따르지 않는다(OSC 11로 바꿨으면 그 색). 반전이 아니거나 제목 막대가 터미널 위에 겹치지 않으면(`top_inset` 0) 칠하지 않는다.
+/// 돌려주는 값은 (x, y, 너비, 높이, 색)
+fn titlebar_fill(
+    top_inset: u32,
+    width: u32,
+    reversed: bool,
+    chrome_bg: bt_core::Rgb,
+) -> Option<(i32, i32, u32, u32, bt_core::Rgb)> {
+    (reversed && top_inset > 0).then_some((0, 0, width, top_inset, chrome_bg))
+}
+
 /// 칸 제목(#124): 사람이 붙인 것 → 프로그램이 정한 것 → 전경 프로세스 이름 → "셸". 벨이 있으면 앞에 🔔
 fn title_of(user: Option<&str>, program: &str, fg: Option<&str>, bell: bool, readonly: bool) -> String {
     let name = if let Some(u) = user.filter(|u| !u.is_empty()) {
@@ -4715,6 +4727,17 @@ impl App {
                     .map(|v| v.screen.background)
                     .unwrap_or(theme.background);
                 canvas.clear(bg);
+                // 화면 반전 중에도 투명 제목 막대는 반전 전 바탕색(Ghostty와 같음, #302)
+                if let Some(f) = views.iter().find(|v| v.focused) {
+                    if let Some((x, y, w, h, c)) = titlebar_fill(
+                        top_inset,
+                        size.width,
+                        f.screen.modes.reverse_colors,
+                        f.screen.chrome_background,
+                    ) {
+                        canvas.fill_rect(x, y, w, h, c);
+                    }
+                }
                 if !labels.is_empty() {
                     tabbar::draw_with_title_font(
                         &mut canvas,
@@ -6042,6 +6065,19 @@ mod tests {
         assert_eq!(link_underline(f(&[CellFlags::HIDDEN])), U::None);
     }
     use bt_term::search::SearchStatus;
+
+    #[test]
+    fn titlebar_keeps_the_unreversed_background_under_decscnm() {
+        use bt_core::Rgb;
+        let bg = Rgb::new(10, 20, 30);
+        assert_eq!(titlebar_fill(28, 800, true, bg), Some((0, 0, 800, 28, bg)));
+        assert_eq!(titlebar_fill(28, 800, false, bg), None, "반전이 아니면 건드리지 않는다");
+        assert_eq!(
+            titlebar_fill(0, 800, true, bg),
+            None,
+            "제목 막대가 겹치지 않으면 영향 없다"
+        );
+    }
 
     #[test]
     fn reversed_screen_swaps_only_the_default_cursor_colors() {
