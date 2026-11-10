@@ -884,7 +884,7 @@ macOS의 Carbon `EnableSecureEventInput`은 켜 있는 동안 키 입력이 다�
 
 ## ADR-034 macOS 화면 올리기는 프레임을 IOSurface에 곧장 복사해 레이어 contents로 넣는다(softbuffer vendor 패치, ADR-009를 잇는다)
 
-상태: 채택(기본 경로는 실험 E5 결과를 본 뒤 확정한다)
+상태: 채택
 관련: [#346](https://github.com/dj258255/b-terminal/issues/346), ADR-009, [실험 E5](experiments/2026-11-10-e5-iosurface.md), [vendor/README.md](../vendor/README.md)
 
 ### 맥락
@@ -898,12 +898,12 @@ macOS의 Carbon `EnableSecureEventInput`은 켜 있는 동안 키 입력이 다�
 3. 앱은 `Buffer::present_frame(프레임)`으로 프레임을 한 번만 복사한다(버퍼에 복사한 뒤 IOSurface로 다시 복사하지 않는다).
 4. 알파: 캔버스는 불투명 프레임의 높은 바이트를 `0`으로 둔다(0RGB). CGImage 길의 `NoneSkipFirst`는 그것을 무시했지만 IOSurface `BGRA`는 알파를 읽으므로, 불투명 창은 복사 중에 알파 바이트를 `0xff`로 채운다. 투명 창(`background-opacity < 1`)은 캔버스가 곱한 알파로 그린 그대로 넘긴다(#78·#86).
 5. 색 공간: 기본(`window-colorspace = display-p3`)은 창이 있는 화면의 색 공간(`CGDisplayCopyColorSpace`)의 속성 목록을 `kIOSurfaceColorSpace`로 붙이고, 창이 다른 화면으로 가면(#97) 그 화면의 것으로 바꾸며 묶음을 비운다. `srgb`는 sRGB 색 공간을 붙인다. CGImage 길의 "기기 RGB"와 달리 이름 있는 sRGB다.
-6. 환경 변수 `BT_E5_CGIMAGE`가 있으면 예전 CGImage 길로 올린다(실험 E5가 견주려고). 기본은 IOSurface이고, 실험에서 올리기가 줄지 않으면 기본을 CGImage로 되돌린다.
+6. 환경 변수 `BT_E5_CGIMAGE`가 있으면 예전 CGImage 길로 올린다(실험 E5가 견주려고). 기본은 IOSurface다. 실험 E5(창 1000×680pt, 바뀐 줄 1줄, 번갈아 다섯 쌍)에서 올리기까지 중앙값이 CGImage 2.26ms에서 IOSurface 1.37ms로 줄었고 다섯 쌍 모두 짧았다. 기본 색 공간과 투명 창은 두 길의 화면 그림이 픽셀까지 같았다.
 
 ### 감수한 트레이드오프
 - macOS 전용 vendor 코드가 늘고 `objc2-io-surface`가 직접 의존성이 된다(잠금 파일에는 이미 있던 크레이트).
-- `IOSurfaceIsInUse`가 Core Animation의 사용을 얼마나 빨리 반영하는지는 문서에 없다. 그래서 지금 `contents`인 것은 따로 쓰지 않는다. 찢어짐이 없는지는 실제 창에서 보지 않았다.
-- `window-colorspace = srgb`의 색이 이전(기기 RGB)과 같게 보이는지는 실제 창에서 보지 않았다.
+- `IOSurfaceIsInUse`가 Core Animation의 사용을 얼마나 빨리 반영하는지는 문서에 없다. 그래서 지금 `contents`인 것은 따로 쓰지 않는다. 빠른 출력 중 실패 로그는 없었지만 찢어짐은 눈으로 보지 않았다.
+- `window-colorspace = srgb`는 이전(기기 RGB)과 일부 픽셀이 채널 최대 2 다르다(실험 E5 화면 그림, 바탕은 둘 다 테마 값 그대로).
 - 보안: 새로 여는 경계는 없다. 입력·출력 길이 아니고 화면에 올리는 길만 바뀐다. 잠금 동안만 기준 주소를 쓰고 `alloc_size` 안에서만 쓴다.
 
 ### 되돌릴 조건
