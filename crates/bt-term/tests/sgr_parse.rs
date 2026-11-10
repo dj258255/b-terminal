@@ -34,3 +34,15 @@ fn overline_mixes_with_other_attributes() {
     // 색 매개변수 뒤에서도 갈라지지 않는다
     assert_eq!(parse(b"\x1b[38;5;1;53m").len(), 2);
 }
+
+/// #287: SGR 5·6은 깜박임, 25는 깜박임 끔으로 해석된다(Ghostty terminal_sgr.zig 302~320줄: 5와 6 모두 blink)
+#[test]
+fn sgr_5_and_6_blink_and_25_cancels_it() {
+    assert_eq!(parse(b"\x1b[5m"), vec![Attr::BlinkSlow]);
+    assert_eq!(parse(b"\x1b[6m"), vec![Attr::BlinkFast]);
+    assert_eq!(parse(b"\x1b[25m"), vec![Attr::CancelBlink]);
+    assert_eq!(
+        parse(b"\x1b[1;5;25m"),
+        vec![Attr::Bold, Attr::BlinkSlow, Attr::CancelBlink]
+    );
+}

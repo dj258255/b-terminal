@@ -2048,9 +2048,10 @@ impl<T: EventListener> Handler for Term<T> {
             // b-terminal(#277): 윗줄(SGR 53·55). Reset은 `flags = empty()`가 함께 지운다
             Attr::Overline => cursor.template.flags.insert(Flags::OVERLINE),
             Attr::CancelOverline => cursor.template.flags.remove(Flags::OVERLINE),
-            _ => {
-                debug!("Term got unhandled attr: {attr:?}");
-            },
+            // b-terminal(#287): 깜박임(SGR 5·6, Ghostty는 둘 다 blink). 25가 끈다. 그리지는 않는다
+            Attr::BlinkSlow | Attr::BlinkFast => cursor.template.flags.insert(Flags::BLINK),
+            Attr::CancelBlink => cursor.template.flags.remove(Flags::BLINK),
+            // b-terminal(#287): 이제 vte의 모든 속성을 다뤄 `_` 갈래가 닿지 않는다(unreachable_patterns 경고). vte가 속성을 더하면 여기서 컴파일이 멈춘다
         }
     }
 

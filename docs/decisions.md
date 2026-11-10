@@ -646,7 +646,7 @@ macOS의 Carbon `EnableSecureEventInput`은 켜 있는 동안 키 입력이 다�
 
 ### 결과
 - 기본 동작이 바뀐다: `DCS $ q`와 `DCS + q`에 답한다(전에는 답이 없었다).
-- DECRQSS SGR은 alacritty 커서 템플릿(`grid.cursor.template`)에서 읽는다. 깜박임(5)은 격자에 없어 답에 빠진다(윗줄 53은 #277에서 더했다. Ghostty처럼 밑줄 바로 뒤). 밑줄 색은 있으면 `58`로 답한다(Ghostty 테스트 값에는 없다). 새 칸의 DECSCUSR는 설정의 `cursor-style`이 아니라 alacritty 기본(깜박이지 않는 블록, `2`)을 답한다.
+- DECRQSS SGR은 alacritty 커서 템플릿(`grid.cursor.template`)에서 읽는다. 깜박임(5)은 #287에서, 윗줄 53은 #277에서 더했다(Ghostty 순서대로 밑줄 `4`, `53`, `5`, 반전 `7`). 밑줄 색은 있으면 `58`로 답한다(Ghostty 테스트 값에는 없다). 새 칸의 DECSCUSR는 설정의 `cursor-style`이 아니라 alacritty 기본(깜박이지 않는 블록, `2`)을 답한다.
 - 프로그램이 `DCS 0 + r`을 기다리면 모르는 이름에 시간 초과가 날 수 있다(Ghostty와 같다).
 - 테스트: Ghostty `dcs.zig` 테스트 값(DECRQSS 응답 인코딩, 큰 응답, 이름 해석, 대소문자 섞임, 여러 이름, 잘못된 값), 스캐너 단위 테스트, `/bin/sh`와 `printf`로 띄운 PTY 통합 테스트. 격리한 실제 창에서 셸이 `/dev/tty`에 질의를 쓰고 `dd`로 답을 읽어, DECRQSS 네 갈래와 XTGETTCAP(한 이름, 여러 이름, 끝 표시를 끼운 이름)의 답이 테스트와 같은 것을 한 번 봤다.
 
@@ -686,14 +686,14 @@ macOS의 Carbon `EnableSecureEventInput`은 켜 있는 동안 키 입력이 다�
 
 ### 결정
 1. **vte 0.15.0을 `vendor/vte`로 들여온다.** 원본 그대로 한 커밋, 패치는 다음 커밋이다. 고친 곳은 `src/ansi.rs` 한 파일: `Attr`에 `Overline`·`CancelOverline`을 **끝에** 더하고 `[53]`·`[55]` 해석 두 줄을 더했다(`b-terminal(#277)`). 새 크레이트는 없다. 잠금 파일에서 `vte`의 `source`·`checksum` 두 줄이 빠지는 것이 변화의 전부다.
-2. vendor `alacritty_terminal`: `Flags`의 마지막 빈 비트(`0b1000_0000_0000_0000`)에 `OVERLINE`을 두고 `terminal_attribute`가 켜고 끈다. SGR 0(Reset)은 `flags = empty()`로 함께 지운다. 윗줄만 있는 공백 칸이 빈 칸으로 취급되지 않게 `is_empty`의 표시 목록에도 더했다. 이 비트로 `Flags: u16`이 가득 찬다(다음 표시가 필요하면 `u32`로 넓혀야 한다).
+2. vendor `alacritty_terminal`: `Flags`의 마지막 빈 비트(`0b1000_0000_0000_0000`)에 `OVERLINE`을 두고 `terminal_attribute`가 켜고 끈다. SGR 0(Reset)은 `flags = empty()`로 함께 지운다. 윗줄만 있는 공백 칸이 빈 칸으로 취급되지 않게 `is_empty`의 표시 목록에도 더했다. 이 비트로 `Flags: u16`이 가득 찼고, #287에서 `u32`로 넓혀 `BLINK`(`1 << 16`)를 더했다. 셀 크기는 24바이트 그대로다(64비트에서 잰 값 한 번).
 3. bt-term의 `CellFlags::OVERLINE`을 거쳐 그리는 쪽의 `DrawCell.overline`이 된다. 그리기는 칸 맨 위(`overline_offset`)에 `overline_thickness` 두께로 **글자색**(밑줄·가운데줄과 같은 `cell.fg`) 줄을 긋는다. 순서는 밑줄 다음, 글자 앞이다(Ghostty generic.zig). 위치·두께는 `adjust-overline-position`·`-thickness`가 정한다(이미 있던 설정).
 4. DECRQSS `m` 답에 `53`을 Ghostty와 같은 자리(밑줄 `4` 바로 뒤, 깜박임 `5` 앞, `terminal/dcs.zig` 테스트의 `0;1;2;3;4:5;53;5;7;8;9`)에 넣는다. XTGETTCAP `Smol`(`\E[53m`)·`Rmol`(`\E[55m`)을 Ghostty terminfo 값 그대로 목록 끝에 더한다.
 
 ### 결과
 - 기본 동작이 바뀐다: 윗줄이 그려지고, DECRQSS 답과 XTGETTCAP이 윗줄을 알린다.
 - 읽기·쓰기 경계는 그대로다: 윗줄은 칸의 표시일 뿐이고 PTY로 쓰는 바이트가 늘지 않는다. 답에 들어가는 것은 고정 숫자 `53`과 고정 문자열이다.
-- 깜박임(SGR 5)은 여전히 격자에 없다. Ghostty도 글자 깜박임은 그리지 않는다(`generic.zig`의 blink는 커서뿐이라고 이슈에 적혀 있다).
+- 깜박임(SGR 5)은 #287에서 엔진 셀 표시(`BLINK`)에 들어가 DECRQSS 답에 나온다. 화면 칸(`CellFlags`)에는 없고 그리지도 않는다. Ghostty도 글자 깜박임은 그리지 않는다(`generic.zig`의 blink는 커서뿐이라고 이슈에 적혀 있다).
 - 테스트: vte 해석(`53`, `55`, `1;53`, 밑줄 모양과 섞기), 엔진 셀 표시(`53` 켬, `55`·`0` 끔, 공백 칸), 렌더 픽셀(위치·두께·글자색·두 칸 폭), DECRQSS·XTGETTCAP 답. 실제 창(격리한 디버그 빌드, 한 번)에서 `OVER`·두 칸 글자·빨간 글자·밑줄과 함께 그린 윗줄을 스크린샷으로 봤고, DECRQSS `m`은 `0;53m`, XTGETTCAP `Smol`은 `\E[53m`으로 답했다.
 
 ### 되돌릴 조건
