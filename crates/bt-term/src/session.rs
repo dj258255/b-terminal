@@ -1425,6 +1425,7 @@ fn modes_of(m: TermMode) -> Modes {
             alt_esc_prefix: m.contains(TermMode::ALT_ESC_PREFIX),
             alt_sends_escape: m.contains(TermMode::ALT_SENDS_ESCAPE),
         },
+        reverse_colors: m.contains(TermMode::REVERSE_COLORS),
     }
 }
 
@@ -1491,7 +1492,25 @@ fn snapshot_of<T: EventListener>(
     let cols = term.columns();
     let rows = term.screen_lines();
     let content = term.renderable_content();
-    let overrides = content.colors;
+    // 화면 반전(DECSCNM, ?5): Ghostty처럼 기본 글자색·바탕색만 맞바꾼다. 칸에 정한 색(팔레트·RGB)은 그대로다.
+    // 푸는 길을 하나로 두려고 테마와 OSC 10·11로 바꾼 값을 같이 맞바꾼 사본으로 아래 전부를 푼다(#302)
+    let reversed = content.mode.contains(TermMode::REVERSE_COLORS);
+    let chrome_background = color::named(theme, content.colors, NamedColor::Background);
+    let swapped_theme;
+    let swapped_colors;
+    let (theme, overrides) = if reversed {
+        let mut t = theme.clone();
+        std::mem::swap(&mut t.foreground, &mut t.background);
+        let mut c = *content.colors;
+        let (fg, bg) = (c[NamedColor::Foreground], c[NamedColor::Background]);
+        c[NamedColor::Foreground] = bg;
+        c[NamedColor::Background] = fg;
+        swapped_theme = t;
+        swapped_colors = c;
+        (&swapped_theme, &swapped_colors)
+    } else {
+        (theme, content.colors)
+    };
     let background = color::named(theme, overrides, NamedColor::Background);
     let foreground = color::named(theme, overrides, NamedColor::Foreground);
     let mut cells = vec![Cell::blank(foreground, background); cols * rows];
@@ -1630,6 +1649,7 @@ fn snapshot_of<T: EventListener>(
         display_offset: content.display_offset,
         history: term.grid().history_size(),
         background,
+        chrome_background,
         links,
         images: graphics.map(|g| visible_images(term, g)).unwrap_or_default(),
     }

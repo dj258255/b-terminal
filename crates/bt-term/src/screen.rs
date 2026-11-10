@@ -118,6 +118,8 @@ pub struct Modes {
     pub kitty: crate::input::KittyFlags,
     /// 키 입력 모드(DECBKM 67, 1035, 1036, 1039, #301)
     pub key: crate::input::KeyModes,
+    /// 화면 반전(DECSCNM, ?5)이 켜져 있다. 칸의 색은 이미 맞바뀐 채 `Screen.cells`에 있고, 커서의 기본 색을 맞바꿀 때 앱이 본다(#302)
+    pub reverse_colors: bool,
 }
 
 /// 화면에 보이는 kitty 그림 하나(#76)
@@ -149,6 +151,8 @@ pub struct Screen {
     /// 스크롤백 줄 수
     pub history: usize,
     pub background: Rgb,
+    /// 화면 반전(DECSCNM) 전의 기본 바탕색(OSC 11로 바꿨으면 그 색). 제목 막대가 쓴다. Ghostty의 제목 막대 색은 반전을 따르지 않는다(#302)
+    pub chrome_background: Rgb,
     /// 화면에 보이는 OSC 8 링크 주소들(칸의 `link`가 가리킨다)
     pub links: Vec<String>,
     /// 화면에 보이는 kitty 그림들(놓인 차례)

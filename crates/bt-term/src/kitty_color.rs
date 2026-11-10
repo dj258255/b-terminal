@@ -235,6 +235,8 @@ pub fn soft_reset<L: EventListener>(term: &mut Term<L>) {
     Handler::set_cursor_style(term, None);
     // 보호 켬과 마지막 보호 방식도 끈다(Ghostty `softReset`, Terminal.zig 5944~5947줄)(#294)
     term.reset_protected();
+    // 역방향 줄바꿈(?45·?1045)과 KAM도 기본값(끔)으로(Ghostty `softReset`의 reset_modes)(#302)
+    term.reset_screen_modes_soft();
 }
 
 /// 요청을 차례로 적용하고, 질의가 있으면 답 바이트를 돌려준다.

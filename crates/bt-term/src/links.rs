@@ -424,6 +424,7 @@ mod tests {
             display_offset: 0,
             history: 0,
             background: Rgb::new(0, 0, 0),
+            chrome_background: Rgb::new(0, 0, 0),
             links: Vec::new(),
             images: Vec::new(),
         }

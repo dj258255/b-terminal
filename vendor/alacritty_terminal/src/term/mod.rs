@@ -112,6 +112,15 @@ bitflags! {
         const IGNORE_KEYPAD_NUMLOCK   = 1 << 37;
         const ALT_ESC_PREFIX          = 1 << 38;
         const ALT_SENDS_ESCAPE        = 1 << 39;
+        // b-terminal(#302): 화면 모드 40~47. 저장만 하는 것(SLOW_SCROLL·AUTOREPEAT·KEYBOARD_ACTION)도 DECRQM이 답하려고 둔다
+        const REVERSE_COLORS          = 1 << 40;
+        const REVERSE_WRAP            = 1 << 41;
+        const REVERSE_WRAP_EXTENDED   = 1 << 42;
+        const SLOW_SCROLL             = 1 << 43;
+        const AUTOREPEAT              = 1 << 44;
+        const KEYBOARD_ACTION         = 1 << 45;
+        /// ANSI 모드 12(SRM). Ghostty 기본 켬이라 `TermMode::default()`에 들어 있다
+        const SEND_RECEIVE            = 1 << 46;
         const MOUSE_MODE              = Self::MOUSE_REPORT_CLICK.bits() | Self::MOUSE_MOTION.bits() | Self::MOUSE_DRAG.bits();
         const KITTY_KEYBOARD_PROTOCOL = Self::DISAMBIGUATE_ESC_CODES.bits()
                                       | Self::REPORT_EVENT_TYPES.bits()
@@ -154,6 +163,7 @@ impl Default for TermMode {
             // b-terminal(#301): Ghostty modes.zig의 기본 켬(1035, 1036)
             | TermMode::IGNORE_KEYPAD_NUMLOCK
             | TermMode::ALT_ESC_PREFIX
+            | TermMode::SEND_RECEIVE // b-terminal(#302)
     }
 }
 
@@ -1102,6 +1112,86 @@ impl<T> Term<T> {
         self.protected_iso = false;
     }
 
+    /// b-terminal(#302): 소프트 리셋(DECSTR)이 역방향 줄바꿈(?45·?1045)과 KAM(2)을 기본값(끔)으로 되돌린다
+    /// (Ghostty `softReset`의 `reset_modes`, Terminal.zig 5919~5931줄).
+    pub fn reset_screen_modes_soft(&mut self) {
+        self.mode.remove(
+            TermMode::REVERSE_WRAP | TermMode::REVERSE_WRAP_EXTENDED | TermMode::KEYBOARD_ACTION,
+        );
+    }
+
+    /// b-terminal(#302): 왼쪽으로 가는 길(Backspace·CUB)이 윗줄로 넘어가야 하는가. Ghostty `cursorLeft`의 `wrap_mode`:
+    /// 자동 줄바꿈(?7)이 꺼져 있으면 넘지 않고, 켜져 있으면 ?1045나 ?45 중 하나라도 켜졌을 때 넘는다
+    fn reverse_wrap_active(&self) -> bool {
+        self.mode.contains(TermMode::LINE_WRAP)
+            && self.mode.intersects(TermMode::REVERSE_WRAP | TermMode::REVERSE_WRAP_EXTENDED)
+    }
+
+    /// b-terminal(#302): Ghostty `Terminal.cursorLeft`(2592~2696줄)의 역방향 줄바꿈 갈래.
+    /// 이 엔진에는 좌우 여백이 없어 왼쪽 여백은 0, 오른쪽 여백은 마지막 칸이다
+    fn reverse_wrap_left(&mut self, count: usize) {
+        let extended = self.mode.contains(TermMode::REVERSE_WRAP_EXTENDED);
+        let cols = self.columns();
+        let mut count = count.max(1);
+        self.damage_cursor();
+
+        // 대기 중인 줄바꿈이 있으면 xterm처럼 한 걸음을 그것이 쓴다
+        if self.grid.cursor.input_needs_wrap {
+            count -= 1;
+            self.grid.cursor.input_needs_wrap = false;
+            if count == 0 {
+                return;
+            }
+        }
+
+        let top = self.scroll_region.start.0;
+        let bottom = self.scroll_region.end.0 - 1;
+        let mut col = self.grid.cursor.point.column.0;
+        let mut line = self.grid.cursor.point.line.0;
+
+        // 왼쪽 끝이고 확장이 아니면 위쪽 여백 위(또는 그 줄)에서는 여백의 왼쪽 위로 가서 끝낸다
+        if col == 0 && !extended && line <= top {
+            self.grid.cursor.point.column = Column(0);
+            self.grid.cursor.point.line = Line(top);
+            self.damage_cursor();
+            return;
+        }
+
+        loop {
+            let amount = col.min(count);
+            count -= amount;
+            col -= amount;
+            if count == 0 {
+                break;
+            }
+            if line == top {
+                if !extended {
+                    break;
+                }
+                // 맨 위에서 더 가면 아래 여백의 오른쪽 끝으로 돈다
+                col = cols - 1;
+                line = bottom;
+                count -= 1;
+                continue;
+            }
+            // xterm이 비정상 종료하는 자리: Ghostty처럼 (0,0)에서 멈춘다
+            if line == 0 {
+                break;
+            }
+            // 확장이 아니면 윗줄이 줄바꿈으로 이어진 줄일 때만 넘는다
+            if !extended && !self.grid[Line(line - 1)][Column(cols - 1)].flags.contains(Flags::WRAPLINE) {
+                break;
+            }
+            col = cols - 1;
+            line -= 1;
+            count -= 1;
+        }
+
+        self.grid.cursor.point.column = Column(col);
+        self.grid.cursor.point.line = Line(line);
+        self.damage_cursor();
+    }
+
     /// b-terminal(#294): 보호 칸을 건너뛰고 `range` 칸을 지운다
     fn clear_unprotected(&mut self, line: Line, range: Range<Column>) {
         let bg = self.grid.cursor.template.bg;
@@ -1534,6 +1624,11 @@ impl<T: EventListener> Handler for Term<T> {
     #[inline]
     fn move_backward(&mut self, cols: usize) {
         trace!("Moving backward: {cols}");
+        // b-terminal(#302): 역방향 줄바꿈(?45·?1045)이 켜져 있으면 윗줄로 넘어간다(Ghostty `cursorLeft`)
+        if self.reverse_wrap_active() {
+            self.reverse_wrap_left(cols);
+            return;
+        }
         let column = self.grid.cursor.point.column.saturating_sub(cols);
 
         let cursor_line = self.grid.cursor.point.line.0 as usize;
@@ -1676,6 +1771,12 @@ impl<T: EventListener> Handler for Term<T> {
     #[inline]
     fn backspace(&mut self) {
         trace!("Backspace");
+
+        // b-terminal(#302): Ghostty `backspace`는 `cursorLeft(1)`이다
+        if self.reverse_wrap_active() {
+            self.reverse_wrap_left(1);
+            return;
+        }
 
         if self.grid.cursor.point.column > Column(0) {
             let line = self.grid.cursor.point.line.0 as usize;
@@ -2329,6 +2430,15 @@ impl<T: EventListener> Handler for Term<T> {
                 self.save_cursor_position();
             },
             NamedPrivateMode::KeypadApplication => self.mode.insert(TermMode::APP_KEYPAD),
+            // b-terminal(#302)
+            NamedPrivateMode::ReverseColors => {
+                self.mode.insert(TermMode::REVERSE_COLORS);
+                self.mark_fully_damaged();
+            },
+            NamedPrivateMode::ReverseWrap => self.mode.insert(TermMode::REVERSE_WRAP),
+            NamedPrivateMode::ReverseWrapExtended => self.mode.insert(TermMode::REVERSE_WRAP_EXTENDED),
+            NamedPrivateMode::SlowScroll => self.mode.insert(TermMode::SLOW_SCROLL),
+            NamedPrivateMode::Autorepeat => self.mode.insert(TermMode::AUTOREPEAT),
         }
     }
 
@@ -2395,6 +2505,15 @@ impl<T: EventListener> Handler for Term<T> {
                 self.restore_cursor_position();
             },
             NamedPrivateMode::KeypadApplication => self.mode.remove(TermMode::APP_KEYPAD),
+            // b-terminal(#302)
+            NamedPrivateMode::ReverseColors => {
+                self.mode.remove(TermMode::REVERSE_COLORS);
+                self.mark_fully_damaged();
+            },
+            NamedPrivateMode::ReverseWrap => self.mode.remove(TermMode::REVERSE_WRAP),
+            NamedPrivateMode::ReverseWrapExtended => self.mode.remove(TermMode::REVERSE_WRAP_EXTENDED),
+            NamedPrivateMode::SlowScroll => self.mode.remove(TermMode::SLOW_SCROLL),
+            NamedPrivateMode::Autorepeat => self.mode.remove(TermMode::AUTOREPEAT),
         }
     }
 
@@ -2447,6 +2566,14 @@ impl<T: EventListener> Handler for Term<T> {
                 },
                 NamedPrivateMode::KeypadApplication => self.mode.contains(TermMode::APP_KEYPAD).into(),
                 NamedPrivateMode::ColumnMode => ModeState::NotSupported,
+                // b-terminal(#302)
+                NamedPrivateMode::ReverseColors => self.mode.contains(TermMode::REVERSE_COLORS).into(),
+                NamedPrivateMode::ReverseWrap => self.mode.contains(TermMode::REVERSE_WRAP).into(),
+                NamedPrivateMode::ReverseWrapExtended => {
+                    self.mode.contains(TermMode::REVERSE_WRAP_EXTENDED).into()
+                },
+                NamedPrivateMode::SlowScroll => self.mode.contains(TermMode::SLOW_SCROLL).into(),
+                NamedPrivateMode::Autorepeat => self.mode.contains(TermMode::AUTOREPEAT).into(),
             },
             PrivateMode::Unknown(GRAPHEME_CLUSTER_MODE) => {
                 self.mode.contains(TermMode::GRAPHEME_CLUSTER).into()
@@ -2484,6 +2611,9 @@ impl<T: EventListener> Handler for Term<T> {
         match mode {
             NamedMode::Insert => self.mode.insert(TermMode::INSERT),
             NamedMode::LineFeedNewLine => self.mode.insert(TermMode::LINE_FEED_NEW_LINE),
+            // b-terminal(#302): 상태만 둔다. 키보드를 실제로 잠그는 일은 세션이 설정(vt-kam-allowed)을 보고 한다
+            NamedMode::KeyboardAction => self.mode.insert(TermMode::KEYBOARD_ACTION),
+            NamedMode::SendReceive => self.mode.insert(TermMode::SEND_RECEIVE),
         }
     }
 
@@ -2504,6 +2634,9 @@ impl<T: EventListener> Handler for Term<T> {
                 self.mark_fully_damaged();
             },
             NamedMode::LineFeedNewLine => self.mode.remove(TermMode::LINE_FEED_NEW_LINE),
+            // b-terminal(#302)
+            NamedMode::KeyboardAction => self.mode.remove(TermMode::KEYBOARD_ACTION),
+            NamedMode::SendReceive => self.mode.remove(TermMode::SEND_RECEIVE),
         }
     }
 
@@ -2516,6 +2649,9 @@ impl<T: EventListener> Handler for Term<T> {
                 NamedMode::LineFeedNewLine => {
                     self.mode.contains(TermMode::LINE_FEED_NEW_LINE).into()
                 },
+                // b-terminal(#302)
+                NamedMode::KeyboardAction => self.mode.contains(TermMode::KEYBOARD_ACTION).into(),
+                NamedMode::SendReceive => self.mode.contains(TermMode::SEND_RECEIVE).into(),
             },
             ansi::Mode::Unknown(_) => ModeState::NotSupported,
         };
