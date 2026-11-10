@@ -1333,6 +1333,8 @@ impl<T> Term<T> {
 
         trace!("Wrapping input");
 
+        let semantic = self.semantic_state(); // b-terminal(#329)
+
         // b-terminal(#311): 이어진 줄 표시는 화면 끝 칸에서 넘어갈 때만 한다. 오른쪽 여백에서 넘어가면 표시하지 않는다(Ghostty `printWrap`)
         if self.grid.cursor.point.column.0 + 1 == self.columns() {
             self.grid.cursor_cell().flags.insert(Flags::WRAPLINE);
@@ -1349,6 +1351,7 @@ impl<T> Term<T> {
         self.grid.cursor.point.column = Column(self.margin_left);
         self.grid.cursor.input_needs_wrap = false;
         self.damage_cursor();
+        self.semantic_after_wrap(semantic); // b-terminal(#329)
     }
 
     /// b-terminal(#294): 소프트 리셋(DECSTR)이 보호 켬과 마지막 보호 방식을 모두 끈다(Ghostty `softReset`).
@@ -1558,7 +1561,8 @@ impl<T> Term<T> {
         cursor_cell.c = c;
         cursor_cell.fg = fg;
         cursor_cell.bg = bg;
-        cursor_cell.flags = flags | Flags::WRITTEN; // b-terminal(#314)
+        // b-terminal(#314): 쓴 칸 표시. b-terminal(#329): 0번 칸에 둔 줄의 프롬프트 표시는 덮어써도 남긴다
+        cursor_cell.flags = flags | Flags::WRITTEN | (cursor_cell.flags & (Flags::ROW_PROMPT | Flags::ROW_PROMPT_CONTINUATION));
         cursor_cell.extra = extra;
     }
 
@@ -2159,6 +2163,7 @@ impl<T: EventListener> Handler for Term<T> {
             self.grid.cursor.point.line += 1;
             self.damage_cursor();
         }
+        self.semantic_after_index(); // b-terminal(#329)
     }
 
     /// Set current position as a tabstop.
@@ -2633,6 +2638,7 @@ impl<T: EventListener> Handler for Term<T> {
         self.cursor_style = None;
         self.protected_iso = false; // b-terminal(#294)
         self.mouse_shift_capture = None; // b-terminal(#327)
+        self.semantic_reset(); // b-terminal(#329)
         self.grid.reset();
         self.inactive_grid.reset();
         self.scroll_region = Line(0)..Line(self.screen_lines() as i32);
