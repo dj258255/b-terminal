@@ -37,7 +37,14 @@ pub struct FramePacer {
     interval: Duration,
     depth: usize,
     presents: VecDeque<Instant>,
+    /// 얻기에서 실제로 기다린 프레임에서 배운, 화면이 한 장을 가져가는 간격(들은 주기보다 길 때만)
+    learned: Option<Duration>,
 }
+
+/// 이보다 오래 기다린 얻기만 "막혔다"로 본다(시계 흔들림을 배우지 않게)
+const BLOCKED: Duration = Duration::from_millis(1);
+/// 막히지 않은 프레임마다 배운 간격을 줄이는 비율. 화면이 다시 빨라졌는지는 막히지 않는 것으로만 알 수 있어 천천히 돌아간다
+const UNLEARN: f64 = 0.99;
 
 impl FramePacer {
     /// `depth`는 `desired_maximum_frame_latency`와 같은 값
@@ -46,12 +53,36 @@ impl FramePacer {
             interval,
             depth: depth.max(1),
             presents: VecDeque::new(),
+            learned: None,
         }
     }
 
     /// 화면 주사율이 바뀌었다(다른 화면으로 옮겨 갔을 때)
     pub fn set_interval(&mut self, interval: Duration) {
+        if interval != self.interval {
+            self.learned = None;
+        }
         self.interval = interval;
+    }
+
+    /// 창에 한 장 올렸다. 그림판을 얻느라 `waited`만큼 기다렸다
+    ///
+    /// 들은 주기(`interval`)는 화면 주사율이지만, 계속 올리는 동안 화면이 실제로 그만큼 자주 가져가는지는 모른다
+    /// (실험 E11: 120Hz 화면에서 16.6ms마다 한 장씩 빠져 얻기가 프레임마다 약 16ms 막혔다). 그래서 얻기에서 막힌 프레임이면
+    /// 앞 장과의 간격이 실제로 한 장이 빠지는 간격이라 보고 배운다(들은 주기의 네 배까지). 막히지 않은 프레임이 이어지면
+    /// 배운 간격을 조금씩 줄여 들은 주기로 돌아간다
+    pub fn record_present_waited(&mut self, at: Instant, waited: Duration) {
+        let prev = self.presents.back().copied();
+        if waited >= BLOCKED {
+            let gap = prev.and_then(|p| at.checked_duration_since(p));
+            if let Some(gap) = gap.filter(|g| *g > self.interval) {
+                self.learned = Some(gap.min(self.interval * 4));
+            }
+        } else if let Some(l) = self.learned {
+            let next = l.mul_f64(UNLEARN);
+            self.learned = (next > self.interval).then_some(next);
+        }
+        self.record_present(at);
     }
 
     /// 창에 한 장 올렸다
@@ -70,7 +101,7 @@ impl FramePacer {
         let Some(oldest) = self.presents.front() else {
             return PaceDecision::Go;
         };
-        let leaves = *oldest + self.interval * self.depth as u32;
+        let leaves = *oldest + self.learned.unwrap_or(self.interval) * self.depth as u32;
         match leaves.checked_duration_since(now) {
             Some(wait) if !wait.is_zero() => PaceDecision::Wait(wait),
             _ => PaceDecision::Go,
@@ -220,5 +251,46 @@ mod tests {
         assert_eq!(Visible.after(false, false), Visible);
         assert_eq!(Hidden.after(false, false), Hidden);
         assert_eq!(Unknown.after(false, false), Unknown);
+    }
+
+    #[test]
+    fn blocked_acquires_teach_the_real_drain_interval() {
+        // 120Hz라고 들었지만 화면이 16ms마다 한 장씩 가져간다: 얻기에서 기다린 프레임의 간격을 배운다
+        let t0 = Instant::now();
+        let mut p = FramePacer::new(2, ms(8));
+        p.record_present_waited(t0, Duration::ZERO);
+        p.record_present_waited(t0 + ms(16), ms(8));
+        assert_eq!(
+            p.check(t0 + ms(17)),
+            PaceDecision::Wait(ms(15)),
+            "가장 오래된 장 + 16ms × 2"
+        );
+        // 기다림이 짧으면(1ms 아래) 배우지 않는다
+        let mut q = FramePacer::new(2, ms(8));
+        q.record_present_waited(t0, Duration::ZERO);
+        q.record_present_waited(t0 + ms(16), Duration::from_micros(500));
+        assert_eq!(q.check(t0 + ms(17)), PaceDecision::Go);
+    }
+
+    #[test]
+    fn frames_that_do_not_wait_slowly_return_to_the_reported_interval() {
+        let t0 = Instant::now();
+        let mut p = FramePacer::new(2, ms(8));
+        p.record_present_waited(t0, Duration::ZERO);
+        p.record_present_waited(t0 + ms(16), ms(8));
+        // 기다리지 않은 프레임이 이어지면 배운 간격이 조금씩 줄어 들은 값으로 돌아온다
+        let mut now = t0 + ms(16);
+        for _ in 0..200 {
+            now += ms(16);
+            p.record_present_waited(now, Duration::ZERO);
+        }
+        assert_eq!(p.check(now + ms(1)), PaceDecision::Go, "8ms × 2 = 16ms가 지났다");
+        // 같은 주기를 다시 알려도(앱은 프레임마다 알린다) 배운 값은 남는다
+        p.record_present_waited(now + ms(32), ms(8));
+        p.set_interval(ms(8));
+        assert_eq!(p.check(now + ms(33)), PaceDecision::Wait(ms(31)), "32ms를 배웠다");
+        // 다른 화면으로 옮겨 주기가 바뀌면 배운 값을 버린다
+        p.set_interval(ms(16));
+        assert_eq!(p.check(now + ms(33)), PaceDecision::Go, "16ms × 2 = 32ms가 지났다");
     }
 }

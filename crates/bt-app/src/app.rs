@@ -3641,17 +3641,21 @@ impl App {
         let mut errors = Vec::new();
         for w in std::iter::once(&mut self.w).chain(&mut self.others) {
             let Some(g) = w.gfx.as_mut() else { continue };
-            for e in apply_shaders(g, &self.shaders) {
-                if !errors.contains(&e) {
-                    errors.push(e);
-                }
-            }
+            errors.extend(apply_shaders(g, &self.shaders));
             w.shader = Default::default();
             g.window.request_redraw();
         }
-        self.config
-            .warnings
-            .extend(errors.into_iter().map(|e| format!("custom-shader: {e}")));
+        self.note_shader_errors(errors);
+    }
+
+    /// 셰이더를 걸다 난 오류를 설정 경고에 더한다(`btctl reload-config`와 설정 알림에 보인다). 창마다 같은 문구는 한 번만
+    fn note_shader_errors(&mut self, errors: Vec<String>) {
+        for e in errors {
+            let w = format!("custom-shader: {e}");
+            if !self.config.warnings.contains(&w) {
+                self.config.warnings.push(w);
+            }
+        }
     }
 
     fn reload_config(&mut self) {
@@ -3941,7 +3945,7 @@ impl App {
                 gpu,
                 first: FirstFrame::new(made),
             };
-            apply_shaders(&mut g, &self.shaders);
+            self.note_shader_errors(apply_shaders(&mut g, &self.shaders));
             return Some(g);
         }
         log::info!("그리기 길: CPU");
@@ -3955,7 +3959,7 @@ impl App {
             gpu: None,
             first: FirstFrame::new(made),
         };
-        apply_shaders(&mut g, &self.shaders);
+        self.note_shader_errors(apply_shaders(&mut g, &self.shaders));
         Some(g)
     }
 
