@@ -412,6 +412,9 @@ impl Inner {
     /// 화면 지우기에 맞춰 놓인 그림을 지운다
     fn graphics_erase(&mut self, visible: bool, scrollback: bool) {
         self.graphics.erase(visible, scrollback);
+        if visible && !scrollback {
+            erase_screen_graphics(&self.term, &mut self.graphics);
+        }
     }
 }
 
@@ -1399,6 +1402,12 @@ fn scheme_report(light: bool) -> &'static [u8] {
     if light { b"\x1b[?997;2n" } else { b"\x1b[?997;1n" }
 }
 
+/// ED 2를 엔진이 처리한 뒤의 그림 정리(#329): 스크롤백에 다 들어간 그림만 남기고 보이는 자리의 그림은 지운다
+fn erase_screen_graphics<T>(term: &Term<T>, graphics: &mut crate::graphics::Graphics) {
+    let alt = term.mode().contains(alacritty_terminal::term::TermMode::ALT_SCREEN);
+    graphics.erase_screen(term.grid().history_size() as i64, alt);
+}
+
 fn signal_event(sig: Signal) -> SessionEvent {
     match sig {
         Signal::Notify(n) => SessionEvent::Notification(n),
@@ -1929,6 +1938,9 @@ impl Emulator {
                 }
                 Signal::Erase { visible, scrollback } => {
                     self.graphics.erase(*visible, *scrollback);
+                    if *visible && !*scrollback {
+                        erase_screen_graphics(&self.term, &mut self.graphics);
+                    }
                     if *visible && *scrollback {
                         crate::kitty_color::reset_palette(&mut self.term);
                     }
@@ -1939,6 +1951,7 @@ impl Emulator {
                         self.replies.extend(r);
                     }
                 }
+                Signal::Semantic(sp) => sp.apply(&mut self.term), // #329
                 _ => {}
             }
             notes.push(sig);

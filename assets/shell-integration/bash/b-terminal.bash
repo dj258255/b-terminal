@@ -19,7 +19,7 @@ _bt_precmd() {
     printf '\e]133;D;%d\a' "$_bt_ret"
     _bt_running=
   fi
-  printf '\e]133;A\a'
+  printf '\e]133;A;redraw=last\a'
   printf '\e]7;file://%s%s\a' "$HOSTNAME" "${PWD// /%20}"
   # path: 사용자의 rc가 PATH를 다시 쓴 뒤인 첫 프롬프트에서 한 번, 없을 때만 끝에 더한다
   if [ -n "$_bt_f_path" ] && [ -z "$_bt_path_done" ]; then

@@ -397,7 +397,7 @@ impl Graphics {
     }
 
     /// 화면 지우기와 초기화에 맞춰 놓인 그림을 지운다.
-    /// ED 2(보이는 화면): VT 엔진은 화면 내용을 스크롤백으로 밀어 올리므로 그림도 내용과 함께 남긴다.
+    /// ED 2(보이는 화면)는 여기서 다루지 않는다: 엔진이 올렸는지(프롬프트에서만, #329)에 달렸으므로 `erase_screen`이 한다.
     /// ED 3(스크롤백): 줄 번호의 기준이 바뀌므로 주 화면의 그림을 모두 지운다. 초기화(RIS)는 모두 지운다
     pub fn erase(&mut self, visible: bool, scrollback: bool) {
         match (visible, scrollback) {
@@ -405,6 +405,14 @@ impl Graphics {
             (false, true) => self.placements.retain(|p| p.alt),
             _ => {}
         }
+    }
+
+    /// ED 2를 처리한 뒤(#329, Ghostty `kitty_images.clearScreen`, Terminal.zig 4527~4535줄): 보이는 자리에 걸친 그림을 지우고
+    /// 스크롤백에 다 들어간 것만 남긴다. `active_top`은 지금 활성 화면 맨 위의 절대 줄(엔진이 올렸으면 이미 늘어난 스크롤백 크기)이다.
+    /// 대체 화면이면 대체 화면 그림만, 주 화면이면 주 화면 그림만 본다
+    pub fn erase_screen(&mut self, active_top: i64, in_alt: bool) {
+        self.placements
+            .retain(|p| p.alt != in_alt || (!in_alt && p.line + i64::from(p.rows) <= active_top));
     }
 
     /// 대체 화면을 나왔다: 그 화면에 놓인 그림을 지운다
@@ -612,10 +620,22 @@ mod tests {
         assert!(g.image(1).is_some(), "d=i는 놓인 것만 지운다");
         g.handle(b"a=d,d=I,i=1", CUR);
         assert!(g.image(1).is_none(), "d=I는 그림도 지운다");
-        // ED 2는 그림을 남기고(내용과 함께 스크롤백으로), ED 3은 주 화면의 그림을 지운다(대체 화면 것은 남김)
+        // ED 2는 보이는 자리의 그림을 지우고 스크롤백에 다 들어간 것만 남긴다(#329). ED 3은 주 화면의 그림을 지운다(대체 화면 것은 남김)
         g.handle(b"a=p,i=2,q=2", Cursor { alt: true, ..CUR });
         g.erase(true, false);
-        assert_eq!(g.placements.len(), 2);
+        assert_eq!(g.placements.len(), 2, "erase(true,false)는 아무것도 하지 않는다");
+        g.erase_screen(5, false);
+        assert_eq!(
+            g.placements.len(),
+            1,
+            "줄 10은 활성 화면(5~)에 걸쳐 지우고 대체 화면 것은 남는다"
+        );
+        g.handle(b"a=p,i=2,q=2", Cursor { line: 10, ..CUR });
+        g.erase_screen(50, false);
+        assert_eq!(g.placements.len(), 2, "스크롤백에 다 들어간 줄 10의 그림은 남는다");
+        g.erase_screen(50, true);
+        assert_eq!(g.placements.len(), 1, "대체 화면이면 대체 화면 그림만 지운다");
+        g.handle(b"a=p,i=2,q=2", Cursor { alt: true, ..CUR });
         g.erase(false, true);
         assert_eq!(g.placements.len(), 1);
         assert!(g.placements[0].alt);

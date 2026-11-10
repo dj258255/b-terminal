@@ -180,6 +180,43 @@ fn kitty_graphics_place_scroll_and_clear() {
     assert!(e.snapshot().images.is_empty(), "화면을 지우면 그림도 지운다");
 }
 
+fn graphics_emulator() -> bt_term::Emulator {
+    bt_term::Emulator::new(
+        bt_term::GridSize {
+            cols: 20,
+            rows: 6,
+            cell_width: 10,
+            cell_height: 20,
+        },
+        bt_core::Theme::default(),
+    )
+}
+
+/// #329: 프롬프트가 아닌 곳의 ED 2는 화면을 스크롤백으로 올리지 않으므로 보이는 자리의 그림을 지운다(Ghostty `clearScreen`)
+#[test]
+fn ed2_without_a_prompt_erases_the_visible_images() {
+    let mut e = graphics_emulator();
+    e.feed(b"ab\x1b_Ga=T,f=24,s=1,v=1,i=1,c=2,r=1,q=2;AAAA\x1b\\");
+    assert_eq!(e.snapshot().images.len(), 1);
+    e.feed(b"\x1b[H\x1b[2J");
+    assert!(e.snapshot().images.is_empty());
+    e.scroll(10);
+    assert!(e.snapshot().images.is_empty(), "스크롤백에도 남지 않는다");
+}
+
+/// #329: 프롬프트에서 받은 ED 2는 화면을 스크롤백으로 올리고, 그림도 내용을 따라 스크롤백 줄에 남는다
+#[test]
+fn ed2_at_a_prompt_keeps_the_images_with_the_scrolled_lines() {
+    let mut e = graphics_emulator();
+    e.feed(b"ab\x1b_Ga=T,f=24,s=1,v=1,i=1,c=2,r=1,q=2;AAAA\x1b\\");
+    e.feed(b"\x1b]133;A\x07$ \x1b]133;B\x07");
+    assert_eq!(e.snapshot().images.len(), 1);
+    e.feed(b"\x1b[H\x1b[2J");
+    assert!(e.snapshot().images.is_empty(), "보이는 화면은 비었다");
+    e.scroll(10);
+    assert_eq!(e.snapshot().images.len(), 1, "스크롤백으로 올라간 줄에 그림이 남았다");
+}
+
 /// 보안 검토(#76): 화면 크기 그림을 같은 자리에 수백 번 놓아도 화면 값에는 중복을 빼고 화면 칸 수의 몇 배까지만 담는다
 #[test]
 fn kitty_graphics_visible_images_are_deduped_and_budgeted() {
