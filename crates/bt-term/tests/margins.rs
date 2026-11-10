@@ -373,6 +373,127 @@ fn cht_stops_at_the_right_margin() {
     assert_eq!(t.cursor(), (11, 0));
 }
 
+// ---- 3단계: 글자 쓰기와 줄 끝 줄바꿈 ----
+
+fn flags_at(t: &T, col: usize, row: usize) -> Flags {
+    t.term.grid()[Line(row as i32)][Column(col)].flags
+}
+
+#[test]
+fn print_wraps_at_the_right_margin_to_the_left_margin() {
+    // "print right margin wrap": 줄 끝이 아니므로 이어진 줄(WRAPLINE) 표시는 하지 않는다
+    let mut t = T::new(10, 5);
+    t.feed("123456789\x1b[?69h\x1b[3;5s\x1b[1;5HXY");
+    assert_eq!(t.plain(), "1234X6789\n  Y");
+    assert!(!flags_at(&t, 9, 0).contains(Flags::WRAPLINE));
+    assert!(!flags_at(&t, 4, 0).contains(Flags::WRAPLINE));
+}
+
+#[test]
+fn print_right_of_the_right_margin_runs_to_the_screen_edge() {
+    // "print right margin outside"
+    let mut t = T::new(10, 5);
+    t.feed("123456789\x1b[?69h\x1b[3;5s\x1b[1;6HXY");
+    assert_eq!(t.plain(), "12345XY89");
+}
+
+#[test]
+fn print_right_of_the_right_margin_wraps_to_the_left_margin() {
+    // "print right margin outside wrap": 화면 끝에서 줄바꿈하면 왼쪽 여백으로 간다
+    let mut t = T::new(10, 5);
+    t.feed("123456789\x1b[?69h\x1b[3;5s\x1b[1;10HXY");
+    assert_eq!(t.plain(), "123456789X\n  Y");
+    // 화면 끝의 칸이라 이어진 줄 표시가 선다
+    assert!(flags_at(&t, 9, 0).contains(Flags::WRAPLINE));
+}
+
+#[test]
+fn wide_after_pending_wrap_from_outside_the_right_margin() {
+    // "print wide after pending wrap from outside right margin"(지역 표시 글자 대신 한자)
+    let mut t = T::new(5, 3);
+    t.feed("\x1b[?69h\x1b[1;2s\x1b[1;4H  ");
+    assert_eq!(t.cursor(), (4, 0));
+    assert!(t.wrap_pending());
+    t.feed("\u{4e2d}");
+    assert_eq!(t.cursor(), (1, 1));
+    assert!(t.wrap_pending(), "여백을 채운 넓은 글자는 대기 줄바꿈을 건다");
+    t.feed("X");
+    assert_eq!(t.cursor(), (1, 2));
+    assert_eq!(t.plain(), "\n\u{4e2d}\nX");
+}
+
+#[test]
+fn narrow_after_pending_wrap_from_outside_the_right_margin() {
+    // "print narrow after pending wrap from outside right margin"
+    let mut t = T::new(5, 3);
+    t.feed("\x1b[?69h\x1b[1;2s\x1b[1;5HA");
+    assert!(t.wrap_pending());
+    t.feed("B");
+    assert_eq!(t.cursor(), (1, 1));
+    assert!(!t.wrap_pending());
+    t.feed("C");
+    assert_eq!(t.cursor().0, 1);
+    assert!(t.wrap_pending());
+    t.feed("D");
+    assert_eq!(t.cursor(), (1, 2));
+    assert_eq!(t.plain(), "    A\nBC\nD");
+}
+
+#[test]
+fn wide_wrapping_from_outside_the_right_margin_lands_on_the_margin() {
+    // "print wide wrapping from outside right margin lands on margin": 화면 끝 칸에는 앞 칸 자리 표시(spacer head)가 선다
+    let mut t = T::new(5, 3);
+    t.feed("\x1b[?69h\x1b[1;2s\x1b[1;5H\u{4e2d}");
+    assert_eq!(t.cursor(), (1, 1));
+    assert!(t.wrap_pending());
+    let f = flags_at(&t, 4, 0);
+    assert!(f.contains(Flags::LEADING_WIDE_CHAR_SPACER));
+    assert!(f.contains(Flags::WRAPLINE));
+}
+
+#[test]
+fn wide_at_the_right_margin_wraps_without_a_spacer_head() {
+    // "print wide char at right margin does not create spacer head": 여백 끝에서는 일반 빈 칸을 남기고 이어진 줄 표시도 없다
+    let mut t = T::new(10, 10);
+    t.feed("\x1b[?69h\x1b[3;5s\x1b[1;5H\u{1F600}");
+    assert_eq!(t.cursor(), (4, 1));
+    let f = flags_at(&t, 4, 0);
+    assert!(!f.contains(Flags::LEADING_WIDE_CHAR_SPACER));
+    assert!(!f.contains(Flags::WRAPLINE));
+    assert_eq!(t.term.grid()[Line(0)][Column(4)].c, ' ');
+    let wide = &t.term.grid()[Line(1)][Column(2)];
+    assert_eq!(wide.c, '\u{1F600}');
+    assert!(wide.flags.contains(Flags::WIDE_CHAR));
+    assert!(flags_at(&t, 3, 1).contains(Flags::WIDE_CHAR_SPACER));
+}
+
+#[test]
+fn wide_at_the_right_margin_is_dropped_when_wraparound_is_off() {
+    // Terminal.zig print: `if (!self.modes.get(.wraparound)) return`(커서는 그대로)
+    let mut t = T::new(10, 3);
+    t.feed("\x1b[?69h\x1b[3;5s\x1b[?7l\x1b[1;5H\u{4e2d}");
+    assert_eq!(t.cursor().1, 0);
+    assert_eq!(t.cursor().0, 4);
+    assert_eq!(t.plain(), "");
+}
+
+#[test]
+fn narrow_at_the_right_margin_overwrites_it_when_wraparound_is_off() {
+    let mut t = T::new(10, 3);
+    t.feed("\x1b[?69h\x1b[3;5s\x1b[?7l\x1b[1;3HABCD");
+    assert_eq!(t.plain(), "  ABD");
+}
+
+#[test]
+fn only_the_real_screen_edge_marks_the_line_as_wrapped() {
+    // printWrap: `mark_wrap = cursor.x == cols - 1`. 오른쪽 여백이 화면 끝이어도 같다
+    let mut t = T::new(8, 3);
+    t.feed("\x1b[?69h\x1b[3;8sabcdefghi");
+    assert_eq!(t.plain(), "abcdefgh\n  i");
+    assert!(flags_at(&t, 7, 0).contains(Flags::WRAPLINE));
+    assert_eq!(t.cursor(), (3, 1));
+}
+
 // ---- DECRQM(PTY) ----
 
 fn sh(script: &str, size: GridSize) -> (Session, Receiver<SessionEvent>) {
@@ -433,7 +554,7 @@ fn cursor_position_report_is_relative_to_the_margins_in_origin_mode() {
     let n = want.len();
     let read = format!("$(dd bs=1 count={n} 2>/dev/null | od -An -tx1 | tr -d ' \\n')");
     let script = format!(
-        "stty raw -echo; printf '\\033[2;4r\\033[?69h\\033[3;8s\\033[?6h\\033[3;4H\\033[6n'; a={read}; stty sane; printf 'ans=%s\\n' \"$a\""
+        "stty raw -echo; printf '\\033[2;4r\\033[?69h\\033[3;8s\\033[?6h\\033[3;4H\\033[6n'; a={read}; stty sane; printf '\\033[?69l\\033[?6l\\033[r\\033[H'; printf 'ans=%s\\n' \"$a\""
     );
     let (s, rx) = sh(&script, GridSize::new(80, 8));
     wait_exit(&rx);

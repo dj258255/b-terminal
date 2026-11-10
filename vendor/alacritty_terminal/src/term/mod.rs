@@ -1160,7 +1160,10 @@ impl<T> Term<T> {
 
         trace!("Wrapping input");
 
-        self.grid.cursor_cell().flags.insert(Flags::WRAPLINE);
+        // b-terminal(#311): 이어진 줄 표시는 화면 끝 칸에서 넘어갈 때만 한다. 오른쪽 여백에서 넘어가면 표시하지 않는다(Ghostty `printWrap`)
+        if self.grid.cursor.point.column.0 + 1 == self.columns() {
+            self.grid.cursor_cell().flags.insert(Flags::WRAPLINE);
+        }
 
         if self.grid.cursor.point.line + 1 >= self.scroll_region.end {
             self.linefeed();
@@ -1169,7 +1172,8 @@ impl<T> Term<T> {
             self.grid.cursor.point.line += 1;
         }
 
-        self.grid.cursor.point.column = Column(0);
+        // 줄이 바뀌면 왼쪽 여백으로 간다
+        self.grid.cursor.point.column = Column(self.margin_left);
         self.grid.cursor.input_needs_wrap = false;
         self.damage_cursor();
     }
@@ -1524,13 +1528,20 @@ impl<T: EventListener> Handler for Term<T> {
             return;
         }
 
+        // b-terminal(#311): 오른쪽 여백 밖(오른쪽)에서 쓰면 화면 끝까지 쓴다. 줄을 바꾸면 안쪽의 오른쪽 여백으로 돌아온다
+        // (Ghostty `print`의 `right_limit`)
+        let columns = self.columns();
+        let margin_limit = self.margin_right.min(columns - 1) + 1;
+        let mut right_limit =
+            if self.grid.cursor.point.column.0 > self.margin_right { columns } else { margin_limit };
+
         // Move cursor to next line.
         if self.grid.cursor.input_needs_wrap {
             self.wrapline();
+            right_limit = margin_limit;
         }
 
         // If in insert mode, first shift cells to the right.
-        let columns = self.columns();
         if self.mode.contains(TermMode::INSERT) && self.grid.cursor.point.column + width < columns {
             let line = self.grid.cursor.point.line;
             let col = self.grid.cursor.point.column;
@@ -1547,13 +1558,17 @@ impl<T: EventListener> Handler for Term<T> {
             base = self.grid.cursor.point;
             self.write_at_cursor(c);
         } else {
-            if self.grid.cursor.point.column + 1 >= columns {
+            if self.grid.cursor.point.column + 1 >= right_limit {
                 if self.mode.contains(TermMode::LINE_WRAP) {
                     // Insert placeholder before wide char if glyph does not fit in this row.
-                    self.grid.cursor.template.flags.insert(Flags::LEADING_WIDE_CHAR_SPACER);
+                    // b-terminal(#311): 앞 칸 자리 표시는 화면의 진짜 끝에서만 둔다. 오른쪽 여백에서는 일반 빈 칸이다(Ghostty print 2200줄)
+                    if right_limit == columns {
+                        self.grid.cursor.template.flags.insert(Flags::LEADING_WIDE_CHAR_SPACER);
+                    }
                     self.write_at_cursor(' ');
                     self.grid.cursor.template.flags.remove(Flags::LEADING_WIDE_CHAR_SPACER);
                     self.wrapline();
+                    right_limit = margin_limit;
                 } else {
                     // Prevent out of bounds crash when linewrapping is disabled.
                     self.grid.cursor.input_needs_wrap = true;
@@ -1575,7 +1590,7 @@ impl<T: EventListener> Handler for Term<T> {
             self.grid.cursor.template.flags.remove(Flags::WIDE_CHAR_SPACER);
         }
 
-        if self.grid.cursor.point.column + 1 < columns {
+        if self.grid.cursor.point.column + 1 < right_limit {
             self.grid.cursor.point.column += 1;
         } else {
             self.grid.cursor.input_needs_wrap = true;
