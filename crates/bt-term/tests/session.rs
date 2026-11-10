@@ -1581,3 +1581,60 @@ fn decsel_keeps_a_decsca_protected_cell_from_a_real_pty() {
     assert_eq!(screen.row_text(0), "  XY");
     assert_eq!(screen.row_text(1), "done");
 }
+
+// ---- 옛 대체 화면(47·1047·1048)·DECNKM(66)과 2031·2026의 DECRQM(#296) ----
+
+#[test]
+fn decrqm_reports_legacy_alt_screen_and_save_cursor_modes() {
+    for m in ["47", "1047", "1048", "1049"] {
+        assert_eq!(
+            reply_to(&format!("\\033[?{m}$p"), |_| {}),
+            hex_of(&format!("\x1b[?{m};2$y")),
+            "{m} 처음"
+        );
+    }
+    for m in ["47", "1047", "1048", "1049"] {
+        assert_eq!(
+            reply_to(&format!("\\033[?{m}h\\033[?{m}$p"), |_| {}),
+            hex_of(&format!("\x1b[?{m};1$y")),
+            "{m} 켠 뒤"
+        );
+        assert_eq!(
+            reply_to(&format!("\\033[?{m}h\\033[?{m}l\\033[?{m}$p"), |_| {}),
+            hex_of(&format!("\x1b[?{m};2$y")),
+            "{m} 끈 뒤"
+        );
+    }
+}
+
+#[test]
+fn decrqm_66_follows_esc_equals_and_esc_greater() {
+    assert_eq!(reply_to("\\033[?66$p", |_| {}), hex_of("\x1b[?66;2$y"));
+    assert_eq!(reply_to("\\033[?66h\\033[?66$p", |_| {}), hex_of("\x1b[?66;1$y"));
+    assert_eq!(reply_to("\\033=\\033[?66$p", |_| {}), hex_of("\x1b[?66;1$y"));
+    assert_eq!(reply_to("\\033=\\033>\\033[?66$p", |_| {}), hex_of("\x1b[?66;2$y"));
+    assert_eq!(
+        reply_to("\\033[?66h\\033[?66l\\033[?66$p", |_| {}),
+        hex_of("\x1b[?66;2$y")
+    );
+}
+
+#[test]
+fn decrqm_2031_and_2026_report_the_real_state_with_one_answer() {
+    assert_eq!(reply_to("\\033[?2031$p", |_| {}), hex_of("\x1b[?2031;2$y"));
+    assert_eq!(reply_to("\\033[?2031h\\033[?2031$p", |_| {}), hex_of("\x1b[?2031;1$y"));
+    assert_eq!(
+        reply_to("\\033[?2031h\\033[?2031l\\033[?2031$p", |_| {}),
+        hex_of("\x1b[?2031;2$y")
+    );
+    assert_eq!(reply_to("\\033[?2026$p", |_| {}), hex_of("\x1b[?2026;2$y"));
+    // 동기화 출력이 켜진 동안의 질의는 켜짐(Ghostty는 모드 값을 바로 읽는다). 질의는 모아 뒀다가 끝날 때 답한다
+    assert_eq!(
+        reply_to("\\033[?2026h\\033[?2026$p\\033[?2026l", |_| {}),
+        hex_of("\x1b[?2026;1$y")
+    );
+    assert_eq!(
+        reply_to("\\033[?2026h\\033[?2026l\\033[?2026$p", |_| {}),
+        hex_of("\x1b[?2026;2$y")
+    );
+}

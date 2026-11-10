@@ -72,6 +72,8 @@ pub enum Signal {
     InBandSizeReports(bool),
     /// 모드 2048의 DECRQM(`CSI ? 2048 $ p`)(#264)
     InBandSizeQuery,
+    /// 모드 2031의 DECRQM(`CSI ? 2031 $ p`). 켜 둔 상태는 세션이 안다(#296)
+    ColorSchemeModeQuery,
     /// DCS 질의(DECRQSS, XTGETTCAP). 세션이 그 자리의 상태로 답한다(#265)
     DcsQuery(crate::dcs::Query),
     /// kitty 색 프로토콜(OSC 21)의 요청들. `bel`은 요청이 BEL로 끝났는가(답도 같은 끝맺음으로 한다)(#266)

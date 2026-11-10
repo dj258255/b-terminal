@@ -310,3 +310,56 @@ fn soft_reset_returns_the_cursor_style_like_decscusr_0() {
     assert_eq!(soft.shape, CursorShape::Block);
     assert_eq!((soft.shape, soft.blinking), (zero.shape, zero.blinking));
 }
+
+// ---- 옛 대체 화면 모드 47·1047·1048(#296). Ghostty Terminal.zig `switchScreenMode` 5758~5827줄 ----
+
+#[test]
+fn mode_47_switches_screens_and_copies_the_cursor_without_clearing() {
+    let mut e = emu(10, 3);
+    e.feed(b"main\x1b[?47h");
+    let s = e.snapshot();
+    assert!(s.modes.alt_screen);
+    // 대체 화면은 비어 있고, 커서는 주 화면의 자리에서 이어진다
+    assert_eq!(s.row_text(0), "");
+    assert_eq!((s.cursor.col, s.cursor.row), (4, 0));
+    e.feed(b"alt");
+    assert_eq!(e.snapshot().row_text(0), "    alt");
+    // 나갈 때 커서는 대체 화면의 자리를 주 화면에 옮긴다
+    e.feed(b"\x1b[?47l");
+    let s = e.snapshot();
+    assert!(!s.modes.alt_screen);
+    assert_eq!(s.row_text(0), "main");
+    assert_eq!((s.cursor.col, s.cursor.row), (7, 0));
+    // 47은 들어갈 때 대체 화면을 지우지 않는다
+    e.feed(b"\x1b[?47h");
+    assert_eq!(e.snapshot().row_text(0), "    alt");
+}
+
+#[test]
+fn mode_1047_clears_the_alt_screen_on_leaving_but_not_on_entering() {
+    let mut e = emu(10, 3);
+    e.feed(b"main\x1b[?1047halt");
+    let s = e.snapshot();
+    assert!(s.modes.alt_screen);
+    assert_eq!(s.row_text(0), "    alt");
+    e.feed(b"\x1b[?1047l");
+    let s = e.snapshot();
+    assert_eq!(s.row_text(0), "main");
+    assert_eq!((s.cursor.col, s.cursor.row), (7, 0));
+    e.feed(b"\x1b[?1047h");
+    assert_eq!(e.snapshot().row_text(0), "", "나갈 때 지웠다");
+    // 주 화면에서 1047을 끄는 것은 아무것도 지우지 않는다
+    let mut e = emu(10, 3);
+    e.feed(b"main\x1b[?1047l");
+    assert_eq!(e.snapshot().row_text(0), "main");
+}
+
+#[test]
+fn mode_1048_saves_and_restores_the_cursor_only() {
+    let mut e = emu(10, 3);
+    e.feed(b"ab\x1b[?1048h\x1b[3;6Hxyz\x1b[?1048lQ");
+    let s = e.snapshot();
+    assert!(!s.modes.alt_screen);
+    assert_eq!(s.row_text(0), "abQ");
+    assert_eq!(s.row_text(2), "     xyz");
+}

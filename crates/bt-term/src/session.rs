@@ -848,6 +848,10 @@ impl Session {
                                             write_reply(&thread_writer, reply.as_bytes());
                                         }
                                     }
+                                    Signal::ColorSchemeModeQuery => {
+                                        let on = thread_scheme_updates.load(std::sync::atomic::Ordering::Acquire);
+                                        write_reply(&thread_writer, crate::csi_query::mode_2031_report(on).as_bytes());
+                                    }
                                     Signal::InBandSizeQuery => {
                                         let on = thread_in_band_size.load(std::sync::atomic::Ordering::Acquire);
                                         write_reply(&thread_writer, crate::csi_query::mode_2048_report(on).as_bytes());
@@ -1259,6 +1263,7 @@ fn signal_event(sig: Signal) -> SessionEvent {
         | Signal::SizeReport(_)
         | Signal::InBandSizeReports(_)
         | Signal::InBandSizeQuery
+        | Signal::ColorSchemeModeQuery
         | Signal::DcsQuery(_)
         | Signal::KittyColor { .. }
         | Signal::WindowResize { .. } => SessionEvent::Output,

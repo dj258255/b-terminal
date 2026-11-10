@@ -88,6 +88,9 @@ bitflags! {
         const REPORT_ASSOCIATED_TEXT  = 1 << 22;
         // b-terminal 패치(#180): DECSET 2027, 글자 묶음 폭
         const GRAPHEME_CLUSTER        = 1 << 23;
+        // b-terminal(#296): DECSET 2026이 켜진 동안(DECRQM 답용), DECSET 1048을 켰다(DECRQM 답용)
+        const SYNC_UPDATE             = 1 << 24;
+        const SAVE_CURSOR_MODE        = 1 << 25;
         const MOUSE_MODE              = Self::MOUSE_REPORT_CLICK.bits() | Self::MOUSE_MOTION.bits() | Self::MOUSE_DRAG.bits();
         const KITTY_KEYBOARD_PROTOCOL = Self::DISAMBIGUATE_ESC_CODES.bits()
                                       | Self::REPORT_EVENT_TYPES.bits()
@@ -789,6 +792,28 @@ impl<T> Term<T> {
             self.inactive_grid.reset_region(..);
         }
 
+        self.swap_alt_grids();
+    }
+
+    /// b-terminal(#296): 대체 화면을 지우지 않고 바꾼다. 모드 47·1047의 화면 전환(Ghostty `switchScreenMode`).
+    /// 커서는 바꾸기 전 화면의 것을 새 화면에 옮긴다. `clear_alt_on_leave`면(1047) 대체 화면을 나갈 때 먼저 지운다
+    fn switch_screen_legacy(&mut self, to_alt: bool, clear_alt_on_leave: bool) {
+        let in_alt = self.mode.contains(TermMode::ALT_SCREEN);
+        if clear_alt_on_leave && !to_alt && in_alt {
+            // 대체 화면의 `ClearMode::All`과 같다(`clear_screen`은 `Handler` 구현에만 있다)
+            self.grapheme_anchor = None;
+            self.grid.reset_region(..);
+        }
+        if in_alt == to_alt {
+            return;
+        }
+        let cursor = self.grid.cursor.clone();
+        self.swap_alt_grids();
+        self.grid.cursor = cursor;
+    }
+
+    /// 두 화면과 키보드 모드 쌓음을 맞바꾼다(`swap_alt`의 뒷부분, b-terminal #296에서 갈랐다)
+    fn swap_alt_grids(&mut self) {
         mem::swap(&mut self.keyboard_mode_stack, &mut self.inactive_keyboard_mode_stack);
         let keyboard_mode =
             self.keyboard_mode_stack.last().copied().unwrap_or(KeyboardModes::NO_MODE).into();
@@ -2266,7 +2291,15 @@ impl<T: EventListener> Handler for Term<T> {
                 style.blinking = true;
                 self.event_proxy.send_event(Event::CursorBlinkingChange);
             },
-            NamedPrivateMode::SyncUpdate => (),
+            // b-terminal(#296): 상태만 적는다. 실제 모으기는 vte의 Processor가 한다
+            NamedPrivateMode::SyncUpdate => self.mode.insert(TermMode::SYNC_UPDATE),
+            NamedPrivateMode::SwapScreenLegacy => self.switch_screen_legacy(true, false),
+            NamedPrivateMode::SwapScreenAndClear => self.switch_screen_legacy(true, true),
+            NamedPrivateMode::SaveRestoreCursor => {
+                self.mode.insert(TermMode::SAVE_CURSOR_MODE);
+                self.save_cursor_position();
+            },
+            NamedPrivateMode::KeypadApplication => self.mode.insert(TermMode::APP_KEYPAD),
         }
     }
 
@@ -2320,7 +2353,14 @@ impl<T: EventListener> Handler for Term<T> {
                 style.blinking = false;
                 self.event_proxy.send_event(Event::CursorBlinkingChange);
             },
-            NamedPrivateMode::SyncUpdate => (),
+            NamedPrivateMode::SyncUpdate => self.mode.remove(TermMode::SYNC_UPDATE),
+            NamedPrivateMode::SwapScreenLegacy => self.switch_screen_legacy(false, false),
+            NamedPrivateMode::SwapScreenAndClear => self.switch_screen_legacy(false, true),
+            NamedPrivateMode::SaveRestoreCursor => {
+                self.mode.remove(TermMode::SAVE_CURSOR_MODE);
+                self.restore_cursor_position();
+            },
+            NamedPrivateMode::KeypadApplication => self.mode.remove(TermMode::APP_KEYPAD),
         }
     }
 
@@ -2363,14 +2403,23 @@ impl<T: EventListener> Handler for Term<T> {
                 NamedPrivateMode::BracketedPaste => {
                     self.mode.contains(TermMode::BRACKETED_PASTE).into()
                 },
-                NamedPrivateMode::SyncUpdate => ModeState::Reset,
+                // b-terminal(#296): 2026은 늘 꺼짐이라 답하던 것을 실제 상태로. 47·1047은 화면, 1048은 적어 둔 표시, 66은 키패드 모드
+                NamedPrivateMode::SyncUpdate => self.mode.contains(TermMode::SYNC_UPDATE).into(),
+                NamedPrivateMode::SwapScreenLegacy | NamedPrivateMode::SwapScreenAndClear => {
+                    self.mode.contains(TermMode::ALT_SCREEN).into()
+                },
+                NamedPrivateMode::SaveRestoreCursor => {
+                    self.mode.contains(TermMode::SAVE_CURSOR_MODE).into()
+                },
+                NamedPrivateMode::KeypadApplication => self.mode.contains(TermMode::APP_KEYPAD).into(),
                 NamedPrivateMode::ColumnMode => ModeState::NotSupported,
             },
             PrivateMode::Unknown(GRAPHEME_CLUSTER_MODE) => {
                 self.mode.contains(TermMode::GRAPHEME_CLUSTER).into()
             },
             // b-terminal(#264): 모드 2048(크기 알림)의 DECRQM은 bt-term의 스캐너가 답한다. 여기서 0을 답하면 답이 둘 나간다
-            PrivateMode::Unknown(2048) => return,
+            // b-terminal(#296): 모드 2031(색 구성표 알림)도 같다
+            PrivateMode::Unknown(2048 | 2031) => return,
             PrivateMode::Unknown(_) => ModeState::NotSupported,
         };
 
