@@ -397,6 +397,21 @@ VT 세부 맞추기. 추적 이슈 [#285](https://github.com/dj258255/b-terminal
 - vendor 크레이트의 경고는 `cargo clippy -- -D warnings`가 잡지 않고 빌드 출력에만 보였습니다(작업 공간 밖이라 clippy 인자가 가지 않음). 합친 뒤 빌드 출력의 `warning`도 봅니다.
 - 고칠 자리가 한 곳인 이슈는 에이전트에게 넘기는 비용(프롬프트·옮기기)이 구현보다 컸습니다. 주 세션이 직접 했습니다.
 
+## 0.23.0 (2026-11-10)
+
+VT 시퀀스 빈칸 메우기. 추적 이슈 [#293](https://github.com/dj258255/b-terminal/issues/293). 조사 에이전트가 Ghostty stream.zig·modes.zig와 vendor vte를 견줘 버려지는 시퀀스를 찾았고, 주 세션이 격리한 창에서 쟀습니다. 에이전트 셋이 각자 worktree에서 구현·커밋하고, 주 세션이 검토·원본 대조·옮기기·실제 창·병합을 했습니다. 병합 시각(KST)은 추적 이슈를 연 13:54부터 마지막 병합 14:31까지입니다.
+
+| 이슈 | 내용 | 예상 | 실제 | PR | 주 세션이 한 것 |
+|---|---|---|---|---|---|
+| [#295](https://github.com/dj258255/b-terminal/issues/295) | 열 삽입·삭제, DECBI·DECFI, CTC, HPB·VPB, 문자 집합 바꿈 | 2~4시간 | 에이전트 약 7분(병합 14:10) | [#297](https://github.com/dj258255/b-terminal/pull/297) | 실제 창(`btctl read`·스크린샷). DECDC가 스크롤 영역의 모든 줄에 먹는 것을 처음엔 DECIC 실패로 잘못 읽었다가 다시 잼 |
+| [#294](https://github.com/dj258255/b-terminal/issues/294) | 보호 칸과 선택 지우기 | 3~5시간 | 에이전트 약 9분(병합 14:16) | [#298](https://github.com/dj258255/b-terminal/pull/298) | #295 위로 옮김, 실제 창(네 경우) |
+| [#296](https://github.com/dj258255/b-terminal/issues/296) | 옛 대체 화면·DECNKM과 DECRQM 답 | 2~4시간 | 에이전트 약 9분(병합 14:31) | [#306](https://github.com/dj258255/b-terminal/pull/306) | 옮김, PR을 연 뒤 #304가 먼저 병합돼 충돌 → force-push 없이 main을 merge, 실제 창(DECRQM 11개·47·1048) |
+
+이번에 배운 것:
+
+- 실제 창에서 두 시퀀스를 한 화면에 이어 찍으면 앞 결과를 뒤 시퀀스가 덮을 수 있습니다(DECDC는 스크롤 영역의 모든 줄을 당김). 하나씩 `btctl read`로 보는 편이 확실했습니다.
+- PR을 연 뒤 main이 움직여 충돌하면 rebase 대신 main을 merge해서 force-push를 피했습니다. squash 병합이라 기록은 같습니다.
+
 ## 다음
 
 - 범수 님이 직접 해야 할 것: 키보드·마우스 확인(한글 2벌식 "안녕 하세요⏎", Claude Code의 Shift+Enter, Cmd-D·Cmd-F·Cmd-클릭·Cmd-N·Cmd-Shift-P, 메뉴, 창 닫기 단추, vim·htop, kitty icat·yazi, 투명 창), Developer ID 계정으로 `scripts/bundle-macos.sh --sign … --notarize … --dmg`
@@ -421,4 +436,5 @@ VT 세부 맞추기. 추적 이슈 [#285](https://github.com/dj258255/b-terminal
 - 범수 님이 확인할 것(0.20): vim·neovim을 켜서 색·배경 판단이 그대로인지(DA1·DA2 값과 OSC 11 답이 바뀜), tmux 안에서 `tmux info`의 `Tc`·`Smulx`·`Sync`가 잡히는지(XTGETTCAP), 창 크기를 끌어 바꾸며 모드 2048을 쓰는 프로그램이 따라오는지
 - 범수 님이 확인할 것(0.21): 셸에서 단어 위 오른쪽 클릭 → 단어가 골라지고 메뉴(복사·붙여넣기·나누기·닫기·초기화·읽기 전용·제목)가 뜨는지, 메뉴 붙여넣기에서 두 줄 글이면 보호 막대, Ctrl+왼쪽 클릭, vim 안에서는 메뉴가 뜨지 않는지. `scripts/bundle-macos.sh`로 만든 앱을 Dock에 두고 폴더를 끌어놓으면 새 탭, `.sh`를 끌어놓으면 확인 막대가 뜨고 Enter가 아니라 `y`로만 실행되는지, `it's.sh`는 실행하지 않고 알림 띠만 뜨는지, 앱이 꺼진 채로 끌어놓았을 때
 - 범수 님이 확인할 것(0.22): `printf '\e]8;;https://example.com\e\\\e[4mlink\e[0m\e]8;;\e\\\n'` 뒤 Cmd를 누르고 `link`에 올리면 이중 밑줄, nvim에서 커서 색이 테마와 어울리는지
+- 범수 님이 확인할 것(0.23): vim·less·옛 curses 프로그램(47·1047을 쓰는 것)을 켜고 끈 뒤 셸 화면이 그대로인지
 - 큰 일로 남긴 것: GPU(또는 IOSurface) 렌더러
