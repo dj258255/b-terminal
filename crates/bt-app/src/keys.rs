@@ -1,14 +1,15 @@
 //! winit 키 이벤트를 PTY 바이트로 바꾼다. 앱 단축키(Cmd-…)는 여기서 거른다
 
 use bt_term::{
-    KeyModes, Mods as TermMods, NamedKey, encode_char_kitty, encode_named_kitty, encode_named_with, encode_text,
-    encode_text_with,
+    KeyModes, KeypadKey, Mods as TermMods, NamedKey, encode_char_kitty, encode_keypad, encode_modify_other_char,
+    encode_named_kitty, encode_named_modify_other, encode_named_with, encode_text, encode_text_with,
+    keypad_application,
 };
 
 use crate::keymap::{Mods, Trigger, normalize_key};
 use bt_core::config::{KeyRemap, ModKind, ModSide, SidedMods, apply_key_remap};
 use winit::event::{KeyEvent, Modifiers};
-use winit::keyboard::{Key, ModifiersKeyState, ModifiersState, NamedKey as WKey};
+use winit::keyboard::{Key, KeyLocation, ModifiersKeyState, ModifiersState, NamedKey as WKey};
 
 /// winit의 수정 키 상태를 좌우 따로 적은 것으로. 좌우를 알려 주지 않으면(`Unknown`) 왼쪽으로 본다.
 /// macOS의 winit은 장치별 비트(NX_DEVICE*KEYMASK)로 좌우를 알려 준다(좌우가 둘 다 `Unknown`이면 안 눌린 것이거나 모르는 것)
@@ -152,6 +153,33 @@ fn effective_key_modes(modes: &bt_term::Modes) -> KeyModes {
     }
 }
 
+/// 숫자 키패드 위치에서 눌린 키(#312). winit이 `KeyLocation::Numpad`로 알려 준다.
+/// NumLock이 꺼져 화살표·Home 같은 이름 키로 오는 것은 커서 키와 같은 바이트라 여기서 다루지 않는다
+fn keypad_key(key: &Key, location: KeyLocation) -> Option<KeypadKey> {
+    if location != KeyLocation::Numpad {
+        return None;
+    }
+    match key {
+        Key::Named(WKey::Enter) => Some(KeypadKey::Enter),
+        Key::Character(s) => {
+            let mut chars = s.chars();
+            let (Some(c), None) = (chars.next(), chars.next()) else {
+                return None;
+            };
+            match c {
+                '0'..='9' => Some(KeypadKey::Digit(c as u8 - b'0')),
+                '.' | ',' => Some(KeypadKey::Decimal),
+                '/' => Some(KeypadKey::Divide),
+                '*' => Some(KeypadKey::Multiply),
+                '-' => Some(KeypadKey::Subtract),
+                '+' => Some(KeypadKey::Add),
+                _ => None,
+            }
+        }
+        _ => None,
+    }
+}
+
 /// 키 이벤트를 PTY 바이트로. 보낼 것이 없으면 빈 벡터. `mods`는 `key-remap`을 적용한 상태, `raw`는 바꾸기 전 상태
 pub fn encode(
     event: &KeyEvent,
@@ -164,6 +192,18 @@ pub fn encode(
     let kitty = modes.kitty;
     let km = effective_key_modes(&modes);
     let m = term_mods(mods, option_gate(option_as_alt, raw));
+    // 키패드 응용 모드와 modifyOtherKeys는 Cmd(Super)도 수식 키로 센다(Ghostty `mods.binding()`). kitty가 켜져 있으면 쓰지 않는다
+    let ms = TermMods {
+        sup: mods.super_key(),
+        ..m
+    };
+    let keypad_app = keypad_application(modes.app_keypad, modes.key);
+    let modify_other = modes.modify_other_keys && !kitty.active();
+    if (keypad_app || modify_other) && !kitty.active() {
+        if let Some(k) = keypad_key(&event.logical_key, event.location) {
+            return encode_keypad(k, ms, keypad_app);
+        }
+    }
     if let Key::Named(named) = &event.logical_key {
         let key = match named {
             WKey::Enter => Some(NamedKey::Enter),
@@ -192,12 +232,24 @@ pub fn encode(
             WKey::F10 => Some(NamedKey::F(10)),
             WKey::F11 => Some(NamedKey::F(11)),
             WKey::F12 => Some(NamedKey::F(12)),
-            WKey::Space => return encode_text_with(" ", m, km),
+            WKey::Space => {
+                if modify_other {
+                    if let Some(bytes) = encode_modify_other_char(' ', ms) {
+                        return bytes;
+                    }
+                }
+                return encode_text_with(" ", m, km);
+            }
             _ => None,
         };
         // 프로그램이 kitty 키보드 프로토콜을 켰으면 Shift+Enter 같은 키를 CSI u로(#41)
         if let Some(k) = key {
             if let Some(bytes) = encode_named_kitty(k, m, kitty) {
+                return bytes;
+            }
+        }
+        if modify_other {
+            if let Some(bytes) = key.and_then(|k| encode_named_modify_other(k, ms)) {
                 return bytes;
             }
         }
@@ -209,6 +261,17 @@ pub fn encode(
             let mut chars = base.chars();
             if let (Some(c), None) = (chars.next(), chars.next()) {
                 if let Some(bytes) = encode_char_kitty(c, m, kitty) {
+                    return bytes;
+                }
+            }
+        }
+    }
+    // modifyOtherKeys 상태 2: 수식 키가 붙은 글자 하나를 `CSI 27 ; 수식 ; 코드 ~`로(Ghostty는 Ctrl→C0 바이트보다 먼저 본다)
+    if modify_other {
+        if let Key::Character(s) = &event.logical_key {
+            let mut chars = s.chars();
+            if let (Some(c), None) = (chars.next(), chars.next()) {
+                if let Some(bytes) = encode_modify_other_char(c, ms) {
                     return bytes;
                 }
             }
@@ -275,6 +338,64 @@ mod tests {
         // Ctrl이 Alt가 되면 ESC c(Alt-c)
         let remaps = [KeyRemap::parse("ctrl=alt").unwrap()];
         assert_eq!(bytes(remapped_state(&remaps, ctrl)), vec![0x1b, b'c']);
+    }
+
+    #[test]
+    fn default_modes_use_neither_keypad_application_nor_modify_other_keys() {
+        // 기본값(1035 켬, modifyOtherKeys 꺼짐)에서는 `encode`가 키패드·CSI 27 길로 가지 않는다(지금 바이트 그대로)
+        let m = bt_term::Modes::default();
+        assert!(!m.modify_other_keys && !keypad_application(m.app_keypad, m.key));
+        let e = bt_term::Emulator::new(bt_term::GridSize::new(10, 3), bt_core::Theme::default());
+        let mut e = e;
+        e.feed(b"\x1b=");
+        let m = e.snapshot().modes;
+        assert!(
+            m.app_keypad && !keypad_application(m.app_keypad, m.key),
+            "DECKPAM만으로는 응용 모드가 아니다(1035 켬)"
+        );
+        // 옛 바이트는 그대로
+        assert_eq!(encode_text("1", TermMods::default()), b"1");
+        assert_eq!(
+            encode_text(
+                "c",
+                TermMods {
+                    ctrl: true,
+                    ..TermMods::default()
+                }
+            ),
+            vec![0x03]
+        );
+        assert_eq!(
+            encode_named_with(NamedKey::Enter, TermMods::default(), false, KeyModes::default()),
+            b"\r"
+        );
+    }
+
+    #[test]
+    fn keypad_key_needs_numpad_location() {
+        let ch = |s: &str| Key::Character(s.into());
+        for (s, k) in [
+            ("0", KeypadKey::Digit(0)),
+            ("7", KeypadKey::Digit(7)),
+            (".", KeypadKey::Decimal),
+            (",", KeypadKey::Decimal),
+            ("/", KeypadKey::Divide),
+            ("*", KeypadKey::Multiply),
+            ("-", KeypadKey::Subtract),
+            ("+", KeypadKey::Add),
+        ] {
+            assert_eq!(keypad_key(&ch(s), KeyLocation::Numpad), Some(k), "{s}");
+            // 같은 글자라도 일반 키 위치면 키패드가 아니다
+            assert_eq!(keypad_key(&ch(s), KeyLocation::Standard), None, "{s}");
+        }
+        assert_eq!(
+            keypad_key(&Key::Named(WKey::Enter), KeyLocation::Numpad),
+            Some(KeypadKey::Enter)
+        );
+        assert_eq!(keypad_key(&Key::Named(WKey::Enter), KeyLocation::Standard), None);
+        assert_eq!(keypad_key(&ch("a"), KeyLocation::Numpad), None);
+        assert_eq!(keypad_key(&ch("12"), KeyLocation::Numpad), None);
+        assert_eq!(keypad_key(&Key::Named(WKey::ArrowUp), KeyLocation::Numpad), None);
     }
 
     #[test]

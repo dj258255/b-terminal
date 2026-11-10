@@ -135,6 +135,8 @@ pub struct Modes {
     pub key: crate::input::KeyModes,
     /// 화면 반전(DECSCNM, ?5)이 켜져 있다. 칸의 색은 이미 맞바뀐 채 `Screen.cells`에 있고, 커서의 기본 색을 맞바꿀 때 앱이 본다(#302)
     pub reverse_colors: bool,
+    /// xterm modifyOtherKeys 상태 2(`CSI > 4 ; 2 m`)가 켜져 있다(#312)
+    pub modify_other_keys: bool,
 }
 
 /// 화면에 보이는 kitty 그림 하나(#76)

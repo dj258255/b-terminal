@@ -17,8 +17,9 @@ mod session;
 pub mod xt_checksum;
 
 pub use input::{
-    KeyModes, KittyFlags, Mods, NamedKey, encode_char_kitty, encode_named, encode_named_kitty, encode_named_with,
-    encode_paste, encode_text, encode_text_with, paste_is_safe, trim_trailing_spaces,
+    KeyModes, KeypadKey, KittyFlags, Mods, NamedKey, encode_char_kitty, encode_keypad, encode_modify_other_char,
+    encode_named, encode_named_kitty, encode_named_modify_other, encode_named_with, encode_paste, encode_text,
+    encode_text_with, keypad_application, paste_is_safe, trim_trailing_spaces,
 };
 pub use mouse_shape::MouseShape;
 pub use notify::{Notification, PromptMark, Signal};
