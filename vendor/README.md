@@ -68,3 +68,12 @@ alacritty_terminal이 글자 묶음 폭(mode 2027)을 지원하는 판을 내면
 ## winit: 오른쪽 클릭 메뉴(#278)
 
 - 고친 곳: `src/platform/macos.rs` 끝의 `pub fn popup_context_menu(*mut c_void) -> bool`과 `src/platform_impl/macos/mod.rs`의 같은 이름 함수(`NSMenu`를 `NSEvent.mouseLocation` 자리에 띄우고 메뉴가 닫힐 때까지 돌아오지 않음. 주 스레드가 아니거나 null이면 거짓). `b-terminal(#278)`로 찾을 수 있습니다. 이유: Ghostty `right-click-action = context-menu`. muda의 `show_context_menu_for_nsview`는 unsafe라 작업 공간 `unsafe_code = "deny"`에서 앱 코드가 부를 수 없습니다. 앱은 muda `ContextMenu::ns_menu()`(안전한 함수)로 얻은 포인터를 이 함수에 넘깁니다. 포인터가 살아 있는 `NSMenu`여야 한다는 약속은 앱이 지킵니다(메뉴를 띄우는 호출이 끝날 때까지 muda `Menu`를 쥠). 되돌릴 조건: muda가 안전한 띄우기 함수를 내거나 winit이 메뉴 띄우기 API를 내면 지우고 그것을 씁니다.
+
+## vte 0.15.0: 윗줄 SGR 53·55(#277)
+
+- 원본: crates.io `vte 0.15.0`(Apache-2.0 또는 MIT, `vendor/vte/LICENSE-*`). 예제·문서·테스트 디렉터리는 뺐습니다. 원본 그대로 한 커밋, 패치는 다음 커밋입니다.
+- 연결: 루트 `Cargo.toml`의 `[patch.crates-io]`. 새 크레이트는 없고, 잠금 파일에서 `vte`의 `source`·`checksum` 줄만 빠집니다. `alacritty_terminal`이 쓰는 `vte`가 이 사본입니다.
+- 고친 곳: `src/ansi.rs` 한 파일. `Attr`에 `Overline`·`CancelOverline`을 끝에 더하고, `attrs_from_sgr_parameters`에 `[53]`·`[55]` 두 줄을 더했습니다. `b-terminal(#277)`로 찾을 수 있습니다.
+- `alacritty_terminal` 쪽(같은 이슈): `src/term/cell.rs`의 `Flags::OVERLINE`(마지막 빈 비트 `0b1000_0000_0000_0000`, 이제 `u16`이 가득 참)과 `is_empty` 표시 목록, `src/term/mod.rs`의 `terminal_attribute`가 켜고 끕니다(Reset은 `flags = empty()`가 지웁니다). `b-terminal(#277)`로 찾을 수 있습니다.
+- 이유: vte 0.15가 SGR 53·55를 해석하지 않아 윗줄을 그릴 수 없었습니다(Ghostty는 그립니다).
+- 되돌릴 조건: upstream vte가 53·55를 해석하는 판을 내면 `vendor/vte`와 `[patch.crates-io]`의 `vte` 줄을 지우고, `alacritty_terminal`의 `terminal_attribute`를 새 `Attr` 이름에 맞춥니다. 판이 바뀌면 `diff`로 `ansi.rs`를 먼저 비교합니다. `vendor/vte`는 작업 공간 밖이라 자체 테스트가 돌지 않으므로 해석 테스트는 `crates/bt-term/tests/sgr_parse.rs`에 있습니다.

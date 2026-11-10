@@ -76,7 +76,7 @@ pub fn encode_decrqss<L: EventListener>(q: Decrqss, term: &Term<L>) -> Vec<u8> {
 }
 
 /// 지금 커서의 글자 속성(`grid.cursor.template`)을 SGR 매개변수로 쓴다. 맨 앞은 늘 `0`이다(Ghostty `printAttributes`와 같다).
-/// alacritty 격자에는 깜박임(5)과 윗줄(53)이 없어 빠진다
+/// alacritty 격자에는 깜박임(5)이 없어 빠진다
 fn sgr_params<L: EventListener>(term: &Term<L>) -> String {
     let t = &term.grid().cursor.template;
     let f = t.flags;
@@ -104,6 +104,10 @@ fn sgr_params<L: EventListener>(term: &Term<L>) -> String {
         add("4:5");
     } else if f.contains(CellFlags::UNDERLINE) {
         add("4");
+    }
+    // 윗줄(53)은 밑줄 바로 뒤, 깜박임(5) 앞이다(Ghostty terminal_dcs.zig, #277)
+    if f.contains(CellFlags::OVERLINE) {
+        add("53");
     }
     if f.contains(CellFlags::INVERSE) {
         add("7");
@@ -185,6 +189,9 @@ const CAPS: &[(&str, Val)] = &[
     ("rv", Val::Str("\\E\\\\[[0-9]+;[0-9]+;[0-9]+c")),
     ("XR", Val::Str("\\E[>0q")),
     ("xr", Val::Str("\\EP>\\\\|[ -~]+a\\E\\\\")),
+    // 윗줄(SGR 53·55, #277). 값은 Ghostty terminfo/ghostty.zig 110~111줄 그대로
+    ("Smol", Val::Str("\\E[53m")),
+    ("Rmol", Val::Str("\\E[55m")),
 ];
 
 fn hex_upper(bytes: &[u8]) -> String {
@@ -339,16 +346,27 @@ mod tests {
 
     #[test]
     fn decrqss_sgr_largest_fits_the_limit() {
-        // Ghostty "DECRQSS largest response fits fixed buffer": 깜박임·윗줄은 alacritty 격자에 없어 뺐다
+        // Ghostty "DECRQSS largest response fits fixed buffer": 깜박임은 alacritty 격자에 없어 뺐다.
+        // 윗줄(53)은 Ghostty terminal_dcs.zig처럼 밑줄(4) 바로 뒤에 온다(#277)
         let r = reply(
             Decrqss::Sgr,
-            "\x1b[1;2;3;4:5;7;8;9m\x1b[38;2;255;255;255m\x1b[48;2;255;255;255m\x1b[58;2;255;255;255m",
+            "\x1b[1;2;3;4:5;53;7;8;9m\x1b[38;2;255;255;255m\x1b[48;2;255;255;255m\x1b[58;2;255;255;255m",
         );
         assert_eq!(
             r,
-            "\x1bP1$r0;1;2;3;4:5;7;8;9;38:2::255:255:255;48:2::255:255:255;58:2::255:255:255m\x1b\\"
+            "\x1bP1$r0;1;2;3;4:5;53;7;8;9;38:2::255:255:255;48:2::255:255:255;58:2::255:255:255m\x1b\\"
         );
         assert!(r.len() <= 256);
+    }
+
+    #[test]
+    fn decrqss_sgr_reports_overline_after_underline() {
+        // #277: 윗줄만, 밑줄과 함께(53은 4 뒤), 끄면 사라짐
+        assert_eq!(reply(Decrqss::Sgr, "\x1b[53m"), "\x1bP1$r0;53m\x1b\\");
+        assert_eq!(reply(Decrqss::Sgr, "\x1b[53m\x1b[4m"), "\x1bP1$r0;4;53m\x1b\\");
+        assert_eq!(reply(Decrqss::Sgr, "\x1b[3;53;9m"), "\x1bP1$r0;3;53;9m\x1b\\");
+        assert_eq!(reply(Decrqss::Sgr, "\x1b[53;55m"), "\x1bP1$r0m\x1b\\");
+        assert_eq!(reply(Decrqss::Sgr, "\x1b[53;0m"), "\x1bP1$r0m\x1b\\");
     }
 
     #[test]
@@ -445,10 +463,23 @@ mod tests {
 
     #[test]
     fn xtgettcap_does_not_list_what_bterminal_cannot_do() {
-        // 윗줄(overline)·밑줄 색·DECSLRM 여백은 없어서 답하지 않는다
-        for name in ["Smol", "Rmol", "Setulc", "Su", "Enmg", "Dsmg", "Cmg"] {
+        // 밑줄 색·DECSLRM 여백은 없어서 답하지 않는다(윗줄 Smol·Rmol은 #277에서 답한다)
+        for name in ["Setulc", "Su", "Enmg", "Dsmg", "Cmg"] {
             assert_eq!(tcap(&hex(name)), "", "{name}");
         }
+    }
+
+    #[test]
+    fn xtgettcap_answers_overline_like_ghostty() {
+        // #277: 값은 Ghostty terminfo/ghostty.zig 110~111줄(`\E[53m`, `\E[55m`). `%`가 없어 `\E`를 ESC로 바꾼다
+        assert_eq!(
+            tcap(&hex("Smol")),
+            format!("\x1bP1+r{}={}\x1b\\", hex("Smol"), hex("\x1b[53m"))
+        );
+        assert_eq!(
+            tcap(&hex("Rmol")),
+            format!("\x1bP1+r{}={}\x1b\\", hex("Rmol"), hex("\x1b[55m"))
+        );
     }
 
     #[test]

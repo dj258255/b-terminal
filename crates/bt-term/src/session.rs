@@ -1474,6 +1474,9 @@ fn snapshot_of<T: EventListener>(
         if f.contains(Flags::STRIKEOUT) {
             flags.insert(CellFlags::STRIKE);
         }
+        if f.contains(Flags::OVERLINE) {
+            flags.insert(CellFlags::OVERLINE);
+        }
         if f.contains(Flags::WIDE_CHAR) {
             flags.insert(CellFlags::WIDE);
         }

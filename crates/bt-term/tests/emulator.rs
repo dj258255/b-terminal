@@ -269,3 +269,29 @@ fn kitty_color_over_the_item_limit_changes_nothing() {
     assert_eq!(e.snapshot().background, Theme::default().background);
     assert!(e.take_replies().is_empty());
 }
+
+/// #277: `CSI 53 m`이 윗줄을 켜고 `CSI 55 m`·`CSI 0 m`이 끈다. 밑줄·가운데줄과 따로 움직인다
+#[test]
+fn overline_is_set_by_sgr_53_and_cleared_by_55_and_0() {
+    let mut e = emu(20, 2);
+    e.feed(b"a\x1b[53mb\x1b[55mc\x1b[53md\x1b[0me\x1b[1;53mf\x1b[4;9;53mg");
+    let s = e.snapshot();
+    let over = |col: usize| s.cell(col, 0).flags.contains(CellFlags::OVERLINE);
+    assert_eq!(s.row_text(0), "abcdefg");
+    assert!(!over(0), "53 앞");
+    assert!(over(1), "53");
+    assert!(!over(2), "55");
+    assert!(over(3), "53 다시");
+    assert!(!over(4), "0");
+    assert!(over(5), "1;53");
+    assert!(over(6), "4;9;53");
+    // 윗줄은 다른 꾸밈을 지우지도 켜지도 않는다
+    assert!(!s.cell(1, 0).flags.contains(CellFlags::UNDERLINE));
+    assert!(!s.cell(1, 0).flags.contains(CellFlags::STRIKE));
+    assert!(s.cell(6, 0).flags.contains(CellFlags::UNDERLINE));
+    assert!(s.cell(6, 0).flags.contains(CellFlags::STRIKE));
+    // 공백도 윗줄이 있으면 표시가 남는다
+    let mut e = emu(5, 1);
+    e.feed(b"\x1b[53m   ");
+    assert!(e.snapshot().cell(1, 0).flags.contains(CellFlags::OVERLINE));
+}
