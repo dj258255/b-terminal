@@ -78,6 +78,10 @@ pub enum Signal {
     VisibilityReports(bool),
     /// 모드 2033의 DECRQM(`CSI ? 2033 $ p`)(#303)
     VisibilityQuery,
+    /// XTSAVE(`CSI ? Pm s`)가 스캐너가 쥔 모드(2031·2033·2048) 하나를 저장하라고 한다(#313). 엔진은 이 모드를 모른다
+    ModeSave(u16),
+    /// XTRESTORE(`CSI ? Pm r`)가 스캐너가 쥔 모드 하나를 복원하라고 한다. 값은 세션이 쥔다(#313)
+    ModeRestore(u16),
     /// DCS 질의(DECRQSS, XTGETTCAP). 세션이 그 자리의 상태로 답한다(#265)
     DcsQuery(crate::dcs::Query),
     /// kitty 색 프로토콜(OSC 21)의 요청들. `bel`은 요청이 BEL로 끝났는가(답도 같은 끝맺음으로 한다)(#266)
@@ -361,6 +365,9 @@ impl Scanner {
                             out.push((i + 1, sig));
                         }
                         if let Some(sig) = crate::csi_query::visibility(b, &self.csi) {
+                            out.push((i + 1, sig));
+                        }
+                        for sig in crate::csi_query::save_restore(b, &self.csi) {
                             out.push((i + 1, sig));
                         }
                     } else if self.csi_gt && self.csi_inter.is_none() && self.csi.len() < MAX_CSI {

@@ -131,6 +131,40 @@ pub fn visibility(fin: u8, params: &[u8]) -> Option<Signal> {
         .then_some(Signal::VisibilityReports(fin == b'h'))
 }
 
+/// 스캐너가 쥔 모드(색 구성표 알림 2031, 가시성 보고 2033, 크기 알림 2048)인가
+fn scanner_mode(p: &str) -> Option<u16> {
+    match p {
+        "2031" => Some(2031),
+        "2033" => Some(2033),
+        "2048" => Some(2048),
+        _ => None,
+    }
+}
+
+/// XTSAVE(`CSI ? Pm s`)·XTRESTORE(`CSI ? Pm r`) 중 스캐너가 쥔 모드의 몫. 엔진은 이 모드들을 모르므로 여기서 읽는다.
+/// 여러 모드가 한 줄에 있으면 적힌 차례로 하나씩 신호를 낸다(Ghostty stream.zig 2560~2630줄) (#313)
+pub fn save_restore(fin: u8, params: &[u8]) -> Vec<Signal> {
+    if !matches!(fin, b's' | b'r') {
+        return Vec::new();
+    }
+    let Some(text) = params.strip_prefix(b"?").and_then(size_param) else {
+        return Vec::new();
+    };
+    if text.contains('?') {
+        return Vec::new();
+    }
+    text.split(';')
+        .filter_map(scanner_mode)
+        .map(|m| {
+            if fin == b's' {
+                Signal::ModeSave(m)
+            } else {
+                Signal::ModeRestore(m)
+            }
+        })
+        .collect()
+}
+
 /// 중간 바이트가 하나인 CSI: `CSI ? 2048 $ p`·`CSI ? 2031 $ p`·`CSI ? 2033 $ p`(DECRQM)만
 pub fn inter(inter: u8, fin: u8, params: &[u8]) -> Option<Signal> {
     if inter != b'$' || fin != b'p' {
@@ -274,6 +308,19 @@ mod tests {
         assert_eq!(visibility_report(false), "\x1b[?999;2n");
         assert_eq!(mode_2033_report(true), "\x1b[?2033;1$y");
         assert_eq!(mode_2033_report(false), "\x1b[?2033;2$y");
+    }
+
+    #[test]
+    fn xtsave_xtrestore_of_scanner_modes_are_parsed() {
+        assert_eq!(signals(b"\x1b[?2048s"), vec![Signal::ModeSave(2048)]);
+        assert_eq!(signals(b"\x1b[?2031r"), vec![Signal::ModeRestore(2031)]);
+        // 여러 모드는 적힌 차례로, 스캐너가 쥐지 않은 모드는 엔진 몫이라 건너뛴다
+        assert_eq!(
+            signals(b"\x1b[?7;2033;25;2031s"),
+            vec![Signal::ModeSave(2033), Signal::ModeSave(2031)]
+        );
+        // `?`가 없는 `s`·`r`(커서 저장, DECSTBM)과 중간 바이트가 낀 것은 아니다
+        assert_eq!(signals(b"\x1b[2048s\x1b[2048r\x1b[?2048$r"), vec![]);
     }
 
     #[test]

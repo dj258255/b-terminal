@@ -699,6 +699,8 @@ impl Session {
             let mut pending_cmd: Option<String> = None;
             // 지금 체크섬 계산 방식(XTCHECKSUM). 읽기 스레드만 쓴다
             let mut xt_flags = xt_default;
+            // XTSAVE로 저장한 스캐너 모드(2031·2033·2048)의 값. 엔진이 모르는 모드라 여기서 쥔다(#313)
+            let mut saved_modes: [Option<bool>; 3] = [None; 3];
             loop {
                 match reader.read(&mut buf) {
                     Ok(0) => break,
@@ -717,6 +719,26 @@ impl Session {
                                     push_capped(cap, seg);
                                 }
                                 pos = end.min(bytes.len());
+                                // XTSAVE·XTRESTORE(#313): 저장은 지금 값을 적어 두고, 복원은 DECSET·DECRST와 같은 신호로 바꿔 같은 길을 탄다.
+                                // 저장한 적이 없으면 꺼짐(Ghostty modes.zig 기본값)
+                                let sig = match sig {
+                                    Signal::ModeSave(m) => {
+                                        use std::sync::atomic::Ordering::Acquire;
+                                        let (slot, on) = match m {
+                                            2031 => (0, thread_scheme_updates.load(Acquire)),
+                                            2033 => (1, thread_visibility_reports.load(Acquire)),
+                                            _ => (2, thread_in_band_size.load(Acquire)),
+                                        };
+                                        saved_modes[slot] = Some(on);
+                                        continue;
+                                    }
+                                    Signal::ModeRestore(m) => match m {
+                                        2031 => Signal::ColorSchemeUpdates(saved_modes[0].unwrap_or(false)),
+                                        2033 => Signal::VisibilityReports(saved_modes[1].unwrap_or(false)),
+                                        _ => Signal::InBandSizeReports(saved_modes[2].unwrap_or(false)),
+                                    },
+                                    other => other,
+                                };
                                 match sig {
                                     Signal::Prompt(PromptMark::PromptStart) => {
                                         thread_integrated.store(true, std::sync::atomic::Ordering::Release);
@@ -757,6 +779,7 @@ impl Session {
                                         if visible && scrollback {
                                             crate::kitty_color::reset_palette(&mut g.term);
                                             xt_flags = xt_default;
+                                            saved_modes = [None; 3];
                                             thread_kam_locked.store(false, std::sync::atomic::Ordering::Release);
                                             thread_scheme_updates.store(false, std::sync::atomic::Ordering::Release);
                                             thread_in_band_size.store(false, std::sync::atomic::Ordering::Release);
@@ -1307,6 +1330,8 @@ fn signal_event(sig: Signal) -> SessionEvent {
         | Signal::ColorSchemeModeQuery
         | Signal::VisibilityReports(_)
         | Signal::VisibilityQuery
+        | Signal::ModeSave(_)
+        | Signal::ModeRestore(_)
         | Signal::DcsQuery(_)
         | Signal::KittyColor { .. }
         | Signal::WindowResize { .. } => SessionEvent::Output,
