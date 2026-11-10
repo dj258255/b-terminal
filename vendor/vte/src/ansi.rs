@@ -1770,6 +1770,11 @@ where
             // b-terminal(#295): HPB는 CUB, VPB는 CUU와 같다(Ghostty stream.zig 'j'·'k')
             ('j', []) => handler.move_backward(next_param_or(1) as usize),
             ('k', []) => handler.move_up(next_param_or(1) as usize),
+            // b-terminal(#339): DECSED 22. Ghostty stream.zig 1896~1925줄은 `?`가 붙어도 `scroll_complete`로 보내고,
+            // `scrollClear`는 보호 칸을 가리지 않으므로 ED 22와 같다
+            ('J', [b'?']) if params.len() == 1 && params.iter().next() == Some(&[22][..]) => {
+                handler.clear_screen_scroll_complete();
+            },
             // b-terminal(#294): DECSED(`CSI ? Ps J`). Ghostty stream.zig: 0..=3 like ED.
             ('J', [b'?']) => {
                 let mode = match next_param_or(0) {

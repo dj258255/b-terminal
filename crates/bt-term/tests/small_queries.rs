@@ -162,6 +162,32 @@ fn ed_22_on_a_blank_screen_adds_no_scrollback() {
 }
 
 #[test]
+fn decsed_22_scrolls_like_ed_22_even_over_protected_cells() {
+    // #339: Ghostty stream.zig 1896~1925줄은 `CSI ? 22 J`도 `scroll_complete`로 보내고,
+    // Terminal.zig 4452줄 `scrollClear`는 보호 표시를 보지 않는다
+    let mut t = T::new(10, 4);
+    t.feed("one\r\n\x1b[1\"qtwo\x1b[0\"q\r\nthree");
+    t.feed("\x1b[?22J");
+    assert!(t.visible_blank(), "보이는 화면이 비어야 한다(보호 칸 포함)");
+    assert!(t.term.history_size() >= 3, "스크롤백 {}줄", t.term.history_size());
+    assert_eq!(t.row(-3), "one");
+    assert_eq!(t.row(-2), "two");
+}
+
+#[test]
+fn decsed_22_with_extra_parameters_is_dropped() {
+    let mut t = T::new(10, 4);
+    t.feed("one\r\ntwo");
+    t.feed("\x1b[?22;1J");
+    assert_eq!(
+        t.row(0),
+        "one",
+        "매개변수가 둘이면 버린다(Ghostty: params.len이 1이 아니면 버림)"
+    );
+    assert_eq!(t.term.history_size(), 0);
+}
+
+#[test]
 fn ed_2_and_ed_3_still_work_next_to_ed_22() {
     let mut t = T::new(10, 3);
     t.feed("a\r\nb\x1b[2J");
