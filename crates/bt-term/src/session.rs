@@ -794,6 +794,8 @@ impl Session {
                                     other => other,
                                 };
                                 match sig {
+                                    // OSC 133 확장(#329): 줄 표시·fresh-line·지우기 규칙을 엔진에 넣는다
+                                    Signal::Semantic(sp) => sp.apply(&mut g.term),
                                     Signal::Prompt(PromptMark::PromptStart) => {
                                         thread_integrated.store(true, std::sync::atomic::Ordering::Release);
                                         let line = g.cursor_abs();
@@ -1405,6 +1407,7 @@ fn signal_event(sig: Signal) -> SessionEvent {
         Signal::Progress { state, percent } => SessionEvent::Progress { state, percent },
         // 셸 통합 표지와 그래픽은 읽기 스레드가 따로 다룬다
         Signal::Prompt(_)
+        | Signal::Semantic(_)
         | Signal::CommandLine(_)
         | Signal::Graphics(_)
         | Signal::Erase { .. }

@@ -30,6 +30,7 @@ use crate::vte::ansi::{
 pub mod cell;
 pub mod color;
 pub mod search;
+pub mod semantic; // b-terminal(#329)
 
 /// Minimum number of columns.
 ///
@@ -421,6 +422,8 @@ pub struct Term<T> {
 
     /// b-terminal(#327): XTSHIFTESCAPE로 프로그램이 정한 값(`None`은 정한 적 없음). Ghostty `flags.mouse_shift_capture`
     mouse_shift_capture: Option<bool>,
+    /// b-terminal(#329): OSC 133 상태(커서의 글 종류, 지우기 규칙, 다시 그리기)
+    semantic: semantic::SemanticState,
 }
 
 /// b-terminal 패치(#180): 한 칸의 결합 문자 목록에 이어 붙이는 글자 수 상한(join_grapheme)
@@ -577,6 +580,7 @@ impl<T> Term<T> {
             grapheme_anchor: None,
             protected_iso: false,
             mouse_shift_capture: None,
+            semantic: Default::default(), // b-terminal(#329)
             mode,
         }
     }
