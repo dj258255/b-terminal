@@ -21,7 +21,7 @@ _bt_precmd() {
   fi
   # 프롬프트 표지(#338, Ghostty ghostty.bash 142~188줄). PS1에 `133;P;k=i`(줄 편집기가 다시 그려도 fresh-line을 하지 않게 A가 아닌 P)와
   # 끝의 `133;B`(여기부터 입력 칸)를 넣고, 처음 한 번 `133;A;redraw=last;cl=line`을 찍는다. `cl=line`은 줄 안 클릭 이동을 받는다는 밝힘이다.
-  # 빈 줄에서 Enter만 쳐서 명령 없이 프롬프트가 다시 오면(`_bt_at_prompt`가 남아 있다) PS1에 이미 표지가 있으므로 다시 더하지 않는다
+  # `_bt_at_prompt`가 남아 있으면(덫이 불리지 않고 프롬프트가 다시 오면) PS1에 이미 표지가 있으므로 다시 더하지 않는다
   if [ -z "$_bt_at_prompt" ]; then
     _BT_SAVE_PS1="$PS1"
     _BT_SAVE_PS2="$PS2"
@@ -67,6 +67,9 @@ _bt_preexec() {
   # 표지를 더하기 전의 PS1·PS2로 되돌린다(명령이 PS1을 읽거나 `PS1=...`로 고치는 것을 표지가 가리지 않게)
   PS1="$_BT_SAVE_PS1"
   PS2="$_BT_SAVE_PS2"
+  # 빈 줄에서 Enter만 치면 명령 없이 PROMPT_COMMAND가 다시 돌고, 덫은 그 첫 명령 앞에서 불린다(#342).
+  # 맨 앞은 언제나 _bt_status이므로 그때는 명령이 아니다. 표지는 위에서 되돌렸으니 _bt_precmd가 한 벌만 다시 넣는다
+  [ "$BASH_COMMAND" = _bt_status ] && return
   _bt_running=1
   local cmd="${BASH_COMMAND//[[:cntrl:]]/ }"
   # cursor: 명령이 도는 동안은 원래 모양(DECSCUSR 0)
