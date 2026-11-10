@@ -365,6 +365,23 @@ Ghostty가 답하는 VT 질의. 추적 이슈 [#263](https://github.com/dj258255
 - CI의 clippy가 로컬보다 새것이라 로컬에서 깨끗한 코드가 CI에서 막혔습니다(`question_mark`). 내보낸 뒤 CI 출력까지 봅니다.
 - 흔들리는 테스트는 기다리는 시간을 늘리지 않고, 셸이 테스트의 신호를 받은 뒤에 움직이게 해서 순서를 정했습니다. 실패를 재현하려고 일부러 지연을 넣어 봤습니다.
 
+## 0.21.0 (2026-11-10)
+
+글자 꾸밈과 macOS 앱 통합. 추적 이슈 [#275](https://github.com/dj258255/b-terminal/issues/275). 에이전트 넷이 각자 worktree에서 구현·커밋하고, 주 세션이 옮기고 검토·병합했습니다. 병합 시각(KST)은 추적 이슈를 연 09:24부터 마지막 병합 10:07까지입니다. 에이전트 시간은 #278(완료 알림의 약 7분)과 #279의 두 번째 에이전트(약 4분)만 남아 있고, 나머지는 재지 않았습니다.
+
+| 이슈 | 내용 | 예상 | 실제 | PR | 주 세션이 한 것 |
+|---|---|---|---|---|---|
+| [#278](https://github.com/dj258255/b-terminal/issues/278) | 오른쪽 클릭 메뉴(`right-click-action = context-menu`) | 2~4시간 | 에이전트 약 7분(병합 09:39) | [#280](https://github.com/dj258255/b-terminal/pull/280) | Surface.zig·SurfaceView_AppKit.swift 원문 대조, vendor winit `popup_context_menu`의 안전하지 않은 약속을 문서에 적음 |
+| [#277](https://github.com/dj258255/b-terminal/issues/277) | 윗줄(SGR 53·55), vte를 vendor로 | 2~4시간 | 에이전트 재지 않음(병합 09:48) | [#281](https://github.com/dj258255/b-terminal/pull/281) | #280 위로 옮김, 금지했던 session.rs 3줄을 받아들임, 실제 창(윗줄·DECRQSS·XTGETTCAP) |
+| [#276](https://github.com/dj258255/b-terminal/issues/276) | 밑줄 다섯 모양과 밑줄 색(SGR 58) | 2~4시간 | 에이전트 재지 않음(병합 09:58) | [#282](https://github.com/dj258255/b-terminal/pull/282) | 에이전트가 패치로 남긴 연결(session.rs)을 적용하고 되돌려 실패를 확인, #281과 겹친 `DrawCell`·비트·그리는 순서를 풂, 실제 창(모양·색·흐림·반전·숨김) |
+| [#279](https://github.com/dj258255/b-terminal/issues/279) | 제목 막대 폴더 아이콘과 Dock 끌어놓기(보안 경계) | 2~4시간 | 에이전트 두 번(두 번째 약 4분, 병합 10:07) | [#283](https://github.com/dj258255/b-terminal/pull/283) | 커밋 보안 검토의 따옴표 탈출 지적(fish·tcsh)을 받아 허용 목록 규칙을 정해 두 번째 에이전트에게 맡김, 실제 창(`visible`·`hidden`) |
+
+이번에 배운 것:
+
+- 에이전트에게 "건드리지 않을 파일"로 준 session.rs가 두 이슈 모두에서 꼭 고쳐야 하는 자리였습니다(엔진 셀을 화면 칸으로 옮기는 곳이 하나뿐). 한 에이전트는 고치고 알렸고, 다른 에이전트는 패치로 남겨 커밋이 실제 화면에서는 아무것도 바꾸지 못했습니다. 금지 목록을 쓰기 전에 그 기능이 지나가는 길을 먼저 따라가 봅니다.
+- 같은 구조체(`DrawCell`)·비트 표(`CellFlags`)·목록(`CAPS`)에 여러 에이전트가 끝에 덧붙이면 충돌은 기계적이지만 비트 번호는 사람이 다시 매겨야 했습니다.
+- Ghostty와 같은 동작(따옴표로 감싼 경로를 셸에 침)도 사용자 셸이 POSIX가 아니면 안전하지 않았습니다. 커밋 보안 검토가 이것을 잡았고, Ghostty보다 좁게 막았습니다.
+
 ## 다음
 
 - 범수 님이 직접 해야 할 것: 키보드·마우스 확인(한글 2벌식 "안녕 하세요⏎", Claude Code의 Shift+Enter, Cmd-D·Cmd-F·Cmd-클릭·Cmd-N·Cmd-Shift-P, 메뉴, 창 닫기 단추, vim·htop, kitty icat·yazi, 투명 창), Developer ID 계정으로 `scripts/bundle-macos.sh --sign … --notarize … --dmg`
@@ -387,4 +404,5 @@ Ghostty가 답하는 VT 질의. 추적 이슈 [#263](https://github.com/dj258255
 - 범수 님이 정할 것(0.18): OSC 22를 받기 전 기본 포인터를 Ghostty처럼 I자로 할지(지금 화살표)
 - 범수 님이 확인할 것(0.19): 셸에서 `sudo -k; sudo true`의 암호 프롬프트에서 커서가 자물쇠가 되고 창 오른쪽 위 배지가 뜨는지, 앱 메뉴 `b-terminal › 보안 키보드 입력`을 켜고 다른 앱으로 갔다 와 보기(그 앱의 단축키 도구가 다시 동작하는지), `keybind = ctrl+shift+s=toggle_secure_input`
 - 범수 님이 확인할 것(0.20): vim·neovim을 켜서 색·배경 판단이 그대로인지(DA1·DA2 값과 OSC 11 답이 바뀜), tmux 안에서 `tmux info`의 `Tc`·`Smulx`·`Sync`가 잡히는지(XTGETTCAP), 창 크기를 끌어 바꾸며 모드 2048을 쓰는 프로그램이 따라오는지
+- 범수 님이 확인할 것(0.21): 셸에서 단어 위 오른쪽 클릭 → 단어가 골라지고 메뉴(복사·붙여넣기·나누기·닫기·초기화·읽기 전용·제목)가 뜨는지, 메뉴 붙여넣기에서 두 줄 글이면 보호 막대, Ctrl+왼쪽 클릭, vim 안에서는 메뉴가 뜨지 않는지. `scripts/bundle-macos.sh`로 만든 앱을 Dock에 두고 폴더를 끌어놓으면 새 탭, `.sh`를 끌어놓으면 확인 막대가 뜨고 Enter가 아니라 `y`로만 실행되는지, `it's.sh`는 실행하지 않고 알림 띠만 뜨는지, 앱이 꺼진 채로 끌어놓았을 때
 - 큰 일로 남긴 것: GPU(또는 IOSurface) 렌더러
