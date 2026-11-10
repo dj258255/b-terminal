@@ -51,6 +51,7 @@ softbuffer가 색 공간을 고를 수 있게 되거나, GPU 렌더러로 바꿔
 - 고친 곳(#264, ADR-022): 같은 파일의 `identify_terminal`(DA1·DA2에 답하던 것)을 답하지 않게 했고, `report_private_mode`가 모드 2048에는 답하지 않게 한 줄을 더했습니다. `b-terminal(#264)`로 찾을 수 있습니다. 이유: DA1·DA2는 Ghostty 값(`?62;22;52c`·`>1;10;0c`)으로, 모드 2048은 켜짐·꺼짐(1·2)으로 bt-term 스캐너가 답합니다. 엔진이 옛 값(`?6c`, `>0;버전;1c`, 모르는 모드 0)으로 또 답하면 PTY에 답이 둘 나갑니다. 되돌릴 조건: alacritty_terminal이 장치 속성 답과 모르는 모드 보고를 이벤트로 바꿔 밖에서 정할 수 있게 하면 지웁니다.
 
 - 더한 곳(#272, ADR-024): `src/event.rs`의 `Event::ColorRequest`에 두 번째 필드 `Option<Rgb>`(프로그램이 OSC 4·10·11·12·21로 바꾼 색, 없으면 `None`)를 더하고, `src/term/mod.rs`의 `dynamic_color_sequence`가 `self.colors[index]`를 실어 보냅니다. `b-terminal(#272)`로 찾을 수 있습니다. 이유: 이 사건은 읽기 스레드가 `Term`을 잠근 채 오므로 받는 쪽(`Listener`)이 `Term::colors()`를 읽을 수 없어 질의가 바꾼 색이 아니라 띄울 때의 테마 색으로 답했습니다. 되돌릴 조건: alacritty_terminal이 색 질의 사건에 지금 색을 실어 주거나 받는 쪽이 엔진을 읽을 수 있게 하면 지웁니다.
+- 더한 곳(#286): 같은 `Event::ColorRequest`에 세 번째 필드 `Option<Rgb>`를 더합니다(`event.rs`, `term/mod.rs`의 `dynamic_color_sequence`). 커서 색(OSC 12) 질의일 때만 프로그램이 바꾼 글자색을 싣고 나머지는 `None`입니다. `b-terminal(#286)`로 찾을 수 있습니다. 이유: Ghostty의 커서 색은 정하지 않았으면 지금 글자색(`cursor orelse foreground`)인데 받는 쪽은 엔진을 읽을 수 없어 테마 글자색으로 답했습니다. 되돌릴 조건은 위와 같습니다.
 
 ### 왜
 

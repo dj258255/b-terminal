@@ -295,7 +295,7 @@ impl EventListener for Listener {
             }
             // 엔진이 사건에 실어 준 색(프로그램이 OSC 4·10·11·12·21로 바꾼 값)이 있으면 그것으로, 없으면 테마로 답한다(#272).
             // 이 사건은 읽기 스레드가 엔진을 잠근 채 보내므로 여기서 `Term::colors()`를 읽을 수 없다
-            VtEvent::ColorRequest(index, changed, format) => {
+            VtEvent::ColorRequest(index, changed, changed_fg, format) => {
                 if self.color_format == OscColorReportFormat::None {
                     return;
                 }
@@ -305,7 +305,11 @@ impl EventListener for Listener {
                         i if i < 256 => theme.indexed(i as u8),
                         i if i == NamedColor::Foreground as usize => theme.foreground,
                         i if i == NamedColor::Background as usize => theme.background,
-                        _ => theme.cursor,
+                        // 커서 색을 정하지 않았으면 지금 글자색(#286). 테마가 커서 색을 따로 정했으면 그 색
+                        _ => match changed_fg {
+                            Some(c) if theme.cursor == theme.foreground => bt_core::Rgb::new(c.r, c.g, c.b),
+                            _ => theme.cursor,
+                        },
                     },
                     |c| bt_core::Rgb::new(c.r, c.g, c.b),
                 );
@@ -758,7 +762,7 @@ impl Session {
                                     }
                                     Signal::SoftReset => {
                                         xt_flags = xt_default;
-                                        crate::kitty_color::reset_palette(&mut g.term);
+                                        crate::kitty_color::soft_reset(&mut g.term);
                                     }
                                     // DCS 질의(DECRQSS, XTGETTCAP): 터미널의 상태와 정해진 목록에서 만든 답이고 요청 글은 들어가지 않는다.
                                     // 터미널의 답이라 읽기 전용 칸에서도 쓴다(ADR-018 결정 4, ADR-023)
@@ -1715,7 +1719,7 @@ impl Emulator {
                         crate::kitty_color::reset_palette(&mut self.term);
                     }
                 }
-                Signal::SoftReset => crate::kitty_color::reset_palette(&mut self.term),
+                Signal::SoftReset => crate::kitty_color::soft_reset(&mut self.term),
                 Signal::KittyColor { requests, bel } => {
                     if let Some(r) = crate::kitty_color::apply(&mut self.term, &self.theme, requests, *bel) {
                         self.replies.extend(r);
