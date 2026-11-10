@@ -851,6 +851,9 @@ impl<T> Term<T> {
 
         // Resize damage information.
         self.damage.resize(num_cols, num_lines);
+
+        // b-terminal(#329): 프롬프트에 있으면 프롬프트 줄을 비워 셸이 다시 그리게 한다
+        self.semantic_clear_prompt_for_redraw();
     }
 
     /// Active terminal modes.
@@ -1484,6 +1487,7 @@ impl<T> Term<T> {
                 self.selection = self.selection.take().filter(|s| !s.intersects_range(range));
             },
             ansi::ClearMode::All => {
+                self.semantic_scroll_clear_at_prompt(); // b-terminal(#329): 프롬프트면 먼저 스크롤
                 for line in 0..screen_lines {
                     self.clear_unprotected(Line(line), Column(0)..Column(columns));
                 }
@@ -2583,18 +2587,10 @@ impl<T: EventListener> Handler for Term<T> {
                 self.selection = self.selection.take().filter(|s| !s.intersects_range(range));
             },
             ansi::ClearMode::All => {
-                if self.mode.contains(TermMode::ALT_SCREEN) {
+                // b-terminal(#329): 프롬프트에서 받았을 때만 화면을 스크롤백으로 올린다(Ghostty `eraseDisplay`의 "Clearing at a prompt").
+                // 그렇지 않으면 스크롤백에 쌓지 않고 지운다(alacritty 원래 동작은 언제나 올렸다)
+                if !self.semantic_scroll_clear_at_prompt() {
                     self.grid.reset_region(..);
-                } else {
-                    let old_offset = self.grid.display_offset();
-
-                    self.grid.clear_viewport();
-
-                    // Compute number of lines scrolled by clearing the viewport.
-                    let lines = self.grid.display_offset().saturating_sub(old_offset);
-
-                    self.vi_mode_cursor.point.line =
-                        (self.vi_mode_cursor.point.line - lines).grid_clamp(self, Boundary::Grid);
                 }
 
                 self.selection = None;

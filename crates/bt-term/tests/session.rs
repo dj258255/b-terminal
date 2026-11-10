@@ -249,6 +249,63 @@ fn prompt_rows_are_the_visible_prompt_marks() {
     assert_eq!(s.prompt_rows(), vec![1, 3]);
 }
 
+/// #329: OSC 133;A는 fresh-line을 먼저 한다. 줄바꿈 없이 끝난 출력 뒤의 프롬프트가 새 줄에서 시작한다
+#[test]
+fn osc133_a_starts_the_prompt_on_a_fresh_line_through_the_pty() {
+    let (s, rx) = sh("printf 'abc\\033]133;A\\007$ '", GridSize::new(20, 6));
+    wait_exit(&rx);
+    wait_until(&s, |t| t.contains('$'));
+    let screen = s.snapshot();
+    assert_eq!(screen.row_text(0), "abc");
+    assert_eq!(screen.row_text(1), "$");
+    assert_eq!(s.prompt_rows(), vec![1]);
+}
+
+/// #329: 프롬프트에서 받은 ED 2는 화면을 스크롤백으로 올린다. 셸이 신호를 받은 뒤에 지운다(시간에 기대지 않는다)
+#[test]
+fn osc133_prompt_then_ed2_keeps_the_screen_in_scrollback_through_the_pty() {
+    let (s, _rx) = sh(
+        "printf 'out\\n\\033]133;A\\007$ \\033]133;B\\007'; read go; printf '\\033[H\\033[2J'; read done",
+        GridSize::new(20, 6),
+    );
+    wait_until(&s, |t| t.contains('$'));
+    s.write(b"go\n");
+    wait_until(&s, |t| !t.contains('$'));
+    let tail = s.tail_text(10);
+    assert!(
+        tail.contains("out") && tail.contains('$'),
+        "스크롤백에 남았다: {tail:?}"
+    );
+    assert!(s.scroll_metrics().1 >= 2);
+}
+
+/// #329: 표지를 받은 적이 없으면 ED 2는 스크롤백에 쌓지 않고 지운다(Ghostty `semantic_prompt.seen`)
+#[test]
+fn ed2_without_osc133_does_not_touch_scrollback_through_the_pty() {
+    let (s, _rx) = sh(
+        "printf 'out\\n$ '; read go; printf '\\033[H\\033[2J'; read done",
+        GridSize::new(20, 6),
+    );
+    wait_until(&s, |t| t.contains('$'));
+    s.write(b"go\n");
+    wait_until(&s, |t| !t.contains('$'));
+    assert_eq!(s.scroll_metrics().1, 0);
+}
+
+/// #329: 프롬프트에 있을 때 크기가 바뀌면 프롬프트 줄을 비워 셸이 다시 그리게 한다. redraw=0이면 그대로 둔다
+#[test]
+fn resize_at_a_prompt_clears_it_unless_the_shell_says_redraw_0_through_the_pty() {
+    for (opt, cleared) in [("", true), (";redraw=0", false)] {
+        let script = format!("printf 'out\\n\\033]133;A{opt}\\007$ \\033]133;B\\007'; read go");
+        let (s, _rx) = sh(&script, GridSize::new(20, 6));
+        wait_until(&s, |t| t.contains('$'));
+        s.resize(GridSize::new(30, 6));
+        let text = s.snapshot().text();
+        assert!(text.contains("out"), "{opt}: {text:?}");
+        assert_eq!(!text.contains('$'), cleared, "{opt}: {text:?}");
+    }
+}
+
 /// #138: 고른 것의 끝점을 키보드로 옮긴다(adjust_selection). 고른 것이 없으면 아무것도 안 한다
 #[test]
 fn adjust_selection_moves_the_selection_end() {

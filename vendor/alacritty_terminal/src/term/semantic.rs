@@ -163,6 +163,83 @@ impl<T> Term<T> {
     pub(super) fn semantic_reset(&mut self) {
         self.semantic = SemanticState::default();
     }
+
+    /// 크기를 바꾼 뒤, 커서가 프롬프트·입력에 있으면 프롬프트 줄을 비워 셸이 다시 그리게 한다
+    /// (Ghostty `Screen.clearPromptForRedraw`, Screen.zig 2447~2505줄. 주 화면만 한다).
+    /// `redraw=1`(기본)이면 커서를 따라 올라가 프롬프트 첫 줄부터 화면 맨 아래까지, `last`면 커서 줄만, `0`이면 아무것도 하지 않는다.
+    /// 칸만 비우고 줄의 표시와 줄 이음(WRAPLINE)은 남긴다(Ghostty는 줄 자체를 지우지 않는다).
+    /// 프롬프트 첫 줄을 찾는 규칙은 PageList.promptIterator 원문이 없어 Ghostty 동작을 읽고 추정한 것이다:
+    /// 커서 줄에서 위로 올라가며 이어진 줄·표시 없는 줄을 지나 처음 만나는 프롬프트 줄
+    pub(super) fn semantic_clear_prompt_for_redraw(&mut self) {
+        let redraw = self.semantic.redraw;
+        if redraw == Redraw::False || self.semantic.content == SemanticContent::Output {
+            return;
+        }
+        let grid = if self.mode.contains(TermMode::ALT_SCREEN) { &mut self.inactive_grid } else { &mut self.grid };
+        let cursor_line = grid.cursor.point.line.0;
+        let first = match redraw {
+            Redraw::False => return,
+            Redraw::Last => cursor_line,
+            Redraw::True => {
+                let top = -(grid.history_size() as i32);
+                let mut line = cursor_line;
+                loop {
+                    if mark_of(grid[Line(line)][Column(0)].flags) == RowPrompt::Prompt {
+                        break line;
+                    }
+                    if line <= top {
+                        return;
+                    }
+                    line -= 1;
+                }
+            },
+        };
+        let last = if redraw == Redraw::Last { cursor_line } else { grid.screen_lines() as i32 - 1 };
+        let columns = grid.columns();
+        for line in first..=last {
+            let row = &mut grid[Line(line)];
+            let marks = row[Column(0)].flags & ROW_MARKS;
+            let wrap = row[Column(columns - 1)].flags & Flags::WRAPLINE;
+            for column in 0..columns {
+                row[Column(column)] = Cell::default();
+            }
+            row[Column(0)].flags.insert(marks);
+            row[Column(columns - 1)].flags.insert(wrap);
+        }
+    }
+
+    /// ED 2를 받았을 때 프롬프트에 있는가: 주 화면이고 표지를 받은 적이 있고, 보이는 화면 맨 아래에서 올라가며 처음 만나는
+    /// 글 있는 줄이 프롬프트·이어진 프롬프트면 참이다. 출력(표시 없는 글 줄)을 먼저 만나면 거짓이다.
+    /// (Ghostty `eraseDisplay`의 `.complete`, Terminal.zig 4482~4513줄. 표지를 받은 적이 없으면 줄을 읽지도 않는다)
+    fn semantic_cursor_at_prompt_for_clear(&self) -> bool {
+        if self.mode.contains(TermMode::ALT_SCREEN) || !self.semantic.seen {
+            return false;
+        }
+        for line in (0..self.screen_lines() as i32).rev() {
+            let row = &self.grid[Line(line)];
+            if mark_of(row[Column(0)].flags) != RowPrompt::None {
+                return true;
+            }
+            if row[Column(0)..].iter().any(|cell| cell.flags.contains(Flags::WRITTEN)) {
+                return false;
+            }
+        }
+        false
+    }
+
+    /// ED 2(`CSI 2 J`)가 프롬프트에서 왔으면 지우기 전에 화면을 스크롤백으로 올린다. 올렸으면 참
+    /// (Ghostty `scrollClear`). 올리지 않으면 거짓이고 부르는 쪽이 그냥 지운다 — 프롬프트가 아니면 스크롤백에 쌓지 않는다
+    pub(super) fn semantic_scroll_clear_at_prompt(&mut self) -> bool {
+        if !self.semantic_cursor_at_prompt_for_clear() {
+            return false;
+        }
+        let old_offset = self.grid.display_offset();
+        self.grid.clear_viewport();
+        // 올린 줄 수만큼 vi 커서가 따라간다
+        let lines = self.grid.display_offset().saturating_sub(old_offset);
+        self.vi_mode_cursor.point.line = (self.vi_mode_cursor.point.line - lines).grid_clamp(self, Boundary::Grid);
+        true
+    }
 }
 
 impl<T: EventListener> Term<T> {
