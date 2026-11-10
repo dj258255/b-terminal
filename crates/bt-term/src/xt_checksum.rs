@@ -9,7 +9,6 @@ use alacritty_terminal::grid::Dimensions;
 use alacritty_terminal::index::{Column, Line};
 use alacritty_terminal::term::cell::{Cell, Flags as CellFlags};
 use alacritty_terminal::term::{Term, TermMode};
-use alacritty_terminal::vte::ansi::{Color, NamedColor};
 use bt_core::config::XtChecksumExtension;
 
 /// XTCHECKSUM의 비트(xterm의 `CSBITS`). 0은 DEC 체크섬이고, 초기화(RIS·DECSTR)가 설정의 기본으로 되돌리는 값이다
@@ -96,15 +95,10 @@ enum Value {
     Glyph(u16),
 }
 
-/// 쓴 적 없는 칸으로 본다. alacritty 격자에는 "쓴 적 없음" 표시가 없어서, 빈칸에 색도 속성도 없는 칸을 그렇게 본다.
-/// 그래서 `printf ' '`로 찍은 평범한 빈칸도 여기에 든다(Ghostty는 찍은 빈칸을 쓴 칸으로 센다)
+/// 쓴 적 없는 칸이다(Ghostty의 `!cell.hasText()`). 글자를 찍은 칸에만 `WRITTEN`이 있고(찍은 평범한 빈칸 포함),
+/// 지우기·밀기·새 줄이 만든 칸과 탭이 지나간 칸에는 없다. 넓은 글자가 줄 끝에서 밀려 남긴 앞 빈칸도 글자가 없다
 fn is_undrawn(cell: &Cell) -> bool {
-    cell.flags.contains(CellFlags::LEADING_WIDE_CHAR_SPACER)
-        || (cell.c == ' '
-            && cell.flags.difference(CellFlags::WRAPLINE).is_empty()
-            && cell.fg == Color::Named(NamedColor::Foreground)
-            && cell.bg == Color::Named(NamedColor::Background)
-            && cell.zerowidth().is_none_or(<[char]>::is_empty))
+    cell.flags.contains(CellFlags::LEADING_WIDE_CHAR_SPACER) || !cell.flags.contains(CellFlags::WRITTEN)
 }
 
 fn value(cell: &Cell, flags: Flags) -> Value {
@@ -128,10 +122,13 @@ fn value(cell: &Cell, flags: Flags) -> Value {
     })
 }
 
-/// xterm이 칸마다 더하는 VT100 표시. 깜박임·DECSCA 보호 표시는 격자에 있지만(#287·#294) 원본을 보고 맞추지 않아 0x40·0x04는 더하지 않는다
+/// xterm이 칸마다 더하는 VT100 표시(Ghostty `attributes`): 보호 0x04, 숨김 0x08, 밑줄 0x10, 반전 0x20, 깜박임 0x40, 굵게 0x80
 fn attributes(cell: &Cell) -> u16 {
     let f = cell.flags;
     let mut n = 0;
+    if f.contains(CellFlags::PROTECTED) {
+        n += 0x04;
+    }
     if f.contains(CellFlags::HIDDEN) {
         n += 0x08;
     }
@@ -141,13 +138,16 @@ fn attributes(cell: &Cell) -> u16 {
     if f.contains(CellFlags::INVERSE) {
         n += 0x20;
     }
+    if f.contains(CellFlags::BLINK) {
+        n += 0x40;
+    }
     if f.contains(CellFlags::BOLD) {
         n += 0x80;
     }
     n
 }
 
-/// 합에는 더하지 않지만 빈칸을 빼지 않게 하는 속성
+/// 합에는 더하지 않지만 빈칸을 빼지 않게 하는 속성(Ghostty `extended`)
 fn extended(cell: &Cell) -> bool {
     cell.flags
         .intersects(CellFlags::DIM | CellFlags::ITALIC | CellFlags::STRIKEOUT | CellFlags::DOUBLE_UNDERLINE)
@@ -339,21 +339,53 @@ mod tests {
         assert_eq!(compute(&t, r, undrawn), b'a' as u16 + b'b' as u16);
     }
 
-    // Ghostty "DEC counts a leading space". 다른 점: 찍은 첫 빈칸이 쓰지 않은 칸과 같아 센 첫 칸이 되지 못한다
+    // Ghostty "DEC counts a leading space"
     #[test]
-    fn leading_space_differs_from_ghostty_because_written_blank_is_undrawn() {
+    fn dec_counts_a_leading_space() {
         let t = term(" a\r\n b");
-        // Ghostty는 ' ' + 'a' + 'b'. 여기서는 첫 빈칸을 건너뛰어 'a'가 센 첫 칸이 되므로 ' '가 빠진다
-        assert_eq!(compute(&t, Request::default(), POS), b'a' as u16 + b'b' as u16);
-        // 빼지 않는 계산(esctest가 쓰는 쪽)은 Ghostty와 같다
+        // 센 첫 칸은 빈칸이어도 더하고, 뒤 줄의 첫 빈칸은 더하지 않는다
+        assert_eq!(
+            compute(&t, Request::default(), POS),
+            b' ' as u16 + b'a' as u16 + b'b' as u16
+        );
         let no_trim = Flags { no_trim: true, ..POS };
         assert_eq!(
             compute(&t, Request::default(), no_trim),
             b'a' as u16 + b'b' as u16 + 32 * 48
         );
-        // 속성이 붙은 빈칸은 쓴 칸이라 Ghostty와 같다(첫 칸이라 셈)
-        let t = term("\x1b[7m \x1b[0ma");
-        assert_eq!(compute(&t, row1(), POS), b' ' as u16 + 0x20 + b'a' as u16);
+    }
+
+    // 지운 칸은 쓴 적 없는 칸처럼 센다(Ghostty는 지운 칸에 글자가 없다)
+    #[test]
+    fn erased_cells_are_undrawn_but_written_blanks_are_not() {
+        let r = row1();
+        // 찍은 빈칸은 쓴 칸: 첫 칸이면 더한다
+        let t = term(" a");
+        assert_eq!(compute(&t, r, POS), b' ' as u16 + b'a' as u16);
+        // 찍은 뒤 EL·ECH·ED로 지운 칸은 쓴 적 없는 칸이라 첫 칸이어도 빠진다
+        let t = term("xa\x1b[1G\x1b[X");
+        assert_eq!(compute(&t, r, POS), b'a' as u16);
+        let t = term("xa\x1b[1G\x1b[K\x1b[2G a");
+        assert_eq!(compute(&t, r, POS), b' ' as u16 + b'a' as u16);
+        let t = term("xa\x1b[2J\x1b[Hb");
+        assert_eq!(compute(&t, r, POS), b'b' as u16);
+        // 색만 있는 빈칸(BCE로 지운 칸)도 글자가 없다
+        let t = term("\x1b[44m\x1b[2Ka");
+        assert_eq!(compute(&t, r, POS), b'a' as u16);
+        // 탭은 칸에 글자를 쓰지 않는다
+        let t = term("\ta");
+        assert_eq!(compute(&t, r, POS), b'a' as u16);
+        // 쓰지 않은 칸을 빈칸으로 세는 계산은 지운 칸을 빈칸으로 센다
+        let t = term("xa\x1b[1G\x1b[X");
+        let no_trim = Flags { no_trim: true, ..POS };
+        assert_eq!(compute(&t, r, no_trim), b'a' as u16 + 32 * 9);
+    }
+
+    // DECALN은 모든 칸에 E를 찍는다
+    #[test]
+    fn decaln_writes_every_cell() {
+        let t = term("\x1b#8");
+        assert_eq!(compute(&t, row1(), POS), b'E' as u16 * 10);
     }
 
     // Ghostty "empty rectangle"
@@ -385,18 +417,21 @@ mod tests {
         );
     }
 
-    // Ghostty "attributes". 깜박임(0x40)과 DECSCA 보호(0x04)는 합에 더하지 않는다
+    // Ghostty "attributes"
     #[test]
     fn attributes_added_per_cell() {
-        // a: 굵게+밑줄, ' ': 반전, b: 숨김
-        let t = term("\x1b[1;4ma\x1b[0;7m \x1b[0;8mb");
-        let sum = (b'a' as u16 + 0x80 + 0x10) + (b' ' as u16 + 0x20) + (b'b' as u16 + 0x08);
+        // a: 굵게+밑줄, ' ': 반전+깜박임, b: 숨김+DECSCA 보호
+        let t = term("\x1b[1;4ma\x1b[0;7;5m \x1b[0;8m\x1b[1\"qb");
+        let sum = (b'a' as u16 + 0x80 + 0x10) + (b' ' as u16 + 0x20 + 0x40) + (b'b' as u16 + 0x08 + 0x04);
         assert_eq!(compute(&t, row1(), POS), sum);
         let no_attr = Flags {
             no_attributes: true,
             ..POS
         };
         assert_eq!(compute(&t, row1(), no_attr), b'a' as u16 + b'b' as u16);
+        // 보호 표시(SPA)도 같다
+        let t = term("\x1bVa");
+        assert_eq!(compute(&t, row1(), POS), b'a' as u16 + 0x04);
     }
 
     // Ghostty "extended attributes keep a space"
