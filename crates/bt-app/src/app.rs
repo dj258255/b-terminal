@@ -155,6 +155,8 @@ pub struct Pane {
     overlay_until: Option<Instant>,
     /// 셸이 OSC 7로 알린 작업 폴더
     pub cwd: Option<std::path::PathBuf>,
+    /// 빈 OSC 7로 폴더를 지웠고 그 뒤 새 폴더를 받지 못했다(#328)
+    pub cwd_reset: bool,
     /// 마지막으로 데스크톱 알림을 띄운 때(탭마다 묶는다)
     last_desktop: Option<Instant>,
     /// 셸 통합: 지금 도는 명령(글, 시작한 때)과 마지막으로 끝난 명령
@@ -1454,6 +1456,7 @@ impl App {
                 created: Instant::now(),
                 overlay_until: None,
                 cwd: None,
+                cwd_reset: false,
                 last_desktop: None,
                 progress: None,
                 scroll_seen: 0,
@@ -1545,7 +1548,7 @@ impl App {
         // OSC 7로 알려진 폴더, 없으면 프로세스에게 묻는다
         let cwd = self
             .active_pane()
-            .and_then(|t| t.cwd.clone().or_else(|| t.session.cwd()));
+            .and_then(|t| inherited_cwd(t.cwd.as_deref(), t.cwd_reset, || t.session.cwd()));
         let mut opts = self.default_spawn();
         if cwd.is_some() && self.config.inherits_cwd(kind) {
             opts.cwd = cwd;
@@ -5330,6 +5333,18 @@ fn dirty_rows(
     dirty
 }
 
+/// 새 칸이 이어받을 폴더(#328). OSC 7로 알린 폴더가 먼저고, 한 번도 알린 적 없으면 프로세스에게 묻는다.
+/// 빈 OSC 7로 지운 칸은 Ghostty처럼 "모른다"이므로 프로세스에게 묻지 않는다(설정의 working-directory가 쓰인다)
+fn inherited_cwd(
+    reported: Option<&std::path::Path>,
+    reset: bool,
+    process: impl FnOnce() -> Option<std::path::PathBuf>,
+) -> Option<std::path::PathBuf> {
+    reported
+        .map(std::path::Path::to_path_buf)
+        .or_else(|| if reset { None } else { process() })
+}
+
 /// OSC 7 폴더를 새 탭의 시작 폴더로 써도 되는가: 호스트가 이 컴퓨터(빈 값·localhost·호스트 이름)이고 실제 폴더일 때만.
 /// ssh 안의 셸이 보낸 원격 경로나 터미널에 찍힌 글이 고른 경로로 새 셸을 열지 않는다
 pub fn osc7_is_local(host: &str, path: &std::path::Path) -> bool {
@@ -5613,7 +5628,12 @@ impl ApplicationHandler<UserEvent> for App {
                     SessionEvent::Cwd { host, path } => {
                         if osc7_is_local(&host, &path) {
                             self.panes[idx].cwd = Some(path);
+                            self.panes[idx].cwd_reset = false;
                         }
+                    }
+                    SessionEvent::CwdReset => {
+                        self.panes[idx].cwd = None;
+                        self.panes[idx].cwd_reset = true;
                     }
                     SessionEvent::Notification(note) => {
                         // 프로그램의 OSC 9·777 알림(desktop-notifications). 끄면 버린다
@@ -6331,6 +6351,22 @@ fn apply_hidden_from_dock(hidden: bt_core::config::MacHidden) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn inherited_cwd_forgets_process_cwd_after_empty_osc7() {
+        let p = || Some(std::path::PathBuf::from("/proc/cwd"));
+        let rep = std::path::Path::new("/reported");
+        assert_eq!(inherited_cwd(Some(rep), false, p), Some("/reported".into()));
+        assert_eq!(
+            inherited_cwd(None, false, p),
+            Some("/proc/cwd".into()),
+            "알린 적 없으면 프로세스"
+        );
+        // 빈 OSC 7로 지운 칸: 프로세스 폴더를 몰래 쓰지 않는다(Ghostty는 알려진 폴더가 없으면 기본 폴더)
+        assert_eq!(inherited_cwd(None, true, p), None);
+        // 지운 뒤 다시 알리면 그 폴더
+        assert_eq!(inherited_cwd(Some(rep), true, p), Some("/reported".into()));
+    }
 
     #[test]
     fn hovered_link_underline_is_double_only_over_a_single_underline_like_ghostty() {
