@@ -664,11 +664,65 @@ struct Gfx {
     /// 창을 만들 때 정해진 제목 막대 밑 비움 높이(논리 점, #192). 제목 막대 모양은 새 창에만 적용되므로 창마다 따로 든다
     inset_points: f32,
     window: Arc<Window>,
-    /// CPU 길의 올릴 곳. GPU 길(`BT_GPU=1`)이면 없다: 한 창에는 한 가지 surface만 붙일 수 있다
+    /// CPU 길의 올릴 곳. GPU 길이면 없다: 한 창에는 한 가지 surface만 붙일 수 있다
     surface: Option<softbuffer::Surface<Arc<Window>, Arc<Window>>>,
     _context: Option<softbuffer::Context<Arc<Window>>>,
-    /// GPU 길(ADR-036): 창 surface에 층과 격자를 합쳐 올리는 렌더러
+    /// GPU 길(ADR-036, macOS 기본 ADR-039): 창 surface에 층과 격자를 합쳐 올리는 렌더러
     gpu: Option<Box<bt_gpu::GpuRenderer>>,
+    /// 창의 첫 프레임을 올리면 한 번 로그에 남긴다(실험 E10)
+    first: FirstFrame,
+}
+
+/// 창을 만든 때, 첫 프레임을 올린 때, macOS가 창이 보이게 됐다고 처음 알린 때(실험 E10).
+/// 둘 중 나중에 오는 쪽에서 한 번 로그에 남긴다
+struct FirstFrame {
+    made: Instant,
+    presented: Option<Instant>,
+    visible: Option<Instant>,
+}
+
+impl FirstFrame {
+    fn new(made: Instant) -> Self {
+        Self {
+            made,
+            presented: None,
+            visible: None,
+        }
+    }
+
+    /// 프레임 하나를 창에 올렸다. 처음이면 창을 만든 뒤·앱을 띄운 뒤(·창이 보인 뒤) 걸린 시간을 남긴다
+    fn presented(&mut self, path: &str) {
+        if self.presented.is_some() {
+            return;
+        }
+        let now = Instant::now();
+        self.presented = Some(now);
+        let ms = |d: std::time::Duration| d.as_secs_f64() * 1000.0;
+        let since_start = crate::STARTED.get().map_or(0.0, |t| ms(now - *t));
+        let after_visible = self.visible.map_or_else(
+            || "창이 보이기 전".to_string(),
+            |v| format!("창이 보인 뒤 {:.1}ms", ms(now - v)),
+        );
+        log::info!(
+            "첫 프레임({path}): 창을 만든 뒤 {:.1}ms, 앱을 띄운 뒤 {since_start:.1}ms, {after_visible}",
+            ms(now - self.made)
+        );
+    }
+
+    /// 창이 보이게 됐다는 알림(`WindowEvent::Occluded(false)`). 첫 프레임을 먼저 올렸으면 그 간격을 남긴다
+    fn became_visible(&mut self) {
+        if self.visible.is_some() {
+            return;
+        }
+        let now = Instant::now();
+        self.visible = Some(now);
+        if let Some(p) = self.presented {
+            log::info!(
+                "창이 보임: 첫 프레임을 올리고 {:.1}ms 뒤",
+                (now - p).as_secs_f64() * 1000.0
+            );
+        }
+    }
 }
 
 /// 창 하나의 상태(#36). 칸(셸)은 모든 창이 App에서 함께 든다
@@ -3732,6 +3786,7 @@ impl App {
     /// 창을 만든다. `quick`이면 퀵 터미널 모양(테두리 없음, 항상 위, 주 화면 맨 위에 폭 전체·높이 40%)으로 처음부터 만든다.
     /// 만든 뒤에 테두리를 바꾸면 macOS가 포커스를 잠깐 거둬 곧바로 숨는다(#95)
     fn create_gfx_with(&mut self, event_loop: &ActiveEventLoop, quick: bool) -> Option<Gfx> {
+        let made = Instant::now();
         // 화면 색 공간으로 넘길지(ADR-009). 새 그림판부터 따른다
         softbuffer::set_native_color_space(!self.config.colorspace_srgb);
         // 투명 창(#78): 창을 투명으로 만들고 그림판이 알파를 넘기게 한다
@@ -3797,29 +3852,46 @@ impl App {
         // 창 뒤 흐림(#238). 퀵 터미널 창도 이 길로 만들어진다
         crate::blur::apply(&window, self.config.background_blur, self.config.background_opacity);
         self.scale = window.scale_factor();
-        // 그리기 길 고르기(ADR-036): BT_GPU=1이고 GPU 길이 맞출 수 있는 설정이면 wgpu surface를, 아니면 softbuffer를 붙인다
+        // 그리기 길 고르기(ADR-036, ADR-039): macOS는 GPU 길이 기본(`BT_GPU=0`이면 CPU, `1`이면 어느 OS든 GPU).
+        // GPU 길이 맞출 수 있는 설정이고 장치를 열면 wgpu surface를, 아니면 softbuffer를 붙인다
         let inputs = crate::render_path::PathInputs {
             opacity: self.config.background_opacity,
             backdrop_image: self.bg_image.is_some(),
             colorspace_srgb: self.config.colorspace_srgb,
         };
         let size = window.inner_size();
-        let (gpu, fallback) = crate::render_path::choose(std::env::var("BT_GPU").ok().as_deref(), &inputs, || {
-            bt_gpu::GpuRenderer::new_for_window_with(window.clone(), (size.width, size.height), inputs.opacity < 1.0)
+        let t_open = Instant::now();
+        let (gpu, fallback) = crate::render_path::choose(
+            std::env::var("BT_GPU").ok().as_deref(),
+            crate::render_path::GPU_BY_DEFAULT,
+            &inputs,
+            || {
+                bt_gpu::GpuRenderer::new_for_window_with(
+                    window.clone(),
+                    (size.width, size.height),
+                    inputs.opacity < 1.0,
+                )
                 .map(Box::new)
-        });
+            },
+        );
         if let Some(why) = fallback {
-            log::warn!("BT_GPU=1이지만 CPU 길로 그린다: {why}");
+            log::warn!("GPU 길을 쓰지 못해 CPU 길로 그린다: {why}");
         }
         if gpu.is_some() {
+            log::info!(
+                "그리기 길: GPU(장치 열기 {:.1}ms)",
+                t_open.elapsed().as_secs_f64() * 1000.0
+            );
             return Some(Gfx {
                 inset_points: look.inset_points,
                 window,
                 surface: None,
                 _context: None,
                 gpu,
+                first: FirstFrame::new(made),
             });
         }
+        log::info!("그리기 길: CPU");
         let context = softbuffer::Context::new(window.clone()).ok()?;
         let surface = softbuffer::Surface::new(&context, window.clone()).ok()?;
         Some(Gfx {
@@ -3828,6 +3900,7 @@ impl App {
             surface: Some(surface),
             _context: Some(context),
             gpu: None,
+            first: FirstFrame::new(made),
         })
     }
 
@@ -4956,7 +5029,7 @@ impl App {
             theme: (theme.background, theme.foreground),
             dim: (dim_alpha, dim_fill, divider_color),
         };
-        // GPU 길(`BT_GPU=1`, ADR-036): 층과 격자를 합쳐 창 surface에 올린다. 아래는 CPU 길
+        // GPU 길(ADR-036, macOS 기본 ADR-039): 층과 격자를 합쳐 창 surface에 올린다. 아래는 CPU 길
         if gfx.gpu.is_some() {
             self.redraw_gpu(gpu_frame::GpuFrame {
                 views: &views,
@@ -5289,7 +5362,9 @@ impl App {
         // macOS의 softbuffer는 프레임마다 빈 버퍼를 준다(age 0). 들고 있는 프레임을 통째로 올린다.
         // 투명 창의 알파는 캔버스가 이미 곱한 알파로 그렸다(#86). macOS 기본은 프레임을 IOSurface로 곧장 옮긴다(#346)
         let t_present = Instant::now();
-        let _ = buffer.present_frame(&self.w.frame);
+        if buffer.present_frame(&self.w.frame).is_ok() {
+            gfx.first.presented("CPU");
+        }
         let ms = |a: Instant, b: Instant| (b - a).as_secs_f64() * 1000.0;
         let end = Instant::now();
         log::debug!(
@@ -5767,6 +5842,9 @@ impl ApplicationHandler<UserEvent> for App {
                 self.sync_visibility();
                 // 보이게 되면 가려진 동안 건너뛴 내용을 그린다(GPU 길은 층을 통째로, ADR-038)
                 if !occluded {
+                    if let Some(g) = self.w.gfx.as_mut() {
+                        g.first.became_visible();
+                    }
                     self.request_redraw();
                 }
             }

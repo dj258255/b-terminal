@@ -1,4 +1,4 @@
-//! GPU 길 그리기(`BT_GPU=1`, ADR-036).
+//! GPU 길 그리기(ADR-036. macOS 기본, `BT_GPU=0`이면 CPU 길, ADR-039).
 //!
 //! CPU가 "아래층"(창 바탕, 제목 막대, 탭 막대, 칸 바탕, 여백)과 "위층"(kitty 그림, 흐림, 검색 막대, 크기 표시, 스크롤바,
 //! 진행 막대, 칸 나눔 선, 링크 띠, 팔레트, 알림 띠, 자물쇠 표시, 제목 입력, 확인 막대)을 지금 `Canvas`로 한 장씩 그리고,
@@ -476,5 +476,8 @@ impl App {
             stats.occluded,
             stats.compare_skipped
         );
+        if matches!(outcome, bt_gpu::PresentOutcome::Presented) {
+            gfx.first.presented("GPU");
+        }
     }
 }
