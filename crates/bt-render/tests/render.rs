@@ -1846,7 +1846,11 @@ fn underline_color_index_follows_osc4_palette_and_ignores_inverse() {
     let mut e = Emulator::new(GridSize::new(4, 1), Theme::default());
     e.feed(b"\x1b]4;2;rgb:11/22/33\x07\x1b[4;58;5;2;7ma\x1b[0m");
     let s = e.snapshot();
-    assert_eq!(s.cells[0].underline_color, Some(Rgb::new(0x11, 0x22, 0x33)), "OSC 4로 바꾼 색");
+    assert_eq!(
+        s.cells[0].underline_color,
+        Some(Rgb::new(0x11, 0x22, 0x33)),
+        "OSC 4로 바꾼 색"
+    );
     // 반전은 글자·바탕을 맞바꾸지만 밑줄 색은 그대로(Ghostty `underlineColor`는 반전을 보지 않는다)
     assert_eq!(s.cells[0].fg, Theme::default().background);
 }
