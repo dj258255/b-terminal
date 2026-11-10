@@ -172,6 +172,15 @@ impl<'a> Canvas<'a> {
         }
     }
 
+    /// 픽셀 하나를 덮음 `alpha`(0~255)로 얹는다. 화면 밖과 그리기 범위 밖은 무시한다(밑줄의 부드러운 가장자리, #276)
+    pub fn blend_px(&mut self, x: i32, y: i32, color: Rgb, alpha: u8) {
+        if x < 0 || x >= self.width as i32 || y < self.clip.0 || y >= self.clip.1 {
+            return;
+        }
+        let i = (y as u32 * self.width + x as u32) as usize;
+        self.buf[i] = blend(self.buf[i], color, alpha as u32);
+    }
+
     /// 글리프를 기준선 자리(x, baseline_y)에 덮는다
     pub fn draw_glyph(&mut self, x: i32, baseline_y: i32, glyph: &Glyph, color: Rgb) {
         // 색 글리프는 bitmap이 비어 있다(draw_color_glyph로 그린다). 잘못 들어와도 죽지 않게(#112)

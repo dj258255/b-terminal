@@ -639,8 +639,9 @@ macOS의 Carbon `EnableSecureEventInput`은 켜 있는 동안 키 입력이 다�
 - `TN`은 자식에게 준 TERM(`term` 설정, 기본 `xterm-256color`)과 같은 값이다. Ghostty는 자기 terminfo의 첫 이름(`xterm-ghostty`)을 답해 TERM과 맞는다. TERM이 `xterm-256color`인데 `b-terminal`이라고 답하면 앱이 TN으로 능력 목록을 고르다가 둘이 어긋나므로 TERM과 맞췄다.
 - 답한다(#277): `Smol`·`Rmol`(윗줄 켜기·끄기, 값은 Ghostty terminfo 그대로).
 - 답한다(#264가 XTVERSION·DA2에 답하게 된 뒤 주 세션이 더함): `XR`·`xr`·`RV`·`rv`(값은 Ghostty terminfo 그대로).
-- 뺀다: `Su`·`Setulc`(밑줄 색: 격자는 색을 들고 있지만 그리지 않는다), `Enmg`·`Dsmg`·`Clmg`·`Cmg`(DECSLRM: 없다), `fullkbd`(kitty 키보드 프로토콜의 모든 단계를 확인하지 않았다), `cols`·`lines`·`it`·`pairs`(크기·정적 값은 terminfo 파일의 일이다), `kcuu1` 같은 키 능력(키는 설정으로 바뀐다), 나머지 `bold`·`cup` 등 정적 문자열 능력(`xterm-256color` terminfo 파일이 답한다. Ghostty의 목록은 자기 terminfo 전체다).
-- `Smulx`는 `4:3`(물결)만 그려지고 점선·이중선은 보통 밑줄로 그려진다. `Ms`는 `clipboard-write`가 `deny`여도 답한다(능력은 있고 허용은 별개다).
+- 답한다(#276이 밑줄 모양·색을 그리게 된 뒤 더함): `Su`(불리언)·`Setulc`(값은 Ghostty terminfo 그대로).
+- 뺀다: `Enmg`·`Dsmg`·`Clmg`·`Cmg`(DECSLRM: 없다), `fullkbd`(kitty 키보드 프로토콜의 모든 단계를 확인하지 않았다), `cols`·`lines`·`it`·`pairs`(크기·정적 값은 terminfo 파일의 일이다), `kcuu1` 같은 키 능력(키는 설정으로 바뀐다), 나머지 `bold`·`cup` 등 정적 문자열 능력(`xterm-256color` terminfo 파일이 답한다. Ghostty의 목록은 자기 terminfo 전체다).
+- `Smulx`의 `4:2`~`4:5`(이중·물결·점·파선)와 `Setulc`의 밑줄 색은 모두 그린다(#276). `Ms`는 `clipboard-write`가 `deny`여도 답한다(능력은 있고 허용은 별개다).
 
 ### 결과
 - 기본 동작이 바뀐다: `DCS $ q`와 `DCS + q`에 답한다(전에는 답이 없었다).

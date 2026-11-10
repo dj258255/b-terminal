@@ -29,7 +29,11 @@ fn cells(s: &Screen) -> Vec<DrawCell> {
             bg: c.bg,
             bold: c.flags.contains(CellFlags::BOLD),
             italic: c.flags.contains(CellFlags::ITALIC),
-            underline: c.flags.contains(CellFlags::UNDERLINE),
+            underline: if c.flags.contains(CellFlags::UNDERLINE) {
+                bt_render::Underline::Single
+            } else {
+                bt_render::Underline::None
+            },
             strike: c.flags.contains(CellFlags::STRIKE),
             wide: c.flags.contains(CellFlags::WIDE),
             spacer: c.flags.contains(CellFlags::SPACER),
@@ -38,6 +42,7 @@ fn cells(s: &Screen) -> Vec<DrawCell> {
             cluster: None,
             cluster_cells: 0,
             overline: c.flags.contains(CellFlags::OVERLINE),
+            underline_color: None,
         })
         .collect();
     bt_render::cluster::mark(&mut cells, s.cols, |i| {
@@ -917,7 +922,7 @@ fn blank(ch: char) -> DrawCell {
         bg: Rgb::new(0, 0, 0),
         bold: false,
         italic: false,
-        underline: false,
+        underline: bt_render::Underline::None,
         strike: false,
         wide: false,
         spacer: false,
@@ -926,6 +931,7 @@ fn blank(ch: char) -> DrawCell {
         cluster: None,
         cluster_cells: 0,
         overline: false,
+        underline_color: None,
     }
 }
 
@@ -969,7 +975,7 @@ fn fonts_with(adjust: MetricAdjust) -> Fonts {
 #[test]
 fn underline_is_drawn_at_adjusted_row_and_thickness() {
     let mut cell = blank(' ');
-    cell.underline = true;
+    cell.underline = bt_render::Underline::Single;
     let mut f = fonts_with(MetricAdjust::default());
     let m0 = f.metrics();
     let (b, w, h) = draw_row(&mut f, &[cell.clone()], None);
@@ -1609,4 +1615,199 @@ fn thicken_adds_ink_scaled_by_strength() {
         glyph_ink(&mut strong, 'a', FontStyle::Regular),
     );
     assert!(a < b && b < c, "끔 {a} < 가장 약함 {b} < 가장 강함 {c}");
+}
+
+// ---- 밑줄 모양과 밑줄 색(#276) ----
+
+fn ul_cell(kind: bt_render::Underline, color: Option<Rgb>) -> DrawCell {
+    let mut c = blank(' ');
+    c.underline = kind;
+    c.underline_color = color;
+    c
+}
+
+/// 밑줄 칸 하나를 그린 픽셀. 글자는 없다(공백)
+fn ul_frame(kind: bt_render::Underline, color: Option<Rgb>) -> Option<(Vec<u32>, u32, u32, bt_render::CellMetrics)> {
+    let mut f = fonts(1.0)?;
+    let m = f.metrics();
+    let (b, w, h) = draw_row(&mut f, &[ul_cell(kind, color)], None);
+    Some((b, w, h, m))
+}
+
+fn lit(buf: &[u32], w: u32, x: u32, y: u32) -> bool {
+    buf[(y * w + x) as usize] & 0x00ff_ffff != 0
+}
+
+fn ink_rows(buf: &[u32], w: u32, h: u32) -> Vec<u32> {
+    (0..h).filter(|&y| (0..w).any(|x| lit(buf, w, x, y))).collect()
+}
+
+fn ink_cols_in_row(buf: &[u32], w: u32, y: u32) -> Vec<u32> {
+    (0..w).filter(|&x| lit(buf, w, x, y)).collect()
+}
+
+#[test]
+fn single_underline_is_one_solid_band() {
+    use bt_render::Underline;
+    let Some((b, w, h, m)) = ul_frame(Underline::Single, None) else {
+        return;
+    };
+    let rows = ink_rows(&b, w, h);
+    let top = m.underline_offset.min(h - m.underline_thickness);
+    assert_eq!(rows, (top..top + m.underline_thickness).collect::<Vec<_>>());
+    assert_eq!(ink_cols_in_row(&b, w, top).len() as u32, w, "칸 너비 전체");
+}
+
+#[test]
+fn double_underline_is_two_bands_with_one_thickness_gap() {
+    use bt_render::Underline;
+    let Some((b, w, h, m)) = ul_frame(Underline::Double, None) else {
+        return;
+    };
+    let t = m.underline_thickness;
+    let top = m.underline_offset.min(h - 2 * t);
+    let want: Vec<u32> = (top - t..top).chain(top + t..top + 2 * t).collect();
+    assert_eq!(ink_rows(&b, w, h), want, "두 줄, 사이는 두께 하나");
+    assert_eq!(ink_cols_in_row(&b, w, top - t).len() as u32, w);
+    assert!(ink_cols_in_row(&b, w, top).is_empty(), "두 줄 사이는 비어 있다");
+}
+
+#[test]
+fn dashed_underline_follows_special_zig_pattern() {
+    use bt_render::Underline;
+    let Some((b, w, h, m)) = ul_frame(Underline::Dashed, None) else {
+        return;
+    };
+    let top = m.underline_offset.min(h - m.underline_thickness);
+    let dash = w / 3 + 1;
+    let want: Vec<u32> = (0..w).filter(|x| (x / dash) % 2 == 0).collect();
+    assert_eq!(ink_cols_in_row(&b, w, top), want, "{dash}칸 켜고 {dash}칸 끄기");
+    assert!(!want.is_empty() && (want.len() as u32) < w);
+    assert_eq!(ink_rows(&b, w, h).len() as u32, m.underline_thickness);
+}
+
+#[test]
+fn dotted_underline_has_gaps_and_stays_in_the_cell() {
+    use bt_render::Underline;
+    let Some((b, w, h, m)) = ul_frame(Underline::Dotted, None) else {
+        return;
+    };
+    let rows = ink_rows(&b, w, h);
+    assert!(!rows.is_empty(), "점이 있다");
+    // 점 줄기의 가운데는 밑줄 윗변에서 두께의 절반 아래이고 반지름은 두께 × √½
+    let t = m.underline_thickness;
+    assert!(rows[0] + 1 >= m.underline_offset.saturating_sub(t));
+    assert!(*rows.last().unwrap() < h);
+    let mid = rows[rows.len() / 2];
+    let cols = ink_cols_in_row(&b, w, mid);
+    assert!(
+        !cols.is_empty() && (cols.len() as u32) < w,
+        "점 사이가 비어 있다: {cols:?}"
+    );
+    let groups = cols.windows(2).filter(|p| p[1] != p[0] + 1).count() + 1;
+    assert!(groups >= 2, "점이 둘 이상: {cols:?}");
+}
+
+#[test]
+fn curly_underline_rises_in_the_middle_and_dips_at_the_edges() {
+    use bt_render::Underline;
+    let Some((b, w, h, m)) = ul_frame(Underline::Curly, None) else {
+        return;
+    };
+    let rows = ink_rows(&b, w, h);
+    let t = m.underline_thickness;
+    // 한 주기의 높낮이: 진폭은 칸 너비/π. 두께 줄 하나보다 분명히 높다
+    assert!(rows.len() as u32 > t + 1, "물결의 높낮이: {rows:?}");
+    let top_of = |x: u32| (0..h).find(|&y| lit(&b, w, x, y));
+    let (edge, center) = (top_of(0).unwrap(), top_of(w / 2).unwrap());
+    assert!(center < edge, "가운데({center})가 가장자리({edge})보다 위");
+    assert!(*rows.last().unwrap() < h);
+    // 부드러운 가장자리: 흰색도 검정도 아닌 중간 밝기 픽셀이 있다
+    let mid = b.iter().any(|p| {
+        let r = Rgb::from_u32(*p).r;
+        r > 20 && r < 235
+    });
+    assert!(mid, "안티에일리어싱 픽셀");
+}
+
+#[test]
+fn underline_color_overrides_the_text_color() {
+    use bt_render::Underline;
+    let red = Rgb::new(255, 0, 0);
+    for kind in [Underline::Single, Underline::Double, Underline::Dashed] {
+        let Some((b, w, h, _)) = ul_frame(kind, Some(red)) else {
+            return;
+        };
+        let rows = ink_rows(&b, w, h);
+        let y = rows[0];
+        let x = ink_cols_in_row(&b, w, y)[0];
+        assert_eq!(Rgb::from_u32(b[(y * w + x) as usize]), red, "{kind:?}");
+        // 색이 없으면 글자색(흰색)
+        let Some((b, w, _, _)) = ul_frame(kind, None) else {
+            return;
+        };
+        assert_eq!(
+            Rgb::from_u32(b[(y * w + x) as usize]),
+            Rgb::new(255, 255, 255),
+            "{kind:?}"
+        );
+    }
+    for kind in [Underline::Curly, Underline::Dotted] {
+        let Some((b, _, _, _)) = ul_frame(kind, Some(red)) else {
+            return;
+        };
+        assert!(
+            b.iter().all(|p| {
+                let c = Rgb::from_u32(*p);
+                c.g == 0 && c.b == 0
+            }),
+            "{kind:?}: 빨강과 검정의 섞음만 있어야 한다"
+        );
+        assert!(b.iter().any(|p| Rgb::from_u32(*p).r > 200), "{kind:?}");
+    }
+}
+
+#[test]
+fn underline_is_drawn_under_the_glyph() {
+    use bt_render::Underline;
+    // 가득 찬 블록(█)은 칸 전체를 글자색으로 칠한다. 밑줄이 글자 밑이면 밑줄 줄도 글자색이다
+    let mut c = blank('\u{2588}');
+    c.underline = Underline::Single;
+    c.underline_color = Some(Rgb::new(255, 0, 0));
+    let Some(mut f) = fonts(1.0) else {
+        return;
+    };
+    let m = f.metrics();
+    let (b, w, _) = draw_row(&mut f, &[c], None);
+    let y = m.underline_offset;
+    assert_eq!(Rgb::from_u32(b[(y * w) as usize]), Rgb::new(255, 255, 255));
+}
+
+#[test]
+fn adjust_underline_thickness_applies_to_every_shape() {
+    use bt_render::Underline;
+    let adj = MetricAdjust {
+        underline_thickness: Some(Adjust::Points(2.0)),
+        ..Default::default()
+    };
+    for kind in [
+        Underline::Single,
+        Underline::Double,
+        Underline::Dashed,
+        Underline::Dotted,
+        Underline::Curly,
+    ] {
+        let mut thin = fonts_with(MetricAdjust::default());
+        let mut thick = fonts_with(adj);
+        let c = [ul_cell(kind, None)];
+        let (a, _, _) = draw_row(&mut thin, &c, None);
+        let (b, _, _) = draw_row(&mut thick, &c, None);
+        let ink = |buf: &[u32]| buf.iter().map(|p| Rgb::from_u32(*p).r as u64).sum::<u64>();
+        assert!(
+            ink(&b) > ink(&a),
+            "{kind:?}: 두께를 키우면 잉크가 늘어난다 ({} > {})",
+            ink(&b),
+            ink(&a)
+        );
+    }
 }

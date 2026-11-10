@@ -192,6 +192,12 @@ const CAPS: &[(&str, Val)] = &[
     // 윗줄(SGR 53·55, #277). 값은 Ghostty terminfo/ghostty.zig 110~111줄 그대로
     ("Smol", Val::Str("\\E[53m")),
     ("Rmol", Val::Str("\\E[55m")),
+    // 밑줄 모양과 밑줄 색을 그린다(#276). 값은 Ghostty terminfo/ghostty.zig 74줄·114줄 그대로
+    ("Su", Val::Bool),
+    (
+        "Setulc",
+        Val::Str("\\E[58:2::%p1%{65536}%/%d:%p1%{256}%/%{255}%&%d:%p1%{255}%&%d%;m"),
+    ),
 ];
 
 fn hex_upper(bytes: &[u8]) -> String {
@@ -407,6 +413,23 @@ mod tests {
     }
 
     #[test]
+    fn xtgettcap_answers_su_and_setulc_like_ghostty() {
+        // Su는 값 없는 불리언: 이름만(53 75)
+        assert_eq!(tcap("5375"), "\x1bP1+r5375\x1b\\");
+        // Setulc은 문자열: 값은 Ghostty terminfo 그대로(`%`가 들어 있어 \E도 글자 그대로 16진수가 된다. Smulx와 같다)
+        let v = "\\E[58:2::%p1%{65536}%/%d:%p1%{256}%/%{255}%&%d:%p1%{255}%&%d%;m";
+        assert_eq!(
+            tcap(&hex("Setulc")),
+            format!("\x1bP1+r{}={}\x1b\\", hex("Setulc"), hex(v))
+        );
+        // 16진수 답 자체도 못 박는다(위 값을 따로 16진수로 바꾼 것)
+        assert_eq!(
+            tcap("536574756C63"),
+            "\x1bP1+r536574756C63=5C455B35383A323A3A257031257B36353533367D252F25643A257031257B3235367D252F257B3235357D252625643A257031257B3235357D25262564253B6D\x1b\\"
+        );
+    }
+
+    #[test]
     fn xtgettcap_known_names() {
         // Ghostty Source.zig 테스트와 같은 모양: 값 없는 불리언은 이름만
         assert_eq!(tcap("5463"), "\x1bP1+r5463\x1b\\");
@@ -463,8 +486,8 @@ mod tests {
 
     #[test]
     fn xtgettcap_does_not_list_what_bterminal_cannot_do() {
-        // 밑줄 색·DECSLRM 여백은 없어서 답하지 않는다(윗줄 Smol·Rmol은 #277에서 답한다)
-        for name in ["Setulc", "Su", "Enmg", "Dsmg", "Cmg"] {
+        // DECSLRM 여백은 없어서 답하지 않는다
+        for name in ["Enmg", "Dsmg", "Cmg"] {
             assert_eq!(tcap(&hex(name)), "", "{name}");
         }
     }
