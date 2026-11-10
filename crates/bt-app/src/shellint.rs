@@ -418,4 +418,29 @@ mod tests {
         let ps1 = ps1_after(Shell::Zsh, "x%", precmd_only(Shell::Zsh));
         assert!(ps1.contains("x%%%{\x1b]133;B\x07%}"), "{ps1:?}");
     }
+
+    /// bash: 빈 줄에서 Enter만 치면 명령 없이 `PROMPT_COMMAND`가 다시 돈다. 그 첫 명령 `_bt_status` 앞의 DEBUG 덫은
+    /// 사람이 친 명령이 아니므로 명령 글(633;E)·시작(C)·끝(D)을 보내지 않는다(#342, Ghostty `bash-preexec`의 `__bp_in_prompt_command`)
+    #[test]
+    fn bash_empty_enter_is_not_a_command() {
+        if !have("bash") {
+            return;
+        }
+        // 프롬프트 → 빈 Enter(PROMPT_COMMAND의 `_bt_status`, `_bt_precmd`) → 다음 프롬프트
+        let empty_enter = "_bt_precmd; _bt_status; _bt_precmd";
+        let out = run_script(Shell::Bash, Some(""), None, empty_enter);
+        assert!(!out.contains("\x1b]633;E"), "명령 글이 나옴: {out:?}");
+        assert!(!out.contains("\x1b]133;C"), "명령 시작이 나옴: {out:?}");
+        assert!(!out.contains("\x1b]133;D"), "명령 끝이 나옴: {out:?}");
+        assert_eq!(out.matches("\x1b]133;A;").count(), 2, "프롬프트 표지는 두 번: {out:?}");
+        // 표지는 한 벌만 남는다
+        assert_eq!(
+            ps1_after(Shell::Bash, "$ ", empty_enter),
+            ps1_after(Shell::Bash, "$ ", "_bt_precmd")
+        );
+        // 그 뒤에 친 명령은 그대로 명령이다
+        let out = run_script(Shell::Bash, Some(""), None, &format!("{empty_enter}; : ls"));
+        assert_eq!(out.matches("\x1b]133;C").count(), 1, "{out:?}");
+        assert!(out.contains("\x1b]633;E;: ls\x07"), "{out:?}");
+    }
 }

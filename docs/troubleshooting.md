@@ -26,3 +26,9 @@
 - 언제: 2026-11-10, #272(OSC 질의) 뒤 격리한 창에서 한 번 잼. `OSC 10;#123456 ST` 뒤 `OSC 12;? ST`가 `rgb:ffff/ffff/ffff`(테마 글자색)로 왔다. Ghostty는 `rgb:1212/3434/5656`으로 답한다. 같은 자리에서 `cursor-style = bar` 설정으로 `CSI 4 SP q`를 보낸 뒤 DECSTR(`CSI ! p`)를 보내면 DECRQSS ` q`가 `4 q`(바꾼 모양 그대로)로 왔다. DECSCUSR 0과 RIS는 설정 모양(`6 q`)으로 맞았다
 - 원인: 색은 #272가 엔진의 바꾼 색을 사건에 실어 보내게 했지만 커서 칸(인덱스 258)에는 바뀐 색이 없어 테마 커서 색(기본은 글자색)으로 떨어졌다. Ghostty의 커서 색은 `cursor.get() orelse foreground.get()`로 둘 다 지금 값이다. 모양은 DECSTR만 팔레트만 되돌리고 `set_cursor_style(None)`(DECSCUSR 0이 쓰는 길)을 부르지 않았다
 - b-terminal: 사건에 바꾼 글자색도 싣고(vendor), 커서 색을 정한 적 없고 테마도 커서를 글자색과 다르게 정하지 않았으면 그 글자색으로 답한다. DECSTR은 팔레트와 함께 커서 모양·깜박임을 설정 값으로 되돌린다(#286). 한계: `cursor-color`를 글자색과 같은 값으로 명시해도 구별하지 못해 바뀐 글자색을 따른다
+
+## 5. bash에서 빈 줄에 Enter만 쳐도 명령 하나가 돈 것으로 보인다
+
+- 언제: 2026-11-10, #338(프롬프트 클릭) 검토 중 macOS `/bin/bash` 3.2.57을 PTY에 띄워 셸 통합 바이트를 한 번 읽음. 빈 Enter 뒤에 `OSC 633;E;_bt_status`, `OSC 133;C`, `OSC 133;D;0`이 나왔다. 셸 통합을 처음 넣은 #50의 스크립트도 같은 덫 구조다(코드로 읽었고 그 판을 돌려 보지는 않았다)
+- 원인: bash는 빈 Enter에서 명령 없이 `PROMPT_COMMAND`(`_bt_status;…;_bt_precmd`)를 다시 돌린다. DEBUG 덫 `_bt_preexec`는 그 첫 명령 `_bt_status` 앞에서도 불리는데, 프롬프트에 있다는 표시(`_bt_at_prompt`)가 켜져 있어 사람이 친 명령으로 셌다. 명령 글이 `_bt_status`인 짧은 명령이 하나 생겨 제목 기능과 명령 경계에 들어갔다
+- b-terminal: 덫이 `_bt_status` 앞에서 불리면 PS1만 표지 전 값으로 되돌리고 명령 표지를 보내지 않는다(#342). Ghostty가 bash 4.4 미만에서 쓰는 `bash-preexec.sh`도 `PROMPT_COMMAND` 안의 명령에서는 preexec를 부르지 않는다(`__bp_in_prompt_command`)
