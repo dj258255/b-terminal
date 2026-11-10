@@ -300,6 +300,9 @@ pub struct Term<T> {
     /// Index into `charsets`, pointing to what ASCII is currently being mapped to.
     active_charset: CharsetIndex,
 
+    /// b-terminal(#295): SS2·SS3가 정한, 다음 한 글자에만 쓰는 문자 집합.
+    single_shift: Option<CharsetIndex>,
+
     /// Tabstops.
     tabs: TabStops,
 
@@ -415,6 +418,21 @@ pub enum Osc52 {
 }
 
 impl<T> Term<T> {
+    /// b-terminal(#295): 커서가 스크롤 영역 안이면 영역의 모든 줄에 `op`를 한 번씩 적용한다.
+    /// 커서 줄·칸은 그대로 돌려놓고 줄바꿈 대기는 푼다
+    fn for_each_region_row(&mut self, mut op: impl FnMut(&mut Self)) {
+        let line = self.grid.cursor.point.line;
+        if !self.scroll_region.contains(&line) {
+            return;
+        }
+        for l in self.scroll_region.start.0..self.scroll_region.end.0 {
+            self.grid.cursor.point.line = Line(l);
+            op(self);
+        }
+        self.grid.cursor.point.line = line;
+        self.grid.cursor.input_needs_wrap = false;
+    }
+
     #[inline]
     pub fn scroll_display(&mut self, scroll: Scroll)
     where
@@ -466,6 +484,7 @@ impl<T> Term<T> {
             inactive_keyboard_mode_stack: Default::default(),
             keyboard_mode_stack: Default::default(),
             active_charset: Default::default(),
+            single_shift: None,
             vi_mode_cursor: Default::default(),
             cursor_style: Default::default(),
             colors: color::Colors::default(),
@@ -1161,6 +1180,14 @@ impl<T: EventListener> Handler for Term<T> {
     /// A character to be displayed.
     #[inline(never)]
     fn input(&mut self, c: char) {
+        // b-terminal(#295): SS2·SS3는 다음 한 글자에만 쓴다. 글자 묶음에 붙는 글자와 폭 0 글자도 한 글자로 센다(Ghostty Terminal.zig 1911줄)
+        if let Some(index) = self.single_shift.take() {
+            let locked = mem::replace(&mut self.active_charset, index);
+            self.input(c);
+            self.active_charset = locked;
+            return;
+        }
+
         // b-terminal 패치(#180): 글자 묶음 폭. 앞 글자와 한 묶음이면 새 칸 없이 그 칸에 잇는다.
         let grapheme = self.mode.contains(TermMode::GRAPHEME_CLUSTER);
         if grapheme && self.join_grapheme(c) {
@@ -1956,6 +1983,7 @@ impl<T: EventListener> Handler for Term<T> {
             mem::swap(&mut self.grid, &mut self.inactive_grid);
         }
         self.active_charset = Default::default();
+        self.single_shift = None;
         self.cursor_style = None;
         self.grid.reset();
         self.inactive_grid.reset();
@@ -2334,6 +2362,46 @@ impl<T: EventListener> Handler for Term<T> {
     }
 
     #[inline]
+    // b-terminal(#295)
+    fn set_single_shift(&mut self, index: CharsetIndex) {
+        trace!("Single shift {index:?}");
+        self.single_shift = Some(index);
+    }
+
+    // b-terminal(#295): DECIC. 스크롤 영역 안 모든 줄의 커서 칸에 빈 칸을 넣는다. 커서가 영역 밖이면 아무것도 하지 않는다
+    // (좌우 여백이 없어 화면 전체 폭이 여백이다. Ghostty Terminal.zig insertColumns)
+    fn insert_columns(&mut self, count: usize) {
+        self.for_each_region_row(|term| term.insert_blank(count));
+    }
+
+    // b-terminal(#295): DECDC. 스크롤 영역 안 모든 줄에서 커서 칸부터 지우고 왼쪽으로 당긴다
+    fn delete_columns(&mut self, count: usize) {
+        self.for_each_region_row(|term| term.delete_chars(count));
+    }
+
+    // b-terminal(#295): DECBI. 왼쪽 끝이면 열을 하나 넣고, 아니면 왼쪽으로 한 칸. 줄바꿈 대기는 풀린다
+    fn back_index(&mut self) {
+        self.grid.cursor.input_needs_wrap = false;
+        if self.grid.cursor.point.column == 0 {
+            self.insert_columns(1);
+        } else {
+            self.move_backward(1);
+        }
+    }
+
+    // b-terminal(#295): DECFI. 오른쪽 끝이면 왼쪽 끝 열을 지우고 당기고, 아니면 오른쪽으로 한 칸. 줄바꿈 대기는 풀린다
+    fn forward_index(&mut self) {
+        self.grid.cursor.input_needs_wrap = false;
+        if self.grid.cursor.point.column == self.last_column() {
+            let column = self.grid.cursor.point.column;
+            self.grid.cursor.point.column = Column(0);
+            self.delete_columns(1);
+            self.grid.cursor.point.column = column;
+        } else {
+            self.move_forward(1);
+        }
+    }
+
     fn set_active_charset(&mut self, index: CharsetIndex) {
         trace!("Setting active charset {index:?}");
         self.active_charset = index;

@@ -625,6 +625,26 @@ pub trait Handler {
     /// down is performed.
     fn reverse_index(&mut self) {}
 
+    /// DECIC: insert `count` blank columns at the cursor column in every row of the scroll region.
+    // b-terminal(#295)
+    fn insert_columns(&mut self, _count: usize) {}
+
+    /// DECDC: delete `count` columns at the cursor column in every row of the scroll region.
+    // b-terminal(#295)
+    fn delete_columns(&mut self, _count: usize) {}
+
+    /// DECBI: move the cursor left, or insert a column at the left edge.
+    // b-terminal(#295)
+    fn back_index(&mut self) {}
+
+    /// DECFI: move the cursor right, or delete the left column at the right edge.
+    // b-terminal(#295)
+    fn forward_index(&mut self) {}
+
+    /// SS2/SS3: use the given charset for exactly the next printed character.
+    // b-terminal(#295)
+    fn set_single_shift(&mut self, _: CharsetIndex) {}
+
     /// Set a terminal attribute.
     fn terminal_attribute(&mut self, _attr: Attr) {}
 
@@ -1207,6 +1227,8 @@ pub enum StandardCharset {
     #[default]
     Ascii,
     SpecialCharacterAndLineDrawing,
+    // b-terminal(#295): ESC ( A 영국 문자 집합. '#'만 '£'로 바뀐다
+    British,
 }
 
 impl StandardCharset {
@@ -1249,6 +1271,11 @@ impl StandardCharset {
                 '|' => '≠',
                 '}' => '£',
                 '~' => '·',
+                _ => c,
+            },
+            // b-terminal(#295)
+            StandardCharset::British => match c {
+                '#' => '£',
                 _ => c,
             },
         }
@@ -1582,6 +1609,13 @@ where
             ('F', []) => handler.move_up_and_cr(next_param_or(1) as usize),
             ('G', []) | ('`', []) => handler.goto_col(next_param_or(1) as usize - 1),
             ('W', [b'?']) if next_param_or(0) == 5 => handler.set_tabs(8),
+            // b-terminal(#295): CTC. 0은 칸에 탭 정지, 2는 그 칸 정지 지움, 5는 모두 지움(Ghostty stream.zig 'W')
+            ('W', []) if params.len() <= 1 => match next_param_or(0) {
+                0 => handler.set_horizontal_tabstop(),
+                2 => handler.clear_tabs(TabulationClearMode::Current),
+                5 => handler.clear_tabs(TabulationClearMode::All),
+                _ => unhandled!(),
+            },
             ('g', []) => {
                 let mode = match next_param_or(0) {
                     0 => TabulationClearMode::Current,
@@ -1643,6 +1677,9 @@ where
 
                 handler.clear_line(mode);
             },
+            // b-terminal(#295): HPB는 CUB, VPB는 CUU와 같다(Ghostty stream.zig 'j'·'k')
+            ('j', []) => handler.move_backward(next_param_or(1) as usize),
+            ('k', []) => handler.move_up(next_param_or(1) as usize),
             ('k', [b' ']) => {
                 // SCP control.
                 let char_path = match next_param_or(0) {
@@ -1668,6 +1705,9 @@ where
                 handler.set_scp(char_path, update_mode);
             },
             ('L', []) => handler.insert_blank_lines(next_param_or(1) as usize),
+            // b-terminal(#295): DECIC·DECDC. 매개변수가 둘 이상이면 Ghostty처럼 버린다
+            ('}', [b'\'']) if params.len() <= 1 => handler.insert_columns(next_param_or(1) as usize),
+            ('~', [b'\'']) if params.len() <= 1 => handler.delete_columns(next_param_or(1) as usize),
             ('l', []) => {
                 for param in params_iter.map(|param| param[0]) {
                     handler.unset_mode(Mode::new(param))
@@ -1802,6 +1842,16 @@ where
 
         match (byte, intermediates) {
             (b'B', intermediates) => configure_charset!(StandardCharset::Ascii, intermediates),
+            // b-terminal(#295): 영국 문자 집합, DECBI, DECFI, SS2·SS3, LS2·LS3, LS1R~LS3R
+            (b'A', intermediates) => configure_charset!(StandardCharset::British, intermediates),
+            (b'6', []) => self.handler.back_index(),
+            (b'9', []) => self.handler.forward_index(),
+            (b'N', []) => self.handler.set_single_shift(CharsetIndex::G2),
+            (b'O', []) => self.handler.set_single_shift(CharsetIndex::G3),
+            (b'n', []) => self.handler.set_active_charset(CharsetIndex::G2),
+            (b'o', []) => self.handler.set_active_charset(CharsetIndex::G3),
+            // GR로 부르는 집합은 Ghostty도 아직 글자에 쓰지 않는다(Terminal.zig 2279줄 TODO). 받기만 한다
+            (b'~', []) | (b'}', []) | (b'|', []) => (),
             (b'D', []) => self.handler.linefeed(),
             (b'E', []) => {
                 self.handler.linefeed();

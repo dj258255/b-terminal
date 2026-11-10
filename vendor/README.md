@@ -52,6 +52,7 @@ softbuffer가 색 공간을 고를 수 있게 되거나, GPU 렌더러로 바꿔
 
 - 더한 곳(#272, ADR-024): `src/event.rs`의 `Event::ColorRequest`에 두 번째 필드 `Option<Rgb>`(프로그램이 OSC 4·10·11·12·21로 바꾼 색, 없으면 `None`)를 더하고, `src/term/mod.rs`의 `dynamic_color_sequence`가 `self.colors[index]`를 실어 보냅니다. `b-terminal(#272)`로 찾을 수 있습니다. 이유: 이 사건은 읽기 스레드가 `Term`을 잠근 채 오므로 받는 쪽(`Listener`)이 `Term::colors()`를 읽을 수 없어 질의가 바꾼 색이 아니라 띄울 때의 테마 색으로 답했습니다. 되돌릴 조건: alacritty_terminal이 색 질의 사건에 지금 색을 실어 주거나 받는 쪽이 엔진을 읽을 수 있게 하면 지웁니다.
 - 더한 곳(#286): 같은 `Event::ColorRequest`에 세 번째 필드 `Option<Rgb>`를 더합니다(`event.rs`, `term/mod.rs`의 `dynamic_color_sequence`). 커서 색(OSC 12) 질의일 때만 프로그램이 바꾼 글자색을 싣고 나머지는 `None`입니다. `b-terminal(#286)`로 찾을 수 있습니다. 이유: Ghostty의 커서 색은 정하지 않았으면 지금 글자색(`cursor orelse foreground`)인데 받는 쪽은 엔진을 읽을 수 없어 테마 글자색으로 답했습니다. 되돌릴 조건은 위와 같습니다.
+- 더한 곳(#295): `src/term/mod.rs`에 `Handler`의 `insert_columns`·`delete_columns`(DECIC·DECDC, 스크롤 영역 줄마다 `insert_blank`·`delete_chars`)·`back_index`·`forward_index`(DECBI·DECFI)·`set_single_shift`(SS2·SS3)와 도우미 `for_each_region_row`, 필드 `single_shift`(다음 한 글자에만 쓰는 문자 집합, `input`이 쓰고 `reset_state`가 지움)를 더했습니다. `b-terminal(#295)`로 찾을 수 있습니다. 이유: vte가 버리던 열 삽입·삭제와 문자 집합 바꿈을 Ghostty처럼 받으려고. 되돌릴 조건: upstream이 같은 기능을 내놓으면 지웁니다. 한계: 칸 이동은 `insert_blank`·`delete_chars`를 그대로 써서 넓은 글자가 가운데에서 잘리는 경우를 Ghostty처럼 따로 다루지 않습니다.
 
 ### 왜
 
@@ -77,6 +78,7 @@ alacritty_terminal이 글자 묶음 폭(mode 2027)을 지원하는 판을 내면
 - 고친 곳: `src/ansi.rs` 한 파일. `Attr`에 `Overline`·`CancelOverline`을 끝에 더하고, `attrs_from_sgr_parameters`에 `[53]`·`[55]` 두 줄을 더했습니다. `b-terminal(#277)`로 찾을 수 있습니다.
 - `alacritty_terminal` 쪽(같은 이슈): `src/term/cell.rs`의 `Flags::OVERLINE`(마지막 빈 비트 `0b1000_0000_0000_0000`, 당시 `u16`이 가득 참)과 `is_empty` 표시 목록, `src/term/mod.rs`의 `terminal_attribute`가 켜고 끕니다(Reset은 `flags = empty()`가 지웁니다). `b-terminal(#277)`로 찾을 수 있습니다.
 - `alacritty_terminal` 쪽(#287): `src/term/cell.rs`의 `Flags`를 `u16`에서 `u32`로 넓히고 `BLINK`(`1 << 16`, 깜박임 SGR 5·6)를 더했으며, `src/term/mod.rs`의 `terminal_attribute`가 `BlinkSlow`·`BlinkFast`로 켜고 `CancelBlink`(25)로 끕니다(Reset은 `flags = empty()`가 지웁니다). `Cell`은 24바이트 그대로입니다(64비트, 한 번 잼). 이유: DECRQSS `m` 답에 5를 넣으려고 커서 템플릿이 깜박임을 기억해야 합니다. 그리지는 않습니다(Ghostty도 글자 깜박임은 그리지 않음). `b-terminal(#287)`로 찾을 수 있습니다. 되돌릴 조건은 위 #277과 같고, upstream이 `Flags`를 넓히거나 깜박임을 기억하면 지웁니다.
+- `vte` 쪽(#295): `src/ansi.rs`의 `Handler`에 `insert_columns`·`delete_columns`·`back_index`·`forward_index`·`set_single_shift`(기본 구현은 빈 함수)를 더하고, `csi_dispatch`에 `W`(CTC)·`j`(HPB)·`k`(VPB)·`'}`(DECIC)·`'~`(DECDC), `esc_dispatch`에 `A`(영국)·`6`·`9`·`N`·`O`·`n`·`o`와 받기만 하는 `~`·`}`·`|`(LS1R~LS3R)를 더하고, `StandardCharset::British`(`#` → `£`)를 끝에 더했습니다. `b-terminal(#295)`로 찾을 수 있습니다. 해석·엔진 테스트는 `crates/bt-term/tests/column_ops.rs`에 있습니다. 되돌릴 조건은 위 #277과 같습니다.
 - 이유: vte 0.15가 SGR 53·55를 해석하지 않아 윗줄을 그릴 수 없었습니다(Ghostty는 그립니다).
 - 되돌릴 조건: upstream vte가 53·55를 해석하는 판을 내면 `vendor/vte`와 `[patch.crates-io]`의 `vte` 줄을 지우고, `alacritty_terminal`의 `terminal_attribute`를 새 `Attr` 이름에 맞춥니다. 판이 바뀌면 `diff`로 `ansi.rs`를 먼저 비교합니다. `vendor/vte`는 작업 공간 밖이라 자체 테스트가 돌지 않으므로 해석 테스트는 `crates/bt-term/tests/sgr_parse.rs`에 있습니다.
 
