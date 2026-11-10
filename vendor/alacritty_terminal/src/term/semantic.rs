@@ -233,12 +233,17 @@ impl<T> Term<T> {
         if !self.semantic_cursor_at_prompt_for_clear() {
             return false;
         }
+        self.scroll_clear_viewport();
+        true
+    }
+
+    /// 보이는 화면의 글을 스크롤백으로 올려 화면을 비운다(Ghostty `Screen.scrollClear`). 프롬프트의 ED 2와 ED 22(#327)가 함께 쓴다
+    pub(super) fn scroll_clear_viewport(&mut self) {
         let old_offset = self.grid.display_offset();
         self.grid.clear_viewport();
         // 올린 줄 수만큼 vi 커서가 따라간다
         let lines = self.grid.display_offset().saturating_sub(old_offset);
         self.vi_mode_cursor.point.line = (self.vi_mode_cursor.point.line - lines).grid_clamp(self, Boundary::Grid);
-        true
     }
 }
 
