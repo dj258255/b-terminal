@@ -1184,6 +1184,10 @@ pub enum Attr {
     Background(Color),
     /// Underline color.
     UnderlineColor(Option<Color>),
+    /// Overlined text. b-terminal(#277)
+    Overline,
+    /// Cancel overline. b-terminal(#277)
+    CancelOverline,
 }
 
 /// Identifiers which can be assigned to a graphic character set.
@@ -1882,6 +1886,8 @@ fn attrs_from_sgr_parameters<H: Handler>(handler: &mut H, params: &mut ParamsIte
             },
             [48, params @ ..] => handle_colon_rgb(params).map(Attr::Background),
             [49] => Some(Attr::Background(Color::Named(NamedColor::Background))),
+            [53] => Some(Attr::Overline),       // b-terminal(#277)
+            [55] => Some(Attr::CancelOverline), // b-terminal(#277)
             [58] => {
                 let mut iter = params.map(|param| param[0]);
                 parse_sgr_color(&mut iter).map(|color| Attr::UnderlineColor(Some(color)))
