@@ -478,6 +478,21 @@ DECCOLM과 kitty 클립보드. 추적 이슈 [#323](https://github.com/dj258255/
 - 배포 도구가 커밋 보안 검토 기록에서 "이 커밋 뒤의 첫 판정"을 읽어, 판정이 없던 커밋(검토할 소스 파일 없음)에 다른 커밋의 판정을 붙였습니다. #335는 그 상태로 병합됐고(커밋마다의 판정은 미리 확인함), 도구는 다음 커밋의 시작이나 "검토할 소스 파일 없음"을 만나면 판정 없음으로 멈추게 고쳤습니다.
 - 창 크기를 바꾸지 않고 리사이즈 갈래를 보려면 DECCOLM(모드 40)으로 격자 크기를 바꾸면 됩니다.
 
+## 0.28.0 (2026-11-10)
+
+프롬프트 클릭. 추적 이슈 [#337](https://github.com/dj258255/b-terminal/issues/337). 범수 님이 범위를 `click_events`까지로 정했습니다. 0.27.0에서 에이전트 하나가 worktree에서 클릭 이동을 구현·커밋하고, 주 세션이 DECSED 22와 검토 중 찾은 bash 버그를 직접 고치고 검토·원본 대조·옮기기·실제 창·병합을 했습니다. 셀 표시 비트(21)와 ADR 번호(033)는 프롬프트에서 미리 정했습니다. 병합 시각(KST)은 추적 이슈를 연 21:57부터 마지막 병합 22:33까지입니다.
+
+| 이슈 | 내용 | 예상 | 실제 | PR | 주 세션이 한 것 |
+|---|---|---|---|---|---|
+| [#339](https://github.com/dj258255/b-terminal/issues/339) | DECSED 22(`CSI ? 22 J`) | 2~4시간 | 주 세션 약 15분(병합 22:07) | [#340](https://github.com/dj258255/b-terminal/pull/340) | 직접 구현(vte 갈래 한 곳) |
+| [#338](https://github.com/dj258255/b-terminal/issues/338) | 프롬프트 클릭 `cl=`·`click_events=`, 입력 칸 표시, 셸 스크립트 | 2~4시간 | 에이전트 약 15분(병합 22:25) | [#341](https://github.com/dj258255/b-terminal/pull/341) | vendor 변경 직접 읽기, 넓은 글자 세기를 Ghostty 원문으로 확인해 ADR 문장 고침, bash 3.2에서 여러 줄 PS1 치환 실행, 실제 창(두 줄 프롬프트), #340 위로 옮기기 |
+| [#342](https://github.com/dj258255/b-terminal/issues/342) | bash 빈 Enter가 명령 `_bt_status`로 세어짐 | — | 주 세션 약 15분(병합 22:33) | [#343](https://github.com/dj258255/b-terminal/pull/343) | #338 검토 중 PTY 바이트에서 찾아 직접 고침 |
+
+이번에 배운 것:
+
+- 셸 스크립트를 바꾸는 PR은 시험(`bash -c`)만이 아니라 실제 대화형 셸을 PTY에 띄워 바이트를 읽어 보면 좋습니다. 그렇게 해서 #50부터 있던 bash 빈 Enter 문제를 찾았습니다.
+- 에이전트가 "원문 동작은 확인하지 못했다"고 남긴 자리(넓은 글자의 뒤 칸)는 주 세션이 받아 둔 원문으로 바로 확인할 수 있었습니다. 보고에 모르는 것을 모른다고 적게 한 덕입니다.
+
 ## 다음
 
 - 범수 님이 직접 해야 할 것: 키보드·마우스 확인(한글 2벌식 "안녕 하세요⏎", Claude Code의 Shift+Enter, Cmd-D·Cmd-F·Cmd-클릭·Cmd-N·Cmd-Shift-P, 메뉴, 창 닫기 단추, vim·htop, kitty icat·yazi, 투명 창), Developer ID 계정으로 `scripts/bundle-macos.sh --sign … --notarize … --dmg`
@@ -507,4 +522,5 @@ DECCOLM과 kitty 클립보드. 추적 이슈 [#323](https://github.com/dj258255/
 - 범수 님이 확인할 것(0.25): `printf '\033=\033[?1035l'; cat -v` 뒤 키패드 `1`·Enter·`+`가 `^[Oq`·`^[OM`·`^[Ok`인지, `printf '\033[>4;2m'; cat -v` 뒤 Ctrl+a·Ctrl+Enter·Shift+Tab이 `^[[27;5;97~`·`^[[27;5;13~`·`^[[27;2;9~`인지와 그 상태에서 한글 조합 확정이 그대로 들어가는지(끝은 `printf '\033[>4;0m'`), vim·tmux가 좌우 여백을 쓰는 화면(세로 분할 스크롤)
 - 범수 님이 확인할 것(0.26): 클립보드 내용을 백업한 뒤 `printf '\033]5522;type=write:id=1\033\\\033]5522;type=wdata:mime=%s;%s\033\\\033]5522;type=wdata\033\\' "$(printf text/plain|base64)" "$(printf hello|base64)"`로 클립보드가 `hello`가 되고 알림 띠가 뜨는지, `clipboard-read = ask`에서 같은 꼴의 읽기에 확인 막대가 뜨고 `n`이면 `EPERM`인지, `printf '\033[?5522h'` 뒤 Cmd+V가 글 대신 `OK:pw=…` 패킷이 되는지(끝은 `printf '\033[?5522l'`), 화면을 나눈 칸에서 `printf '\033[?40h\033[?3h'`(끝은 `printf '\033[?40l'`)
 - 범수 님이 확인할 것(0.27): zsh에서 출력 뒤 Ctrl-L로 지운 내용이 스크롤백에 남는지, bash(여러 줄 PS1)에서 창 크기를 바꿀 때 프롬프트 윗줄이 남는지, `printf 'abc'` 뒤 프롬프트가 새 줄에서 시작하는지, vim(`:set mouse=a`)에서 `printf '\033[>1s'` 뒤 Shift 클릭이 vim으로 가는지(끝은 `printf '\033[>0s'`), `printf '\033]7;\033\\'` 뒤 Cmd-T의 새 탭 폴더
+- 범수 님이 확인할 것(0.28): 셸 통합 zsh에서 `echo 가나다 abc`를 치고 `가`와 `c`를 눌러 커서가 그 글자로 가는지, 두 줄 프롬프트에서 입력 앞의 프롬프트 글을 누르면 입력 맨 앞에서 멈추는지, `\` 뒤 둘째 줄(PS2)을 누를 때, bash(`shell-integration = bash`)에서 같은 것, vim 안에서 누르면 아무것도 가지 않는지, 셸 통합을 끄면 클릭 이동이 꺼지는지, bash에서 빈 Enter 뒤 탭 제목이 `_bt_status`로 바뀌지 않는지(`shell-integration-features`에 `title`)
 - 큰 일로 남긴 것: GPU(또는 IOSurface) 렌더러
