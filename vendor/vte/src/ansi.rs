@@ -884,7 +884,9 @@ pub enum Mode {
 impl Mode {
     fn new(mode: u16) -> Self {
         match mode {
+            2 => Self::Named(NamedMode::KeyboardAction), // b-terminal(#302)
             4 => Self::Named(NamedMode::Insert),
+            12 => Self::Named(NamedMode::SendReceive), // b-terminal(#302)
             20 => Self::Named(NamedMode::LineFeedNewLine),
             _ => Self::Unknown(mode),
         }
@@ -909,8 +911,12 @@ impl From<NamedMode> for Mode {
 #[repr(u16)]
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum NamedMode {
+    /// KAM Keyboard Action Mode. b-terminal(#302): 상태만 두고 DECRQM이 답한다
+    KeyboardAction = 2,
     /// IRM Insert Mode.
     Insert = 4,
+    /// SRM Send/Receive Mode (기본 켬). b-terminal(#302)
+    SendReceive = 12,
     LineFeedNewLine = 20,
 }
 
@@ -928,13 +934,17 @@ impl PrivateMode {
         match mode {
             1 => Self::Named(NamedPrivateMode::CursorKeys),
             3 => Self::Named(NamedPrivateMode::ColumnMode),
+            4 => Self::Named(NamedPrivateMode::SlowScroll), // b-terminal(#302)
+            5 => Self::Named(NamedPrivateMode::ReverseColors), // b-terminal(#302)
             6 => Self::Named(NamedPrivateMode::Origin),
             7 => Self::Named(NamedPrivateMode::LineWrap),
+            8 => Self::Named(NamedPrivateMode::Autorepeat), // b-terminal(#302)
             12 => Self::Named(NamedPrivateMode::BlinkingCursor),
             // b-terminal(#296): 옛 대체 화면 47·1047, 커서 저장 1048, DECNKM 66
             47 => Self::Named(NamedPrivateMode::SwapScreenLegacy),
             66 => Self::Named(NamedPrivateMode::KeypadApplication),
             25 => Self::Named(NamedPrivateMode::ShowCursor),
+            45 => Self::Named(NamedPrivateMode::ReverseWrap), // b-terminal(#302)
             1000 => Self::Named(NamedPrivateMode::ReportMouseClicks),
             1002 => Self::Named(NamedPrivateMode::ReportCellMouseMotion),
             1003 => Self::Named(NamedPrivateMode::ReportAllMouseMotion),
@@ -945,6 +955,7 @@ impl PrivateMode {
             1042 => Self::Named(NamedPrivateMode::UrgencyHints),
             1047 => Self::Named(NamedPrivateMode::SwapScreenAndClear),
             1048 => Self::Named(NamedPrivateMode::SaveRestoreCursor),
+            1045 => Self::Named(NamedPrivateMode::ReverseWrapExtended), // b-terminal(#302)
             1049 => Self::Named(NamedPrivateMode::SwapScreenAndSetRestoreCursor),
             2004 => Self::Named(NamedPrivateMode::BracketedPaste),
             2026 => Self::Named(NamedPrivateMode::SyncUpdate),
@@ -983,9 +994,19 @@ pub enum NamedPrivateMode {
     /// * resets DECLRMM to unavailable
     /// * clears data from the status line (if set to host-writable)
     ColumnMode = 3,
+    /// DECSCLM. b-terminal(#302): 저장만 한다(Ghostty도 부드러운 스크롤을 하지 않는다)
+    SlowScroll = 4,
+    /// DECSCNM 화면 반전. b-terminal(#302)
+    ReverseColors = 5,
     Origin = 6,
     LineWrap = 7,
+    /// DECARM. b-terminal(#302): 저장만 한다(xterm·Ghostty는 자동 반복을 끄지 않는다)
+    Autorepeat = 8,
     BlinkingCursor = 12,
+    /// 역방향 줄바꿈(xterm). b-terminal(#302)
+    ReverseWrap = 45,
+    /// 확장 역방향 줄바꿈(XTREVWRAP2). b-terminal(#302)
+    ReverseWrapExtended = 1045,
     ShowCursor = 25,
     ReportMouseClicks = 1000,
     ReportCellMouseMotion = 1002,

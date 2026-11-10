@@ -214,6 +214,26 @@ fn cursor_colors(
     (pick(color, theme.0), pick(text, theme.1))
 }
 
+/// 화면 반전(DECSCNM, #302)일 때 커서 기본 색. Ghostty는 커서 색을 따로 정하지 않았으면 (맞바뀐) 기본 글자색,
+/// 커서 위 글자는 (맞바뀐) 기본 바탕색을 쓴다. 설정(cursor-color·cursor-text)으로 정한 색은 그대로다.
+/// 테마에는 정했는지가 남지 않아 기본값(커서 = 글자색, 커서 글자 = 바탕색)과 같은 값이면 정하지 않은 것으로 본다
+fn reversed_cursor_defaults(theme: &bt_core::Theme, reversed: bool) -> (bt_core::Rgb, bt_core::Rgb) {
+    if !reversed {
+        return (theme.cursor, theme.cursor_text);
+    }
+    let color = if theme.cursor == theme.foreground {
+        theme.background
+    } else {
+        theme.cursor
+    };
+    let text = if theme.cursor_text == theme.background {
+        theme.foreground
+    } else {
+        theme.cursor_text
+    };
+    (color, text)
+}
+
 /// 칸 제목(#124): 사람이 붙인 것 → 프로그램이 정한 것 → 전경 프로세스 이름 → "셸". 벨이 있으면 앞에 🔔
 fn title_of(user: Option<&str>, program: &str, fg: Option<&str>, bell: bool, readonly: bool) -> String {
     let name = if let Some(u) = user.filter(|u| !u.is_empty()) {
@@ -4545,7 +4565,7 @@ impl App {
                 let cursor_color = cursor_colors(
                     self.config.cursor_color_cell,
                     self.config.cursor_text_cell,
-                    (theme.cursor, theme.cursor_text),
+                    reversed_cursor_defaults(&theme, screen.modes.reverse_colors),
                     under,
                 );
                 // 암호 입력 중이면 자물쇠(#258). 모양은 Ghostty cursor.zig의 순서를 따른다
@@ -4647,13 +4667,18 @@ impl App {
         // 이 창이 지금 쓰는 바탕 불투명도(toggle_background_opacity로 불투명해졌으면 1, #209)
         let opacity = crate::toggles::effective_opacity(self.config.background_opacity, self.w.opaque);
         // 배경 그림 층(#134): 창 크기·바탕색이 바뀌면 다시 합성한다
-        let key = (size.width, size.height, theme.background.to_u32());
+        // 화면 반전(DECSCNM, #302)이면 기본 바탕색이 맞바뀐다. 창 바탕·투명 처리도 그 색을 따른다(Ghostty는 맞바뀐 바탕색을 쓴다)
+        let win_bg = views
+            .iter()
+            .find(|v| v.focused && v.screen.modes.reverse_colors)
+            .map_or(theme.background, |v| v.screen.background);
+        let key = (size.width, size.height, win_bg.to_u32());
         match self.bg_image.as_ref() {
             Some(img) if self.w.backdrop.as_ref().map(|b| b.0) != Some(key) => {
                 let bg_alpha = opacity.clamp(0.0, 1.0);
                 let a = (bg_alpha * 255.0).round() as u32;
                 let mul = |c: u8| (c as u32 * a + 127) / 255;
-                let bg = theme.background;
+                let bg = win_bg;
                 let base = (a << 24) | (mul(bg.r) << 16) | (mul(bg.g) << 8) | mul(bg.b);
                 // 1보다 크면 background-opacity보다 진하게(Ghostty와 같은 뜻)
                 let alpha = (self.config.background_image_opacity * bg_alpha).min(1.0);
@@ -4675,11 +4700,11 @@ impl App {
         {
             let mut canvas = Canvas::new(&mut self.w.frame, size.width, size.height);
             if let Some((_, layer)) = &self.w.backdrop {
-                canvas.set_backdrop(theme.background, layer);
+                canvas.set_backdrop(win_bg, layer);
             }
             // 투명 창(#78·#86): 기본 바탕색은 반투명으로 칠하고, 글자 가장자리는 그 위에 알파째 섞는다
             if opacity < 1.0 {
-                canvas.set_see_through(theme.background, (opacity * 255.0).round() as u8);
+                canvas.set_see_through(win_bg, (opacity * 255.0).round() as u8);
             }
             // background-opacity-cells(#177): 색 바탕 칸도 같은 알파로
             canvas.set_cells_alpha(bt_render::cells_alpha(opacity, self.config.background_opacity_cells));
@@ -6017,6 +6042,32 @@ mod tests {
         assert_eq!(link_underline(f(&[CellFlags::HIDDEN])), U::None);
     }
     use bt_term::search::SearchStatus;
+
+    #[test]
+    fn reversed_screen_swaps_only_the_default_cursor_colors() {
+        use bt_core::Rgb;
+        let theme = bt_core::Theme::default();
+        // 반전이 아니면 테마 그대로
+        assert_eq!(
+            reversed_cursor_defaults(&theme, false),
+            (theme.cursor, theme.cursor_text)
+        );
+        // 반전이면 정하지 않은 커서(= 글자색)는 바탕색, 커서 글자(= 바탕색)는 글자색(#302)
+        assert_eq!(
+            reversed_cursor_defaults(&theme, true),
+            (theme.background, theme.foreground)
+        );
+        // 설정으로 정한 색은 그대로
+        let set = bt_core::Theme {
+            cursor: Rgb::new(9, 9, 9),
+            cursor_text: Rgb::new(8, 8, 8),
+            ..theme
+        };
+        assert_eq!(
+            reversed_cursor_defaults(&set, true),
+            (Rgb::new(9, 9, 9), Rgb::new(8, 8, 8))
+        );
+    }
 
     #[test]
     fn cursor_can_take_the_cell_colors_like_ghostty() {
