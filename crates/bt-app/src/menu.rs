@@ -37,6 +37,11 @@ pub fn action_for(id: &str) -> Option<MenuCommand> {
         "quit" => MenuCommand::Action(Action::Quit),
         // 앱 전체의 보안 키보드 입력(#258). 키 묶음 `toggle_secure_input`(초점 칸 하나)과 다르다
         "secure_input" => MenuCommand::ToggleSecureKeyboardEntry,
+        // 오른쪽 클릭 메뉴(#278)만 쓰는 항목
+        "split_left" => MenuCommand::Action(Action::NewSplit(Some(Direction::Left))),
+        "split_up" => MenuCommand::Action(Action::NewSplit(Some(Direction::Up))),
+        "reset_terminal" => MenuCommand::Action(Action::Reset),
+        "toggle_readonly" => MenuCommand::Action(Action::ToggleReadonly),
         _ => return None,
     })
 }

@@ -6,6 +6,7 @@ mod bell_sound;
 mod blur;
 mod cliact;
 mod cliinfo;
+mod context_menu;
 mod control;
 mod desktop;
 mod dump;

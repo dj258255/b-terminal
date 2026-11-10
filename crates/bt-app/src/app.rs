@@ -1814,7 +1814,48 @@ impl App {
         copied
     }
 
-    /// 마우스 보고 모드가 아닌 칸의 오른쪽 클릭(`right-click-action`). `context-menu`는 메뉴가 없어 하는 일이 없다
+    /// 오른쪽 클릭(또는 Ctrl+왼쪽 클릭)으로 메뉴를 띄운다(#278). 먼저 Ghostty처럼 누른 자리를 고른다(Surface.zig 4220~4246줄):
+    /// 이미 고른 영역이 그 자리를 품으면 그대로, 링크 위면 링크, 아니면 단어. 고른 것은 `copy-on-select`가 켜져 있으면 복사한다
+    fn context_menu_press(&mut self) {
+        let Some(idx) = self.active_index() else { return };
+        if let Some((c, r)) = self.cell_in(idx, self.w.cursor_pos) {
+            let link = self.link_under(self.w.cursor_pos).map(|(_, hit)| hit);
+            let contained = self.panes[idx].session.selection_contains(c, r);
+            let session = &self.panes[idx].session;
+            let picked = match crate::context_menu::pick(contained, link.is_some()) {
+                crate::context_menu::Pick::Keep => false,
+                crate::context_menu::Pick::Link => match link.and_then(|h| crate::context_menu::link_ends(&h.spans)) {
+                    Some(((r0, c0), (r1, c1))) => {
+                        session.select_start(c0, r0, SelectKind::Simple);
+                        session.select_update(c1, r1);
+                        true
+                    }
+                    None => false,
+                },
+                crate::context_menu::Pick::Word => {
+                    session.select_start(c, r, SelectKind::Word);
+                    session.select_update(c, r);
+                    true
+                }
+            };
+            if picked {
+                if self.config.copy_on_select.copies() {
+                    self.copy_selection();
+                }
+                self.request_redraw();
+            }
+        }
+        #[cfg(target_os = "macos")]
+        {
+            let (has_selection, readonly) = match self.active_pane() {
+                Some(t) => (t.session.selection_text().is_some(), t.session.readonly()),
+                None => return,
+            };
+            crate::context_menu::popup(&crate::context_menu::entries(has_selection, readonly));
+        }
+    }
+
+    /// 마우스 보고 모드가 아닌 칸의 오른쪽 클릭(`right-click-action`). `context-menu`는 단어·링크를 고르고 메뉴를 띄운다(#278)
     fn right_click(&mut self) {
         let paste = |app: &mut Self| {
             let text = app.clipboard.as_mut().and_then(|cb| cb.get_text().ok());
@@ -1823,7 +1864,8 @@ impl App {
             }
         };
         match self.config.right_click_action {
-            bt_core::config::RightClickAction::ContextMenu | bt_core::config::RightClickAction::Ignore => {}
+            bt_core::config::RightClickAction::ContextMenu => self.context_menu_press(),
+            bt_core::config::RightClickAction::Ignore => {}
             bt_core::config::RightClickAction::Paste => paste(self),
             bt_core::config::RightClickAction::Copy => {
                 self.copy_selection_command();
@@ -5457,6 +5499,18 @@ impl ApplicationHandler<UserEvent> for App {
                 if button == MouseButton::Right {
                     if state == ElementState::Pressed {
                         self.right_click();
+                    }
+                    return;
+                }
+                // Ctrl+왼쪽 클릭도 메뉴(마우스 보고 중이 아닐 때만, 위에서 이미 걸렀다). `context-menu`일 때만 띄운다(#278)
+                if cfg!(target_os = "macos")
+                    && button == MouseButton::Left
+                    && self.mods.control_key()
+                    && !self.mods.super_key()
+                    && self.config.right_click_action == bt_core::config::RightClickAction::ContextMenu
+                {
+                    if state == ElementState::Pressed {
+                        self.context_menu_press();
                     }
                     return;
                 }

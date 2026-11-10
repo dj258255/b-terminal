@@ -64,3 +64,7 @@ alacritty_terminal이 글자 묶음 폭(mode 2027)을 지원하는 판을 내면
 ## winit: 보안 키보드 입력(#258)
 
 - 고친 곳: `src/platform/macos.rs` 끝의 `pub fn set_secure_event_input(bool) -> bool`, `src/platform_impl/macos/mod.rs`의 같은 이름 함수(Carbon `EnableSecureEventInput`·`DisableSecureEventInput`을 부르고 `noErr`면 참), `src/platform_impl/macos/ffi.rs`의 Carbon 선언 두 줄. `b-terminal(#258)`로 찾을 수 있습니다. 창에 묶이지 않는 프로세스 전역 호출이라 창 메서드가 아니라 자유 함수입니다. 이유: Ghostty `macos-auto-secure-input`·메뉴 `Secure Keyboard Entry`·`toggle_secure_input`. 작업 공간이 `unsafe_code = "deny"`라 앱 코드는 FFI를 못 부릅니다. 되돌릴 조건: winit이 보안 이벤트 입력 API를 내면 지우고 그것을 씁니다.
+
+## winit: 오른쪽 클릭 메뉴(#278)
+
+- 고친 곳: `src/platform/macos.rs` 끝의 `pub fn popup_context_menu(*mut c_void) -> bool`과 `src/platform_impl/macos/mod.rs`의 같은 이름 함수(`NSMenu`를 `NSEvent.mouseLocation` 자리에 띄우고 메뉴가 닫힐 때까지 돌아오지 않음. 주 스레드가 아니거나 null이면 거짓). `b-terminal(#278)`로 찾을 수 있습니다. 이유: Ghostty `right-click-action = context-menu`. muda의 `show_context_menu_for_nsview`는 unsafe라 작업 공간 `unsafe_code = "deny"`에서 앱 코드가 부를 수 없습니다. 앱은 muda `ContextMenu::ns_menu()`(안전한 함수)로 얻은 포인터를 이 함수에 넘깁니다. 포인터가 살아 있는 `NSMenu`여야 한다는 약속은 앱이 지킵니다(메뉴를 띄우는 호출이 끝날 때까지 muda `Menu`를 쥠). 되돌릴 조건: muda가 안전한 띄우기 함수를 내거나 winit이 메뉴 띄우기 API를 내면 지우고 그것을 씁니다.
