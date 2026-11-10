@@ -294,11 +294,16 @@ impl GpuRenderer {
                     depth_slice: None,
                     resolve_target: None,
                     ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color {
-                            r: clear.r as f64 / 255.0,
-                            g: clear.g as f64 / 255.0,
-                            b: clear.b as f64 / 255.0,
-                            a: 1.0,
+                        // 투명 창이면 투명으로 지우고 칸이 화면을 덮는다(#353, Scene::is_transparent)
+                        load: wgpu::LoadOp::Clear(if self.scene.is_transparent() {
+                            wgpu::Color::TRANSPARENT
+                        } else {
+                            wgpu::Color {
+                                r: clear.r as f64 / 255.0,
+                                g: clear.g as f64 / 255.0,
+                                b: clear.b as f64 / 255.0,
+                                a: 1.0,
+                            }
                         }),
                         store: wgpu::StoreOp::Store,
                     },
@@ -376,6 +381,7 @@ impl GpuRenderer {
             let _ = tx.send(r);
         });
         let _ = self.device.poll(wgpu::PollType::wait_indefinitely());
+        let transparent = self.scene.is_transparent();
         let mut out = Vec::new();
         let mapped = rx.recv().is_ok_and(|r| r.is_ok());
         if let (true, Ok(data)) = (mapped, slice.get_mapped_range()) {
@@ -383,10 +389,11 @@ impl GpuRenderer {
             out.reserve(w * h);
             for row in 0..h {
                 let line = &data[row * target.padded_row as usize..][..w * 4];
-                out.extend(
-                    line.chunks_exact(4)
-                        .map(|p| 0xff00_0000 | (p[0] as u32) << 16 | (p[1] as u32) << 8 | p[2] as u32),
-                );
+                out.extend(line.chunks_exact(4).map(|p| {
+                    // 투명 창이면 텍스처의 곱한 알파를 그대로 낸다(CPU `Canvas`와 같은 꼴, #353)
+                    let alpha = if transparent { p[3] as u32 } else { 0xff };
+                    alpha << 24 | (p[0] as u32) << 16 | (p[1] as u32) << 8 | p[2] as u32
+                }));
             }
             drop(data);
         } else {
@@ -603,3 +610,23 @@ fn upload_instances(
 // 인스턴스 꼴이 바뀌면 셰이더와 맞춰야 한다
 const _: () = assert!(std::mem::size_of::<RectInst>() == RECT_STRIDE);
 const _: () = assert!(std::mem::size_of::<GlyphInst>() == GLYPH_STRIDE);
+
+/// 칸 알파(#353). 설정은 `Scene`이 들고 있다
+impl GpuRenderer {
+    /// 투명 창(CPU `Canvas::set_see_through`와 같다): 앞으로 `bg` 바탕은 `alpha`만큼만 덮는다.
+    /// 이 모드(`set_cells_alpha`도 같다)에서는 `render`의 `clear`를 쓰지 않고 투명으로 지우며,
+    /// 읽어 낸 픽셀은 곱한 알파 ARGB(맨 앞 바이트가 알파, 색은 알파를 곱한 값)다
+    pub fn set_see_through(&mut self, bg: Rgb, alpha: u8) {
+        self.scene.set_see_through(bg, alpha);
+    }
+
+    /// 투명 창을 끈다(다시 불투명 `clear`로 지우고 알파는 ff)
+    pub fn clear_see_through(&mut self) {
+        self.scene.clear_see_through();
+    }
+
+    /// `background-opacity-cells`(CPU `Canvas::set_cells_alpha`와 같다): 색 바탕 칸의 알파
+    pub fn set_cells_alpha(&mut self, alpha: Option<u8>) {
+        self.scene.set_cells_alpha(alpha);
+    }
+}

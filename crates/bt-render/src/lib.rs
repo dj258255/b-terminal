@@ -9,6 +9,7 @@ pub mod grid;
 pub mod proportional;
 pub mod scrollbar;
 mod sfnt;
+pub mod sprite;
 pub mod text;
 pub mod underline;
 
@@ -17,6 +18,6 @@ pub use font::{
     CellMetrics, CodepointFont, FaceEntry, FaceSource, FontConfig, FontError, FontSet, FontStyle, FontStyleName, Fonts,
     MetricAdjust, SyntheticStyle, Variations, list_system_faces,
 };
-pub use grid::{CursorStyle, DrawCell, DrawCursor, GridView, draw_grid, draw_grid_rows, lock_rects};
+pub use grid::{CursorStyle, DrawCell, DrawCursor, GridView, draw_grid, draw_grid_rows, lock_rects, text_color};
 pub use text::{char_cells, draw_text, text_cells, truncate};
 pub use underline::Underline;

@@ -16,6 +16,14 @@ pub enum Key {
     /// 이모지 모양(U+FE0F), 차지하는 칸 수
     Emoji(char, u32),
     Cluster(Arc<str>),
+    /// 밑줄 마스크: (모양 `Underline as u8`, 칸 폭, 칸 높이, 윗변 위치, 두께)
+    Underline(u8, u32, u32, u32, u32),
+    /// 직접 그리는 상자·블록 글자 마스크: (글자, 칸 폭, 칸 높이, 선 두께)
+    BoxChar(char, u32, u32, u32),
+    /// 글리프 없는 글자의 빈 상자: (칸 폭, 칸 높이)
+    Missing(u32, u32),
+    /// 칸 크기 단색 마스크(조합 중 글의 밑줄 막대): (폭, 높이)
+    Solid(u32, u32),
 }
 
 /// 아틀라스 안의 글리프 하나
@@ -88,6 +96,39 @@ impl GlyphCache {
             return *e;
         }
         let e = make().and_then(|g| self.put(&g));
+        self.map.insert(key, e);
+        e
+    }
+
+    /// 마스크(`w × h` 회색조)를 글리프처럼 아틀라스에 놓는다. 셀 왼쪽 위가 기준(`left`·`top` 0)이다.
+    /// `make`가 없으면(그리지 않는 모양) 없다
+    pub fn get_mask(&mut self, key: Key, w: u32, h: u32, make: impl FnOnce() -> Option<Vec<u8>>) -> Option<Entry> {
+        if let Some(e) = self.map.get(&key) {
+            return *e;
+        }
+        let e = make().and_then(|mask| {
+            let pos = self.gray.insert_growing(w, h, &mask);
+            let (x, y) = pos.or_else(|| {
+                log::warn!("글리프 아틀라스가 가득 찼다({}x{})", w, h);
+                None
+            })?;
+            self.uploads.push(Upload {
+                color: false,
+                x,
+                y,
+                w,
+                h,
+            });
+            Some(Entry {
+                x,
+                y,
+                w,
+                h,
+                left: 0,
+                top: 0,
+                color: false,
+            })
+        });
         self.map.insert(key, e);
         e
     }
