@@ -1310,7 +1310,7 @@ impl<T> Term<T> {
         cursor_cell.c = c;
         cursor_cell.fg = fg;
         cursor_cell.bg = bg;
-        cursor_cell.flags = flags;
+        cursor_cell.flags = flags | Flags::WRITTEN; // b-terminal(#314)
         cursor_cell.extra = extra;
     }
 
@@ -1530,6 +1530,7 @@ impl<T: EventListener> Handler for Term<T> {
                 let cell = &mut self.grid[line][Column(column)];
                 *cell = Cell::default();
                 cell.c = 'E';
+                cell.flags.insert(Flags::WRITTEN); // b-terminal(#314)
             }
         }
 

@@ -36,6 +36,9 @@ bitflags! {
         const BLINK                     = 0b1_0000_0000_0000_0000;
         /// b-terminal(#294): 보호 칸(DECSCA 1, SPA). 선택 지우기(DECSED·DECSEL)와 ISO 보호가 건너뛴다. 그리지 않는다
         const PROTECTED                 = 0b10_0000_0000_0000_0000;
+        /// b-terminal(#314): 글자를 찍은 칸(`write_at_cursor`·DECALN). 지우기·밀기·새 줄은 이 표시가 없는 칸을 만든다.
+        /// XTCHECKSUM이 "쓴 적 없는 칸"(Ghostty의 `!hasText`)을 가린다. 그리지 않고 `is_empty`에도 넣지 않는다
+        const WRITTEN                   = 0b100_0000_0000_0000_0000;
         const ALL_UNDERLINES            = Self::UNDERLINE.bits() | Self::DOUBLE_UNDERLINE.bits()
                                         | Self::UNDERCURL.bits() | Self::DOTTED_UNDERLINE.bits()
                                         | Self::DASHED_UNDERLINE.bits();
