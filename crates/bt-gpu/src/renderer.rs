@@ -11,6 +11,7 @@ use crate::glyphs::GlyphCache;
 use crate::scene::{GLYPH_STRIDE, GlyphInst, RECT_STRIDE, RectInst, Scene};
 
 mod compose;
+mod custom;
 mod layer_diff;
 mod window;
 pub use compose::{LayerUpdate, PaneDraw};
@@ -37,6 +38,8 @@ pub struct FrameTimings {
     pub submit_ms: f64,
     /// 창 길에서 `queue.present`에 든 시간
     pub present_ms: f64,
+    /// 이번 프레임에 돈 사용자 셰이더 패스 수. 셰이더가 없으면 0(`compose`·`present`)
+    pub shader_passes: usize,
 }
 
 /// 그림이 그려지는 텍스처 꼴. sRGB가 아니다: CPU 렌더러는 0~255 값을 그대로 섞으므로(감마 없이)
@@ -85,6 +88,10 @@ pub struct GpuRenderer {
     format: wgpu::TextureFormat,
     layers: compose::Layers,
     window: Option<window::WindowSurface>,
+    /// 사용자 셰이더(ADR-040). 없으면 지금 길 그대로
+    custom: Option<custom::CustomChain>,
+    /// 다음 프레임에 셰이더에 줄 유니폼 값
+    shader_uniforms: Box<crate::shadertoy::ShaderUniforms>,
 }
 
 /// 어댑터를 고른다. 진짜 GPU가 없으면 소프트웨어 어댑터(lavapipe 등)를 찾는다. `surface`가 있으면 그것을 그릴 수 있는 것만
@@ -283,6 +290,8 @@ impl GpuRenderer {
             layers,
             format,
             window,
+            custom: None,
+            shader_uniforms: Box::default(),
         })
     }
 

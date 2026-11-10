@@ -5,7 +5,9 @@ pub mod glyphs;
 pub mod pacing;
 mod renderer;
 pub mod scene;
+pub mod shadertoy;
 
 pub use atlas::{Atlas, Full};
 pub use renderer::{FrameTimings, GpuRenderer};
 pub use renderer::{LayerUpdate, PaneDraw, PresentOutcome};
+pub use shadertoy::{CustomShaderSource, ShaderUniforms};
