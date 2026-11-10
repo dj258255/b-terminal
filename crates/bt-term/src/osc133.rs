@@ -120,7 +120,9 @@ fn clean_aid(v: &str) -> String {
 impl SemanticPrompt {
     /// `click_events=`가 먼저, 없거나 틀렸으면 `cl=`(Ghostty `semanticPrompt`의 `click:` 블록). 둘 다 없으면 None
     fn click(&self) -> Option<SemanticClick> {
-        self.click_events.map(SemanticClick::ClickEvents).or(self.cl.map(SemanticClick::Cl))
+        self.click_events
+            .map(SemanticClick::ClickEvents)
+            .or(self.cl.map(SemanticClick::Cl))
     }
 
     /// 엔진에 적용한다(Ghostty `Terminal.semanticPrompt`, 2784~2902줄).
@@ -128,7 +130,9 @@ impl SemanticPrompt {
     pub fn apply<T: EventListener>(&self, term: &mut Term<T>) {
         match self.action {
             Action::FreshLine => term.semantic_fresh_line(),
-            Action::FreshLineNewPrompt | Action::NewCommand => term.semantic_new_prompt(self.kind, self.redraw, self.click()),
+            Action::FreshLineNewPrompt | Action::NewCommand => {
+                term.semantic_new_prompt(self.kind, self.redraw, self.click())
+            }
             Action::PromptStart => term.semantic_prompt_start(self.kind),
             Action::EndPromptStartInput => term.semantic_input(false),
             Action::EndPromptStartInputTerminateEol => term.semantic_input(true),

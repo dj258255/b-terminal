@@ -55,7 +55,9 @@ impl T {
         self.osc(&format!("A{opts}")).feed("$ ").osc("B").feed(text)
     }
     fn is_input(&self, line: i32, col: usize) -> bool {
-        self.term.grid()[Line(line)][Column(col)].flags.contains(Flags::SEMANTIC_INPUT)
+        self.term.grid()[Line(line)][Column(col)]
+            .flags
+            .contains(Flags::SEMANTIC_INPUT)
     }
     fn input_cols(&self, line: i32) -> Vec<usize> {
         (0..self.term.columns()).filter(|&c| self.is_input(line, c)).collect()
@@ -88,7 +90,11 @@ fn input_marks_continue_across_soft_wrap() {
     t.prompt("", "abcdefghijkl");
     assert_eq!(t.input_cols(0), (2..10).collect::<Vec<_>>());
     assert_eq!(t.input_cols(1), vec![0, 1, 2, 3]);
-    assert_eq!(t.term.row_prompt(Line(1)), RowPrompt::Continuation, "줄 넘김으로 이어진 입력 줄은 이어진 프롬프트");
+    assert_eq!(
+        t.term.row_prompt(Line(1)),
+        RowPrompt::Continuation,
+        "줄 넘김으로 이어진 입력 줄은 이어진 프롬프트"
+    );
 }
 
 #[test]
@@ -136,10 +142,16 @@ fn click_kind_parsing_priority_and_persistence() {
     assert_eq!(t.term.semantic_click(), SemanticClick::Cl(Click::Line));
     // click_events가 cl보다 앞선다
     t.osc("A;cl=line;click_events=2");
-    assert_eq!(t.term.semantic_click(), SemanticClick::ClickEvents(ClickEvents::Relative));
+    assert_eq!(
+        t.term.semantic_click(),
+        SemanticClick::ClickEvents(ClickEvents::Relative)
+    );
     // 옵션 없는 A는 기억을 지우지 않는다(Ghostty는 옵션이 있을 때만 바꾼다)
     t.osc("A");
-    assert_eq!(t.term.semantic_click(), SemanticClick::ClickEvents(ClickEvents::Relative));
+    assert_eq!(
+        t.term.semantic_click(),
+        SemanticClick::ClickEvents(ClickEvents::Relative)
+    );
     // 틀린 click_events 값은 없는 것으로 보고 cl로 간다
     t.osc("A;click_events=3;cl=m");
     assert_eq!(t.term.semantic_click(), SemanticClick::Cl(Click::Multiple));
@@ -153,7 +165,11 @@ fn cl_left_moves_over_input_cells_only() {
     t.prompt(";cl=line", "hello"); // h2 e3 l4 l5 o6, 커서 7
     assert_eq!(t.click(4, 0), Some(LEFT.repeat(3)), "o·l·l을 지나 l에 선다");
     assert_eq!(t.click(2, 0), Some(LEFT.repeat(5)));
-    assert_eq!(t.click(0, 0), Some(LEFT.repeat(5)), "프롬프트 글은 건너뛰고 입력 시작까지만");
+    assert_eq!(
+        t.click(0, 0),
+        Some(LEFT.repeat(5)),
+        "프롬프트 글은 건너뛰고 입력 시작까지만"
+    );
     assert_eq!(t.click(7, 0), None, "커서 자리를 누르면 움직이지 않는다");
 }
 
@@ -180,7 +196,11 @@ fn cl_counts_a_wide_char_once() {
     let mut t = T::new(20, 5);
     t.prompt(";cl=line", "한글ab"); // 한2-3 글4-5 a6 b7, 커서 8
     assert_eq!(t.click(2, 0), Some(LEFT.repeat(4)));
-    assert_eq!(t.click(3, 0), Some(LEFT.repeat(4)), "넓은 글자의 뒤 칸을 눌러도 그 글자");
+    assert_eq!(
+        t.click(3, 0),
+        Some(LEFT.repeat(4)),
+        "넓은 글자의 뒤 칸을 눌러도 그 글자"
+    );
     assert_eq!(t.click(5, 0), Some(LEFT.repeat(3)));
     t.feed("\x1b[1;3H"); // 한(2)
     assert_eq!(t.click(6, 0), Some(RIGHT.repeat(2)), "한에서 글, a");
@@ -219,7 +239,11 @@ fn nothing_is_sent_when_the_cursor_is_not_at_a_prompt_or_on_the_alt_screen() {
         let mut t = T::new(20, 5);
         t.prompt(opts, "hello");
         t.osc("C").feed("\r\nout");
-        assert_eq!(t.click(2, 0), None, "{opts}: 명령 출력 줄에 커서가 있으면 프롬프트가 아니다");
+        assert_eq!(
+            t.click(2, 0),
+            None,
+            "{opts}: 명령 출력 줄에 커서가 있으면 프롬프트가 아니다"
+        );
         assert_eq!(t.click(2, 1), None, "{opts}");
         // 대체 화면 안에서 프롬프트 표지를 다시 보내도 프롬프트가 아니다
         let mut t = T::new(20, 5);
@@ -244,7 +268,11 @@ fn click_events_1_sends_absolute_screen_cell() {
     t.feed("old\r\n");
     t.prompt(";click_events=1", "hello");
     assert_eq!(t.click(4, 1), Some(b"\x1b[<0;5;2M".to_vec()), "x는 칸+1, y는 화면 줄+1");
-    assert_eq!(t.click(15, 3), Some(b"\x1b[<0;16;4M".to_vec()), "프롬프트 뒤 어디든 셸이 판단한다");
+    assert_eq!(
+        t.click(15, 3),
+        Some(b"\x1b[<0;16;4M".to_vec()),
+        "프롬프트 뒤 어디든 셸이 판단한다"
+    );
     assert_eq!(t.click(4, 0), None, "프롬프트보다 위는 보내지 않는다");
 }
 

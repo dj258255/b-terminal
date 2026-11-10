@@ -44,7 +44,9 @@ pub fn prompt_click<T: EventListener>(term: &Term<T>, col: usize, row: usize) ->
     let bytes = match click {
         SemanticClick::None => return None,
         SemanticClick::ClickEvents(ClickEvents::Absolute) => sgr_click(col + 1, row + 1),
-        SemanticClick::ClickEvents(ClickEvents::Relative) => sgr_click(col + 1, (click_line.0 - prompt_line.0 + 1) as usize),
+        SemanticClick::ClickEvents(ClickEvents::Relative) => {
+            sgr_click(col + 1, (click_line.0 - prompt_line.0 + 1) as usize)
+        }
         // 네 값(line·m·v·w) 모두 지금은 한 줄 이동이다(Ghostty `promptClickMove`)
         SemanticClick::Cl(_) => {
             let (left, right) = prompt_click_line(term, click_line, col);
@@ -74,7 +76,8 @@ fn is_input(cell: &alacritty_terminal::term::cell::Cell) -> bool {
 }
 
 fn is_spacer(cell: &alacritty_terminal::term::cell::Cell) -> bool {
-    cell.flags.intersects(Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER)
+    cell.flags
+        .intersects(Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER)
 }
 
 /// 커서에서 눌린 칸까지 움직일 ←·→ 수(Ghostty `promptClickLine`). 소프트 랩으로 이어진 줄은 한 줄로 본다.
@@ -91,7 +94,11 @@ fn prompt_click_line<T>(term: &Term<T>, click_line: Line, click_col: usize) -> (
     }
     // 넓은 글자의 뒤 칸을 눌렀으면 그 글자를 누른 것이다
     let mut click_col = click_col;
-    if click_col > 0 && grid[click_line][Column(click_col)].flags.contains(Flags::WIDE_CHAR_SPACER) {
+    if click_col > 0
+        && grid[click_line][Column(click_col)]
+            .flags
+            .contains(Flags::WIDE_CHAR_SPACER)
+    {
         click_col -= 1;
     }
     if (click_line.0, click_col) == (cursor_line, cursor_col) {
@@ -162,7 +169,11 @@ fn prompt_click_line<T>(term: &Term<T>, click_line: Line, click_col: usize) -> (
 
 /// `cl=`이 정한 이동 바이트: 왼쪽 `left`번, 오른쪽 `right`번. DECCKM이면 `ESC O D`·`ESC O C`, 아니면 `ESC [ D`·`ESC [ C`
 pub fn move_bytes(left: usize, right: usize, app_cursor: bool) -> Vec<u8> {
-    let (l, r): (&[u8], &[u8]) = if app_cursor { (b"\x1bOD", b"\x1bOC") } else { (b"\x1b[D", b"\x1b[C") };
+    let (l, r): (&[u8], &[u8]) = if app_cursor {
+        (b"\x1bOD", b"\x1bOC")
+    } else {
+        (b"\x1b[D", b"\x1b[C")
+    };
     let mut out = Vec::with_capacity((left + right) * 3);
     for _ in 0..left {
         out.extend_from_slice(l);

@@ -2451,7 +2451,11 @@ impl App {
     /// 프롬프트를 누르면 셸이 밝힌 방식으로 PTY에 보낸다(#137, #338). 셸이 OSC 133;A에 `cl=`나 `click_events=`를 밝힌 화면에서만이고,
     /// 무엇을 보낼지는 `Session::prompt_click`이 정한다(Ghostty `maybePromptClick`). 읽기 전용 칸과 명령이 도는 중에는 보내지 않는다
     fn click_to_move(&mut self, idx: usize, col: usize, row: usize) {
-        let Some(p) = self.panes.get(idx).filter(|p| !p.session.readonly() && p.running.is_none()) else {
+        let Some(p) = self
+            .panes
+            .get(idx)
+            .filter(|p| !p.session.readonly() && p.running.is_none())
+        else {
             return;
         };
         if let Some(bytes) = p.session.prompt_click(col, row) {

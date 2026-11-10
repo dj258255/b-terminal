@@ -19,7 +19,26 @@ _bt_precmd() {
     printf '\e]133;D;%d\a' "$_bt_ret"
     _bt_running=
   fi
-  printf '\e]133;A;redraw=last\a'
+  # 프롬프트 표지(#338, Ghostty ghostty.bash 142~188줄). PS1에 `133;P;k=i`(줄 편집기가 다시 그려도 fresh-line을 하지 않게 A가 아닌 P)와
+  # 끝의 `133;B`(여기부터 입력 칸)를 넣고, 처음 한 번 `133;A;redraw=last;cl=line`을 찍는다. `cl=line`은 줄 안 클릭 이동을 받는다는 밝힘이다.
+  # 빈 줄에서 Enter만 쳐서 명령 없이 프롬프트가 다시 오면(`_bt_at_prompt`가 남아 있다) PS1에 이미 표지가 있으므로 다시 더하지 않는다
+  if [ -z "$_bt_at_prompt" ]; then
+    _BT_SAVE_PS1="$PS1"
+    _BT_SAVE_PS2="$PS2"
+    PS1='\[\e]133;P;k=i\a\]'$PS1'\[\e]133;B\a\]'
+    PS2='\[\e]133;P;k=s\a\]'$PS2'\[\e]133;B\a\]'
+    # bash는 여러 줄 프롬프트의 앞 줄을 다시 그리지 않으므로 `\n` 뒤마다 이어진 프롬프트(k=s)로 표시한다.
+    # 글자 그대로의 `\n`만 바꾼다(`$(...)` 안의 줄바꿈에 표지를 넣으면 셸 문법이 깨진다)
+    if [[ "$PS1" == *"\n"* ]]; then
+      PS1="${PS1//\\n/\\n$'\\[\\e]133;P;k=s\\a\\]'}"
+    fi
+  fi
+  if [ -n "${BLE_VERSION-}" ]; then
+    # ble.sh는 커서 자리를 따로 세므로 fresh-line을 하는 A를 보내지 않는다(Ghostty와 같다)
+    printf '\e]133;P;k=i\a'
+  else
+    printf '\e]133;A;redraw=last;cl=line\a'
+  fi
   printf '\e]7;file://%s%s\a' "$HOSTNAME" "${PWD// /%20}"
   # path: 사용자의 rc가 PATH를 다시 쓴 뒤인 첫 프롬프트에서 한 번, 없을 때만 끝에 더한다
   if [ -n "$_bt_f_path" ] && [ -z "$_bt_path_done" ]; then
@@ -45,6 +64,9 @@ _bt_preexec() {
   [ -n "$COMP_LINE" ] && return
   [ -z "$_bt_at_prompt" ] && return
   _bt_at_prompt=
+  # 표지를 더하기 전의 PS1·PS2로 되돌린다(명령이 PS1을 읽거나 `PS1=...`로 고치는 것을 표지가 가리지 않게)
+  PS1="$_BT_SAVE_PS1"
+  PS2="$_BT_SAVE_PS2"
   _bt_running=1
   local cmd="${BASH_COMMAND//[[:cntrl:]]/ }"
   # cursor: 명령이 도는 동안은 원래 모양(DECSCUSR 0)
