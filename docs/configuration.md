@@ -105,6 +105,8 @@ config-file = ?~/.config/b-terminal/local   # ?가 붙으면 없어도 된다
 | `search-selected-background` / `search-selected-foreground` | `#rrggbb`, `cell-foreground`, `cell-background` | `#f2a57e` / `#000000` | 지금 고른 맞은 곳(Enter로 옮겨 다니는 것)의 바탕·글자색 |
 | `selection-clear-on-typing` | `true` / `false` | `true` | 글을 치면 고른 영역을 지웁니다(IME 조합을 시작할 때도). 끄면 지우지 않지만 Esc는 지웁니다. 붙여넣기는 이 값과 상관없이 지웁니다 |
 | `selection-clear-on-copy` | `true` / `false` | `false` | 복사 명령(단축키·메뉴·`right-click-action`의 복사)으로 복사한 뒤 고른 영역을 지웁니다. `copy-on-select`의 자동 복사는 지우지 않습니다 |
+| `custom-shader` | 경로 (여러 번) | (없음) | 화면 위에 돌릴 Shadertoy 꼴 GLSL 셰이더 파일. 적은 순서대로 돌립니다. 앞에 `?`를 붙이면 파일이 없어도 오류가 아닙니다. 상대 경로는 그 줄이 있는 설정 파일의 폴더 기준이고 `~/`를 지원합니다. 빈 값은 목록을 비웁니다. 파일 하나는 1MiB까지이고 UTF-8이 아니면 건너뜁니다. 설정을 읽고 값을 보여 주는 데까지만 됩니다: **셰이더를 그리는 쪽은 GPU 길(macOS 기본)에서만 돌 예정이고 앱 연결은 아직 없어, 지금은 적어도 화면이 바뀌지 않습니다**. 셰이더에 넘길 시간·커서·초점·색 값을 만드는 부분은 들어 있습니다 |
+| `custom-shader-animation` | `true` / `false` / `always` | `true` | 셰이더를 움직이는 때. `true`는 초점이 있는 칸만, `false`는 화면이 바뀔 때만 그리고, `always`는 초점과 상관없이 늘 움직입니다. 셰이더가 하나도 없으면 어느 값이든 움직이지 않습니다. 움직이는 동안은 8ms 간격으로 그리기를 깨웁니다(Ghostty `draw_interval_ms`). 다른 값은 경고하고 앞 값을 둡니다. 위 `custom-shader`와 같이 앱 연결은 아직 없습니다 |
 | `macos-auto-secure-input` | `true` / `false` | `true` | macOS에서 암호 입력을 알아채면(PTY의 termios가 줄 단위 입력이고 되울림이 꺼짐, 200ms마다 살핌) 그 칸이 초점일 때 보안 키보드 입력을 켭니다. 앱이 뒤로 가면 끄고 앞으로 오면 다시 켭니다. 끄면 칸 단위로는 켜지 않고 `toggle_secure_input`도 아무 일이 없습니다. 자물쇠 커서는 이 값과 상관없이 그려집니다. ssh 너머의 암호는 알아채지 못합니다(Ghostty도 같음). 앱 메뉴 `보안 키보드 입력`(앱 전체로 켬, 다음 실행에도 남음)은 이 값과 상관없습니다. macOS 밖에서는 자물쇠 커서만 있습니다 |
 | `macos-secure-input-indication` | `true` / `false` | `true` | 보안 입력이 켜져 있는 동안 창 오른쪽 위에 자물쇠 표시를 그립니다(누르면 설명이 뜨는 것은 없음) |
 | `cursor-style` | `block` `bar` `underline` `block_hollow` | `block` | 프로그램이 바꾸면 그쪽이 이깁니다. 암호 입력 중에는 자물쇠입니다 |
@@ -226,7 +228,7 @@ config-file = ?~/.config/b-terminal/local   # ?가 붙으면 없어도 된다
 | `gtk-custom-css` `gtk-horizontal-tab-scroll` `gtk-opengl-debug` `gtk-quick-terminal-layer` `gtk-quick-terminal-namespace` `gtk-tabs-inverted` `gtk-tabs-location` `gtk-titlebar-hide-when-maximized` `gtk-titlebar-style` `gtk-toolbar-style` `gtk-wide-tabs` | GTK 전용입니다(`gtk-titlebar`·`gtk-single-instance`는 앞서 받기만 하던 것) |
 | `linux-cgroup` `linux-cgroup-memory-limit` `linux-cgroup-processes-limit` `linux-cgroup-hard-fail` `async-backend` | 리눅스 전용입니다(cgroup, epoll·io_uring 고르기). macOS는 kqueue 하나입니다 |
 | `quick-terminal-keyboard-interactivity` | Wayland 레이어 셸 전용입니다 |
-| `custom-shader` `custom-shader-animation` `alpha-blending` `freetype-load-flags` `window-vsync` | Ghostty의 GPU 그리기(셰이더, 선형 알파, FreeType 옵션, vsync)에 대한 것입니다. b-terminal은 CPU로 그려 그 단계가 없습니다 |
+| `alpha-blending` `freetype-load-flags` `window-vsync` | Ghostty의 GPU 그리기(선형 알파, FreeType 옵션, vsync)에 대한 것입니다. b-terminal은 CPU로 그려 그 단계가 없습니다 |
 | `scrollback-compression` | Ghostty 화면 엔진(페이지 메모리 압축)의 옵션입니다. b-terminal의 VT 엔진에는 그 단계가 없습니다 |
 | `drag-handle` | 마우스로 칸을 끌어 옮기는 손잡이입니다. b-terminal에는 그 기능이 없습니다 |
 

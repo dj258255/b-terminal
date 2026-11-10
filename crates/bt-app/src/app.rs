@@ -17,6 +17,7 @@ use winit::window::{CursorIcon, Window, WindowId};
 mod backdrop;
 mod gpu_frame;
 mod gpu_pace;
+mod shader_inputs;
 
 use crate::icon;
 use crate::keymap::{Action, Keymap, SplitTarget};
