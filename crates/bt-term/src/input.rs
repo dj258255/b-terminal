@@ -41,8 +41,37 @@ impl Mods {
     }
 }
 
+/// 키 입력 모양을 바꾸는 DEC 모드(#301). 기본값은 Ghostty `modes.zig`와 같다
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct KeyModes {
+    /// DECBKM(67). 켜면 Backspace가 BS(0x08), Ctrl+Backspace가 DEL(0x7f). 기본 꺼짐
+    pub backarrow_key: bool,
+    /// 1035. 켜면 키패드는 늘 숫자 키(응용 모드를 무시). 기본 켬. 지금은 상태만 기억한다
+    pub ignore_keypad_with_numlock: bool,
+    /// 1036. 켜면 Alt를 누른 글자 앞에 ESC를 붙인다. 기본 켬
+    pub alt_esc_prefix: bool,
+    /// 1039. Ghostty도 상태만 기억하고 인코딩에는 쓰지 않는다. 기본 꺼짐
+    pub alt_sends_escape: bool,
+}
+
+impl Default for KeyModes {
+    fn default() -> Self {
+        KeyModes {
+            backarrow_key: false,
+            ignore_keypad_with_numlock: true,
+            alt_esc_prefix: true,
+            alt_sends_escape: false,
+        }
+    }
+}
+
 /// 이름 있는 키 하나를 바이트로 바꾼다. `app_cursor`는 DECCKM(커서 키 응용 모드)
 pub fn encode_named(key: NamedKey, mods: Mods, app_cursor: bool) -> Vec<u8> {
+    encode_named_with(key, mods, app_cursor, KeyModes::default())
+}
+
+/// `encode_named`에 키 입력 모드(DECBKM 등)를 더한 것
+pub fn encode_named_with(key: NamedKey, mods: Mods, app_cursor: bool, km: KeyModes) -> Vec<u8> {
     let csi_mod = |final_byte: char| -> Vec<u8> {
         if mods.any() {
             format!("\x1b[1;{}{}", mods.xterm_param(), final_byte).into_bytes()
@@ -68,7 +97,8 @@ pub fn encode_named(key: NamedKey, mods: Mods, app_cursor: bool) -> Vec<u8> {
     match key {
         NamedKey::Enter => alt_prefix(vec![b'\r']),
         NamedKey::Backspace => {
-            if mods.ctrl {
+            // DECBKM(67)를 켜면 둘이 서로 바뀐다(Ghostty `pcStyleFunctionKey`의 `sequence_decbkm`)
+            if mods.ctrl != km.backarrow_key {
                 alt_prefix(vec![0x08])
             } else {
                 alt_prefix(vec![0x7f])
@@ -183,18 +213,28 @@ pub fn encode_char_kitty(base: char, mods: Mods, flags: KittyFlags) -> Option<Ve
 
 /// 글자 키를 바이트로 바꾼다. Ctrl은 제어 문자로, Alt는 ESC를 앞에 붙인다(macOS Option을 Alt로 쓸 때)
 pub fn encode_text(text: &str, mods: Mods) -> Vec<u8> {
+    encode_text_with(text, mods, KeyModes::default())
+}
+
+/// `encode_text`에 키 입력 모드(1036)를 더한 것
+pub fn encode_text_with(text: &str, mods: Mods, km: KeyModes) -> Vec<u8> {
     let mut out = Vec::new();
-    if mods.alt {
-        out.push(0x1b);
-    }
     if mods.ctrl {
         let mut chars = text.chars();
         if let (Some(c), None) = (chars.next(), chars.clone().next()) {
             if let Some(b) = ctrl_byte(c) {
+                // 제어 문자 길은 1036과 상관없이 Alt가 ESC를 앞에 붙인다(Ghostty `legacy`의 ctrlSeq 길)
+                if mods.alt {
+                    out.push(0x1b);
+                }
                 out.push(b);
                 return out;
             }
         }
+    }
+    // 글자 길은 1036이 켜져 있을 때만 ESC를 붙인다(Ghostty `legacyAltPrefix`)
+    if mods.alt && km.alt_esc_prefix {
+        out.push(0x1b);
     }
     out.extend_from_slice(text.as_bytes());
     out
@@ -380,6 +420,116 @@ mod tests {
         assert_eq!(encode_text("[", ctrl), vec![0x1b]);
         let alt = Mods { alt: true, ..NONE };
         assert_eq!(encode_text("b", alt), b"\x1bb");
+    }
+
+    fn km(f: impl FnOnce(&mut KeyModes)) -> KeyModes {
+        let mut k = KeyModes::default();
+        f(&mut k);
+        k
+    }
+
+    // ---- DECBKM (Ghostty key_encode.zig 2285~2325줄) ----
+
+    #[test]
+    fn backspace_follows_decbkm_like_ghostty() {
+        let ctrl = Mods { ctrl: true, ..NONE };
+        let reset = km(|k| k.backarrow_key = false);
+        let set = km(|k| k.backarrow_key = true);
+        // 꺼짐: 0x7f, Ctrl이면 0x08
+        assert_eq!(encode_named_with(NamedKey::Backspace, NONE, false, reset), b"\x7f");
+        assert_eq!(encode_named_with(NamedKey::Backspace, ctrl, false, reset), b"\x08");
+        // 켬: 0x08, Ctrl이면 0x7f
+        assert_eq!(encode_named_with(NamedKey::Backspace, NONE, false, set), b"\x08");
+        assert_eq!(encode_named_with(NamedKey::Backspace, ctrl, false, set), b"\x7f");
+        // Ctrl+Shift+Backspace(2259줄)는 꺼짐에서 0x08
+        let cs = Mods {
+            ctrl: true,
+            shift: true,
+            ..NONE
+        };
+        assert_eq!(encode_named_with(NamedKey::Backspace, cs, false, reset), b"\x08");
+        // Alt는 ESC를 앞에 붙인다(2269줄 ctrl+alt+shift는 ESC 0x08)
+        let all = Mods {
+            ctrl: true,
+            alt: true,
+            shift: true,
+            ..NONE
+        };
+        assert_eq!(encode_named_with(NamedKey::Backspace, all, false, reset), b"\x1b\x08");
+        assert_eq!(encode_named_with(NamedKey::Backspace, all, false, set), b"\x1b\x7f");
+        // 기본값은 지금까지와 같다
+        assert_eq!(encode_named(NamedKey::Backspace, NONE, false), b"\x7f");
+        assert_eq!(KeyModes::default(), km(|_| {}));
+    }
+
+    #[test]
+    fn decbkm_does_not_touch_other_keys() {
+        let set = km(|k| k.backarrow_key = true);
+        for key in [
+            NamedKey::Enter,
+            NamedKey::Tab,
+            NamedKey::Escape,
+            NamedKey::Delete,
+            NamedKey::Up,
+        ] {
+            assert_eq!(
+                encode_named_with(key, NONE, false, set),
+                encode_named(key, NONE, false),
+                "{key:?}"
+            );
+        }
+    }
+
+    // ---- 1036 (Ghostty key_encode.zig 2112~2231줄) ----
+
+    #[test]
+    fn alt_prefix_follows_mode_1036() {
+        let alt = Mods { alt: true, ..NONE };
+        let on = km(|k| k.alt_esc_prefix = true);
+        let off = km(|k| k.alt_esc_prefix = false);
+        // legacy: alt+c, alt+unicode(2116~2200줄)
+        assert_eq!(encode_text_with("c", alt, on), b"\x1bc");
+        assert_eq!(encode_text_with("é", alt, on), "\x1bé".as_bytes());
+        assert_eq!(encode_text_with("界", alt, on), "\x1b界".as_bytes());
+        assert_eq!(encode_text_with("😀", alt, on), "\x1b😀".as_bytes());
+        assert_eq!(encode_text_with("ф", alt, on), "\x1bф".as_bytes());
+        // 꺼짐: 접두 없이 글자 그대로(legacyAltPrefix가 false를 돌려 writeAll(utf8))
+        assert_eq!(encode_text_with("c", alt, off), b"c");
+        assert_eq!(encode_text_with("界", alt, off), "界".as_bytes());
+        // Ctrl+Alt+c는 C0 길이라 모드와 상관없이 ESC가 앞에 붙는다(2095줄 근처, 456~461줄)
+        let ca = Mods {
+            ctrl: true,
+            alt: true,
+            ..NONE
+        };
+        assert_eq!(encode_text_with("c", ca, on), b"\x1b\x03");
+        assert_eq!(encode_text_with("c", ca, off), b"\x1b\x03");
+        // 기본값은 지금처럼 ESC를 붙인다
+        assert_eq!(encode_text("b", alt), b"\x1bb");
+    }
+
+    #[test]
+    fn named_keys_with_alt_ignore_mode_1036() {
+        // pcStyleFunctionKey 표가 정하는 키(Enter·Escape·Tab·Backspace)는 1036과 상관없다
+        let alt = Mods { alt: true, ..NONE };
+        let off = km(|k| k.alt_esc_prefix = false);
+        assert_eq!(encode_named_with(NamedKey::Enter, alt, false, off), b"\x1b\r");
+        assert_eq!(encode_named_with(NamedKey::Backspace, alt, false, off), b"\x1b\x7f");
+    }
+
+    #[test]
+    fn modes_1035_and_1039_are_remembered_but_do_not_change_bytes() {
+        let d = KeyModes::default();
+        assert!(d.ignore_keypad_with_numlock, "1035는 기본 켬(modes.zig 404줄)");
+        assert!(d.alt_esc_prefix, "1036은 기본 켬(405줄)");
+        assert!(!d.alt_sends_escape && !d.backarrow_key, "1039·67은 기본 꺼짐");
+        let alt = Mods { alt: true, ..NONE };
+        let k = km(|k| {
+            k.ignore_keypad_with_numlock = false;
+            k.alt_sends_escape = true;
+        });
+        assert_eq!(encode_text_with("c", alt, k), b"\x1bc");
+        assert_eq!(encode_named_with(NamedKey::Backspace, NONE, false, k), b"\x7f");
     }
 
     #[test]
