@@ -5,6 +5,12 @@ use std::time::Instant;
 use bt_render::Fonts;
 
 use super::{GpuRenderer, LayerUpdate, PaneDraw, pick_adapter};
+use crate::pacing::{DEFAULT_REFRESH, FramePacer, PaceDecision, SurfaceVisibility};
+
+/// `desired_maximum_frame_latency`. 프레임 간격 짐작(`FramePacer`)의 줄 깊이와 같은 값이다
+const FRAME_LATENCY: u32 = 2;
+/// 창이 가려졌을 때 `present`가 돌려주는 이유
+const OCCLUDED: &str = "창이 가려졌다";
 
 /// 창 surface와 지금 설정
 pub(super) struct WindowSurface {
@@ -14,6 +20,10 @@ pub(super) struct WindowSurface {
     stale: bool,
     /// 곱한 알파를 받는 알파 모드로 열었다(투명 창, #359)
     transparent: bool,
+    /// 올린 때를 세어 그림판 얻기가 막힐 것 같으면 미룬다(ADR-038)
+    pacer: FramePacer,
+    /// 창이 보이는지 아는 것. 모르거나 가려졌으면 층을 올리기 전에 그림판부터 얻어 본다(ADR-038)
+    visibility: SurfaceVisibility,
 }
 
 /// `present`의 결과
@@ -90,7 +100,7 @@ impl GpuRenderer {
             width: size.0.max(1),
             height: size.1.max(1),
             present_mode: wgpu::PresentMode::Fifo,
-            desired_maximum_frame_latency: 2,
+            desired_maximum_frame_latency: FRAME_LATENCY,
             alpha_mode,
             view_formats: vec![],
         };
@@ -103,6 +113,8 @@ impl GpuRenderer {
                 config,
                 stale: false,
                 transparent,
+                pacer: FramePacer::new(FRAME_LATENCY as usize, DEFAULT_REFRESH),
+                visibility: SurfaceVisibility::default(),
             }),
         )?;
         if let Some(w) = &me.window {
@@ -117,7 +129,62 @@ impl GpuRenderer {
         self.window.as_ref().is_some_and(|w| w.transparent)
     }
 
-    /// 층과 칸을 합쳐 창에 올린다. 창 크기가 바뀌었으면 surface를 다시 설정한다
+    /// 화면 주사율이 한 장 오르는 간격(`pacing::interval_from_millihertz`)을 알린다. 앱이 창이 있는 화면에서 읽어 넘긴다
+    pub fn set_refresh_interval(&mut self, interval: std::time::Duration) {
+        if let Some(w) = self.window.as_mut() {
+            w.pacer.set_interval(interval);
+        }
+    }
+
+    /// 지금 그려 올려도 그림판을 기다리지 않을 것 같은가(ADR-038). `Wait`이면 그 시간 뒤에 다시 그리면 된다.
+    /// 그리기 전에 부른다: 미룬 프레임은 아무것도 쓰지 않았으므로 나중에 그릴 때 그때의 최신 내용이 올라간다
+    pub fn pace_check(&self, now: Instant) -> PaceDecision {
+        self.window.as_ref().map_or(PaceDecision::Go, |w| w.pacer.check(now))
+    }
+
+    /// 그림판 하나를 얻는다. `Outdated`·`Lost`는 한 번 다시 설정하고 다시 얻는다. 얻는 데 든 시간을 `acquire_ms`에 더한다
+    fn acquire_frame(&mut self, acquire_ms: &mut f64) -> Result<wgpu::SurfaceTexture, &'static str> {
+        for attempt in 0..2 {
+            let Some(win) = self.window.as_mut() else {
+                return Err("창 surface가 없다");
+            };
+            // Fifo에서 여기서 화면 주사율을 기다릴 수 있어 따로 잰다(ADR-037). 앱이 `pace_check`로 미리 피한다(ADR-038)
+            let t_acquire = Instant::now();
+            let acquired = win.surface.get_current_texture();
+            *acquire_ms += t_acquire.elapsed().as_secs_f64() * 1000.0;
+            match acquired {
+                wgpu::CurrentSurfaceTexture::Success(f) => return Ok(f),
+                wgpu::CurrentSurfaceTexture::Suboptimal(f) => {
+                    win.stale = true;
+                    return Ok(f);
+                }
+                wgpu::CurrentSurfaceTexture::Outdated | wgpu::CurrentSurfaceTexture::Lost if attempt == 0 => {
+                    win.surface.configure(&self.device, &win.config);
+                }
+                wgpu::CurrentSurfaceTexture::Outdated | wgpu::CurrentSurfaceTexture::Lost => {
+                    return Err("surface를 다시 설정해도 얻지 못했다");
+                }
+                wgpu::CurrentSurfaceTexture::Occluded => return Err(OCCLUDED),
+                wgpu::CurrentSurfaceTexture::Timeout => return Err("surface를 얻는 데 시간이 넘었다"),
+                wgpu::CurrentSurfaceTexture::Validation => return Err("surface 검증 오류"),
+            }
+        }
+        Err("surface를 얻지 못했다")
+    }
+
+    /// 올리지 못한 프레임을 마친다. 보이는지 아는 것을 고친다
+    fn skipped(&mut self, reason: &'static str) -> PresentOutcome {
+        if let Some(w) = self.window.as_mut() {
+            w.visibility = w.visibility.after(false, reason == OCCLUDED);
+        }
+        PresentOutcome::Skipped(reason)
+    }
+
+    /// 층과 칸을 합쳐 창에 올린다. 창 크기가 바뀌었으면 surface를 다시 설정한다.
+    ///
+    /// 창이 보이는지 모르거나 가려졌으면 그림판부터 얻어 본다: 가려진 창에서는 기다리지 않고 바로 돌아오므로(`wgpu-hal` metal
+    /// `surface.rs` 359~368줄) 21MB 층을 올리고 나서 건너뛰지 않는다. 이때 `Skipped`면 `layers`는 올라가지 않았다.
+    /// 앱은 다음 프레임에 층을 통째로 다시 넘겨야 한다(ADR-038)
     pub fn present(
         &mut self,
         fonts: &mut Fonts,
@@ -137,54 +204,44 @@ impl GpuRenderer {
             win.stale = false;
             win.surface.configure(&self.device, &win.config);
         }
+        let mut acquire_ms = 0.0;
+        let probe = win.visibility.probe_before_upload();
+        let mut early = None;
+        if probe {
+            match self.acquire_frame(&mut acquire_ms) {
+                Ok(f) => early = Some(f),
+                Err(reason) => return self.skipped(reason),
+            }
+        }
         self.prepare_compose(fonts, size, layers, panes);
         let t = Instant::now();
-        let mut acquire_ms = 0.0;
-        for attempt in 0..2 {
-            let Some(win) = self.window.as_mut() else {
-                return PresentOutcome::Skipped("창 surface가 없다");
-            };
-            // 그림판 얻기는 준비(층 올리기·인스턴스) 뒤로 미뤄 두었다. Fifo에서 여기서 화면 주사율을 기다릴 수 있어
-            // 따로 잰다(ADR-037)
-            let t_acquire = Instant::now();
-            let acquired = win.surface.get_current_texture();
-            acquire_ms += t_acquire.elapsed().as_secs_f64() * 1000.0;
-            let frame = match acquired {
-                wgpu::CurrentSurfaceTexture::Success(f) => f,
-                wgpu::CurrentSurfaceTexture::Suboptimal(f) => {
-                    win.stale = true;
-                    f
-                }
-                wgpu::CurrentSurfaceTexture::Outdated | wgpu::CurrentSurfaceTexture::Lost if attempt == 0 => {
-                    win.surface.configure(&self.device, &win.config);
-                    continue;
-                }
-                wgpu::CurrentSurfaceTexture::Outdated | wgpu::CurrentSurfaceTexture::Lost => {
-                    return PresentOutcome::Skipped("surface를 다시 설정해도 얻지 못했다");
-                }
-                wgpu::CurrentSurfaceTexture::Occluded => return PresentOutcome::Skipped("창이 가려졌다"),
-                wgpu::CurrentSurfaceTexture::Timeout => {
-                    return PresentOutcome::Skipped("surface를 얻는 데 시간이 넘었다");
-                }
-                wgpu::CurrentSurfaceTexture::Validation => return PresentOutcome::Skipped("surface 검증 오류"),
-            };
-            let t_encode = Instant::now();
-            let view = frame.texture.create_view(&wgpu::TextureViewDescriptor::default());
-            let cb = self.encode_compose(&view);
-            let encode_ms = t_encode.elapsed().as_secs_f64() * 1000.0;
-            let t_submit = Instant::now();
-            self.queue.submit([cb]);
-            let submit_ms = t_submit.elapsed().as_secs_f64() * 1000.0;
-            let t_present = Instant::now();
-            self.queue.present(frame);
-            self.timings.present_ms = t_present.elapsed().as_secs_f64() * 1000.0;
-            self.timings.acquire_ms = acquire_ms;
-            self.timings.encode_ms = encode_ms;
-            self.timings.submit_ms = submit_ms;
-            self.timings.gpu_ms = t.elapsed().as_secs_f64() * 1000.0;
-            return PresentOutcome::Presented;
+        // 보이는 창에서는 그림판 얻기를 준비(층 올리기·인스턴스) 뒤로 미룬다
+        let frame = match early {
+            Some(f) => f,
+            None => match self.acquire_frame(&mut acquire_ms) {
+                Ok(f) => f,
+                Err(reason) => return self.skipped(reason),
+            },
+        };
+        let t_encode = Instant::now();
+        let view = frame.texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let cb = self.encode_compose(&view);
+        let encode_ms = t_encode.elapsed().as_secs_f64() * 1000.0;
+        let t_submit = Instant::now();
+        self.queue.submit([cb]);
+        let submit_ms = t_submit.elapsed().as_secs_f64() * 1000.0;
+        let t_present = Instant::now();
+        self.queue.present(frame);
+        self.timings.present_ms = t_present.elapsed().as_secs_f64() * 1000.0;
+        self.timings.acquire_ms = acquire_ms;
+        self.timings.encode_ms = encode_ms;
+        self.timings.submit_ms = submit_ms;
+        self.timings.gpu_ms = t.elapsed().as_secs_f64() * 1000.0;
+        if let Some(w) = self.window.as_mut() {
+            w.visibility = w.visibility.after(true, false);
+            w.pacer.record_present(Instant::now());
         }
-        PresentOutcome::Skipped("surface를 얻지 못했다")
+        PresentOutcome::Presented
     }
 }
 

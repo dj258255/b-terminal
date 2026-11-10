@@ -16,6 +16,7 @@ use winit::window::{CursorIcon, Window, WindowId};
 
 mod backdrop;
 mod gpu_frame;
+mod gpu_pace;
 
 use crate::icon;
 use crate::keymap::{Action, Keymap, SplitTarget};
@@ -742,6 +743,12 @@ struct Win {
     proxy_icon: Option<std::path::PathBuf>,
     /// 창이 다른 창에 가려졌거나 최소화됐다(`WindowEvent::Occluded`, #303). 알리기 전에는 보인다고 본다
     occluded: bool,
+    /// GPU 길(ADR-038): 그림판 얻기가 막힐 것 같아 미룬 프레임을 다시 그릴 때
+    pace_wake: Option<Instant>,
+    /// GPU 길: 앞 프레임의 층 입력. 같으면 층을 그리지도 견주지도 않는다
+    layer_key: Option<gpu_pace::LayerKey>,
+    /// GPU 길 로그에 남기는 누적 수(ADR-038): 미룬 프레임, 가려져 건너뛴 프레임, 층 견주기를 건너뛴 프레임
+    pace_stats: gpu_pace::PaceStats,
 }
 
 impl Win {
@@ -790,6 +797,9 @@ impl Win {
             opaque: false,
             proxy_icon: None,
             occluded: false,
+            pace_wake: None,
+            layer_key: None,
+            pace_stats: Default::default(),
         }
     }
 
@@ -4673,6 +4683,10 @@ impl App {
 
     fn redraw(&mut self) {
         self.redraw_pending.store(false, Ordering::Release);
+        // GPU 길: 가려진 창은 그리지 않고, 그림판 얻기가 막힐 것 같으면 미룬다(ADR-038)
+        if self.gpu_frame_gate() {
+            return;
+        }
         // OSC 22 모양이 바뀌었거나, 탭·칸이 바뀌어 마우스 아래 칸이 달라졌을 수 있다(#239)
         self.refresh_pointer();
         let theme = self.config.theme.clone();
@@ -5751,6 +5765,10 @@ impl ApplicationHandler<UserEvent> for App {
             WindowEvent::Occluded(occluded) => {
                 self.w.occluded = occluded;
                 self.sync_visibility();
+                // 보이게 되면 가려진 동안 건너뛴 내용을 그린다(GPU 길은 층을 통째로, ADR-038)
+                if !occluded {
+                    self.request_redraw();
+                }
             }
             WindowEvent::ThemeChanged(theme) => self.system_look_changed(theme == winit::window::Theme::Dark),
             WindowEvent::ModifiersChanged(m) => {
@@ -6270,6 +6288,8 @@ impl ApplicationHandler<UserEvent> for App {
                 }
             }
         }
+        // 미뤄 둔 GPU 프레임을 다시 그릴 때가 됐다(ADR-038)
+        self.fire_pace_wakes(now);
         // 기한이 지난 닫은 칸·탭은 이때 떨어뜨린다(셸이 SIGHUP을 받는다, #164)
         drop(self.undo.expire(now));
         drop(self.redo.expire(now));
@@ -6332,11 +6352,19 @@ impl ApplicationHandler<UserEvent> for App {
             .chain(overlay_next)
             .chain(self.undo.next_deadline())
             .chain(self.redo.next_deadline())
+            .chain(
+                std::iter::once(&self.w)
+                    .chain(&self.others)
+                    .filter_map(|w| w.pace_wake)
+                    .min(),
+            )
             .chain(self.quit_deadline)
             .chain(self.any_window_focused().then_some(self.next_secure_poll))
             .min();
         match deadline {
             Some(d) if d <= Instant::now() => {
+                // 깨울 때가 방금 지났을 수 있다: 아래에서 Wait으로 잠들면 미룬 프레임이 영영 안 올라간다
+                self.fire_pace_wakes(Instant::now());
                 if self.panes.iter().any(|t| t.session.flush_expired_sync()) {
                     self.request_redraw_all();
                 }
