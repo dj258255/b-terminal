@@ -23,7 +23,7 @@ pub use input::{
 pub use mouse_shape::MouseShape;
 pub use notify::{Notification, PromptMark, Signal};
 pub use process::Foreground;
-pub use screen::{Cell, CellFlags, Cursor, CursorShape, ImageView, Modes, Screen};
+pub use screen::{Cell, CellFlags, Cursor, CursorShape, ImageView, Modes, MouseFormat, Screen};
 pub use session::{
     ClipboardReply, CommandRecord, Emulator, EventSink, GridSize, SelectKind, SelectionAdjust, Session, SessionEvent,
     SpawnOptions, window_resize_target,

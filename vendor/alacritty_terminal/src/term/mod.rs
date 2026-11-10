@@ -121,7 +121,12 @@ bitflags! {
         const KEYBOARD_ACTION         = 1 << 45;
         /// ANSI 모드 12(SRM). Ghostty 기본 켬이라 `TermMode::default()`에 들어 있다
         const SEND_RECEIVE            = 1 << 46;
-        const MOUSE_MODE              = Self::MOUSE_REPORT_CLICK.bits() | Self::MOUSE_MOTION.bits() | Self::MOUSE_DRAG.bits();
+        // b-terminal(#300): X10 이벤트 모드(9)와 urxvt(1015)·SGR 픽셀(1016) 형식. 비트 35는 비워 둔다
+        const MOUSE_X10               = 1 << 32;
+        const URXVT_MOUSE             = 1 << 33;
+        const SGR_PIXELS_MOUSE        = 1 << 34;
+        const MOUSE_FORMAT            = Self::SGR_MOUSE.bits() | Self::UTF8_MOUSE.bits() | Self::URXVT_MOUSE.bits() | Self::SGR_PIXELS_MOUSE.bits();
+        const MOUSE_MODE              = Self::MOUSE_REPORT_CLICK.bits() | Self::MOUSE_MOTION.bits() | Self::MOUSE_DRAG.bits() | Self::MOUSE_X10.bits();
         const KITTY_KEYBOARD_PROTOCOL = Self::DISAMBIGUATE_ESC_CODES.bits()
                                       | Self::REPORT_EVENT_TYPES.bits()
                                       | Self::REPORT_ALTERNATE_KEYS.bits()
@@ -2401,13 +2406,27 @@ impl<T: EventListener> Handler for Term<T> {
             NamedPrivateMode::ReportFocusInOut => self.mode.insert(TermMode::FOCUS_IN_OUT),
             NamedPrivateMode::BracketedPaste => self.mode.insert(TermMode::BRACKETED_PASTE),
             // Mouse encodings are mutually exclusive.
+            // b-terminal(#300): 형식은 하나만, 마지막에 켠 것이 이긴다(Ghostty stream_handler.zig)
             NamedPrivateMode::SgrMouse => {
-                self.mode.remove(TermMode::UTF8_MOUSE);
+                self.mode.remove(TermMode::MOUSE_FORMAT);
                 self.mode.insert(TermMode::SGR_MOUSE);
             },
             NamedPrivateMode::Utf8Mouse => {
-                self.mode.remove(TermMode::SGR_MOUSE);
+                self.mode.remove(TermMode::MOUSE_FORMAT);
                 self.mode.insert(TermMode::UTF8_MOUSE);
+            },
+            NamedPrivateMode::UrxvtMouse => {
+                self.mode.remove(TermMode::MOUSE_FORMAT);
+                self.mode.insert(TermMode::URXVT_MOUSE);
+            },
+            NamedPrivateMode::SgrPixelsMouse => {
+                self.mode.remove(TermMode::MOUSE_FORMAT);
+                self.mode.insert(TermMode::SGR_PIXELS_MOUSE);
+            },
+            NamedPrivateMode::X10Mouse => {
+                self.mode.remove(TermMode::MOUSE_MODE);
+                self.mode.insert(TermMode::MOUSE_X10);
+                self.event_proxy.send_event(Event::MouseCursorDirty);
             },
             NamedPrivateMode::AlternateScroll => self.mode.insert(TermMode::ALTERNATE_SCROLL),
             NamedPrivateMode::LineWrap => self.mode.insert(TermMode::LINE_WRAP),
@@ -2486,8 +2505,15 @@ impl<T: EventListener> Handler for Term<T> {
             },
             NamedPrivateMode::ReportFocusInOut => self.mode.remove(TermMode::FOCUS_IN_OUT),
             NamedPrivateMode::BracketedPaste => self.mode.remove(TermMode::BRACKETED_PASTE),
-            NamedPrivateMode::SgrMouse => self.mode.remove(TermMode::SGR_MOUSE),
-            NamedPrivateMode::Utf8Mouse => self.mode.remove(TermMode::UTF8_MOUSE),
+            // b-terminal(#300): Ghostty는 어느 형식을 끄든 X10 형식으로 돌아간다
+            NamedPrivateMode::SgrMouse
+            | NamedPrivateMode::Utf8Mouse
+            | NamedPrivateMode::UrxvtMouse
+            | NamedPrivateMode::SgrPixelsMouse => self.mode.remove(TermMode::MOUSE_FORMAT),
+            NamedPrivateMode::X10Mouse => {
+                self.mode.remove(TermMode::MOUSE_X10);
+                self.event_proxy.send_event(Event::MouseCursorDirty);
+            },
             NamedPrivateMode::AlternateScroll => self.mode.remove(TermMode::ALTERNATE_SCROLL),
             NamedPrivateMode::LineWrap => self.mode.remove(TermMode::LINE_WRAP),
             NamedPrivateMode::Origin => self.mode.remove(TermMode::ORIGIN),
@@ -2541,6 +2567,11 @@ impl<T: EventListener> Handler for Term<T> {
                 },
                 NamedPrivateMode::ReportFocusInOut => {
                     self.mode.contains(TermMode::FOCUS_IN_OUT).into()
+                },
+                NamedPrivateMode::X10Mouse => self.mode.contains(TermMode::MOUSE_X10).into(),
+                NamedPrivateMode::UrxvtMouse => self.mode.contains(TermMode::URXVT_MOUSE).into(),
+                NamedPrivateMode::SgrPixelsMouse => {
+                    self.mode.contains(TermMode::SGR_PIXELS_MOUSE).into()
                 },
                 NamedPrivateMode::Utf8Mouse => self.mode.contains(TermMode::UTF8_MOUSE).into(),
                 NamedPrivateMode::SgrMouse => self.mode.contains(TermMode::SGR_MOUSE).into(),
