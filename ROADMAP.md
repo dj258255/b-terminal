@@ -412,6 +412,24 @@ VT 시퀀스 빈칸 메우기. 추적 이슈 [#293](https://github.com/dj258255/
 - 실제 창에서 두 시퀀스를 한 화면에 이어 찍으면 앞 결과를 뒤 시퀀스가 덮을 수 있습니다(DECDC는 스크롤 영역의 모든 줄을 당김). 하나씩 `btctl read`로 보는 편이 확실했습니다.
 - PR을 연 뒤 main이 움직여 충돌하면 rebase 대신 main을 merge해서 force-push를 피했습니다. squash 병합이라 기록은 같습니다.
 
+## 0.24.0 (2026-11-10)
+
+남은 DEC 모드. 추적 이슈 [#299](https://github.com/dj258255/b-terminal/issues/299). 0.23.0을 합친 빌드에서 Ghostty modes.zig의 모든 모드를 DECRQM으로 물어 `0`으로 답하는 것을 골랐습니다. 주 세션이 엔진 `TermMode`를 `u64`로 넓힌 뒤(#304), 에이전트 넷이 각자 worktree에서 구현·커밋하고 주 세션이 검토·원본 대조·옮기기·실제 창·병합을 했습니다. 병합 시각(KST)은 추적 이슈를 연 14:14부터 마지막 병합 15:20까지입니다.
+
+| 이슈 | 내용 | 예상 | 실제 | PR | 주 세션이 한 것 |
+|---|---|---|---|---|---|
+| [#304](https://github.com/dj258255/b-terminal/issues/304) | 엔진 `TermMode`를 `u64`로 | 15분 | 주 세션 약 10분(병합 14:22) | [#305](https://github.com/dj258255/b-terminal/pull/305) | 직접 구현. 에이전트들이 쓸 비트 번호를 미리 나눔 |
+| [#303](https://github.com/dj258255/b-terminal/issues/303) | 가시성 보고(2033) | 2~4시간 | 에이전트 약 7분(병합 15:01) | [#308](https://github.com/dj258255/b-terminal/pull/308) | 0.23.0 위로 옮김, 실제 창(탭 전환). 창 가림은 확인하지 못함 |
+| [#301](https://github.com/dj258255/b-terminal/issues/301) | 키 입력 모드(67·1035·1036·1039) | 2~4시간 | 에이전트 약 8분(병합 15:08) | [#309](https://github.com/dj258255/b-terminal/pull/309) | 옮김, ADR 번호를 병합 순서로 027, 실제 창(DECRQM) |
+| [#302](https://github.com/dj258255/b-terminal/issues/302) | 화면 반전·역방향 줄바꿈·저장만 하는 모드 | 2~4시간 | 에이전트 약 18분(병합 15:15) | [#315](https://github.com/dj258255/b-terminal/pull/315) | 실제 창에서 반전 중 제목 막대가 흰색이 되어 제목이 안 보이는 것을 찾아 에이전트에게 고치게 함(Ghostty TerminalWindow.swift 대조). 에이전트가 네트워크 오류로 멈춰 되돌림 시험을 직접 함 |
+| [#300](https://github.com/dj258255/b-terminal/issues/300) | 마우스 보고 형식(9·1005·1015·1016)과 추가 단추 | 2~4시간 | 에이전트 약 13분(병합 15:20) | [#316](https://github.com/dj258255/b-terminal/pull/316) | 옮김, ADR 번호 028, 실제 창(DECRQM) |
+
+이번에 배운 것:
+
+- 비트 번호처럼 여러 에이전트가 같은 자리에 쓰는 값은 미리 나눠 프롬프트에 적으니 충돌이 줄 하나씩 나란히 두는 것으로 끝났습니다.
+- 화면 반전은 테스트가 모두 통과했지만 실제 창에서 제목 막대가 흰색이 되는 것을 보았습니다. 창 테두리처럼 터미널 격자 밖에 그리는 것은 실제 창으로만 보였습니다.
+- 실제 창 스크린샷은 늘 창 번호(`-l`)를 줍니다. 이번에 한 번 빠뜨려 전체 화면을 찍었고, 보지 않고 바로 지웠습니다.
+
 ## 다음
 
 - 범수 님이 직접 해야 할 것: 키보드·마우스 확인(한글 2벌식 "안녕 하세요⏎", Claude Code의 Shift+Enter, Cmd-D·Cmd-F·Cmd-클릭·Cmd-N·Cmd-Shift-P, 메뉴, 창 닫기 단추, vim·htop, kitty icat·yazi, 투명 창), Developer ID 계정으로 `scripts/bundle-macos.sh --sign … --notarize … --dmg`
@@ -437,4 +455,5 @@ VT 시퀀스 빈칸 메우기. 추적 이슈 [#293](https://github.com/dj258255/
 - 범수 님이 확인할 것(0.21): 셸에서 단어 위 오른쪽 클릭 → 단어가 골라지고 메뉴(복사·붙여넣기·나누기·닫기·초기화·읽기 전용·제목)가 뜨는지, 메뉴 붙여넣기에서 두 줄 글이면 보호 막대, Ctrl+왼쪽 클릭, vim 안에서는 메뉴가 뜨지 않는지. `scripts/bundle-macos.sh`로 만든 앱을 Dock에 두고 폴더를 끌어놓으면 새 탭, `.sh`를 끌어놓으면 확인 막대가 뜨고 Enter가 아니라 `y`로만 실행되는지, `it's.sh`는 실행하지 않고 알림 띠만 뜨는지, 앱이 꺼진 채로 끌어놓았을 때
 - 범수 님이 확인할 것(0.22): `printf '\e]8;;https://example.com\e\\\e[4mlink\e[0m\e]8;;\e\\\n'` 뒤 Cmd를 누르고 `link`에 올리면 이중 밑줄, nvim에서 커서 색이 테마와 어울리는지
 - 범수 님이 확인할 것(0.23): vim·less·옛 curses 프로그램(47·1047을 쓰는 것)을 켜고 끈 뒤 셸 화면이 그대로인지
+- 범수 님이 확인할 것(0.24): vim·htop·tmux에서 마우스 클릭·끌기·휠(가로 휠 방향 포함), `printf '\033[?1003h\033[?1016h'` 뒤 마우스를 움직여 픽셀 좌표가 오는지(끝은 `printf '\033[?1003l\033[?1016l'`), `printf '\033[?67h'` 뒤 `cat -v`에서 Backspace가 `^H`인지, `macos-option-as-alt = true`에서 `printf '\033[?1036l'` 뒤 Option 글자, 다른 창으로 칸을 다 가렸을 때 2033 보고, `printf '\033[?5h'`로 화면 반전 뒤 제목 막대와 창 여백
 - 큰 일로 남긴 것: GPU(또는 IOSurface) 렌더러
