@@ -38,7 +38,7 @@ pub struct ShaderUniforms {
     pub cursor_visible: i32,
     /// `iTimeCursorChange`: 커서가 자리·색을 바꾼 때의 `iTime`
     pub time_cursor_change: f32,
-    /// `iTimeFocus`: 초점을 얻거나 잃은 때의 `iTime`(Ghostty 원문대로)
+    /// `iTimeFocus`: 초점을 얻은 때의 `iTime`(Ghostty: 잃을 때는 옮기지 않는다)
     pub time_focus: f32,
     /// `iFocus`: 1 초점, 0 아님
     pub focus: i32,
