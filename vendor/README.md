@@ -50,6 +50,8 @@ softbuffer가 색 공간을 고를 수 있게 되거나, GPU 렌더러로 바꿔
 
 - 고친 곳(#264, ADR-022): 같은 파일의 `identify_terminal`(DA1·DA2에 답하던 것)을 답하지 않게 했고, `report_private_mode`가 모드 2048에는 답하지 않게 한 줄을 더했습니다. `b-terminal(#264)`로 찾을 수 있습니다. 이유: DA1·DA2는 Ghostty 값(`?62;22;52c`·`>1;10;0c`)으로, 모드 2048은 켜짐·꺼짐(1·2)으로 bt-term 스캐너가 답합니다. 엔진이 옛 값(`?6c`, `>0;버전;1c`, 모르는 모드 0)으로 또 답하면 PTY에 답이 둘 나갑니다. 되돌릴 조건: alacritty_terminal이 장치 속성 답과 모르는 모드 보고를 이벤트로 바꿔 밖에서 정할 수 있게 하면 지웁니다.
 
+- 더한 곳(#272, ADR-024): `src/event.rs`의 `Event::ColorRequest`에 두 번째 필드 `Option<Rgb>`(프로그램이 OSC 4·10·11·12·21로 바꾼 색, 없으면 `None`)를 더하고, `src/term/mod.rs`의 `dynamic_color_sequence`가 `self.colors[index]`를 실어 보냅니다. `b-terminal(#272)`로 찾을 수 있습니다. 이유: 이 사건은 읽기 스레드가 `Term`을 잠근 채 오므로 받는 쪽(`Listener`)이 `Term::colors()`를 읽을 수 없어 질의가 바꾼 색이 아니라 띄울 때의 테마 색으로 답했습니다. 되돌릴 조건: alacritty_terminal이 색 질의 사건에 지금 색을 실어 주거나 받는 쪽이 엔진을 읽을 수 있게 하면 지웁니다.
+
 ### 왜
 
 alacritty_terminal은 글자마다 `unicode-width`로 폭을 세고, 폭 0인 글자만 앞 칸에 붙입니다. 그래서 ZWJ 가족은 6칸, 피부색은 4칸을 차지해 Ghostty(`grapheme-width-method = unicode`)와 어긋나고 프로그램이 mode 2027로 묶음 폭을 요청해도 받지 못합니다. 엔진 바깥(바이트를 바꾸는 방식)에서는 줄바꿈·커서·지우기와 섞여 안전하게 할 수 없었습니다.

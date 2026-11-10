@@ -34,7 +34,11 @@ pub enum Event {
     ///
     /// The attached function is a formatter which will correctly transform the RGB color into the
     /// expected escape sequence format.
-    ColorRequest(usize, Arc<dyn Fn(Rgb) -> String + Sync + Send + 'static>),
+    ///
+    /// b-terminal(#272): the second field is the color the program set for this index (OSC 4, 10, 11, 12, 21),
+    /// `None` when nothing was set. The event is sent while the reader thread holds the `Term` lock, so the
+    /// listener cannot read `Term::colors()` itself.
+    ColorRequest(usize, Option<Rgb>, Arc<dyn Fn(Rgb) -> String + Sync + Send + 'static>),
 
     /// Write some text to the PTY.
     PtyWrite(String),
@@ -64,7 +68,7 @@ impl Debug for Event {
             Event::ClipboardStore(ty, text) => write!(f, "ClipboardStore({ty:?}, {text})"),
             Event::ClipboardLoad(ty, _) => write!(f, "ClipboardLoad({ty:?})"),
             Event::TextAreaSizeRequest(_) => write!(f, "TextAreaSizeRequest"),
-            Event::ColorRequest(index, _) => write!(f, "ColorRequest({index})"),
+            Event::ColorRequest(index, _, _) => write!(f, "ColorRequest({index})"),
             Event::PtyWrite(text) => write!(f, "PtyWrite({text})"),
             Event::Title(title) => write!(f, "Title({title})"),
             Event::CursorBlinkingChange => write!(f, "CursorBlinkingChange"),

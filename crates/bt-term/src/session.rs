@@ -293,17 +293,22 @@ impl EventListener for Listener {
                 let mut w = self.writer.lock();
                 let _ = w.write_all(reply.as_bytes());
             }
-            VtEvent::ColorRequest(index, format) => {
+            // 엔진이 사건에 실어 준 색(프로그램이 OSC 4·10·11·12·21로 바꾼 값)이 있으면 그것으로, 없으면 테마로 답한다(#272).
+            // 이 사건은 읽기 스레드가 엔진을 잠근 채 보내므로 여기서 `Term::colors()`를 읽을 수 없다
+            VtEvent::ColorRequest(index, changed, format) => {
                 if self.color_format == OscColorReportFormat::None {
                     return;
                 }
                 let theme = &self.theme;
-                let rgb = match index {
-                    i if i < 256 => theme.indexed(i as u8),
-                    i if i == NamedColor::Foreground as usize => theme.foreground,
-                    i if i == NamedColor::Background as usize => theme.background,
-                    _ => theme.cursor,
-                };
+                let rgb = changed.map_or_else(
+                    || match index {
+                        i if i < 256 => theme.indexed(i as u8),
+                        i if i == NamedColor::Foreground as usize => theme.foreground,
+                        i if i == NamedColor::Background as usize => theme.background,
+                        _ => theme.cursor,
+                    },
+                    |c| bt_core::Rgb::new(c.r, c.g, c.b),
+                );
                 let mut reply = format(VtRgb {
                     r: rgb.r,
                     g: rgb.g,

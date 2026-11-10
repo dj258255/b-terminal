@@ -1366,3 +1366,101 @@ fn kitty_color_reply_ignores_osc_color_report_format_and_reaches_readonly_panes(
     // 읽기 전용 칸에서도 터미널의 답은 막지 않는다(ADR-018 결정 4)
     assert_eq!(checksum_reply("", &q, true, |_| {}), hex_of(&want));
 }
+
+// ---- OSC 4·10·11·12 질의는 지금 색으로 답한다(#272) ----
+
+/// 8비트 값을 되풀이한 16비트 꼴(`rgb:RRRR/GGGG/BBBB`)
+fn rgb16(r: u8, g: u8, b: u8) -> String {
+    format!("rgb:{r:02x}{r:02x}/{g:02x}{g:02x}/{b:02x}{b:02x}")
+}
+
+#[test]
+fn osc_color_queries_answer_with_the_color_the_program_set() {
+    // 바꾼 색으로 답한다. 바꾸지 않은 색(OSC 4;2)은 테마 값 그대로다
+    let set = format!("\\033]4;1;#00ff00{ST}\\033]10;#123456{ST}\\033]11;#ff0000{ST}\\033]12;#0000ff{ST}");
+    let ask = "\\033]4;1;?\\007\\033]10;?\\007\\033]11;?\\007\\033]12;?\\007\\033]4;2;?\\007";
+    let p2 = Theme::default().palette[2];
+    let want = format!(
+        "\x1b]4;1;{}\x07\x1b]10;{}\x07\x1b]11;{}\x07\x1b]12;{}\x07\x1b]4;2;{}\x07",
+        rgb16(0, 255, 0),
+        rgb16(0x12, 0x34, 0x56),
+        rgb16(255, 0, 0),
+        rgb16(0, 0, 255),
+        rgb16(p2.r, p2.g, p2.b),
+    );
+    assert_eq!(kitty_reply(&set, ask, false, |_| {}), hex_of(&want));
+}
+
+#[test]
+fn osc_color_query_of_a_changed_color_follows_the_report_format() {
+    let set = format!("\\033]11;#ff0000{ST}");
+    let bit8 = |o: &mut SpawnOptions| o.osc_color_report_format = bt_core::config::OscColorReportFormat::Bit8;
+    assert_eq!(
+        kitty_reply(&set, "\\033]11;?\\007", false, bit8),
+        hex_of("\x1b]11;rgb:ff/00/00\x07")
+    );
+    // none이면 바꾼 색이어도 답하지 않는다
+    let none = |o: &mut SpawnOptions| o.osc_color_report_format = bt_core::config::OscColorReportFormat::None;
+    assert_eq!(kitty_reply(&set, "\\033]11;?\\007", false, none), "");
+}
+
+#[test]
+fn osc_color_query_returns_to_the_theme_after_a_reset() {
+    let t = Theme::default();
+    let ask = "\\033]4;1;?\\007\\033]10;?\\007\\033]11;?\\007\\033]12;?\\007";
+    let want = format!(
+        "\x1b]4;1;{}\x07\x1b]10;{}\x07\x1b]11;{}\x07\x1b]12;{}\x07",
+        rgb16(t.palette[1].r, t.palette[1].g, t.palette[1].b),
+        rgb16(t.foreground.r, t.foreground.g, t.foreground.b),
+        rgb16(t.background.r, t.background.g, t.background.b),
+        rgb16(t.cursor.r, t.cursor.g, t.cursor.b),
+    );
+    let set = format!("\\033]4;1;#00ff00{ST}\\033]10;#123456{ST}\\033]11;#ff0000{ST}\\033]12;#0000ff{ST}");
+    // OSC 104·110·111·112
+    let reset = format!("{set}\\033]104;1{ST}\\033]110{ST}\\033]111{ST}\\033]112{ST}");
+    assert_eq!(kitty_reply(&reset, ask, false, |_| {}), hex_of(&want));
+    // OSC 21의 `키=`(값 없음)도 같은 칸을 되돌린다
+    let reset21 = format!("{set}\\033]21;1=;foreground=;background=;cursor={ST}");
+    assert_eq!(kitty_reply(&reset21, ask, false, |_| {}), hex_of(&want));
+}
+
+#[test]
+fn ris_returns_the_palette_to_the_theme_for_osc_4_queries() {
+    // 초기화(RIS)는 팔레트만 되돌린다(#266). 질의도 테마 값으로 답한다
+    let p = Theme::default().palette[1];
+    let set = format!("\\033]4;1;#00ff00{ST}\\033c");
+    assert_eq!(
+        kitty_reply(&set, "\\033]4;1;?\\007", false, |_| {}),
+        hex_of(&format!("\x1b]4;1;{}\x07", rgb16(p.r, p.g, p.b)))
+    );
+}
+
+#[test]
+fn replies_in_one_read_come_out_in_the_order_they_were_asked() {
+    // vim 같은 프로그램은 OSC 11 질의 뒤에 DA1을 보내, DA1 답이 먼저 오면 OSC 11을 모르는 터미널로 본다.
+    // 엔진이 답하는 것(OSC 11, CSI 6n)과 스캐너가 답하는 것(OSC 21, DA1)이 한 읽기 묶음에 섞여도 요청 순서대로 나가야 한다.
+    // printf 한 번이라 한 묶음으로 오는 일이 많지만 보장은 아니다. 그래서 이 테스트는 순서가 지켜지는지만 본다
+    let set = format!("\\033]11;#ff0000{ST}");
+    let ask = format!("\\033]11;?{ST}\\033[6n\\033]21;foreground=?{ST}\\033]4;1;?{ST}\\033[c");
+    let t = Theme::default();
+    let want = format!(
+        "\x1b]11;{}\x1b\\\x1b[1;6R\x1b]21;foreground={}\x1b\\\x1b]4;1;{}\x1b\\\x1b[?62;22c",
+        rgb16(255, 0, 0),
+        rgb8(t.foreground),
+        rgb16(t.palette[1].r, t.palette[1].g, t.palette[1].b),
+    );
+    assert_eq!(kitty_reply(&set, &ask, false, |_| {}), hex_of(&want));
+}
+
+#[test]
+fn replies_keep_their_order_when_no_color_was_changed() {
+    // 위 테스트에서 색 바꾸기를 뺀 것. 고치기 전에도 통과한다(순서가 그대로인지만 본다)
+    let ask = format!("\\033]11;?{ST}\\033[6n\\033]21;foreground=?{ST}\\033[c");
+    let t = Theme::default();
+    let want = format!(
+        "\x1b]11;{}\x1b\\\x1b[1;6R\x1b]21;foreground={}\x1b\\\x1b[?62;22c",
+        rgb16(t.background.r, t.background.g, t.background.b),
+        rgb8(t.foreground),
+    );
+    assert_eq!(kitty_reply("", &ask, false, |_| {}), hex_of(&want));
+}
