@@ -167,6 +167,9 @@ pub struct Pane {
     scrollbar_until: Option<Instant>,
     /// `toggle_mouse_reporting`로 이 칸에 정한 마우스 보고 켬·끔(#209). 없으면 `mouse-reporting` 설정을 따른다
     mouse_reporting_over: Option<bool>,
+    /// 마우스 보고: 눌린 단추(`mouse_bit`)와 마지막에 보고한 칸(움직임 중복 제거, #300)
+    mouse_down: u8,
+    mouse_last_cell: Option<(usize, usize)>,
     /// PTY의 termios로 알아챈 암호 입력(#258). 자물쇠 커서를 그린다
     password: bool,
     /// 명령이 끝나도 칸을 남긴다: Dock에 놓은 파일을 실행한 칸(#279). `wait-after-command`와 같다
@@ -662,6 +665,8 @@ struct Win {
     selecting: bool,
     last_click: Option<(Instant, usize, usize, u8)>,
     scroll_accum: f64,
+    /// 가로 휠 누적(마우스 보고용, #300)
+    scroll_accum_x: f64,
     focused: bool,
     /// 창 안 알림 띠(글, 띄운 때). 2.5초 보인다
     toast: Option<(String, Instant)>,
@@ -728,6 +733,7 @@ impl Win {
             selecting: false,
             last_click: None,
             scroll_accum: 0.0,
+            scroll_accum_x: 0.0,
             // 포커스 사건이 오기 전에는 보고 있지 않은 창으로 둔다. 보고 있다고 잘못 알면
             // 그 창의 OSC 52 클립보드 쓰기를 받게 된다(보안 검토, #36)
             focused: false,
@@ -1434,6 +1440,8 @@ impl App {
                 scroll_seen: 0,
                 scrollbar_until: None,
                 mouse_reporting_over: None,
+                mouse_down: 0,
+                mouse_last_cell: None,
                 password: false,
                 running: None,
                 last_command: None,
@@ -3454,21 +3462,54 @@ impl App {
     }
 
     fn send_mouse(&mut self, idx: usize, button: mouse::Button, action: mouse::Action) {
+        // 눌린 단추를 기억한다(보고하지 않을 때도: 놓음을 놓치면 눌린 채로 남는다)
+        if let Some(bit) = mouse::button_bit(button) {
+            match action {
+                mouse::Action::Press => self.panes[idx].mouse_down |= bit,
+                mouse::Action::Release => self.panes[idx].mouse_down &= !bit,
+                mouse::Action::Motion => {}
+            }
+        }
         let Some(m) = self.mouse_reporting(idx) else { return };
-        let Some((col, row)) = self.cell_in(idx, self.w.cursor_pos) else {
+        let Some(event) = mouse::EventMode::from_modes(&m) else {
             return;
         };
-        let bytes = mouse::encode(
-            button,
-            action,
-            col,
-            row,
-            self.mods.shift_key(),
-            self.mods.alt_key(),
-            self.mods.control_key(),
-            m.sgr_mouse,
-        );
-        self.panes[idx].session.write(&bytes);
+        let Some(rect) = self.pane_rect(self.panes[idx].id) else {
+            return;
+        };
+        let Some(fonts) = self.fonts.as_ref() else { return };
+        let (cw, ch) = (fonts.metrics().width as f64, fonts.metrics().height as f64);
+        let inner = self.inner_rect(rect);
+        let size = self.panes[idx].session.size();
+        // 좌표는 칸(창) 왼쪽 위에서 잰 실제 픽셀이다(배율을 곱한 픽셀. Ghostty도 표면 픽셀을 그대로 쓴다).
+        // 1016은 거기서 격자 원점(여백을 뺀 자리)까지 뺀 값을 보낸다
+        let geometry = mouse::Geometry {
+            screen_w: rect.w as f64,
+            screen_h: rect.h as f64,
+            cell_w: cw,
+            cell_h: ch,
+            pad_left: (inner.x - rect.x) as f64,
+            pad_top: (inner.y - rect.y) as f64,
+            cols: size.cols as usize,
+            rows: size.rows as usize,
+        };
+        let opts = mouse::Options {
+            event,
+            format: m.mouse_format,
+            geometry,
+            any_button_pressed: self.panes[idx].mouse_down != 0,
+        };
+        let pos = (self.w.cursor_pos.x - rect.x as f64, self.w.cursor_pos.y - rect.y as f64);
+        let mods = mouse::Mods {
+            shift: self.mods.shift_key(),
+            alt: self.mods.alt_key(),
+            ctrl: self.mods.control_key(),
+        };
+        let pane = &mut self.panes[idx];
+        let bytes = mouse::encode(button, action, mods, pos, &opts, &mut pane.mouse_last_cell);
+        if !bytes.is_empty() {
+            pane.session.write(&bytes);
+        }
     }
 
     /// 창과 그림판을 만든다(첫 창, 새 창)
@@ -5624,9 +5665,12 @@ impl ApplicationHandler<UserEvent> for App {
                         self.request_redraw();
                     }
                 } else if let Some(m) = self.mouse_reporting(idx) {
-                    // 움직임 보고는 고른 칸 위에서만
-                    if m.mouse_motion && self.pane_at(position) == Some(self.panes[idx].id) {
-                        self.send_mouse(idx, mouse::Button::None, mouse::Action::Motion);
+                    // 움직임 보고는 고른 칸 위에서만. 단추를 누른 채면 그 단추로 보낸다(1002는 이것만 받는다).
+                    // 어떤 움직임을 보낼지는 이벤트 모드가 정한다(mouse::encode)
+                    let _ = m;
+                    if self.pane_at(position) == Some(self.panes[idx].id) {
+                        let held = mouse::held_button(self.panes[idx].mouse_down);
+                        self.send_mouse(idx, held, mouse::Action::Motion);
                     }
                 }
             }
@@ -5693,6 +5737,8 @@ impl ApplicationHandler<UserEvent> for App {
                     MouseButton::Left => mouse::Button::Left,
                     MouseButton::Middle => mouse::Button::Middle,
                     MouseButton::Right => mouse::Button::Right,
+                    MouseButton::Back => mouse::Button::Back,
+                    MouseButton::Forward => mouse::Button::Forward,
                     _ => return,
                 };
                 if self.mouse_reporting(idx).is_some() {
@@ -5806,6 +5852,37 @@ impl ApplicationHandler<UserEvent> for App {
                         p.y / ch * precision
                     }
                 };
+                // 가로 휠(트랙패드 옆으로 밀기, 기울이는 휠): 마우스 보고 중일 때만 단추 6·7로 보낸다(#300).
+                // 양수가 왼쪽이다(Ghostty `up_right` → `six`)
+                let xlines = match delta {
+                    MouseScrollDelta::LineDelta(x, _) => x as f64 * discrete,
+                    MouseScrollDelta::PixelDelta(p) => {
+                        let cw = self.fonts.as_ref().map(|f| f.metrics().width as f64).unwrap_or(8.0);
+                        p.x / cw * precision
+                    }
+                };
+                let xpane = self
+                    .pane_at(self.w.cursor_pos)
+                    .and_then(|id| self.pane_index(id))
+                    .or_else(|| self.active_index())
+                    .filter(|&i| self.mouse_reporting(i).is_some());
+                if let Some(xi) = xpane {
+                    self.w.scroll_accum_x += xlines;
+                    let xwhole = self.w.scroll_accum_x.trunc() as i32;
+                    if xwhole != 0 {
+                        self.w.scroll_accum_x -= xwhole as f64;
+                        let b = if xwhole > 0 {
+                            mouse::Button::WheelLeft
+                        } else {
+                            mouse::Button::WheelRight
+                        };
+                        for _ in 0..xwhole.unsigned_abs().min(10) {
+                            self.send_mouse(xi, b, mouse::Action::Press);
+                        }
+                    }
+                } else {
+                    self.w.scroll_accum_x = 0.0;
+                }
                 self.w.scroll_accum += lines;
                 let whole = self.w.scroll_accum.trunc() as i32;
                 if whole == 0 {

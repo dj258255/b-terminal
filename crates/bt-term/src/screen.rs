@@ -101,6 +101,17 @@ pub struct Cursor {
     pub blinking: bool,
 }
 
+/// 마우스 보고 좌표 형식(DECSET 1005·1006·1015·1016, 아무것도 없으면 옛 X10 꼴)
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum MouseFormat {
+    #[default]
+    X10,
+    Utf8,
+    Sgr,
+    Urxvt,
+    SgrPixels,
+}
+
 /// 앱이 입력을 바꿀 때 보는 터미널 모드
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Modes {
@@ -112,6 +123,10 @@ pub struct Modes {
     pub mouse_drag: bool,
     pub mouse_motion: bool,
     pub sgr_mouse: bool,
+    /// X10 이벤트 모드(DECSET 9): 누름만 보고하고 수식 키를 넣지 않는다(#300)
+    pub mouse_x10: bool,
+    /// 마우스 좌표 형식. 하나만 켜고 마지막에 켠 것이 이긴다(#300)
+    pub mouse_format: MouseFormat,
     pub focus_events: bool,
     pub alternate_scroll: bool,
     /// kitty 키보드 프로토콜 단계

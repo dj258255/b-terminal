@@ -939,6 +939,7 @@ impl PrivateMode {
             6 => Self::Named(NamedPrivateMode::Origin),
             7 => Self::Named(NamedPrivateMode::LineWrap),
             8 => Self::Named(NamedPrivateMode::Autorepeat), // b-terminal(#302)
+            9 => Self::Named(NamedPrivateMode::X10Mouse), // b-terminal(#300)
             12 => Self::Named(NamedPrivateMode::BlinkingCursor),
             // b-terminal(#296): 옛 대체 화면 47·1047, 커서 저장 1048, DECNKM 66
             47 => Self::Named(NamedPrivateMode::SwapScreenLegacy),
@@ -952,6 +953,8 @@ impl PrivateMode {
             1005 => Self::Named(NamedPrivateMode::Utf8Mouse),
             1006 => Self::Named(NamedPrivateMode::SgrMouse),
             1007 => Self::Named(NamedPrivateMode::AlternateScroll),
+            1015 => Self::Named(NamedPrivateMode::UrxvtMouse), // b-terminal(#300)
+            1016 => Self::Named(NamedPrivateMode::SgrPixelsMouse), // b-terminal(#300)
             1042 => Self::Named(NamedPrivateMode::UrgencyHints),
             1047 => Self::Named(NamedPrivateMode::SwapScreenAndClear),
             1048 => Self::Named(NamedPrivateMode::SaveRestoreCursor),
@@ -1002,6 +1005,8 @@ pub enum NamedPrivateMode {
     LineWrap = 7,
     /// DECARM. b-terminal(#302): 저장만 한다(xterm·Ghostty는 자동 반복을 끄지 않는다)
     Autorepeat = 8,
+    /// X10 mouse reporting: presses only, no modifiers. b-terminal(#300)
+    X10Mouse = 9,
     BlinkingCursor = 12,
     /// 역방향 줄바꿈(xterm). b-terminal(#302)
     ReverseWrap = 45,
@@ -1015,6 +1020,10 @@ pub enum NamedPrivateMode {
     Utf8Mouse = 1005,
     SgrMouse = 1006,
     AlternateScroll = 1007,
+    /// urxvt mouse format. b-terminal(#300)
+    UrxvtMouse = 1015,
+    /// SGR mouse format with pixel coordinates. b-terminal(#300)
+    SgrPixelsMouse = 1016,
     UrgencyHints = 1042,
     /// b-terminal(#296): 옛 대체 화면(47). 화면만 바꾼다.
     SwapScreenLegacy = 47,

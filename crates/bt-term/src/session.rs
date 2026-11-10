@@ -79,7 +79,7 @@ impl Dimensions for Dims {
 }
 
 /// 마우스 보고 모드를 모두 끄는 순서(1000·1002·1003 보고, 1005·1006·1015 꼴)
-const MOUSE_OFF: &[u8] = b"\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1005l\x1b[?1006l\x1b[?1015l";
+const MOUSE_OFF: &[u8] = b"\x1b[?9l\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1005l\x1b[?1006l\x1b[?1015l\x1b[?1016l";
 
 /// 띄울 프로그램
 #[derive(Debug, Clone, Default)]
@@ -1175,11 +1175,7 @@ impl Session {
     /// 마우스를 켠 프로그램이 끄지 못하고 죽으면 셸에 `ESC[<35;x;yM`이 글자로 쏟아진다(#24). PTY에는 쓰지 않고 화면 상태만 바꾼다
     pub fn reset_mouse_modes(&self) -> bool {
         let mut g = self.inner.lock();
-        if !g
-            .term
-            .mode()
-            .intersects(TermMode::MOUSE_MODE | TermMode::SGR_MOUSE | TermMode::UTF8_MOUSE)
-        {
+        if !g.term.mode().intersects(TermMode::MOUSE_MODE | TermMode::MOUSE_FORMAT) {
             return false;
         }
         let Inner { term, parser, .. } = &mut *g;
@@ -1413,6 +1409,18 @@ fn modes_of(m: TermMode) -> Modes {
         mouse_drag: m.contains(TermMode::MOUSE_DRAG),
         mouse_motion: m.contains(TermMode::MOUSE_MOTION),
         sgr_mouse: m.contains(TermMode::SGR_MOUSE),
+        mouse_x10: m.contains(TermMode::MOUSE_X10),
+        mouse_format: if m.contains(TermMode::SGR_PIXELS_MOUSE) {
+            crate::screen::MouseFormat::SgrPixels
+        } else if m.contains(TermMode::URXVT_MOUSE) {
+            crate::screen::MouseFormat::Urxvt
+        } else if m.contains(TermMode::SGR_MOUSE) {
+            crate::screen::MouseFormat::Sgr
+        } else if m.contains(TermMode::UTF8_MOUSE) {
+            crate::screen::MouseFormat::Utf8
+        } else {
+            crate::screen::MouseFormat::X10
+        },
         focus_events: m.contains(TermMode::FOCUS_IN_OUT),
         alternate_scroll: m.contains(TermMode::ALTERNATE_SCROLL),
         kitty: crate::input::KittyFlags {
