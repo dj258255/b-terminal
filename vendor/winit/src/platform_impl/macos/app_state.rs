@@ -8,7 +8,7 @@ use objc2::{declare_class, msg_send_id, mutability, ClassType, DeclaredClass};
 use objc2_app_kit::{
     NSApplication, NSApplicationActivationPolicy, NSApplicationDelegate, NSRunningApplication,
 };
-use objc2_foundation::{MainThreadMarker, NSNotification, NSObject, NSObjectProtocol};
+use objc2_foundation::{MainThreadMarker, NSNotification, NSObject, NSObjectProtocol, NSString};
 
 use super::event_handler::EventHandler;
 use super::event_loop::{notify_windows_of_exit, stop_app_immediately, ActiveEventLoop, PanicInfo};
@@ -69,6 +69,14 @@ declare_class!(
         #[method(applicationWillTerminate:)]
         fn app_will_terminate(&self, notification: &NSNotification) {
             self.will_terminate(notification)
+        }
+
+        // b-terminal(#279): Finder/Dock drops and `open -a` paths. Handled when the app registered a handler or the
+        // request could be queued for it.
+        #[method(application:openFile:)]
+        fn app_open_file(&self, _app: &NSApplication, filename: &NSString) -> bool {
+            super::deliver_open_file(std::path::PathBuf::from(filename.to_string()));
+            true
         }
     }
 );

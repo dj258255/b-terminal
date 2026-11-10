@@ -9,6 +9,7 @@ mod cliinfo;
 mod context_menu;
 mod control;
 mod desktop;
+mod dock_open;
 mod dump;
 mod icon;
 mod keymap;
@@ -109,6 +110,8 @@ pub fn system_is_dark() -> bool {
 fn main() -> anyhow::Result<()> {
     // `+동작`(Ghostty의 `ghostty +동작`)은 창 없이 돌고 끝난다. 출력에 로그가 섞이지 않게 로거보다 먼저
     let argv: Vec<String> = std::env::args().skip(1).collect();
+    #[cfg(target_os = "macos")]
+    let launch_args = argv.clone();
     if let Some(code) = cliact::try_run(&argv) {
         std::process::exit(code);
     }
@@ -139,6 +142,25 @@ fn main() -> anyhow::Result<()> {
         config.apply_cli_command();
     }
     let event_loop = EventLoop::<app::UserEvent>::with_user_event().build()?;
+    // Dock·Finder가 열라고 한 경로를 받는다(#279). 명령줄 인자로 온 경로가 되돌아온 것은 거른다
+    #[cfg(target_os = "macos")]
+    {
+        let proxy = event_loop.create_proxy();
+        let started = std::time::Instant::now();
+        let cwd = std::env::current_dir().unwrap_or_default();
+        let filter = std::sync::Mutex::new(dock_open::ArgFilter::new(&launch_args, &cwd, |p| p.exists()));
+        winit::platform::macos::set_open_file_handler(Box::new(move |path| {
+            let ignore = filter
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .should_ignore(&path, started.elapsed());
+            if ignore {
+                log::debug!("명령줄 인자로 온 경로의 열기 요청은 무시합니다: {path:?}");
+                return;
+            }
+            let _ = proxy.send_event(app::UserEvent::OpenFile(path));
+        }));
+    }
     let mut app = app::App::new(
         config,
         (cli.config_file.clone(), cli.default_files),

@@ -62,6 +62,43 @@ pub fn popup_context_menu(ns_menu: *mut std::ffi::c_void) -> bool {
     }
 }
 
+/// b-terminal(#279): Finder/Dock "open file" requests (`application:openFile:`). winit 0.30 has no event for them, so
+/// the app registers a handler. Requests that arrive before it is registered (a drop that launched the app) wait here.
+struct OpenFiles {
+    handler: Option<std::sync::Arc<dyn Fn(std::path::PathBuf) + Send + Sync>>,
+    pending: Vec<std::path::PathBuf>,
+}
+
+static OPEN_FILES: std::sync::Mutex<OpenFiles> = std::sync::Mutex::new(OpenFiles { handler: None, pending: Vec::new() });
+
+/// b-terminal(#279): registers the handler and passes it the requests that arrived earlier.
+pub fn set_open_file_handler(handler: Box<dyn Fn(std::path::PathBuf) + Send + Sync>) {
+    let handler: std::sync::Arc<dyn Fn(std::path::PathBuf) + Send + Sync> = handler.into();
+    let pending = {
+        let mut g = OPEN_FILES.lock().unwrap_or_else(|e| e.into_inner());
+        g.handler = Some(handler.clone());
+        std::mem::take(&mut g.pending)
+    };
+    for path in pending {
+        handler(path);
+    }
+}
+
+/// b-terminal(#279): called by the application delegate for each file the system asks the app to open.
+pub(crate) fn deliver_open_file(path: std::path::PathBuf) {
+    let handler = {
+        let mut g = OPEN_FILES.lock().unwrap_or_else(|e| e.into_inner());
+        match g.handler.clone() {
+            Some(h) => h,
+            None => {
+                g.pending.push(path);
+                return;
+            }
+        }
+    };
+    handler(path);
+}
+
 #[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct DeviceId;
 

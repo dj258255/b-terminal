@@ -55,6 +55,40 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>LSApplicationCategoryType</key><string>public.app-category.developer-tools</string>
   <key>NSHighResolutionCapable</key><true/>
   <key>NSSupportsAutomaticGraphicsSwitching</key><true/>
+  <!-- Dock 아이콘에 끌어놓기와 Finder의 "다음으로 열기"(#279). Ghostty의 Info.plist와 같은 세 유형: 스크립트, 폴더, 실행 파일 -->
+  <key>CFBundleDocumentTypes</key>
+  <array>
+    <dict>
+      <key>CFBundleTypeExtensions</key>
+      <array>
+        <string>command</string>
+        <string>tool</string>
+        <string>sh</string>
+        <string>zsh</string>
+        <string>csh</string>
+        <string>pl</string>
+      </array>
+      <key>CFBundleTypeIconFile</key><string>b-terminal.icns</string>
+      <key>CFBundleTypeName</key><string>Terminal scripts</string>
+      <key>CFBundleTypeRole</key><string>Editor</string>
+    </dict>
+    <dict>
+      <key>CFBundleTypeName</key><string>Folders</string>
+      <key>CFBundleTypeRole</key><string>Editor</string>
+      <key>LSHandlerRank</key><string>Alternate</string>
+      <key>LSItemContentTypes</key>
+      <array>
+        <string>public.directory</string>
+      </array>
+    </dict>
+    <dict>
+      <key>CFBundleTypeRole</key><string>Shell</string>
+      <key>LSItemContentTypes</key>
+      <array>
+        <string>public.unix-executable</string>
+      </array>
+    </dict>
+  </array>
 </dict>
 </plist>
 PLIST

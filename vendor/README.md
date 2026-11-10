@@ -77,3 +77,7 @@ alacritty_terminal이 글자 묶음 폭(mode 2027)을 지원하는 판을 내면
 - `alacritty_terminal` 쪽(같은 이슈): `src/term/cell.rs`의 `Flags::OVERLINE`(마지막 빈 비트 `0b1000_0000_0000_0000`, 이제 `u16`이 가득 참)과 `is_empty` 표시 목록, `src/term/mod.rs`의 `terminal_attribute`가 켜고 끕니다(Reset은 `flags = empty()`가 지웁니다). `b-terminal(#277)`로 찾을 수 있습니다.
 - 이유: vte 0.15가 SGR 53·55를 해석하지 않아 윗줄을 그릴 수 없었습니다(Ghostty는 그립니다).
 - 되돌릴 조건: upstream vte가 53·55를 해석하는 판을 내면 `vendor/vte`와 `[patch.crates-io]`의 `vte` 줄을 지우고, `alacritty_terminal`의 `terminal_attribute`를 새 `Attr` 이름에 맞춥니다. 판이 바뀌면 `diff`로 `ansi.rs`를 먼저 비교합니다. `vendor/vte`는 작업 공간 밖이라 자체 테스트가 돌지 않으므로 해석 테스트는 `crates/bt-term/tests/sgr_parse.rs`에 있습니다.
+
+## winit: 제목 막대 폴더 아이콘과 파일 열기 요청(#279)
+
+- 고친 곳: `src/platform/macos.rs` 끝의 `pub fn set_represented_path(&Window, Option<&Path>)`와 `pub fn set_open_file_handler(Box<dyn Fn(PathBuf) + Send + Sync>)`, `src/platform_impl/macos/window_delegate.rs` 끝의 `impl WindowDelegate { set_represented_path }`(`NSWindow.setRepresentedURL`), `src/platform_impl/macos/app_state.rs`의 앱 대리자에 `application:openFile:`, `src/platform_impl/macos/mod.rs`의 `set_open_file_handler`·`deliver_open_file`(등록 전에 온 요청은 쌓아 두었다가 등록할 때 넘김), `Cargo.toml`의 `objc2-foundation` 기능 `NSURL`. `b-terminal(#279)`로 찾을 수 있습니다. 이유: Ghostty `macos-titlebar-proxy-icon`(작업 폴더 아이콘)과 `macos-dock-drop-behavior`(Dock에 놓은 폴더·파일). 작업 공간이 `unsafe_code = "deny"`라 앱 코드는 `NSWindow`와 앱 대리자를 만질 수 없고, winit 0.30에는 파일 열기 사건이 없습니다. 되돌릴 조건: winit이 `representedURL`과 파일 열기 사건을 내놓으면 지우고 그것을 씁니다.

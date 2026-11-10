@@ -552,3 +552,17 @@ pub fn set_secure_event_input(enable: bool) -> bool {
 pub fn popup_context_menu(ns_menu: *mut c_void) -> bool {
     crate::platform_impl::popup_context_menu(ns_menu)
 }
+
+/// Sets the title bar proxy icon (the folder icon) of `window` to `path`, or removes it with `None`.
+/// b-terminal(#279)
+pub fn set_represented_path(window: &Window, path: Option<&std::path::Path>) {
+    let path = path.map(|p| p.to_path_buf());
+    window.window.maybe_queue_on_main(move |w| w.set_represented_path(path.as_deref()))
+}
+
+/// Registers the function that receives the paths macOS asks the app to open (Dock drops, Finder "Open With",
+/// `open -a`). Paths that arrived before the call (a drop that launched the app) are passed first. The function runs
+/// on the main thread. b-terminal(#279)
+pub fn set_open_file_handler(handler: Box<dyn Fn(std::path::PathBuf) + Send + Sync>) {
+    crate::platform_impl::set_open_file_handler(handler)
+}
