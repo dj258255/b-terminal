@@ -380,6 +380,18 @@ enum Pending {
         cwd: std::path::PathBuf,
         input: String,
     },
+    /// 프로그램이 kitty 클립보드 프로토콜(OSC 5522)로 클립보드를 읽으려 한다(`clipboard-read = ask`, #325). 막대에 보인 `text`를 이 칸에만 답한다
+    KittyRead {
+        pane: u64,
+        req: bt_term::kitty_clip::ReadRequest,
+        text: String,
+    },
+    /// 프로그램이 kitty 클립보드 프로토콜로 클립보드에 쓰려 한다(`clipboard-write = ask`, #325)
+    KittyWrite {
+        pane: u64,
+        req: bt_term::kitty_clip::WriteRequest,
+        text: String,
+    },
 }
 
 impl Pending {
@@ -388,7 +400,11 @@ impl Pending {
         // Dock에 놓은 파일도 다른 프로그램이 `open -a`로 띄울 수 있어(키보드를 치는 중에 막대가 뜬다) 같은 규칙을 쓴다(ADR-026)
         matches!(
             self,
-            Pending::ClipboardRead { .. } | Pending::ClipboardWrite { .. } | Pending::OpenFile { .. }
+            Pending::ClipboardRead { .. }
+                | Pending::ClipboardWrite { .. }
+                | Pending::OpenFile { .. }
+                | Pending::KittyRead { .. }
+                | Pending::KittyWrite { .. }
         )
     }
 }
@@ -402,7 +418,9 @@ impl Pending {
             | Pending::CloseTab(id)
             | Pending::Paste { pane: id, .. }
             | Pending::ClipboardRead { pane: id, .. }
-            | Pending::ClipboardWrite { pane: id, .. } => leaves.contains(id),
+            | Pending::ClipboardWrite { pane: id, .. }
+            | Pending::KittyRead { pane: id, .. }
+            | Pending::KittyWrite { pane: id, .. } => leaves.contains(id),
             Pending::CloseWindow | Pending::CloseAllWindows | Pending::Quit | Pending::OpenFile { .. } => false,
         }
     }
@@ -1375,6 +1393,7 @@ impl App {
             cursor_blink: self.config.cursor_blink.unwrap_or(false),
             clipboard_write: self.config.clipboard_write.engine_enabled(),
             clipboard_read: self.config.clipboard_read.engine_enabled(),
+            clipboard_write_limit_bytes: self.config.clipboard_write_limit_bytes,
             word_chars: Some(self.config.selection_word_chars.clone()),
             scroll_on_output: self.config.scroll_to_bottom.output,
             title_report: self.config.title_report,
@@ -1799,7 +1818,9 @@ impl App {
             Pending::Paste { .. }
             | Pending::ClipboardRead { .. }
             | Pending::ClipboardWrite { .. }
-            | Pending::OpenFile { .. } => Vec::new(),
+            | Pending::OpenFile { .. }
+            | Pending::KittyRead { .. }
+            | Pending::KittyWrite { .. } => Vec::new(),
         };
         let busy: Vec<u64> = ids.into_iter().filter(|&id| self.pane_needs_confirm(id)).collect();
         if busy.is_empty() {
@@ -1839,7 +1860,9 @@ impl App {
             Pending::Paste { .. }
             | Pending::ClipboardRead { .. }
             | Pending::ClipboardWrite { .. }
-            | Pending::OpenFile { .. } => return,
+            | Pending::OpenFile { .. }
+            | Pending::KittyRead { .. }
+            | Pending::KittyWrite { .. } => return,
         };
         self.ask(pending, message, yes);
     }
@@ -1956,6 +1979,14 @@ impl App {
         if t.session.readonly() {
             return;
         }
+        // 프로그램이 붙여넣기 이벤트(모드 5522)를 켜 두었으면 글 대신 종류 목록과 일회용 암호를 보낸다. 글은 읽히지 않으므로
+        // 붙여넣기 보호(줄바꿈 확인)와 괄호 붙여넣기 틀은 거치지 않는다(Ghostty `paste.zig`). 사람이 붙여넣을 때만 여기까지 온다(#325)
+        if t.session.kitty_paste_mode() {
+            let avail = bt_term::kitty_clip::clipboard_listing(Some(&text));
+            if t.session.kitty_paste_event(&avail) {
+                return;
+            }
+        }
         let (id, bracketed) = (t.id, t.session.modes().bracketed_paste);
         if !self.config.paste_protection || bt_term::paste_is_safe(&text, bracketed, self.config.paste_bracketed_safe) {
             self.paste_into(id, &text);
@@ -1992,7 +2023,9 @@ impl App {
             self.w.confirm.is_some(),
         );
         match verdict {
-            ClipVerdict::Allow => self.store_clipboard(idx, text),
+            ClipVerdict::Allow => {
+                self.store_clipboard(idx, text);
+            }
             ClipVerdict::Ask => {
                 let id = self.panes[idx].id;
                 let message = bt_core::clipboard::write_prompt(&text);
@@ -2016,10 +2049,11 @@ impl App {
     }
 
     /// 허용된 OSC 52 쓰기를 클립보드에 넣고 알림 띠로 보인다
-    fn store_clipboard(&mut self, idx: usize, text: String) {
-        if let Some(cb) = self.clipboard.as_mut() {
-            let _ = cb.set_text(text.clone());
-        }
+    fn store_clipboard(&mut self, idx: usize, text: String) -> bool {
+        let ok = self
+            .clipboard
+            .as_mut()
+            .is_some_and(|cb| cb.set_text(text.clone()).is_ok());
         let shown = bt_core::clipboard::clip_preview(&text, 40);
         log::info!(
             "탭 {}: 프로그램이 클립보드에 {}글자를 썼습니다",
@@ -2030,6 +2064,7 @@ impl App {
         if self.config.app_notifications.clipboard_copy {
             self.toast(format!("클립보드에 복사됨: {shown}"));
         }
+        ok
     }
 
     /// 프로그램이 OSC 52로 클립보드를 읽으려 한다. ask면 막대에 읽어 갈 글 앞부분을 보이고 묻는다(ADR-019)
@@ -2075,8 +2110,161 @@ impl App {
     /// 허용된 쓰기: 그 칸이 아직 있고 보고 있는 칸일 때만 클립보드에 넣는다
     fn answer_clipboard_write(&mut self, pane: u64, text: String) {
         match self.pane_index(pane).filter(|&i| self.w.focused && self.is_focused(i)) {
-            Some(i) => self.store_clipboard(i, text),
+            Some(i) => {
+                self.store_clipboard(i, text);
+            }
             None => log::warn!("탭 {pane}: 클립보드 쓰기를 버렸습니다(칸이 닫혔거나 보고 있지 않음)"),
+        }
+    }
+
+    /// 그 칸에 kitty 클립보드 상태 답 하나를 쓴다(칸이 없으면 버린다)
+    fn kitty_status(
+        &mut self,
+        pane: u64,
+        op: bt_term::kitty_clip::Op,
+        status: bt_term::kitty_clip::Status,
+        id: &str,
+        bel: bool,
+    ) {
+        if let Some(i) = self.pane_index(pane) {
+            self.panes[i]
+                .session
+                .write(&bt_term::kitty_clip::status_reply(op, status, id, bel));
+        }
+    }
+
+    /// 프로그램이 OSC 5522로 클립보드를 읽으려 한다(#325, ADR-030). 정책은 OSC 52의 `clipboard-read`를 그대로 따른다:
+    /// deny는 EPERM, ask는 같은 확인 막대(목록만 묻거나 일회용 암호가 있거나 읽어 갈 글이 없으면 건너뜀), allow는 바로 답한다.
+    /// 글 종류만 읽는다(arboard). primary 선택 영역은 이 터미널에 없으므로 ENOSYS
+    fn on_kitty_read(&mut self, idx: usize, req: bt_term::kitty_clip::ReadRequest) {
+        use bt_core::clipboard::ClipVerdict;
+        use bt_term::kitty_clip::{Op, Status};
+        let id = self.panes[idx].id;
+        if self.config.clipboard_read == bt_core::clipboard::ClipboardAccess::Deny {
+            log::warn!("탭 {id}: 클립보드 읽기(OSC 5522)를 거절했습니다(clipboard-read = deny)");
+            return self.kitty_status(id, Op::Read, Status::Eperm, &req.id, req.bel);
+        }
+        if req.primary {
+            return self.kitty_status(id, Op::Read, Status::Enosys, &req.id, req.bel);
+        }
+        let text = self
+            .clipboard
+            .as_mut()
+            .and_then(|cb| cb.get_text().ok())
+            .unwrap_or_default();
+        let watching = self.w.focused && self.is_focused(idx);
+        let readonly = self.panes[idx].session.readonly();
+        // 읽어 갈 글이 없으면 밝힐 것이 없어 묻지 않는다
+        let prompt_free = req.granted || req.prompt_exempt() || text.is_empty();
+        match bt_core::clipboard::decide_kitty_read(
+            self.config.clipboard_read,
+            watching,
+            readonly,
+            self.w.confirm.is_some(),
+            prompt_free,
+        ) {
+            ClipVerdict::Allow => {
+                let bytes = bt_term::kitty_clip::answer_read(&req, Some(&text));
+                self.panes[idx].session.write(&bytes);
+            }
+            ClipVerdict::Ask => {
+                let message = bt_core::clipboard::read_prompt(&text);
+                self.ask(Pending::KittyRead { pane: id, req, text }, message, "허용");
+            }
+            ClipVerdict::Deny => {
+                log::warn!(
+                    "탭 {id}: 클립보드 읽기(OSC 5522)를 거절했습니다(보고 있지 않거나 읽기 전용이거나 막대가 떠 있음)"
+                );
+                self.kitty_status(id, Op::Read, Status::Eperm, &req.id, req.bel);
+            }
+        }
+    }
+
+    /// 허용된 kitty 읽기 답: 그 칸이 아직 있고, 보고 있는 칸이며, 읽기 전용이 아닐 때만 막대에 보인 글을 답한다
+    fn answer_kitty_read(&mut self, pane: u64, req: &bt_term::kitty_clip::ReadRequest, text: &str) {
+        let target = self
+            .pane_index(pane)
+            .filter(|&i| self.is_focused(i) && !self.panes[i].session.readonly());
+        match target {
+            Some(i) => self.panes[i]
+                .session
+                .write(&bt_term::kitty_clip::answer_read(req, Some(text))),
+            None => {
+                log::warn!(
+                    "탭 {pane}: 클립보드 읽기(OSC 5522) 답을 버렸습니다(칸이 닫혔거나 보고 있지 않거나 읽기 전용)"
+                )
+            }
+        }
+    }
+
+    /// 프로그램이 OSC 5522 쓰기 거래를 끝냈다. 정책은 `clipboard-write`와 "보는 칸만" 규칙을 OSC 52와 똑같이 따른다.
+    /// 글 종류만 쓴다(arboard): 다른 종류만 있으면 ENOSYS, UTF-8이 아니면 EINVAL, 아무것도 없으면 클립보드를 비운다
+    fn on_kitty_write(&mut self, idx: usize, req: bt_term::kitty_clip::WriteRequest) {
+        use bt_core::clipboard::ClipVerdict;
+        use bt_term::kitty_clip::{Op, Status, WriteText};
+        let id = self.panes[idx].id;
+        if self.config.clipboard_write == bt_core::clipboard::ClipboardAccess::Deny {
+            log::warn!("탭 {id}: 클립보드 쓰기(OSC 5522)를 거절했습니다(clipboard-write = deny)");
+            return self.kitty_status(id, Op::Write, Status::Eperm, &req.id, req.bel);
+        }
+        if req.primary {
+            return self.kitty_status(id, Op::Write, Status::Enosys, &req.id, req.bel);
+        }
+        let text = match bt_term::kitty_clip::write_text(&req.contents) {
+            WriteText::Text(t) => t,
+            WriteText::Clear => String::new(),
+            WriteText::Unsupported => return self.kitty_status(id, Op::Write, Status::Enosys, &req.id, req.bel),
+            WriteText::BadUtf8 => return self.kitty_status(id, Op::Write, Status::Einval, &req.id, req.bel),
+        };
+        let watching = self.w.focused && self.is_focused(idx);
+        match bt_core::clipboard::decide_kitty_write(
+            self.config.clipboard_write,
+            watching,
+            text.len(),
+            self.config.clipboard_write_limit_bytes,
+            self.w.confirm.is_some(),
+            req.granted,
+        ) {
+            ClipVerdict::Allow => self.finish_kitty_write(idx, &req, text),
+            ClipVerdict::Ask => {
+                let message = bt_core::clipboard::write_prompt(&text);
+                self.ask(Pending::KittyWrite { pane: id, req, text }, message, "허용");
+            }
+            ClipVerdict::Deny => {
+                log::warn!(
+                    "탭 {id}: 클립보드 쓰기(OSC 5522)를 버렸습니다(보고 있지 않거나 크기가 상한을 넘거나 막대가 떠 있음)"
+                );
+                self.kitty_status(id, Op::Write, Status::Eperm, &req.id, req.bel);
+            }
+        }
+    }
+
+    /// 클립보드에 넣고(알림 띠가 보인다) DONE이나 EIO를 답한다
+    fn finish_kitty_write(&mut self, idx: usize, req: &bt_term::kitty_clip::WriteRequest, text: String) {
+        use bt_term::kitty_clip::{Op, Status};
+        let id = self.panes[idx].id;
+        let status = if self.store_clipboard(idx, text) {
+            Status::Done
+        } else {
+            Status::Eio
+        };
+        self.kitty_status(id, Op::Write, status, &req.id, req.bel);
+    }
+
+    /// 허용된 kitty 쓰기: 그 칸이 아직 있고 보고 있는 칸일 때만 클립보드에 넣는다
+    fn answer_kitty_write(&mut self, pane: u64, req: &bt_term::kitty_clip::WriteRequest, text: String) {
+        match self.pane_index(pane).filter(|&i| self.w.focused && self.is_focused(i)) {
+            Some(i) => self.finish_kitty_write(i, req, text),
+            None => {
+                log::warn!("탭 {pane}: 클립보드 쓰기(OSC 5522)를 버렸습니다(칸이 닫혔거나 보고 있지 않음)");
+                self.kitty_status(
+                    pane,
+                    bt_term::kitty_clip::Op::Write,
+                    bt_term::kitty_clip::Status::Eperm,
+                    &req.id,
+                    req.bel,
+                );
+            }
         }
     }
 
@@ -2105,6 +2293,20 @@ impl App {
             Pending::ClipboardRead { pane, reply, text } => self.answer_clipboard_read(pane, &reply, &text),
             Pending::ClipboardWrite { pane, text } => self.answer_clipboard_write(pane, text),
             Pending::OpenFile { cwd, input } => self.open_dropped(event_loop, cwd, Some(input)),
+            Pending::KittyRead { pane, req, text } => self.answer_kitty_read(pane, &req, &text),
+            Pending::KittyWrite { pane, req, text } => self.answer_kitty_write(pane, &req, text),
+        }
+    }
+
+    /// 확인 막대에서 거절했다. kitty 클립보드 요청은 거절을 EPERM으로 알린다(프로그램이 기다리지 않게). 나머지는 아무 일도 없다
+    fn denied(&mut self, pending: Pending) {
+        use bt_term::kitty_clip::{Op, Status};
+        match pending {
+            Pending::KittyRead { pane, req, .. } => self.kitty_status(pane, Op::Read, Status::Eperm, &req.id, req.bel),
+            Pending::KittyWrite { pane, req, .. } => {
+                self.kitty_status(pane, Op::Write, Status::Eperm, &req.id, req.bel)
+            }
+            _ => {}
         }
     }
 
@@ -2324,8 +2526,10 @@ impl App {
         if let Some(yes) = yes {
             let c = self.w.confirm.take();
             self.request_redraw();
-            if let (true, Some(c)) = (yes, c) {
-                self.perform(c.pending, event_loop);
+            match (yes, c) {
+                (true, Some(c)) => self.perform(c.pending, event_loop),
+                (false, Some(c)) => self.denied(c.pending),
+                _ => {}
             }
         }
         true
@@ -2909,7 +3113,7 @@ impl App {
         if on {
             // 쓰다 만 조합 글자와 이 칸에 걸린 붙여넣기 확인은 더는 갈 곳이 없다
             self.w.preedit.clear();
-            if matches!(&self.w.confirm, Some(c) if matches!(&c.pending, Pending::Paste { pane, .. } | Pending::ClipboardRead { pane, .. } if *pane == self.panes[i].id))
+            if matches!(&self.w.confirm, Some(c) if matches!(&c.pending, Pending::Paste { pane, .. } | Pending::ClipboardRead { pane, .. } | Pending::KittyRead { pane, .. } | Pending::KittyWrite { pane, .. } if *pane == self.panes[i].id))
             {
                 self.w.confirm = None;
             }
@@ -5449,6 +5653,8 @@ impl ApplicationHandler<UserEvent> for App {
                     }
                     SessionEvent::ClipboardStore(text) => self.on_clipboard_store(idx, text),
                     SessionEvent::ClipboardLoad(reply) => self.on_clipboard_load(idx, reply),
+                    SessionEvent::KittyClipboardRead(req) => self.on_kitty_read(idx, req),
+                    SessionEvent::KittyClipboardWrite(req) => self.on_kitty_write(idx, req),
                     SessionEvent::CommandStarted(cmd) => self.panes[idx].running = Some((cmd, Instant::now())),
                     SessionEvent::CommandFinished(rec) => self.on_command_finished(idx, rec),
                     SessionEvent::Bell => self.on_bell(idx),
@@ -6278,6 +6484,42 @@ mod tests {
         assert!(p.is_program_prompt());
         assert!(!p.binds_to(&[1, 2, 3]));
         assert!(!Pending::Quit.is_program_prompt());
+    }
+
+    /// kitty 클립보드 확인(#325)도 프로그램의 출력이 띄운 막대라 Enter로 허용하지 않고, 그 칸에 매인다
+    #[test]
+    fn kitty_clipboard_prompts_need_y_and_bind_to_their_pane() {
+        let read = Pending::KittyRead {
+            pane: 7,
+            req: bt_term::kitty_clip::ReadRequest {
+                primary: false,
+                id: String::new(),
+                mimes: vec!["text/plain".into()],
+                list: false,
+                pw: String::new(),
+                name: String::new(),
+                granted: false,
+                bel: false,
+            },
+            text: "x".into(),
+        };
+        let write = Pending::KittyWrite {
+            pane: 7,
+            req: bt_term::kitty_clip::WriteRequest {
+                primary: false,
+                id: String::new(),
+                pw: String::new(),
+                name: String::new(),
+                contents: vec![],
+                granted: false,
+                bel: false,
+            },
+            text: "x".into(),
+        };
+        for p in [read, write] {
+            assert!(p.is_program_prompt());
+            assert!(p.binds_to(&[7]) && !p.binds_to(&[1, 2]));
+        }
     }
 
     #[test]

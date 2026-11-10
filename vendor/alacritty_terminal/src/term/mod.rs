@@ -2978,6 +2978,8 @@ impl<T: EventListener> Handler for Term<T> {
             PrivateMode::Unknown(2048 | 2031) => return,
             // b-terminal(#303): 모드 2033(가시성 보고)도 같다
             PrivateMode::Unknown(2033) => return,
+            // b-terminal(#325): 모드 5522(kitty 붙여넣기 이벤트)도 같다
+            PrivateMode::Unknown(5522) => return,
             PrivateMode::Unknown(_) => ModeState::NotSupported,
         };
 

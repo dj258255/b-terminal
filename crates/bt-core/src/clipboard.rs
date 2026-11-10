@@ -36,6 +36,49 @@ pub enum ClipVerdict {
     Deny,
 }
 
+/// kitty 클립보드 프로토콜(OSC 5522) 읽기 요청의 판단(#325, ADR-030). OSC 52와 같은 정책을 따른다.
+/// `prompt_free`는 확인 없이 답해도 되는 요청이다(목록만 묻거나, 일회용 암호 허가가 있거나, 읽어 갈 글이 비어 있다).
+/// 이런 요청도 `clipboard-read = deny`면 거절한다(Ghostty `kittyClipboardRead`는 정책 검사가 먼저다)
+pub fn decide_kitty_read(
+    access: ClipboardAccess,
+    watching: bool,
+    readonly: bool,
+    bar_busy: bool,
+    prompt_free: bool,
+) -> ClipVerdict {
+    // 정책 검사가 먼저다
+    if access == ClipboardAccess::Deny {
+        return ClipVerdict::Deny;
+    }
+    // 면제는 확인 막대만 건너뛴다. 보는 칸과 읽기 전용 검사는 그대로 지난다
+    if prompt_free {
+        return if watching && !readonly {
+            ClipVerdict::Allow
+        } else {
+            ClipVerdict::Deny
+        };
+    }
+    decide_read(access, watching, readonly, bar_busy)
+}
+
+/// kitty 클립보드 쓰기 거래의 판단. 크기(`len`)·보는 칸·`clipboard-write` 규칙은 `decide_write`와 같다.
+/// `granted`(암호 허가)는 ask의 확인만 건너뛴다. deny와 보지 않는 칸은 그대로 거절한다
+pub fn decide_kitty_write(
+    access: ClipboardAccess,
+    watching: bool,
+    len: usize,
+    limit: Option<usize>,
+    bar_busy: bool,
+    granted: bool,
+) -> ClipVerdict {
+    let access = if granted && access == ClipboardAccess::Ask {
+        ClipboardAccess::Allow
+    } else {
+        access
+    };
+    decide_write(access, watching, len, limit, bar_busy)
+}
+
 /// 막대의 허용 키가 듣기 시작하는 때까지(출력이 막대를 띄운 순간 사람이 치던 키가 허용이 되지 않게)
 pub const CLIP_ARM_DELAY: Duration = Duration::from_millis(600);
 
@@ -208,5 +251,63 @@ mod tests {
         assert!(read_prompt("").contains("비어"));
         let w = write_prompt(&("x".repeat(100)));
         assert!(w.contains("쓰") && w.contains("(100글자)") && w.contains('…'), "{w}");
+    }
+
+    #[test]
+    fn kitty_read_follows_the_osc52_policy_with_a_prompt_exemption() {
+        // deny는 허가·면제가 있어도 거절한다(정책이 먼저)
+        assert_eq!(decide_kitty_read(A::Deny, true, false, false, true), Deny);
+        assert_eq!(decide_kitty_read(A::Deny, true, false, false, false), Deny);
+        assert_eq!(decide_kitty_read(A::Allow, true, false, false, false), Allow);
+        assert_eq!(
+            decide_kitty_read(A::Allow, false, false, false, false),
+            Allow,
+            "OSC 52와 같다: allow는 보지 않는 칸도 답한다"
+        );
+        // ask: 면제·허가가 없으면 묻는다. 있으면 묻지 않는다
+        assert_eq!(decide_kitty_read(A::Ask, true, false, false, false), Ask);
+        assert_eq!(decide_kitty_read(A::Ask, true, false, false, true), Allow);
+        // ask인데 보지 않는 칸·읽기 전용·막대가 이미 떠 있으면 묻지 않고 거절(OSC 52와 같다)
+        assert_eq!(decide_kitty_read(A::Ask, false, false, false, false), Deny);
+        assert_eq!(decide_kitty_read(A::Ask, true, true, false, false), Deny);
+        assert_eq!(decide_kitty_read(A::Ask, true, false, true, false), Deny);
+    }
+
+    #[test]
+    fn kitty_read_exemption_only_skips_the_bar_not_the_watching_and_readonly_checks() {
+        // 일회용 허가·목록 질의·빈 글도 보지 않는 칸과 읽기 전용 칸은 지나지 못한다
+        assert_eq!(decide_kitty_read(A::Ask, false, false, false, true), Deny);
+        assert_eq!(decide_kitty_read(A::Ask, true, true, false, true), Deny);
+        assert_eq!(decide_kitty_read(A::Allow, false, false, false, true), Deny);
+        assert_eq!(decide_kitty_read(A::Allow, true, true, false, true), Deny);
+        // 보는 칸이고 읽기 전용이 아니면 막대 없이 답한다(막대가 떠 있어도: 묻지 않으므로 막대와 부딪치지 않는다)
+        assert_eq!(decide_kitty_read(A::Ask, true, false, false, true), Allow);
+        assert_eq!(decide_kitty_read(A::Ask, true, false, true, true), Allow);
+        // 면제가 아닌 요청의 OSC 52 동작은 그대로다
+        assert_eq!(decide_kitty_read(A::Allow, false, false, false, false), Allow);
+    }
+
+    #[test]
+    fn kitty_write_keeps_watching_size_and_policy_and_a_grant_only_skips_the_bar() {
+        assert_eq!(decide_kitty_write(A::Allow, true, 10, None, false, false), Allow);
+        assert_eq!(decide_kitty_write(A::Deny, true, 10, None, false, true), Deny);
+        assert_eq!(
+            decide_kitty_write(A::Allow, false, 10, None, false, false),
+            Deny,
+            "보지 않는 칸의 쓰기는 버린다"
+        );
+        assert_eq!(decide_kitty_write(A::Ask, true, 10, None, false, false), Ask);
+        assert_eq!(decide_kitty_write(A::Ask, true, 10, None, false, true), Allow);
+        assert_eq!(
+            decide_kitty_write(A::Ask, false, 10, None, false, true),
+            Deny,
+            "허가가 있어도 보지 않는 칸은 안 된다"
+        );
+        assert_eq!(decide_kitty_write(A::Ask, true, 10, None, true, false), Deny);
+        assert_eq!(
+            decide_kitty_write(A::Allow, true, 11, Some(10), false, true),
+            Deny,
+            "상한을 넘음"
+        );
     }
 }

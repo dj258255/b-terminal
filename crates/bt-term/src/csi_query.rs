@@ -131,12 +131,32 @@ pub fn visibility(fin: u8, params: &[u8]) -> Option<Signal> {
         .then_some(Signal::VisibilityReports(fin == b'h'))
 }
 
-/// 스캐너가 쥔 모드(색 구성표 알림 2031, 가시성 보고 2033, 크기 알림 2048)인가
+/// DECRQM 답: 모드 5522(kitty 붙여넣기 이벤트). 켜짐이면 1, 꺼짐이면 2(#325)
+pub fn mode_5522_report(on: bool) -> &'static str {
+    if on { "\x1b[?5522;1$y" } else { "\x1b[?5522;2$y" }
+}
+
+/// 붙여넣기 이벤트 모드(5522)를 켜고 끄는 CSI(`CSI ? … 5522 … h|l`). 여러 모드 중 하나여도 읽는다(#325)
+pub fn kitty_paste(fin: u8, params: &[u8]) -> Option<Signal> {
+    if !matches!(fin, b'h' | b'l') {
+        return None;
+    }
+    let text = size_param(params.strip_prefix(b"?")?)?;
+    if text.contains('?') {
+        return None;
+    }
+    text.split(';')
+        .any(|p| p == "5522")
+        .then_some(Signal::KittyPasteEvents(fin == b'h'))
+}
+
+/// 스캐너가 쥔 모드(색 구성표 알림 2031, 가시성 보고 2033, 크기 알림 2048, 붙여넣기 이벤트 5522)인가
 fn scanner_mode(p: &str) -> Option<u16> {
     match p {
         "2031" => Some(2031),
         "2033" => Some(2033),
         "2048" => Some(2048),
+        "5522" => Some(5522),
         _ => None,
     }
 }
@@ -174,6 +194,7 @@ pub fn inter(inter: u8, fin: u8, params: &[u8]) -> Option<Signal> {
         b"?2048" => Some(Signal::InBandSizeQuery),
         b"?2031" => Some(Signal::ColorSchemeModeQuery),
         b"?2033" => Some(Signal::VisibilityQuery),
+        b"?5522" => Some(Signal::KittyPasteQuery),
         _ => None,
     }
 }
