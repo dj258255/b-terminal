@@ -1,11 +1,20 @@
 //! `GridView`를 GPU가 그릴 인스턴스 목록으로 바꾼다(GPU를 부르지 않는다).
 //!
-//! 그리는 순서(CPU `draw_grid`와 같다): 셀 배경 → 윗줄·취소선 → 글자 → 커서 → 상자 커서 안의 글자.
-//! 사각형과 글리프는 파이프라인이 달라 목록이 둘이고, `*_pre`는 글자 앞, 나머지는 글자 뒤에 그린다
+//! 그리는 순서(CPU `draw_grid`와 같다): 셀 배경 → 윗줄·취소선 → (밑줄 → 글자) → 커서나 조합 중 글 → 상자 커서 안의 글자.
+//! 사각형과 글리프는 파이프라인이 달라 목록이 둘이고, `*_pre`는 글자 앞, 나머지는 글자 뒤에 그린다.
+//!
+//! 밑줄·상자 글자·빈 상자는 CPU가 칸에 그리는 모양을 칸 크기 마스크(`bt_render::sprite`)로 받아 아틀라스에 넣고
+//! 글리프(kind 0)로 그린다(Ghostty가 sprite를 글자와 같은 인스턴스로 그리는 것과 같다).
+//!
+//! 투명 창: `set_see_through`·`set_cells_alpha`를 켜면 칸 바탕이 곱한 알파로 나가고, 렌더러는 바탕을 투명으로 지운 뒤
+//! 칸이 화면을 모두 덮는다(그 모드에서 `build`의 `clear`는 쓰지 않는다). 결과 픽셀은 CPU `Canvas`와 같은 곱한 알파 ARGB다
 
 use bt_core::Rgb;
 use bt_render::font::CellMetrics;
-use bt_render::{CursorStyle, DrawCell, DrawCursor, FontStyle, Fonts, GridView, lock_rects};
+use bt_render::{
+    CursorStyle, DrawCell, DrawCursor, FontStyle, Fonts, GridView, Underline, char_cells, lock_rects, sprite,
+    text_color,
+};
 
 use crate::glyphs::{Entry, GlyphCache, Key};
 
@@ -57,6 +66,10 @@ pub struct Scene {
     pub glyphs: Vec<GlyphInst>,
     /// `glyphs[..glyphs_pre]`는 칸의 글자, 나머지는 상자 커서 안의 글자
     pub glyphs_pre: usize,
+    /// 투명 창(CPU `Canvas::set_see_through`): (기본 바탕색, 알파). 그 색 바탕은 이 알파로 그린다
+    see_through: Option<(Rgb, u8)>,
+    /// `background-opacity-cells`(CPU `Canvas::set_cells_alpha`): 색 바탕 칸의 알파
+    cells_alpha: Option<u8>,
 }
 
 fn rgba(c: Rgb, a: u8) -> [u8; 4] {
@@ -64,6 +77,42 @@ fn rgba(c: Rgb, a: u8) -> [u8; 4] {
 }
 
 impl Scene {
+    /// 투명 창: 앞으로 `bg` 바탕은 `alpha`만큼만 덮는다(CPU `Canvas::set_see_through`와 같다)
+    pub fn set_see_through(&mut self, bg: Rgb, alpha: u8) {
+        self.see_through = Some((bg, alpha));
+    }
+
+    /// 투명 창을 끈다
+    pub fn clear_see_through(&mut self) {
+        self.see_through = None;
+    }
+
+    /// 색 바탕 칸의 알파(CPU `Canvas::set_cells_alpha`와 같다). 없으면 불투명
+    pub fn set_cells_alpha(&mut self, alpha: Option<u8>) {
+        self.cells_alpha = alpha;
+    }
+
+    /// 바탕에 알파가 있어 렌더러가 투명하게 지우고 모든 칸을 그려야 하는가
+    pub fn is_transparent(&self) -> bool {
+        self.see_through.is_some() || self.cells_alpha.is_some()
+    }
+
+    /// CPU `Canvas::solid`: 투명 창의 기본 바탕색이면 그 알파, 아니면 불투명
+    fn solid_alpha(&self, c: Rgb) -> u8 {
+        match self.see_through {
+            Some((bg, a)) if bg == c => a,
+            _ => 255,
+        }
+    }
+
+    /// CPU `Canvas::fill_rect_cell`: 색 바탕 칸은 `cells_alpha`, 기본 바탕색은 `solid_alpha`
+    fn cell_alpha(&self, c: Rgb) -> u8 {
+        match self.cells_alpha {
+            Some(a) if self.see_through.is_none_or(|(bg, _)| bg != c) => a,
+            _ => self.solid_alpha(c),
+        }
+    }
+
     pub fn clear(&mut self) {
         self.rects.clear();
         self.glyphs.clear();
@@ -96,6 +145,20 @@ impl Scene {
         });
     }
 
+    /// 마스크 글리프를 칸 왼쪽 위 `(x, y)`에 놓는다(글리프와 달리 기준선을 거치지 않는다)
+    fn sprite(&mut self, x: i32, y: i32, e: Entry, color: Rgb) {
+        if e.w == 0 || e.h == 0 {
+            return;
+        }
+        self.glyphs.push(GlyphInst {
+            pos: [x as f32, y as f32],
+            size: [e.w as f32, e.h as f32],
+            atlas: [e.x as f32, e.y as f32],
+            color: rgba(color, 255),
+            kind: 0,
+        });
+    }
+
     /// 격자 하나를 목록으로 만든다. `clear`와 같은 바탕색 칸은 그리지 않는다(결과가 같다)
     pub fn build(&mut self, cache: &mut GlyphCache, fonts: &mut Fonts, view: &GridView, clear: Rgb) {
         self.clear();
@@ -103,12 +166,18 @@ impl Scene {
         cache.check_metrics(m);
         let (cw, ch) = (m.width as i32, m.height as i32);
 
-        // 1) 바탕
+        // 1) 바탕. 투명 창이면 렌더러가 투명으로 지우므로 기본 바탕 칸도 알파로 그린다(칸이 화면을 덮는다)
+        let transparent = self.is_transparent();
         for row in 0..view.rows {
             for col in 0..view.cols {
                 let cell = &view.cells[row * view.cols + col];
-                if cell.bg != clear {
-                    self.rect(col as i32 * cw, row as i32 * ch, m.width, m.height, cell.bg, 255);
+                let (color, alpha) = if cell.selected {
+                    (view.selection_bg, self.solid_alpha(view.selection_bg))
+                } else {
+                    (cell.bg, self.cell_alpha(cell.bg))
+                };
+                if transparent || color != clear {
+                    self.rect(col as i32 * cw, row as i32 * ch, m.width, m.height, color, alpha);
                 }
             }
         }
@@ -146,7 +215,8 @@ impl Scene {
         }
         self.rects_pre = self.rects.len();
 
-        // 3) 글자
+        // 3) 글자와 밑줄
+        let mut contrast_memo: Option<((Rgb, Rgb), Rgb)> = None;
         for row in 0..view.rows {
             let py = row as i32 * ch;
             let mut skip_until = 0;
@@ -167,6 +237,36 @@ impl Scene {
                     }
                 }
                 let span = if cell.wide { 2 } else { 1 };
+                let fg = text_color(view, cell, &mut contrast_memo);
+                // 밑줄은 글자 밑에 깐다. 넓은 글자는 칸마다 따로 긋는다(CPU와 같다)
+                if cell.underline != Underline::None {
+                    let color = cell.underline_color.unwrap_or(cell.fg);
+                    let e = cache.get_mask(
+                        Key::Underline(
+                            cell.underline as u8,
+                            m.width,
+                            m.height,
+                            m.underline_offset,
+                            m.underline_thickness,
+                        ),
+                        m.width,
+                        m.height,
+                        || {
+                            sprite::underline_mask(
+                                cell.underline,
+                                m.width,
+                                m.height,
+                                m.underline_offset,
+                                m.underline_thickness,
+                            )
+                        },
+                    );
+                    if let Some(e) = e {
+                        for k in 0..span as i32 {
+                            self.sprite(px + k * cw, py, e, color);
+                        }
+                    }
+                }
                 let emoji = if cell.emoji {
                     cache.get(Key::Emoji(cell.ch, span), || fonts.emoji_glyph(cell.ch, span))
                 } else {
@@ -177,31 +277,62 @@ impl Scene {
                         let ox = (m.width as i32 * span as i32 - e.w as i32) / 2;
                         self.glyph(px + ox, py + m.baseline as i32, e, cell.fg);
                     }
-                    None => self.cell_text(cache, fonts, m, px, py, span, cell, cell.fg),
+                    None => self.cell_text(cache, fonts, m, px, py, span, cell, fg),
                 }
             }
         }
         self.glyphs_pre = self.glyphs.len();
 
-        // 4) 커서
+        // 4) 커서와 조합 중 글
         if let Some(cur) = view.cursor {
             if cur.row < view.rows && cur.col < view.cols {
                 let px = cur.col as i32 * cw;
                 let py = cur.row as i32 * ch;
-                self.cursor(
-                    cache,
-                    fonts,
-                    m,
-                    px,
-                    py,
-                    &cur,
-                    &view.cells[cur.row * view.cols + cur.col],
-                );
+                if let Some(pre) = view.preedit.filter(|p| !p.is_empty()) {
+                    self.preedit(cache, fonts, m, px, py, pre, cur.color, view.selection_bg);
+                } else {
+                    self.cursor(
+                        cache,
+                        fonts,
+                        m,
+                        px,
+                        py,
+                        &cur,
+                        &view.cells[cur.row * view.cols + cur.col],
+                    );
+                }
             }
         }
     }
 
-    /// 칸의 글자 하나(`draw_cell_text`에서 상자 글자를 뺀 것). 넓은 글자나 칸보다 넓은 글리프는 칸 가운데에 둔다
+    /// 조합 중 글(CPU `draw_preedit`): 글자마다 `selection_bg` 칸, 글자, 아래 줄(커서색)
+    #[allow(clippy::too_many_arguments)]
+    fn preedit(
+        &mut self,
+        cache: &mut GlyphCache,
+        fonts: &mut Fonts,
+        m: CellMetrics,
+        px: i32,
+        py: i32,
+        text: &str,
+        color: Rgb,
+        bg: Rgb,
+    ) {
+        let mut x = px;
+        for c in text.chars() {
+            let span = char_cells(c) as u32;
+            let w = m.width * span;
+            self.rect(x, py, w, m.height, bg, self.solid_alpha(bg));
+            self.text_char(cache, fonts, m, x, py, span, c, color, false, false);
+            // 아래 줄은 글자 위에 얹는다(글자와 같은 층의 단색 마스크)
+            if let Some(e) = cache.get_mask(Key::Solid(w, m.stroke), w, m.stroke, || sprite::solid_mask(w, m.stroke)) {
+                self.sprite(x, py + m.height as i32 - m.stroke as i32, e, color);
+            }
+            x += w as i32;
+        }
+    }
+
+    /// 칸의 글자 하나(`draw_cell_text`와 같다)
     #[allow(clippy::too_many_arguments)]
     fn cell_text(
         &mut self,
@@ -214,15 +345,50 @@ impl Scene {
         cell: &DrawCell,
         fg: Rgb,
     ) {
-        let c = cell.ch;
+        self.text_char(cache, fonts, m, px, py, span, cell.ch, fg, cell.bold, cell.italic);
+    }
+
+    /// 글자 `c` 하나를 칸 `(px, py)`에: 상자 글자는 직접 그린 마스크로, 글리프가 없으면 빈 상자로.
+    /// 넓은 글자나 칸보다 넓은 글리프는 칸 가운데에 둔다
+    #[allow(clippy::too_many_arguments)]
+    fn text_char(
+        &mut self,
+        cache: &mut GlyphCache,
+        fonts: &mut Fonts,
+        m: CellMetrics,
+        px: i32,
+        py: i32,
+        span: u32,
+        c: char,
+        fg: Rgb,
+        bold: bool,
+        italic: bool,
+    ) {
         if c == ' ' || c == '\0' {
             return;
         }
-        let style = FontStyle::from_flags(cell.bold, cell.italic);
+        let w = m.width * span;
+        if sprite::may_be_box_char(c) {
+            let e = cache.get_mask(Key::BoxChar(c, w, m.height, m.box_thickness), w, m.height, || {
+                sprite::box_mask(c, w, m.height, m.box_thickness)
+            });
+            if let Some(e) = e {
+                self.sprite(px, py, e, fg);
+                return;
+            }
+        }
+        let style = FontStyle::from_flags(bold, italic);
         let Some(e) = cache.get(Key::Char(c, style), || fonts.glyph(c, style)) else {
+            // 어느 글꼴에도 없는 글자: 빈 상자
+            let e = cache.get_mask(Key::Missing(w, m.height), w, m.height, || {
+                sprite::missing_glyph_mask(w, m.height)
+            });
+            if let Some(e) = e {
+                self.sprite(px, py, e, fg);
+            }
             return;
         };
-        let slot = (m.width * span) as i32;
+        let slot = w as i32;
         let offset = if e.w as i32 > slot - e.left || span > 1 {
             (slot - e.w as i32) / 2 - e.left
         } else {

@@ -169,24 +169,7 @@ fn draw_rows(
             }
             let px = x + col as i32 * cw;
             let span = if cell.wide { 2 } else { 1 };
-            let fg = match (cell.selected, view.selection_fg) {
-                (true, Some(c)) => c,
-                _ => cell.fg,
-            };
-            // 최소 명암비(#123): 바탕과 너무 비슷한 글자색은 흰색이나 검은색으로. 이어지는 칸은 같은 쌍이 많아 앞 결과를 쓴다
-            let fg = if view.min_contrast > 1.0 {
-                let bg = if cell.selected { view.selection_bg } else { cell.bg };
-                match contrast_memo {
-                    Some((pair, out)) if pair == (fg, bg) => out,
-                    _ => {
-                        let out = fg.contrasted(bg, view.min_contrast);
-                        contrast_memo = Some(((fg, bg), out));
-                        out
-                    }
-                }
-            } else {
-                fg
-            };
+            let fg = text_color(view, cell, &mut contrast_memo);
             // 밑줄은 글자보다 먼저 그려 글자 밑에 깐다(Ghostty와 같다. 색 밑줄이 내려가는 획과 겹쳐도 글자가 읽힌다, #276)
             if cell.underline != Underline::None {
                 let color = cell.underline_color.unwrap_or(cell.fg);
@@ -265,6 +248,32 @@ fn draw_rows(
     }
 }
 
+/// 칸의 글자색: 고른 칸이면 `selection_fg`, 최소 명암비(#123)를 켰으면 바탕과 비슷한 색을 흰색이나 검은색으로.
+/// 이어지는 칸은 같은 (글자색, 바탕) 쌍이 많아 앞 결과(`memo`)를 쓴다. GPU 렌더러도 이 함수를 쓴다(규칙은 한 벌)
+pub fn text_color(view: &GridView, cell: &DrawCell, memo: &mut Option<((Rgb, Rgb), Rgb)>) -> Rgb {
+    let fg = match (cell.selected, view.selection_fg) {
+        (true, Some(c)) => c,
+        _ => cell.fg,
+    };
+    if view.min_contrast <= 1.0 {
+        return fg;
+    }
+    let bg = if cell.selected { view.selection_bg } else { cell.bg };
+    match *memo {
+        Some((pair, out)) if pair == (fg, bg) => out,
+        _ => {
+            let out = fg.contrasted(bg, view.min_contrast);
+            *memo = Some(((fg, bg), out));
+            out
+        }
+    }
+}
+
+/// 어느 글꼴에도 없는 글자를 칸 `(px, py, w, h)`에 빈 상자로 그린다
+pub(crate) fn stroke_missing_glyph(canvas: &mut Canvas, px: i32, py: i32, w: u32, h: u32, color: Rgb) {
+    canvas.stroke_rect(px + 1, py + 2, w - 2, h - 4, 1, color);
+}
+
 /// 한 줄에서 합자로 바꿀 글리프 번호(칸마다, 0은 그대로, #96).
 /// 같은 꼴이고 기본 글꼴에 있는 한 칸 글자가 이어진 묶음만 다듬는다. 공백·넓은 글자·이모지·커서 칸에서 끊는다
 /// (커서 밑의 합자는 풀어 보인다. Ghostty와 같다). 공백에서 끊으므로 같은 낱말은 캐시에서 꺼낸다
@@ -327,7 +336,7 @@ fn draw_cell_text(
     }
     let Some(g) = fonts.glyph(c, FontStyle::from_flags(bold, italic)) else {
         // 어느 글꼴에도 없는 글자: 빈 상자
-        canvas.stroke_rect(px + 1, py + 2, m.width * span - 2, m.height - 4, 1, fg);
+        stroke_missing_glyph(canvas, px, py, m.width * span, m.height, fg);
         return;
     };
     // 넓은 글자나 셀보다 넓은 글리프는 칸 가운데에 둔다
