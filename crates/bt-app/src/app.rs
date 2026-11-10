@@ -5092,7 +5092,6 @@ struct FrameMemo {
     panes: Vec<PaneFrame>,
 }
 
-/// 앞 프레임과 견줘 다시 그릴 줄. 앞 프레임이 없거나 크기가 다르면 모두
 /// 칸의 (열, 줄) 수 가운데 마우스·선택이 가리킬 수 있는 것: 엔진 격자와 창 격자 중 작은 쪽(#324).
 /// 격자가 창보다 넓으면 창 밖 열은 보이지 않고, 좁으면 격자 밖 열에는 칸이 없다
 fn pane_cells(session: &bt_term::Session) -> (usize, usize) {
@@ -5101,6 +5100,7 @@ fn pane_cells(session: &bt_term::Session) -> (usize, usize) {
     (cols.min(size.cols as usize).max(1), rows.min(size.rows as usize).max(1))
 }
 
+/// 앞 프레임과 견줘 다시 그릴 줄. 앞 프레임이 없거나 크기가 다르면 모두
 fn dirty_rows(
     cols: usize,
     rows: usize,
