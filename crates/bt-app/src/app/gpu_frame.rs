@@ -8,6 +8,7 @@
 //!
 //! 위층을 그리는 호출은 CPU 길(`redraw`)과 같은 순서의 같은 함수들이다. 그쪽에 덧그림이 더해지면 여기도 맞춘다
 
+use super::gpu_pace::{self, FramePlan, LayerInputs, ViewLayer};
 use super::*;
 
 /// 명령 팔레트: 친 글, 보일 줄들(이름, 단축키), 고른 줄
@@ -44,6 +45,49 @@ pub(super) struct GpuFrame<'a> {
 }
 
 impl App {
+    /// `redraw`의 맨 앞에서 부른다. 참이면 이번 그리기는 하지 않는다(ADR-038).
+    /// 가려진 창은 아무것도 그리지 않고 앞 프레임 기억을 지워, 보이게 되면 층을 통째로 다시 그리게 한다.
+    /// 그림판 얻기가 막힐 것 같으면 아무것도 쓰지 않고 `pace_wake`에 다시 그릴 때를 남긴다(`about_to_wait`가 깨운다).
+    /// 미룬 프레임은 상태를 건드리지 않았으므로 깨어나 그릴 때 그때의 최신 내용이 올라간다
+    pub(super) fn gpu_frame_gate(&mut self) -> bool {
+        let now = Instant::now();
+        let occluded = self.w.occluded;
+        let Some(gfx) = self.w.gfx.as_mut() else { return false };
+        let Some(gpu) = gfx.gpu.as_mut() else { return false };
+        let millihertz = gfx.window.current_monitor().and_then(|m| m.refresh_rate_millihertz());
+        gpu.set_refresh_interval(bt_gpu::pacing::interval_from_millihertz(millihertz));
+        let plan = gpu_pace::plan_frame(occluded, gpu.pace_check(now));
+        let waiting = self.w.pace_wake.take().is_some();
+        match plan {
+            FramePlan::Draw => false,
+            FramePlan::SkipOccluded => {
+                self.w.last_frame = None;
+                self.w.layer_key = None;
+                self.w.pace_stats.occluded += 1;
+                true
+            }
+            FramePlan::Defer(wait) => {
+                self.w.pace_wake = Some(now + wait);
+                if !waiting {
+                    self.w.pace_stats.deferred += 1;
+                }
+                true
+            }
+        }
+    }
+
+    /// 미뤄 둔 프레임을 다시 그릴 때가 된 창을 깨운다
+    pub(super) fn fire_pace_wakes(&mut self, now: Instant) {
+        for w in std::iter::once(&mut self.w).chain(self.others.iter_mut()) {
+            if w.pace_wake.is_some_and(|t| t <= now) {
+                w.pace_wake = None;
+                if let Some(g) = &w.gfx {
+                    g.window.request_redraw();
+                }
+            }
+        }
+    }
+
     pub(super) fn redraw_gpu(&mut self, f: GpuFrame<'_>) {
         let started = Instant::now();
         let theme = self.config.theme.clone();
@@ -96,10 +140,47 @@ impl App {
             .find(|v| v.focused && v.screen.modes.reverse_colors)
             .map_or(theme.background, |v| v.screen.background);
 
-        let full = chrome.overlay
-            || self.w.last_frame.as_ref().is_none_or(|l| l.chrome != chrome)
+        // 층 입력이 앞 프레임과 같으면(진행 막대 값이 그대로 등) 덧그림이 켜져 있어도 층은 그대로다(ADR-038).
+        // 키를 헤아릴 수 없는 덧그림(알림 띠·검색 막대 등)이 있으면 키가 없고 늘 통째로 그린다
+        let key = gpu_pace::layer_key(&LayerInputs {
+            opacity,
+            win_bg,
+            chrome_bg: views.iter().find(|v| v.focused).map(|v| v.screen.chrome_background),
+            theme: &theme,
+            top_inset,
+            scale,
+            single_tab,
+            views: &views
+                .iter()
+                .zip(bars)
+                .map(|(v, bar)| ViewLayer {
+                    bar_shown: bar.0,
+                    bar_hover: bar.1,
+                    history: v.screen.history,
+                    display_offset: v.screen.display_offset,
+                    progress: v.progress,
+                })
+                .collect::<Vec<_>>(),
+            toast: toast.is_some(),
+            secure_badge,
+            hover_hint: hover.as_ref().is_some_and(|(_, h)| link_previews.shows(h.explicit)),
+            search: search.is_some(),
+            palette: palette.is_some(),
+            title_prompt: title_prompt.is_some(),
+            confirm: confirm.is_some(),
+            resize_overlay: !resize_overlays.is_empty(),
+            images: views.iter().any(|v| !v.screen.images.is_empty()),
+        });
+        let structural = self.w.last_frame.as_ref().is_none_or(|l| l.chrome != chrome)
             || self.w.frame.len() != n
             || self.w.upper.len() != n;
+        let reuse = !structural && chrome.overlay && key.is_some() && key == self.w.layer_key;
+        let full = structural || (chrome.overlay && !reuse);
+        if full {
+            self.w.layer_key = key;
+        } else if reuse {
+            self.w.pace_stats.compare_skipped += 1;
+        }
 
         let mut repainted_rows = 0;
         if full {
@@ -365,9 +446,19 @@ impl App {
             self.w.proxy_icon = proxy;
         }
         let Some(outcome) = outcome else { return };
+        if matches!(outcome, bt_gpu::PresentOutcome::Skipped(_)) {
+            // 올리지 못했으니 층이 올라갔는지 믿을 수 없다. 다음 프레임에 층을 통째로 다시 그려 넘긴다
+            // (가려진 창에서는 층을 올리기 전에 돌아오므로 올라가지 않았다, ADR-038)
+            self.w.last_frame = None;
+            self.w.layer_key = None;
+            if matches!(outcome, bt_gpu::PresentOutcome::Skipped("창이 가려졌다")) {
+                self.w.pace_stats.occluded += 1;
+            }
+        }
+        let stats = self.w.pace_stats;
         let t = gpu.timings();
         log::debug!(
-            "다시 그리기: {} {}줄 그리기 {:.2}ms, 올리기까지 {:.2}ms (GPU: 층 올리기 {:.2}({}바이트) 준비 {:.2} 제출·올리기 {:.2} = 얻기 {:.2} 인코딩 {:.2} 제출 {:.2} 올리기 {:.2}, {:?})",
+            "다시 그리기: {} {}줄 그리기 {:.2}ms, 올리기까지 {:.2}ms (GPU: 층 올리기 {:.2}({}바이트) 준비 {:.2} 제출·올리기 {:.2} = 얻기 {:.2} 인코딩 {:.2} 제출 {:.2} 올리기 {:.2}, , {:?}, 누적: 미룬 프레임 {} 가려짐 건너뜀 {} 층 견주기 건너뜀 {})",
             if full { "통째" } else { "바뀐 줄" },
             repainted_rows,
             draw_ms,
@@ -380,7 +471,10 @@ impl App {
             t.encode_ms,
             t.submit_ms,
             t.present_ms,
-            outcome
+            outcome,
+            stats.deferred,
+            stats.occluded,
+            stats.compare_skipped
         );
     }
 }

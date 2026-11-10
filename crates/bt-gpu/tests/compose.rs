@@ -529,6 +529,114 @@ fn partial_layer_upload_keeps_every_frame_equal_to_the_cpu_frame() {
     assert!(g.timings().upload_bytes <= (20 * 8 * 4) as usize);
 }
 
+/// 앱이 층 입력이 같다고 보고 층을 넘기지 않은 프레임(ADR-038)과 미루거나 가려져 건너뛴 프레임 뒤에도,
+/// 합친 결과가 같은 내용의 CPU 프레임과 같아야 한다. 층을 넘기지 않으면 견주지도 올리지도 않는다
+#[test]
+fn frames_without_a_layer_update_keep_the_last_layers_and_follow_later_changes() {
+    let Some(mut g) = gpu() else { return };
+    let mut fx = fixture();
+    let (va, vb) = (view(&fx.sa, &fx.ca, &fx.t), view(&fx.sb, &fx.cb, &fx.t));
+    let panes = [
+        PaneDraw {
+            x: fx.l.a.0,
+            y: fx.l.a.1,
+            view: &va,
+            clear: fx.sa.background,
+        },
+        PaneDraw {
+            x: fx.l.b.0,
+            y: fx.l.b.1,
+            view: &vb,
+            clear: fx.sb.background,
+        },
+    ];
+    let size = (fx.l.w, fx.l.h);
+    let upper_with = |l: &Layout, width: u32| {
+        let mut u = vec![0u32; (l.w * l.h) as usize];
+        bar_ops(&mut Canvas::new(&mut u, l.w, l.h), l, width);
+        u
+    };
+    let reference = |f: &mut Fonts, l: &Layout, bg: Rgb, width: u32| {
+        let mut buf = cpu_reference(f, l, bg, [&va, &vb], false);
+        bar_ops(&mut Canvas::new(&mut buf, l.w, l.h), l, width);
+        buf
+    };
+    let none = || LayerUpdate {
+        lower: None,
+        upper: None,
+    };
+
+    // 1. 첫 프레임(통째)
+    let up1 = upper_with(&fx.l, 40);
+    let got = g.compose(
+        &mut fx.f,
+        size,
+        LayerUpdate {
+            lower: Some(&fx.lower),
+            upper: Some(&up1),
+        },
+        &panes,
+    );
+    assert_close("1. 첫 프레임", &reference(&mut fx.f, &fx.l, fx.sa.background, 40), &got);
+
+    // 2. 층 입력이 같음(진행 막대 값이 그대로): 층을 넘기지 않는다. 견주지도 올리지도 않고 결과는 같다
+    for n in 0..3 {
+        let got = g.compose(&mut fx.f, size, none(), &panes);
+        assert_close(
+            &format!("2. 층 없이 {n}번째"),
+            &reference(&mut fx.f, &fx.l, fx.sa.background, 40),
+            &got,
+        );
+        assert_eq!(g.timings().upload_bytes, 0);
+        assert!(
+            g.timings().upload_ms < 0.2,
+            "층을 넘기지 않으면 견주기도 없다: {}ms",
+            g.timings().upload_ms
+        );
+    }
+
+    // 3. 덧그림이 바뀜(건너뛴 프레임 뒤): 새 층이 반영되고 옛 막대가 남지 않는다
+    let up2 = upper_with(&fx.l, 15);
+    let got = g.compose(
+        &mut fx.f,
+        size,
+        LayerUpdate {
+            lower: Some(&fx.lower),
+            upper: Some(&up2),
+        },
+        &panes,
+    );
+    assert_close(
+        "3. 막대 값 바뀜",
+        &reference(&mut fx.f, &fx.l, fx.sa.background, 15),
+        &got,
+    );
+    let bytes = g.timings().upload_bytes;
+    assert!(
+        bytes > 0 && bytes <= (40 * 3 * 4) as usize,
+        "바뀐 띠만 올라야 한다: {bytes}"
+    );
+
+    // 4. 미루거나 가려져 건너뛴 프레임 뒤: 앱이 층을 통째로 다시 넘겨도(같은 내용) 올릴 것이 없고 결과는 같다
+    let got = g.compose(&mut fx.f, size, none(), &panes);
+    assert_close("4. 건너뜀", &reference(&mut fx.f, &fx.l, fx.sa.background, 15), &got);
+    let got = g.compose(
+        &mut fx.f,
+        size,
+        LayerUpdate {
+            lower: Some(&fx.lower),
+            upper: Some(&up2),
+        },
+        &panes,
+    );
+    assert_close(
+        "4. 통째로 다시",
+        &reference(&mut fx.f, &fx.l, fx.sa.background, 15),
+        &got,
+    );
+    assert_eq!(g.timings().upload_bytes, 0);
+}
+
 /// 층 올리기 비용 재기(E8 준비, 창 없이): `cargo test -p bt-gpu --release --test compose -- --ignored --nocapture upload_cost`
 #[test]
 #[ignore = "시간을 재는 시험(--ignored로 돌린다)"]
