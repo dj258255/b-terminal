@@ -19,6 +19,56 @@ pub enum CursorStyle {
     BlockHollow,
 }
 
+/// `custom-shader` 경로 하나(Ghostty `RepeatablePath`). `optional`이면 `?`로 시작한 경로라 없어도 오류가 아니다.
+/// 상대 경로는 그 줄이 있는 설정 파일의 폴더 기준으로 풀어 둔다(`~/`는 홈)
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ShaderPath {
+    pub path: PathBuf,
+    pub optional: bool,
+}
+
+/// `custom-shader` 값 하나를 푼다. 빈 값은 호출하는 쪽이 목록을 비우는 것으로 다룬다
+pub fn parse_shader_path(v: &str, base: &Path) -> ShaderPath {
+    let (optional, p) = match v.strip_prefix('?') {
+        Some(rest) => (true, rest),
+        None => (false, v),
+    };
+    ShaderPath {
+        path: expand_home(p, base),
+        optional,
+    }
+}
+
+/// `custom-shader-animation`(Ghostty `CustomShaderAnimation`): 사용자 셰이더를 움직이는 때
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CustomShaderAnimation {
+    /// 움직이지 않고 화면이 바뀔 때만 그린다
+    False,
+    /// 초점이 있는 칸만 움직인다(기본)
+    True,
+    /// 초점과 상관없이 늘 움직인다
+    Always,
+}
+
+impl CustomShaderAnimation {
+    pub fn parse(v: &str) -> Option<Self> {
+        match v {
+            "false" => Some(Self::False),
+            "true" => Some(Self::True),
+            "always" => Some(Self::Always),
+            _ => None,
+        }
+    }
+
+    fn render(self) -> &'static str {
+        match self {
+            Self::False => "false",
+            Self::True => "true",
+            Self::Always => "always",
+        }
+    }
+}
+
 /// `link-previews`(Ghostty 1.2): 링크 위에 있을 때 실제 주소 띠를 언제 보일지
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LinkPreviews {
@@ -615,6 +665,10 @@ pub struct Config {
     pub env: Vec<(String, String)>,
     /// `input`: 칸을 띄울 때 PTY에 보낼 데이터. 쓴 차례대로 이어 붙인다(#190)
     pub input: Vec<InputSource>,
+    /// `custom-shader`(여러 번, 적은 순서대로 돈다)
+    pub custom_shader: Vec<ShaderPath>,
+    /// `custom-shader-animation`
+    pub custom_shader_animation: CustomShaderAnimation,
     /// 프로그램이 키보드 잠금 모드(KAM, `CSI 2 h`)로 사람의 키 입력을 막을 수 있는가(Ghostty `vt-kam-allowed`, 기본 끔, #176)
     pub vt_kam_allowed: bool,
     /// 프로그램이 `CSI 8 ; 행 ; 열 t`로 창 크기를 바꿀 수 있는가(Ghostty `vt-window-resize-allowed`, 기본 끔, #176)
@@ -1590,6 +1644,8 @@ impl Default for Config {
             term: DEFAULT_TERM.to_string(),
             env: Vec::new(),
             input: Vec::new(),
+            custom_shader: Vec::new(),
+            custom_shader_animation: CustomShaderAnimation::True,
             vt_kam_allowed: false,
             vt_window_resize_allowed: false,
             image_storage_limit: 320_000_000,
@@ -3205,6 +3261,18 @@ impl Config {
                     }
                 }
             }
+            "custom-shader" => {
+                if v.is_empty() {
+                    self.custom_shader.clear();
+                } else {
+                    self.custom_shader
+                        .push(parse_shader_path(v, e.file.parent().unwrap_or(Path::new("."))));
+                }
+            }
+            "custom-shader-animation" => match CustomShaderAnimation::parse(v) {
+                Some(a) => self.custom_shader_animation = a,
+                None => bad(warnings),
+            },
             "vt-kam-allowed" => match parse_bool(v) {
                 Some(b) => self.vt_kam_allowed = b,
                 None => bad(warnings),
@@ -3760,6 +3828,13 @@ impl Config {
         for src in &self.input {
             push("input", src.render());
         }
+        for sh in &self.custom_shader {
+            push(
+                "custom-shader",
+                format!("{}{}", if sh.optional { "?" } else { "" }, sh.path.display()),
+            );
+        }
+        push("custom-shader-animation", self.custom_shader_animation.render().into());
         push(
             "window-decoration",
             match self.window_decoration {
@@ -3868,8 +3943,6 @@ const KNOWN_IGNORED: &[&str] = &[
     "async-backend",
     "quick-terminal-keyboard-interactivity",
     // 그리기·엔진 쪽(b-terminal의 그리기와 VT 엔진이 다르다)
-    "custom-shader",
-    "custom-shader-animation",
     "alpha-blending",
     "freetype-load-flags",
     "window-vsync",
@@ -5343,8 +5416,6 @@ mod tests {
             "linux-cgroup-memory-limit = 1",
             "linux-cgroup-processes-limit = 1",
             "linux-cgroup-hard-fail = true",
-            "custom-shader = a.glsl",
-            "custom-shader-animation = always",
             "alpha-blending = linear",
             "freetype-load-flags = light",
             "window-vsync = false",
@@ -6603,5 +6674,121 @@ mod tests {
             Config::from_text("theme = nonexistent-a\ntheme =\n", true).render()
         ));
         assert!(no_theme(Config::default().render()));
+    }
+
+    #[test]
+    fn custom_shader_defaults_and_order() {
+        let c = Config::default();
+        assert!(c.custom_shader.is_empty());
+        assert_eq!(c.custom_shader_animation, CustomShaderAnimation::True);
+        let c = Config::from_text(
+            "custom-shader = /a/one.glsl\ncustom-shader = /a/two.glsl\ncustom-shader = /a/three.glsl\n",
+            true,
+        );
+        assert!(c.warnings.is_empty(), "{:?}", c.warnings);
+        let names: Vec<_> = c.custom_shader.iter().map(|s| s.path.display().to_string()).collect();
+        assert_eq!(names, ["/a/one.glsl", "/a/two.glsl", "/a/three.glsl"]);
+        assert!(c.custom_shader.iter().all(|s| !s.optional));
+    }
+
+    #[test]
+    fn custom_shader_question_mark_means_optional_and_empty_clears() {
+        let c = Config::from_text("custom-shader = ?/a/maybe.glsl\ncustom-shader = /a/must.glsl\n", true);
+        assert_eq!(
+            c.custom_shader,
+            [
+                ShaderPath {
+                    path: PathBuf::from("/a/maybe.glsl"),
+                    optional: true
+                },
+                ShaderPath {
+                    path: PathBuf::from("/a/must.glsl"),
+                    optional: false
+                },
+            ]
+        );
+        let c = Config::from_text(
+            "custom-shader = /a/x.glsl\ncustom-shader =\ncustom-shader = /a/y.glsl\n",
+            true,
+        );
+        assert_eq!(c.custom_shader.len(), 1);
+        assert_eq!(c.custom_shader[0].path, PathBuf::from("/a/y.glsl"));
+        let c = Config::from_text("custom-shader = /a/x.glsl\ncustom-shader = \"\"\n", true);
+        assert!(c.custom_shader.is_empty());
+    }
+
+    #[test]
+    fn custom_shader_relative_path_is_relative_to_the_file_with_the_line() {
+        let d = input_dir("shader-rel");
+        std::fs::create_dir_all(d.join("sub")).unwrap();
+        std::fs::write(
+            d.join("main.conf"),
+            "custom-shader = a.glsl\nconfig-file = sub/inc.conf\n",
+        )
+        .unwrap();
+        std::fs::write(d.join("sub/inc.conf"), "custom-shader = ?b.glsl\n").unwrap();
+        let mut w = Vec::new();
+        let mut srcs = Vec::new();
+        let entries = read_entries(&d.join("main.conf"), 0, &mut w, &mut srcs);
+        let mut c = Config::default();
+        c.apply_all(&entries, true, &mut w);
+        assert_eq!(c.custom_shader.len(), 2, "{w:?}");
+        // 줄이 있는 파일의 폴더 기준이다(포함한 파일이면 그 파일의 폴더)
+        assert_eq!(c.custom_shader[0].path, d.join("a.glsl"));
+        assert_eq!(c.custom_shader[1].path, d.join("sub").join("b.glsl"));
+        assert!(c.custom_shader[1].optional);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn custom_shader_tilde_is_the_home_folder() {
+        let sh = parse_shader_path("~/s/x.glsl", Path::new("/etc/bt"));
+        assert_eq!(sh.path, home().join("s/x.glsl"));
+        let sh = parse_shader_path("?~/s/x.glsl", Path::new("/etc/bt"));
+        assert!(sh.optional);
+        assert_eq!(sh.path, home().join("s/x.glsl"));
+    }
+
+    #[test]
+    fn custom_shader_animation_values_and_bad_value_warning() {
+        for (v, want) in [
+            ("false", CustomShaderAnimation::False),
+            ("true", CustomShaderAnimation::True),
+            ("always", CustomShaderAnimation::Always),
+        ] {
+            let c = Config::from_text(&format!("custom-shader-animation = {v}\n"), true);
+            assert!(c.warnings.is_empty(), "{v}: {:?}", c.warnings);
+            assert_eq!(c.custom_shader_animation, want, "{v}");
+        }
+        let c = Config::from_text(
+            "custom-shader-animation = always\ncustom-shader-animation = sometimes\n",
+            true,
+        );
+        assert_eq!(c.warnings.len(), 1, "{:?}", c.warnings);
+        assert_eq!(
+            c.custom_shader_animation,
+            CustomShaderAnimation::Always,
+            "나쁜 값은 앞 값을 둔다"
+        );
+    }
+
+    #[test]
+    fn custom_shader_keys_show_in_render() {
+        let r = Config::default().render();
+        assert!(r.lines().any(|l| l == "custom-shader-animation = true"), "{r}");
+        let r = Config::from_text(
+            "custom-shader = /a/one.glsl\ncustom-shader = ?/a/two.glsl\ncustom-shader-animation = always\n",
+            true,
+        )
+        .render();
+        let lines: Vec<_> = r.lines().filter(|l| l.starts_with("custom-shader")).collect();
+        assert_eq!(
+            lines,
+            [
+                "custom-shader = /a/one.glsl",
+                "custom-shader = ?/a/two.glsl",
+                "custom-shader-animation = always"
+            ]
+        );
     }
 }
