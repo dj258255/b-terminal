@@ -48,6 +48,22 @@ pub struct Face {
 
 /// `path`의 `index`번째 꼴을 읽는다. `sbix_px`를 주면 sbix 표에서 그 크기 이상인 가장 작은 한 벌만 남긴다(없으면 가장 큰 것)
 pub fn read_face(path: &Path, index: u32, sbix_px: Option<u16>) -> io::Result<Face> {
+    read_face_with(path, index, sbix_px, false)
+}
+
+/// 가변 글꼴의 변형 표(`VARIATION_TABLES`)를 뺀 고정 글꼴로 읽는다(#467). 기본 인스턴스 그대로 쓰는 글꼴용
+pub fn read_face_static(path: &Path, index: u32) -> io::Result<Face> {
+    read_face_with(path, index, None, true)
+}
+
+/// 가변 글꼴 축에만 쓰이는 표. 빼면 swash는 축 없는 고정 글꼴로 보고 기본 인스턴스(`glyf`·`hmtx`·`GPOS` 기본값)를 그대로 쓴다.
+/// OpenType 명세: `fvar`가 축을 정의하고, `gvar`·`cvar`(글리프·CVT 변형), `HVAR`·`VVAR`(진행 폭·높이 변형), `MVAR`(`OS/2`·`hhea` 등 글꼴 단위 값 변형),
+/// `avar`(축 값 재배치)는 모두 `fvar`가 있어야 뜻이 있고 기본 인스턴스에는 기여하지 않는다.
+/// `GDEF`·`GPOS`의 ItemVariationStore 참조는 축 좌표가 없으면 쓰이지 않는다(기본값이 이미 표 본문에 있다).
+/// `STAT`(스타일 이름 표)은 8KB 정도라 남긴다
+const VARIATION_TABLES: [[u8; 4]; 7] = [*b"gvar", *b"HVAR", *b"VVAR", *b"MVAR", *b"cvar", *b"avar", *b"fvar"];
+
+fn read_face_with(path: &Path, index: u32, sbix_px: Option<u16>, drop_variation: bool) -> io::Result<Face> {
     let mut f = File::open(path)?;
     let head = read_at(&mut f, 0, 12)?;
     let face_offset = if &head[0..4] == b"ttcf" {
@@ -80,6 +96,9 @@ pub fn read_face(path: &Path, index: u32, sbix_px: Option<u16>) -> io::Result<Fa
     let mut tables = Vec::with_capacity(entries.len());
     let mut sbix_ppem = None;
     for &(tag, checksum, off, len) in &entries {
+        if drop_variation && VARIATION_TABLES.contains(&tag) {
+            continue;
+        }
         let data = match (&tag, sbix_px) {
             (b"sbix", Some(px)) if num_glyphs > 0 => {
                 let (t, ppem) = one_strike(&mut f, off as u64, len, num_glyphs, px)?;
@@ -232,6 +251,22 @@ mod tests {
         // 필드가 16비트라 이만큼 크면 값이 잘리지만(swash는 이 값을 쓰지 않는다) 넘쳐서 멈추지 않는다
         assert_eq!(search_values(40_000).1, 15);
         assert_eq!(search_values(u16::MAX).1, 15);
+    }
+
+    /// #467: 고정 글꼴로 읽으면 변형 표만 빠지고 나머지 표는 그대로다. 일반 읽기는 변형 표도 남긴다
+    #[test]
+    fn static_read_drops_only_variation_tables() {
+        let mut tables = fake_face(false);
+        for tag in VARIATION_TABLES {
+            tables.push((tag, 7, b"VARDATA!".to_vec()));
+        }
+        tables.push((*b"STAT", 8, b"STATDATA".to_vec()));
+        let p = tmp("variable", &write_sfnt(0x0001_0000, &tables));
+        let kept = |d: &[u8]| tables_of(d).into_iter().map(|t| t.0).collect::<Vec<_>>();
+        let all = kept(&read_face(&p, 0, None).unwrap().data);
+        assert!(all.contains(&"gvar".to_string()) && all.contains(&"fvar".to_string()));
+        let fixed = kept(&read_face_static(&p, 0).unwrap().data);
+        assert_eq!(fixed, ["cmap", "maxp", "STAT"]);
     }
 
     #[test]
