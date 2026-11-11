@@ -534,6 +534,51 @@ mod tests {
         }
     }
 
+    /// #460: 키를 비우면(macOS) 시스템 UI 글꼴로 그린다. 그 글꼴의 키가 탭 줄 높이 안에 들어가고 아래 구분선을 덮지 않는다.
+    /// 시스템 UI 글꼴이 없으면(Linux 등) 건너뛴다
+    #[test]
+    fn system_ui_title_font_fits_the_tab_bar() {
+        let Ok(set) = Fonts::new_with_title(&bt_render::FontConfig::default(), None) else {
+            return;
+        };
+        let (mut fonts, mut title) = (set.terminal, set.title);
+        let Some(tf) = title.as_ref() else {
+            eprintln!("건너뜀: 시스템 UI 글꼴이 없어 터미널 글꼴로 그린다");
+            return;
+        };
+        let bh = height_px(&fonts);
+        assert!(
+            tf.metrics().height <= bh,
+            "제목 글꼴 키 {} > 탭 줄 {bh}",
+            tf.metrics().height
+        );
+        let theme = Theme::ghostty_default();
+        let (w, h) = (300u32, 60u32);
+        let mut buf = vec![0u32; (w * h) as usize];
+        let mut c = Canvas::new(&mut buf, w, h);
+        c.clear(theme.background);
+        let mk = |t: &str| TabLabel {
+            title: t.into(),
+            active: false,
+            unread: false,
+            progress: None,
+        };
+        let tabs = [mk(&"Hgjpq안녕 Ég ".repeat(10)), mk("")];
+        draw_with_title_font(&mut c, &mut fonts, title.as_mut(), &theme, &tabs, 0);
+        let border = theme.background.mix(theme.foreground, 0.16);
+        for x in 0..149 {
+            assert_eq!(c.pixel(x, bh - 1), border, "({x})에서 구분선이 덮였다");
+        }
+        let bar = theme.background.mix(theme.foreground, 0.06);
+        let inked = (0..149).any(|x| (0..bh - 1).any(|y| c.pixel(x, y) != bar));
+        assert!(inked, "제목이 그려지지 않았다");
+        for y in 0..bh - 1 {
+            for x in 150..299 {
+                assert_eq!(c.pixel(x, y), bar, "({x},{y})에 첫 탭 제목이 넘어 나왔다");
+            }
+        }
+    }
+
     #[test]
     fn progress_is_ignored_when_style_is_off() {
         assert_eq!(accept_progress(true, 1, 40), Some((1, 40)));

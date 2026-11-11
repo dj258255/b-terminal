@@ -1342,13 +1342,23 @@ mod face_size_tests {
     }
 }
 
-/// 터미널 글꼴과 탭 줄 제목 글꼴(#241 `window-title-font-family`)
+/// 터미널 글꼴과 탭 줄 제목 글꼴(#241 `window-title-font-family`). 키를 비우면 macOS에서는 시스템 UI 글꼴(#460)
 pub struct FontSet {
     pub terminal: Fonts,
-    /// 제목 글꼴. 키가 없거나 글꼴을 못 찾았으면 없다(그러면 제목도 터미널 글꼴로)
+    /// 제목 글꼴. 키가 비었는데 시스템 UI 글꼴도 못 찾았거나 이름의 글꼴을 못 찾았으면 없다(그러면 제목도 터미널 글꼴로)
     pub title: Option<Fonts>,
     /// 제목 글꼴을 못 찾았을 때의 경고
     pub title_warning: Option<String>,
+}
+
+/// 시스템 UI 글꼴을 찾을 때 시도하는 이름과 순서(#460). macOS 26에서 `.SF NS`와 `System Font`는 둘 다 `SFNS.ttf`(가변 글꼴)의
+/// 이름이고 fontdb가 그대로 본다. `.SF NS Text`는 macOS 10.11~10.15의 시스템 글꼴 이름이다(이 기기에서는 확인하지 못했다).
+/// `unsafe` 없이 시스템이 알려 주는 UI 글꼴(CoreText)을 부를 수 없어 이름 목록으로 찾는다. 하나도 없으면 없다
+const SYSTEM_UI_FAMILIES: &[&str] = &[".SF NS", "System Font", ".SF NS Text"];
+
+/// 시스템 UI 글꼴의 패밀리 이름: `SYSTEM_UI_FAMILIES`를 차례로 `has`에 물어 처음 있는 것. 없으면 없다
+fn system_ui_family(has: impl Fn(&str) -> bool) -> Option<&'static str> {
+    SYSTEM_UI_FAMILIES.iter().copied().find(|n| has(n))
 }
 
 impl Fonts {
@@ -1359,7 +1369,15 @@ impl Fonts {
         let db = system_db();
         let terminal = Self::with_database(&db, config)?;
         let (mut title, mut title_warning) = (None, None);
-        if let Some(name) = title_family {
+        // 이름을 정했으면 그 글꼴(없으면 경고). 비웠으면 macOS에서는 시스템 UI 글꼴(#460, 못 찾으면 경고 없이 터미널 글꼴)
+        let name = match title_family {
+            Some(name) => Some(name),
+            None if cfg!(target_os = "macos") => {
+                system_ui_family(|n| load(&db, n, Weight::NORMAL, Style::Normal).is_some())
+            }
+            None => None,
+        };
+        if let Some(name) = name {
             if load(&db, name, Weight::NORMAL, Style::Normal).is_none() {
                 title_warning = Some(format!(
                     "window-title-font-family: 글꼴 \"{name}\"을 찾지 못해 탭 제목을 터미널 글꼴로 그립니다"
@@ -1422,10 +1440,60 @@ mod title_font_tests {
     use super::*;
 
     #[test]
-    fn no_title_family_means_terminal_font() {
+    fn no_title_family_has_no_warning() {
         let s = Fonts::new_with_title(&FontConfig::default(), None).unwrap();
-        assert!(s.title.is_none());
         assert!(s.title_warning.is_none());
+    }
+
+    /// #460: 비우면 시스템 UI 글꼴. 시스템에 그 글꼴이 있을 때만(macOS) 확인하고, 없으면 건너뛴다
+    #[test]
+    fn empty_title_family_uses_system_ui_font_when_present() {
+        let db = system_db();
+        // 시험은 구현의 이름 목록이 아니라 macOS가 실제로 갖는 이름(.SF NS)으로 있는지 본다
+        let present = |n: &str| load(&db, n, Weight::NORMAL, Style::Normal).is_some();
+        let Some(name) = [".SF NS", "System Font"].into_iter().find(|n| present(n)) else {
+            eprintln!("건너뜀: 이 시스템에는 시스템 UI 글꼴이 없다");
+            let s = Fonts::new_with_title(&FontConfig::default(), None).unwrap();
+            assert!(s.title.is_none(), "못 찾으면 터미널 글꼴(제목 글꼴 없음)");
+            return;
+        };
+        let s = Fonts::new_with_title(&FontConfig::default(), None).unwrap();
+        let title = s.title.expect("시스템 UI 글꼴이 제목 글꼴이어야 한다");
+        assert!(
+            title.family_name == name || present(&title.family_name),
+            "제목 글꼴 {:?}",
+            title.family_name
+        );
+        assert!(s.title_warning.is_none());
+        assert!(title.metrics().height > 0);
+    }
+
+    #[test]
+    fn system_ui_family_tries_names_in_order_and_none_when_absent() {
+        assert_eq!(system_ui_family(|_| false), None);
+        let all = SYSTEM_UI_FAMILIES;
+        assert!(!all.is_empty());
+        assert_eq!(system_ui_family(|_| true), Some(all[0]));
+        let last = *all.last().unwrap();
+        assert_eq!(system_ui_family(|n| n == last), Some(last));
+        assert_eq!(system_ui_family(|n| n == "없는글꼴"), None);
+    }
+
+    /// #460: 가변 글꼴(SFNS)을 기본 인스턴스로 읽으면 Regular 굵기여야 한다
+    #[test]
+    fn system_ui_font_default_instance_is_regular() {
+        let db = system_db();
+        let Some(font) = [".SF NS", "System Font"]
+            .iter()
+            .find_map(|n| load(&db, n, Weight::NORMAL, Style::Normal))
+        else {
+            eprintln!("건너뜀: 이 시스템에는 시스템 UI 글꼴이 없다");
+            return;
+        };
+        let f = font.font();
+        assert_eq!(f.attributes().weight().0, 400);
+        assert!(!font.is_bold(&[]));
+        assert!(font.has('A') && font.has('0'));
     }
 
     #[test]
