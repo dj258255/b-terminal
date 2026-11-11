@@ -644,6 +644,161 @@ fn frames_without_a_layer_update_keep_the_last_layers_and_follow_later_changes()
     assert_eq!(g.timings().upload_bytes, 0);
 }
 
+fn frame_panes<'a>(fx: &Fixture, va: &'a GridView<'a>, vb: &'a GridView<'a>) -> [PaneDraw<'a>; 2] {
+    [
+        PaneDraw {
+            x: fx.l.a.0,
+            y: fx.l.a.1,
+            view: va,
+            clear: fx.sa.background,
+        },
+        PaneDraw {
+            x: fx.l.b.0,
+            y: fx.l.b.1,
+            view: vb,
+            clear: fx.sb.background,
+        },
+    ]
+}
+
+/// 색 아틀라스(RGBA 1024x1024 = 4MiB)는 색 글리프(이모지)를 처음 볼 때 잡는다: 글자만 있는 창은 쥐지 않는다(#400).
+/// 처음 본 뒤의 화면은 CPU 기준과 같다
+#[test]
+fn color_atlas_is_taken_when_the_first_color_glyph_shows_up() {
+    let Some(mut g) = gpu() else { return };
+    let mut fx = fixture();
+    let size = (fx.l.w, fx.l.h);
+    let (va, vb) = (view(&fx.sa, &fx.ca, &fx.t), view(&fx.sb, &fx.cb, &fx.t));
+    let none = |lower| LayerUpdate {
+        lower,
+        upper: Some(&[]),
+    };
+    let want = cpu_reference(&mut fx.f, &fx.l, fx.sa.background, [&va, &vb], false);
+    let panes = frame_panes(&fx, &va, &vb);
+    let got = g.compose(&mut fx.f, size, none(Some(&fx.lower)), &panes);
+    assert_close("글자만 있는 프레임", &want, &got);
+    let m = g.gpu_memory();
+    eprintln!("글자만: {m:?}");
+    assert!(m.color_atlas <= 4, "색 글리프가 없으면 색 아틀라스는 1x1이다: {m:?}");
+    assert!(
+        m.atlas_cpu < 2 * 1024 * 1024,
+        "색 아틀라스 CPU 사본도 쥐지 않는다: {m:?}"
+    );
+    assert_eq!(m.gray_atlas, 1024 * 1024, "{m:?}");
+
+    if !fx.f.has_color_emoji() {
+        eprintln!("건너뜀: 색 이모지 글꼴이 없다");
+        return;
+    }
+    let (se, _) = screen("a 😀 \u{2764}\u{fe0f} 🎉 한글", COLS, ROWS);
+    let ce = cells(&se);
+    let ve = view(&se, &ce, &fx.t);
+    let want = cpu_reference(&mut fx.f, &fx.l, fx.sa.background, [&ve, &vb], false);
+    let panes = frame_panes(&fx, &ve, &vb);
+    let got = g.compose(&mut fx.f, size, none(None), &panes);
+    assert_close("처음 본 이모지 프레임", &want, &got);
+    let m = g.gpu_memory();
+    eprintln!("이모지 뒤: {m:?}");
+    assert!(
+        m.color_atlas > 4 && m.color_atlas < 1024 * 1024 * 4,
+        "처음 본 색 글리프에서 작게 잡는다: {m:?}"
+    );
+    // 한 번 잡은 뒤에는 같은 화면이 그대로다
+    let again = g.compose(&mut fx.f, size, none(None), &panes);
+    assert_close("다시 그린 이모지 프레임", &want, &again);
+}
+
+/// 처음 보는 색 글리프(색 아틀라스를 잡는 프레임)의 비용(#400): 새 렌더러에 글자 프레임을 그린 뒤 이모지 프레임을 그리고,
+/// 그 프레임의 벽시계 시간을 같은 이모지를 다시 그린 프레임과 견준다.
+/// `cargo test -p bt-gpu --release --test compose -- --ignored --nocapture first_color_glyph_cost`
+#[test]
+#[ignore = "시간을 재는 시험(--ignored로 돌린다)"]
+fn first_color_glyph_cost() {
+    if gpu().is_none() {
+        return;
+    }
+    let median = |mut v: Vec<f64>| {
+        v.sort_by(|a, b| a.total_cmp(b));
+        v[v.len() / 2]
+    };
+    let (mut first, mut second, mut text) = (Vec::new(), Vec::new(), Vec::new());
+    for _ in 0..15 {
+        let Some(mut g) = gpu() else { return };
+        let mut fx = fixture();
+        if !fx.f.has_color_emoji() {
+            eprintln!("건너뜀: 색 이모지 글꼴이 없다");
+            return;
+        }
+        let size = (fx.l.w, fx.l.h);
+        let (va, vb) = (view(&fx.sa, &fx.ca, &fx.t), view(&fx.sb, &fx.cb, &fx.t));
+        let (se, _) = screen("a 😀 \u{2764}\u{fe0f} 🎉 한글", COLS, ROWS);
+        let ce = cells(&se);
+        let ve = view(&se, &ce, &fx.t);
+        let (pa, pe) = (frame_panes(&fx, &va, &vb), frame_panes(&fx, &ve, &vb));
+        let none = |lower| LayerUpdate {
+            lower,
+            upper: Some(&[]),
+        };
+        let run = |g: &mut GpuRenderer, f: &mut Fonts, lower, panes: &[PaneDraw]| {
+            let t = std::time::Instant::now();
+            g.compose(f, size, none(lower), panes);
+            t.elapsed().as_secs_f64() * 1000.0
+        };
+        let lower = fx.lower.clone();
+        let t0 = run(&mut g, &mut fx.f, Some(&lower), &pa);
+        text.push(t0);
+        first.push(run(&mut g, &mut fx.f, None, &pe));
+        second.push(run(&mut g, &mut fx.f, None, &pe));
+    }
+    eprintln!(
+        "글자 프레임(처음) {:.2}ms, 처음 본 이모지 프레임 {:.2}ms, 같은 이모지 다시 {:.2}ms (중앙값, 15회, 읽어 내기 포함)",
+        median(text),
+        median(first),
+        median(second)
+    );
+}
+
+/// 창 하나의 GPU 자원 내역(#400, 창 없이, 2000x1360, 글자 화면): `cargo test -p bt-gpu --release --test compose -- --ignored --nocapture gpu_memory_report`
+#[test]
+#[ignore = "내역을 찍는다(--ignored로 돌린다)"]
+fn gpu_memory_report_2000x1360() {
+    let Some(mut g) = gpu() else { return };
+    let mut fx = fixture();
+    let (w, h) = (2000u32, 1360u32);
+    let lower = vec![0xff20_242bu32; (w * h) as usize];
+    let (va, vb) = (view(&fx.sa, &fx.ca, &fx.t), view(&fx.sb, &fx.cb, &fx.t));
+    let panes = frame_panes(&fx, &va, &vb);
+    g.compose(
+        &mut fx.f,
+        (w, h),
+        LayerUpdate {
+            lower: Some(&lower),
+            upper: Some(&[]),
+        },
+        &panes,
+    );
+    let m = g.gpu_memory();
+    let mb = |b: usize| b as f64 / 1048576.0;
+    eprintln!("{m:?}");
+    eprintln!(
+        "GPU 합 {:.2}MiB (층 {:.2}, 회색조 아틀라스 {:.2}, 색 아틀라스 {:.2}, 인스턴스 {:.3}, 유니폼 {:.4}), 창 없는 길 전용(그림 텍스처 + 읽기 버퍼) {:.2}MiB",
+        mb(m.gpu_total() - m.offscreen_target),
+        mb(m.layer_textures),
+        mb(m.gray_atlas),
+        mb(m.color_atlas),
+        mb(m.instance_buffers),
+        mb(m.uniform_buffers),
+        mb(m.offscreen_target),
+    );
+    eprintln!(
+        "CPU 합 {:.2}MiB (아틀라스 사본 {:.2}, 층 칸 해시 {:.3}, 임시 버퍼 {:.2})",
+        mb(m.cpu_total()),
+        mb(m.atlas_cpu),
+        mb(m.layer_hashes),
+        mb(m.scratch)
+    );
+}
+
 /// 층 올리기 비용 재기(E8 준비, 창 없이): `cargo test -p bt-gpu --release --test compose -- --ignored --nocapture upload_cost`
 #[test]
 #[ignore = "시간을 재는 시험(--ignored로 돌린다)"]

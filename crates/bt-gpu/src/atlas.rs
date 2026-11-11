@@ -23,6 +23,8 @@ pub struct Atlas {
     data: Vec<u8>,
     shelves: Vec<Shelf>,
     grows: u32,
+    /// 처음 필요할 때 이 크기로 잡는다(0이면 지연 없음). 그 전에는 1x1이다(#400)
+    first: u32,
 }
 
 impl Atlas {
@@ -35,7 +37,23 @@ impl Atlas {
             data: vec![0; (size as usize).pow(2) * bpp as usize],
             shelves: Vec::new(),
             grows: 0,
+            first: 0,
         }
+    }
+
+    /// 처음 자리가 필요할 때까지 1x1로 두고, 그때 한 번에 `first`(한 변)로 잡는 아틀라스.
+    /// 그 첫 잡기는 키운 횟수(`grows`)에 세지 않는다. 이모지를 안 쓰는 창이 색 아틀라스 4MiB를 쥐지 않게 한다
+    pub fn lazy(first: u32, bpp: u32, max: u32) -> Self {
+        let mut a = Self::new(1, bpp, max.max(first));
+        a.first = first.clamp(1, a.max);
+        a
+    }
+
+    /// 같은 크기·지연 설정의 빈 아틀라스(키운 횟수는 0부터)
+    pub fn emptied(&self) -> Self {
+        let mut a = Self::new(self.size, self.bpp, self.max);
+        a.first = self.first;
+        a
     }
 
     pub fn size(&self) -> u32 {
@@ -101,7 +119,12 @@ impl Atlas {
 
     /// 두 배로 키운다. 이미 놓은 조각의 자리는 그대로다. 한도에 닿았으면 거짓
     pub fn grow(&mut self) -> bool {
-        let new = (self.size * 2).min(self.max);
+        let first = self.size < self.first;
+        let new = if first {
+            self.first
+        } else {
+            (self.size * 2).min(self.max)
+        };
         if new <= self.size {
             return false;
         }
@@ -114,7 +137,9 @@ impl Atlas {
         }
         self.data = data;
         self.size = new;
-        self.grows += 1;
+        if !first {
+            self.grows += 1;
+        }
         true
     }
 

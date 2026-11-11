@@ -51,6 +51,10 @@ pub struct Upload {
     pub h: u32,
 }
 
+/// 색 아틀라스를 처음 잡을 때의 한 변(픽셀). 이모지를 처음 볼 때 4MiB를 한꺼번에 잡고 올리면 그 프레임이 0.9ms 늘었다(#400).
+/// 모자라면 두 배씩 큰다
+pub const COLOR_ATLAS_FIRST: u32 = 256;
+
 pub struct GlyphCache {
     pub gray: Atlas,
     pub color: Atlas,
@@ -64,7 +68,7 @@ impl GlyphCache {
     pub fn new(initial: u32, max: u32) -> Self {
         Self {
             gray: Atlas::new(initial, 1, max),
-            color: Atlas::new(initial, 4, max),
+            color: Atlas::lazy(initial.min(COLOR_ATLAS_FIRST), 4, max),
             map: HashMap::new(),
             metrics: None,
             uploads: Vec::new(),
@@ -76,8 +80,8 @@ impl GlyphCache {
         if self.metrics != Some(m) {
             if self.metrics.is_some() {
                 self.map.clear();
-                self.gray = Atlas::new(self.gray.size(), 1, self.gray.max());
-                self.color = Atlas::new(self.color.size(), 4, self.color.max());
+                self.gray = self.gray.emptied();
+                self.color = self.color.emptied();
                 self.uploads.clear();
             }
             self.metrics = Some(m);
