@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use bt_render::{Canvas, DrawCell, DrawCursor, FontConfig, Fonts, GridView, draw_grid, draw_grid_rows};
-use bt_term::{CellFlags, CursorShape, GridSize, Screen, SelectKind, Session, SessionEvent, SpawnOptions};
+use bt_term::{CellFlags, CellSide, CursorShape, GridSize, Screen, SelectKind, Session, SessionEvent, SpawnOptions};
 use winit::application::ApplicationHandler;
 use winit::dpi::{LogicalSize, PhysicalPosition, PhysicalSize};
 use winit::event::{ElementState, Ime, MouseButton, MouseScrollDelta, WindowEvent};
@@ -3147,6 +3147,18 @@ impl App {
         let col = ((pos.x - r.x as f64) / m.width as f64).floor().max(0.0) as usize;
         let row = ((pos.y - r.y as f64) / m.height as f64).floor().max(0.0) as usize;
         Some((col.min(cols.saturating_sub(1)), row.min(rows.saturating_sub(1))))
+    }
+
+    /// 창 좌표가 `cell_in`이 구한 칸의 어느 쪽인가(#437). 글자 고르기가 누른 칸과 끝 칸을 넣을지 이 쪽으로 정한다
+    fn cell_side_in(&self, idx: usize, pos: PhysicalPosition<f64>) -> CellSide {
+        let Some(pane) = self.panes.get(idx) else {
+            return CellSide::Left;
+        };
+        let (Some(m), Some(r)) = (self.metrics_at(pane.font_size), self.pane_inner(pane.id)) else {
+            return CellSide::Left;
+        };
+        let (cols, _) = pane_cells(&pane.session);
+        mouse::cell_side(pos.x - r.x as f64, m.width, cols)
     }
 
     /// 휠이 가리키는 칸의 칸 크기: 마우스 아래 칸, 없으면 고른 칸, 그것도 없으면 창의 기준 크기
@@ -6560,7 +6572,8 @@ impl ApplicationHandler<UserEvent> for App {
                     let rectangle = self.rectangle_select_mods();
                     if let Some((c, r)) = self.cell_in(idx, position) {
                         self.panes[idx].session.select_set_block(rectangle);
-                        self.panes[idx].session.select_update(c, r);
+                        let side = self.cell_side_in(idx, position);
+                        self.panes[idx].session.select_update_at(c, r, side);
                         self.request_redraw();
                     }
                 } else if let Some(m) = self.mouse_reporting(idx) {
@@ -6730,11 +6743,12 @@ impl ApplicationHandler<UserEvent> for App {
                         };
                         self.w.last_click = Some((now, c, r, clicks));
                         let kind = mouse::select_kind(clicks, self.rectangle_select_mods());
+                        let side = self.cell_side_in(idx, self.w.cursor_pos);
                         if let Some(t) = self.active_pane() {
                             if clicks == 1 {
                                 t.session.select_clear();
                             }
-                            t.session.select_start(c, r, kind);
+                            t.session.select_start_at(c, r, kind, side);
                             if clicks > 1 {
                                 t.session.select_update(c, r);
                             }

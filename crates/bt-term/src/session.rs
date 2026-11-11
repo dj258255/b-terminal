@@ -1374,8 +1374,14 @@ impl Session {
         self.inner.lock().term.mouse_shift_capture()
     }
 
-    /// 화면 좌표(보이는 줄 기준)로 고르기를 시작한다
+    /// 화면 좌표(보이는 줄 기준)로 고르기를 시작한다. 시작 칸은 통째로 품는다(쪽은 `Left`)
     pub fn select_start(&self, col: usize, row: usize, kind: SelectKind) {
+        self.select_start_at(col, row, kind, CellSide::Left);
+    }
+
+    /// 칸 안의 어느 쪽을 눌렀는지 알고 고르기를 시작한다(#437, Ghostty `SelectionGesture.dragSelection`).
+    /// 끝 칸의 쪽과 함께 글자·사각 고르기에서 두 가장자리 칸을 넣을지 정한다. 낱말·줄 고르기는 쪽을 보지 않는다
+    pub fn select_start_at(&self, col: usize, row: usize, kind: SelectKind, side: CellSide) {
         let mut g = self.inner.lock();
         let point = viewport_point(&g.term, col, row);
         let ty = match kind {
@@ -1384,7 +1390,7 @@ impl Session {
             SelectKind::Line => SelectionType::Lines,
             SelectKind::Block => SelectionType::Block,
         };
-        g.term.selection = Some(Selection::new(ty, point, Side::Left));
+        g.term.selection = Some(Selection::new(ty, point, side.to_engine()));
         g.sel_end = Some(point);
     }
 
@@ -1401,25 +1407,23 @@ impl Session {
         }
     }
 
+    /// 끝점을 옮긴다. 시작 칸과 끝 칸을 모두 품는다: 끄는 방향이 거꾸로면 가장자리 쪽을 맞춰 두 칸이 빠지지 않게 한다.
+    /// 칸 안 자리를 모르는 호출(링크 고르기, 전체 고르기, 키보드)이 쓴다
     pub fn select_update(&self, col: usize, row: usize) {
         let mut g = self.inner.lock();
         let point = viewport_point(&g.term, col, row);
         if let Some(sel) = g.term.selection.as_mut() {
-            match sel.start_point() {
-                // 사각은 왼쪽으로 끌 때 누른 칸과 끝 칸이 빠지지 않게 가장자리 쪽을 맞춘다(엔진은 시작 칸의 쪽을 처음에 정해 둔다).
-                // 시작점은 엔진의 고르기에서 읽는다: 끄는 중 출력으로 스크롤하면 엔진이 고르기를 함께 옮긴다
-                st if sel.ty == SelectionType::Block => {
-                    let (from, to) = if point.column < st.column {
-                        (Side::Right, Side::Left)
-                    } else {
-                        (Side::Left, Side::Right)
-                    };
-                    let mut next = Selection::new(SelectionType::Block, st, from);
-                    next.update(point, to);
-                    *sel = next;
-                }
-                _ => sel.update(point, Side::Right),
-            }
+            update_inclusive(sel, point);
+        }
+        g.sel_end = Some(point);
+    }
+
+    /// 칸 안의 어느 쪽에서 끌고 있는지 알고 끝점을 옮긴다(#437). 두 가장자리 칸을 넣을지는 누른 쪽과 끈 쪽이 정한다
+    pub fn select_update_at(&self, col: usize, row: usize, side: CellSide) {
+        let mut g = self.inner.lock();
+        let point = viewport_point(&g.term, col, row);
+        if let Some(sel) = g.term.selection.as_mut() {
+            sel.update(point, side.to_engine());
         }
         g.sel_end = Some(point);
     }
@@ -1435,7 +1439,7 @@ impl Session {
         let (top, bottom) = (g.term.topmost_line(), g.term.bottommost_line());
         let next = adjusted_point(end, adj, cols, top, bottom, page);
         if let Some(sel) = g.term.selection.as_mut() {
-            sel.update(next, Side::Right);
+            update_inclusive(sel, next);
         }
         g.sel_end = Some(next);
         g.term.scroll_to_point(next);
@@ -1552,6 +1556,42 @@ pub enum SelectKind {
     Line,
     /// 사각(세로 덩어리) 고르기. 줄을 따라가지 않고 두 끝점이 이루는 사각 안의 칸만 고른다(#433)
     Block,
+}
+
+/// 칸 안의 왼쪽·오른쪽(Ghostty는 칸 너비의 60% 자리를 경계로 가른다, bt-app `mouse::cell_side`)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CellSide {
+    Left,
+    Right,
+}
+
+impl CellSide {
+    fn to_engine(self) -> Side {
+        match self {
+            Self::Left => Side::Left,
+            Self::Right => Side::Right,
+        }
+    }
+}
+
+/// 시작 칸과 끝 칸을 모두 품게 끝점을 옮긴다(#437). 엔진은 쪽으로 가장자리 칸을 넣을지 정하므로 끄는 방향이 거꾸로면
+/// 시작은 `Right`, 끝은 `Left`로 해야 두 칸이 남는다. 시작점은 엔진의 고르기에서 읽는다: 끄는 중 출력으로 스크롤하면
+/// 엔진이 고르기를 함께 옮기므로 따로 들고 있으면 옛 화면 줄을 가리킨다. 사각은 열만 비교한다
+fn update_inclusive(sel: &mut Selection, point: Point) {
+    let start = sel.start_point();
+    let backwards = if sel.ty == SelectionType::Block {
+        point.column < start.column
+    } else {
+        point < start
+    };
+    let (from, to) = if backwards {
+        (Side::Right, Side::Left)
+    } else {
+        (Side::Left, Side::Right)
+    };
+    let mut next = Selection::new(sel.ty, start, from);
+    next.update(point, to);
+    *sel = next;
 }
 
 fn dirs_home() -> Option<PathBuf> {

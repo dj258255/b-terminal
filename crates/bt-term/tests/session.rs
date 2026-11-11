@@ -1918,3 +1918,253 @@ fn decrqm_2031_and_2026_report_the_real_state_with_one_answer() {
         hex_of("\x1b[?2026;2$y")
     );
 }
+
+/// #437: 글자 고르기는 어느 쪽으로 끌어도 누른 칸과 끝 칸을 모두 품는다(`select_start`·`select_update`는 두 칸을 모두 포함한다).
+/// 고치기 전에는 왼쪽(위)으로 끌면 두 칸이 빠졌다(엔진이 시작은 Left, 끝은 Right로만 받았다)
+#[test]
+fn simple_select_includes_both_end_cells_in_every_direction() {
+    use bt_term::SelectKind::Simple;
+    let (s, rx) = sh("printf 'abcdef\\nghijkl\\nmnopqr\\n'", GridSize::new(20, 6));
+    wait_exit(&rx);
+    wait_until(&s, |t| t.contains("mnopqr"));
+    let pick = |(c0, r0), (c1, r1)| {
+        s.select_start(c0, r0, Simple);
+        s.select_update(c1, r1);
+        s.selection_text()
+    };
+    // 이슈의 재현: 오른쪽 아래에서 왼쪽 위로
+    assert_eq!(pick((3, 2), (1, 0)).as_deref(), Some("bcdef\nghijkl\nmnop"));
+    // 왼쪽 위에서 오른쪽 아래로(대조)
+    assert_eq!(pick((1, 0), (3, 2)).as_deref(), Some("bcdef\nghijkl\nmnop"));
+    // 오른쪽 위에서 왼쪽 아래로, 왼쪽 아래에서 오른쪽 위로
+    assert_eq!(pick((3, 0), (1, 2)).as_deref(), Some("def\nghijkl\nmn"));
+    assert_eq!(pick((1, 2), (3, 0)).as_deref(), Some("def\nghijkl\nmn"));
+    // 같은 줄에서 왼쪽으로, 오른쪽으로
+    assert_eq!(pick((4, 1), (1, 1)).as_deref(), Some("hijk"));
+    assert_eq!(pick((1, 1), (4, 1)).as_deref(), Some("hijk"));
+    // 같은 칸에서 끌어도 그 칸 하나
+    assert_eq!(pick((2, 1), (2, 1)).as_deref(), Some("i"));
+}
+
+/// #437: 낱말·줄 고르기는 끄는 방향과 상관없이 낱말·줄 단위다
+#[test]
+fn word_and_line_select_do_not_depend_on_drag_direction() {
+    use bt_term::SelectKind::{Line, Word};
+    let (s, rx) = sh("printf 'abc def\\nghi jkl\\nmno pqr\\n'", GridSize::new(20, 6));
+    wait_exit(&rx);
+    wait_until(&s, |t| t.contains("mno"));
+    for ((c0, r0), (c1, r1)) in [((5, 1), (1, 0)), ((1, 0), (5, 1))] {
+        s.select_start(c0, r0, Word);
+        s.select_update(c1, r1);
+        assert_eq!(
+            s.selection_text().as_deref(),
+            Some("abc def\nghi jkl"),
+            "낱말 ({c0},{r0})->({c1},{r1})"
+        );
+        s.select_start(c0, r0, Line);
+        s.select_update(c1, r1);
+        assert_eq!(
+            s.selection_text().as_deref(),
+            Some("abc def\nghi jkl\n"),
+            "줄 ({c0},{r0})->({c1},{r1})"
+        );
+    }
+}
+
+/// #437: 칸 안의 쪽(Ghostty `SelectionGesture.dragSelection`)이 가장자리 칸을 넣을지 정한다. 네 방향 × 누른 쪽 × 끈 쪽의 복사 글.
+/// 오른쪽으로 끌 때: 누른 칸은 왼쪽을 눌러야, 끝 칸은 오른쪽에서 끌어야 들어간다. 왼쪽으로 끌 때는 반대다
+#[test]
+fn simple_select_edges_follow_the_side_of_the_cell() {
+    use bt_term::CellSide::{Left as L, Right as R};
+    let (s, rx) = sh("printf 'abcdef\\nghijkl\\nmnopqr\\n'", GridSize::new(20, 6));
+    wait_exit(&rx);
+    wait_until(&s, |t| t.contains("mnopqr"));
+    let pick = |(c0, r0, s0), (c1, r1, s1)| {
+        s.select_start_at(c0, r0, bt_term::SelectKind::Simple, s0);
+        s.select_update_at(c1, r1, s1);
+        s.selection_text()
+    };
+    // 오른쪽으로(b -> e)
+    assert_eq!(pick((1, 0, L), (4, 0, R)).as_deref(), Some("bcde"));
+    assert_eq!(
+        pick((1, 0, L), (4, 0, L)).as_deref(),
+        Some("bcd"),
+        "끝 칸은 왼쪽에서 끌면 빠진다"
+    );
+    assert_eq!(
+        pick((1, 0, R), (4, 0, R)).as_deref(),
+        Some("cde"),
+        "누른 칸은 오른쪽을 누르면 빠진다"
+    );
+    assert_eq!(pick((1, 0, R), (4, 0, L)).as_deref(), Some("cd"));
+    // 왼쪽으로(e -> b)
+    assert_eq!(pick((4, 0, R), (1, 0, L)).as_deref(), Some("bcde"));
+    assert_eq!(
+        pick((4, 0, L), (1, 0, L)).as_deref(),
+        Some("bcd"),
+        "누른 칸은 왼쪽을 누르면 빠진다"
+    );
+    assert_eq!(
+        pick((4, 0, R), (1, 0, R)).as_deref(),
+        Some("cde"),
+        "끝 칸은 오른쪽에서 끌면 빠진다"
+    );
+    assert_eq!(pick((4, 0, L), (1, 0, R)).as_deref(), Some("cd"));
+    // 아래로, 위로(이슈의 재현은 위쪽)
+    assert_eq!(pick((1, 0, L), (3, 2, R)).as_deref(), Some("bcdef\nghijkl\nmnop"));
+    assert_eq!(pick((3, 2, R), (1, 0, L)).as_deref(), Some("bcdef\nghijkl\nmnop"));
+    assert_eq!(pick((3, 2, L), (1, 0, R)).as_deref(), Some("cdef\nghijkl\nmno"));
+    assert_eq!(pick((3, 0, L), (1, 2, R)).as_deref(), Some("def\nghijkl\nmn"));
+    assert_eq!(pick((1, 2, R), (3, 0, L)).as_deref(), Some("def\nghijkl\nmn"));
+}
+
+/// #437: 같은 칸 안에서 끌 때와 붙은 두 칸. 누른 쪽에서 끈 쪽으로 칸 하나를 가로지르면 그 칸이 들어가고, 아니면 고른 것이 없다
+/// (Ghostty는 이때 선택을 비운다)
+#[test]
+fn simple_select_inside_one_cell_or_between_adjacent_cells() {
+    use bt_term::CellSide::{Left as L, Right as R};
+    let (s, rx) = sh("printf 'abcdef\\n'", GridSize::new(20, 6));
+    wait_exit(&rx);
+    wait_until(&s, |t| t.contains("abcdef"));
+    let pick = |(c0, s0), (c1, s1)| {
+        s.select_start_at(c0, 0, bt_term::SelectKind::Simple, s0);
+        s.select_update_at(c1, 0, s1);
+        s.selection_text()
+    };
+    assert_eq!(pick((2, L), (2, R)).as_deref(), Some("c"), "왼쪽에서 오른쪽으로");
+    assert_eq!(pick((2, R), (2, L)).as_deref(), Some("c"), "오른쪽에서 왼쪽으로");
+    assert_eq!(pick((2, L), (2, L)), None);
+    assert_eq!(pick((2, R), (2, R)), None);
+    // 한 번 누르기: 끌지 않으면 고른 것이 없다
+    s.select_start_at(2, 0, bt_term::SelectKind::Simple, L);
+    assert_eq!(s.selection_text(), None);
+    // 붙은 두 칸: 가운데 경계만 지나면 아무것도 안 고른다
+    assert_eq!(pick((2, R), (3, L)), None, "오른쪽으로");
+    assert_eq!(pick((3, L), (2, R)), None, "왼쪽으로");
+    assert_eq!(pick((2, L), (3, R)).as_deref(), Some("cd"));
+    assert_eq!(pick((3, R), (2, L)).as_deref(), Some("cd"));
+}
+
+/// #437: 넓은 글자(한 = 0~1칸)의 둘째 칸도 칸 하나로 센다. 둘째 칸의 왼쪽을 누르면 그 글자가 들어가고 오른쪽을 누르면 빠진다
+#[test]
+fn simple_select_counts_the_second_cell_of_a_wide_char() {
+    use bt_term::CellSide::{Left as L, Right as R};
+    let (s, rx) = sh("printf '한a한b\\n'", GridSize::new(20, 6));
+    wait_exit(&rx);
+    wait_until(&s, |t| t.contains('b'));
+    let pick = |(c0, s0), (c1, s1)| {
+        s.select_start_at(c0, 0, bt_term::SelectKind::Simple, s0);
+        s.select_update_at(c1, 0, s1);
+        s.selection_text()
+    };
+    assert_eq!(pick((1, L), (5, R)).as_deref(), Some("한a한b"), "시작이 둘째 칸의 왼쪽");
+    assert_eq!(pick((1, R), (5, R)).as_deref(), Some("a한b"), "시작이 둘째 칸의 오른쪽");
+    assert_eq!(
+        pick((5, R), (1, L)).as_deref(),
+        Some("한a한b"),
+        "거꾸로, 끝이 둘째 칸의 왼쪽"
+    );
+    assert_eq!(
+        pick((5, R), (1, R)).as_deref(),
+        Some("a한b"),
+        "거꾸로, 끝이 둘째 칸의 오른쪽"
+    );
+}
+
+/// #437: 사각 고르기도 같은 쪽 규칙이다. 열만 본다. 같은 열을 세로로 끌 때 누른 쪽이 오른쪽, 끈 쪽이 왼쪽이어도 그 열이 남는다
+#[test]
+fn block_select_edges_follow_the_side_of_the_cell() {
+    use bt_term::CellSide::{Left as L, Right as R};
+    use bt_term::SelectKind::Block;
+    let (s, rx) = sh("printf 'abcdef\\nghijkl\\nmnopqr\\n'", GridSize::new(20, 6));
+    wait_exit(&rx);
+    wait_until(&s, |t| t.contains("mnopqr"));
+    let pick = |(c0, r0, s0), (c1, r1, s1)| {
+        s.select_start_at(c0, r0, Block, s0);
+        s.select_update_at(c1, r1, s1);
+        s.selection_text()
+    };
+    assert_eq!(
+        pick((3, 2, R), (1, 0, L)).as_deref(),
+        Some("bcd\nhij\nnop"),
+        "왼쪽 위로"
+    );
+    assert_eq!(
+        pick((1, 0, L), (3, 2, R)).as_deref(),
+        Some("bcd\nhij\nnop"),
+        "오른쪽 아래로"
+    );
+    assert_eq!(
+        pick((3, 0, R), (1, 2, L)).as_deref(),
+        Some("bcd\nhij\nnop"),
+        "왼쪽 아래로"
+    );
+    assert_eq!(
+        pick((1, 2, L), (3, 0, R)).as_deref(),
+        Some("bcd\nhij\nnop"),
+        "오른쪽 위로"
+    );
+    assert_eq!(
+        pick((3, 2, L), (1, 0, R)).as_deref(),
+        Some("c\ni\no"),
+        "양 끝 칸이 빠진다"
+    );
+    assert_eq!(
+        pick((1, 0, L), (3, 2, L)).as_deref(),
+        Some("bc\nhi\nno"),
+        "끝 칸만 빠진다"
+    );
+    // 같은 열 세로
+    assert_eq!(pick((2, 0, L), (2, 2, R)).as_deref(), Some("c\ni\no"));
+    assert_eq!(
+        pick((2, 0, R), (2, 2, L)).as_deref(),
+        Some("c\ni\no"),
+        "오른쪽을 눌러 왼쪽으로 끌어도 그 열"
+    );
+    assert_eq!(pick((2, 0, L), (2, 2, L)), None, "한 열을 가로지르지 않으면 없다");
+    assert_eq!(pick((2, 0, R), (2, 2, R)), None);
+    // 붙은 열: 경계만 지나면 없다
+    assert_eq!(pick((2, 0, R), (3, 2, L)), None);
+}
+
+/// #437: 낱말·줄 고르기는 쪽을 보지 않는다(어느 쪽을 주어도 같다)
+#[test]
+fn word_and_line_select_ignore_the_side() {
+    use bt_term::CellSide::{Left as L, Right as R};
+    use bt_term::SelectKind::{Line, Word};
+    let (s, rx) = sh("printf 'abc def\\nghi jkl\\nmno pqr\\n'", GridSize::new(20, 6));
+    wait_exit(&rx);
+    wait_until(&s, |t| t.contains("mno"));
+    for (s0, s1) in [(L, L), (L, R), (R, L), (R, R)] {
+        s.select_start_at(5, 1, Word, s0);
+        s.select_update_at(1, 0, s1);
+        assert_eq!(
+            s.selection_text().as_deref(),
+            Some("abc def\nghi jkl"),
+            "낱말 {s0:?} {s1:?}"
+        );
+        s.select_start_at(5, 1, Line, s0);
+        s.select_update_at(1, 0, s1);
+        assert_eq!(
+            s.selection_text().as_deref(),
+            Some("abc def\nghi jkl\n"),
+            "줄 {s0:?} {s1:?}"
+        );
+    }
+}
+
+/// #437: 키보드로 끝점을 옮겨도(#138) 거꾸로 끈 고르기의 끝 칸이 빠지지 않는다. 고치기 전에는 끝이 늘 오른쪽이라 왼쪽으로 옮기면 한 칸이 빠졌다
+#[test]
+fn adjust_selection_keeps_the_end_cell_when_moving_backwards() {
+    use bt_term::SelectionAdjust::Left;
+    let (s, rx) = sh("printf 'abcdef\\n'", GridSize::new(20, 5));
+    wait_exit(&rx);
+    wait_until(&s, |t| t.contains("abcdef"));
+    s.select_start(3, 0, bt_term::SelectKind::Simple);
+    s.select_update(3, 0);
+    assert_eq!(s.selection_text().as_deref(), Some("d"));
+    assert!(s.adjust_selection(Left));
+    assert_eq!(s.selection_text().as_deref(), Some("cd"));
+    assert!(s.adjust_selection(Left));
+    assert_eq!(s.selection_text().as_deref(), Some("bcd"));
+}
