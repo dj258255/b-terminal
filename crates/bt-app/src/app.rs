@@ -786,6 +786,10 @@ struct Win {
     /// 스크롤 막대를 누르고 있는 중(손잡이를 끌거나 빈 곳을 눌러 쪽 단위로 옮긴 누름). 놓을 때까지 마우스는
     /// 프로그램에 보고하지 않고 글도 고르지 않는다
     scrollbar_press: Option<ScrollbarPress>,
+    /// 칸 끌기 손잡이를 누르고 끄는 중(`drag-handle`). 끄는 동안 마우스는 프로그램에 보고하지 않고 글도 고르지 않는다
+    pane_drag: crate::pane_drag::PaneDrag,
+    /// 마우스가 위쪽 띠 안에 있는 칸과 마우스가 손잡이 위인지(`drag-handle`)
+    handle_hover: Option<(u64, bool)>,
     selecting: bool,
     last_click: Option<(Instant, usize, usize, u8)>,
     scroll_accum: f64,
@@ -864,6 +868,8 @@ impl Win {
             cursor_pos: PhysicalPosition::new(0.0, 0.0),
             gutter_hot: None,
             scrollbar_press: None,
+            pane_drag: crate::pane_drag::PaneDrag::default(),
+            handle_hover: None,
             selecting: false,
             last_click: None,
             scroll_accum: 0.0,
@@ -2936,6 +2942,76 @@ impl App {
             .map(|(id, _)| id)
     }
 
+    /// 이 탭의 칸 수와 크게 보는 중인가(손잡이를 보일지·잡을지 정한다)
+    fn handle_env(&self) -> (usize, bool) {
+        match self.w.tabs.get(self.w.active) {
+            Some(g) => (g.layout.leaves().len(), g.zoomed),
+            None => (0, false),
+        }
+    }
+
+    /// 마우스가 잡을 수 있는 손잡이 위에 있으면 그 칸(`drag-handle`). 손잡이가 없거나 옮길 칸이 하나뿐이면 없다
+    fn handle_under_cursor(&self) -> Option<u64> {
+        let (panes, zoomed) = self.handle_env();
+        if !crate::pane_drag::grabbable(self.config.drag_handle, panes, zoomed) {
+            return None;
+        }
+        let pos = self.w.cursor_pos;
+        let id = self.pane_at(pos)?;
+        let outer = self.pane_rect(id)?;
+        crate::pane_drag::handle_rect(outer, self.scale)
+            .contains(pos.x, pos.y)
+            .then_some(id)
+    }
+
+    /// 마우스 아래 칸의 위쪽 띠·손잡이 상태를 다시 읽는다. 바뀌었으면 다시 그린다
+    fn update_handle_hover(&mut self) {
+        let pos = self.w.cursor_pos;
+        let hover = self
+            .pane_at(pos)
+            .and_then(|id| {
+                let outer = self.pane_rect(id)?;
+                crate::pane_drag::hover_band(outer, self.scale)
+                    .contains(pos.x, pos.y)
+                    .then(|| {
+                        (
+                            id,
+                            crate::pane_drag::handle_rect(outer, self.scale).contains(pos.x, pos.y),
+                        )
+                    })
+            })
+            .filter(|_| self.config.drag_handle != bt_core::config::DragHandle::Never);
+        if hover != self.w.handle_hover {
+            self.w.handle_hover = hover;
+            self.request_redraw();
+        }
+    }
+
+    /// 끌던 칸을 마우스 자리에 놓으면 어디에 놓이는가
+    fn drop_target_at_cursor(&self) -> Option<crate::pane_drag::Drop> {
+        let from = self.w.pane_drag.from()?;
+        let pos = self.w.cursor_pos;
+        crate::pane_drag::drop_at(&self.group_layout(self.w.active), from, pos.x, pos.y)
+    }
+
+    /// 끌기를 마쳤다. 옮기기면 트리를 바꾸고 PTY 크기를 맞추고 옮긴 칸을 고른다
+    fn finish_pane_drag(&mut self, outcome: Option<crate::pane_drag::Outcome>) {
+        if let Some(crate::pane_drag::Outcome::Move { from, to, dir }) = outcome {
+            let moved = self.group_of(from) == Some(self.w.active)
+                && self
+                    .w
+                    .tabs
+                    .get_mut(self.w.active)
+                    .is_some_and(|g| !g.zoomed && g.layout.move_pane(from, to, dir));
+            if moved {
+                self.resize_all();
+                self.focus_pane(from);
+            }
+        }
+        self.refresh_pointer();
+        self.request_redraw();
+    }
+
     /// 창 좌표 → 칸 idx의 격자 칸. 칸 밖이면 가장자리 칸으로 붙인다(고르며 끌다 칸을 벗어나도)
     fn cell_in(&self, idx: usize, pos: PhysicalPosition<f64>) -> Option<(usize, usize)> {
         let m = self.fonts.as_ref()?.metrics();
@@ -3001,6 +3077,13 @@ impl App {
             shift: over.is_some() && self.mods.shift_key(),
             reports_to_program: over.is_some_and(|i| self.mouse_reporting(i).is_some()),
             hidden: self.w.pointer_hidden,
+            handle: if self.w.pane_drag.is_active() {
+                crate::pointer::HandleCursor::Dragging
+            } else if self.handle_under_cursor().is_some() {
+                crate::pointer::HandleCursor::Over
+            } else {
+                crate::pointer::HandleCursor::None
+            },
         });
         if icon != self.w.pointer_icon {
             if let Some(g) = &self.w.gfx {
@@ -4968,6 +5051,27 @@ impl App {
             })
             .collect();
         let split = views.len() > 1;
+        // 칸 끌기 손잡이(`drag-handle`)와 놓을 자리 미리 보기. 둘 다 위층에 그리고 `Chrome`에 들어 있어 바뀌면 통째로 다시 그린다
+        let (handle_panes, handle_zoomed) = self.handle_env();
+        let handles: Vec<crate::pane_drag::Look> = views
+            .iter()
+            .map(|v| {
+                let hover = self.w.handle_hover.filter(|h| h.0 == v.id);
+                crate::pane_drag::look(crate::pane_drag::HandleInput {
+                    mode: self.config.drag_handle,
+                    panes: handle_panes,
+                    zoomed: handle_zoomed,
+                    in_band: hover.is_some(),
+                    over_handle: hover.is_some_and(|h| h.1),
+                    dragging: self.w.pane_drag.from() == Some(v.id),
+                })
+            })
+            .collect();
+        let drop_preview: Option<(Rect, crate::split::Direction)> = self
+            .w
+            .pane_drag
+            .target()
+            .and_then(|t| views.iter().find(|v| v.id == t.pane).map(|v| (v.outer, t.dir)));
         let dividers = match self.w.tabs.get(self.w.active) {
             Some(g) if split => g.layout.dividers(self.content_rect(), self.divider_px()),
             _ => Vec::new(),
@@ -5147,6 +5251,8 @@ impl App {
                 .iter()
                 .map(|l| (l.title.clone(), l.active, l.unread, l.progress))
                 .collect(),
+            handles: handles.clone(),
+            drop: drop_preview,
             overlay: toast.is_some()
                 || secure_badge
                 || hover.is_some()
@@ -5158,6 +5264,8 @@ impl App {
                 // kitty 그림은 칸 위에 겹쳐 그린다(#76)
                 || views.iter().any(|v| !v.screen.images.is_empty())
                 || bars.iter().any(|b| b.0)
+                // 손잡이와 놓을 자리는 위층에 그린다. 위층을 쓰는 판단(`chrome.overlay || split`)에 빠지면 단언이 걸린다
+                || crate::pane_drag::needs_upper(&handles, drop_preview.is_some())
                 || (single_tab && views.iter().any(|v| v.progress.is_some())),
             theme: (theme.background, theme.foreground),
             dim: (dim_alpha, dim_fill, divider_color),
@@ -5182,6 +5290,8 @@ impl App {
                 search: &search,
                 preedit: &preedit,
                 resize_overlays: &resize_overlays,
+                handles: &handles,
+                drop_preview,
                 dividers: &dividers,
                 divider_color,
                 dim_alpha,
@@ -5425,6 +5535,12 @@ impl App {
                 for d in &dividers {
                     canvas.fill_rect(d.x, d.y, d.w, d.h, divider_color);
                 }
+                for (v, look) in views.iter().zip(&handles) {
+                    crate::pane_drag::draw_handle(&mut canvas, v.outer, *look, theme.foreground, self.scale);
+                }
+                if let Some((rect, dir)) = drop_preview {
+                    crate::pane_drag::draw_drop(&mut canvas, rect, dir, theme.cursor);
+                }
                 // 실제 주소를 창 왼쪽 아래에 보인다(OSC 8 링크는 보이는 글과 주소가 다를 수 있다)
                 // `link-previews`가 끈 링크는 띠 없이 밑줄만 보인다
                 if let Some((_, hit)) = hover.as_ref().filter(|(_, h)| link_previews.shows(h.explicit)) {
@@ -5549,6 +5665,10 @@ struct Chrome {
     cell: (u32, u32),
     panes: Vec<PaneKey>,
     labels: Vec<LabelKey>,
+    /// 칸마다 손잡이를 어떻게 보이는가(`drag-handle`)
+    handles: Vec<crate::pane_drag::Look>,
+    /// 끌어다 놓을 자리 미리 보기: 놓일 칸의 바깥 사각형과 쪽
+    drop: Option<(Rect, crate::split::Direction)>,
     overlay: bool,
     theme: (bt_core::Rgb, bt_core::Rgb),
     dim: (u8, bt_core::Rgb, bt_core::Rgb),
@@ -6087,6 +6207,17 @@ impl ApplicationHandler<UserEvent> for App {
                 if event.state != ElementState::Pressed {
                     return;
                 }
+                // 칸을 끌던 중 Esc는 끌기를 취소한다(키는 어디에도 가지 않는다)
+                if self.w.pane_drag.is_active()
+                    && matches!(
+                        event.logical_key,
+                        winit::keyboard::Key::Named(winit::keyboard::NamedKey::Escape)
+                    )
+                {
+                    self.w.pane_drag.cancel();
+                    self.finish_pane_drag(None);
+                    return;
+                }
                 // 명령이 끝나 남겨 둔 칸은 아무 키나 누르면 닫는다(wait-after-command, #178)
                 if crate::lifecycle::is_dismiss_key(&event.logical_key) {
                     let held = self
@@ -6153,11 +6284,20 @@ impl ApplicationHandler<UserEvent> for App {
                     self.w.pointer_hidden = false;
                 }
                 self.update_hover();
+                self.update_handle_hover();
                 self.refresh_pointer();
                 let hot = self.gutter_pane();
                 if hot != self.w.gutter_hot {
                     self.w.gutter_hot = hot;
                     self.request_redraw();
+                }
+                // 칸을 끄는 중이면 놓을 자리만 따라간다(프로그램에 보고하지 않고 글도 고르지 않고 고른 칸도 바꾸지 않는다)
+                if self.w.pane_drag.is_active() {
+                    let target = self.drop_target_at_cursor();
+                    if self.w.pane_drag.moved(target) {
+                        self.request_redraw();
+                    }
+                    return;
                 }
                 // 마우스가 올라간 칸을 고른다(focus-follows-mouse, #126). 고르는 중에는 바꾸지 않는다
                 if self.config.focus_follows_mouse && !self.w.selecting {
@@ -6186,7 +6326,25 @@ impl ApplicationHandler<UserEvent> for App {
                     }
                 }
             }
+            WindowEvent::CursorLeft { .. } => {
+                // 창을 벗어났다: 손잡이는 숨고, 끄는 중이면 놓을 자리가 없다(단추를 놓으면 취소)
+                if self.w.handle_hover.take().is_some() {
+                    self.request_redraw();
+                }
+                if self.w.pane_drag.is_active() && self.w.pane_drag.moved(None) {
+                    self.request_redraw();
+                }
+            }
             WindowEvent::MouseInput { state, button, .. } => {
+                // 칸을 끌던 중이면 왼쪽 단추를 놓을 때 끝낸다. 끄는 동안 다른 누름은 아무 데도 가지 않는다
+                if self.w.pane_drag.is_active() {
+                    if button == MouseButton::Left && state == ElementState::Released {
+                        let target = self.drop_target_at_cursor();
+                        let outcome = self.w.pane_drag.release(target);
+                        self.finish_pane_drag(outcome);
+                    }
+                    return;
+                }
                 // 막대를 누르던 중 왼쪽 단추를 놓으면 끝낸다. 놓은 뒤 평소처럼 사라지는 시간을 다시 센다
                 if let Some(press) = self.w.scrollbar_press {
                     if button == MouseButton::Left && state == ElementState::Released {
@@ -6216,6 +6374,16 @@ impl ApplicationHandler<UserEvent> for App {
                         }
                     }
                     return;
+                }
+                // 칸 끌기 손잡이를 누르면 끌기를 시작한다. 프로그램(마우스 보고)·고르기에는 보내지 않는다
+                if state == ElementState::Pressed && button == MouseButton::Left {
+                    if let Some(id) = self.handle_under_cursor() {
+                        if self.w.pane_drag.press(Some(id)) {
+                            self.refresh_pointer();
+                            self.request_redraw();
+                            return;
+                        }
+                    }
                 }
                 // Cmd-클릭: 링크를 연다. 누름과 놓기 모두 프로그램(마우스 보고)·고르기에 보내지 않는다
                 if button == MouseButton::Left {

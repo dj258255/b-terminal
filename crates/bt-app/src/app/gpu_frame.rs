@@ -33,6 +33,10 @@ pub(super) struct GpuFrame<'a> {
     pub search: &'a Option<(u64, String, String, bool)>,
     pub preedit: &'a str,
     pub resize_overlays: &'a [u64],
+    /// 칸마다 끌기 손잡이를 어떻게 보이는가(`drag-handle`)
+    pub handles: &'a [crate::pane_drag::Look],
+    /// 끌어다 놓을 자리 미리 보기: 놓일 칸의 바깥 사각형과 쪽
+    pub drop_preview: Option<(Rect, crate::split::Direction)>,
     pub dividers: &'a [Rect],
     pub divider_color: bt_core::Rgb,
     pub dim_alpha: u8,
@@ -117,6 +121,8 @@ impl App {
             search,
             preedit,
             resize_overlays,
+            handles,
+            drop_preview,
             dividers,
             divider_color,
             dim_alpha,
@@ -337,6 +343,12 @@ impl App {
                 }
                 for d in dividers {
                     upper.fill_rect(d.x, d.y, d.w, d.h, divider_color);
+                }
+                for (v, look) in views.iter().zip(handles) {
+                    crate::pane_drag::draw_handle(&mut upper, v.outer, *look, theme.foreground, scale);
+                }
+                if let Some((rect, dir)) = drop_preview {
+                    crate::pane_drag::draw_drop(&mut upper, rect, dir, theme.cursor);
                 }
                 if let Some((_, hit)) = hover.as_ref().filter(|(_, h)| link_previews.shows(h.explicit)) {
                     tabbar::draw_link_hint(&mut upper, fonts, &theme, &bt_core::proto::printable(&hit.url));
