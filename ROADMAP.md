@@ -859,10 +859,34 @@ vsync를 끈 창의 마지막 화면. 추적 이슈 [#450](https://github.com/dj
 - 이슈를 열기 전에 단계별(띄운 뒤·짧은 명령 뒤·빠른 출력 뒤)로 재니 앞 판의 대가 설명(셰이더 창만)이 좁았던 것이 드러났습니다.
 - 결정 기준에 '효과가 없으면 잰 값과 함께 문서에 적고 닫는다'를 미리 적어 두어 첫 실험 뒤 바로 멈출 수 있었습니다.
 
+## 0.49.0 (2026-11-12)
+
+Ghostty 기본값 맞추기. 추적 이슈 [#458](https://github.com/dj258255/b-terminal/issues/458).
+
+0.48 ROADMAP '다음'에 범수 님이 정할 것으로 남긴 기본값들을, 범수 님이 "계속해줘 끝까지 다해줘"(앞서 "묻지말고 전부")라 하셔서 주 세션이 추천안(Ghostty와 같게)으로 정했습니다. 서브에이전트 셋이 worktree에서 동시에 구현했습니다. 주 세션은 검토, 실제 창(탭 줄), SECURITY.md·ADR-046, 병합, 릴리스를 맡았습니다.
+
+- 시각(KST): 추적 이슈와 하위 이슈를 06:48에 열고, #464를 07:29에 병합했습니다.
+- 그대로 두기로 정한 것
+  - `window-colorspace` 기본 `display-p3`: `srgb`면 GPU 길을 쓰지 못합니다.
+  - 스크롤백 바이트 상한 세는 법: 우리 칸은 24바이트, Ghostty 칸은 8바이트입니다. 실제 크기로 세면 같은 10MB에서 기록이 Ghostty의 약 3분의 1이 됩니다.
+  - `window-vsync = false`의 올리기: ADR-045 그대로, 까닭을 모르는 다시 올리기는 택하지 않습니다.
+
+| 이슈 | 내용 | 예상 | 실제 | PR | 주 세션이 한 것 |
+|---|---|---|---|---|---|
+| [#459](https://github.com/dj258255/b-terminal/issues/459) | 포인터 기본 I자 | 1시간 | 약 26분(이슈 06:48부터 병합 07:14까지, 에이전트 약 9.1분) | [#462](https://github.com/dj258255/b-terminal/pull/462) | 검토에서 X10 모드(`?9h`)만 켠 프로그램에 마우스 누름이 가지 않던 버그(#300부터)를 찾아 시험을 먼저 쓰고 고쳤습니다. 옮겨 붙은 doc 주석을 바로잡았습니다 |
+| [#460](https://github.com/dj258255/b-terminal/issues/460) | 제목 글꼴을 비우면 시스템 UI 글꼴 | 1~2시간 | 약 33분(이슈 06:48부터 병합 07:21까지, 에이전트 약 8.4분) | [#463](https://github.com/dj258255/b-terminal/pull/463) | 실제 창에서 0.47.0과 번갈아 탭 줄을 찍었습니다(잘리던 제목이 끝까지 보이고 한글이 대체 글꼴 폭으로 이어짐). 첫 프레임까지 일곱 회씩 쟀습니다(첫 회 뺀 중앙값 166.9 → 167.8ms) |
+| [#461](https://github.com/dj258255/b-terminal/issues/461) | `clipboard-read` 기본 `ask` | 1시간 | 약 41분(이슈 06:48부터 병합 07:29까지, 에이전트 약 8.0분) | [#464](https://github.com/dj258255/b-terminal/pull/464) | 막대 없이 답하는 세 갈래(종류 목록, 빈 클립보드, 붙여넣기 이벤트 암호)를 받아들일지 정했습니다. 커밋 보안 검토의 '기본값 완화'에 대가를 ADR-046에 적어 답했습니다. SECURITY.md를 고치고 ADR-019·030에 갱신 표시를 했습니다 |
+
+이번에 배운 것:
+
+- 에이전트가 새 함수를 넣을 때 바로 위 함수의 doc 주석 사이에 끼워 넣으면, 옛 주석이 새 함수로 옮겨 붙습니다(#459 `mouse_mode_on`). 검토 때 doc 주석이 어느 함수 위에 있는지 봅니다.
+- 기본값을 Ghostty와 맞추며 '같은 판정을 쓰는 다른 길'을 따라가다 기존 버그를 찾았습니다(X10). 엔진이 모드를 켤 때 다른 모드를 지우는지(`remove(MOUSE_MODE)`)를 벤더 소스로 봅니다.
+- PR 본문의 에이전트 시간을 짐작으로 적었다가(약 14분) 병합 뒤 작업 알림의 `duration_ms`(9.1·8.0분)로 고쳤습니다. 본문을 쓰기 전에 알림 값을 옮겨 적습니다.
+
 ## 다음
 
 - 범수 님이 직접 해야 할 것: 키보드·마우스 확인(한글 2벌식 "안녕 하세요⏎", Claude Code의 Shift+Enter, Cmd-D·Cmd-F·Cmd-클릭·Cmd-N·Cmd-Shift-P, 메뉴, 창 닫기 단추, vim·htop, kitty icat·yazi, 투명 창), Developer ID 계정으로 `scripts/bundle-macos.sh --sign … --notarize … --dmg`
-- 범수 님이 정할 것: `window-colorspace` 기본값(ADR-009)
+- 정함(0.49, 주 세션 추천안): `window-colorspace` 기본은 `display-p3` 그대로(`srgb`면 GPU 길을 못 씀). 바꾸시려면 알려 주세요
 - 범수 님이 확인할 것(0.6): 퀵 터미널을 실제 전역 단축키로(`keybind = global:ctrl+backquote=toggle_quick_terminal`), 외부 모니터로 창을 옮겼을 때 present 시간(`RUST_LOG=b_terminal=debug`)
 - 범수 님이 확인할 것(0.7): `sleep 100` 중에 ⌘W → 확인 막대 → esc는 그대로·↩는 닫힘, 프롬프트에서 ⌘W는 바로 닫힘, ⌘Q도 같게. 셸에서 `cat` 중에 두 줄 글 ⌘V → 붙여넣기 확인 막대. `keybind = ctrl+a>n=new_window` 뒤 Ctrl-A·N → 새 창, Ctrl-A·X → `^A`와 `x`가 셸로. 다른 탭에서 `sleep 2; printf '\a'` → 탭 제목에 🔔
 - 범수 님이 확인할 것(0.8): 메뉴 "셸 › 제목 바꾸기…"로 탭 제목 붙이고 비우기, 팔레트 "스크롤백을 파일로 열기"와 앱을 끈 뒤 `$TMPDIR/b-terminal-$(id -u)/files`가 비었는지, `focus-follows-mouse = true`로 분할 칸 위를 마우스로 오가기, 단어 두 번 눌러 고르기(`;`·`$`에서 끊김), ⌃⌘F 전체 화면
@@ -873,12 +897,12 @@ vsync를 끈 창의 마지막 화면. 추적 이슈 [#450](https://github.com/dj
 - 범수 님이 확인할 것(0.13): OSC 8 링크를 Cmd를 누른 채 올려 `link-previews = osc8`·`false`에서 주소 띠가 어떻게 나오는지, `seq 1 500` 뒤 휠로 올려 스크롤 막대가 나왔다 사라지는지, `key-remap = left_ctrl=super`와 `keybind = super+t=new_tab`으로 왼쪽 Ctrl-T(오른쪽 Ctrl-C는 그대로 SIGINT), `macos-icon = custom`과 `macos-custom-icon`으로 Dock 아이콘, `quick-terminal-space-behavior = remain`에서 Space 옮기기, `macos-titlebar-style = hidden`에서 창 위쪽 끌기, `font-thicken = true`의 두께
 - 범수 님이 확인할 것(0.14): `keybind = ctrl+alt+r=toggle_readonly`로 칸을 읽기 전용으로 한 뒤 타자·⌘V·`btctl send`가 막히고 제목에 🔒가 붙는지, `prompt_tab_title`의 입력 막대, `move_tab_to_new_window`, `toggle_visibility`, `toggle_background_opacity`(`background-opacity = 0.8`과 함께), `set_window_theme:light`, `keybind = ctrl+a>activate_key_table:nav`와 `nav/h=goto_split:left` 같은 키 테이블
 - 범수 님이 확인할 것(0.15): `seq 1 500` 뒤 오른쪽 끝 막대를 끌고 빈 곳 누르기, `theme = light:GitHub Light Default,dark:GitHub Dark`로 시스템 설정의 모양을 바꿔 색이 바로 바뀌는지, `clipboard-write = ask`·`clipboard-read = ask`에서 막대가 뜰 때 Enter가 허용이 아닌지·`y`는 되는지, 탭 제목을 붙이고 ⌘Q 뒤 다시 켜서 되살아나는지
-- 범수 님이 정할 것(0.15): `clipboard-read` 기본을 Ghostty처럼 `ask`로 바꿀지(지금 `deny`)
+- 정함(0.49): `clipboard-read` 기본을 Ghostty처럼 `ask`로 바꿨습니다(#461, ADR-046). 되돌리시려면 알려 주세요
 - 범수 님이 확인할 것(0.16): `theme = light:…,dark:…`에서 nvim을 켜고 시스템 모양을 바꿔 nvim 색이 따라오는지(모드 2031), `EDITOR="code -w" b-terminal +edit-config`, `b-terminal +list-keybinds`가 실제 설정의 키 묶음과 맞는지, `b-terminal +show-face --string="가😀"`가 창에 그려지는 글꼴과 같은지
 - 범수 님이 확인할 것(0.17): `background-opacity = 0.7`·`background-blur = 20`으로 퀵 터미널 뒤도 흐린지, nvim·tmux 같은 프로그램이 OSC 22로 포인터를 바꾸는지(`printf '\033]22;crosshair\033\\'` 뒤 마우스를 칸 위로), `window-title-font-family`로 여러 글꼴을 써 보기
-- 범수 님이 정할 것(0.17): `window-title-font-family`를 비울 때 Ghostty처럼 시스템 글꼴을 쓸지(지금 터미널 글꼴)
+- 정함(0.49): `window-title-font-family`를 비우면 macOS에서 시스템 UI 글꼴로 그립니다(#460)
 - 범수 님이 확인할 것(0.18): 셸에서 마우스를 칸 위에 두고 Shift를 누르면 I자가 되는지, `printf '\033]22;progress\007'` 뒤 `printf '\033[?1000h'`로 모양이 화살표로 돌아오는지
-- 범수 님이 정할 것(0.18): OSC 22를 받기 전 기본 포인터를 Ghostty처럼 I자로 할지(지금 화살표)
+- 정함(0.49): 기본 포인터는 Ghostty처럼 I자, 마우스 보고 모드인 칸만 화살표(#459)
 - 범수 님이 확인할 것(0.19): 셸에서 `sudo -k; sudo true`의 암호 프롬프트에서 커서가 자물쇠가 되고 창 오른쪽 위 배지가 뜨는지, 앱 메뉴 `b-terminal › 보안 키보드 입력`을 켜고 다른 앱으로 갔다 와 보기(그 앱의 단축키 도구가 다시 동작하는지), `keybind = ctrl+shift+s=toggle_secure_input`
 - 범수 님이 확인할 것(0.20): vim·neovim을 켜서 색·배경 판단이 그대로인지(DA1·DA2 값과 OSC 11 답이 바뀜), tmux 안에서 `tmux info`의 `Tc`·`Smulx`·`Sync`가 잡히는지(XTGETTCAP), 창 크기를 끌어 바꾸며 모드 2048을 쓰는 프로그램이 따라오는지
 - 범수 님이 확인할 것(0.21): 셸에서 단어 위 오른쪽 클릭 → 단어가 골라지고 메뉴(복사·붙여넣기·나누기·닫기·초기화·읽기 전용·제목)가 뜨는지, 메뉴 붙여넣기에서 두 줄 글이면 보호 막대, Ctrl+왼쪽 클릭, vim 안에서는 메뉴가 뜨지 않는지. `scripts/bundle-macos.sh`로 만든 앱을 Dock에 두고 폴더를 끌어놓으면 새 탭, `.sh`를 끌어놓으면 확인 막대가 뜨고 Enter가 아니라 `y`로만 실행되는지, `it's.sh`는 실행하지 않고 알림 띠만 뜨는지, 앱이 꺼진 채로 끌어놓았을 때
@@ -900,7 +924,7 @@ vsync를 끈 창의 마지막 화면. 추적 이슈 [#450](https://github.com/dj
 - 범수 님이 확인할 것(0.37): 앱 묶음을 띄워 이모지를 처음 찍을 때(`printf '😀🎉🚀\n'`) 깜빡이거나 빈 칸이 보이지 않는지, 이모지를 많이 찍는 프로그램(예: `gh`·`lazygit`의 아이콘)에서 화면이 이상하지 않은지
 - 범수 님이 확인할 것(0.38): `alpha-blending = linear-corrected`와 `linear`로 평소 쓰는 테마에서 글자가 읽기 좋은지(특히 색 글자), 설정을 바꾸고 `btctl reload-config` 뒤 바로 바뀌는지, `window-vsync = false`로 새 창을 열어 타자 느낌과 빠른 출력에서 찢어짐이 보이는지(이상하면 `true`로 되돌림)
 - 범수 님이 확인할 것(0.39): 칸을 둘 이상으로 나눈 뒤 칸 위쪽 가운데에 마우스를 올리면 점 셋이 보이고 포인터가 손 모양이 되는지, 눌러 다른 칸 위로 끌면 가까운 변 쪽 절반이 커서 색으로 덮이는지, 놓으면 그 자리로 칸이 옮겨지고 내용은 그대로인지, Esc·탭 줄에 놓기는 아무것도 바뀌지 않는지, vim(`set mouse=a`) 위에서 손잡이를 눌러도 vim이 클릭을 받지 않는지
-- 범수 님이 정할 것(0.39): 스크롤백 바이트 상한을 실제 줄 크기(칸 수 × 24바이트)로 셀지. 그러면 기본 1000만 바이트가 124칸 창에서 약 3,200줄로 줄어듭니다(지금 1만 줄, 약 32MB)
+- 정함(0.49, 주 세션 추천안): 스크롤백 바이트 상한은 지금처럼 셉니다(실제 크기로 세면 같은 10MB에서 Ghostty보다 기록이 약 3분의 1). 메모리를 줄이고 싶으시면 `scrollback-limit` 값을 낮추거나 세는 법을 바꾸라고 알려 주세요
 - 범수 님이 확인할 것(0.40): 창 둘을 열고 한 창에서 ⌘+를 눌렀을 때 그 창만 커지는지, 커진 창에서 ⌘N으로 연 새 창이 같은 크기인지(`window-inherit-font-size = false`면 `font-size`), 설정을 다시 읽어도(`font-size`를 바꾸지 않으면) 크기가 그대로인지
 - 범수 님이 확인할 것(0.41): 창을 좌우로 나눈 뒤 한 칸에서 ⌘+를 눌러 그 칸만 커지는지, 큰 칸에서 한글·커서·IME 조합·마우스 고르기·링크가 맞는지, 큰 칸에서 나눈 새 칸이 같은 크기인지, 두 칸 사이로 초점을 옮겨도 탭 줄이 흔들리지 않는지
 - 범수 님이 확인할 것(0.42): 저전력 모드를 끈 채로 `RUST_LOG=b_terminal=debug,bt_gpu=info <앱 묶음>/Contents/MacOS/b-terminal`을 띄워 `seq 1 300000`을 돌리고, 로그의 "다시 그리기" 줄 누적 "미룬 프레임"이 프레임 수만큼 늘어나는지(늘면 끈 상태에서도 화면이 60Hz 꼴, 거의 늘지 않으면 저전력 모드가 원인). 그 결과를 알려 주시면 실험 E19에 적습니다
@@ -910,6 +934,7 @@ vsync를 끈 창의 마지막 화면. 추적 이슈 [#450](https://github.com/dj
 - 범수 님이 확인할 것(0.45): 커서 꼬리 같은 Ghostty용 셰이더를 걸고 화면을 좌우로 나눠, 칸마다 따로 그려지는지, 고른 칸의 커서에만 꼬리가 붙는지, 팔레트(Cmd-Shift-P)·찾기(Cmd-F)·닫기 확인 막대가 셰이더에 덮이지 않는지, `custom-shader-animation = true`에서 초점 없는 칸이 멈추는지
 - 범수 님이 확인할 것(0.46): 앱 묶음을 띄워 명령을 친 뒤 출력이 끝난 화면이 바로 보이는지(전에는 가끔 앞 화면에 멈춤), 셰이더를 건 창에서 칸을 나누고 닫아도 화면이 맞는지
 - 범수 님이 확인할 것(0.47): `window-vsync = false`로 새 창을 열어 명령을 친 뒤 출력이 끝난 화면이 바로 보이는지(전에는 거의 늘 앞 화면에 멈춤), 타자 느낌이 `true`와 다른지
-- 범수 님이 정할 것(0.47): `window-vsync = false`의 빠른 출력(약 30%)을 되살리고 싶으면 '마지막 프레임 뒤 다시 올리기'로 바꿀 수 있습니다(ADR-045 '하지 않은 것', 12회 중 0회로 고쳐졌지만 까닭을 모르고 출력 중 메인 스레드 막힘이 남음)
-- 다음 판: 이 기기에서 잴 수 있고 범수 님의 결정이 필요 없는 큰 일은 남지 않았습니다. 남은 것은 범수 님이 정할 것(스크롤백 바이트 상한, `unsafe_code` 풀기에 따른 `CADisplayLink`·`CAMetalLayer` 직접 조작, `window-vsync = false`의 다시 올리기, `clipboard-read` 기본, 포인터 기본, `window-colorspace`)과 직접 확인할 것(키보드·마우스, 서명·공증)입니다. 그 결정에 따라 다음 판을 엽니다
+- 정함(0.49, 주 세션 추천안): `window-vsync = false`는 ADR-045 그대로 둡니다. 빠른 출력(약 30%)을 되살리고 싶으시면 '마지막 프레임 뒤 다시 올리기'로 바꿀 수 있습니다(12회 중 0회로 고쳐졌지만 까닭을 모르고 출력 중 메인 스레드 막힘이 남음)
+- 범수 님이 확인할 것(0.49): 셸 위 포인터가 I자인지, vim `set mouse=a` 안에서 화살표가 되고 나오면 I자로 돌아오는지, 탭 줄 제목이 시스템 글꼴로 보기 좋은지, nvim의 OSC 52 붙여넣기(`vim.g.clipboard = 'osc52'`)에서 막대가 뜨고 `y`·`n`이 맞게 동작하는지
+- 다음 판: GPU 길에서 `window-colorspace = srgb`를 쓸 수 있는지 조사합니다(지금은 `srgb`면 CPU 길로 떨어짐). Ghostty는 GPU로 색을 맞춥니다. `unsafe` 없이 셰이더에서 sRGB → 화면 색 공간 변환을 할 수 있는지, 화면 색 공간을 어떻게 아는지가 관건입니다
 - 큰 일로 남긴 것: Linux에서 GPU 길 재기와 기본 바꾸기, 화면이 장을 가져가는 때에 맞춰 그리기(Ghostty의 CVDisplayLink 같은 것)
