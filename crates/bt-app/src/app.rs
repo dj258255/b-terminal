@@ -4085,12 +4085,12 @@ impl App {
         self.mods = keys::remapped_state(&self.config.key_remap, self.raw_mods);
     }
 
-    /// 칸 idx의 프로그램이 마우스 보고를 켰으면 그 모드
-    /// 칸의 마우스 보고 모드(X10·버튼·움직임)가 켜져 있는가. Shift·`mouse-reporting`·읽기 전용과 상관없이 모드만 본다(#459)
+    /// 칸의 마우스 보고 모드(X10·누름·버튼·움직임)가 켜져 있는가. Shift·`mouse-reporting`·읽기 전용과 상관없이 모드만 본다(#459)
     fn mouse_mode_on(m: bt_term::Modes) -> bool {
-        m.mouse_report || m.mouse_drag || m.mouse_motion
+        m.mouse_x10 || m.mouse_report || m.mouse_drag || m.mouse_motion
     }
 
+    /// 칸 idx의 프로그램이 마우스 보고를 켰으면 그 모드
     fn mouse_reporting(&self, idx: usize) -> Option<bt_term::Modes> {
         let pane = self.panes.get(idx)?;
         // 읽기 전용 칸은 프로그램에 마우스를 보내지 않는다. 마우스는 고르기·스크롤에 쓴다(#209, ADR-018)
@@ -7095,6 +7095,21 @@ fn apply_hidden_from_dock(hidden: bt_core::config::MacHidden) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mouse_mode_counts_x10_like_ghostty() {
+        // 엔진은 DECSET 9를 켜면 다른 마우스 모드를 모두 지우고 X10만 남긴다. 그래도 보고 모드다(Ghostty `mouse_event`)
+        let m = |f: fn(&mut bt_term::Modes)| {
+            let mut m = bt_term::Modes::default();
+            f(&mut m);
+            App::mouse_mode_on(m)
+        };
+        assert!(!m(|_| {}));
+        assert!(m(|m| m.mouse_x10 = true), "X10만 켠 칸");
+        assert!(m(|m| m.mouse_report = true));
+        assert!(m(|m| m.mouse_drag = true));
+        assert!(m(|m| m.mouse_motion = true));
+    }
 
     #[test]
     fn inherited_cwd_forgets_process_cwd_after_empty_osc7() {
