@@ -99,11 +99,12 @@ impl App {
         let theme = self.config.theme.clone();
         let scale = self.scale;
         let Some(gfx) = self.w.gfx.as_mut() else { return };
-        let Some(fonts) = self.w.fonts.as_mut() else { return };
+        let Some(mut fonts) = self.w.fonts.parts_mut() else {
+            return;
+        };
         let Some(gpu) = gfx.gpu.as_mut() else { return };
         let size = gfx.window.inner_size();
         let (sw, sh) = (size.width, size.height);
-        let m = fonts.metrics();
         let n = sw as usize * sh as usize;
         let GpuFrame {
             views,
@@ -229,7 +230,7 @@ impl App {
             if !labels.is_empty() {
                 tabbar::draw_with_title_font(
                     &mut lower,
-                    fonts,
+                    fonts.chrome(),
                     self.w.title_fonts.as_mut(),
                     &theme,
                     labels,
@@ -238,20 +239,21 @@ impl App {
             }
             for (v, pad) in views.iter().zip(pads) {
                 let screen = &v.screen;
+                let vm = v.metrics;
                 lower.fill_rect(v.outer.x, v.outer.y, v.outer.w, v.outer.h, screen.background);
                 if let Some(p) = pad {
                     let grid_rect = Rect::new(
                         v.inner.x,
                         v.inner.y,
-                        screen.cols as u32 * m.width,
-                        screen.rows as u32 * m.height,
+                        screen.cols as u32 * vm.width,
+                        screen.rows as u32 * vm.height,
                     );
                     crate::padding::paint(
                         &mut lower,
                         v.outer,
                         grid_rect,
-                        m.width,
-                        m.height,
+                        vm.width,
+                        vm.height,
                         p,
                         screen.background,
                         None,
@@ -274,25 +276,26 @@ impl App {
                 let mut upper = Canvas::new(&mut self.w.upper, sw, sh);
                 for ((v, (_, _, _)), bar) in views.iter().zip(&drawn).zip(bars) {
                     let screen = &v.screen;
+                    let vm = v.metrics;
                     // kitty 그림: 놓인 칸에, 칸 수에 맞춰 늘리거나 원래 크기로. 격자 밖은 자른다
                     let grid_clip = (
                         v.inner.x,
                         v.inner.y,
-                        v.inner.x + (screen.cols as u32 * m.width) as i32,
-                        v.inner.y + (screen.rows as u32 * m.height) as i32,
+                        v.inner.x + (screen.cols as u32 * vm.width) as i32,
+                        v.inner.y + (screen.rows as u32 * vm.height) as i32,
                     );
                     for im in &screen.images {
-                        let (cw, chh) = (im.cols * m.width, im.rows * m.height);
+                        let (cw, chh) = (im.cols * vm.width, im.rows * vm.height);
                         let (w, h) = if im.scaled { (cw, chh) } else { (im.width, im.height) };
                         let clip = (
                             grid_clip.0,
                             grid_clip.1,
-                            grid_clip.2.min(v.inner.x + (im.col as u32 * m.width + cw) as i32),
+                            grid_clip.2.min(v.inner.x + (im.col as u32 * vm.width + cw) as i32),
                             grid_clip.3,
                         );
                         upper.draw_rgba(
-                            v.inner.x + (im.col as u32 * m.width) as i32,
-                            v.inner.y + im.row * m.height as i32,
+                            v.inner.x + (im.col as u32 * vm.width) as i32,
+                            v.inner.y + im.row * vm.height as i32,
                             w,
                             h,
                             &im.rgba,
@@ -307,7 +310,7 @@ impl App {
                     if let Some((_, query, status, missing)) = search.as_ref().filter(|s| s.0 == v.id) {
                         tabbar::draw_search_bar(
                             &mut upper,
-                            fonts,
+                            fonts.chrome(),
                             &theme,
                             v.outer,
                             &format!("{query}{preedit}"),
@@ -318,7 +321,7 @@ impl App {
                     if resize_overlays.contains(&v.id) {
                         tabbar::draw_resize_overlay(
                             &mut upper,
-                            fonts,
+                            fonts.chrome(),
                             &theme,
                             v.outer,
                             self.config.resize_overlay_position,
@@ -331,7 +334,7 @@ impl App {
                             &mut upper,
                             v.outer.right() - width as i32 - scale.round().max(1.0) as i32,
                             v.inner.y,
-                            screen.rows as u32 * m.height,
+                            screen.rows as u32 * vm.height,
                             width,
                             screen.rows,
                             screen.history,
@@ -341,7 +344,7 @@ impl App {
                         );
                     }
                     if let (true, Some(p)) = (single_tab, v.progress) {
-                        tabbar::draw_progress(&mut upper, &theme, v.outer.x, v.outer.y, v.outer.w, p, m.stroke * 3);
+                        tabbar::draw_progress(&mut upper, &theme, v.outer.x, v.outer.y, v.outer.w, p, vm.stroke * 3);
                     }
                 }
                 for d in dividers {
@@ -354,21 +357,21 @@ impl App {
                     crate::pane_drag::draw_drop(&mut upper, rect, dir, theme.cursor);
                 }
                 if let Some((_, hit)) = hover.as_ref().filter(|(_, h)| link_previews.shows(h.explicit)) {
-                    tabbar::draw_link_hint(&mut upper, fonts, &theme, &bt_core::proto::printable(&hit.url));
+                    tabbar::draw_link_hint(&mut upper, fonts.chrome(), &theme, &bt_core::proto::printable(&hit.url));
                 }
                 if let Some((q, rows, sel)) = palette {
-                    tabbar::draw_palette(&mut upper, fonts, &theme, &format!("{q}{preedit}"), rows, *sel);
+                    tabbar::draw_palette(&mut upper, fonts.chrome(), &theme, &format!("{q}{preedit}"), rows, *sel);
                 }
                 if let Some((text, _)) = toast {
-                    tabbar::draw_toast(&mut upper, fonts, &theme, text);
+                    tabbar::draw_toast(&mut upper, fonts.chrome(), &theme, text);
                 }
                 if secure_badge {
-                    tabbar::draw_secure_badge(&mut upper, fonts, &theme, badge_top);
+                    tabbar::draw_secure_badge(&mut upper, fonts.chrome(), &theme, badge_top);
                 }
                 if let Some((label, text)) = title_prompt {
                     tabbar::draw_prompt(
                         &mut upper,
-                        fonts,
+                        fonts.chrome(),
                         &theme,
                         label,
                         &format!("{text}{preedit}"),
@@ -381,7 +384,7 @@ impl App {
                     } else {
                         format!("↩ {yes}    esc 취소")
                     };
-                    tabbar::draw_confirm(&mut upper, fonts, &theme, message, &hint);
+                    tabbar::draw_confirm(&mut upper, fonts.chrome(), &theme, message, &hint);
                 }
             }
             if !uses_upper {
@@ -408,10 +411,11 @@ impl App {
         }
         if let Some(v) = views.iter().find(|v| v.focused) {
             // IME 후보 창을 커서 옆에 띄운다
-            let px = v.inner.x + (v.screen.cursor.col as u32 * m.width) as i32;
-            let py = v.inner.y + (v.screen.cursor.row as u32 * m.height) as i32;
+            let vm = v.metrics;
+            let px = v.inner.x + (v.screen.cursor.col as u32 * vm.width) as i32;
+            let py = v.inner.y + (v.screen.cursor.row as u32 * vm.height) as i32;
             gfx.window
-                .set_ime_cursor_area(PhysicalPosition::new(px, py), PhysicalSize::new(m.width, m.height));
+                .set_ime_cursor_area(PhysicalPosition::new(px, py), PhysicalSize::new(vm.width, vm.height));
         }
         let draw_ms = started.elapsed().as_secs_f64() * 1000.0;
 
@@ -445,10 +449,12 @@ impl App {
             }
             gpu.set_cells_alpha(bt_render::cells_alpha(opacity, self.config.background_opacity_cells));
             gpu.set_backdrop(self.w.backdrop.as_ref().map(|_| win_bg));
+            // 칸마다 그 칸의 글자 크기의 글꼴 묶음으로 그린다(0번이 창의 기준 크기, #422)
             let panes: Vec<bt_gpu::PaneDraw> = views
                 .iter()
                 .zip(&grid_views)
                 .map(|(v, gv)| bt_gpu::PaneDraw {
+                    font: fonts.index_of(v.font_size),
                     x: v.inner.x,
                     y: v.inner.y,
                     view: gv,
@@ -463,7 +469,6 @@ impl App {
                 let u = shader_frame(
                     &mut self.w.shader,
                     &theme,
-                    &m,
                     views,
                     &drawn,
                     self.w.focused,
@@ -471,7 +476,7 @@ impl App {
                 );
                 gpu.set_shader_uniforms(&u);
             }
-            outcome = Some(gpu.present(fonts, (sw, sh), layers, &panes));
+            outcome = Some(gpu.present_with(&mut fonts.all(), (sw, sh), layers, &panes));
         }
         let end = Instant::now();
         self.w.last_frame = Some(FrameMemo {
@@ -532,7 +537,6 @@ impl App {
 fn shader_frame(
     state: &mut super::shader_inputs::ShaderState,
     theme: &bt_core::Theme,
-    m: &bt_render::font::CellMetrics,
     views: &[PaneView],
     drawn: &[(Vec<DrawCell>, Option<DrawCursor>, Option<String>)],
     focused: bool,
@@ -540,13 +544,23 @@ fn shader_frame(
 ) -> bt_gpu::ShaderUniforms {
     use super::shader_inputs as si;
     let pane = views.iter().zip(drawn).find(|(v, _)| v.focused);
-    let metrics = si::CursorMetrics {
-        cell_w: m.width,
-        cell_h: m.height,
-        cursor_h: m.cursor_height,
-        beam: m.cursor_beam,
-        stroke: m.stroke,
-    };
+    // 커서 자리는 고른 칸의 글자 크기의 칸 크기다(#422)
+    let metrics = pane.map_or(
+        si::CursorMetrics {
+            cell_w: 0,
+            cell_h: 0,
+            cursor_h: 0,
+            beam: 0,
+            stroke: 0,
+        },
+        |(v, _)| si::CursorMetrics {
+            cell_w: v.metrics.width,
+            cell_h: v.metrics.height,
+            cursor_h: v.metrics.cursor_height,
+            beam: v.metrics.cursor_beam,
+            stroke: v.metrics.stroke,
+        },
+    );
     let cursor = pane.map_or(
         si::FrameCursor {
             style: 0,

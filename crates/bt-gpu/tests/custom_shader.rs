@@ -113,6 +113,7 @@ impl Scene {
             min_contrast: 1.0,
         };
         let panes = [PaneDraw {
+            font: 0,
             x: 12,
             y: 9,
             view: &view,

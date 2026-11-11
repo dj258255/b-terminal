@@ -257,6 +257,17 @@ impl GpuRenderer {
         layers: LayerUpdate,
         panes: &[PaneDraw],
     ) -> PresentOutcome {
+        self.present_with(&mut [fonts], size, layers, panes)
+    }
+
+    /// `present`. 칸마다 다른 글꼴 묶음(`PaneDraw::font`)으로 그린다(#422)
+    pub fn present_with(
+        &mut self,
+        fonts: &mut [&mut Fonts],
+        size: (u32, u32),
+        layers: LayerUpdate,
+        panes: &[PaneDraw],
+    ) -> PresentOutcome {
         if size.0 == 0 || size.1 == 0 {
             return PresentOutcome::Skipped("창 크기가 0이다");
         }
