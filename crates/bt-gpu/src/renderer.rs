@@ -15,7 +15,7 @@ mod custom;
 pub use custom::{CompileStages, ShaderWaker};
 mod layer_diff;
 mod window;
-pub use compose::{LayerUpdate, PaneDraw};
+pub use compose::{LayerMemory, LayerUpdate, PaneDraw};
 pub use window::PresentOutcome;
 
 /// 한 프레임의 구간별 시간(ms). 마지막으로 그린 프레임의 값이다

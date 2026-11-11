@@ -8,7 +8,7 @@ use std::time::Instant;
 use bt_core::Rgb;
 use bt_render::{Fonts, GridView};
 
-use super::layer_diff::{Rect, changed_rects};
+use super::layer_diff::changed_rects;
 use super::{FrameTimings, GpuRenderer, upload_instances};
 use crate::scene::{GLYPH_STRIDE, GlyphInst, RECT_STRIDE, RectInst};
 
@@ -25,8 +25,20 @@ pub struct PaneDraw<'a> {
 pub struct LayerUpdate<'a> {
     /// 격자 아래: 창 바탕, 탭 막대, 칸 바탕, 여백. 불투명, 창 크기, 0xAARRGGBB
     pub lower: Option<&'a [u32]>,
-    /// 격자 위: kitty 그림, 흐림, 막대, 팔레트 등. 투명 바탕에 그린 곱한 알파, 창 크기, 0xAARRGGBB
+    /// 격자 위: kitty 그림, 흐림, 막대, 팔레트 등. 투명 바탕에 그린 곱한 알파, 창 크기, 0xAARRGGBB.
+    /// 빈 조각(`Some(&[])`)은 "위층이 비었다"는 뜻이다: 위층 텍스처와 사본을 놓는다(#387)
     pub upper: Option<&'a [u32]>,
+}
+
+/// 층 합치기가 쥔 메모리(바이트). 시험과 측정에서 본다
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct LayerMemory {
+    /// 층 텍스처(GPU)
+    pub texture_bytes: usize,
+    /// 텍스처에 올린 픽셀의 사본(CPU)
+    pub shadow_bytes: usize,
+    /// 올릴 사각형을 옮겨 담는 임시 버퍼의 용량(CPU)
+    pub scratch_bytes: usize,
 }
 
 /// 층 텍스처 하나. `Bgra8Unorm`이라 CPU 캔버스의 `u32`(0xAARRGGBB, 작은 끝 바이트 순서 B G R A)를 그대로 올린다
@@ -157,6 +169,11 @@ impl Layers {
         px: &[u32],
         (w, h): (u32, u32),
     ) -> usize {
+        if upper && px.is_empty() {
+            // 위층이 비었다: 텍스처와 사본을 놓는다. 다시 그리면 새로 만든다(#387)
+            self.upper = None;
+            return 0;
+        }
         if w == 0 || h == 0 || px.len() < w as usize * h as usize {
             log::warn!("층 픽셀이 창 크기보다 모자란다: {} < {w}×{h}", px.len());
             return 0;
@@ -201,7 +218,12 @@ impl Layers {
                     shadow: vec![0; w as usize * h as usize],
                     nonzero: 0,
                 });
-                vec![Rect { x: 0, y: 0, w, h }]
+                // wgpu는 새 텍스처를 0으로 채워 쓴다. 사본도 0이니 0이 아닌 자리만 올리면 된다
+                // (놓았던 위층이 돌아올 때 층을 통째로 올리지 않는다, #387)
+                match slot.as_ref() {
+                    Some(t) => changed_rects(&t.shadow, px, w, h),
+                    None => Vec::new(),
+                }
             }
         };
         let Some(t) = slot else { return 0 };
@@ -246,6 +268,19 @@ impl Layers {
         bytes
     }
 
+    /// 쥔 메모리
+    fn memory(&self) -> LayerMemory {
+        let mut m = LayerMemory {
+            scratch_bytes: self.scratch.capacity(),
+            ..LayerMemory::default()
+        };
+        for t in [&self.lower, &self.upper].into_iter().flatten() {
+            m.texture_bytes += t.width as usize * t.height as usize * 4;
+            m.shadow_bytes += t.shadow.capacity() * 4;
+        }
+        m
+    }
+
     /// 지금 크기와 같은 층만
     fn visible(&self, upper: bool) -> Option<&LayerTex> {
         let t = if upper { &self.upper } else { &self.lower };
@@ -268,6 +303,11 @@ pub fn shift_instances(rects: &mut [RectInst], glyphs: &mut [GlyphInst], dx: i32
 }
 
 impl GpuRenderer {
+    /// 층 합치기가 쥔 메모리(바이트)
+    pub fn layer_memory(&self) -> LayerMemory {
+        self.layers.memory()
+    }
+
     /// 층과 칸을 창 없이 합쳐 0RGB 픽셀로 읽어 낸다(시험과 CPU 프레임 비교용).
     /// 창에 올리는 `present`와 같은 길로 합친다: 달라지는 것은 어디에 그리느냐뿐이다
     pub fn compose(

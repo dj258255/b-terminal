@@ -433,7 +433,12 @@ fn partial_layer_upload_keeps_every_frame_equal_to_the_cpu_frame() {
         &panes,
     );
     assert_close("1. 덧그림 켬", &reference(&mut fx.f, &fx.l, fx.sa.background, 40), &got);
-    assert_eq!(g.timings().upload_bytes, full_bytes, "첫 프레임은 두 층 통째");
+    // 아래층은 통째, 새 위층 텍스처는 0으로 시작하므로 0이 아닌 자리만(#387)
+    let first = g.timings().upload_bytes;
+    assert!(
+        first >= full_bytes / 2 && first < full_bytes,
+        "첫 프레임: 아래층 통째와 위층의 그린 자리: {first}"
+    );
 
     // 2. 진행 막대 값만 바뀜: 아래층은 같고(같은 내용으로 다시 넘긴다) 위층은 띠 끝만 달라진다
     let up2 = upper_with(&fx.l, 90);
@@ -698,4 +703,81 @@ fn upload_cost_2000x1360() {
         },
         &lower,
     );
+}
+
+#[test]
+fn empty_upper_slice_releases_the_upper_layer_and_it_comes_back() {
+    let Some(mut g) = gpu() else { return };
+    let mut fx = fixture();
+    let (va, vb) = (view(&fx.sa, &fx.ca, &fx.t), view(&fx.sb, &fx.cb, &fx.t));
+    let panes = [
+        PaneDraw {
+            x: fx.l.a.0,
+            y: fx.l.a.1,
+            view: &va,
+            clear: fx.sa.background,
+        },
+        PaneDraw {
+            x: fx.l.b.0,
+            y: fx.l.b.1,
+            view: &vb,
+            clear: fx.sb.background,
+        },
+    ];
+    let size = (fx.l.w, fx.l.h);
+    let layer = fx.l.w as usize * fx.l.h as usize * 4;
+    let with_upper = cpu_reference(&mut fx.f, &fx.l, fx.sa.background, [&va, &vb], true);
+    let without_upper = cpu_reference(&mut fx.f, &fx.l, fx.sa.background, [&va, &vb], false);
+
+    let up = LayerUpdate {
+        lower: Some(&fx.lower),
+        upper: Some(&fx.upper),
+    };
+    let got = g.compose(&mut fx.f, size, up, &panes);
+    assert_close("위층이 있는 프레임", &with_upper, &got);
+    let m = g.layer_memory();
+    assert_eq!(m.texture_bytes, 2 * layer, "두 층 텍스처: {m:?}");
+    assert!(m.shadow_bytes >= 2 * layer, "두 층 사본: {m:?}");
+
+    // 위층이 비었다: 텍스처와 사본을 놓고, 화면은 위층 없는 기준과 같다
+    let empty = LayerUpdate {
+        lower: None,
+        upper: Some(&[]),
+    };
+    let got = g.compose(&mut fx.f, size, empty, &panes);
+    assert_close("위층을 놓은 프레임", &without_upper, &got);
+    let m = g.layer_memory();
+    assert_eq!(m.texture_bytes, layer, "아래층 텍스처만 남는다: {m:?}");
+    assert!(
+        m.shadow_bytes >= layer && m.shadow_bytes < 2 * layer,
+        "아래층 사본만 남는다: {m:?}"
+    );
+
+    // 다시 위층을 주면 돌아온다
+    let back = LayerUpdate {
+        lower: None,
+        upper: Some(&fx.upper),
+    };
+    let got = g.compose(&mut fx.f, size, back, &panes);
+    assert_close("위층이 돌아온 프레임", &with_upper, &got);
+    assert_eq!(g.layer_memory().texture_bytes, 2 * layer);
+    // 새 텍스처는 0으로 시작하므로 0이 아닌 자리만 올린다(층을 통째로 올리지 않는다)
+    let sent = g.timings().upload_bytes;
+    assert!(
+        sent > 0 && sent < layer,
+        "돌아온 위층을 {sent}바이트 올렸다(층 {layer}바이트)"
+    );
+
+    // 다시 놓고, 10×10 조각만 그린 위층을 주면 그 조각만 올린다
+    g.compose(&mut fx.f, size, empty, &panes);
+    let mut small = vec![0u32; fx.l.w as usize * fx.l.h as usize];
+    Canvas::new(&mut small, fx.l.w, fx.l.h).fill_rect(20, 30, 10, 10, Rgb::new(255, 0, 0));
+    let small_up = LayerUpdate {
+        lower: None,
+        upper: Some(&small),
+    };
+    let got = g.compose(&mut fx.f, size, small_up, &panes);
+    assert_eq!(g.timings().upload_bytes, 10 * 10 * 4, "조각만 올린다");
+    assert_eq!(got[35 * fx.l.w as usize + 25] & 0xff_ffff, 0xff_0000, "조각이 보인다");
+    assert_close("조각 밖은 위층 없는 기준", &without_upper[..20], &got[..20]);
 }
