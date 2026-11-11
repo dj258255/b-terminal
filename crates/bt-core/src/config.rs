@@ -1633,7 +1633,7 @@ impl Default for Config {
             palette_defaults_cleared: false,
             mouse_reset_on_shell: true,
             clipboard_write: crate::clipboard::ClipboardAccess::Allow,
-            clipboard_read: crate::clipboard::ClipboardAccess::Deny,
+            clipboard_read: crate::clipboard::ClipboardAccess::Ask,
             paste_protection: true,
             paste_bracketed_safe: true,
             shell_integration: "detect".into(),
@@ -5128,7 +5128,13 @@ mod tests {
     fn clipboard_access_keys_take_ask_and_keep_defaults() {
         use crate::clipboard::ClipboardAccess::{Allow, Ask, Deny};
         let d = Config::default();
-        assert_eq!((d.clipboard_read, d.clipboard_write), (Deny, Allow), "기본값은 그대로");
+        assert_eq!(
+            (d.clipboard_read, d.clipboard_write),
+            (Ask, Allow),
+            "읽기 기본은 Ghostty처럼 ask, 쓰기는 allow"
+        );
+        let c = Config::from_text("clipboard-read = deny\n", true);
+        assert_eq!(c.clipboard_read, Deny, "끄려면 deny");
         let c = Config::from_text("clipboard-read = ask\nclipboard-write = ask\n", true);
         assert_eq!((c.clipboard_read, c.clipboard_write), (Ask, Ask));
         let c = Config::from_text("clipboard-read = true\nclipboard-write = false\n", true);

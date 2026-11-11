@@ -288,6 +288,24 @@ mod tests {
     }
 
     #[test]
+    fn default_config_asks_only_when_watching_and_denies_the_rest() {
+        let a = crate::config::Config::default().clipboard_read;
+        // OSC 52: 보고 있는 칸이고 읽기 전용이 아니고 막대가 없을 때만 묻는다. 나머지는 묻지 않고 거절
+        assert_eq!(decide_read(a, true, false, false), Ask);
+        assert_eq!(decide_read(a, false, false, false), Deny, "보지 않는 칸");
+        assert_eq!(decide_read(a, true, true, false), Deny, "읽기 전용 칸");
+        assert_eq!(decide_read(a, true, false, true), Deny, "다른 확인이 떠 있음");
+        // OSC 5522 읽기(암호 없음, 글 종류를 달라는 요청)도 같다
+        assert_eq!(decide_kitty_read(a, true, false, false, false), Ask);
+        assert_eq!(decide_kitty_read(a, false, false, false, false), Deny);
+        assert_eq!(decide_kitty_read(a, true, true, false, false), Deny);
+        assert_eq!(decide_kitty_read(a, true, false, true, false), Deny);
+        // 목록만 묻기·빈 글·일회용 암호(사람이 붙여넣은 것)는 막대만 건너뛰고 보는 칸·읽기 전용 검사는 지난다
+        assert_eq!(decide_kitty_read(a, false, false, false, true), Deny);
+        assert_eq!(decide_kitty_read(a, true, true, false, true), Deny);
+    }
+
+    #[test]
     fn kitty_write_keeps_watching_size_and_policy_and_a_grant_only_skips_the_bar() {
         assert_eq!(decide_kitty_write(A::Allow, true, 10, None, false, false), Allow);
         assert_eq!(decide_kitty_write(A::Deny, true, 10, None, false, true), Deny);
