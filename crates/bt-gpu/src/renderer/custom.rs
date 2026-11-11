@@ -71,6 +71,34 @@ pub(super) struct Compiled {
     errors: Vec<String>,
 }
 
+/// naga 읽기·검증을 통과한 셰이더(메인 스레드에서 검사하고 컴파일 스레드로 넘긴다)
+struct Checked {
+    name: String,
+    module: wgpu::naga::Module,
+    naga_ms: f64,
+}
+
+/// 셰이더를 naga로 읽고 검증한다(1ms 안팎). 통과한 것과 건너뛴 것의 오류 문구로 나눈다
+fn check_all(shaders: &[CustomShaderSource]) -> (Vec<Checked>, Vec<String>) {
+    let mut ok = Vec::new();
+    let mut errors = Vec::new();
+    for s in shaders {
+        let t = Instant::now();
+        match shadertoy::check(&s.name, &s.glsl) {
+            Ok(module) => ok.push(Checked {
+                name: s.name.clone(),
+                module,
+                naga_ms: ms(t),
+            }),
+            Err(e) => {
+                log::warn!("사용자 셰이더를 건너뛴다: {e}");
+                errors.push(e);
+            }
+        }
+    }
+    (ok, errors)
+}
+
 /// 컴파일 한 번이 돌고 있는 일. 결과는 채널로 오고, 이 값을 버리면(다시 걸거나 렌더러가 사라지면) 늦게 온 결과는 버려진다
 pub(super) struct CustomJob {
     rx: Receiver<Compiled>,
@@ -115,20 +143,23 @@ fn shared_parts(device: &wgpu::Device) -> (wgpu::BindGroupLayout, wgpu::Pipeline
     (layout, pl, vs)
 }
 
-/// 셰이더들을 컴파일해 체인을 만든다. 장치만 쓰므로 어느 스레드에서든 돈다
-fn build_chain(device: &wgpu::Device, format: wgpu::TextureFormat, shaders: &[CustomShaderSource]) -> Compiled {
+/// 검사를 통과한 셰이더들로 파이프라인과 체인을 만든다. 장치만 쓰므로 어느 스레드에서든 돈다
+fn build_chain(device: &wgpu::Device, format: wgpu::TextureFormat, shaders: Vec<Checked>) -> Compiled {
     let mut errors = Vec::new();
     let (layout, pl, vs) = shared_parts(device);
     let mut pipelines = Vec::new();
     for s in shaders {
         let t = Instant::now();
-        let mut st = CompileStages::default();
-        match compile_pass(device, format, s, &pl, &vs, &mut st) {
+        let mut st = CompileStages {
+            naga_ms: s.naga_ms,
+            ..CompileStages::default()
+        };
+        match compile_pass(device, format, &s.name, s.module, &pl, &vs, &mut st) {
             Ok(p) => {
                 log::info!(
                     "사용자 셰이더 {}: 컴파일 {:.1}ms (읽기·검증 {:.1}, 모듈 {:.1}, 파이프라인 {:.1}, 오류 범위 {:.1})",
                     s.name,
-                    ms(t),
+                    ms(t) + st.naga_ms,
                     st.naga_ms,
                     st.module_ms,
                     st.pipeline_ms,
@@ -169,30 +200,28 @@ fn build_chain(device: &wgpu::Device, format: wgpu::TextureFormat, shaders: &[Cu
     Compiled { chain, errors }
 }
 
-/// 셰이더 하나를 읽고 검증하고 파이프라인으로 만든다. 먼저 naga로 막고, 그래도 wgpu가 오류를 내면(바인딩이 안 맞는 것 등)
+/// 검사를 통과한 셰이더 하나를 파이프라인으로 만든다. naga가 먼저 막았어도 wgpu가 오류를 내면(바인딩이 안 맞는 것 등)
 /// 오류 범위로 잡아 문구로 돌려준다: 잘못된 셰이더가 앱을 패닉시키면 안 된다.
 /// 오류 범위는 스레드마다 따로라(wgpu `ErrorScopeGuard`) 컴파일 스레드의 범위가 메인 스레드의 그리기 오류를 잡지 않는다
 fn compile_pass(
     device: &wgpu::Device,
     format: wgpu::TextureFormat,
-    s: &CustomShaderSource,
+    name: &str,
+    module: wgpu::naga::Module,
     pl: &wgpu::PipelineLayout,
     vs: &wgpu::ShaderModule,
     st: &mut CompileStages,
 ) -> Result<wgpu::RenderPipeline, String> {
     let t = Instant::now();
-    let module = shadertoy::check(&s.name, &s.glsl)?;
-    st.naga_ms = ms(t);
-    let t = Instant::now();
     let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
     let fs = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-        label: Some(&s.name),
+        label: Some(name),
         source: wgpu::ShaderSource::Naga(std::borrow::Cow::Owned(module)),
     });
     st.module_ms = ms(t);
     let t = Instant::now();
     let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-        label: Some(&s.name),
+        label: Some(name),
         layout: Some(pl),
         vertex: wgpu::VertexState {
             module: vs,
@@ -222,7 +251,7 @@ fn compile_pass(
     let err = pollster::block_on(scope.pop());
     st.scope_ms = ms(t);
     match err {
-        Some(e) => Err(format!("{}: {e}", s.name)),
+        Some(e) => Err(format!("{name}: {e}")),
         None => Ok(pipeline),
     }
 }
@@ -234,33 +263,45 @@ fn stages_of(
     s: &CustomShaderSource,
 ) -> Result<CompileStages, String> {
     let (_layout, pl, vs) = shared_parts(device);
-    let mut st = CompileStages::default();
-    compile_pass(device, format, s, &pl, &vs, &mut st)?;
+    let t = Instant::now();
+    let module = shadertoy::check(&s.name, &s.glsl)?;
+    let mut st = CompileStages {
+        naga_ms: ms(t),
+        ..CompileStages::default()
+    };
+    compile_pass(device, format, &s.name, module, &pl, &vs, &mut st)?;
     Ok(st)
 }
 
 impl GpuRenderer {
-    /// 사용자 셰이더 컴파일을 시작하고 곧바로 돌아온다(컴파일은 다른 스레드에서 돈다, ADR-042). 결과는 `poll_custom_shaders`가 받아
-    /// 체인에 끼운다. 그 전에는 지금 길(셰이더가 없으면 셰이더 없이)로 그린다. 컴파일에 실패한 셰이더는 건너뛰고(Ghostty와 같다)
-    /// 오류 문구는 결과와 함께 온다. 도는 컴파일이 있으면 그 결과는 버린다. 빈 목록이면 곧바로 끄고 지금 길로 돌아간다
-    pub fn set_custom_shaders(&mut self, shaders: &[CustomShaderSource]) {
+    /// 사용자 셰이더를 건다(ADR-042). GLSL 읽기·검증(naga, 1ms 안팎)은 이 자리에서 하고, 건너뛴 셰이더의 오류 문구를 곧바로
+    /// 돌려준다. 통과한 셰이더의 파이프라인 만들기(처음 보는 셰이더는 0.15~0.35초)는 다른 스레드에서 돌고, 결과는
+    /// `poll_custom_shaders`가 받아 체인에 끼운다. 그 전에는 지금 길(셰이더가 없으면 셰이더 없이)로 그린다. 도는 컴파일이 있으면
+    /// 그 결과는 버린다. 빈 목록이거나 통과한 셰이더가 없으면 곧바로 끄고 지금 길로 돌아간다
+    pub fn set_custom_shaders(&mut self, shaders: &[CustomShaderSource]) -> Vec<String> {
         self.custom_job = None;
         if shaders.is_empty() {
             self.custom = None;
-            return;
+            return Vec::new();
+        }
+        // GLSL 읽기·검증은 여기서(1ms 안팎): 오류를 곧바로 돌려줘 설정 다시 읽기의 답에 보이게 한다
+        let (checked, errors) = check_all(shaders);
+        if checked.is_empty() {
+            self.custom = None;
+            return errors;
         }
         let (tx, rx) = mpsc::channel();
         let started = Instant::now();
-        log::info!("사용자 셰이더 컴파일 시작: {}개", shaders.len());
+        log::info!("사용자 셰이더 컴파일 시작: {}개", checked.len());
         let device = self.device.clone();
         let format = self.format;
-        let shaders = shaders.to_vec();
+        let shaders = checked;
         let wake = self.shader_waker.clone();
         self.custom_job = Some(CustomJob { rx, started });
         // wgpu `Device`는 `Send + Sync`이고 복제하면 같은 장치다(wgpu 30 `api/device.rs` 24줄 `assert_impl_all!(Device: Send, Sync)`,
         // 19줄 `#[derive(Clone)]`). 만든 파이프라인도 채널로 넘긴다. 스레드를 못 만들면 그 오류를 결과로 보낸다
         let run = move || {
-            let r = build_chain(&device, format, &shaders);
+            let r = build_chain(&device, format, shaders);
             if tx.send(r).is_ok() {
                 if let Some(w) = wake {
                     w();
@@ -271,6 +312,7 @@ impl GpuRenderer {
             // 클로저(와 보내는 쪽)가 버려지므로 `poll_custom_shaders`가 `Disconnected`로 받아 오류로 알리고 셰이더를 끈다
             log::warn!("셰이더 컴파일 스레드를 만들지 못했다: {e}");
         }
+        errors
     }
 
     /// 컴파일이 끝났으면 결과를 체인에 끼우고 건너뛴 셰이더의 오류 문구를 돌려준다(오류가 없으면 빈 목록). 아직이거나 돌리는 것이

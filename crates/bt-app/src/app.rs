@@ -663,14 +663,14 @@ struct PaneView {
     progress: Option<(u8, u8)>,
 }
 
-/// 창에 사용자 셰이더를 건다(#376). GPU 길이면 다른 스레드에서 컴파일을 시작하고 곧바로 돌아온다(#381): 컴파일 오류는
-/// 결과가 올 때 `poll_shaders`가 받는다. CPU 길이면 쓰지 못한다는 문구를 돌려준다(로그에도 남는다. GPU 쪽 컴파일 경고는 렌더러가 남긴다)
+/// 창에 사용자 셰이더를 건다(#376). GPU 길이면 GLSL 오류는 곧바로 돌려주고 파이프라인은 다른 스레드에서 만든다(#381):
+/// 그때 나는 드문 오류는 결과가 올 때 `poll_shaders`가 받는다. CPU 길이면 쓰지 못한다는 문구를 돌려준다
+/// (둘 다 로그에도 남는다. GPU 쪽 컴파일 경고는 렌더러가 남긴다)
 fn apply_shaders(g: &mut Gfx, shaders: &[bt_gpu::CustomShaderSource], wake: &bt_gpu::ShaderWaker) -> Vec<String> {
     match g.gpu.as_mut() {
         Some(gpu) => {
             gpu.set_custom_shader_waker(Some(wake.clone()));
-            gpu.set_custom_shaders(shaders);
-            Vec::new()
+            gpu.set_custom_shaders(shaders)
         }
         None if shaders.is_empty() => Vec::new(),
         None => {

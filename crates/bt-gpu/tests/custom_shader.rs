@@ -149,14 +149,15 @@ fn max_diff(a: &[u32], b: &[u32]) -> i32 {
 
 /// 걸고 결과를 받을 때까지 기다린다(컴파일은 다른 스레드에서 돈다, ADR-042). 받은 오류 문구를 돌려준다
 fn set(g: &mut GpuRenderer, shaders: &[(&str, &str)]) -> Vec<String> {
-    start(g, shaders);
-    g.wait_custom_shaders()
+    let mut errors = start(g, shaders);
+    errors.extend(g.wait_custom_shaders());
+    errors
 }
 
-/// 걸기만 한다(기다리지 않는다)
-fn start(g: &mut GpuRenderer, shaders: &[(&str, &str)]) {
+/// 걸기만 한다(기다리지 않는다). GLSL 읽기·검증 오류는 곧바로 돌아온다
+fn start(g: &mut GpuRenderer, shaders: &[(&str, &str)]) -> Vec<String> {
     let v: Vec<_> = shaders.iter().map(|(n, s)| src(n, s)).collect();
-    g.set_custom_shaders(&v);
+    g.set_custom_shaders(&v)
 }
 
 /// 끄고(빈 목록) 꺼졌는지 본다. 끄기는 곧바로다
@@ -636,6 +637,32 @@ fn set_custom_shaders_returns_before_the_compile_finishes() {
     assert!(s.compose(&mut g) != want, "받은 뒤 화면이 바뀌어야 한다(crt)");
 }
 
+/// GLSL 읽기·검증(naga, 1ms 안팎)은 거는 자리에서 하고 그 오류를 곧바로 돌려준다: `btctl reload-config`의 답과 설정 경고에
+/// 0.33처럼 오류가 보이게(파이프라인 만들기만 다른 스레드로)
+#[test]
+fn glsl_errors_come_back_from_set_custom_shaders_at_once() {
+    let Some(mut g) = gpu() else { return };
+    let bad = "void notMain(out vec4 c, in vec2 p) {\n    c = vec4(1.0);\n}";
+    let errors = start(&mut g, &[("bad.glsl", bad), ("invert", INVERT)]);
+    assert_eq!(errors.len(), 1, "{errors:?}");
+    assert!(
+        errors[0].starts_with("bad.glsl") && errors[0].contains("mainImage"),
+        "{}",
+        errors[0]
+    );
+    assert!(
+        g.custom_shaders_pending(),
+        "검사를 통과한 셰이더는 스레드에서 컴파일한다"
+    );
+    assert!(g.wait_custom_shaders().is_empty(), "늦게 오는 오류는 없다");
+    assert!(g.has_custom_shaders());
+
+    // 모두 잘못되면 기다릴 것이 없다: 곧바로 끈다
+    let errors = start(&mut g, &[("bad.glsl", bad)]);
+    assert_eq!(errors.len(), 1, "{errors:?}");
+    assert!(!g.custom_shaders_pending() && !g.has_custom_shaders());
+}
+
 #[test]
 fn polling_installs_the_result_once_and_reports_errors() {
     let Some(mut g) = gpu() else { return };
@@ -644,15 +671,15 @@ fn polling_installs_the_result_once_and_reports_errors() {
     assert!(g.poll_custom_shaders().is_none(), "돌리는 컴파일이 없으면 None");
 
     let bad = "void mainImage(out vec4 fragColor, in vec2 fragCoord) {\n    fragColor = vec3(1.0);\n}";
-    start(&mut g, &[("bad", bad), ("invert", INVERT)]);
+    let mut errors = start(&mut g, &[("bad", bad), ("invert", INVERT)]);
     let t = std::time::Instant::now();
-    let errors = loop {
+    errors.extend(loop {
         if let Some(e) = g.poll_custom_shaders() {
             break e;
         }
         assert!(t.elapsed().as_secs() < 30, "결과가 오지 않았다");
         std::thread::sleep(std::time::Duration::from_millis(1));
-    };
+    });
     assert_eq!(errors.len(), 1, "{errors:?}");
     assert!(errors[0].starts_with("bad"), "{}", errors[0]);
     assert!(g.poll_custom_shaders().is_none(), "결과는 한 번만 온다");
