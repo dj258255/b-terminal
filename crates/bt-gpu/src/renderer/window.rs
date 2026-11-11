@@ -74,7 +74,7 @@ pub(super) fn present_mode_for(
 }
 
 /// `FramePacer`의 미룸을 쓰는가. 올리기 방식과 상관없이 늘 쓴다. `Immediate`에서 미룸을 끄고 화면 주기보다 빨리 그림판을 몰아 올리면
-/// 마지막 올림이 화면에 붙지 않아 출력 뒤 앞 프레임에 멈췄다(#451, 6회 중 5회). 합성기 안쪽의 까닭은 확인하지 못했다
+/// 마지막 올림이 화면에 붙지 않아 출력 뒤 앞 프레임에 멈췄다(#451, 0.46.0에서 16회 중 14회, 실험 E23). 합성기 안쪽의 까닭은 확인하지 못했다
 pub(super) fn pacing_applies(_mode: wgpu::PresentMode) -> bool {
     true
 }
