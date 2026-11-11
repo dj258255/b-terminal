@@ -270,11 +270,50 @@ enum ColorData {
     Shared(std::sync::Arc<dyn AsRef<[u8]> + Send + Sync>),
 }
 
-/// 골라 읽은 색 글꼴. 같은 파일·꼴·크기면 글꼴 묶음을 다시 만들어도 다시 읽지 않는다. 크기가 바뀌면 바꿔 둔다(하나만 든다)
+/// 골라 읽은 색 글꼴. 같은 파일·꼴·크기면 글꼴 묶음을 다시 만들어도, 창끼리도 다시 읽지 않는다.
+/// 창마다 글자 크기가 달라도 번갈아 읽지 않게 몇 개(`SUBSET_CACHE_MAX`)까지 든다. 넘으면 가장 오래된 것부터 버린다
 type SubsetKey = (std::path::PathBuf, usize, u16);
 type SubsetEntry = (SubsetKey, Option<Rc<Vec<u8>>>);
+const SUBSET_CACHE_MAX: usize = 4;
 thread_local! {
-    static COLOR_SUBSET: std::cell::RefCell<Option<SubsetEntry>> = const { std::cell::RefCell::new(None) };
+    static COLOR_SUBSET: std::cell::RefCell<Vec<SubsetEntry>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+fn subset_cache_get(cache: &[SubsetEntry], key: &SubsetKey) -> Option<Option<Rc<Vec<u8>>>> {
+    cache.iter().find(|(k, _)| k == key).map(|(_, d)| d.clone())
+}
+
+fn subset_cache_put(cache: &mut Vec<SubsetEntry>, key: SubsetKey, data: Option<Rc<Vec<u8>>>) {
+    cache.retain(|(k, _)| *k != key);
+    if cache.len() >= SUBSET_CACHE_MAX {
+        cache.remove(0);
+    }
+    cache.push((key, data));
+}
+
+// 훑어 둔 시스템 글꼴 목록과 넣어 둔 글꼴. 창을 열 때마다 시스템 글꼴 폴더를 다시 훑고 넣어 둔 글꼴을 복사하지 않게
+// 나눠 쓴다. 설정을 다시 읽을 때는 `forget_system_fonts`로 버려 새로 설치한 글꼴을 본다
+thread_local! {
+    static SYSTEM_DB: std::cell::RefCell<Option<Rc<Database>>> = const { std::cell::RefCell::new(None) };
+}
+
+fn system_db() -> Rc<Database> {
+    if let Some(db) = SYSTEM_DB.with(|d| d.borrow().clone()) {
+        return db;
+    }
+    let mut db = Database::new();
+    db.load_system_fonts();
+    for data in EMBEDDED {
+        db.load_font_data(data.to_vec());
+    }
+    let db = Rc::new(db);
+    SYSTEM_DB.with(|d| *d.borrow_mut() = Some(db.clone()));
+    db
+}
+
+/// 훑어 둔 시스템 글꼴 목록을 버린다(다음에 글꼴을 만들 때 다시 훑는다). 설정을 다시 읽을 때 부른다
+pub fn forget_system_fonts() {
+    SYSTEM_DB.with(|d| *d.borrow_mut() = None);
 }
 
 /// 색 글꼴 바이트(빌린 것 또는 골라 읽은 것)와 그 안의 꼴 번호
@@ -299,7 +338,7 @@ impl ColorData {
             ColorData::Shared(a) => Some(ColorBytes::Borrowed((**a).as_ref(), index)),
             ColorData::File(path) => {
                 let key = (path.clone(), index, px);
-                let hit = COLOR_SUBSET.with(|c| c.borrow().as_ref().filter(|(k, _)| *k == key).map(|(_, d)| d.clone()));
+                let hit = COLOR_SUBSET.with(|c| subset_cache_get(&c.borrow(), &key));
                 let data = match hit {
                     Some(d) => d,
                     None => {
@@ -318,7 +357,7 @@ impl ColorData {
                                 None
                             }
                         };
-                        COLOR_SUBSET.with(|c| *c.borrow_mut() = Some((key, d.clone())));
+                        COLOR_SUBSET.with(|c| subset_cache_put(&mut c.borrow_mut(), key, d.clone()));
                         d
                     }
                 };
@@ -524,14 +563,9 @@ fn parse_face(db: &Database, id: fontdb::ID) -> Option<Font> {
 }
 
 impl Fonts {
-    /// 시스템 글꼴을 읽어 묶음을 만든다
+    /// 시스템 글꼴을 읽어(이미 읽어 둔 것이 있으면 그것으로) 묶음을 만든다
     pub fn new(config: &FontConfig) -> Result<Self, FontError> {
-        let mut db = Database::new();
-        db.load_system_fonts();
-        for data in EMBEDDED {
-            db.load_font_data(data.to_vec());
-        }
-        Self::with_database(&db, config)
+        Self::with_database(&system_db(), config)
     }
 
     pub fn with_database(db: &Database, config: &FontConfig) -> Result<Self, FontError> {
@@ -1316,11 +1350,7 @@ impl Fonts {
     /// 제목 글꼴은 터미널 글꼴과 같은 크기이고, 그 글꼴에 없는 글자(한글·기호·이모지)는 터미널의 기본 글꼴 다음
     /// 터미널과 같은 대체 순서로 찾는다. 이름의 글꼴을 못 찾으면 제목 글꼴은 없고 경고가 있다
     pub fn new_with_title(config: &FontConfig, title_family: Option<&str>) -> Result<FontSet, FontError> {
-        let mut db = Database::new();
-        db.load_system_fonts();
-        for data in EMBEDDED {
-            db.load_font_data(data.to_vec());
-        }
+        let db = system_db();
         let terminal = Self::with_database(&db, config)?;
         let (mut title, mut title_warning) = (None, None);
         if let Some(name) = title_family {
@@ -1480,5 +1510,61 @@ mod title_font_tests {
         if f.glyph('😀', FontStyle::Regular).is_some_and(|g| g.color.is_some()) {
             assert_eq!(f.advance('😀'), 2.0 * f.metrics().width as f32);
         }
+    }
+}
+
+#[cfg(test)]
+mod shared_font_tests {
+    use super::*;
+
+    #[test]
+    fn system_font_list_is_shared_until_forgotten() {
+        let a = system_db();
+        let b = system_db();
+        assert!(Rc::ptr_eq(&a, &b), "창을 열 때마다 시스템 글꼴을 다시 훑으면 안 된다");
+        forget_system_fonts();
+        let c = system_db();
+        assert!(!Rc::ptr_eq(&a, &c), "설정을 다시 읽으면 새로 훑는다");
+    }
+
+    #[test]
+    fn windows_at_different_sizes_share_font_data() {
+        let at = |size| FontConfig {
+            size,
+            ..FontConfig::default()
+        };
+        let a = Fonts::new(&at(13.0)).unwrap();
+        let b = Fonts::new(&at(20.0)).unwrap();
+        assert_ne!(a.metrics(), b.metrics());
+        for i in 0..4 {
+            assert!(
+                Rc::ptr_eq(&a.regular[i], &b.regular[i]),
+                "글꼴 파일 자료는 크기와 상관없이 하나"
+            );
+        }
+        assert_eq!(a.fallbacks.len(), b.fallbacks.len());
+        for (x, y) in a.fallbacks.iter().zip(&b.fallbacks) {
+            assert!(Rc::ptr_eq(&x.font, &y.font));
+        }
+    }
+
+    #[test]
+    fn subset_cache_keeps_a_few_sizes() {
+        let key = |px| (std::path::PathBuf::from("/x/emoji.ttc"), 0usize, px);
+        let mut cache: Vec<SubsetEntry> = Vec::new();
+        for px in [26u16, 40, 52] {
+            subset_cache_put(&mut cache, key(px), Some(Rc::new(vec![px as u8])));
+        }
+        for px in [26u16, 40, 52] {
+            assert!(subset_cache_get(&cache, &key(px)).is_some(), "{px}px");
+        }
+        for px in 100..110u16 {
+            subset_cache_put(&mut cache, key(px), None);
+        }
+        assert!(cache.len() <= SUBSET_CACHE_MAX);
+        assert!(
+            subset_cache_get(&cache, &key(109)).is_some(),
+            "가장 나중에 넣은 것은 남는다"
+        );
     }
 }

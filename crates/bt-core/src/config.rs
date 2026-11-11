@@ -579,7 +579,7 @@ pub struct Config {
     pub window_inherit_working_directory: bool,
     pub tab_inherit_working_directory: bool,
     pub split_inherit_working_directory: bool,
-    /// 받기만 한다. 글자 크기가 앱 전체 하나라 새 창은 늘 지금 크기를 쓴다(docs/configuration.md)
+    /// 새 창이 직전에 고른 창의 글자 크기로 열리는가(Ghostty, 기본 켬). 끄면 `font-size`로 연다. 글자 크기는 창마다다
     pub window_inherit_font_size: bool,
     pub window_new_tab_position: WindowNewTabPosition,
     pub window_show_tab_bar: WindowShowTabBar,
@@ -2462,11 +2462,32 @@ impl Config {
         }
     }
 
+    /// 새 창이 열릴 때의 글자 크기(pt). `previous`는 직전에 고른 창의 크기(그런 창이 없으면 `None`).
+    /// `window-inherit-font-size`가 켜져 있고 직전 창이 있으면 그 크기, 아니면 설정 `font-size`(Ghostty와 같다).
+    /// 새 탭은 같은 창이라 이 규칙을 거치지 않고 그 창의 크기를 그대로 쓴다
+    pub fn new_window_font_size(&self, previous: Option<f32>) -> f32 {
+        match previous {
+            Some(size) if self.window_inherit_font_size => clamp_font_size(size),
+            _ => self.font_size,
+        }
+    }
+
     /// 명령줄 `-e`로 띄웠을 때 Ghostty가 함께 바꾸는 것: 명령이 끝나면 앱도 끝난다
     pub fn apply_cli_command(&mut self) {
         self.quit_after_last_window_closed = true;
         self.quit_after_last_window_closed_delay = None;
     }
+}
+
+/// 창 하나의 글자 크기(pt) 범위: 6~72
+pub fn clamp_font_size(size: f32) -> f32 {
+    size.clamp(6.0, 72.0)
+}
+
+/// 설정을 다시 읽은 뒤 창 하나의 글자 크기. 설정의 `font-size`가 바뀌었으면 모든 창이 새 값으로,
+/// 안 바뀌었으면 그 창에서 고른 크기(`current`)를 그대로 둔다
+pub fn font_size_after_reload(old_config: f32, new_config: f32, current: f32) -> f32 {
+    if old_config != new_config { new_config } else { current }
 }
 
 /// `scrollback-limit-bytes` 기본. 릴리스된 Ghostty(1.3까지)의 10MB를 따른다.
@@ -4299,6 +4320,32 @@ mod tests {
         c.window_inherit_working_directory = false;
         c.split_inherit_working_directory = false;
         assert!(!c.inherits_cwd(SpawnKind::Window) && !c.inherits_cwd(SpawnKind::Split));
+    }
+
+    #[test]
+    fn new_window_font_size_follows_inherit_setting() {
+        let mut c = Config {
+            font_size: 13.0,
+            ..Config::default()
+        };
+        // 켜면(기본) 직전에 고른 창의 크기, 그런 창이 없으면 설정 값
+        assert!(c.window_inherit_font_size);
+        assert_eq!(c.new_window_font_size(Some(20.0)), 20.0);
+        assert_eq!(c.new_window_font_size(None), 13.0);
+        // 끄면 직전 창이 있어도 설정 `font-size`
+        c.window_inherit_font_size = false;
+        assert_eq!(c.new_window_font_size(Some(20.0)), 13.0);
+        assert_eq!(c.new_window_font_size(None), 13.0);
+    }
+
+    #[test]
+    fn font_size_clamp_and_reload_rule() {
+        assert_eq!(clamp_font_size(2.0), 6.0);
+        assert_eq!(clamp_font_size(100.0), 72.0);
+        assert_eq!(clamp_font_size(14.5), 14.5);
+        // 설정의 font-size가 바뀌었을 때만 모든 창이 새 값으로, 아니면 창마다 고른 크기를 둔다
+        assert_eq!(font_size_after_reload(13.0, 16.0, 20.0), 16.0);
+        assert_eq!(font_size_after_reload(13.0, 13.0, 20.0), 20.0);
     }
 
     #[test]

@@ -772,6 +772,11 @@ impl FirstFrame {
 
 /// 창 하나의 상태(#36). 칸(셸)은 모든 창이 App에서 함께 든다
 struct Win {
+    /// 이 창의 글꼴 묶음과 글자 크기(pt). 창마다 따로다(#416). 글꼴 파일 자료는 창끼리 나눠 쓰고 글리프 캐시만 창마다 든다
+    fonts: Option<Fonts>,
+    font_size: f32,
+    /// 탭 줄 제목 글꼴(#241 `window-title-font-family`). 키가 없거나 글꼴을 못 찾았으면 없고, 그러면 터미널 글꼴로 그린다
+    title_fonts: Option<Fonts>,
     /// 창을 만든 차례(`goto_window`가 이 차례로 돈다, #206). 바꿔 끼워도 변하지 않는다
     serial: u64,
     gfx: Option<Gfx>,
@@ -857,10 +862,13 @@ struct Win {
 }
 
 impl Win {
-    fn new() -> Self {
+    fn new(font_size: f32) -> Self {
         static NEXT_SERIAL: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
         Self {
             serial: NEXT_SERIAL.fetch_add(1, Ordering::Relaxed),
+            fonts: None,
+            font_size,
+            title_fonts: None,
             gfx: None,
             float_on_top: false,
             tabs: Vec::new(),
@@ -924,8 +932,6 @@ pub struct App {
     config: AppConfig,
     proxy: EventLoopProxy<UserEvent>,
     redraw_pending: Arc<AtomicBool>,
-    fonts: Option<Fonts>,
-    font_size: f32,
     scale: f64,
     /// 모든 탭의 칸들(탭 순서와 상관없다)
     panes: Vec<Pane>,
@@ -984,8 +990,6 @@ pub struct App {
     applied_dark: bool,
     /// 칸에 마지막으로 알린 시스템 모양(`CSI ? 996 n`의 답, 모드 2031 알림, #232)
     reported_dark: bool,
-    /// 탭 줄 제목 글꼴(#241 `window-title-font-family`). 키가 없거나 글꼴을 못 찾았으면 없고, 그러면 터미널 글꼴로 그린다
-    title_fonts: Option<Fonts>,
     /// 보안 키보드 입력 상태(#258)
     secure: crate::secure_input::SecureInput,
     /// 다음에 칸의 암호 입력을 살필 때(200ms마다, 앱이 앞이고 창에 초점이 있을 때만)
@@ -1014,8 +1018,6 @@ impl App {
             config,
             proxy,
             redraw_pending: Arc::new(AtomicBool::new(false)),
-            fonts: None,
-            font_size,
             scale: 1.0,
             panes: Vec::new(),
             next_id: 1,
@@ -1033,7 +1035,7 @@ impl App {
             keymap,
             config_extra,
             config_default_files,
-            w: Win::new(),
+            w: Win::new(font_size),
             others: Vec::new(),
             last_focused: None,
             hotkeys: None,
@@ -1051,7 +1053,6 @@ impl App {
             theme_override: None,
             applied_dark: crate::system_is_dark(),
             reported_dark: crate::system_is_dark(),
-            title_fonts: None,
             secure: crate::secure_input::SecureInput::new(
                 Box::new(crate::secure_input::system_call),
                 crate::secure_input::global_path().is_some_and(|p| crate::secure_input::load_global(&p)),
@@ -1063,13 +1064,13 @@ impl App {
     }
 
     fn load_fonts(&mut self) {
-        let cfg = font_config(&self.config, self.font_size, self.scale as f32);
+        let cfg = font_config(&self.config, self.w.font_size, self.scale as f32);
         match Fonts::new_with_title(&cfg, self.config.window_title_font_family.as_deref()) {
             Ok(set) => {
                 log::info!(
                     "글꼴: {} {}pt × {}",
                     set.terminal.family_name,
-                    self.font_size,
+                    self.w.font_size,
                     self.scale
                 );
                 if let Some(w) = set.title_warning {
@@ -1079,13 +1080,13 @@ impl App {
                         self.config.warnings.push(w);
                     }
                 }
-                self.fonts = Some(set.terminal);
-                self.title_fonts = set.title;
+                self.w.fonts = Some(set.terminal);
+                self.w.title_fonts = set.title;
             }
             Err(e) => {
                 log::error!("{e}");
-                self.fonts = None;
-                self.title_fonts = None;
+                self.w.fonts = None;
+                self.w.title_fonts = None;
             }
         }
     }
@@ -1110,7 +1111,7 @@ impl App {
             (r.h as i32 - top - bottom).max(0) as u32,
         );
         // 남는 자리를 네 변에 고르게(window-padding-balance, #136)
-        match (&self.fonts, self.config.padding_balance) {
+        match (&self.w.fonts, self.config.padding_balance) {
             (Some(f), true) => crate::padding::balance(inner, f.metrics().width, f.metrics().height),
             _ => inner,
         }
@@ -1147,7 +1148,7 @@ impl App {
 
     /// 칸의 스크롤 막대 트랙: (맨 위 픽셀 y, 길이 픽셀). 막대를 그리는 곳과 같다(칸 안쪽 맨 위에서 보이는 줄 수만큼)
     fn scrollbar_track(&self, id: u64, rows: usize) -> Option<(i32, u32)> {
-        let m = self.fonts.as_ref()?.metrics();
+        let m = self.w.fonts.as_ref()?.metrics();
         let inner = self.inner_rect(self.pane_rect(id)?);
         Some((inner.y, rows as u32 * m.height))
     }
@@ -1260,7 +1261,7 @@ impl App {
 
     /// 탭 줄 높이. 탭이 하나면 없다(Ghostty처럼)
     fn tabbar_height(&self) -> u32 {
-        match &self.fonts {
+        match &self.w.fonts {
             Some(f) if self.config.window_show_tab_bar.visible(self.w.tabs.len()) => tabbar::height_px(f),
             _ => 0,
         }
@@ -1480,7 +1481,7 @@ impl App {
 
     /// 칸의 바깥 사각형에 들어가는 격자 크기
     fn grid_size_for(&self, outer: Rect) -> GridSize {
-        let Some(f) = &self.fonts else {
+        let Some(f) = &self.w.fonts else {
             return GridSize::new(80, 24);
         };
         let m = f.metrics();
@@ -1612,7 +1613,7 @@ impl App {
         let now = self.config.window_show_tab_bar.visible(self.w.tabs.len());
         let next = self.config.window_show_tab_bar.visible(self.w.tabs.len() + 1);
         if next && !now {
-            let bar = self.fonts.as_ref().map(tabbar::height_px).unwrap_or(0);
+            let bar = self.w.fonts.as_ref().map(tabbar::height_px).unwrap_or(0);
             area.y += bar as i32;
             area.h = area.h.saturating_sub(bar);
         }
@@ -2931,10 +2932,28 @@ impl App {
         self.request_redraw();
     }
 
+    /// 지금 창의 글자 크기만 바꾼다(#416). 다른 창은 그대로다
     fn set_font_size(&mut self, size: f32) {
-        self.font_size = size.clamp(6.0, 72.0);
+        self.w.font_size = bt_core::config::clamp_font_size(size);
         self.load_fonts();
-        self.for_each_window(|app| app.resize_all());
+        self.resize_all();
+    }
+
+    /// 새 창이 열릴 때의 글자 크기(`window-inherit-font-size`). 직전에 고른 창은 지금 창이고,
+    /// 지금 창이 없으면(btctl 등 창 밖 요청) 마지막으로 보던 창이다. 퀵 터미널은 늘 설정 `font-size`다
+    fn new_window_font_size(&self, quick: bool) -> f32 {
+        let previous = if quick {
+            None
+        } else if self.w.gfx.is_some() {
+            Some(self.w.font_size)
+        } else {
+            let last = self.last_focused;
+            std::iter::once(&self.w)
+                .chain(&self.others)
+                .find(|w| last.is_some() && w.id() == last)
+                .map(|w| w.font_size)
+        };
+        self.config.new_window_font_size(previous)
     }
 
     /// 창 좌표 아래의 칸(보고 있는 탭에서)
@@ -3017,7 +3036,7 @@ impl App {
 
     /// 창 좌표 → 칸 idx의 격자 칸. 칸 밖이면 가장자리 칸으로 붙인다(고르며 끌다 칸을 벗어나도)
     fn cell_in(&self, idx: usize, pos: PhysicalPosition<f64>) -> Option<(usize, usize)> {
-        let m = self.fonts.as_ref()?.metrics();
+        let m = self.w.fonts.as_ref()?.metrics();
         let pane = self.panes.get(idx)?;
         let r = self.inner_rect(self.pane_rect(pane.id)?);
         let (cols, rows) = pane_cells(&pane.session);
@@ -3440,8 +3459,8 @@ impl App {
                     self.paste(text);
                 }
             }
-            Action::FontBigger(n) => self.set_font_size(self.font_size + n),
-            Action::FontSmaller(n) => self.set_font_size(self.font_size - n),
+            Action::FontBigger(n) => self.set_font_size(self.w.font_size + n),
+            Action::FontSmaller(n) => self.set_font_size(self.w.font_size - n),
             Action::FontReset => self.set_font_size(self.config.font_size),
             // 새 탭·새 칸은 고른 칸의 폴더에서 연다
             Action::NewTab => {
@@ -3820,7 +3839,11 @@ impl App {
         for w in std::iter::once(&mut self.w).chain(&mut self.others) {
             w.keyseq = Default::default();
         }
-        self.font_size = next.font_size;
+        // 설정의 `font-size`가 바뀌었으면 모든 창을 새 값으로, 아니면 창마다 고른 크기를 둔다(#416)
+        let (old_size, new_size) = (self.config.font_size, next.font_size);
+        for w in std::iter::once(&mut self.w).chain(&mut self.others) {
+            w.font_size = bt_core::config::font_size_after_reload(old_size, new_size, w.font_size);
+        }
         for t in &self.panes {
             t.session.set_theme(next.theme.clone());
             t.session.set_scroll_on_output(next.scroll_to_bottom.output);
@@ -3852,8 +3875,12 @@ impl App {
                 g.window.request_redraw();
             }
         }
-        self.load_fonts();
-        self.for_each_window(|app| app.resize_all());
+        // 설정을 다시 읽으면 시스템 글꼴을 새로 훑는다(한 번). 창마다 글꼴 묶음을 다시 만들지만 글꼴 파일은 나눠 쓴다
+        bt_render::forget_system_fonts();
+        self.for_each_window(|app| {
+            app.load_fonts();
+            app.resize_all();
+        });
         self.register_hotkeys();
         log::info!("설정을 다시 읽었습니다");
         let warn = self.config.warnings.len();
@@ -3945,7 +3972,7 @@ impl App {
         let Some(rect) = self.pane_rect(self.panes[idx].id) else {
             return;
         };
-        let Some(fonts) = self.fonts.as_ref() else { return };
+        let Some(fonts) = self.w.fonts.as_ref() else { return };
         let (cw, ch) = (fonts.metrics().width as f64, fonts.metrics().height as f64);
         let inner = self.inner_rect(rect);
         let (grid_cols, grid_rows) = pane_cells(&self.panes[idx].session);
@@ -4170,7 +4197,7 @@ impl App {
 
     /// window-step-resize: 칸 크기 단위로 창 크기가 바뀌게 한다(끄면 픽셀 단위로 되돌린다)
     fn apply_step_resize(&self) {
-        let (Some(f), Some(g)) = (&self.fonts, &self.w.gfx) else {
+        let (Some(f), Some(g)) = (&self.w.fonts, &self.w.gfx) else {
             return;
         };
         let m = f.metrics();
@@ -4184,7 +4211,7 @@ impl App {
     /// 40열 × 10행보다 작게는 줄이지 않고 화면보다 크게는 키우지 않는다
     fn on_window_resize_request(&mut self, idx: usize, rows: u16, cols: u16) {
         let Some(pane) = self.panes.get(idx) else { return };
-        let (Some(g), Some(f)) = (&self.w.gfx, &self.fonts) else {
+        let (Some(g), Some(f)) = (&self.w.gfx, &self.w.fonts) else {
             return;
         };
         let single = self.w.tabs.len() == 1 && self.w.tabs[0].layout.leaves() == [pane.id];
@@ -4225,7 +4252,7 @@ impl App {
 
     /// 설정의 window-width·window-height(셀)로 지금 창 크기를 맞춘다
     fn apply_initial_size(&self) {
-        if let (Some(f), Some(g)) = (&self.fonts, &self.w.gfx) {
+        if let (Some(f), Some(g)) = (&self.w.fonts, &self.w.gfx) {
             if let (Some(cols), Some(rows)) = (self.config.window_width, self.config.window_height) {
                 let m = f.metrics();
                 let (w, h) = self.window_inner_for(Some((cols as u32, rows as u32)), (m.width, m.height));
@@ -4251,7 +4278,7 @@ impl App {
 
     /// `reset_window_size`: 창을 새 창이 만들어질 크기로 되돌린다. 전체 화면이면 하지 않는다(Ghostty). 최대화는 풀고 되돌린다
     fn reset_window_size(&mut self) {
-        let Some(f) = &self.fonts else { return };
+        let Some(f) = &self.w.fonts else { return };
         let m = f.metrics();
         let cells = match (self.config.window_width, self.config.window_height) {
             (Some(c), Some(r)) => Some((c as u32, r as u32)),
@@ -4345,12 +4372,14 @@ impl App {
         let old_focused = self.w.focused;
         let new_focused = gfx.window.has_focus();
         let moved_focus = moved.focus;
-        let mut win = Win::new();
+        // 옮긴 탭은 보던 크기 그대로 보인다(`window-inherit-font-size`와 상관없이 떠난 창의 크기)
+        let mut win = Win::new(self.w.font_size);
         win.focused = new_focused;
         win.gfx = Some(gfx);
         win.tabs.push(moved);
         let mut old = std::mem::replace(&mut self.w, win);
         old.focused = false;
+        self.load_fonts();
         // 옮긴 칸에 초점 보고(DEC 1004)를 한 번만 보낸다(#223). 창이 만들어질 때 이미 초점이 있으면 뒤따르는
         // 포커스 사건은 상태가 같아 건너뛰므로(WindowEvent::Focused) 중복되지 않는다
         let plan = crate::winact::move_focus_plan(old_focused, new_focused);
@@ -4674,11 +4703,12 @@ impl App {
             // 첫 창은 이미 만든 창을 쓰고, 그다음부터 새 창
             if wi > 0 {
                 let Some(gfx) = self.create_gfx(event_loop) else { break };
-                let mut win = Win::new();
+                let mut win = Win::new(self.new_window_font_size(false));
                 win.focused = gfx.window.has_focus();
                 win.gfx = Some(gfx);
                 let old = std::mem::replace(&mut self.w, win);
                 self.others.push(old);
+                self.load_fonts();
             }
             if let Some(g) = &self.w.gfx {
                 let _ = g
@@ -4754,7 +4784,7 @@ impl App {
     fn open_window_with(&mut self, event_loop: &ActiveEventLoop, options: SpawnOptions, quick: bool) -> Option<u64> {
         let gfx = self.create_gfx_with(event_loop, quick)?;
         let id = gfx.window.id();
-        let mut win = Win::new();
+        let mut win = Win::new(self.new_window_font_size(quick));
         win.focused = gfx.window.has_focus();
         win.gfx = Some(gfx);
         let mut old = std::mem::replace(&mut self.w, win);
@@ -4764,6 +4794,7 @@ impl App {
             old.focused = false;
             self.others.push(old);
         }
+        self.load_fonts();
         self.quit_deadline = None;
         self.last_focused = Some(id);
         if !quick {
@@ -4802,7 +4833,7 @@ impl App {
             }
             // 마지막 창: 앱을 끝낼지는 quit-after-last-window-closed가 정한다(#178)
             None => {
-                self.w = Win::new();
+                self.w = Win::new(self.config.font_size);
                 self.last_focused = None;
                 self.on_last_window_closed(event_loop, false);
             }
@@ -5231,7 +5262,7 @@ impl App {
             })
             .collect();
         let Some(gfx) = self.w.gfx.as_mut() else { return };
-        let Some(fonts) = self.fonts.as_mut() else { return };
+        let Some(fonts) = self.w.fonts.as_mut() else { return };
         let size = gfx.window.inner_size();
         let m = fonts.metrics();
         // 격자 밖에 그리는 모든 것. 하나라도 바뀌면 통째로 다시 그린다.
@@ -5368,7 +5399,7 @@ impl App {
                     tabbar::draw_with_title_font(
                         &mut canvas,
                         fonts,
-                        self.title_fonts.as_mut(),
+                        self.w.title_fonts.as_mut(),
                         &theme,
                         &labels,
                         top_inset as i32,
@@ -5867,7 +5898,7 @@ impl ApplicationHandler<UserEvent> for App {
         apply_hidden_from_dock(self.config.macos_hidden);
         icon::apply(self.config.macos_icon, self.config.macos_custom_icon.as_deref());
         self.load_fonts();
-        if self.fonts.is_none() {
+        if self.w.fonts.is_none() {
             event_loop.exit();
             return;
         }
@@ -6375,6 +6406,7 @@ impl ApplicationHandler<UserEvent> for App {
                     if state == ElementState::Pressed && button == MouseButton::Left {
                         let width = self.w.gfx.as_ref().map(|g| g.window.inner_size().width).unwrap_or(0);
                         let hit = self
+                            .w
                             .fonts
                             .as_ref()
                             .and_then(|f| tabbar::hit(f, width, self.w.cursor_pos.x, self.w.tabs.len()));
@@ -6537,7 +6569,7 @@ impl ApplicationHandler<UserEvent> for App {
                 let lines = match delta {
                     MouseScrollDelta::LineDelta(_, y) => y as f64 * discrete,
                     MouseScrollDelta::PixelDelta(p) => {
-                        let ch = self.fonts.as_ref().map(|f| f.metrics().height as f64).unwrap_or(16.0);
+                        let ch = self.w.fonts.as_ref().map(|f| f.metrics().height as f64).unwrap_or(16.0);
                         p.y / ch * precision
                     }
                 };
@@ -6546,7 +6578,7 @@ impl ApplicationHandler<UserEvent> for App {
                 let xlines = match delta {
                     MouseScrollDelta::LineDelta(x, _) => x as f64 * discrete,
                     MouseScrollDelta::PixelDelta(p) => {
-                        let cw = self.fonts.as_ref().map(|f| f.metrics().width as f64).unwrap_or(8.0);
+                        let cw = self.w.fonts.as_ref().map(|f| f.metrics().width as f64).unwrap_or(8.0);
                         p.x / cw * precision
                     }
                 };
@@ -7443,7 +7475,7 @@ mod tests {
     /// 보안 검토(#36): 새 창은 포커스 사건이 오기 전까지 보고 있지 않은 창이다(클립보드 쓰기를 받지 않는다)
     #[test]
     fn new_window_state_is_not_focused_until_told() {
-        assert!(!Win::new().focused);
+        assert!(!Win::new(13.0).focused);
     }
 
     #[test]
