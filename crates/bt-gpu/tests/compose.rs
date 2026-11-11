@@ -27,6 +27,11 @@ fn gpu() -> Option<GpuRenderer> {
     }
 }
 
+/// 바뀐 띠의 폭 `cols`가 칸 경계(64px)로 넓어진 최대 폭: 칸 경계에 걸치면 칸 하나가 더 든다(#393)
+fn wide(cols: usize) -> usize {
+    cols.next_multiple_of(64) + 64
+}
+
 fn cells(s: &Screen) -> Vec<DrawCell> {
     let mut cells: Vec<DrawCell> = s
         .cells
@@ -458,7 +463,7 @@ fn partial_layer_upload_keeps_every_frame_equal_to_the_cpu_frame() {
     );
     let bytes = g.timings().upload_bytes;
     assert!(
-        bytes > 0 && bytes <= (90 * 3 * 4) as usize,
+        bytes > 0 && bytes <= wide(90) * 3 * 4,
         "바뀐 띠만 올라야 한다: {bytes}바이트(통째 {full_bytes})"
     );
 
@@ -491,7 +496,7 @@ fn partial_layer_upload_keeps_every_frame_equal_to_the_cpu_frame() {
         &panes,
     );
     assert_close("4. 덧그림 끔", &reference(&mut fx.f, &fx.l, fx.sa.background, 0), &got);
-    assert!(g.timings().upload_bytes <= (25 * 3 * 4) as usize);
+    assert!(g.timings().upload_bytes <= wide(25) * 3 * 4);
 
     // 5. 빈 채로 한 번 더, 그리고 다시 켬(비었다가 켜지는 프레임)
     let got = g.compose(
@@ -531,7 +536,7 @@ fn partial_layer_upload_keeps_every_frame_equal_to_the_cpu_frame() {
     let mut want = reference(&mut fx.f, &fx.l, fx.sa.background, 40);
     Canvas::new(&mut want, size.0, size.1).fill_rect(100, 5, 20, 8, Rgb::new(200, 50, 50));
     assert_close("6. 아래층 한 곳", &want, &got);
-    assert!(g.timings().upload_bytes <= (20 * 8 * 4) as usize);
+    assert!(g.timings().upload_bytes <= wide(20) * 8 * 4);
 }
 
 /// 앱이 층 입력이 같다고 보고 층을 넘기지 않은 프레임(ADR-038)과 미루거나 가려져 건너뛴 프레임 뒤에도,
@@ -617,10 +622,7 @@ fn frames_without_a_layer_update_keep_the_last_layers_and_follow_later_changes()
         &got,
     );
     let bytes = g.timings().upload_bytes;
-    assert!(
-        bytes > 0 && bytes <= (40 * 3 * 4) as usize,
-        "바뀐 띠만 올라야 한다: {bytes}"
-    );
+    assert!(bytes > 0 && bytes <= wide(40) * 3 * 4, "바뀐 띠만 올라야 한다: {bytes}");
 
     // 4. 미루거나 가려져 건너뛴 프레임 뒤: 앱이 층을 통째로 다시 넘겨도(같은 내용) 올릴 것이 없고 결과는 같다
     let got = g.compose(&mut fx.f, size, none(), &panes);
@@ -737,7 +739,11 @@ fn empty_upper_slice_releases_the_upper_layer_and_it_comes_back() {
     assert_close("위층이 있는 프레임", &with_upper, &got);
     let m = g.layer_memory();
     assert_eq!(m.texture_bytes, 2 * layer, "두 층 텍스처: {m:?}");
-    assert!(m.shadow_bytes >= 2 * layer, "두 층 사본: {m:?}");
+    assert!(
+        m.shadow_bytes > 0 && m.shadow_bytes * 10 < 2 * layer,
+        "두 층 칸 해시는 두 층 텍스처 크기의 1/10보다 작다: {m:?}"
+    );
+    let both = m.shadow_bytes;
 
     // 위층이 비었다: 텍스처와 사본을 놓고, 화면은 위층 없는 기준과 같다
     let empty = LayerUpdate {
@@ -749,8 +755,8 @@ fn empty_upper_slice_releases_the_upper_layer_and_it_comes_back() {
     let m = g.layer_memory();
     assert_eq!(m.texture_bytes, layer, "아래층 텍스처만 남는다: {m:?}");
     assert!(
-        m.shadow_bytes >= layer && m.shadow_bytes < 2 * layer,
-        "아래층 사본만 남는다: {m:?}"
+        m.shadow_bytes > 0 && m.shadow_bytes < both,
+        "아래층 칸 해시만 남는다: {m:?}"
     );
 
     // 다시 위층을 주면 돌아온다
@@ -777,7 +783,8 @@ fn empty_upper_slice_releases_the_upper_layer_and_it_comes_back() {
         upper: Some(&small),
     };
     let got = g.compose(&mut fx.f, size, small_up, &panes);
-    assert_eq!(g.timings().upload_bytes, 10 * 10 * 4, "조각만 올린다");
+    // 조각(열 20..30)은 칸 하나(0..64)에 든다: 폭이 칸 경계로 넓어진다(#393)
+    assert_eq!(g.timings().upload_bytes, 64 * 10 * 4, "조각의 칸만 올린다");
     assert_eq!(got[35 * fx.l.w as usize + 25] & 0xff_ffff, 0xff_0000, "조각이 보인다");
     assert_close("조각 밖은 위층 없는 기준", &without_upper[..20], &got[..20]);
 }

@@ -8,7 +8,7 @@ use std::time::Instant;
 use bt_core::Rgb;
 use bt_render::{Fonts, GridView};
 
-use super::layer_diff::changed_rects;
+use super::layer_diff::TileHashes;
 use super::{FrameTimings, GpuRenderer, upload_instances};
 use crate::scene::{GLYPH_STRIDE, GlyphInst, RECT_STRIDE, RectInst};
 
@@ -38,7 +38,7 @@ const SCRATCH_MAX_BYTES: usize = 1 << 20;
 pub struct LayerMemory {
     /// 층 텍스처(GPU)
     pub texture_bytes: usize,
-    /// 텍스처에 올린 픽셀의 사본(CPU)
+    /// 텍스처에 올린 픽셀의 칸 해시(CPU)
     pub shadow_bytes: usize,
     /// 올릴 사각형을 옮겨 담는 임시 버퍼의 용량(CPU)
     pub scratch_bytes: usize,
@@ -50,10 +50,9 @@ pub(super) struct LayerTex {
     bind_group: wgpu::BindGroup,
     width: u32,
     height: u32,
-    /// 텍스처에 올라가 있는 픽셀의 사본. 다음 층과 견줘 달라진 사각형만 올린다(ADR-037)
-    shadow: Vec<u32>,
-    /// `shadow`에서 0이 아닌 픽셀 수. 0이면 층이 비었다(그리지 않는다)
-    nonzero: usize,
+    /// 텍스처에 올라가 있는 픽셀의 칸 해시. 다음 층과 견줘 달라진 사각형만 올린다(ADR-037, 사본 대신 #393).
+    /// 0이 아닌 픽셀 수도 여기서 센다: 0이면 층이 비었다(그리지 않는다)
+    tiles: TileHashes,
 }
 
 /// 칸 하나가 인스턴스 목록에서 차지하는 구간(글자 앞 사각형, 글자, 글자 뒤 사각형, 상자 커서 안 글자 차례)
@@ -183,53 +182,46 @@ impl Layers {
         }
         let px = &px[..w as usize * h as usize];
         let slot = if upper { &mut self.upper } else { &mut self.lower };
-        let rects = match slot.as_ref().filter(|t| (t.width, t.height) == (w, h)) {
-            Some(t) => changed_rects(&t.shadow, px, w, h),
-            None => {
-                let texture = device.create_texture(&wgpu::TextureDescriptor {
-                    label: Some(if upper {
-                        "bt-gpu upper layer"
-                    } else {
-                        "bt-gpu lower layer"
-                    }),
-                    size: wgpu::Extent3d {
-                        width: w,
-                        height: h,
-                        depth_or_array_layers: 1,
-                    },
-                    mip_level_count: 1,
-                    sample_count: 1,
-                    dimension: wgpu::TextureDimension::D2,
-                    format: wgpu::TextureFormat::Bgra8Unorm,
-                    usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-                    view_formats: &[],
-                });
-                let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-                let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-                    label: Some("bt-gpu layer bind group"),
-                    layout: &self.layout,
-                    entries: &[wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: wgpu::BindingResource::TextureView(&view),
-                    }],
-                });
-                *slot = Some(LayerTex {
-                    texture,
-                    bind_group,
+        if slot.as_ref().is_none_or(|t| (t.width, t.height) != (w, h)) {
+            let texture = device.create_texture(&wgpu::TextureDescriptor {
+                label: Some(if upper {
+                    "bt-gpu upper layer"
+                } else {
+                    "bt-gpu lower layer"
+                }),
+                size: wgpu::Extent3d {
                     width: w,
                     height: h,
-                    shadow: vec![0; w as usize * h as usize],
-                    nonzero: 0,
-                });
-                // wgpu는 새 텍스처를 0으로 채워 쓴다. 사본도 0이니 0이 아닌 자리만 올리면 된다
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::Bgra8Unorm,
+                usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+                view_formats: &[],
+            });
+            let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+            let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("bt-gpu layer bind group"),
+                layout: &self.layout,
+                entries: &[wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&view),
+                }],
+            });
+            *slot = Some(LayerTex {
+                texture,
+                bind_group,
+                width: w,
+                height: h,
+                // wgpu는 새 텍스처를 0으로 채워 쓴다. 칸 해시도 "0인 칸"에서 시작하니 0이 아닌 자리만 올리면 된다
                 // (놓았던 위층이 돌아올 때 층을 통째로 올리지 않는다, #387)
-                match slot.as_ref() {
-                    Some(t) => changed_rects(&t.shadow, px, w, h),
-                    None => Vec::new(),
-                }
-            }
-        };
+                tiles: TileHashes::zeroed(w, h),
+            });
+        }
         let Some(t) = slot else { return 0 };
+        let rects = t.tiles.update(px);
         let mut bytes = 0;
         for r in rects {
             let rw = r.w as usize;
@@ -240,19 +232,12 @@ impl Layers {
             while y0 < r.y + r.h {
                 let rows = chunk_rows.min(r.y + r.h - y0);
                 self.scratch.resize(rw * rows as usize * 4, 0);
-                let (mut old_nz, mut new_nz) = (0, 0);
                 for (row, dst_row) in self.scratch.chunks_exact_mut(rw * 4).enumerate() {
                     let at = (y0 as usize + row) * w as usize + r.x as usize;
-                    let src = &px[at..at + rw];
-                    let shadow = &mut t.shadow[at..at + rw];
-                    old_nz += shadow.iter().filter(|p| **p != 0).count();
-                    new_nz += src.iter().filter(|p| **p != 0).count();
-                    shadow.copy_from_slice(src);
-                    for (dst, p) in dst_row.chunks_exact_mut(4).zip(src) {
+                    for (dst, p) in dst_row.chunks_exact_mut(4).zip(&px[at..at + rw]) {
                         dst.copy_from_slice(&p.to_le_bytes());
                     }
                 }
-                t.nonzero = t.nonzero + new_nz - old_nz;
                 queue.write_texture(
                     wgpu::TexelCopyTextureInfo {
                         texture: &t.texture,
@@ -287,7 +272,7 @@ impl Layers {
         };
         for t in [&self.lower, &self.upper].into_iter().flatten() {
             m.texture_bytes += t.width as usize * t.height as usize * 4;
-            m.shadow_bytes += t.shadow.capacity() * 4;
+            m.shadow_bytes += t.tiles.bytes();
         }
         m
     }
@@ -297,7 +282,7 @@ impl Layers {
         let t = if upper { &self.upper } else { &self.lower };
         // 비어 있는 위층은 그리지 않는다(칸마다 화면을 한 번 덮는 일을 아낀다)
         t.as_ref()
-            .filter(|t| (t.width, t.height) == self.size && !(upper && t.nonzero == 0))
+            .filter(|t| (t.width, t.height) == self.size && !(upper && t.tiles.nonzero() == 0))
     }
 }
 
