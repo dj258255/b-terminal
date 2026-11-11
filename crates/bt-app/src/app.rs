@@ -81,6 +81,8 @@ pub enum UserEvent {
     /// Dock·Finder가 열라고 한 경로(#279). macOS에만 온다
     #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     OpenFile(std::path::PathBuf),
+    /// 사용자 셰이더 컴파일이 끝났다(컴파일 스레드가 보낸다, ADR-042)
+    ShaderCompiled,
 }
 
 /// 앱 설정: 설정 파일(bt_core::Config, Ghostty 문법)을 그대로 쓴다(#13)
@@ -661,11 +663,15 @@ struct PaneView {
     progress: Option<(u8, u8)>,
 }
 
-/// 창에 사용자 셰이더를 건다(#376). GPU 길이면 컴파일하고 실패한 것의 오류 문구를, CPU 길이면 쓰지 못한다는 문구를 돌려준다
-/// (둘 다 로그에 남는다. GPU 쪽 컴파일 경고는 렌더러가 남긴다)
-fn apply_shaders(g: &mut Gfx, shaders: &[bt_gpu::CustomShaderSource]) -> Vec<String> {
+/// 창에 사용자 셰이더를 건다(#376). GPU 길이면 GLSL 오류는 곧바로 돌려주고 파이프라인은 다른 스레드에서 만든다(#381):
+/// 그때 나는 드문 오류는 결과가 올 때 `poll_shaders`가 받는다. CPU 길이면 쓰지 못한다는 문구를 돌려준다
+/// (둘 다 로그에도 남는다. GPU 쪽 컴파일 경고는 렌더러가 남긴다)
+fn apply_shaders(g: &mut Gfx, shaders: &[bt_gpu::CustomShaderSource], wake: &bt_gpu::ShaderWaker) -> Vec<String> {
     match g.gpu.as_mut() {
-        Some(gpu) => gpu.set_custom_shaders(shaders),
+        Some(gpu) => {
+            gpu.set_custom_shader_waker(Some(wake.clone()));
+            gpu.set_custom_shaders(shaders)
+        }
         None if shaders.is_empty() => Vec::new(),
         None => {
             let e =
@@ -3660,12 +3666,37 @@ impl App {
             .into_iter()
             .map(|(name, glsl)| bt_gpu::CustomShaderSource { name, glsl })
             .collect();
+        let wake = self.shader_waker();
         let mut errors = Vec::new();
         for w in std::iter::once(&mut self.w).chain(&mut self.others) {
             let Some(g) = w.gfx.as_mut() else { continue };
-            errors.extend(apply_shaders(g, &self.shaders));
+            errors.extend(apply_shaders(g, &self.shaders, &wake));
             w.shader = Default::default();
             g.window.request_redraw();
+        }
+        self.note_shader_errors(errors);
+    }
+
+    /// 컴파일이 끝나면 이벤트 루프를 깨우는 함수(컴파일 스레드에서 불린다, #381)
+    fn shader_waker(&self) -> bt_gpu::ShaderWaker {
+        let proxy = self.proxy.clone();
+        std::sync::Arc::new(move || {
+            let _ = proxy.send_event(UserEvent::ShaderCompiled);
+        })
+    }
+
+    /// 컴파일이 끝난 창의 결과를 받아 끼우고, 그 창을 다시 그리고 셰이더 시간을 0부터 센다. 오류는 지금처럼 설정 경고로 남긴다(#381).
+    /// 아직 안 끝난 창은 그대로 둔다(기다리지 않는다)
+    fn poll_shaders(&mut self) {
+        let mut errors = Vec::new();
+        for w in std::iter::once(&mut self.w).chain(&mut self.others) {
+            let Some(g) = w.gfx.as_mut() else { continue };
+            let Some(gpu) = g.gpu.as_mut() else { continue };
+            if let Some(e) = gpu.poll_custom_shaders() {
+                errors.extend(e);
+                w.shader = Default::default();
+                g.window.request_redraw();
+            }
         }
         self.note_shader_errors(errors);
     }
@@ -3967,7 +3998,7 @@ impl App {
                 gpu,
                 first: FirstFrame::new(made),
             };
-            self.note_shader_errors(apply_shaders(&mut g, &self.shaders));
+            self.note_shader_errors(apply_shaders(&mut g, &self.shaders, &self.shader_waker()));
             return Some(g);
         }
         log::info!("그리기 길: CPU");
@@ -3981,7 +4012,7 @@ impl App {
             gpu: None,
             first: FirstFrame::new(made),
         };
-        self.note_shader_errors(apply_shaders(&mut g, &self.shaders));
+        self.note_shader_errors(apply_shaders(&mut g, &self.shaders, &self.shader_waker()));
         Some(g)
     }
 
@@ -5896,6 +5927,8 @@ impl ApplicationHandler<UserEvent> for App {
                 }
                 self.request_redraw();
             }
+            // 사용자 셰이더 컴파일이 끝났다(ADR-042): 끝난 창의 결과를 받아 끼우고 다시 그린다
+            UserEvent::ShaderCompiled => self.poll_shaders(),
         }
     }
 
