@@ -2462,7 +2462,8 @@ pub const SCROLLBACK_BYTES_DEFAULT: u64 = 10_000_000;
 pub const SCROLLBACK_ROWS_MAX: usize = 1_000_000;
 
 /// 두 상한(`scrollback-limit-bytes`, `scrollback-limit-lines`; 없으면 `unlimited`)에서 VT 엔진에 줄 스크롤백 줄 수를 정한다.
-/// 엔진은 줄 수 상한만 있어 바이트는 줄 하나를 약 1KB로 보고 줄 수로 바꾼다(100줄 이상).
+/// 엔진은 줄 수 상한만 있어 바이트는 1000바이트를 한 줄로 쳐서 줄 수로 바꾼다(100줄 이상).
+/// 실제 줄 하나는 창 폭만큼 칸(24바이트)을 쥐어 이보다 크다(124칸 창에서 약 3.2KB, 실험 E17)
 /// Ghostty처럼 둘 다 정했으면 먼저 닿는 쪽, 곧 작은 쪽이다
 pub fn scrollback_rows(bytes: Option<u64>, lines: Option<usize>) -> usize {
     let from_bytes = match bytes {

@@ -134,7 +134,7 @@ config-file = ?~/.config/b-terminal/local   # ?가 붙으면 없어도 된다
 | `key-remap` | `from=to` (예 `ctrl=super`, `left_alt=right_ctrl`), 여러 번 쓸 수 있음 | 없음 | 앱 안에서만 수정 키를 바꿉니다. 이름은 `shift` `ctrl`/`control` `alt`/`option` `super`/`cmd`/`command`, 앞에 `left_`·`right_`를 붙이면 그쪽만입니다(좌우 없는 이름은 양쪽). 키 묶음 판단과 PTY로 보내는 인코딩이 모두 바뀐 키를 씁니다. 한 방향이고 이어서 바뀌지 않습니다(`ctrl=super`, `alt=ctrl`이면 Alt는 Ctrl이 될 뿐 Super가 아닙니다). 키보드 배치와 OS가 만드는 글자는 그대로라 `option+a`가 `å`를 만드는 것은 달라지지 않습니다. 메뉴 막대의 Cmd 단축키는 macOS가 먼저 처리해 바뀌지 않습니다. 좌우는 macOS의 winit이 장치별 비트로 알려 주는 것을 씁니다(그 밖의 OS는 좌우를 모르면 왼쪽으로 봅니다). 빈 값은 지금까지 쌓은 것을 지웁니다. `option-as-alt`는 진짜 Option 키에만 걸리고, 바꾸기로 생긴 Alt는 늘 Alt입니다 |
 | `macos-icon` | `official` `custom` `custom-style`, 내장 이름(`blueprint` `chalkboard` `microchip` `glass` `holographic` `paper` `retro` `xray`) | `official` | `custom`일 때만 `macos-custom-icon`의 그림으로 바꿉니다. 내장 이름과 `custom-style`은 b-terminal에 그 그림이 없어 받기만 합니다. `NSApplication.setApplicationIconImage`가 objc2에서 `unsafe`라 쓰지 못해 Dock 아이콘(`NSDockTile`)에만 올립니다. Cmd-Tab과 Finder의 아이콘은 그대로입니다. 실제 Dock에서는 아직 확인하지 않았습니다 |
 | `macos-custom-icon` | 그림 파일 경로(png·jpeg·icns) | 없음 | `macos-icon = custom`일 때 쓸 그림. `~/`는 홈, 상대 경로는 설정 파일이 있는 폴더 기준입니다(Ghostty의 `~/.config/ghostty/Ghostty.icns` 기본값은 없습니다). 읽지 못하면 로그에 경고하고 아이콘을 그대로 둡니다. 빈 값은 지움 |
-| `scrollback-limit-bytes` | 바이트, `unlimited` | 1000만 | Ghostty 1.4 이름. VT 엔진은 줄 수 상한만 있어 줄 하나를 약 1KB로 보고 줄 수로 바꿉니다(1000만이면 1만 줄, 100줄 이상). 옛 이름 `scrollback-limit`도 같은 뜻으로 받습니다. Ghostty 1.4 소스의 기본은 5000만이지만 스크롤백 압축과 함께 올린 값이라 따르지 않습니다 |
+| `scrollback-limit-bytes` | 바이트, `unlimited` | 1000만 | Ghostty 1.4 이름. VT 엔진은 줄 수 상한만 있어 1000바이트를 한 줄로 쳐서 줄 수로 바꿉니다(1000만이면 1만 줄, 100줄 이상). 실제 메모리는 이보다 큽니다. 줄 하나는 글자 수와 관계없이 창 폭만큼 칸을 쥐어(칸 하나 24바이트) 124칸 창에서 약 3.2KB, 60칸 창에서 약 1.6KB였고, 기본 1만 줄을 채우면 칸마다 약 32MB가 늘었습니다(실험 E17). 스크롤백은 칸마다 따로 듭니다. 옛 이름 `scrollback-limit`도 같은 뜻으로 받습니다. Ghostty 1.4 소스의 기본은 5000만이지만 스크롤백 압축과 함께 올린 값이라 따르지 않습니다 |
 | `scrollback-limit-lines` | 줄 수, `unlimited` | `unlimited` | Ghostty 1.4 값. 바이트 상한과 둘 다 있으면 먼저 닿는 쪽(작은 쪽)이 이깁니다. 둘 다 `unlimited`여도 100만 줄에서 멈춥니다 |
 | `scrollback-lines` | 줄 수 | | b-terminal 옛 키. 정확히 그 줄 수로 두고 바이트 상한은 풉니다(뒤에 쓴 `scrollback-limit-*`가 이김) |
 | `copy-on-select` | `true` `false` `clipboard`(Ghostty 1.4 이름 `none` `primary` `both`도 받음) | `true` | 고르기를 마치면 클립보드로. macOS에는 선택 클립보드가 없어 `true`·`clipboard`·`both`는 같고(시스템 클립보드), `false`·`none`·`primary`면 복사하지 않습니다. Ghostty 1.4(아직 나오지 않은 판)는 macOS 기본을 `none`으로 바꿨지만, b-terminal은 지금 나온 판의 기본(켬)을 따릅니다 |
@@ -231,7 +231,7 @@ config-file = ?~/.config/b-terminal/local   # ?가 붙으면 없어도 된다
 | `linux-cgroup` `linux-cgroup-memory-limit` `linux-cgroup-processes-limit` `linux-cgroup-hard-fail` `async-backend` | 리눅스 전용입니다(cgroup, epoll·io_uring 고르기). macOS는 kqueue 하나입니다 |
 | `quick-terminal-keyboard-interactivity` | Wayland 레이어 셸 전용입니다 |
 | `freetype-load-flags` | Ghostty의 FreeType 글꼴 옵션입니다. b-terminal은 글꼴을 FreeType이 아니라 swash(순수 Rust)로 그려서 하는 일이 없습니다 |
-| `scrollback-compression` | Ghostty 화면 엔진(페이지 메모리 압축)의 옵션입니다. b-terminal의 VT 엔진에는 그 단계가 없습니다 |
+| `scrollback-compression` | Ghostty 화면 엔진이 쉬는 동안 스크롤백 페이지를 압축하는 옵션입니다. b-terminal의 VT 엔진은 줄을 칸 배열로 들고 있어 그 단계가 없습니다. 스크롤백이 쓰는 메모리는 위 `scrollback-limit-bytes` 줄에 적었습니다 |
 | `drag-handle` | 마우스로 칸을 끌어 옮기는 손잡이입니다. b-terminal에는 그 기능이 없습니다 |
 
 ## 팔레트 항목
