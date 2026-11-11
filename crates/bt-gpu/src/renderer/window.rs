@@ -5,7 +5,9 @@ use std::time::{Duration, Instant};
 use bt_render::Fonts;
 
 use super::{GpuRenderer, LayerUpdate, PaneDraw, pick_adapter, srgb_twin, srgb_view_of};
-use crate::pacing::{DEFAULT_REFRESH, FramePacer, PaceDecision, SurfaceVisibility, frame_latency_from_env};
+use crate::pacing::{
+    DEFAULT_REFRESH, FramePacer, PaceDecision, SurfaceVisibility, frame_latency_from_env, surface_latency,
+};
 use bt_core::AlphaBlending;
 
 /// 창이 가려졌을 때 `present`가 돌려주는 이유
@@ -118,9 +120,14 @@ impl GpuRenderer {
             );
             return None;
         };
-        // `desired_maximum_frame_latency`와 `FramePacer`의 줄 깊이는 같은 값이다. 다시 설정할 때는 `config`를 그대로 쓰므로 바뀌지 않는다
+        // `FramePacer`의 줄 깊이와 surface에 청하는 `desired_maximum_frame_latency`는 다른 값이다(#447): surface는 줄 깊이 + 1(최대 2).
+        // 다시 설정할 때는 `config`를 그대로 쓰므로 바뀌지 않는다
         let frame_latency = frame_latency_from_env(std::env::var("BT_FRAME_LATENCY").ok().as_deref());
-        log::info!("프레임 지연 {frame_latency}(그림판 {}장)", frame_latency + 1);
+        let surface_latency = surface_latency(frame_latency);
+        log::info!(
+            "줄 깊이 {frame_latency}, surface 지연 {surface_latency}(그림판 최대 {}장)",
+            surface_latency + 1
+        );
         let (present_mode, vsync_warning) = present_mode_for(vsync, &caps.present_modes);
         if let Some(why) = vsync_warning {
             log::warn!("{why}: {:?}", caps.present_modes);
@@ -135,7 +142,7 @@ impl GpuRenderer {
             width: size.0.max(1),
             height: size.1.max(1),
             present_mode,
-            desired_maximum_frame_latency: frame_latency,
+            desired_maximum_frame_latency: surface_latency,
             alpha_mode,
             view_formats: vec![],
         };
