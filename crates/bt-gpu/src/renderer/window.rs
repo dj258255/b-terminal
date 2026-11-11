@@ -21,7 +21,7 @@ pub(super) struct WindowSurface {
     stale: bool,
     /// 곱한 알파를 받는 알파 모드로 열었다(투명 창, #359)
     transparent: bool,
-    /// 올린 때를 세어 그림판 얻기가 막힐 것 같으면 미룬다(ADR-038). `Immediate`에서는 쓰지 않는다
+    /// 올린 때를 세어 그림판 얻기가 막힐 것 같으면 미룬다(ADR-038). 올리기 방식과 상관없이 쓴다
     pacer: FramePacer,
     /// 창이 보이는지 아는 것. 모르거나 가려졌으면 층을 올리기 전에 그림판부터 얻어 본다(ADR-038)
     visibility: SurfaceVisibility,
@@ -73,10 +73,10 @@ pub(super) fn present_mode_for(
     )
 }
 
-/// `FramePacer`의 미룸을 쓰는가. 미룸은 화면이 주기마다 한 장을 가져간다는 짐작(`Fifo`)에 기대므로,
-/// 맞추지 않고 올리는 `Immediate`에서는 틀린 짐작으로 프레임만 늦춘다. 그때는 끄고 늘 바로 그린다
-pub(super) fn pacing_applies(mode: wgpu::PresentMode) -> bool {
-    mode != wgpu::PresentMode::Immediate
+/// `FramePacer`의 미룸을 쓰는가. 올리기 방식과 상관없이 늘 쓴다. `Immediate`에서 미룸을 끄고 화면 주기보다 빨리 그림판을 몰아 올리면
+/// 마지막 올림이 화면에 붙지 않아 출력 뒤 앞 프레임에 멈췄다(#451, 0.46.0에서 16회 중 14회, 실험 E23). 합성기 안쪽의 까닭은 확인하지 못했다
+pub(super) fn pacing_applies(_mode: wgpu::PresentMode) -> bool {
+    true
 }
 
 impl GpuRenderer {
@@ -372,9 +372,18 @@ mod tests {
     }
 
     #[test]
-    fn pacing_is_skipped_only_for_unsynced_presents() {
-        assert!(pacing_applies(P::Fifo));
-        assert!(!pacing_applies(P::Immediate));
+    fn pacing_applies_to_every_present_mode() {
+        // `Immediate`에서 미룸을 끄면 마지막 프레임이 화면에 붙지 않았다(#451)
+        for mode in [
+            P::Fifo,
+            P::FifoRelaxed,
+            P::Mailbox,
+            P::Immediate,
+            P::AutoVsync,
+            P::AutoNoVsync,
+        ] {
+            assert!(pacing_applies(mode), "{mode:?}");
+        }
     }
 
     #[test]
