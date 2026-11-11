@@ -251,123 +251,132 @@ impl App {
             }
 
             // 위층: 투명 바탕(0)에 그린다. 캔버스의 섞기가 곱한 알파로 쌓아 준다.
-            // 지난 프레임에 비어 놓았으면 새로 잡는다(새로 잡은 것은 이미 0)
-            if self.w.upper.len() == n {
-                self.w.upper.fill(0);
-            } else {
-                self.w.upper = vec![0; n];
-            }
-            let mut upper = Canvas::new(&mut self.w.upper, sw, sh);
-            for ((v, (_, _, _)), bar) in views.iter().zip(&drawn).zip(bars) {
-                let screen = &v.screen;
-                // kitty 그림: 놓인 칸에, 칸 수에 맞춰 늘리거나 원래 크기로. 격자 밖은 자른다
-                let grid_clip = (
-                    v.inner.x,
-                    v.inner.y,
-                    v.inner.x + (screen.cols as u32 * m.width) as i32,
-                    v.inner.y + (screen.rows as u32 * m.height) as i32,
-                );
-                for im in &screen.images {
-                    let (cw, chh) = (im.cols * m.width, im.rows * m.height);
-                    let (w, h) = if im.scaled { (cw, chh) } else { (im.width, im.height) };
-                    let clip = (
-                        grid_clip.0,
-                        grid_clip.1,
-                        grid_clip.2.min(v.inner.x + (im.col as u32 * m.width + cw) as i32),
-                        grid_clip.3,
-                    );
-                    upper.draw_rgba(
-                        v.inner.x + (im.col as u32 * m.width) as i32,
-                        v.inner.y + im.row * m.height as i32,
-                        w,
-                        h,
-                        &im.rgba,
-                        im.width,
-                        im.height,
-                        clip,
-                    );
-                }
-                if split && !v.focused && dim_alpha > 0 {
-                    upper.blend_rect(v.outer.x, v.outer.y, v.outer.w, v.outer.h, dim_fill, dim_alpha);
-                }
-                if let Some((_, query, status, missing)) = search.as_ref().filter(|s| s.0 == v.id) {
-                    tabbar::draw_search_bar(
-                        &mut upper,
-                        fonts,
-                        &theme,
-                        v.outer,
-                        &format!("{query}{preedit}"),
-                        status,
-                        *missing,
-                    );
-                }
-                if resize_overlays.contains(&v.id) {
-                    tabbar::draw_resize_overlay(
-                        &mut upper,
-                        fonts,
-                        &theme,
-                        v.outer,
-                        self.config.resize_overlay_position,
-                        &format!("{} × {}", screen.cols, screen.rows),
-                    );
-                }
-                if bar.0 {
-                    let width = (bt_render::scrollbar::BAR_WIDTH as f64 * scale).round() as u32;
-                    bt_render::scrollbar::draw(
-                        &mut upper,
-                        v.outer.right() - width as i32 - scale.round().max(1.0) as i32,
-                        v.inner.y,
-                        screen.rows as u32 * m.height,
-                        width,
-                        screen.rows,
-                        screen.history,
-                        screen.display_offset,
-                        theme.foreground,
-                        if bar.1 { 170 } else { 110 },
-                    );
-                }
-                if let (true, Some(p)) = (single_tab, v.progress) {
-                    tabbar::draw_progress(&mut upper, &theme, v.outer.x, v.outer.y, v.outer.w, p, m.stroke * 3);
-                }
-            }
-            for d in dividers {
-                upper.fill_rect(d.x, d.y, d.w, d.h, divider_color);
-            }
-            if let Some((_, hit)) = hover.as_ref().filter(|(_, h)| link_previews.shows(h.explicit)) {
-                tabbar::draw_link_hint(&mut upper, fonts, &theme, &bt_core::proto::printable(&hit.url));
-            }
-            if let Some((q, rows, sel)) = palette {
-                tabbar::draw_palette(&mut upper, fonts, &theme, &format!("{q}{preedit}"), rows, *sel);
-            }
-            if let Some((text, _)) = toast {
-                tabbar::draw_toast(&mut upper, fonts, &theme, text);
-            }
-            if secure_badge {
-                tabbar::draw_secure_badge(&mut upper, fonts, &theme, badge_top);
-            }
-            if let Some((label, text)) = title_prompt {
-                tabbar::draw_prompt(
-                    &mut upper,
-                    fonts,
-                    &theme,
-                    label,
-                    &format!("{text}{preedit}"),
-                    "↩ 정하기    esc 취소    비우고 ↩면 프로그램이 정한 제목으로",
-                );
-            }
-            if let Some((message, yes, from_program)) = confirm {
-                let hint = if *from_program {
-                    format!("y {yes}    n·esc 거절")
+            // 위층에 그리는 것은 덧그림(`chrome.overlay`)과, 화면을 나눴을 때의 흐린 칸·경계선뿐이다.
+            // 둘 다 없으면 그리지 않고 버퍼를 놓는다. 빈 조각을 받은 렌더러도 위층 텍스처와 사본을 놓는다(#387).
+            // debug 빌드는 그래도 그려 보고 정말 비었는지 본다(판단에 빠진 그리기를 잡는다)
+            let uses_upper = chrome.overlay || split;
+            if uses_upper || cfg!(debug_assertions) {
+                // 지난 프레임에 놓았으면 새로 잡는다(새로 잡은 것은 이미 0)
+                if self.w.upper.len() == n {
+                    self.w.upper.fill(0);
                 } else {
-                    format!("↩ {yes}    esc 취소")
-                };
-                tabbar::draw_confirm(&mut upper, fonts, &theme, message, &hint);
+                    self.w.upper = vec![0; n];
+                }
+                let mut upper = Canvas::new(&mut self.w.upper, sw, sh);
+                for ((v, (_, _, _)), bar) in views.iter().zip(&drawn).zip(bars) {
+                    let screen = &v.screen;
+                    // kitty 그림: 놓인 칸에, 칸 수에 맞춰 늘리거나 원래 크기로. 격자 밖은 자른다
+                    let grid_clip = (
+                        v.inner.x,
+                        v.inner.y,
+                        v.inner.x + (screen.cols as u32 * m.width) as i32,
+                        v.inner.y + (screen.rows as u32 * m.height) as i32,
+                    );
+                    for im in &screen.images {
+                        let (cw, chh) = (im.cols * m.width, im.rows * m.height);
+                        let (w, h) = if im.scaled { (cw, chh) } else { (im.width, im.height) };
+                        let clip = (
+                            grid_clip.0,
+                            grid_clip.1,
+                            grid_clip.2.min(v.inner.x + (im.col as u32 * m.width + cw) as i32),
+                            grid_clip.3,
+                        );
+                        upper.draw_rgba(
+                            v.inner.x + (im.col as u32 * m.width) as i32,
+                            v.inner.y + im.row * m.height as i32,
+                            w,
+                            h,
+                            &im.rgba,
+                            im.width,
+                            im.height,
+                            clip,
+                        );
+                    }
+                    if split && !v.focused && dim_alpha > 0 {
+                        upper.blend_rect(v.outer.x, v.outer.y, v.outer.w, v.outer.h, dim_fill, dim_alpha);
+                    }
+                    if let Some((_, query, status, missing)) = search.as_ref().filter(|s| s.0 == v.id) {
+                        tabbar::draw_search_bar(
+                            &mut upper,
+                            fonts,
+                            &theme,
+                            v.outer,
+                            &format!("{query}{preedit}"),
+                            status,
+                            *missing,
+                        );
+                    }
+                    if resize_overlays.contains(&v.id) {
+                        tabbar::draw_resize_overlay(
+                            &mut upper,
+                            fonts,
+                            &theme,
+                            v.outer,
+                            self.config.resize_overlay_position,
+                            &format!("{} × {}", screen.cols, screen.rows),
+                        );
+                    }
+                    if bar.0 {
+                        let width = (bt_render::scrollbar::BAR_WIDTH as f64 * scale).round() as u32;
+                        bt_render::scrollbar::draw(
+                            &mut upper,
+                            v.outer.right() - width as i32 - scale.round().max(1.0) as i32,
+                            v.inner.y,
+                            screen.rows as u32 * m.height,
+                            width,
+                            screen.rows,
+                            screen.history,
+                            screen.display_offset,
+                            theme.foreground,
+                            if bar.1 { 170 } else { 110 },
+                        );
+                    }
+                    if let (true, Some(p)) = (single_tab, v.progress) {
+                        tabbar::draw_progress(&mut upper, &theme, v.outer.x, v.outer.y, v.outer.w, p, m.stroke * 3);
+                    }
+                }
+                for d in dividers {
+                    upper.fill_rect(d.x, d.y, d.w, d.h, divider_color);
+                }
+                if let Some((_, hit)) = hover.as_ref().filter(|(_, h)| link_previews.shows(h.explicit)) {
+                    tabbar::draw_link_hint(&mut upper, fonts, &theme, &bt_core::proto::printable(&hit.url));
+                }
+                if let Some((q, rows, sel)) = palette {
+                    tabbar::draw_palette(&mut upper, fonts, &theme, &format!("{q}{preedit}"), rows, *sel);
+                }
+                if let Some((text, _)) = toast {
+                    tabbar::draw_toast(&mut upper, fonts, &theme, text);
+                }
+                if secure_badge {
+                    tabbar::draw_secure_badge(&mut upper, fonts, &theme, badge_top);
+                }
+                if let Some((label, text)) = title_prompt {
+                    tabbar::draw_prompt(
+                        &mut upper,
+                        fonts,
+                        &theme,
+                        label,
+                        &format!("{text}{preedit}"),
+                        "↩ 정하기    esc 취소    비우고 ↩면 프로그램이 정한 제목으로",
+                    );
+                }
+                if let Some((message, yes, from_program)) = confirm {
+                    let hint = if *from_program {
+                        format!("y {yes}    n·esc 거절")
+                    } else {
+                        format!("↩ {yes}    esc 취소")
+                    };
+                    tabbar::draw_confirm(&mut upper, fonts, &theme, message, &hint);
+                }
             }
-            repainted_rows = views.iter().map(|v| v.screen.rows).sum();
-            // 위층에 그린 것이 없으면 버퍼를 놓는다. 빈 조각을 받은 렌더러도 위층 텍스처와 사본을 놓는다(#387)
-            if !self.w.upper.iter().any(|&p| p != 0) {
+            if !uses_upper {
+                debug_assert!(
+                    self.w.upper.iter().all(|&p| p == 0),
+                    "위층을 쓰지 않는다고 봤는데 그린 것이 있다"
+                );
                 self.w.upper = Vec::new();
             }
+            repainted_rows = views.iter().map(|v| v.screen.rows).sum();
         } else {
             // 바뀐 줄만 바뀐 프레임: 층은 그대로, 몇 줄이 바뀌었는지만 센다(GPU는 격자를 늘 통째로 그린다)
             for (v, (cells, cursor, pre)) in views.iter().zip(&drawn) {

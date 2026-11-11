@@ -8,7 +8,7 @@ use std::time::Instant;
 use bt_core::Rgb;
 use bt_render::{Fonts, GridView};
 
-use super::layer_diff::{Rect, changed_rects};
+use super::layer_diff::changed_rects;
 use super::{FrameTimings, GpuRenderer, upload_instances};
 use crate::scene::{GLYPH_STRIDE, GlyphInst, RECT_STRIDE, RectInst};
 
@@ -218,7 +218,12 @@ impl Layers {
                     shadow: vec![0; w as usize * h as usize],
                     nonzero: 0,
                 });
-                vec![Rect { x: 0, y: 0, w, h }]
+                // wgpu는 새 텍스처를 0으로 채워 쓴다. 사본도 0이니 0이 아닌 자리만 올리면 된다
+                // (놓았던 위층이 돌아올 때 층을 통째로 올리지 않는다, #387)
+                match slot.as_ref() {
+                    Some(t) => changed_rects(&t.shadow, px, w, h),
+                    None => Vec::new(),
+                }
             }
         };
         let Some(t) = slot else { return 0 };
