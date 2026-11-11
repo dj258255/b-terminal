@@ -46,6 +46,9 @@ pub type Variations = Vec<([u8; 4], f32)>;
 pub struct FontConfig {
     /// 기본 글꼴 이름. 없거나 못 찾으면 넣어 둔 JetBrains Mono, 그다음 고정폭 후보를 차례로 찾는다
     pub family: Option<String>,
+    /// `family`를 변형 표 없는 고정 글꼴로 읽는다(#467). 변형 축을 쓰지 않는 제목 글꼴용: 시스템 UI 글꼴(SF)의 `gvar`만 7MB라
+    /// 읽어 둘 값이 없다. 터미널 글꼴에는 쓰지 않는다(`font-variation`이 그 표를 쓴다)
+    pub static_family: bool,
     /// 굵게·기울임·굵은 기울임에 따로 쓸 글꼴(없으면 기본 글꼴의 그 꼴)
     pub family_bold: Option<String>,
     pub family_italic: Option<String>,
@@ -84,6 +87,7 @@ impl Default for FontConfig {
     fn default() -> Self {
         Self {
             family: None,
+            static_family: false,
             family_bold: None,
             family_italic: None,
             family_bold_italic: None,
@@ -484,17 +488,28 @@ fn thicken_px(strength: u8, scale: f32) -> f32 {
 }
 
 /// 읽어 둔 글꼴(#58). 글꼴은 크기와 상관없으므로, 설정을 다시 읽거나 글자 크기를 바꿀 때 같은 글꼴을 다시 읽지 않고 나눠 쓴다
+/// 셋째 값의 맨 위 비트(`STATIC_BIT`)가 켜져 있으면 변형 표를 뺀 고정 글꼴(#467)이라 터미널 글꼴(변형 표를 가진 것)과 열쇠가 갈린다
 type FontKey = (String, u16, u8);
+const STATIC_BIT: u8 = 0x80;
 thread_local! {
     static PARSED: std::cell::RefCell<HashMap<FontKey, Option<Rc<Font>>>> = std::cell::RefCell::new(HashMap::new());
 }
 
 fn load(db: &Database, family: &str, weight: Weight, style: Style) -> Option<Rc<Font>> {
-    let key = (family.to_ascii_lowercase(), weight.0, style as u8);
+    load_as(db, family, weight, style, false)
+}
+
+/// `fixed`면 가변 글꼴의 변형 표를 빼고 읽는다(#467). 변형 축을 쓰지 않는 제목 글꼴용이고, 캐시 열쇠가 따로라 터미널 글꼴과 섞이지 않는다
+fn load_as(db: &Database, family: &str, weight: Weight, style: Style, fixed: bool) -> Option<Rc<Font>> {
+    let key = (
+        family.to_ascii_lowercase(),
+        weight.0,
+        style as u8 | if fixed { STATIC_BIT } else { 0 },
+    );
     if let Some(hit) = PARSED.with(|p| p.borrow().get(&key).cloned()) {
         return hit;
     }
-    let font = parse(db, family, weight, style).map(Rc::new);
+    let font = parse(db, family, weight, style, fixed).map(Rc::new);
     PARSED.with(|p| p.borrow_mut().insert(key, font.clone()));
     font
 }
@@ -513,7 +528,7 @@ fn load_named(db: &Database, family: &str, style_name: &str) -> Option<Rc<Font>>
     let font = db
         .faces()
         .filter(|f| f.families.iter().any(|(n, _)| n.eq_ignore_ascii_case(family)))
-        .find_map(|f| parse_face(db, f.id).filter(|font| has_style_name(font, style_name)))
+        .find_map(|f| parse_face(db, f.id, false).filter(|font| has_style_name(font, style_name)))
         .map(Rc::new);
     PARSED.with(|p| p.borrow_mut().insert(key, font.clone()));
     font
@@ -528,7 +543,7 @@ fn has_style_name(font: &Font, name: &str) -> bool {
         .any(|s| s.chars().collect::<String>().trim().eq_ignore_ascii_case(name.trim()))
 }
 
-fn parse(db: &Database, family: &str, weight: Weight, style: Style) -> Option<Font> {
+fn parse(db: &Database, family: &str, weight: Weight, style: Style, fixed: bool) -> Option<Font> {
     let families = [Family::Name(family)];
     let id = db.query(&Query {
         families: &families,
@@ -541,15 +556,19 @@ fn parse(db: &Database, family: &str, weight: Weight, style: Style) -> Option<Fo
     if !face.families.iter().any(|(n, _)| n.eq_ignore_ascii_case(family)) {
         return None;
     }
-    parse_face(db, id)
+    parse_face(db, id, fixed)
 }
 
 /// 얼굴 하나를 읽는다
-fn parse_face(db: &Database, id: fontdb::ID) -> Option<Font> {
+fn parse_face(db: &Database, id: fontdb::ID, fixed: bool) -> Option<Font> {
     // 파일이면 그 꼴의 표만 읽는다(모음 파일 전체를 들지 않게, #65). 앱에 넣어 둔 글꼴은 이미 메모리에 있다
     let (source, index) = db.face_source(id)?;
     match source {
-        fontdb::Source::File(path) => match crate::sfnt::read_face(&path, index, None) {
+        fontdb::Source::File(path) => match if fixed {
+            crate::sfnt::read_face_static(&path, index)
+        } else {
+            crate::sfnt::read_face(&path, index, None)
+        } {
             Ok(face) => Font::new(face.data, 0),
             Err(e) => {
                 log::warn!("글꼴을 읽지 못했습니다({}): {e}", path.display());
@@ -574,9 +593,12 @@ impl Fonts {
             names.push(f);
         }
         names.extend_from_slice(MONO_CANDIDATES);
+        // 변형 표를 뺄 글꼴은 `config.family`뿐이다(대체 글꼴은 터미널과 같은 것을 나눠 쓴다)
+        let fixed =
+            |n: &str| config.static_family && config.family.as_deref().is_some_and(|f| f.eq_ignore_ascii_case(n));
         let (family, regular) = names
             .iter()
-            .find_map(|n| load(db, n, Weight::NORMAL, Style::Normal).map(|f| (n.to_string(), f)))
+            .find_map(|n| load_as(db, n, Weight::NORMAL, Style::Normal, fixed(n)).map(|f| (n.to_string(), f)))
             .ok_or_else(|| FontError::NotFound(names.join(", ")))?;
         // 보통 꼴에 스타일 이름을 정했으면(#174, `font-style`) 그 이름의 꼴. 못 찾으면 그대로
         let regular = match &config.styles[0] {
@@ -587,7 +609,7 @@ impl Fonts {
         let pick = |own: &Option<String>, w, s| {
             own.as_deref()
                 .and_then(|name| load(db, name, w, s).or_else(|| load(db, name, Weight::NORMAL, Style::Normal)))
-                .or_else(|| load(db, &family, w, s))
+                .or_else(|| load_as(db, &family, w, s, fixed(&family)))
                 .unwrap_or_else(|| regular.clone())
         };
         // 꼴마다 정한 스타일 이름(#174): 이름이면 그 이름의 꼴(그 꼴의 글꼴, 없으면 기본 글꼴에서), 못 찾으면 위에서 고른 꼴.
@@ -1373,12 +1395,12 @@ impl Fonts {
         let name = match title_family {
             Some(name) => Some(name),
             None if cfg!(target_os = "macos") => {
-                system_ui_family(|n| load(&db, n, Weight::NORMAL, Style::Normal).is_some())
+                system_ui_family(|n| load_as(&db, n, Weight::NORMAL, Style::Normal, true).is_some())
             }
             None => None,
         };
         if let Some(name) = name {
-            if load(&db, name, Weight::NORMAL, Style::Normal).is_none() {
+            if load_as(&db, name, Weight::NORMAL, Style::Normal, true).is_none() {
                 title_warning = Some(format!(
                     "window-title-font-family: 글꼴 \"{name}\"을 찾지 못해 탭 제목을 터미널 글꼴로 그립니다"
                 ));
@@ -1388,6 +1410,7 @@ impl Fonts {
                 fallbacks.extend(config.fallbacks.iter().cloned());
                 let tc = FontConfig {
                     family: Some(name.to_string()),
+                    static_family: true,
                     fallbacks,
                     size: config.size,
                     scale: config.scale,
@@ -1513,6 +1536,105 @@ mod title_font_tests {
         let s = Fonts::new_with_title(&FontConfig::default(), Some("JetBrains Mono")).unwrap();
         assert!(s.title.is_some());
         assert!(s.title_warning.is_none());
+    }
+
+    /// 시스템 UI 글꼴(가변 SF)을 변형 표 있는 것과 없는 것으로 읽는다. 없으면 None(건너뜀)
+    fn sf_pair() -> Option<(Rc<Font>, Rc<Font>)> {
+        let db = system_db();
+        let name = SYSTEM_UI_FAMILIES
+            .iter()
+            .find(|n| load(&db, n, Weight::NORMAL, Style::Normal).is_some());
+        let Some(name) = name else {
+            eprintln!("건너뜀: 이 시스템에는 시스템 UI 글꼴이 없다");
+            return None;
+        };
+        let full = load(&db, name, Weight::NORMAL, Style::Normal)?;
+        let fixed = load_as(&db, name, Weight::NORMAL, Style::Normal, true)?;
+        Some((full, fixed))
+    }
+
+    /// #467: 변형 표(gvar 7MB 등)를 뺀 제목 글꼴 얼굴은 원래(약 8.3MB)보다 훨씬 작다
+    #[test]
+    fn static_system_ui_face_drops_variation_tables() {
+        let Some((full, fixed)) = sf_pair() else { return };
+        eprintln!(
+            "SF 얼굴 바이트: 원래 {} 변형 표 뺀 것 {}",
+            full.data.len(),
+            fixed.data.len()
+        );
+        assert!(fixed.data.len() < 2 * 1024 * 1024, "{}", fixed.data.len());
+        assert!(fixed.data.len() < full.data.len() / 2);
+        assert!(!has_axis(&fixed.font(), b"wght"), "축이 남았다");
+    }
+
+    /// #467: 같은 글꼴을 터미널 글꼴로 읽으면 변형 표가 그대로다(캐시가 섞이지 않는다). 읽는 순서와 상관없다
+    #[test]
+    fn terminal_font_keeps_variation_tables_even_after_title_load() {
+        let Some((full, fixed)) = sf_pair() else { return };
+        assert!(has_axis(&full.font(), b"wght"), "터미널 글꼴에는 굵기 축이 있어야 한다");
+        assert!(full.data.len() > fixed.data.len());
+        // 이름으로 터미널 글꼴 묶음을 만들어도(font-family = System Font) 변형 표가 있다
+        let name = SYSTEM_UI_FAMILIES
+            .iter()
+            .find(|n| load(&system_db(), n, Weight::NORMAL, Style::Normal).is_some())
+            .unwrap();
+        let _title = Fonts::new_with_title(&FontConfig::default(), None).unwrap();
+        let term = Fonts::new(&FontConfig {
+            family: Some(name.to_string()),
+            variation: vec![(*b"wght", 700.0)],
+            ..FontConfig::default()
+        })
+        .unwrap();
+        assert!(has_axis(&term.regular[0].font(), b"wght"));
+        assert!(term.regular[0].data.len() > 2 * 1024 * 1024);
+        // 제목 글꼴은 고정 글꼴이다
+        let s = Fonts::new_with_title(&FontConfig::default(), None).unwrap();
+        let t = s.title.unwrap();
+        assert!(!has_axis(&t.regular[0].font(), b"wght"));
+        assert!(t.regular[0].data.len() < 2 * 1024 * 1024);
+    }
+
+    /// #467: 변형 표를 빼도 제목 글자의 글리프 id·진행 폭(GPOS 짝 맞춤 포함)·윤곽이 같다
+    #[test]
+    fn static_system_ui_face_shapes_and_outlines_identically() {
+        let Some((full, fixed)) = sf_pair() else { return };
+        let text = "…/.claude/worktrees/wt-460 Title 0123 AVATAR fi, (a|b)_[x]~ Wo";
+        let shape = |f: &Font| {
+            let mut ctx = swash::shape::ShapeContext::new();
+            let mut sh = ctx.builder(f.font()).size(26.0).build();
+            sh.add_str(text);
+            let mut out = Vec::new();
+            sh.shape_with(|c| {
+                out.extend(
+                    c.glyphs
+                        .iter()
+                        .map(|g| (g.id, g.advance.to_bits(), g.x.to_bits(), g.y.to_bits())),
+                )
+            });
+            out
+        };
+        let (a, b) = (shape(&full), shape(&fixed));
+        assert!(a.len() >= text.chars().count() - 6);
+        assert_eq!(a, b, "글리프 id·폭이 다르다");
+        for c in text.chars() {
+            assert_eq!(full.glyph_id(c), fixed.glyph_id(c), "{c:?}");
+            assert_eq!(
+                full.advance(c, 26.0).to_bits(),
+                fixed.advance(c, 26.0).to_bits(),
+                "{c:?}"
+            );
+        }
+        assert_eq!(full.line(26.0), fixed.line(26.0));
+        // 윤곽: 몇 글자의 점과 동작이 같다
+        let outline = |f: &Font, c: char| {
+            let mut ctx = swash::scale::ScaleContext::new();
+            let mut sc = ctx.builder(f.font()).size(26.0).hint(false).build();
+            let o = sc.scale_outline(f.glyph_id(c)).expect("윤곽");
+            (format!("{:?}", o.points()), format!("{:?}", o.verbs()))
+        };
+        for c in ['A', 'g', 'W', '0', '/', 'a', 'T'] {
+            assert_eq!(outline(&full, c), outline(&fixed, c), "{c:?}");
+        }
     }
 
     #[test]

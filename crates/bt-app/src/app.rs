@@ -98,6 +98,7 @@ pub(crate) fn font_config(c: &AppConfig, size: f32, scale: f32) -> FontConfig {
     fallbacks.extend(defaults.fallbacks);
     FontConfig {
         family: c.font_family.first().cloned(),
+        static_family: false,
         family_bold: c.font_family_bold.clone(),
         family_italic: c.font_family_italic.clone(),
         family_bold_italic: c.font_family_bold_italic.clone(),
