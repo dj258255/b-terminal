@@ -8,6 +8,6 @@ pub mod scene;
 pub mod shadertoy;
 
 pub use atlas::{Atlas, Full};
-pub use renderer::{FrameTimings, GpuRenderer};
+pub use renderer::{CompileStages, FrameTimings, GpuRenderer, ShaderWaker};
 pub use renderer::{LayerUpdate, PaneDraw, PresentOutcome};
 pub use shadertoy::{CustomShaderSource, ShaderUniforms};

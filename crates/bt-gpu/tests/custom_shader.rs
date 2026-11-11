@@ -147,9 +147,22 @@ fn max_diff(a: &[u32], b: &[u32]) -> i32 {
         .unwrap_or(0)
 }
 
+/// 걸고 결과를 받을 때까지 기다린다(컴파일은 다른 스레드에서 돈다, ADR-042). 받은 오류 문구를 돌려준다
 fn set(g: &mut GpuRenderer, shaders: &[(&str, &str)]) -> Vec<String> {
+    start(g, shaders);
+    g.wait_custom_shaders()
+}
+
+/// 걸기만 한다(기다리지 않는다)
+fn start(g: &mut GpuRenderer, shaders: &[(&str, &str)]) {
     let v: Vec<_> = shaders.iter().map(|(n, s)| src(n, s)).collect();
-    g.set_custom_shaders(&v)
+    g.set_custom_shaders(&v);
+}
+
+/// 끄고(빈 목록) 꺼졌는지 본다. 끄기는 곧바로다
+fn off(g: &mut GpuRenderer) {
+    g.set_custom_shaders(&[]);
+    assert!(!g.has_custom_shaders() && !g.custom_shaders_pending());
 }
 
 fn baseline(g: &mut GpuRenderer, s: &mut Scene) -> Vec<u32> {
@@ -480,15 +493,14 @@ fn turning_shaders_off_returns_to_the_plain_path_and_resize_keeps_working() {
     assert!(set(&mut g, &[("invert", INVERT)]).is_empty());
     assert!(g.has_custom_shaders());
     assert!(s.compose(&mut g) != want, "뒤집기가 화면을 바꿔야 한다");
-    assert!(g.set_custom_shaders(&[]).is_empty());
-    assert!(!g.has_custom_shaders());
+    off(&mut g);
     assert!(s.compose(&mut g) == want, "껐다 켜도(빈 목록) 원래 길과 같아야 한다");
 
     // 창 크기가 바뀌어도(중간 텍스처를 다시 만든다) 항등은 항등이다
     assert!(set(&mut g, &[("identity", IDENTITY)]).is_empty());
     let mut big = Scene::new(421, 263);
     let plain_big = {
-        assert!(g.set_custom_shaders(&[]).is_empty());
+        off(&mut g);
         big.compose(&mut g)
     };
     assert!(set(&mut g, &[("identity", IDENTITY)]).is_empty());
@@ -528,7 +540,7 @@ fn measure_compile_and_pass_cost() {
         );
         v[15]
     };
-    assert!(g.set_custom_shaders(&[]).is_empty());
+    off(&mut g);
     let base = median(&mut g, "셰이더 없음");
     for (label, list) in [
         ("항등 1패스", vec![("identity", IDENTITY)]),
@@ -576,4 +588,254 @@ fn identity_in_a_see_through_window_keeps_the_alpha() {
             "색이 절반이어야 한다: {w:?} {p:?}"
         );
     }
+}
+
+/// 처음 보는 소스로 만든다(주석이 매번 다르다): 컴파일 캐시에 걸리지 않는다
+fn fresh(body: &str, tag: &str) -> String {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("시계")
+        .as_nanos();
+    // 주석만 바꾸면 naga가 내는 셰이더 글이 같아 Metal 캐시에 걸린다: 숫자 상수가 다른 함수를 더한다
+    format!(
+        "// {tag}\n{body}\nfloat bt_tag_{nanos}() {{ return {}.5; }}",
+        nanos % 100_000
+    )
+}
+
+#[test]
+fn set_custom_shaders_returns_before_the_compile_finishes() {
+    let Some(mut g) = gpu() else { return };
+    let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/shaders/");
+    let crt = std::fs::read_to_string(format!("{dir}test_shadertoy_crt.glsl")).expect("시험 셰이더 파일");
+    let mut s = Scene::new(300, 200);
+    let want = baseline(&mut g, &mut s);
+
+    let list = [
+        ("a", fresh(&crt, "a")),
+        ("b", fresh(&crt, "b")),
+        ("c", fresh(&crt, "c")),
+    ];
+    let list: Vec<_> = list.iter().map(|(n, c)| (*n, c.as_str())).collect();
+    let t = std::time::Instant::now();
+    start(&mut g, &list);
+    let started = t.elapsed();
+    assert!(g.custom_shaders_pending(), "결과를 받기 전이다");
+    assert!(!g.has_custom_shaders(), "받기 전에는 셰이더가 돌지 않는다");
+    assert!(s.compose(&mut g) == want, "받기 전에는 셰이더 없이 그린다");
+    let errors = g.wait_custom_shaders();
+    let total = t.elapsed();
+    assert!(errors.is_empty(), "{errors:?}");
+    eprintln!("거는 데 {started:?}, 받을 때까지 {total:?}");
+    assert!(
+        started * 5 < total,
+        "거는 호출이 컴파일을 기다렸다: 거는 데 {started:?}, 받을 때까지 {total:?}"
+    );
+    assert!(!g.custom_shaders_pending());
+    assert!(g.has_custom_shaders(), "받은 뒤에는 셰이더가 돈다");
+    assert!(s.compose(&mut g) != want, "받은 뒤 화면이 바뀌어야 한다(crt)");
+}
+
+#[test]
+fn polling_installs_the_result_once_and_reports_errors() {
+    let Some(mut g) = gpu() else { return };
+    let mut s = Scene::new(300, 200);
+    let want = baseline(&mut g, &mut s);
+    assert!(g.poll_custom_shaders().is_none(), "돌리는 컴파일이 없으면 None");
+
+    let bad = "void mainImage(out vec4 fragColor, in vec2 fragCoord) {\n    fragColor = vec3(1.0);\n}";
+    start(&mut g, &[("bad", bad), ("invert", INVERT)]);
+    let t = std::time::Instant::now();
+    let errors = loop {
+        if let Some(e) = g.poll_custom_shaders() {
+            break e;
+        }
+        assert!(t.elapsed().as_secs() < 30, "결과가 오지 않았다");
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    };
+    assert_eq!(errors.len(), 1, "{errors:?}");
+    assert!(errors[0].starts_with("bad"), "{}", errors[0]);
+    assert!(g.poll_custom_shaders().is_none(), "결과는 한 번만 온다");
+    assert!(g.has_custom_shaders(), "성공한 것은 돈다");
+    let got = s.compose(&mut g);
+    for (w, p) in want.iter().zip(&got) {
+        let (w, p) = (channels(*w), channels(*p));
+        assert!(
+            (0..3).all(|c| (255 - w[c] - p[c]).abs() <= 1),
+            "남은 셰이더(뒤집기)만 돈다"
+        );
+    }
+}
+
+#[test]
+fn setting_again_while_compiling_drops_the_old_result() {
+    let Some(mut g) = gpu() else { return };
+    let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/shaders/");
+    let crt = std::fs::read_to_string(format!("{dir}test_shadertoy_crt.glsl")).expect("시험 셰이더 파일");
+    let mut s = Scene::new(300, 200);
+    let want = baseline(&mut g, &mut s);
+    // B 혼자 건 화면
+    assert!(set(&mut g, &[("left_red", LEFT_RED)]).is_empty());
+    let only_b = s.compose(&mut g);
+    assert!(only_b != want);
+    off(&mut g);
+
+    // 느린 A(처음 보는 crt 셋)를 걸자마자 B를 건다. A의 결과가 늦게 와도 끼워지면 안 된다
+    let slow = [
+        ("a1", fresh(&crt, "a1")),
+        ("a2", fresh(&crt, "a2")),
+        ("a3", fresh(&crt, "a3")),
+    ];
+    let slow: Vec<_> = slow.iter().map(|(n, c)| (*n, c.as_str())).collect();
+    start(&mut g, &slow);
+    start(&mut g, &[("left_red", LEFT_RED)]);
+    assert!(g.wait_custom_shaders().is_empty());
+    std::thread::sleep(std::time::Duration::from_millis(600));
+    assert!(g.poll_custom_shaders().is_none(), "옛 결과가 따로 오면 안 된다");
+    assert!(s.compose(&mut g) == only_b, "B만 돌아야 한다(옛 A는 버려졌다)");
+}
+
+#[test]
+fn turning_off_while_compiling_drops_the_result_and_empty_list_is_instant() {
+    let Some(mut g) = gpu() else { return };
+    let mut s = Scene::new(300, 200);
+    let want = baseline(&mut g, &mut s);
+    start(&mut g, &[("invert", INVERT)]);
+    off(&mut g);
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    assert!(g.poll_custom_shaders().is_none());
+    assert!(!g.has_custom_shaders());
+    assert!(s.compose(&mut g) == want, "끈 뒤 늦은 결과가 켜면 안 된다");
+}
+
+#[test]
+fn setting_again_keeps_the_running_chain_until_the_new_one_arrives() {
+    let Some(mut g) = gpu() else { return };
+    let mut s = Scene::new(300, 200);
+    let want = baseline(&mut g, &mut s);
+    assert!(set(&mut g, &[("invert", INVERT)]).is_empty());
+    let inverted = s.compose(&mut g);
+    start(&mut g, &[("identity", IDENTITY)]);
+    assert!(g.has_custom_shaders(), "다시 거는 동안에도 돌던 셰이더가 돈다");
+    assert!(s.compose(&mut g) == inverted);
+    assert!(g.wait_custom_shaders().is_empty());
+    assert!(s.compose(&mut g) == want, "새 결과(항등)가 끼워지면 바뀐다");
+}
+
+#[test]
+fn waker_runs_after_the_result_is_sent() {
+    let Some(mut g) = gpu() else { return };
+    let woke = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let w = woke.clone();
+    g.set_custom_shader_waker(Some(std::sync::Arc::new(move || {
+        w.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    })));
+    start(&mut g, &[("invert", INVERT)]);
+    let t = std::time::Instant::now();
+    while woke.load(std::sync::atomic::Ordering::SeqCst) == 0 {
+        assert!(t.elapsed().as_secs() < 30, "깨우지 않았다");
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+    // 깨운 시점에 결과는 이미 채널에 있다: 한 번에 받는다
+    assert!(g.poll_custom_shaders().is_some(), "깬 뒤 받을 수 있어야 한다");
+}
+
+/// 렌더러를 컴파일 도중에 버려도 스레드가 패닉하거나 걸리지 않는다(결과는 버려진다)
+#[test]
+fn dropping_the_renderer_while_compiling_is_harmless() {
+    let Some(mut g) = gpu() else { return };
+    let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/shaders/");
+    let crt = std::fs::read_to_string(format!("{dir}test_shadertoy_crt.glsl")).expect("시험 셰이더 파일");
+    start(&mut g, &[("crt", &fresh(&crt, "drop"))]);
+    drop(g);
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    // 다른 렌더러가 멀쩡히 도는지
+    let Some(mut g2) = gpu() else { return };
+    assert!(set(&mut g2, &[("identity", IDENTITY)]).is_empty());
+    assert!(g2.has_custom_shaders());
+}
+
+/// 컴파일 단계별 시간(창 없이, 한 번 잰 값): naga 읽기·검증 / 셰이더 모듈 / 파이프라인 / 오류 범위. 처음 보는 소스(주석이 매번 다름)와
+/// 같은 소스, 메인 스레드와 다른 스레드. `--ignored --nocapture --release`로 돌린다
+#[test]
+#[ignore = "시간을 재서 찍기만 한다"]
+fn measure_compile_stages() {
+    let Some(g) = gpu() else { return };
+    let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/shaders/");
+    let crt = std::fs::read_to_string(format!("{dir}test_shadertoy_crt.glsl")).expect("시험 셰이더 파일");
+    eprintln!("어댑터: {}", g.adapter_name());
+    for (name, body) in [("identity", IDENTITY), ("crt", crt.as_str())] {
+        for on_thread in [false, true] {
+            for kind in ["처음 보는 소스", "같은 소스"] {
+                let same = src(name, &fresh(body, "same"));
+                let mut rows = Vec::new();
+                for i in 0..5 {
+                    let s = if kind == "같은 소스" {
+                        same.clone()
+                    } else {
+                        src(name, &fresh(body, &format!("new{i}")))
+                    };
+                    let t = std::time::Instant::now();
+                    let st = g.measure_compile_stages(&s, on_thread).expect("컴파일");
+                    let total = t.elapsed().as_secs_f64() * 1000.0;
+                    rows.push(format!(
+                        "[전체 {total:.1} = naga {:.1} + 모듈 {:.1} + 파이프라인 {:.1} + 범위 {:.1}]",
+                        st.naga_ms, st.module_ms, st.pipeline_ms, st.scope_ms
+                    ));
+                }
+                eprintln!(
+                    "{name} {} {kind}: {}",
+                    if on_thread {
+                        "다른 스레드"
+                    } else {
+                        "메인 스레드"
+                    },
+                    rows.join(" ")
+                );
+            }
+        }
+    }
+}
+
+/// 다른 스레드에서 컴파일이 도는 동안 메인 스레드의 그리기가 얼마나 걸리는지(창 없이, 한 번 잰 값). 컴파일이 장치를 잡고 있으면
+/// 이 시간이 컴파일 시간만큼 늘어난다. `--ignored --nocapture --release`
+#[test]
+#[ignore = "시간을 재서 찍기만 한다"]
+fn measure_frames_while_compiling() {
+    let Some(mut g) = gpu() else { return };
+    let mut s = Scene::new(1000, 680);
+    for _ in 0..5 {
+        s.compose(&mut g);
+    }
+    let mut ms_of = |g: &mut GpuRenderer, n: usize| {
+        let mut v = Vec::new();
+        for _ in 0..n {
+            let t = std::time::Instant::now();
+            s.compose(g);
+            v.push(t.elapsed().as_secs_f64() * 1000.0);
+        }
+        v
+    };
+    let mut quiet = ms_of(&mut g, 30);
+    quiet.sort_by(f64::total_cmp);
+    eprintln!("컴파일 없음 compose: 중앙값 {:.2}ms 최대 {:.2}ms", quiet[15], quiet[29]);
+    let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/shaders/");
+    let crt = std::fs::read_to_string(format!("{dir}test_shadertoy_crt.glsl")).expect("시험 셰이더 파일");
+    let sh = fresh(&crt, "frames");
+    start(&mut g, &[("crt", &sh)]);
+    let t0 = std::time::Instant::now();
+    let mut during = Vec::new();
+    while g.custom_shaders_pending() && g.poll_custom_shaders().is_none() {
+        let t = std::time::Instant::now();
+        s.compose(&mut g);
+        during.push(t.elapsed().as_secs_f64() * 1000.0);
+    }
+    let total = t0.elapsed().as_secs_f64() * 1000.0;
+    let n = during.len();
+    during.sort_by(f64::total_cmp);
+    eprintln!(
+        "컴파일 중({total:.0}ms) compose {n}장: 중앙값 {:.2}ms 최대 {:.2}ms",
+        during[n / 2],
+        during[n - 1]
+    );
 }
