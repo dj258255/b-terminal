@@ -1948,3 +1948,58 @@ fn two_panes_of_different_font_sizes_draw_like_their_own_frames() {
         "큰 칸이 혼자 그린 화면과 다르다"
     );
 }
+
+/// #433: 사각 고르기의 덮인 칸을 CPU 캔버스가 사각으로 칠한다. 실제 Session(`/bin/sh`·`printf`)에서 사각으로 골라
+/// 화면 스냅숏 → 그릴 칸 → 픽셀까지 이어서 본다. 칸 왼쪽 위 픽셀이 고른 칸이면 고르기 바탕색, 아니면 화면 바탕색이다
+#[test]
+fn block_selection_paints_a_rectangle_of_cells() {
+    use std::sync::Arc;
+    use std::time::Duration;
+    let Some(mut f) = fonts(1.0) else { return };
+    let sink = Arc::new(|_e: bt_term::SessionEvent| {});
+    let opts = bt_term::SpawnOptions {
+        program: Some("/bin/sh".into()),
+        args: vec!["-c".into(), "printf 'abcdef\\nghijkl\\nmnopqr\\n'".into()],
+        cwd: Some(std::env::temp_dir()),
+        ..Default::default()
+    };
+    let session = bt_term::Session::spawn(opts, GridSize::new(8, 4), Theme::default(), sink).expect("spawn");
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !session.snapshot().text().contains("mnopqr") {
+        assert!(Instant::now() < deadline, "화면이 나오지 않았다");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    session.select_start(1, 0, bt_term::SelectKind::Block);
+    session.select_update(3, 2);
+    let s = session.snapshot();
+    let t = Theme::default();
+    assert_ne!(
+        t.selection_background, s.background,
+        "시험의 전제: 고르기 바탕이 화면 바탕과 다르다"
+    );
+    let m = f.metrics();
+    let (w, h) = (m.width * s.cols as u32, m.height * s.rows as u32);
+    let mut buf = vec![0u32; (w * h) as usize];
+    let dc = cells(&s);
+    let view = GridView {
+        cols: s.cols,
+        rows: s.rows,
+        cells: &dc,
+        cursor: None,
+        selection_bg: t.selection_background,
+        selection_fg: t.selection_foreground,
+        preedit: None,
+        min_contrast: 1.0,
+    };
+    let mut canvas = Canvas::new(&mut buf, w, h);
+    canvas.clear(s.background);
+    draw_grid(&mut canvas, &mut f, 0, 0, &view);
+    for row in 0..s.rows as u32 {
+        for col in 0..s.cols as u32 {
+            let p = Rgb::from_u32(buf[(row * m.height * w + col * m.width) as usize]);
+            let inside = (1..=3).contains(&col) && row <= 2;
+            let want = if inside { t.selection_background } else { s.background };
+            assert_eq!(p, want, "칸 ({col},{row}) 왼쪽 위 픽셀");
+        }
+    }
+}

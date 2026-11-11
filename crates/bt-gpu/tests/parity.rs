@@ -267,6 +267,47 @@ fn selected_cells_match_cpu() {
     }
 }
 
+/// #433: 사각 고르기가 덮는 칸(열 2~4, 줄 1~3의 사각)을 GPU도 CPU와 같게 그린다. 칸 왼쪽 위 픽셀이 사각 안에서만 고르기 바탕색이다
+#[test]
+fn block_selected_cells_form_a_rectangle_on_cpu_and_gpu() {
+    let Some(mut g) = gpu() else { return };
+    let mut f = fonts(2.0);
+    let (cols, rows) = (8usize, 5usize);
+    let mut cells: Vec<DrawCell> = (0..rows).flat_map(|_| row_cells("abcdefgh", cols)).collect();
+    for (i, c) in cells.iter_mut().enumerate() {
+        let (col, row) = (i % cols, i / cols);
+        c.selected = (2..=4).contains(&col) && (1..=3).contains(&row);
+    }
+    let plain: Vec<DrawCell> = cells
+        .iter()
+        .map(|c| DrawCell {
+            selected: false,
+            ..c.clone()
+        })
+        .collect();
+    let v = grid(&cells, cols);
+    let p = grid(&plain, cols);
+    check(&mut g, &mut f, "사각 고르기", &v, &p, Alpha::default());
+    let m = f.metrics();
+    let w = m.width as usize * cols;
+    for (name, frame) in [
+        ("CPU", cpu_frame(&mut f, &v, Alpha::default())),
+        ("GPU", gpu_frame(&mut g, &mut f, &v, Alpha::default())),
+    ] {
+        for row in 0..rows {
+            for col in 0..cols {
+                let px = frame[row * m.height as usize * w + col * m.width as usize];
+                let inside = (2..=4).contains(&col) && (1..=3).contains(&row);
+                assert_eq!(
+                    px & 0x00ff_ffff == BG.to_u32() & 0x00ff_ffff,
+                    !inside,
+                    "{name} 칸 ({col},{row}): 사각 안은 고르기 색, 밖은 화면 바탕"
+                );
+            }
+        }
+    }
+}
+
 #[test]
 fn preedit_matches_cpu() {
     let Some(mut g) = gpu() else { return };

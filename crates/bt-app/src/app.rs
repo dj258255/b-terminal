@@ -3196,6 +3196,16 @@ impl App {
         self.request_redraw();
     }
 
+    /// 지금 누른 수식 키가 사각 고르기 키인가(#433). macOS는 Option, 그 밖에는 Ctrl(또는 Super)+Alt
+    fn rectangle_select_mods(&self) -> bool {
+        mouse::is_rectangle_select(
+            cfg!(target_os = "macos"),
+            self.mods.alt_key(),
+            self.mods.control_key(),
+            self.mods.super_key(),
+        )
+    }
+
     /// 창의 마우스 포인터 모양을 맞춘다(#239): 링크 위면 손가락, 아니면 마우스 아래 칸이 OSC 22로 정한 모양, 없으면 화살표
     fn refresh_pointer(&mut self) {
         let pos = self.w.cursor_pos;
@@ -3209,6 +3219,7 @@ impl App {
             over_link: self.w.hover.is_some(),
             program,
             shift: over.is_some() && self.mods.shift_key(),
+            rectangle: over.is_some() && self.rectangle_select_mods(),
             reports_to_program: over.is_some_and(|i| self.mouse_reporting(i).is_some()),
             hidden: self.w.pointer_hidden,
             handle: if self.w.pane_drag.is_active() {
@@ -6545,7 +6556,10 @@ impl ApplicationHandler<UserEvent> for App {
                 }
                 let Some(idx) = self.active_index() else { return };
                 if self.w.selecting {
+                    // 끌 때마다 그 순간의 수식 키로 사각 여부를 정한다(Ghostty Surface.zig 4838줄)
+                    let rectangle = self.rectangle_select_mods();
                     if let Some((c, r)) = self.cell_in(idx, position) {
+                        self.panes[idx].session.select_set_block(rectangle);
                         self.panes[idx].session.select_update(c, r);
                         self.request_redraw();
                     }
@@ -6715,11 +6729,7 @@ impl ApplicationHandler<UserEvent> for App {
                             _ => 1,
                         };
                         self.w.last_click = Some((now, c, r, clicks));
-                        let kind = match clicks {
-                            2 => SelectKind::Word,
-                            3 => SelectKind::Line,
-                            _ => SelectKind::Simple,
-                        };
+                        let kind = mouse::select_kind(clicks, self.rectangle_select_mods());
                         if let Some(t) = self.active_pane() {
                             if clicks == 1 {
                                 t.session.select_clear();

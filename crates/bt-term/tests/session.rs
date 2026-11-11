@@ -329,6 +329,155 @@ fn adjust_selection_moves_the_selection_end() {
     assert_eq!(s.selection_text().as_deref(), Some("abcdef\ng"));
 }
 
+/// #433: 사각 고르기는 줄을 따라가지 않고 두 끝점이 이루는 사각 안의 칸만 고른다. 끄는 방향이 거꾸로여도 같다
+#[test]
+fn block_select_takes_only_the_rectangle() {
+    use bt_term::SelectKind::{Block, Simple};
+    let (s, rx) = sh("printf 'abcdef\\nghijkl\\nmnopqr\\n'", GridSize::new(20, 6));
+    wait_exit(&rx);
+    wait_until(&s, |t| t.contains("mnopqr"));
+    s.select_start(1, 0, Simple);
+    s.select_update(3, 2);
+    assert_eq!(
+        s.selection_text().as_deref(),
+        Some("bcdef\nghijkl\nmnop"),
+        "대조: 글자 고르기는 줄을 따라간다"
+    );
+    s.select_start(1, 0, Block);
+    s.select_update(3, 2);
+    assert_eq!(s.selection_text().as_deref(), Some("bcd\nhij\nnop"));
+    // 모든 방향(오른쪽 아래, 왼쪽 위, 오른쪽 위, 왼쪽 아래)으로 끌어도 같은 사각이다
+    for ((c0, r0), (c1, r1)) in [((3, 2), (1, 0)), ((3, 0), (1, 2)), ((1, 2), (3, 0))] {
+        s.select_start(c0, r0, Block);
+        s.select_update(c1, r1);
+        assert_eq!(
+            s.selection_text().as_deref(),
+            Some("bcd\nhij\nnop"),
+            "({c0},{r0}) -> ({c1},{r1})"
+        );
+    }
+    // 한 열만 세로로 끌면 그 열 하나
+    s.select_start(2, 0, Block);
+    s.select_update(2, 2);
+    assert_eq!(s.selection_text().as_deref(), Some("c\ni\no"));
+}
+
+/// #433: 사각으로 끄는 도중 출력이 들어와 줄이 올라가도 사각은 처음 누른 글자에 붙어 있다
+/// (엔진은 스크롤할 때 고르기를 함께 옮긴다. 시작점을 따로 들고 있으면 옛 화면 줄에서 사각을 다시 만든다)
+#[test]
+fn block_select_follows_the_text_when_output_scrolls_mid_drag() {
+    use bt_term::SelectKind::Block;
+    let (s, rx) = sh(
+        "printf 'abcdef\\nghijkl\\nmnopqr\\n'; read x; printf 'X\\nY\\nZ\\n'",
+        GridSize::new(20, 6),
+    );
+    wait_until(&s, |t| t.contains("mnopqr"));
+    s.select_start(1, 0, Block);
+    s.select_update(3, 2);
+    assert_eq!(s.selection_text().as_deref(), Some("bcd\nhij\nnop"));
+    s.write(b"\r");
+    wait_exit(&rx);
+    let text = wait_until(&s, |t| t.contains('Z'));
+    let row = text
+        .lines()
+        .position(|l| l.starts_with("mnopqr"))
+        .expect("mnopqr가 화면에 있다");
+    assert!(row < 2, "줄이 올라갔다:\n{text}");
+    s.select_update(3, row);
+    assert_eq!(s.selection_text().as_deref(), Some("bcd\nhij\nnop"), "화면:\n{text}");
+}
+
+/// #433: 사각의 왼쪽·오른쪽 가장자리에 넓은 글자(두 칸)가 걸치면 그 글자를 통째로 가져온다(반쪽을 자르거나 빼먹지 않는다).
+/// 줄 끝 공백은 줄마다 지우고 줄 가운데 공백은 남긴다. 공백뿐인 줄은 빈 줄이 된다(실측: VT 엔진 0.26, 재현은 이 시험)
+#[test]
+fn block_select_keeps_wide_chars_whole_and_trims_line_ends() {
+    use bt_term::SelectKind::Block;
+    let (s, rx) = sh("printf 'ab  cd\\nxyzwuv\\nq     r\\n한a한bcd\\n'", GridSize::new(20, 6));
+    wait_exit(&rx);
+    wait_until(&s, |t| t.contains("q"));
+    let pick = |c0, r0, c1, r1| {
+        s.select_start(c0, r0, Block);
+        s.select_update(c1, r1);
+        s.selection_text()
+    };
+    // 한(0~1칸) a(2) 한(3~4) b(5). 사각이 한 글자의 둘째 칸에서 시작하거나 첫째 칸에서 끝나도 그 글자를 통째로
+    assert_eq!(pick(1, 3, 3, 3).as_deref(), Some("한a한"), "시작이 넓은 글자의 둘째 칸");
+    assert_eq!(pick(2, 3, 4, 3).as_deref(), Some("a한"), "끝이 넓은 글자의 둘째 칸");
+    assert_eq!(pick(3, 3, 5, 3).as_deref(), Some("한b"));
+    assert_eq!(
+        pick(4, 1, 5, 3).as_deref(),
+        Some("uv\n\n한b"),
+        "가운데 줄은 공백뿐이라 빈 줄"
+    );
+    // 줄 끝 공백: 가운데 공백은 남고 공백뿐인 줄은 빈 줄
+    assert_eq!(pick(1, 0, 4, 1).as_deref(), Some("b  c\nyzwu"));
+    assert_eq!(
+        pick(2, 0, 3, 2).as_deref(),
+        Some("\nzw\n"),
+        "공백뿐인 윗줄·아랫줄은 빈 줄"
+    );
+}
+
+/// #433: 끄는 중 사각 여부를 바꿀 수 있다(Ghostty는 끌 때마다 그 순간의 수식 키로 정한다). 낱말·줄 고르기는 바꾸지 않는다
+#[test]
+fn select_set_block_toggles_simple_and_leaves_word_and_line() {
+    use bt_term::SelectKind::{Line, Simple, Word};
+    let (s, rx) = sh("printf 'abc def\\nghi jkl\\nmno pqr\\n'", GridSize::new(20, 6));
+    wait_exit(&rx);
+    wait_until(&s, |t| t.contains("mno"));
+    s.select_set_block(true); // 고른 것이 없으면 아무 일도 없다
+    assert_eq!(s.selection_text(), None);
+    s.select_start(1, 0, Simple);
+    s.select_set_block(true);
+    s.select_update(2, 1);
+    assert_eq!(s.selection_text().as_deref(), Some("bc\nhi"), "사각으로 바뀐다");
+    s.select_set_block(false);
+    s.select_update(2, 1);
+    assert_eq!(
+        s.selection_text().as_deref(),
+        Some("bc def\nghi"),
+        "글자 고르기로 돌아온다"
+    );
+    s.select_start(1, 0, Word);
+    s.select_update(5, 0);
+    s.select_set_block(true);
+    assert_eq!(s.selection_text().as_deref(), Some("abc def"), "낱말 고르기는 그대로");
+    s.select_start(0, 1, Line);
+    s.select_set_block(true);
+    assert_eq!(s.selection_text().as_deref(), Some("ghi jkl\n"), "줄 고르기는 그대로");
+}
+
+/// #433: 사각 고르기가 덮는 칸(화면의 SELECTED)은 사각이다. 글자 고르기는 줄을 따라가 사각이 아니다
+#[test]
+fn block_select_marks_a_rectangle_of_cells_in_the_snapshot() {
+    use bt_term::{
+        CellFlags,
+        SelectKind::{Block, Simple},
+    };
+    let (s, rx) = sh("printf 'abcdef\\nghijkl\\nmnopqr\\n'", GridSize::new(8, 4));
+    wait_exit(&rx);
+    wait_until(&s, |t| t.contains("mnopqr"));
+    let covered = |s: &Session| {
+        let snap = s.snapshot();
+        (0..3)
+            .map(|r| {
+                (0..8)
+                    .filter(|&c| snap.cell(c, r).flags.contains(CellFlags::SELECTED))
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>()
+    };
+    s.select_start(1, 0, Block);
+    s.select_update(3, 2);
+    assert_eq!(covered(&s), vec![vec![1, 2, 3]; 3]);
+    s.select_start(1, 0, Simple);
+    s.select_update(3, 2);
+    assert_eq!(
+        covered(&s),
+        vec![vec![1, 2, 3, 4, 5, 6, 7], (0..8).collect::<Vec<_>>(), vec![0, 1, 2, 3]]
+    );
+}
+
 /// #147: 스크롤백을 만든 뒤 위로 올려 두고, 셸이 새 출력을 내게 한다. 맨 아래로 돌아왔는지(display_offset 0) 돌려준다
 fn offset_after_new_output(scroll_on_output: bool) -> usize {
     let (tx, rx) = channel();
