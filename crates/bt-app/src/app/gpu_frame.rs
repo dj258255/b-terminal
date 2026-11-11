@@ -273,9 +273,9 @@ impl App {
             // 셰이더가 돌면(`split_layers`) 위층에는 kitty 그림만 그리고 나머지는 맨 위층(`top`)에 그린다
             let uses_upper = chrome.overlay || split;
             let uses_images = views.iter().any(|v| !v.screen.images.is_empty());
-            let upper_used = if split_layers { uses_images } else { uses_upper };
-            let top_used = split_layers && uses_upper;
-            if upper_used || cfg!(debug_assertions) {
+            let plan = layer_plan(split_layers, uses_upper, uses_images, cfg!(debug_assertions));
+            let (upper_used, top_used) = (plan.keep_upper, plan.keep_top);
+            if plan.alloc_upper {
                 // 지난 프레임에 놓았으면 새로 잡는다(새로 잡은 것은 이미 0)
                 if self.w.upper.len() == n {
                     self.w.upper.fill(0);
@@ -283,7 +283,7 @@ impl App {
                     self.w.upper = vec![0; n];
                 }
             }
-            if split_layers && (top_used || cfg!(debug_assertions)) {
+            if plan.alloc_top {
                 if self.w.top.len() == n {
                     self.w.top.fill(0);
                 } else {
@@ -292,7 +292,7 @@ impl App {
             } else {
                 self.w.top = Vec::new();
             }
-            if upper_used || top_used || cfg!(debug_assertions) {
+            if plan.draw {
                 let mut upper = Canvas::new(&mut self.w.upper, sw, sh);
                 let mut top_canvas = split_layers.then(|| Canvas::new(&mut self.w.top, sw, sh));
                 // 칸 안 화면이 아닌 덧그림이 가는 캔버스: 셰이더가 돌면 맨 위층, 아니면 위층
@@ -630,4 +630,71 @@ fn shader_regions(
         })
         .collect();
     state.regions(Instant::now(), theme, setting, alive, &inputs)
+}
+
+/// 통째 프레임에서 위층·맨 위층 버퍼를 어떻게 다룰지(#441). 셰이더가 돌면(`split_layers`) 위층에는 kitty 그림만,
+/// 나머지 덧그림은 맨 위층에 그린다. `draw`이면 두 캔버스를 만들므로 그 버퍼가 화면 크기로 있어야 한다
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct LayerPlan {
+    /// 그리기 블록에 들어간다(캔버스를 만든다)
+    draw: bool,
+    /// 위층 버퍼를 화면 크기로 잡는다
+    alloc_upper: bool,
+    /// 맨 위층 버퍼를 화면 크기로 잡는다
+    alloc_top: bool,
+    /// 그린 뒤에도 위층을 남긴다(아니면 놓는다)
+    keep_upper: bool,
+    /// 그린 뒤에도 맨 위층을 남긴다
+    keep_top: bool,
+}
+
+fn layer_plan(split_layers: bool, uses_upper: bool, uses_images: bool, debug: bool) -> LayerPlan {
+    let keep_upper = if split_layers { uses_images } else { uses_upper };
+    let keep_top = split_layers && uses_upper;
+    let draw = keep_upper || keep_top || debug;
+    LayerPlan {
+        draw,
+        alloc_upper: draw,
+        alloc_top: split_layers && draw,
+        keep_upper,
+        keep_top,
+    }
+}
+
+#[cfg(test)]
+mod layer_plan_tests {
+    use super::*;
+
+    /// #441: 캔버스를 만드는 프레임이면 그 버퍼가 있어야 한다(빈 버퍼로 `Canvas::new`를 부르면 패닉한다).
+    /// 실제 창에서 셰이더를 건 채 화면을 나누면 위층 버퍼 없이 그리기 블록에 들어가 꺼졌다
+    #[test]
+    fn every_canvas_made_has_a_buffer() {
+        for split_layers in [false, true] {
+            for uses_upper in [false, true] {
+                for uses_images in [false, true] {
+                    for debug in [false, true] {
+                        let p = layer_plan(split_layers, uses_upper, uses_images, debug);
+                        let case = (split_layers, uses_upper, uses_images, debug);
+                        if p.draw {
+                            assert!(p.alloc_upper, "위층 캔버스를 만드는데 버퍼가 없다: {case:?}");
+                            if split_layers {
+                                assert!(p.alloc_top, "맨 위층 캔버스를 만드는데 버퍼가 없다: {case:?}");
+                            }
+                        }
+                        assert!(!p.keep_upper || p.alloc_upper && p.draw, "{case:?}");
+                        assert!(!p.keep_top || p.alloc_top && p.draw, "{case:?}");
+                    }
+                }
+            }
+        }
+    }
+
+    /// 셰이더가 없으면 지금까지와 같다: 덧그림이 있을 때만 위층, 맨 위층은 쓰지 않는다
+    #[test]
+    fn without_shaders_only_the_upper_layer_is_used() {
+        let p = layer_plan(false, true, true, false);
+        assert!(p.draw && p.alloc_upper && p.keep_upper && !p.alloc_top && !p.keep_top);
+        let p = layer_plan(false, false, true, false);
+        assert!(!p.draw && !p.keep_upper && !p.alloc_top);
+    }
 }
