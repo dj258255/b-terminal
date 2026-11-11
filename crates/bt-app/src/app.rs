@@ -3839,7 +3839,11 @@ impl App {
         for w in std::iter::once(&mut self.w).chain(&mut self.others) {
             w.keyseq = Default::default();
         }
-        self.w.font_size = next.font_size;
+        // 설정의 `font-size`가 바뀌었으면 모든 창을 새 값으로, 아니면 창마다 고른 크기를 둔다(#416)
+        let (old_size, new_size) = (self.config.font_size, next.font_size);
+        for w in std::iter::once(&mut self.w).chain(&mut self.others) {
+            w.font_size = bt_core::config::font_size_after_reload(old_size, new_size, w.font_size);
+        }
         for t in &self.panes {
             t.session.set_theme(next.theme.clone());
             t.session.set_scroll_on_output(next.scroll_to_bottom.output);
