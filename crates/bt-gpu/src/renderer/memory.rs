@@ -17,8 +17,10 @@ pub struct GpuMemory {
     pub uniform_buffers: usize,
     /// 창 없는 길의 그림 텍스처와 읽기 버퍼. 창 길에서는 0
     pub offscreen_target: usize,
-    /// 사용자 셰이더 중간 텍스처 둘 (GPU). 셰이더가 없으면 0
+    /// 사용자 셰이더 중간 텍스처 (GPU): 칸 크기별 한 벌(셰이더 하나면 한 장, 둘 이상이면 두 장)과 칸이 창 전체가 아닐 때의 창 크기 한 장. 셰이더가 없으면 0
     pub custom_textures: usize,
+    /// 사용자 셰이더 중간 텍스처의 장 수(바이트가 아니라 개수). 셰이더가 없으면 0
+    pub custom_texture_count: usize,
     /// 아틀라스의 CPU 쪽 사본(회색조 + 색)
     pub atlas_cpu: usize,
     /// 층 칸 해시(CPU)
@@ -61,6 +63,7 @@ impl GpuRenderer {
                 t.width as usize * t.height as usize * 4 + t.readback.size() as usize
             }),
             custom_textures: self.custom_texture_bytes(),
+            custom_texture_count: self.custom_texture_count(),
             atlas_cpu: self.cache.gray.data().len() + self.cache.color.data().len(),
             layer_hashes: layers.shadow_bytes,
             scratch: layers.scratch_bytes,

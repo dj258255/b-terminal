@@ -86,7 +86,7 @@ impl Default for ShaderUniforms {
 }
 
 /// 유니폼 블록 `Globals`의 std140 바이트 수
-pub const UNIFORM_BLOCK_SIZE: usize = 4496;
+pub const UNIFORM_BLOCK_SIZE: usize = 4512;
 
 /// 블록 필드의 바이트 자리(std140). prelude의 선언 순서와 같고, 시험이 naga가 계산한 값과 견준다
 pub const FIELD_OFFSETS: &[(&str, usize)] = &[
@@ -117,6 +117,7 @@ pub const FIELD_OFFSETS: &[(&str, usize)] = &[
     ("iCursorText", 4448),
     ("iSelectionForegroundColor", 4464),
     ("iSelectionBackgroundColor", 4480),
+    ("_bt_origin", 4496),
 ];
 
 fn offset_of(name: &str) -> usize {
@@ -138,9 +139,12 @@ fn put_i(buf: &mut [u8], at: usize, v: i32) {
 }
 
 impl ShaderUniforms {
-    /// 유니폼 블록 한 개의 std140 바이트. `resolution`은 `iResolution`(`iChannelResolution[0]`도 같은 값, 넷째는 0)
-    pub fn to_std140(&self, resolution: [f32; 3]) -> Vec<u8> {
+    /// 유니폼 블록 한 개의 std140 바이트. `resolution`은 `iResolution`(`iChannelResolution[0]`도 같은 값, 넷째는 0).
+    /// `origin`은 패스가 그리는 사각형의 왼쪽 위(대상 픽셀). 마지막 패스가 대상에 뷰포트로 곧바로 그릴 때 `gl_FragCoord`에서 빼
+    /// 칸 안 좌표로 되돌리는 값이다. 칸 크기 텍스처에 그리는 패스는 (0, 0)
+    pub fn to_std140(&self, resolution: [f32; 3], origin: [f32; 2]) -> Vec<u8> {
         let mut b = vec![0u8; UNIFORM_BLOCK_SIZE];
+        put(&mut b, offset_of("_bt_origin"), &origin);
         put(&mut b, offset_of("iResolution"), &resolution);
         put(&mut b, offset_of("iTime"), &[self.time]);
         put(&mut b, offset_of("iTimeDelta"), &[self.time_delta]);
@@ -216,7 +220,12 @@ layout(set = 0, binding = 1, std140) uniform Globals {
     vec3  iCursorText;
     vec3  iSelectionForegroundColor;
     vec3  iSelectionBackgroundColor;
+    vec4  _bt_origin;
 };
+// 사용자 소스가 `gl_FragCoord`를 직접 써도 칸 안 좌표를 받게 한다: 마지막 패스는 대상에 뷰포트로 곧바로 그려서 내장 값이 창 좌표이므로
+// 칸 왼쪽 위(`_bt_origin`)를 뺀다. 함수는 매크로를 걸기 전에 두어 안쪽의 `gl_FragCoord`는 내장 값이다
+vec4 _bt_frag_coord() { return vec4(gl_FragCoord.xy - _bt_origin.xy, gl_FragCoord.zw); }
+#define gl_FragCoord _bt_frag_coord()
 const float iChannelTime[4] = float[4](0.0, 0.0, 0.0, 0.0);
 #define CURSORSTYLE_BLOCK        0
 #define CURSORSTYLE_BLOCK_HOLLOW 1
@@ -357,7 +366,7 @@ mod tests {
         };
         u.palette[0] = [30.0, 31.0, 32.0];
         u.palette[255] = [33.0, 34.0, 35.0];
-        let b = u.to_std140([640.0, 480.0, 1.0]);
+        let b = u.to_std140([640.0, 480.0, 1.0], [12.0, 34.0]);
         assert_eq!(b.len(), UNIFORM_BLOCK_SIZE);
         let f = |name: &str, i: usize| f32::from_le_bytes(b[offset_of(name) + i * 4..][..4].try_into().unwrap());
         let n = |name: &str| i32::from_le_bytes(b[offset_of(name)..][..4].try_into().unwrap());
@@ -405,6 +414,7 @@ mod tests {
         // 선택 색은 prelude 순서: 앞이 foreground, 뒤가 background
         assert_eq!(f("iSelectionForegroundColor", 0), 26.0);
         assert_eq!(f("iSelectionBackgroundColor", 2), 25.0);
+        assert_eq!((f("_bt_origin", 0), f("_bt_origin", 1)), (12.0, 34.0));
         // 쓰지 않는 자리는 0
         assert_eq!(f("iFrameRate", 0), 0.0);
         assert_eq!(f("iMouse", 0), 0.0);

@@ -80,18 +80,27 @@ pub(super) fn covers_window(window: (u32, u32), plan: &[Planned]) -> bool {
     matches!(plan, [p] if (p.x, p.y, p.w, p.h) == (0, 0, window.0, window.1))
 }
 
-/// 칸 하나의 크기 중간 텍스처 둘과 바인드 그룹, 유니폼 버퍼. 칸 크기가 바뀔 때만 다시 만들고 칸이 사라지면 놓는다
+/// 같은 크기의 칸이 나눠 쓰는 중간 텍스처. 칸들은 한 인코더 안에서 차례로 돌므로(칸마다 떼어 오기 → 패스들이 읽고 쓰기 → 다음 칸)
+/// 같은 크기끼리 한 벌을 돌려 써도 서로 덮지 않는다. 셰이더가 하나면 앞 텍스처만 있다(그 출력은 대상에 곧바로 그린다).
+/// 둘 이상이면 앞·뒤를 번갈아 쓴다
+struct SharedTex {
+    size: (u32, u32),
+    textures: Vec<wgpu::Texture>,
+    views: Vec<wgpu::TextureView>,
+}
+
+/// 칸 하나의 바인드 그룹과 유니폼 버퍼. 칸 크기가 바뀔 때만 다시 만들고 칸이 사라지면 놓는다. 텍스처는 `SharedTex`가 쥔다
+/// (칸마다 가진 것은 가리키는 바인드 그룹뿐이고, 칸 크기와 같은 `SharedTex`는 이 칸이 있는 동안 남는다)
 struct RegionRes {
     key: u64,
     size: (u32, u32),
-    textures: [wgpu::Texture; 2],
-    views: [wgpu::TextureView; 2],
-    /// `bind_groups[i]`는 `views[i]`를 `iChannel0`으로 읽는다
-    bind_groups: [wgpu::BindGroup; 2],
-    /// 칸 크기 텍스처를 제자리로 옮겨 그릴 때 읽는 바인드 그룹(`blit_groups[i]`는 `views[i]`)
-    blit_groups: [wgpu::BindGroup; 2],
-    /// 칸마다 따로다: 한 버퍼를 쓰면 제출 전에 마지막으로 쓴 값이 모든 칸에 닿는다
-    uniforms: wgpu::Buffer,
+    /// 마지막 패스의 유니폼: `_bt_origin`이 칸의 대상 자리다. 칸마다 따로다: 한 버퍼를 쓰면 제출 전에 마지막으로 쓴 값이 모든 칸에 닿는다
+    last_uniforms: wgpu::Buffer,
+    /// 마지막 패스가 읽는 바인드 그룹(`views[(셰이더 수 - 1) % 2]`와 `last_uniforms`)
+    last_group: wgpu::BindGroup,
+    /// 가운데 패스(셰이더가 둘 이상일 때만)의 유니폼과 바인드 그룹: 칸 크기 텍스처에 그리므로 `_bt_origin`은 (0, 0)이다.
+    /// `mid_groups[i]`는 `views[i]`를 `iChannel0`으로 읽는다
+    mid: Option<(wgpu::Buffer, [wgpu::BindGroup; 2])>,
 }
 
 /// 합친 화면을 담는 창 크기 텍스처(칸이 창 전체를 덮지 않을 때만). 칸 영역을 여기서 뗀다
@@ -111,6 +120,8 @@ pub(super) struct CustomChain {
     blit_layout: wgpu::BindGroupLayout,
     blit_pipeline: wgpu::RenderPipeline,
     regions: Vec<RegionRes>,
+    /// 칸 크기별 중간 텍스처(같은 크기 칸이 나눠 쓴다)
+    pool: Vec<SharedTex>,
     scene: Option<SceneTex>,
     /// 이번 프레임에 도는 칸들(`prepare_custom`이 정한다)
     plan: Vec<Planned>,
@@ -367,6 +378,7 @@ fn build_chain(device: &wgpu::Device, format: wgpu::TextureFormat, shaders: Vec<
             blit_layout,
             blit_pipeline,
             regions: Vec::new(),
+            pool: Vec::new(),
             scene: None,
             plan: Vec::new(),
             full: false,
@@ -552,18 +564,30 @@ impl GpuRenderer {
         }
     }
 
-    /// 사용자 셰이더 유니폼 버퍼의 바이트(칸마다 하나)
+    /// 사용자 셰이더 유니폼 버퍼의 바이트(칸마다 마지막 패스 하나, 셰이더가 둘 이상이면 가운데 패스용 하나 더)
     pub(super) fn custom_uniform_bytes(&self) -> usize {
-        self.custom
-            .as_ref()
-            .map_or(0, |c| c.regions.iter().map(|r| r.uniforms.size() as usize).sum())
+        self.custom.as_ref().map_or(0, |c| {
+            c.regions
+                .iter()
+                .map(|r| r.last_uniforms.size() as usize + r.mid.as_ref().map_or(0, |(b, _)| b.size() as usize))
+                .sum()
+        })
     }
 
-    /// 사용자 셰이더 중간 텍스처의 바이트: 칸마다 칸 크기 둘, 칸이 창 전체를 덮지 않으면 합친 화면을 담는 창 크기 하나
+    /// 사용자 셰이더 중간 텍스처의 바이트: 칸 크기별로 한 벌(셰이더 하나면 한 장, 둘 이상이면 두 장), 칸이 창 전체를 덮지 않으면
+    /// 합친 화면을 담는 창 크기 하나
     pub(super) fn custom_texture_bytes(&self) -> usize {
         let px = |s: (u32, u32)| s.0 as usize * s.1 as usize * 4;
         self.custom.as_ref().map_or(0, |c| {
-            c.regions.iter().map(|r| px(r.size) * 2).sum::<usize>() + c.scene.as_ref().map_or(0, |t| px(t.size))
+            c.pool.iter().map(|t| px(t.size) * t.textures.len()).sum::<usize>()
+                + c.scene.as_ref().map_or(0, |t| px(t.size))
+        })
+    }
+
+    /// 사용자 셰이더 중간 텍스처의 장 수
+    pub(super) fn custom_texture_count(&self) -> usize {
+        self.custom.as_ref().map_or(0, |c| {
+            c.pool.iter().map(|t| t.textures.len()).sum::<usize>() + usize::from(c.scene.is_some())
         })
     }
 
@@ -593,7 +617,8 @@ impl GpuRenderer {
         self.shader_regions.extend_from_slice(regions);
     }
 
-    /// 그리기 전에: 칸마다 중간 텍스처를 칸 크기로 맞추고(크기가 바뀐 칸만 다시 만든다, 사라진 칸은 놓는다) 유니폼 버퍼를 올린다
+    /// 그리기 전에: 칸 크기별 중간 텍스처와 칸마다 바인드 그룹·유니폼 버퍼를 맞추고(크기가 바뀐 칸만 다시 만든다, 사라진 칸은 놓는다)
+    /// 유니폼 버퍼를 올린다
     pub(super) fn prepare_custom(&mut self, window: (u32, u32)) {
         let Some(chain) = self.custom.as_mut() else { return };
         let whole = [ShaderRegion {
@@ -608,38 +633,51 @@ impl GpuRenderer {
         };
         let plan = plan_regions(window, regions);
         chain.full = covers_window(window, &plan);
-        // 사라진 칸을 놓는다(GPU 메모리가 새지 않게)
+        let passes = chain.pipelines.len();
+        // 사라진 칸과 쓰는 칸이 없는 크기의 텍스처를 놓는다(GPU 메모리가 새지 않게)
         chain.regions.retain(|r| plan.iter().any(|p| p.key == r.key));
+        chain.pool.retain(|t| plan.iter().any(|p| (p.w, p.h) == t.size));
+        // 앞 텍스처는 합친 화면을 떼어 오는 자리(COPY_DST)이거나 창 전체 칸에서는 합친 화면을 곧바로 그리는 자리다.
+        // 둘 이상의 셰이더면 가운데 패스가 앞·뒤 모두에 그린다
         let usage = wgpu::TextureUsages::RENDER_ATTACHMENT
             | wgpu::TextureUsages::TEXTURE_BINDING
             | wgpu::TextureUsages::COPY_DST;
         for p in &plan {
             let size = (p.w, p.h);
+            if !chain.pool.iter().any(|t| t.size == size) {
+                let textures: Vec<wgpu::Texture> = (0..passes.min(2))
+                    .map(|i| {
+                        texture_2d(
+                            &self.device,
+                            ["bt-gpu custom front", "bt-gpu custom back"][i],
+                            size,
+                            self.format,
+                            usage,
+                        )
+                    })
+                    .collect();
+                let views = textures
+                    .iter()
+                    .map(|t| t.create_view(&wgpu::TextureViewDescriptor::default()))
+                    .collect();
+                chain.pool.push(SharedTex { size, textures, views });
+            }
             if chain.regions.iter().any(|r| r.key == p.key && r.size == size) {
                 continue;
             }
             chain.regions.retain(|r| r.key != p.key);
-            let make = |i: usize| {
-                texture_2d(
-                    &self.device,
-                    ["bt-gpu custom front", "bt-gpu custom back"][i],
-                    size,
-                    self.format,
-                    usage,
-                )
+            let Some(shared) = chain.pool.iter().find(|t| t.size == size) else {
+                continue;
             };
-            let textures = [make(0), make(1)];
-            let views = [
-                textures[0].create_view(&wgpu::TextureViewDescriptor::default()),
-                textures[1].create_view(&wgpu::TextureViewDescriptor::default()),
-            ];
-            let uniforms = self.device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some("bt-gpu custom shader uniforms"),
-                size: UNIFORM_BLOCK_SIZE as u64,
-                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-                mapped_at_creation: false,
-            });
-            let group = |view: &wgpu::TextureView| {
+            let new_buffer = || {
+                self.device.create_buffer(&wgpu::BufferDescriptor {
+                    label: Some("bt-gpu custom shader uniforms"),
+                    size: UNIFORM_BLOCK_SIZE as u64,
+                    usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                    mapped_at_creation: false,
+                })
+            };
+            let group = |view: &wgpu::TextureView, uniforms: &wgpu::Buffer| {
                 self.device.create_bind_group(&wgpu::BindGroupDescriptor {
                     label: Some("bt-gpu custom shader bind group"),
                     layout: &chain.layout,
@@ -659,17 +697,19 @@ impl GpuRenderer {
                     ],
                 })
             };
-            let blit = |view: &wgpu::TextureView| blit_group(&self.device, &chain.blit_layout, view);
-            let bind_groups = [group(&views[0]), group(&views[1])];
-            let blit_groups = [blit(&views[0]), blit(&views[1])];
+            let last_uniforms = new_buffer();
+            let last_group = group(&shared.views[(passes - 1) % 2], &last_uniforms);
+            let mid = (passes >= 2).then(|| {
+                let buf = new_buffer();
+                let groups = [group(&shared.views[0], &buf), group(&shared.views[1], &buf)];
+                (buf, groups)
+            });
             chain.regions.push(RegionRes {
                 key: p.key,
                 size,
-                textures,
-                views,
-                bind_groups,
-                blit_groups,
-                uniforms,
+                last_uniforms,
+                last_group,
+                mid,
             });
         }
         // 합친 화면 텍스처: 칸이 창 전체를 덮으면 칸의 앞 텍스처가 그 자리이므로 필요 없다
@@ -701,16 +741,23 @@ impl GpuRenderer {
             let Some(r) = regions.iter().find(|r| r.key == p.key) else {
                 continue;
             };
-            let bytes = r.uniforms.to_std140([p.w as f32, p.h as f32, 1.0]);
-            self.queue.write_buffer(&res.uniforms, 0, &bytes);
+            let res_xyz = [p.w as f32, p.h as f32, 1.0];
+            // 마지막 패스는 대상에 뷰포트로 그리므로 `gl_FragCoord`가 창 좌표다: 칸 왼쪽 위를 빼 칸 안 좌표로 되돌린다
+            let bytes = r.uniforms.to_std140(res_xyz, [p.x as f32, p.y as f32]);
+            self.queue.write_buffer(&res.last_uniforms, 0, &bytes);
+            if let Some((buf, _)) = &res.mid {
+                self.queue
+                    .write_buffer(buf, 0, &r.uniforms.to_std140(res_xyz, [0.0, 0.0]));
+            }
         }
-        self.timings.shader_passes = chain.pipelines.len() * plan.len();
+        self.timings.shader_passes = passes * plan.len();
         chain.plan = plan;
     }
 
     /// 한 프레임의 그리기 명령. 셰이더가 없으면 `encode_compose` 하나(지금 길 그대로)이다. 있으면 합친 화면(격자와 kitty 그림까지,
     /// 셰이더 뒤에 얹는 층은 빼고)을 그린 뒤 칸마다 그 칸 영역을 떼어 셰이더를 차례로 돌려 제자리에 그리고, 마지막에 셰이더 뒤에
-    /// 얹는 층을 얹는다. 칸 밖(탭 막대, 칸 사이 틈)은 합친 화면 그대로다
+    /// 얹는 층을 얹는다. 칸 밖(탭 막대, 칸 사이 틈)은 합친 화면 그대로다. 마지막 셰이더 패스는 대상의 칸 사각형에 뷰포트와 가위로
+    /// 곧바로 그린다(칸 크기 텍스처에 그렸다가 옮기지 않는다)
     /// `srgb`는 `view`의 sRGB 꼴 뷰(선형 섞기용). 셰이더가 돌 때는 장면 텍스처에 그리므로 쓰지 않는다: 그때는 `alpha-blending`이 `native`로 그려진다
     pub(super) fn encode_frame(
         &self,
@@ -720,10 +767,14 @@ impl GpuRenderer {
         let Some(chain) = self.custom.as_ref().filter(|c| !c.plan.is_empty()) else {
             return vec![self.encode_compose(view, srgb, true)];
         };
-        let planned: Vec<(&Planned, &RegionRes)> = chain
+        let planned: Vec<(&Planned, &RegionRes, &SharedTex)> = chain
             .plan
             .iter()
-            .filter_map(|p| chain.regions.iter().find(|r| r.key == p.key).map(|r| (p, r)))
+            .filter_map(|p| {
+                let r = chain.regions.iter().find(|r| r.key == p.key)?;
+                let t = chain.pool.iter().find(|t| t.size == r.size)?;
+                Some((p, r, t))
+            })
             .collect();
         if planned.is_empty() {
             return vec![self.encode_compose(view, srgb, true)];
@@ -731,7 +782,7 @@ impl GpuRenderer {
         // 합친 화면의 자리: 칸이 창 전체면 그 칸의 앞 텍스처, 아니면 창 크기 텍스처
         let scene_view = match (chain.full, chain.scene.as_ref()) {
             (false, Some(t)) => &t.view,
-            _ => &planned[0].1.views[0],
+            _ => &planned[0].2.views[0],
         };
         let scene = self.encode_compose(scene_view, None, false);
         let mut enc = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
@@ -743,7 +794,7 @@ impl GpuRenderer {
             blit(&mut enc, &chain.blit_pipeline, &t.blit_group, view, None);
         }
         let last = chain.pipelines.len() - 1;
-        for (p, r) in planned {
+        for (p, r, shared) in planned {
             if let Some(t) = split_scene {
                 // 칸 영역을 칸 크기 텍스처로 뗀다
                 enc.copy_texture_to_texture(
@@ -754,7 +805,7 @@ impl GpuRenderer {
                         aspect: wgpu::TextureAspect::All,
                     },
                     wgpu::TexelCopyTextureInfo {
-                        texture: &r.textures[0],
+                        texture: &shared.textures[0],
                         mip_level: 0,
                         origin: wgpu::Origin3d::ZERO,
                         aspect: wgpu::TextureAspect::All,
@@ -767,11 +818,23 @@ impl GpuRenderer {
                 );
             }
             for (i, pipeline) in chain.pipelines.iter().enumerate() {
-                // 칸이 창 전체면 마지막 패스가 대상에 곧바로 그린다. 아니면 칸 크기 텍스처에 그리고 아래에서 제자리에 옮긴다
-                let target = if i == last && chain.full {
-                    view
+                let is_last = i == last;
+                // 마지막 패스는 대상에 곧바로 그린다(창 전체 칸이면 한 장을 다 덮으므로 읽어 오지 않고 지운다, 아니면 칸 밖을 둔다).
+                // 앞 패스는 칸 크기 텍스처에 그린다
+                let (target, load) = if is_last {
+                    (
+                        view,
+                        if chain.full {
+                            wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT)
+                        } else {
+                            wgpu::LoadOp::Load
+                        },
+                    )
                 } else {
-                    &r.views[(i + 1) % 2]
+                    (
+                        &shared.views[(i + 1) % 2],
+                        wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                    )
                 };
                 let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
                     label: Some("bt-gpu custom shader"),
@@ -780,7 +843,7 @@ impl GpuRenderer {
                         depth_slice: None,
                         resolve_target: None,
                         ops: wgpu::Operations {
-                            load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                            load,
                             store: wgpu::StoreOp::Store,
                         },
                     })],
@@ -789,19 +852,16 @@ impl GpuRenderer {
                     occlusion_query_set: None,
                     multiview_mask: None,
                 });
+                if is_last && !chain.full {
+                    pass.set_viewport(p.x as f32, p.y as f32, p.w as f32, p.h as f32, 0.0, 1.0);
+                    pass.set_scissor_rect(p.x, p.y, p.w, p.h);
+                }
                 pass.set_pipeline(pipeline);
-                pass.set_bind_group(0, &r.bind_groups[i % 2], &[]);
+                match (&r.mid, is_last) {
+                    (Some((_, groups)), false) => pass.set_bind_group(0, &groups[i % 2], &[]),
+                    _ => pass.set_bind_group(0, &r.last_group, &[]),
+                }
                 pass.draw(0..3, 0..1);
-            }
-            if !chain.full {
-                let rect = (p.x, p.y, p.w, p.h);
-                blit(
-                    &mut enc,
-                    &chain.blit_pipeline,
-                    &r.blit_groups[(last + 1) % 2],
-                    view,
-                    Some(rect),
-                );
             }
         }
         self.encode_top(&mut enc, view);

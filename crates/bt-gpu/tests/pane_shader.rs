@@ -334,7 +334,8 @@ fn one_pane_covering_the_window_is_the_same_as_the_whole_window_path() {
         old_mem,
         "칸 하나는 지금과 같은 메모리여야 한다"
     );
-    assert_eq!(old_mem, (W * H * 4 * 2) as usize);
+    // 셰이더가 하나면 창 크기 한 장(앞)뿐이다: 뒤 텍스처 없이 마지막 패스가 대상에 곧바로 그린다
+    assert_eq!(old_mem, (W * H * 4) as usize);
     // rect가 없는 칸도 창 전체다
     g.set_shader_regions(&[ShaderRegion {
         key: 3,
@@ -419,7 +420,8 @@ fn pane_textures_follow_the_regions_and_are_released_when_a_pane_goes_away() {
     let mut s = Scene::new();
     set(&mut g, "identity", IDENTITY);
     let u = ShaderUniforms::default();
-    let px = |r: PixelRect| (r.w * r.h * 4 * 2) as usize;
+    // 셰이더가 하나라 칸 크기 한 장씩(뒤 텍스처 없음)
+    let px = |r: PixelRect| (r.w * r.h * 4) as usize;
     let scene = (W * H * 4) as usize;
     g.set_shader_regions(&[region(1, A, u), region(2, B, u)]);
     s.compose(&mut g, None, None);
@@ -439,9 +441,210 @@ fn pane_textures_follow_the_regions_and_are_released_when_a_pane_goes_away() {
     g.set_shader_regions(&[]);
     s.compose(&mut g, None, None);
     assert_eq!(g.custom_region_keys(), vec![0]);
-    assert_eq!(g.gpu_memory().custom_textures, (W * H * 4 * 2) as usize);
+    assert_eq!(g.gpu_memory().custom_textures, (W * H * 4) as usize);
     // 셰이더를 끄면 모두 놓는다
     g.set_custom_shaders(&[]);
     assert_eq!(g.gpu_memory().custom_textures, 0);
     assert_eq!(g.gpu_memory().uniform_buffers, 16);
+    assert_eq!(g.gpu_memory().custom_texture_count, 0);
+}
+
+// ---- #445: 칸마다 셰이더의 GPU 텍스처 줄이기 ----
+// 아래 시험은 두 가지를 고정한다. (1) 칸 하나(창 전체·top inset)·둘·셋과 셰이더 하나·둘의 화면이 텍스처 줄이기 전과 한 픽셀도 다르지
+// 않다(줄이기 전 코드에서 낸 해시). (2) 그 장면들이 잡는 텍스처의 장 수와 바이트
+
+/// 칸 안 위치·초점·칸 크기·iChannel0을 비스듬히 읽는 셰이더: 칸 원점이 어긋나거나 y가 뒤집히면 해시가 바뀐다
+const PROBE: &str = "void mainImage(out vec4 fragColor, in vec2 fragCoord) {
+    vec2 uv = fragCoord / iResolution.xy;
+    vec4 c = texture(iChannel0, uv + vec2(0.03, -0.02) * sin(uv.y * 20.0));
+    fragColor = vec4(c.rgb * 0.7 + 0.3 * vec3(uv, 0.5 * float(iFocus)), 1.0);
+}";
+
+/// `gl_FragCoord`를 직접 쓰는 셰이더(`mainImage`의 `fragCoord`가 아니라)
+const DIRECT_FRAG_COORD: &str = "void mainImage(out vec4 fragColor, in vec2 fragCoord) {
+    vec4 c = texture(iChannel0, gl_FragCoord.xy / iResolution.xy);
+    fragColor = vec4(gl_FragCoord.x / iResolution.x, gl_FragCoord.y / iResolution.y, c.b, 1.0);
+}";
+
+fn fnv(frame: &[u32]) -> u64 {
+    frame.iter().fold(0xcbf2_9ce4_8422_2325u64, |h, p| {
+        p.to_le_bytes()
+            .iter()
+            .fold(h, |h, b| (h ^ u64::from(*b)).wrapping_mul(0x0000_0100_0000_01b3))
+    })
+}
+
+fn set_chain(g: &mut GpuRenderer, shaders: &[(&str, &str)]) {
+    let list: Vec<_> = shaders.iter().map(|(n, s)| src(n, s)).collect();
+    let errors = g.set_custom_shaders(&list);
+    assert!(errors.is_empty(), "{errors:?}");
+    let errors = g.wait_custom_shaders();
+    assert!(errors.is_empty(), "{errors:?}");
+}
+
+const INSET: PixelRect = PixelRect {
+    x: 0,
+    y: 30,
+    w: W,
+    h: H - 30,
+};
+const WHOLE: PixelRect = PixelRect { x: 0, y: 0, w: W, h: H };
+/// 같은 크기 둘과 크기가 다른 하나
+const EQ1: PixelRect = PixelRect {
+    x: 0,
+    y: 30,
+    w: 140,
+    h: 80,
+};
+const EQ2: PixelRect = PixelRect {
+    x: 150,
+    y: 30,
+    w: 140,
+    h: 80,
+};
+const WIDE: PixelRect = PixelRect {
+    x: 5,
+    y: 120,
+    w: 290,
+    h: 75,
+};
+
+fn uni(i: u32) -> ShaderUniforms {
+    ShaderUniforms {
+        focus: (i % 2) as i32,
+        time: i as f32,
+        ..ShaderUniforms::default()
+    }
+}
+
+struct Case {
+    name: &'static str,
+    shaders: Vec<(&'static str, &'static str)>,
+    panes: Vec<PixelRect>,
+    /// 줄이기 전 코드의 화면 해시
+    hash: u64,
+    /// 줄인 뒤 텍스처 장 수와 바이트
+    textures: usize,
+    bytes: usize,
+}
+
+fn px(r: PixelRect) -> usize {
+    (r.w * r.h * 4) as usize
+}
+
+fn cases() -> Vec<Case> {
+    let win = (W * H * 4) as usize;
+    vec![
+        Case {
+            name: "창 전체 칸 하나, 셰이더 하나",
+            shaders: vec![("probe", PROBE)],
+            panes: vec![WHOLE],
+            hash: 0xcc5f693615dbe452,
+            textures: 1,
+            bytes: win,
+        },
+        Case {
+            name: "top inset 칸 하나, 셰이더 하나",
+            shaders: vec![("probe", PROBE)],
+            panes: vec![INSET],
+            hash: 0x7d6c2f6f10c91c3b,
+            textures: 2,
+            bytes: win + px(INSET),
+        },
+        Case {
+            name: "top inset 칸 하나, 셰이더 둘",
+            shaders: vec![("invert", INVERT), ("probe", PROBE)],
+            panes: vec![INSET],
+            hash: 0x7059ecf8dcf850ce,
+            textures: 3,
+            bytes: win + 2 * px(INSET),
+        },
+        Case {
+            name: "칸 셋(둘은 같은 크기), 셰이더 하나",
+            shaders: vec![("probe", PROBE)],
+            panes: vec![EQ1, EQ2, WIDE],
+            hash: 0x3cfc65b7c2374628,
+            textures: 3,
+            bytes: win + px(EQ1) + px(WIDE),
+        },
+        Case {
+            name: "칸 셋(둘은 같은 크기), 셰이더 둘",
+            shaders: vec![("invert", INVERT), ("probe", PROBE)],
+            panes: vec![EQ1, EQ2, WIDE],
+            hash: 0x9d2323812c3c47b3,
+            textures: 5,
+            bytes: win + 2 * px(EQ1) + 2 * px(WIDE),
+        },
+        Case {
+            name: "칸 둘(크기가 다름), 셰이더 하나, gl_FragCoord 직접",
+            shaders: vec![("direct", DIRECT_FRAG_COORD)],
+            panes: vec![A, B],
+            hash: 0xb0bdcd62f5e8ac9c,
+            textures: 3,
+            bytes: win + px(A) + px(B),
+        },
+    ]
+}
+
+#[test]
+fn frames_stay_the_same_and_textures_shrink() {
+    let Some(mut g) = gpu() else { return };
+    let mut s = Scene::new();
+    let mut report = String::new();
+    let mut bad = Vec::new();
+    for c in cases() {
+        set_chain(&mut g, &c.shaders);
+        let regions: Vec<_> = c
+            .panes
+            .iter()
+            .enumerate()
+            .map(|(i, r)| region(i as u64 + 1, *r, uni(i as u32)))
+            .collect();
+        g.set_shader_regions(&regions);
+        let h = fnv(&s.compose(&mut g, None, None));
+        let m = g.gpu_memory();
+        report += &format!(
+            "{}: 해시 {h:#x} 텍스처 {}장 {}바이트\n",
+            c.name, m.custom_texture_count, m.custom_textures
+        );
+        if h != c.hash {
+            bad.push(format!("{}: 화면 해시 {h:#x} != {:#x}", c.name, c.hash));
+        }
+        if (m.custom_texture_count, m.custom_textures) != (c.textures, c.bytes) {
+            bad.push(format!(
+                "{}: 텍스처 {}장 {}바이트 != {}장 {}바이트",
+                c.name, m.custom_texture_count, m.custom_textures, c.textures, c.bytes
+            ));
+        }
+    }
+    eprintln!("{report}");
+    assert!(bad.is_empty(), "{}\n{report}", bad.join("\n"));
+}
+
+#[test]
+fn direct_gl_frag_coord_is_pane_local_in_every_pass() {
+    // 사용자 소스가 `gl_FragCoord`를 직접 써도 `fragCoord`와 같은 칸 안 좌표를 받는다. 마지막 패스가 대상에 뷰포트로 곧바로 그려서
+    // 내장 값은 창 좌표가 되지만 prelude의 매크로가 칸 왼쪽 위를 뺀다. 셰이더가 둘이면 앞 패스(칸 크기 텍스처)도 같다
+    let Some(mut g) = gpu() else { return };
+    let mut s = Scene::new();
+    let direct = "void mainImage(out vec4 fragColor, in vec2 fragCoord) {
+        vec2 d = gl_FragCoord.xy - fragCoord;
+        fragColor = vec4(gl_FragCoord.x / iResolution.x, gl_FragCoord.y / iResolution.y, abs(d.x) + abs(d.y), 1.0);
+    }";
+    for chain in [vec![("direct", direct)], vec![("invert", INVERT), ("direct", direct)]] {
+        set_chain(&mut g, &chain);
+        g.set_shader_regions(&[region(2, B, ShaderUniforms::default())]);
+        let got = s.compose(&mut g, None, None);
+        let (px, py) = (B.x as u32 + 70, B.y as u32 + 60);
+        let p = channels(at(&got, px, py));
+        near(
+            p,
+            [
+                (70.5 / B.w as f32 * 255.0) as i32,
+                (60.5 / B.h as f32 * 255.0) as i32,
+                0,
+            ],
+            "칸 안 위치(gl_FragCoord 직접)",
+        );
+    }
 }
