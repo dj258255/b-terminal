@@ -206,6 +206,22 @@ impl Node {
         }
     }
 
+    /// `from` 칸을 떼어 `to` 칸의 `dir` 쪽으로 나눠 붙인다(칸 끌어 옮기기). 비율은 반반이다.
+    /// 칸이 하나이거나 `from == to`이거나 어느 칸이 없으면, 또는 옮겨도 트리가 그대로면 아무것도 하지 않고 거짓
+    pub fn move_pane(&mut self, from: u64, to: u64, dir: Direction) -> bool {
+        if from == to || !self.contains(from) || !self.contains(to) {
+            return false;
+        }
+        // 칸이 둘 이상이니 하나를 빼도 트리가 남는다. 실패하면 원래 트리를 건드리지 않게 복사본에서 한다
+        let (rest, _) = self.clone().remove(from);
+        let Some(mut next) = rest else { return false };
+        if !next.split(to, from, dir) || next == *self {
+            return false;
+        }
+        *self = next;
+        true
+    }
+
     /// `target` 칸이 트리에서 놓인 자리(되살릴 때 쓴다). 칸이 하나뿐이면 `None`
     pub fn slot_of(&self, target: u64) -> Option<Slot> {
         let Node::Split {
@@ -403,6 +419,35 @@ impl Node {
     }
 }
 
+/// 칸을 끌어다 놓을 때 칸 안의 한 점이 가리키는 쪽. 가장 가까운 변이다(변까지의 거리를 칸 크기로 나눠 견준다: 대각선이 칸을 네 삼각형으로 나눈다).
+/// 같으면 왼쪽, 오른쪽, 위, 아래 차례(Ghostty `TerminalSplitDropZone.calculate`와 같다). 칸 밖이거나 크기가 0이면 `None`
+pub fn drop_direction(rect: Rect, x: f64, y: f64) -> Option<Direction> {
+    if rect.w == 0 || rect.h == 0 || !rect.contains(x, y) {
+        return None;
+    }
+    let rel_x = (x - rect.x as f64) / rect.w as f64;
+    let rel_y = (y - rect.y as f64) / rect.h as f64;
+    let dists = [
+        (rel_x, Direction::Left),
+        (1.0 - rel_x, Direction::Right),
+        (rel_y, Direction::Up),
+        (1.0 - rel_y, Direction::Down),
+    ];
+    let min = dists.iter().map(|d| d.0).fold(f64::INFINITY, f64::min);
+    dists.iter().find(|d| d.0 == min).map(|d| d.1)
+}
+
+/// 놓을 쪽의 미리 보기 사각형: 칸의 그쪽 절반
+pub fn drop_preview(rect: Rect, dir: Direction) -> Rect {
+    let (half_w, half_h) = (rect.w / 2, rect.h / 2);
+    match dir {
+        Direction::Left => Rect::new(rect.x, rect.y, half_w, rect.h),
+        Direction::Right => Rect::new(rect.x + half_w as i32, rect.y, rect.w - half_w, rect.h),
+        Direction::Up => Rect::new(rect.x, rect.y, rect.w, half_h),
+        Direction::Down => Rect::new(rect.x, rect.y + half_h as i32, rect.w, rect.h - half_h),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -550,5 +595,109 @@ mod tests {
         let win = Rect::new(0, 0, 302, 100);
         let widths: Vec<u32> = t.layout(win, 1).iter().map(|(_, r)| r.w).collect();
         assert_eq!(widths, vec![100, 100, 100]);
+    }
+
+    fn tree_1_2_3() -> Node {
+        // 1 | (2 / 3)
+        let mut t = Node::Leaf(1);
+        t.split(1, 2, Direction::Right);
+        t.split(2, 3, Direction::Down);
+        t
+    }
+
+    #[test]
+    fn move_pane_detaches_and_splits_target_in_half() {
+        let mut t = tree_1_2_3();
+        // 1을 3의 오른쪽으로: (2 / (3 | 1))
+        assert!(t.move_pane(1, 3, Direction::Right));
+        assert_eq!(t.leaves(), vec![2, 3, 1]);
+        let l = t.layout(WIN, 1);
+        assert_eq!(l[0].1, Rect::new(0, 0, 801, 300), "2는 위 전체");
+        assert_eq!(l[1].1.w, l[2].1.w, "3과 1은 반반");
+        assert!(l[1].1.x < l[2].1.x);
+        assert_eq!(l[1].1.y, 301);
+    }
+
+    #[test]
+    fn move_pane_resets_ratio_and_keeps_every_pane_once() {
+        let mut t = tree_1_2_3();
+        t.resize(WIN, 1, 1, Direction::Right, 100);
+        assert!(t.move_pane(3, 1, Direction::Up));
+        let mut leaves = t.leaves();
+        leaves.sort();
+        assert_eq!(leaves, vec![1, 2, 3]);
+        // 3이 1의 위: (3 / 1) | 2
+        assert_eq!(t.leaves(), vec![3, 1, 2]);
+        let l = t.layout(WIN, 1);
+        assert_eq!(l[0].1.h, l[1].1.h, "새로 나눈 쪽은 반반");
+    }
+
+    #[test]
+    fn move_pane_does_nothing_for_self_missing_or_single() {
+        let mut t = tree_1_2_3();
+        let before = t.clone();
+        assert!(!t.move_pane(2, 2, Direction::Left), "자기 자신 곁으로는 옮기지 않는다");
+        assert!(!t.move_pane(9, 1, Direction::Left), "없는 칸");
+        assert!(!t.move_pane(1, 9, Direction::Left), "없는 대상");
+        assert_eq!(t, before);
+        let mut one = Node::Leaf(1);
+        assert!(!one.move_pane(1, 1, Direction::Right));
+        assert!(!one.move_pane(1, 2, Direction::Right));
+        assert_eq!(one, Node::Leaf(1));
+    }
+
+    #[test]
+    fn move_pane_that_changes_nothing_reports_false() {
+        // 1 | 2 에서 1을 2의 왼쪽으로 놓아도 그대로
+        let mut t = Node::Leaf(1);
+        t.split(1, 2, Direction::Right);
+        let before = t.clone();
+        assert!(!t.move_pane(1, 2, Direction::Left));
+        assert_eq!(t, before);
+        // 2의 위로 놓으면 달라진다
+        assert!(t.move_pane(1, 2, Direction::Up));
+        assert_eq!(t.leaves(), vec![1, 2]);
+        assert_ne!(t, before);
+    }
+
+    #[test]
+    fn move_pane_two_panes_swaps_axis() {
+        let mut t = Node::Leaf(1);
+        t.split(1, 2, Direction::Right);
+        assert!(t.move_pane(2, 1, Direction::Left));
+        assert_eq!(t.leaves(), vec![2, 1]);
+    }
+
+    #[test]
+    fn drop_direction_picks_the_nearest_edge() {
+        let r = Rect::new(100, 50, 400, 200);
+        assert_eq!(drop_direction(r, 110.0, 150.0), Some(Direction::Left));
+        assert_eq!(drop_direction(r, 490.0, 150.0), Some(Direction::Right));
+        assert_eq!(drop_direction(r, 300.0, 55.0), Some(Direction::Up));
+        assert_eq!(drop_direction(r, 300.0, 245.0), Some(Direction::Down));
+        // 칸 크기로 나눠 견준다: 가로로 긴 칸에서 위 변은 가깝고(10/200) 왼쪽 변은 멀다(60/400 = 0.15 > 0.05)
+        assert_eq!(drop_direction(r, 160.0, 60.0), Some(Direction::Up));
+        // 정확히 가운데는 같은 거리: 왼쪽이 먼저
+        assert_eq!(drop_direction(r, 300.0, 150.0), Some(Direction::Left));
+        // 왼쪽 위 대각선(상대 거리가 같다)도 왼쪽이 먼저
+        assert_eq!(drop_direction(r, 140.0, 70.0), Some(Direction::Left));
+    }
+
+    #[test]
+    fn drop_direction_is_none_outside_or_empty() {
+        let r = Rect::new(100, 50, 400, 200);
+        assert_eq!(drop_direction(r, 99.0, 100.0), None);
+        assert_eq!(drop_direction(r, 500.0, 100.0), None, "오른쪽 변은 칸 밖");
+        assert_eq!(drop_direction(r, 200.0, 250.0), None);
+        assert_eq!(drop_direction(Rect::new(0, 0, 0, 10), 0.0, 1.0), None);
+    }
+
+    #[test]
+    fn drop_preview_is_the_half_on_that_side() {
+        let r = Rect::new(100, 50, 401, 201);
+        assert_eq!(drop_preview(r, Direction::Left), Rect::new(100, 50, 200, 201));
+        assert_eq!(drop_preview(r, Direction::Right), Rect::new(300, 50, 201, 201));
+        assert_eq!(drop_preview(r, Direction::Up), Rect::new(100, 50, 401, 100));
+        assert_eq!(drop_preview(r, Direction::Down), Rect::new(100, 150, 401, 101));
     }
 }

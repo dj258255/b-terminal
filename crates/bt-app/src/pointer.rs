@@ -58,12 +58,32 @@ pub struct PointerInput {
     pub reports_to_program: bool,
     /// 마우스 포인터를 숨겼다(입력 중 숨김)
     pub hidden: bool,
+    /// 칸 끌기 손잡이와 마우스의 관계(`drag-handle`)
+    pub handle: HandleCursor,
+}
+
+/// 칸 끌기 손잡이 위의 포인터 상태
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum HandleCursor {
+    /// 손잡이와 상관없다
+    #[default]
+    None,
+    /// 잡을 수 있는 손잡이 위
+    Over,
+    /// 칸을 끄는 중
+    Dragging,
 }
 
 /// 지금 보일 포인터. Ghostty(surface_mouse.zig)처럼 링크 위의 손가락이 가장 앞서고, 그다음 Shift를 누른 채 마우스가 고르기를
 /// 하게 될 때의 I자, 아니면 프로그램이 정한 모양, 정한 것이 없으면(OSC 22를 받은 적 없거나 되돌렸으면) 기본 화살표를 쓴다.
 /// 마우스를 숨겼으면 키가 모양을 바꾸지 않는다. Ghostty의 사각 고르기 `crosshair`는 b-terminal에 사각 고르기가 없어 뺐다
 pub fn decide(input: PointerInput) -> CursorIcon {
+    // 칸을 끌어 옮기는 중이나 손잡이 위에서는 잡는 손이 모든 것에 앞선다(손잡이 위는 칸의 글이 아니다)
+    match input.handle {
+        HandleCursor::Dragging => return CursorIcon::Grabbing,
+        HandleCursor::Over => return CursorIcon::Grab,
+        HandleCursor::None => {}
+    }
     if input.over_link {
         return CursorIcon::Pointer;
     }
@@ -100,6 +120,37 @@ mod tests {
 
     fn input() -> PointerInput {
         PointerInput::default()
+    }
+
+    #[test]
+    fn drag_handle_shows_a_grabbing_hand_over_everything() {
+        let busy = PointerInput {
+            over_link: true,
+            program: Some(MouseShape::Crosshair),
+            shift: true,
+            ..input()
+        };
+        assert_eq!(
+            decide(PointerInput {
+                handle: HandleCursor::Over,
+                ..busy
+            }),
+            CursorIcon::Grab
+        );
+        assert_eq!(
+            decide(PointerInput {
+                handle: HandleCursor::Dragging,
+                ..busy
+            }),
+            CursorIcon::Grabbing
+        );
+        assert_eq!(
+            decide(PointerInput {
+                handle: HandleCursor::None,
+                ..busy
+            }),
+            CursorIcon::Pointer
+        );
     }
 
     #[test]

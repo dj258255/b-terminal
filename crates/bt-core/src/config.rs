@@ -153,6 +153,17 @@ pub enum MiddleClickAction {
     Ignore,
 }
 
+/// `drag-handle`(Ghostty 1.4): 분할 칸을 끌어 옮기는 손잡이를 보일 때
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum DragHandle {
+    /// 칸이 하나여도 늘 보인다
+    Always,
+    /// 마우스가 칸 위쪽에 있을 때 보인다. macOS 전체 화면에서 칸이 하나면 숨기고, Linux는 칸이 둘 이상일 때만 보인다(기본)
+    #[default]
+    Auto,
+    Never,
+}
+
 /// 새 칸을 어떤 길로 여는가. 폴더 이어받기 키(`*-inherit-working-directory`)를 가른다
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SpawnKind {
@@ -558,6 +569,8 @@ pub struct Config {
     pub mouse_shift_capture: MouseShiftCapture,
     /// 가운데 클릭 동작(Ghostty `middle-click-action`, 기본 `primary-paste`)
     pub middle_click_action: MiddleClickAction,
+    /// 칸 끌기 손잡이(Ghostty `drag-handle`, 기본 `auto`)
+    pub drag_handle: DragHandle,
     /// GPU 길 창을 화면 갱신에 맞춰 올리는가(Ghostty `window-vsync`, 기본 켬). 끄면 맞추지 않고 올린다. 새 창부터 적용된다
     pub window_vsync: bool,
     /// 두 번·세 번 누르기 간격 밀리초(Ghostty `click-repeat-interval`). 0이면 플랫폼 값
@@ -1597,6 +1610,7 @@ impl Default for Config {
             mouse_shift_capture: MouseShiftCapture::False,
             middle_click_action: MiddleClickAction::PrimaryPaste,
             click_repeat_interval: 0,
+            drag_handle: DragHandle::Auto,
             window_vsync: true,
             window_inherit_working_directory: true,
             tab_inherit_working_directory: true,
@@ -3041,6 +3055,12 @@ impl Config {
                 Ok(n) => self.click_repeat_interval = n,
                 Err(_) => bad(warnings),
             },
+            "drag-handle" => match v {
+                "always" => self.drag_handle = DragHandle::Always,
+                "auto" => self.drag_handle = DragHandle::Auto,
+                "never" => self.drag_handle = DragHandle::Never,
+                _ => bad(warnings),
+            },
             "window-vsync" => match parse_bool(v) {
                 Some(b) => self.window_vsync = b,
                 None => bad(warnings),
@@ -3695,6 +3715,15 @@ impl Config {
             .into(),
         );
         push("click-repeat-interval", self.click_repeat_interval.to_string());
+        push(
+            "drag-handle",
+            match self.drag_handle {
+                DragHandle::Always => "always",
+                DragHandle::Auto => "auto",
+                DragHandle::Never => "never",
+            }
+            .into(),
+        );
         push("window-vsync", self.window_vsync.to_string());
         push(
             "window-inherit-working-directory",
@@ -3984,7 +4013,6 @@ const KNOWN_IGNORED: &[&str] = &[
     // 그리기·엔진 쪽(b-terminal의 그리기와 VT 엔진이 다르다)
     "freetype-load-flags",
     "scrollback-compression",
-    "drag-handle",
     // unsafe나 시스템 연동(AppleScript·단축어·보안 입력)이 필요하다
     "macos-applescript",
     "macos-shortcuts",
@@ -4180,6 +4208,31 @@ mod tests {
         assert!(!z.navigation);
         assert!(!z.apply("navigation,bogus"));
         assert!(!z.navigation, "모르는 이름이 섞이면 아무것도 바꾸지 않는다");
+    }
+
+    #[test]
+    fn drag_handle_key() {
+        assert_eq!(Config::default().drag_handle, DragHandle::Auto, "기본은 auto");
+        for (text, want) in [
+            ("always", DragHandle::Always),
+            ("auto", DragHandle::Auto),
+            ("never", DragHandle::Never),
+        ] {
+            let c = Config::from_text(&format!("drag-handle = {text}\n"), true);
+            assert!(c.warnings.is_empty(), "{text}: {:?}", c.warnings);
+            assert_eq!(c.drag_handle, want);
+            assert!(c.render().contains(&format!("drag-handle = {text}")), "{text}");
+        }
+        let bad = Config::from_text("drag-handle = always\ndrag-handle = sometimes\n", true);
+        assert_eq!(
+            bad.drag_handle,
+            DragHandle::Always,
+            "잘못된 값은 앞의 값을 지우지 않는다"
+        );
+        assert_eq!(bad.warnings.len(), 1);
+        let bad = Config::from_text("drag-handle = true\n", true);
+        assert_eq!(bad.drag_handle, DragHandle::Auto);
+        assert_eq!(bad.warnings.len(), 1);
     }
 
     #[test]
@@ -5474,7 +5527,6 @@ mod tests {
             "scrollback-compression = false",
             "macos-applescript = false",
             "macos-shortcuts = deny",
-            "drag-handle = never",
             "background-blur = 20",
         ] {
             let c = Config::from_text(&format!("{k}\n"), true);

@@ -19,6 +19,7 @@ mod menu;
 mod mouse;
 mod padding;
 mod palette;
+mod pane_drag;
 mod pointer;
 mod quick;
 mod render_path;
