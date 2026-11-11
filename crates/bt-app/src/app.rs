@@ -3978,6 +3978,7 @@ impl App {
                     window.clone(),
                     (size.width, size.height),
                     inputs.opacity < 1.0,
+                    self.config.window_vsync,
                 )
                 .map(Box::new)
             },

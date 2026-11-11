@@ -144,6 +144,7 @@ config-file = ?~/.config/b-terminal/local   # ?가 붙으면 없어도 된다
 | `mouse-shift-capture` | `false` `true` `always` `never` | `false` | Shift를 누른 클릭을 마우스 보고 프로그램이 받을지 정합니다. `false`는 기본으로 고르기가, `true`는 기본으로 프로그램이 받고, 프로그램이 XTSHIFTESCAPE(`CSI > 1 s`는 보고로, `CSI > 0 s`·`CSI > s`는 고르기로)로 정하면 그 값을 따릅니다(Ghostty와 같음, RIS가 프로그램이 정한 값을 지웁니다). `never`는 `false`와 같지만 프로그램이 못 바꾸고, `always`는 `true`와 같지만 프로그램이 못 바꿉니다. 늘 Shift로 고르려면 `never`로 두십시오 |
 | `middle-click-action` | `primary-paste` `clipboard-paste` `ignore` | `primary-paste` | 가운데 클릭 동작. `primary-paste`는 선택 클립보드 붙여넣기인데 macOS에는 없어 하는 일이 없습니다. `clipboard-paste`는 시스템 클립보드를 붙여넣습니다(붙여넣기 보호를 거칩니다). 마우스 보고 모드의 프로그램에는 이 키와 상관없이 클릭을 보냅니다 |
 | `click-repeat-interval` | 밀리초(정수) | `0` | 두 번·세 번 누르기로 치는 간격. `0`이면 macOS는 OS 설정(`NSEvent.doubleClickInterval`), 그 밖에는 500ms |
+| `window-vsync` | `true` `false` | `true` | GPU 길로 그리는 창을 화면 갱신에 맞춰 올릴지 정합니다(Ghostty와 같음, macOS 전용). `true`는 화면 갱신에 맞춰 그려 찢어짐이 적지만 입력 지연이 늘 수 있습니다. `false`는 맞추지 않고 가능한 한 자주 그려 지연이 줄 수 있지만 화면이 찢어질 수 있고, 부하가 크면 CPU·전력을 더 씁니다. Ghostty는 macOS 14.4 이상에서 맞추지 않은 그리기가 커널 패닉을 낼 수 있고 DisplayLink를 쓰는 외부 화면에서 느려질 수 있다고 적어 기본을 `true`로 둡니다. b-terminal에서 `false`는 GPU 길 창의 올리기 방식을 `Immediate`로 바꾸고 프레임 미룸도 끕니다. 화면이 `Immediate`를 주지 않으면 경고하고 `true`처럼 동작합니다. 설정을 다시 읽어도 이미 열린 창은 그대로이고 새로 여는 창부터 바뀝니다. CPU 길 창에는 영향이 없습니다. `false`가 실제로 지연을 얼마나 줄이는지는 아직 재지 않았습니다 |
 | `window-inherit-working-directory` / `tab-inherit-working-directory` / `split-inherit-working-directory` | `true` `false` | `true` | 새 창·탭·분할이 고른 칸의 작업 폴더를 이어받습니다(Ghostty와 같음). 켜져 있으면 `working-directory`보다 앞서고, 끄면 `working-directory`를 씁니다. 이어받을 폴더를 알 수 없으면 `working-directory`입니다. 셸 통합이 OSC 7(`file://`, `kitty-shell-cwd://`)로 알린 폴더가 먼저이고, 알린 적이 없으면 칸 프로세스의 현재 폴더를 씁니다. 셸이 빈 OSC 7을 보내 폴더를 지웠으면 프로세스 폴더 대신 `working-directory`입니다. 전에는 `working-directory = inherit`일 때만 이어받았는데, 이제 `home`·경로여도 이어받습니다 |
 | `window-inherit-font-size` | `true` `false` | `true` | 값만 받고 하는 일이 없습니다. b-terminal은 글자 크기가 앱 전체 하나라 새 창은 늘 지금 크기(⌘+/⌘-로 바꾼 값)를 씁니다. `false`(새 창은 `font-size`로)를 지키려면 창마다 글자 크기를 두어야 해서 이번에는 하지 않았습니다 |
 | `window-new-tab-position` | `current` `end` | `current` | 새 탭을 둘 자리. `current`는 지금 탭 바로 뒤, `end`는 맨 끝. 전에는 늘 맨 끝이었습니다 |
@@ -228,7 +229,7 @@ config-file = ?~/.config/b-terminal/local   # ?가 붙으면 없어도 된다
 | `gtk-custom-css` `gtk-horizontal-tab-scroll` `gtk-opengl-debug` `gtk-quick-terminal-layer` `gtk-quick-terminal-namespace` `gtk-tabs-inverted` `gtk-tabs-location` `gtk-titlebar-hide-when-maximized` `gtk-titlebar-style` `gtk-toolbar-style` `gtk-wide-tabs` | GTK 전용입니다(`gtk-titlebar`·`gtk-single-instance`는 앞서 받기만 하던 것) |
 | `linux-cgroup` `linux-cgroup-memory-limit` `linux-cgroup-processes-limit` `linux-cgroup-hard-fail` `async-backend` | 리눅스 전용입니다(cgroup, epoll·io_uring 고르기). macOS는 kqueue 하나입니다 |
 | `quick-terminal-keyboard-interactivity` | Wayland 레이어 셸 전용입니다 |
-| `alpha-blending` `freetype-load-flags` `window-vsync` | Ghostty의 GPU 그리기(선형 알파, FreeType 옵션, vsync)에 대한 것입니다. b-terminal은 CPU로 그려 그 단계가 없습니다 |
+| `alpha-blending` `freetype-load-flags` | Ghostty의 글자 그리기(선형 알파 섞기, FreeType 옵션)에 대한 것입니다. b-terminal은 글꼴을 FreeType이 아니라 swash(순수 Rust)로 그려서 `freetype-load-flags`가 하는 일이 없습니다 |
 | `scrollback-compression` | Ghostty 화면 엔진(페이지 메모리 압축)의 옵션입니다. b-terminal의 VT 엔진에는 그 단계가 없습니다 |
 | `drag-handle` | 마우스로 칸을 끌어 옮기는 손잡이입니다. b-terminal에는 그 기능이 없습니다 |
 
