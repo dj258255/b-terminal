@@ -16,6 +16,8 @@ type PaletteState = (String, Vec<(String, String)>, usize);
 
 /// `redraw`가 모아 둔, 이번 프레임을 그리는 데 필요한 것
 pub(super) struct GpuFrame<'a> {
+    /// 입력 → 화면 지연(#417): 이 프레임에 출력이 든 칸의 값
+    pub latency: super::input_latency::Samples,
     pub views: &'a [PaneView],
     pub drawn: Vec<(Vec<DrawCell>, Option<DrawCursor>, Option<String>)>,
     pub pads: &'a [Option<crate::padding::PadPaint>],
@@ -132,6 +134,7 @@ impl App {
             top_inset,
             title,
             proxy,
+            latency,
         } = f;
 
         // 투명 창·배경 그림(#359): CPU 길(`redraw`)과 같은 값. 투명으로 열지 않은 창은 설정이 나중에 바뀌어도 불투명으로 그린다
@@ -518,6 +521,7 @@ impl App {
         );
         if matches!(outcome, bt_gpu::PresentOutcome::Presented) {
             gfx.first.presented("GPU");
+            self.latency_presented(&latency, "GPU");
         }
     }
 }

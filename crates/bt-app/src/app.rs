@@ -17,6 +17,7 @@ use winit::window::{CursorIcon, Window, WindowId};
 mod backdrop;
 mod gpu_frame;
 mod gpu_pace;
+mod input_latency;
 mod shader_inputs;
 
 use crate::icon;
@@ -1826,6 +1827,8 @@ impl App {
             Call::Send { tab, text } => match pick(self, tab) {
                 Ok(i) if self.panes[i].session.readonly() => Response::err(id, READONLY_REFUSAL),
                 Ok(i) => {
+                    // 입력 → 화면 지연(#417): btctl send도 키와 같은 쪽의 시각을 적는다
+                    self.panes[i].session.note_input();
                     self.panes[i].session.write(text.as_bytes());
                     Response::ok(id, json!({}))
                 }
@@ -5003,6 +5006,8 @@ impl App {
             .map(|p| p.id)
             .collect();
         let focus = self.focused_id();
+        // 입력 → 화면 지연(#417): 칸의 화면을 뜨기 전의 때. 이 때까지 온 출력은 뜬 화면에 들어 있다
+        let latency_at = Instant::now();
         // 보이는 칸마다: 바깥 사각형, 격자 자리, 화면, 고른 칸인가, 진행 표시
         let layout = self.group_layout(self.w.active);
         let views: Vec<PaneView> = layout
@@ -5024,6 +5029,7 @@ impl App {
                 })
             })
             .collect();
+        let latency = self.latency_begin(&views, latency_at);
         // 스크롤 막대: 스크롤 위치가 바뀌면 잠깐 보인다. 마우스가 오른쪽 끝 위에 있어도 보인다
         let now_bar = Instant::now();
         for v in &views {
@@ -5273,6 +5279,7 @@ impl App {
         // GPU 길(ADR-036, macOS 기본 ADR-039): 층과 격자를 합쳐 창 surface에 올린다. 아래는 CPU 길
         if gfx.gpu.is_some() {
             self.redraw_gpu(gpu_frame::GpuFrame {
+                latency,
                 views: &views,
                 drawn,
                 pads: &pads,
@@ -5611,8 +5618,10 @@ impl App {
         // macOS의 softbuffer는 프레임마다 빈 버퍼를 준다(age 0). 들고 있는 프레임을 통째로 올린다.
         // 투명 창의 알파는 캔버스가 이미 곱한 알파로 그렸다(#86). macOS 기본은 프레임을 IOSurface로 곧장 옮긴다(#346)
         let t_present = Instant::now();
-        if buffer.present_frame(&self.w.frame).is_ok() {
+        let presented = buffer.present_frame(&self.w.frame).is_ok();
+        if presented {
             gfx.first.presented("CPU");
+            self.latency_presented(&latency, "CPU");
         }
         let ms = |a: Instant, b: Instant| (b - a).as_secs_f64() * 1000.0;
         let end = Instant::now();

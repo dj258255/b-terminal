@@ -7,6 +7,7 @@ pub mod graphics;
 pub mod input;
 pub mod kitty_clip;
 pub mod kitty_color;
+pub mod latency;
 pub mod links;
 pub mod mouse_shape;
 pub mod notify;
