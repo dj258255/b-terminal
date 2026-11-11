@@ -7,8 +7,10 @@ use std::time::{Duration, Instant};
 /// 화면 주사율을 모를 때 쓰는 값(60Hz)
 pub const DEFAULT_REFRESH: Duration = Duration::from_nanos(16_666_667);
 
-/// 프레임 지연(`desired_maximum_frame_latency`)의 기본값
-pub const DEFAULT_FRAME_LATENCY: u32 = 2;
+/// 프레임 지연(`desired_maximum_frame_latency`)의 기본값. 1이면 그림판이 2장이다.
+/// 실험 E14(Apple M2 Pro 내장 120Hz, 2000×1360)에서 그림판 한 장이 약 10.5MB여서 3장(지연 2)보다 창 하나의 물리 메모리가
+/// 약 10.5MB 줄었고, 그림판을 얻는 시간은 늘지 않았다. 외부 화면·60Hz 화면은 재지 않았다. 지연 2는 `BT_FRAME_LATENCY=2`로 고른다
+pub const DEFAULT_FRAME_LATENCY: u32 = 1;
 
 /// 측정용 환경 변수 `BT_FRAME_LATENCY`의 값에서 프레임 지연을 고른다. 1~3이면 그 값, 없거나 그 밖이면 기본값이다.
 /// Metal은 그림판을 지연 + 1장 돌려 쓰므로 1이면 2장, 2면 3장, 3이면 4장이다
@@ -190,6 +192,13 @@ mod tests {
         ] {
             assert_eq!(frame_latency_from_env(v), DEFAULT_FRAME_LATENCY, "{v:?}");
         }
+    }
+
+    #[test]
+    fn frame_latency_defaults_to_one() {
+        assert_eq!(DEFAULT_FRAME_LATENCY, 1);
+        assert_eq!(frame_latency_from_env(None), 1);
+        assert_eq!(frame_latency_from_env(Some("2")), 2, "예전 값은 환경 변수로 고른다");
     }
 
     #[test]
