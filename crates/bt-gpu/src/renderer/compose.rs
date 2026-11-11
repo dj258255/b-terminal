@@ -30,6 +30,9 @@ pub struct LayerUpdate<'a> {
     pub upper: Option<&'a [u32]>,
 }
 
+/// 올릴 사각형을 옮겨 담는 임시 버퍼의 상한(바이트). 큰 사각형은 이만큼씩 줄 묶음으로 나눠 올린다(#388)
+const SCRATCH_MAX_BYTES: usize = 1 << 20;
+
 /// 층 합치기가 쥔 메모리(바이트). 시험과 측정에서 본다
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct LayerMemory {
@@ -229,41 +232,49 @@ impl Layers {
         let Some(t) = slot else { return 0 };
         let mut bytes = 0;
         for r in rects {
-            let (rw, rh) = (r.w as usize, r.h as usize);
-            self.scratch.resize(rw * rh * 4, 0);
-            let (mut old_nz, mut new_nz) = (0, 0);
-            for (row, dst_row) in self.scratch.chunks_exact_mut(rw * 4).enumerate() {
-                let at = (r.y as usize + row) * w as usize + r.x as usize;
-                let src = &px[at..at + rw];
-                let shadow = &mut t.shadow[at..at + rw];
-                old_nz += shadow.iter().filter(|p| **p != 0).count();
-                new_nz += src.iter().filter(|p| **p != 0).count();
-                shadow.copy_from_slice(src);
-                for (dst, p) in dst_row.chunks_exact_mut(4).zip(src) {
-                    dst.copy_from_slice(&p.to_le_bytes());
+            let rw = r.w as usize;
+            // 큰 사각형(창을 열 때, 크기·테마를 바꿀 때 통째로)은 줄 묶음으로 나눠 올린다. 임시 버퍼가 상한을 넘게
+            // 커지지 않는다: 커진 뒤 놓아도 malloc이 돌려주지 않고 쥐고 있어 물리 사용량이 줄지 않았다(#388, 실험 E13)
+            let chunk_rows = (SCRATCH_MAX_BYTES / (rw * 4)).max(1) as u32;
+            let mut y0 = r.y;
+            while y0 < r.y + r.h {
+                let rows = chunk_rows.min(r.y + r.h - y0);
+                self.scratch.resize(rw * rows as usize * 4, 0);
+                let (mut old_nz, mut new_nz) = (0, 0);
+                for (row, dst_row) in self.scratch.chunks_exact_mut(rw * 4).enumerate() {
+                    let at = (y0 as usize + row) * w as usize + r.x as usize;
+                    let src = &px[at..at + rw];
+                    let shadow = &mut t.shadow[at..at + rw];
+                    old_nz += shadow.iter().filter(|p| **p != 0).count();
+                    new_nz += src.iter().filter(|p| **p != 0).count();
+                    shadow.copy_from_slice(src);
+                    for (dst, p) in dst_row.chunks_exact_mut(4).zip(src) {
+                        dst.copy_from_slice(&p.to_le_bytes());
+                    }
                 }
+                t.nonzero = t.nonzero + new_nz - old_nz;
+                queue.write_texture(
+                    wgpu::TexelCopyTextureInfo {
+                        texture: &t.texture,
+                        mip_level: 0,
+                        origin: wgpu::Origin3d { x: r.x, y: y0, z: 0 },
+                        aspect: wgpu::TextureAspect::All,
+                    },
+                    &self.scratch,
+                    wgpu::TexelCopyBufferLayout {
+                        offset: 0,
+                        bytes_per_row: Some(r.w * 4),
+                        rows_per_image: Some(rows),
+                    },
+                    wgpu::Extent3d {
+                        width: r.w,
+                        height: rows,
+                        depth_or_array_layers: 1,
+                    },
+                );
+                bytes += self.scratch.len();
+                y0 += rows;
             }
-            t.nonzero = t.nonzero + new_nz - old_nz;
-            queue.write_texture(
-                wgpu::TexelCopyTextureInfo {
-                    texture: &t.texture,
-                    mip_level: 0,
-                    origin: wgpu::Origin3d { x: r.x, y: r.y, z: 0 },
-                    aspect: wgpu::TextureAspect::All,
-                },
-                &self.scratch,
-                wgpu::TexelCopyBufferLayout {
-                    offset: 0,
-                    bytes_per_row: Some(r.w * 4),
-                    rows_per_image: Some(r.h),
-                },
-                wgpu::Extent3d {
-                    width: r.w,
-                    height: r.h,
-                    depth_or_array_layers: 1,
-                },
-            );
-            bytes += rw * rh * 4;
         }
         bytes
     }
