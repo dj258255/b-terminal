@@ -18,7 +18,7 @@ pub(super) struct WindowSurface {
     stale: bool,
     /// 곱한 알파를 받는 알파 모드로 열었다(투명 창, #359)
     transparent: bool,
-    /// 올린 때를 세어 그림판 얻기가 막힐 것 같으면 미룬다(ADR-038)
+    /// 올린 때를 세어 그림판 얻기가 막힐 것 같으면 미룬다(ADR-038). `Immediate`에서는 쓰지 않는다
     pacer: FramePacer,
     /// 창이 보이는지 아는 것. 모르거나 가려졌으면 층을 올리기 전에 그림판부터 얻어 본다(ADR-038)
     visibility: SurfaceVisibility,
@@ -52,22 +52,48 @@ pub(super) fn pick_alpha_mode(
     (metal && modes.contains(&M::PostMultiplied)).then_some(M::PostMultiplied)
 }
 
+/// `window-vsync`에서 surface의 올리기 방식을 고른다. `true`면 `Fifo`(화면 갱신에 맞춤, 모든 곳이 지원).
+/// `false`면 `Immediate`(맞추지 않고 올림)이고, surface가 주지 않으면 이유를 돌려주고 `Fifo`로 돌아간다
+pub(super) fn present_mode_for(
+    vsync: bool,
+    supported: &[wgpu::PresentMode],
+) -> (wgpu::PresentMode, Option<&'static str>) {
+    if vsync {
+        return (wgpu::PresentMode::Fifo, None);
+    }
+    if supported.contains(&wgpu::PresentMode::Immediate) {
+        return (wgpu::PresentMode::Immediate, None);
+    }
+    (
+        wgpu::PresentMode::Fifo,
+        Some("window-vsync = false를 이 화면이 지원하지 않아(Immediate 없음) 화면 갱신에 맞춰 올린다"),
+    )
+}
+
+/// `FramePacer`의 미룸을 쓰는가. 미룸은 화면이 주기마다 한 장을 가져간다는 짐작(`Fifo`)에 기대므로,
+/// 맞추지 않고 올리는 `Immediate`에서는 틀린 짐작으로 프레임만 늦춘다. 그때는 끄고 늘 바로 그린다
+pub(super) fn pacing_applies(mode: wgpu::PresentMode) -> bool {
+    mode != wgpu::PresentMode::Immediate
+}
+
 impl GpuRenderer {
     /// 창 대상(`Arc<Window>` 등)에 그리는 렌더러를 연다. 어댑터·surface·꼴을 얻지 못하면 이유를 `log::warn!`로 남기고 없다.
     ///
     /// 꼴은 sRGB가 아닌 것(보통 `Bgra8Unorm`): CPU 렌더러는 0~255 값을 감마 없이 섞고 그 값이 그대로 화면에 간다(ADR-035).
-    /// 올리기 방식(present mode)은 `Fifo`: 모든 곳이 지원하고, 화면 주사율에 맞춰 올려 찢김이 없고, 바뀐 것이 없으면 그리지 않으므로
+    /// 올리기 방식(present mode)은 기본 `Fifo`(`window-vsync = false`면 `Immediate`): `Fifo`는 모든 곳이 지원하고, 화면 주사율에 맞춰 올려 찢김이 없고, 바뀐 것이 없으면 그리지 않으므로
     /// 지금 CPU 길(레이어 contents 교체, 합성기 주사율)과 비슷한 간격이다
     pub fn new_for_window(target: impl Into<wgpu::SurfaceTarget<'static>>, size: (u32, u32)) -> Option<Self> {
-        Self::new_for_window_with(target, size, false)
+        Self::new_for_window_with(target, size, false, true)
     }
 
     /// `new_for_window`에 투명 창 여부를 더한다(#359). `transparent`면 surface가 곱한 알파를 받는 알파 모드를 주어야 하고,
-    /// 주지 않으면 이유를 남기고 없다(앱이 CPU 길로 돌아간다)
+    /// 주지 않으면 이유를 남기고 없다(앱이 CPU 길로 돌아간다).
+    /// `vsync`는 `window-vsync`: `false`면 화면 갱신에 맞추지 않고 올린다(`Immediate`, `present_mode_for`)
     pub fn new_for_window_with(
         target: impl Into<wgpu::SurfaceTarget<'static>>,
         size: (u32, u32),
         transparent: bool,
+        vsync: bool,
     ) -> Option<Self> {
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
         let surface = instance
@@ -94,13 +120,20 @@ impl GpuRenderer {
         // `desired_maximum_frame_latency`와 `FramePacer`의 줄 깊이는 같은 값이다. 다시 설정할 때는 `config`를 그대로 쓰므로 바뀌지 않는다
         let frame_latency = frame_latency_from_env(std::env::var("BT_FRAME_LATENCY").ok().as_deref());
         log::info!("프레임 지연 {frame_latency}(그림판 {}장)", frame_latency + 1);
+        let (present_mode, vsync_warning) = present_mode_for(vsync, &caps.present_modes);
+        if let Some(why) = vsync_warning {
+            log::warn!("{why}: {:?}", caps.present_modes);
+        }
+        if present_mode == wgpu::PresentMode::Immediate {
+            log::info!("화면 갱신 맞춤 끔({present_mode:?})");
+        }
         let config = wgpu::SurfaceConfiguration {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
             format,
             color_space: wgpu::SurfaceColorSpace::Auto,
             width: size.0.max(1),
             height: size.1.max(1),
-            present_mode: wgpu::PresentMode::Fifo,
+            present_mode,
             desired_maximum_frame_latency: frame_latency,
             alpha_mode,
             view_formats: vec![],
@@ -140,7 +173,10 @@ impl GpuRenderer {
     /// 지금 그려 올려도 그림판을 기다리지 않을 것 같은가(ADR-038). `Wait`이면 그 시간 뒤에 다시 그리면 된다.
     /// 그리기 전에 부른다: 미룬 프레임은 아무것도 쓰지 않았으므로 나중에 그릴 때 그때의 최신 내용이 올라간다
     pub fn pace_check(&self, now: Instant) -> PaceDecision {
-        self.window.as_ref().map_or(PaceDecision::Go, |w| w.pacer.check(now))
+        self.window
+            .as_ref()
+            .filter(|w| pacing_applies(w.config.present_mode))
+            .map_or(PaceDecision::Go, |w| w.pacer.check(now))
     }
 
     /// 그림판 하나를 얻는다. `Outdated`·`Lost`는 한 번 다시 설정하고 다시 얻는다. 얻는 데 든 시간을 `acquire_ms`에 더한다
@@ -251,6 +287,31 @@ impl GpuRenderer {
 mod tests {
     use super::*;
     use wgpu::CompositeAlphaMode as M;
+    use wgpu::PresentMode as P;
+
+    #[test]
+    fn vsync_on_uses_fifo_without_warning() {
+        assert_eq!(present_mode_for(true, &[P::Fifo, P::Immediate]), (P::Fifo, None));
+        assert_eq!(present_mode_for(true, &[]), (P::Fifo, None));
+    }
+
+    #[test]
+    fn vsync_off_uses_immediate_when_supported() {
+        assert_eq!(present_mode_for(false, &[P::Fifo, P::Immediate]), (P::Immediate, None));
+    }
+
+    #[test]
+    fn vsync_off_warns_and_falls_back_to_fifo_when_unsupported() {
+        let (mode, warning) = present_mode_for(false, &[P::Fifo, P::Mailbox]);
+        assert_eq!(mode, P::Fifo);
+        assert!(warning.is_some_and(|w| w.contains("window-vsync")), "{warning:?}");
+    }
+
+    #[test]
+    fn pacing_is_skipped_only_for_unsynced_presents() {
+        assert!(pacing_applies(P::Fifo));
+        assert!(!pacing_applies(P::Immediate));
+    }
 
     #[test]
     fn opaque_window_keeps_opaque_mode() {

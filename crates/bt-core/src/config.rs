@@ -546,6 +546,8 @@ pub struct Config {
     pub mouse_shift_capture: MouseShiftCapture,
     /// 가운데 클릭 동작(Ghostty `middle-click-action`, 기본 `primary-paste`)
     pub middle_click_action: MiddleClickAction,
+    /// GPU 길 창을 화면 갱신에 맞춰 올리는가(Ghostty `window-vsync`, 기본 켬). 끄면 맞추지 않고 올린다. 새 창부터 적용된다
+    pub window_vsync: bool,
     /// 두 번·세 번 누르기 간격 밀리초(Ghostty `click-repeat-interval`). 0이면 플랫폼 값
     pub click_repeat_interval: u32,
     /// 새 창·탭·분할이 고른 칸의 폴더를 이어받는가(Ghostty, 모두 기본 켬). 켜면 `working-directory`보다 앞선다
@@ -1581,6 +1583,7 @@ impl Default for Config {
             mouse_shift_capture: MouseShiftCapture::False,
             middle_click_action: MiddleClickAction::PrimaryPaste,
             click_repeat_interval: 0,
+            window_vsync: true,
             window_inherit_working_directory: true,
             tab_inherit_working_directory: true,
             split_inherit_working_directory: true,
@@ -3022,6 +3025,10 @@ impl Config {
                 Ok(n) => self.click_repeat_interval = n,
                 Err(_) => bad(warnings),
             },
+            "window-vsync" => match parse_bool(v) {
+                Some(b) => self.window_vsync = b,
+                None => bad(warnings),
+            },
             "window-inherit-working-directory" => match parse_bool(v) {
                 Some(b) => self.window_inherit_working_directory = b,
                 None => bad(warnings),
@@ -3657,6 +3664,7 @@ impl Config {
             .into(),
         );
         push("click-repeat-interval", self.click_repeat_interval.to_string());
+        push("window-vsync", self.window_vsync.to_string());
         push(
             "window-inherit-working-directory",
             self.window_inherit_working_directory.to_string(),
@@ -3945,7 +3953,6 @@ const KNOWN_IGNORED: &[&str] = &[
     // 그리기·엔진 쪽(b-terminal의 그리기와 VT 엔진이 다르다)
     "alpha-blending",
     "freetype-load-flags",
-    "window-vsync",
     "scrollback-compression",
     "drag-handle",
     // unsafe나 시스템 연동(AppleScript·단축어·보안 입력)이 필요하다
@@ -4143,6 +4150,20 @@ mod tests {
         assert!(!z.navigation);
         assert!(!z.apply("navigation,bogus"));
         assert!(!z.navigation, "모르는 이름이 섞이면 아무것도 바꾸지 않는다");
+    }
+
+    #[test]
+    fn window_vsync_key() {
+        assert!(Config::default().window_vsync, "기본은 화면 갱신에 맞춘다");
+        let off = Config::from_text("window-vsync = false\n", true);
+        assert!(off.warnings.is_empty(), "{:?}", off.warnings);
+        assert!(!off.window_vsync);
+        let on = Config::from_text("window-vsync = false\nwindow-vsync = true\n", true);
+        assert!(on.window_vsync && on.warnings.is_empty());
+        let bad = Config::from_text("window-vsync = maybe\n", true);
+        assert!(bad.window_vsync, "잘못된 값은 기본으로 둔다");
+        assert_eq!(bad.warnings.len(), 1);
+        assert!(off.render().contains("window-vsync = false"));
     }
 
     #[test]
@@ -5418,7 +5439,6 @@ mod tests {
             "linux-cgroup-hard-fail = true",
             "alpha-blending = linear",
             "freetype-load-flags = light",
-            "window-vsync = false",
             "async-backend = epoll",
             "window-title-font-family = Menlo",
             "quick-terminal-keyboard-interactivity = none",
