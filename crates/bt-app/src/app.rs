@@ -4239,25 +4239,31 @@ impl App {
         crate::blur::apply(&window, self.config.background_blur, self.config.background_opacity);
         self.scale = window.scale_factor();
         // 그리기 길 고르기(ADR-036, ADR-039): macOS는 GPU 길이 기본(`BT_GPU=0`이면 CPU, `1`이면 어느 OS든 GPU).
-        // GPU 길이 맞출 수 있는 설정이고 장치를 열면 wgpu surface를, 아니면 softbuffer를 붙인다
-        let inputs = crate::render_path::PathInputs {
-            opacity: self.config.background_opacity,
-            backdrop_image: self.bg_image.is_some(),
-            colorspace_srgb: self.config.colorspace_srgb,
-        };
+        // 장치를 열면 wgpu surface를, 못 열면 softbuffer를 붙인다. `window-colorspace = srgb`도 GPU 길이다(#466)
+        let colorspace_srgb = self.config.colorspace_srgb;
+        let transparent_gpu = self.config.background_opacity < 1.0;
         let size = window.inner_size();
         let t_open = Instant::now();
         let (gpu, fallback) = crate::render_path::choose(
             std::env::var("BT_GPU").ok().as_deref(),
             crate::render_path::GPU_BY_DEFAULT,
-            &inputs,
             || {
-                bt_gpu::GpuRenderer::new_for_window_with(
-                    window.clone(),
-                    (size.width, size.height),
-                    inputs.opacity < 1.0,
-                    self.config.window_vsync,
-                )
+                // `srgb`면 surface를 Display P3로 열고 마지막 변환 패스를 둔다(surface가 Display P3를 안 주면 `None`, CPU 길로 간다)
+                if colorspace_srgb {
+                    bt_gpu::GpuRenderer::new_for_window_srgb_p3(
+                        window.clone(),
+                        (size.width, size.height),
+                        transparent_gpu,
+                        self.config.window_vsync,
+                    )
+                } else {
+                    bt_gpu::GpuRenderer::new_for_window_with(
+                        window.clone(),
+                        (size.width, size.height),
+                        transparent_gpu,
+                        self.config.window_vsync,
+                    )
+                }
                 .map(Box::new)
             },
         );

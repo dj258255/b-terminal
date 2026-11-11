@@ -5,6 +5,7 @@ use std::time::{Duration, Instant};
 use bt_render::Fonts;
 
 use super::{GpuRenderer, LayerUpdate, PaneDraw, pick_adapter, srgb_twin, srgb_view_of};
+use crate::p3::P3Convert;
 use crate::pacing::{
     DEFAULT_REFRESH, FramePacer, PaceDecision, SurfaceVisibility, frame_latency_from_env, surface_latency,
 };
@@ -25,6 +26,15 @@ pub(super) struct WindowSurface {
     pacer: FramePacer,
     /// 창이 보이는지 아는 것. 모르거나 가려졌으면 층을 올리기 전에 그림판부터 얻어 본다(ADR-038)
     visibility: SurfaceVisibility,
+    /// `window-colorspace = srgb`(#466): surface를 Display P3로 두고 마지막에 sRGB 값을 P3 값으로 바꿔 쓴다. 꺼져 있으면 없다
+    p3: Option<P3Out>,
+}
+
+/// sRGB 변환 패스와 그 앞 중간 텍스처(창 크기, surface와 같은 꼴). 안 (나): 모든 파이프라인(셀·층·사용자 셰이더·덧그림)이 이 텍스처에
+/// 그대로 그리고, 마지막에 한 번 바꿔 surface에 쓴다. 그래서 섞기는 늘 sRGB 값에서 일어나 CPU `srgb`와 같다
+pub(super) struct P3Out {
+    convert: P3Convert,
+    mid: Option<(wgpu::Texture, (u32, u32))>,
 }
 
 /// `present`의 결과
@@ -98,6 +108,27 @@ impl GpuRenderer {
         transparent: bool,
         vsync: bool,
     ) -> Option<Self> {
+        Self::open_window(target, size, transparent, vsync, false)
+    }
+
+    /// `window-colorspace = srgb`(#466): `new_for_window_with`에 surface를 Display P3로 설정하고 sRGB 값을 P3 값으로 바꿔 쓰는 길을 더한다
+    /// (`window-colorspace = srgb`용). surface가 Display P3를 주지 않으면 경고를 남기고 없다(앱이 CPU 길로 돌아간다)
+    pub fn new_for_window_srgb_p3(
+        target: impl Into<wgpu::SurfaceTarget<'static>>,
+        size: (u32, u32),
+        transparent: bool,
+        vsync: bool,
+    ) -> Option<Self> {
+        Self::open_window(target, size, transparent, vsync, true)
+    }
+
+    fn open_window(
+        target: impl Into<wgpu::SurfaceTarget<'static>>,
+        size: (u32, u32),
+        transparent: bool,
+        vsync: bool,
+        p3: bool,
+    ) -> Option<Self> {
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
         let surface = instance
             .create_surface(target)
@@ -112,6 +143,13 @@ impl GpuRenderer {
             log::warn!("창 surface가 sRGB가 아닌 꼴을 주지 않는다: {:?}", caps.formats);
             return None;
         };
+        if p3 && !caps.color_spaces(format).contains(wgpu::SurfaceColorSpaces::DISPLAY_P3) {
+            log::warn!(
+                "window-colorspace = srgb: 창 surface가 {format:?}에 Display P3를 주지 않는다({:?}): CPU 길로 돌아간다",
+                caps.color_spaces(format)
+            );
+            return None;
+        }
         log::info!("창 surface가 주는 알파 모드: {:?}", caps.alpha_modes);
         let Some(alpha_mode) = pick_alpha_mode(&caps.alpha_modes, transparent, cfg!(target_os = "macos")) else {
             log::warn!(
@@ -138,7 +176,11 @@ impl GpuRenderer {
         let config = wgpu::SurfaceConfiguration {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
             format,
-            color_space: wgpu::SurfaceColorSpace::Auto,
+            color_space: if p3 {
+                wgpu::SurfaceColorSpace::DisplayP3
+            } else {
+                wgpu::SurfaceColorSpace::Auto
+            },
             width: size.0.max(1),
             height: size.1.max(1),
             present_mode,
@@ -157,13 +199,71 @@ impl GpuRenderer {
                 transparent,
                 pacer: FramePacer::new(frame_latency as usize, DEFAULT_REFRESH),
                 visibility: SurfaceVisibility::default(),
+                p3: None,
             }),
         )?;
         if let Some(w) = &me.window {
             w.surface.configure(&me.device, &w.config);
         }
         log::info!("GPU 창 길: {} ({format:?}, {alpha_mode:?})", me.adapter_name());
+        if p3 {
+            log::info!("sRGB 색 맞춤: GPU 길(surface Display P3 + 마지막 변환 패스)");
+            let convert = P3Convert::new(&me.device, format);
+            let mut me = me;
+            if let Some(w) = me.window.as_mut() {
+                w.p3 = Some(P3Out { convert, mid: None });
+            }
+            return Some(me);
+        }
         Some(me)
+    }
+
+    /// `srgb`: 중간 텍스처에 늘 하던 대로 그리고(`encode_frame`) 마지막에 변환 패스로 surface에 쓴다
+    fn encode_frame_p3(&mut self, surface_view: &wgpu::TextureView, size: (u32, u32)) -> Vec<wgpu::CommandBuffer> {
+        let format = self.format;
+        let twin = srgb_twin(format);
+        let device = self.device.clone();
+        let p3 = self
+            .window
+            .as_mut()
+            .and_then(|w| w.p3.as_mut())
+            .expect("호출 앞에서 확인했다");
+        // 창 크기가 바뀌면 다시 만든다. 선형 섞기용 sRGB 꼴 뷰를 늘 열 수 있게 짝 꼴을 허락해 둔다
+        if p3.mid.as_ref().is_none_or(|(_, s)| *s != size) {
+            let texture = device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("bt-gpu p3 mid"),
+                size: wgpu::Extent3d {
+                    width: size.0,
+                    height: size.1,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+                view_formats: twin.as_slice(),
+            });
+            p3.mid = Some((texture, size));
+        }
+        let Some(win) = self.window.as_ref() else {
+            return Vec::new();
+        };
+        let Some(p3) = win.p3.as_ref() else {
+            return Vec::new();
+        };
+        let Some((mid, _)) = p3.mid.as_ref() else {
+            return Vec::new();
+        };
+        let mid_view = mid.create_view(&wgpu::TextureViewDescriptor::default());
+        let srgb = self.frame_srgb_view(mid);
+        let mut cbs = self.encode_frame(&mid_view, srgb.as_ref());
+        let mut enc = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("bt-gpu p3 convert"),
+        });
+        p3.convert.encode(&device, &mut enc, &mid_view, surface_view);
+        cbs.push(enc.finish());
+        cbs
     }
 
     /// `alpha-blending`이 선형이면 surface를 sRGB 꼴 뷰도 열 수 있게 다시 설정하도록 표시한다(`present`가 다음 프레임 앞에서 한다).
@@ -324,9 +424,13 @@ impl GpuRenderer {
             },
         };
         let t_encode = Instant::now();
-        let view = frame.texture.create_view(&wgpu::TextureViewDescriptor::default());
-        let srgb = self.frame_srgb_view(&frame.texture);
-        let cbs = self.encode_frame(&view, srgb.as_ref());
+        let surface_view = frame.texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let cbs = if self.window.as_ref().is_some_and(|w| w.p3.is_some()) {
+            self.encode_frame_p3(&surface_view, size)
+        } else {
+            let srgb = self.frame_srgb_view(&frame.texture);
+            self.encode_frame(&surface_view, srgb.as_ref())
+        };
         let encode_ms = t_encode.elapsed().as_secs_f64() * 1000.0;
         let t_submit = Instant::now();
         self.queue.submit(cbs);

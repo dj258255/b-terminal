@@ -49,6 +49,7 @@
 - [ADR-044 GPU 길 surface는 그림판을 프레임 미룸 줄 깊이보다 한 장 더 허락한다](#adr-044-gpu-길-surface는-그림판을-프레임-미룸-줄-깊이보다-한-장-더-허락한다)
 - [ADR-045 `window-vsync = false`에서도 프레임 미룸을 쓴다](#adr-045-window-vsync--false에서도-프레임-미룸을-쓴다)
 - [ADR-046 `clipboard-read` 기본을 Ghostty처럼 `ask`로 한다](#adr-046-clipboard-read-기본을-ghostty처럼-ask로-한다)
+- [ADR-047 `window-colorspace = srgb`는 GPU 길에서 Display P3 표시와 마지막 변환 패스로 맞춘다](#adr-047-window-colorspace--srgb는-gpu-길에서-display-p3-표시와-마지막-변환-패스로-맞춘다)
 
 ## ADR-001 VT 엔진은 alacritty_terminal로 시작하고, bt-term 밖으로 엔진 타입을 내보내지 않는다
 
@@ -995,7 +996,7 @@ macOS의 Carbon `EnableSecureEventInput`은 켜 있는 동안 키 입력이 다�
 - 투명 창: 창 surface 알파 모드를 surface가 주는 것에서 고른다(`pick_alpha_mode`). 곱한 알파로 합친 결과를 그대로 내므로 `PreMultiplied`가 있으면 그것, 없으면 macOS에서만 `PostMultiplied`(wgpu의 Metal 면은 그 모드에서 레이어를 불투명이 아니게만 한다: `wgpu-hal` 30.0.1 `metal/surface.rs` 270~271줄. CoreAnimation이 그 레이어를 곱한 알파로 합성한다는 것은 소스에서 확인한 것이 아니라 추정이므로 실제 창에서 확인해야 한다), 둘 다 없으면 창을 열지 못해 CPU 길로 돌아간다. Metal 뒷단이 내는 목록은 `[Opaque, PostMultiplied]`다(`wgpu-hal` `metal/adapter.rs` 468~471줄을 읽었다. 창이 없어 실제 surface로 불러 보지는 않았다). 투명으로 열지 않은 창은 나중에 설정이 바뀌어도 불투명으로 그린다.
 - 칸 바탕은 아래층 픽셀을 덮어쓴다(CPU `fill_rect`처럼). 칸 바탕 전용 파이프라인(블렌드 없음, 곱한 알파로 냄)이 이를 맡고, 글자·커서·밑줄은 이전처럼 위에 얹는다. 칸 알파(`background-opacity-cells`)는 #353의 `set_cells_alpha`를 앱이 연결한다.
 - 배경 그림: 아래층을 그리는 캔버스에 `set_backdrop`을 쓰고(CPU 길과 같은 층, 앱의 `backdrop.rs`가 두 길을 함께 만든다), GPU 격자는 기본 바탕색 칸을 그리지 않는다(`Scene::set_backdrop`). 그 칸은 아래층에 이미 그림이 있다.
-- `render_path`에서 투명·배경 그림 조건을 뺐다. 남은 것은 `window-colorspace = srgb`다. wgpu 30의 안전한 `SurfaceColorSpace`를 `wgpu-types`·`wgpu-hal` metal `surface.rs`에서 읽었다: `Auto`·`Srgb`는 레이어 색 공간을 비운다(기본, 화면 색 공간 그대로), `DisplayP3`는 레이어에 Display P3 이름을 붙이고, 확장·HDR 값은 다른 뜻이다. CPU 길의 `srgb`(레이어에 sRGB 이름을 붙여 화면으로 바꿔 보이게 함)에 해당하는 값이 없다. 그래서 `srgb`는 CPU로 돌아가는 것을 그대로 둔다. 기본(`display-p3` 설정, 화면 색 공간 그대로)이 `Srgb`(레이어를 비움)와 같은 화면인지는 실제 창에서 확인해야 한다.
+- `render_path`에서 투명·배경 그림 조건을 뺐다. 남은 것은 `window-colorspace = srgb`다. wgpu 30의 안전한 `SurfaceColorSpace`를 `wgpu-types`·`wgpu-hal` metal `surface.rs`에서 읽었다: `Auto`·`Srgb`는 레이어 색 공간을 비운다(기본, 화면 색 공간 그대로), `DisplayP3`는 레이어에 Display P3 이름을 붙이고, 확장·HDR 값은 다른 뜻이다. CPU 길의 `srgb`(레이어에 sRGB 이름을 붙여 화면으로 바꿔 보이게 함)에 해당하는 값이 없다. 그래서 `srgb`는 CPU로 돌아가는 것을 그대로 둔다(갱신 #466: ADR-047에서 `DisplayP3` 표시와 마지막 변환 패스로 GPU 길에서 맞춘다). 기본(`display-p3` 설정, 화면 색 공간 그대로)이 `Srgb`(레이어를 비움)와 같은 화면인지는 실제 창에서 확인해야 한다.
 - 남은 차이: 위층(덧그림)은 투명 바탕의 별도 캔버스에 그리므로, 덧그림 색이 창 기본 바탕색과 같을 때 CPU 길은 그 색을 반투명으로 칠하지만 GPU 길은 불투명이다. 조합 중 글 바탕이 기본 바탕색과 같은 경우의 칸 바탕 덮어쓰기도 같다(칸 바탕 파이프라인은 글자 앞 사각형만 맡는다).
 
 8. 시험: 창 없이 같은 합치기(`GpuRenderer::compose`: 아래층 → 자리가 다른 두 칸 → 위층, 반투명 흐림·그림 포함)를 읽어 낸 프레임을 CPU 캔버스에 같은 순서로 그린 프레임과 견준다. 창에 올리는 `present`는 같은 준비·그리기 코드를 쓰고 대상만 다르다.
@@ -1145,7 +1146,7 @@ E8의 실제 창 로그에서 10ms 넘는 GPU 프레임은 세 가지였다. (1)
 
 ### 결정
 1. `render_path::GPU_BY_DEFAULT`는 `cfg!(target_os = "macos")`다. 환경 변수 `BT_GPU`가 `1`이면 어느 OS든 GPU, `0`이면 CPU다. 그 밖의 값이나 없으면 OS 기본을 따른다.
-2. GPU 길을 쓰기로 했어도 `window-colorspace = srgb`이거나 장치·창 surface를 열지 못하면 CPU로 그린다. 투명 창에 쓸 곱한 알파 모드가 없을 때도 같다. 로그에 `GPU 길을 쓰지 못해 CPU 길로 그린다: <이유>`를 남긴다(경고 수준).
+2. GPU 길을 쓰기로 했어도 `window-colorspace = srgb`이거나 장치·창 surface를 열지 못하면 CPU로 그린다(갱신 #466: `srgb`는 ADR-047부터 GPU 길이고, Display P3 surface를 못 열 때만 CPU). 투명 창에 쓸 곱한 알파 모드가 없을 때도 같다. 로그에 `GPU 길을 쓰지 못해 CPU 길로 그린다: <이유>`를 남긴다(경고 수준).
 3. 창을 만들 때 `그리기 길: GPU(장치 열기 …ms)` 또는 `그리기 길: CPU`를 info로 남긴다.
 4. 창의 첫 프레임을 올리면 `첫 프레임(길): 창을 만든 뒤 …ms, 앱을 띄운 뒤 …ms, …`를 info로 한 번 남긴다. macOS가 창이 보이게 됐다고 알린 때와의 간격도 함께 남긴다. E10의 지표이고, 다음에 창 여는 시간을 다시 잴 때 같은 줄을 쓴다.
 
@@ -1154,7 +1155,7 @@ E8의 실제 창 로그에서 10ms 넘는 GPU 프레임은 세 가지였다. (1)
   - 보이기 전에 층을 올려 두는 방법을 재 봤지만 줄지 않았다(E10 "해 보고 버린 것").
 - 메모리(RSS)를 약 20~50MB 더 쓴다. 창마다 장치·아틀라스를 따로 열기 때문이다. 창을 여럿 열 때 어떻게 쌓이는지는 재지 않았다.
 - 분할의 흐린 칸은 CPU 길과 채널 1까지 다르다(ADR-036).
-- `window-colorspace = srgb`를 쓰는 사람은 계속 CPU 길이다.
+- ~~`window-colorspace = srgb`를 쓰는 사람은 계속 CPU 길이다.~~ 갱신(#466): ADR-047에서 GPU 길로 옮겼다.
 - GPU 길이 그리던 중 장치를 잃으면 그 창은 CPU로 옮겨 가지 않는다. 그런 일을 재현해 보지 않았다.
 
 ### 하지 않은 것
@@ -1418,3 +1419,32 @@ E8의 실제 창 로그에서 10ms 넘는 GPU 프레임은 세 가지였다. (1)
   - 사람이 `y`로 허용한 읽기
   - 사람이 붙여넣은 글의 일회용 암호 읽기
 - 사람의 행동 없이 읽히는 길은 없다. 근거는 `decide_read`·`decide_kitty_read`를 기본 설정으로 부르는 시험(`default_config_asks_only_when_watching_and_denies_the_rest`)이다.
+
+## ADR-047 `window-colorspace = srgb`는 GPU 길에서 Display P3 표시와 마지막 변환 패스로 맞춘다
+
+상태: 채택
+관련: [#466](https://github.com/dj258255/b-terminal/issues/466), ADR-009(화면 색 공간), ADR-036·ADR-039(GPU 길), [실험 E26](experiments/2026-11-12-e26-gpu-srgb.md)
+
+### 맥락
+- `srgb`면 GPU 길을 쓰지 못하고 CPU 길로 떨어졌다(`render_path::cpu_only_reason`). CPU 길의 색 맞춤은 큰 창에서 프레임마다 약 10~15ms였다(E3).
+- GPU 길의 레이어 색 공간은 nil이고 색을 맞추지 않는다(E26, 바탕 (40,44,52)로 CPU `display-p3`와 같음).
+- 레이어에 sRGB 색 공간을 직접 다는 것은 `unsafe`가 필요하다(작업 공간 `unsafe_code = "deny"`). wgpu 30은 Bgra8 형식에 nil과 Display P3만 준다.
+
+### 결정
+1. `srgb`이면 surface를 `SurfaceColorSpace::DisplayP3`로 설정하고, 창 크기 중간 텍스처에 그린 뒤 마지막 패스에서 sRGB를 Display P3로 바꿔 쓴다. 합성기가 P3에서 화면으로 맞춘다.
+2. 섞기와 사용자 셰이더는 중간 텍스처(sRGB 값)에서 일어난다. 곱한 알파는 알파로 나눠 바꾸고 다시 곱한다.
+3. surface가 Display P3를 주지 않으면 경고하고 CPU 길로 그린다.
+4. 기본은 `display-p3` 그대로다.
+
+### 감수한 트레이드오프
+- `srgb` 창은 중간 텍스처만큼 크다(2000×1360px에서 약 10.9MB, 실측 footprint +13.6MB).
+- 기본이 Ghostty(`srgb`)와 다르다. 테마 색이 P3 화면에서 조금 더 진하게 보인다(ANSI 빨강 채널 최대 차이 23).
+- 외부 sRGB 화면에서는 재지 않았다.
+
+### 하지 않은 것
+- 각 파이프라인 출력에서 바꾸기: 텍스처가 들지 않지만 섞기가 P3 값에서 일어나고 사용자 셰이더 출력을 바꿀 수 없다.
+- `Rgba16Float` + 확장 sRGB: EDR이 켜지고 그림판이 두 배가 된다.
+- 기본을 `srgb`로: 창마다 약 13.6MB.
+
+### 보안
+입력 경계는 바뀌지 않는다.
