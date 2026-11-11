@@ -423,6 +423,8 @@ impl Inner {
 pub struct Session {
     inner: Arc<Mutex<Inner>>,
     writer: Writer,
+    /// 키 입력 → 화면 지연 표(#417). 재기가 꺼져 있으면 건드리지 않는다
+    latency: Arc<Mutex<crate::latency::LatencyTracker>>,
     master: Mutex<Box<dyn MasterPty + Send>>,
     size: Arc<Mutex<GridSize>>,
     theme: Arc<Mutex<Arc<Theme>>>,
@@ -739,6 +741,8 @@ impl Session {
         let thread_size = size_cell.clone();
         let da1_clipboard = options.clipboard_write;
         let thread_inner = inner.clone();
+        let latency: Arc<Mutex<crate::latency::LatencyTracker>> = Arc::default();
+        let thread_latency = latency.clone();
         let thread_exited = exited.clone();
         let thread_writer = writer.clone();
         let thread_title = title.clone();
@@ -1046,6 +1050,9 @@ impl Session {
                         for e in events {
                             sink(e);
                         }
+                        if crate::latency::enabled() {
+                            thread_latency.lock().note_output(Instant::now());
+                        }
                         sink(SessionEvent::Output);
                     }
                     Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
@@ -1060,6 +1067,7 @@ impl Session {
         Ok(Self {
             inner,
             writer,
+            latency,
             master: Mutex::new(pair.master),
             size: size_cell,
             theme: current_theme,
@@ -1171,7 +1179,29 @@ impl Session {
         if scroll {
             self.scroll_to_bottom();
         }
+        self.note_input();
         self.write(bytes);
+    }
+
+    /// 사람 입력(키·IME·붙여넣기·`btctl send`)을 PTY에 쓰기 직전의 때를 적는다(입력 → 화면 지연, #417).
+    /// 이미 적혀 있으면 덮지 않는다. 재기가 꺼져 있으면(debug 로그가 아니면) 아무것도 하지 않는다
+    pub fn note_input(&self) {
+        if crate::latency::enabled() {
+            self.latency.lock().note_input(Instant::now());
+        }
+    }
+
+    /// 프레임이 칸의 화면을 뜨기 전에 부른다. 입력 뒤 출력이 이미 온 칸이면 값을 돌려준다
+    pub fn latency_begin_frame(&self, now: Instant) -> Option<crate::latency::Sample> {
+        if !crate::latency::enabled() {
+            return None;
+        }
+        self.latency.lock().begin_frame(now)
+    }
+
+    /// 그 프레임이 실제로 올라갔다. 걸린 시간을 돌려주고 시각을 지운다
+    pub fn latency_presented(&self, sample: &crate::latency::Sample, now: Instant) -> Option<crate::latency::Report> {
+        self.latency.lock().presented(sample, now)
     }
 
     /// 새 출력이 오면 맨 아래로 스크롤할지 바꾼다(설정을 다시 읽을 때)

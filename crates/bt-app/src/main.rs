@@ -122,6 +122,8 @@ fn main() -> anyhow::Result<()> {
         std::process::exit(code);
     }
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
+    // 입력 → 화면 지연(#417): debug 로그가 켜졌을 때만 칸이 시각을 적는다
+    bt_term::latency::set_enabled(log::log_enabled!(log::Level::Debug));
     let cli = match parse_args(argv.into_iter()) {
         Ok(o) => o,
         Err(msg) => {
