@@ -4244,6 +4244,7 @@ impl App {
             opacity: self.config.background_opacity,
             backdrop_image: self.bg_image.is_some(),
             colorspace_srgb: self.config.colorspace_srgb,
+            e26_srgb: std::env::var_os("BT_E26_SRGB").is_some(),
         };
         let size = window.inner_size();
         let t_open = Instant::now();
@@ -4252,12 +4253,22 @@ impl App {
             crate::render_path::GPU_BY_DEFAULT,
             &inputs,
             || {
-                bt_gpu::GpuRenderer::new_for_window_with(
-                    window.clone(),
-                    (size.width, size.height),
-                    inputs.opacity < 1.0,
-                    self.config.window_vsync,
-                )
+                // 실험 E26(#466): `srgb` + 스위치면 surface를 Display P3로 열고 변환 패스를 둔다
+                if inputs.colorspace_srgb && inputs.e26_srgb {
+                    bt_gpu::GpuRenderer::new_for_window_srgb_p3(
+                        window.clone(),
+                        (size.width, size.height),
+                        inputs.opacity < 1.0,
+                        self.config.window_vsync,
+                    )
+                } else {
+                    bt_gpu::GpuRenderer::new_for_window_with(
+                        window.clone(),
+                        (size.width, size.height),
+                        inputs.opacity < 1.0,
+                        self.config.window_vsync,
+                    )
+                }
                 .map(Box::new)
             },
         );

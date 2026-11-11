@@ -2,6 +2,7 @@
 
 pub mod atlas;
 pub mod glyphs;
+pub mod p3;
 pub mod pacing;
 mod renderer;
 pub mod scene;

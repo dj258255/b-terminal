@@ -11,6 +11,8 @@ pub struct PathInputs {
     pub backdrop_image: bool,
     /// `window-colorspace = srgb`
     pub colorspace_srgb: bool,
+    /// 실험 스위치 `BT_E26_SRGB`(#466): `window-colorspace = srgb`도 GPU 길로 보낸다(surface를 Display P3로 두고 셰이더가 변환한다)
+    pub e26_srgb: bool,
 }
 
 /// 이 OS의 기본 길이 GPU인가. 실제 창에서 재고 화면을 견준 것은 macOS(Metal)뿐이다(ADR-039)
@@ -28,9 +30,10 @@ pub fn wants_gpu(env: Option<&str>, gpu_by_default: bool) -> bool {
 /// GPU 길이 아직 CPU와 같게 그리지 못하는 설정이면 그 이유(로그에 쓴다).
 /// 투명 창(`background-opacity < 1`)과 배경 그림은 0.31부터 GPU 길이 곱한 알파 합치기와 아래층 그림으로 맞춘다.
 /// 투명 창에 쓸 알파 모드를 surface가 주지 않으면 장치를 여는 쪽이 실패해 CPU로 돌아간다(`choose`의 두 번째 갈래).
-/// `window-colorspace = srgb`는 안전한 API로 surface의 색 공간 태그를 정할 수 없어 맞추지 못한다(ADR-036)
+/// `window-colorspace = srgb`는 안전한 API로 surface의 색 공간 태그를 정할 수 없어 맞추지 못한다(ADR-036).
+/// 실험 스위치 `BT_E26_SRGB`(#466)가 있으면 surface를 Display P3로 두고 셰이더가 변환하는 길로 GPU를 쓴다
 pub fn cpu_only_reason(inputs: &PathInputs) -> Option<&'static str> {
-    if inputs.colorspace_srgb {
+    if inputs.colorspace_srgb && !inputs.e26_srgb {
         Some("window-colorspace = srgb")
     } else {
         None
@@ -65,6 +68,7 @@ mod tests {
         opacity: 1.0,
         backdrop_image: false,
         colorspace_srgb: false,
+        e26_srgb: false,
     };
 
     /// `open`이 불렸는지와 결과
@@ -150,6 +154,25 @@ mod tests {
             assert!(why.is_some(), "돌아간 이유를 알려야 한다: {env:?}");
             assert!(!opened, "못 맞추는 설정이면 열지 않는다: {env:?}");
         }
+    }
+
+    #[test]
+    fn e26_switch_sends_srgb_colorspace_to_the_gpu_and_only_then() {
+        // 스위치가 없으면 지금 동작(CPU)과 같고, 있을 때만 GPU 길을 연다(#466). `display-p3`는 스위치와 상관없이 GPU
+        let srgb = PathInputs {
+            colorspace_srgb: true,
+            ..PLAIN
+        };
+        assert_eq!(run(None, true, &srgb), (None, Some("window-colorspace = srgb"), false));
+        let on = PathInputs { e26_srgb: true, ..srgb };
+        assert_eq!(run(None, true, &on), (Some(7), None, true));
+        let p3_only = PathInputs {
+            e26_srgb: true,
+            ..PLAIN
+        };
+        assert_eq!(run(None, true, &p3_only), (Some(7), None, true));
+        // BT_GPU=0이면 스위치가 있어도 CPU
+        assert_eq!(run(Some("0"), true, &on), (None, None, false));
     }
 
     #[test]
