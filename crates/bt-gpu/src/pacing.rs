@@ -7,6 +7,18 @@ use std::time::{Duration, Instant};
 /// 화면 주사율을 모를 때 쓰는 값(60Hz)
 pub const DEFAULT_REFRESH: Duration = Duration::from_nanos(16_666_667);
 
+/// 프레임 지연(`desired_maximum_frame_latency`)의 기본값
+pub const DEFAULT_FRAME_LATENCY: u32 = 2;
+
+/// 측정용 환경 변수 `BT_FRAME_LATENCY`의 값에서 프레임 지연을 고른다. 1~3이면 그 값, 없거나 그 밖이면 기본값이다.
+/// Metal은 그림판을 지연 + 1장 돌려 쓰므로 1이면 2장, 2면 3장, 3이면 4장이다
+pub fn frame_latency_from_env(value: Option<&str>) -> u32 {
+    match value.and_then(|v| v.trim().parse::<u32>().ok()) {
+        Some(n) if (1..=3).contains(&n) => n,
+        _ => DEFAULT_FRAME_LATENCY,
+    }
+}
+
 /// `FramePacer::check`의 답
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PaceDecision {
@@ -159,6 +171,64 @@ mod tests {
         for m in [None, Some(0), Some(1), Some(29_999), Some(360_001), Some(u32::MAX)] {
             assert_eq!(interval_from_millihertz(m), DEFAULT_REFRESH, "{m:?}");
         }
+    }
+
+    #[test]
+    fn frame_latency_accepts_one_to_three_and_defaults_otherwise() {
+        for (v, want) in [("1", 1), ("2", 2), ("3", 3), (" 1\n", 1)] {
+            assert_eq!(frame_latency_from_env(Some(v)), want, "{v:?}");
+        }
+        for v in [
+            None,
+            Some(""),
+            Some("0"),
+            Some("4"),
+            Some("-1"),
+            Some("abc"),
+            Some("1.5"),
+            Some("99999999999"),
+        ] {
+            assert_eq!(frame_latency_from_env(v), DEFAULT_FRAME_LATENCY, "{v:?}");
+        }
+    }
+
+    #[test]
+    fn depth_one_defers_a_second_present_within_one_interval() {
+        let t0 = Instant::now();
+        let mut p = FramePacer::new(1, ms(16));
+        assert_eq!(p.check(t0), PaceDecision::Go);
+        p.record_present(t0);
+        assert_eq!(p.check(t0 + ms(1)), PaceDecision::Wait(ms(15)));
+        assert_eq!(p.check(t0 + ms(16)), PaceDecision::Go);
+        // 한 주기에 한 장씩 올리면 기다리지 않는다
+        let mut q = FramePacer::new(1, ms(16));
+        for i in 0..50 {
+            let now = t0 + ms(16 * i);
+            assert_eq!(q.check(now), PaceDecision::Go, "{i}번째");
+            q.record_present(now);
+        }
+    }
+
+    #[test]
+    fn depth_one_learns_a_slow_drain_and_keeps_one_entry() {
+        let t0 = Instant::now();
+        let mut p = FramePacer::new(1, ms(8));
+        p.record_present_waited(t0, Duration::ZERO);
+        p.record_present_waited(t0 + ms(16), ms(8));
+        assert_eq!(
+            p.check(t0 + ms(17)),
+            PaceDecision::Wait(ms(15)),
+            "마지막 장 + 배운 16ms"
+        );
+        assert_eq!(p.presents.len(), 1);
+    }
+
+    #[test]
+    fn depth_zero_is_treated_as_one() {
+        let t0 = Instant::now();
+        let mut p = FramePacer::new(0, ms(16));
+        p.record_present(t0);
+        assert_eq!(p.check(t0), PaceDecision::Wait(ms(16)));
     }
 
     #[test]

@@ -5,10 +5,8 @@ use std::time::{Duration, Instant};
 use bt_render::Fonts;
 
 use super::{GpuRenderer, LayerUpdate, PaneDraw, pick_adapter};
-use crate::pacing::{DEFAULT_REFRESH, FramePacer, PaceDecision, SurfaceVisibility};
+use crate::pacing::{DEFAULT_REFRESH, FramePacer, PaceDecision, SurfaceVisibility, frame_latency_from_env};
 
-/// `desired_maximum_frame_latency`. 프레임 간격 짐작(`FramePacer`)의 줄 깊이와 같은 값이다
-const FRAME_LATENCY: u32 = 2;
 /// 창이 가려졌을 때 `present`가 돌려주는 이유
 const OCCLUDED: &str = "창이 가려졌다";
 
@@ -93,6 +91,9 @@ impl GpuRenderer {
             );
             return None;
         };
+        // `desired_maximum_frame_latency`와 `FramePacer`의 줄 깊이는 같은 값이다. 다시 설정할 때는 `config`를 그대로 쓰므로 바뀌지 않는다
+        let frame_latency = frame_latency_from_env(std::env::var("BT_FRAME_LATENCY").ok().as_deref());
+        log::info!("프레임 지연 {frame_latency}(그림판 {}장)", frame_latency + 1);
         let config = wgpu::SurfaceConfiguration {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
             format,
@@ -100,7 +101,7 @@ impl GpuRenderer {
             width: size.0.max(1),
             height: size.1.max(1),
             present_mode: wgpu::PresentMode::Fifo,
-            desired_maximum_frame_latency: FRAME_LATENCY,
+            desired_maximum_frame_latency: frame_latency,
             alpha_mode,
             view_formats: vec![],
         };
@@ -113,7 +114,7 @@ impl GpuRenderer {
                 config,
                 stale: false,
                 transparent,
-                pacer: FramePacer::new(FRAME_LATENCY as usize, DEFAULT_REFRESH),
+                pacer: FramePacer::new(frame_latency as usize, DEFAULT_REFRESH),
                 visibility: SurfaceVisibility::default(),
             }),
         )?;
