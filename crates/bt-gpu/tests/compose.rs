@@ -781,3 +781,43 @@ fn empty_upper_slice_releases_the_upper_layer_and_it_comes_back() {
     assert_eq!(got[35 * fx.l.w as usize + 25] & 0xff_ffff, 0xff_0000, "조각이 보인다");
     assert_close("조각 밖은 위층 없는 기준", &without_upper[..20], &got[..20]);
 }
+
+#[test]
+fn big_uploads_go_in_row_chunks_and_small_uploads_reuse_the_scratch() {
+    let Some(mut g) = gpu() else { return };
+    let mut f = fonts();
+    let (w, h) = (800u32, 600u32);
+    let n = (w * h) as usize;
+    // 줄마다 색이 달라, 줄 묶음이 제자리에 올라갔는지 보인다
+    let mut lower: Vec<u32> = (0..n)
+        .map(|i| 0xff00_0000 | ((i / w as usize) as u32 % 256) << 16 | 0x2c34)
+        .collect();
+    let mut draw = |g: &mut GpuRenderer, lower: &[u32]| {
+        let layers = LayerUpdate {
+            lower: Some(lower),
+            upper: None,
+        };
+        g.compose(&mut f, (w, h), layers, &[])
+    };
+    // 첫 통째 올리기(1.92MB): 줄 묶음으로 나눠 올려 임시 버퍼가 상한(1MiB)을 넘지 않는다(#388)
+    let got = draw(&mut g, &lower);
+    assert_eq!(g.timings().upload_bytes, n * 4);
+    let want: Vec<u32> = lower.iter().map(|p| p & 0xff_ffff).collect();
+    assert_close("나눠 올린 아래층", &want, &got);
+    let s = g.layer_memory().scratch_bytes;
+    assert!(s <= 1 << 20, "통째 올리기 뒤 임시 버퍼가 {s}바이트 남았다");
+
+    // 작은 올리기 둘: 임시 버퍼를 쥐고, 두 번째는 다시 잡지 않는다
+    lower[10 * w as usize + 10] = 0xffff_0000;
+    let got = draw(&mut g, &lower);
+    assert_eq!(got[10 * w as usize + 10] & 0xff_ffff, 0xff_0000, "작은 올리기가 보인다");
+    let s1 = g.layer_memory().scratch_bytes;
+    assert!(s1 > 0 && s1 <= 1 << 20, "작은 올리기 뒤 임시 버퍼 {s1}바이트");
+    lower[20 * w as usize + 20] = 0xff00_ff00;
+    draw(&mut g, &lower);
+    assert_eq!(
+        g.layer_memory().scratch_bytes,
+        s1,
+        "같은 크기의 작은 올리기는 그대로 쓴다"
+    );
+}
