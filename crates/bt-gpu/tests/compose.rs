@@ -27,9 +27,9 @@ fn gpu() -> Option<GpuRenderer> {
     }
 }
 
-/// 바뀐 띠의 폭 `cols`가 칸 경계(64px)로 넓어진 최대 폭: 칸 경계에 걸치면 칸 하나가 더 든다(#393)
+/// 바뀐 띠의 폭 `cols`가 칸 경계(128px)로 넓어진 최대 폭: 칸 경계에 걸치면 칸 하나가 더 든다(#393)
 fn wide(cols: usize) -> usize {
-    cols.next_multiple_of(64) + 64
+    cols.next_multiple_of(128) + 128
 }
 
 fn cells(s: &Screen) -> Vec<DrawCell> {
@@ -783,8 +783,8 @@ fn empty_upper_slice_releases_the_upper_layer_and_it_comes_back() {
         upper: Some(&small),
     };
     let got = g.compose(&mut fx.f, size, small_up, &panes);
-    // 조각(열 20..30)은 칸 하나(0..64)에 든다: 폭이 칸 경계로 넓어진다(#393)
-    assert_eq!(g.timings().upload_bytes, 64 * 10 * 4, "조각의 칸만 올린다");
+    // 조각(열 20..30)은 칸 하나(0..128)에 든다: 폭이 칸 경계로 넓어진다(#393)
+    assert_eq!(g.timings().upload_bytes, 128 * 10 * 4, "조각의 칸만 올린다");
     assert_eq!(got[35 * fx.l.w as usize + 25] & 0xff_ffff, 0xff_0000, "조각이 보인다");
     assert_close("조각 밖은 위층 없는 기준", &without_upper[..20], &got[..20]);
 }

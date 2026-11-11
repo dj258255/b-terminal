@@ -62,7 +62,7 @@ fn bands_to_rects(bands: Vec<(u32, u32, u32, u32)>) -> Vec<Rect> {
 }
 
 /// 칸 폭(픽셀). 한 칸은 이 폭 × 1줄이다. 칸이 좁을수록 바뀐 사각형이 꼭 맞고 칸 정보는 늘어난다
-pub const TILE_W: usize = 64;
+pub const TILE_W: usize = 128;
 
 /// 곱하기 섞기 상수(소수에 가까운 홀수 64비트)
 const MUL: u64 = 0x9e37_79b9_7f4a_7c15;
@@ -76,42 +76,72 @@ fn seed() -> u64 {
     *SEED.get_or_init(|| std::collections::hash_map::RandomState::new().build_hasher().finish() | 1)
 }
 
-/// 한 칸(한 줄의 일부) 픽셀의 64비트 해시. 네 줄기로 나눠 곱하기 사슬이 서로 기다리지 않게 한다
-fn tile_hash(px: &[u32], seed: u64) -> u64 {
-    let mut lane = [
-        seed,
-        seed.rotate_left(16) ^ MUL,
-        seed.rotate_left(32) ^ MUL.rotate_left(7),
-        seed.rotate_left(48) ^ MUL.rotate_left(13),
-    ];
-    let mut chunks = px.chunks_exact(8);
+/// 32비트 곱하기 섞기 상수(홀수)
+const MUL32: u32 = 0x85eb_ca6b;
+/// 한 번에 섞는 픽셀 수(u32 갈래 수). NEON·AVX가 한 번에 곱할 수 있는 꼴이다
+const LANES: usize = 16;
+
+/// 한 칸(한 줄의 일부) 픽셀의 64비트 해시. 픽셀(u32)마다 갈래 하나에 `xor → 홀수 곱 → 회전`으로 섞는다.
+/// 64비트 곱셈 사슬은 M2에서 벡터화되지 않아 느렸다(#393): u32 곱셈은 벡터로 돌고, 갈래 16개를 칸 끝에서 한 번만
+/// 64비트로 모은다. 갈래마다 한 단계는 상태에 대해 일대일이라, 한 픽셀만 바뀐 칸은 그 갈래의 상태가 반드시 달라진다
+fn tile_hash(px: &[u32], init: &Init) -> u64 {
+    let mut lane = init.lane;
+    let mut chunks = px.chunks_exact(LANES);
     for c in chunks.by_ref() {
-        for (i, l) in lane.iter_mut().enumerate() {
-            let v = u64::from(c[2 * i]) | u64::from(c[2 * i + 1]) << 32;
-            *l = (*l ^ v).wrapping_mul(MUL).rotate_left(29);
+        // 길이를 아는 배열로 받아 경계 검사 없이 벡터로 돌게 한다
+        let c: &[u32; LANES] = c.try_into().unwrap_or(&[0; LANES]);
+        for i in 0..LANES {
+            lane[i] = (lane[i] ^ c[i]).wrapping_mul(MUL32).rotate_left(13);
         }
     }
-    for p in chunks.remainder() {
-        lane[0] = (lane[0] ^ u64::from(*p)).wrapping_mul(MUL).rotate_left(29);
+    for (l, p) in lane.iter_mut().zip(chunks.remainder()) {
+        *l = (*l ^ p).wrapping_mul(MUL32).rotate_left(13);
     }
-    let mut h = px.len() as u64;
-    for l in lane {
-        h = (h ^ l).wrapping_mul(MUL).rotate_left(31);
+    // 갈래 16개를 64비트 넷으로 모은다(서로 기다리지 않는 곱셈 넷)
+    let mut acc = [
+        px.len() as u64 ^ init.seed,
+        init.seed.rotate_left(21),
+        init.seed.rotate_left(42),
+        !init.seed,
+    ];
+    for (i, a) in acc.iter_mut().enumerate() {
+        for j in 0..2 {
+            let v = u64::from(lane[4 * i + 2 * j]) | u64::from(lane[4 * i + 2 * j + 1]) << 32;
+            *a = (*a ^ v).wrapping_mul(MUL).rotate_left(31);
+        }
     }
+    let mut h = acc[0] ^ acc[1].rotate_left(16) ^ acc[2].rotate_left(32) ^ acc[3].rotate_left(48);
     h ^= h >> 32;
     h = h.wrapping_mul(MUL);
     h ^ (h >> 29)
 }
 
+/// 칸 해시의 출발 상태(시드에서 한 번 만든다)
+struct Init {
+    seed: u64,
+    lane: [u32; LANES],
+}
+
+impl Init {
+    fn new(seed: u64) -> Self {
+        let (lo, hi) = (seed as u32, (seed >> 32) as u32);
+        let mut lane = [0u32; LANES];
+        for (i, l) in lane.iter_mut().enumerate() {
+            *l = lo.wrapping_add(hi.wrapping_mul(i as u32 + 1)) ^ MUL32.rotate_left(i as u32);
+        }
+        Self { seed, lane }
+    }
+}
+
 /// 층 픽셀의 사본 대신 쥐는 칸 해시(#393). 층을 `TILE_W`×1 칸으로 나눠 칸마다 64비트 해시와 0이 아닌 픽셀 수를 쥔다.
-/// 2000×1360 층이면 사본 10.9MB 대신 약 0.4MB다.
+/// 2000×1360 층이면 사본 10.9MB 대신 약 0.2MB다.
 ///
 /// 한계: 해시가 우연히 같으면(2^-64 수준, 시드는 프로세스마다 다르다) 그 칸은 바뀐 줄 모르고 옛 그림으로 남는다.
 /// 그 칸은 다음에 그 칸이 또 바뀔 때 고쳐진다
 pub struct TileHashes {
     w: u32,
     h: u32,
-    seed: u64,
+    init: Init,
     tiles_per_row: usize,
     hashes: Vec<u64>,
     /// 칸의 0이 아닌 픽셀 수(칸은 `TILE_W`픽셀 이하)
@@ -122,13 +152,13 @@ pub struct TileHashes {
 impl TileHashes {
     /// 0으로 채운 `w`×`h` 층의 칸 해시(wgpu가 새 텍스처를 0으로 채우므로 새 층의 출발점이다)
     pub fn zeroed(w: u32, h: u32) -> Self {
-        let seed = seed();
+        let init = Init::new(seed());
         let tiles_per_row = (w as usize).div_ceil(TILE_W);
         let zeros = [0u32; TILE_W];
         let tail = w as usize % TILE_W;
-        let mut hashes = vec![tile_hash(&zeros, seed); tiles_per_row * h as usize];
+        let mut hashes = vec![tile_hash(&zeros, &init); tiles_per_row * h as usize];
         if tail != 0 && tiles_per_row > 0 {
-            let tail_hash = tile_hash(&zeros[..tail], seed);
+            let tail_hash = tile_hash(&zeros[..tail], &init);
             for row in hashes.chunks_exact_mut(tiles_per_row) {
                 row[tiles_per_row - 1] = tail_hash;
             }
@@ -137,7 +167,7 @@ impl TileHashes {
         Self {
             w,
             h,
-            seed,
+            init,
             tiles_per_row,
             hashes,
             counts,
@@ -163,7 +193,7 @@ impl TileHashes {
             let base = y * self.tiles_per_row;
             let (mut first, mut last) = (usize::MAX, 0);
             for (tx, tile) in row.chunks(TILE_W).enumerate() {
-                let hash = tile_hash(tile, self.seed);
+                let hash = tile_hash(tile, &self.init);
                 if hash == self.hashes[base + tx] {
                     continue;
                 }
@@ -367,7 +397,7 @@ mod tests {
 
     #[test]
     fn tiles_widen_one_pixel_to_its_tile_and_clamp_at_the_edge() {
-        // 폭 40은 칸 하나(64)보다 좁다: 칸은 층 폭으로 자른다
+        // 폭 40은 칸 하나(128)보다 좁다: 칸은 층 폭으로 자른다
         let mut t = TileHashes::zeroed(W, H);
         let mut b = blank();
         set(&mut b, 7, 30);
@@ -477,6 +507,37 @@ mod tests {
         }
     }
 
+    /// 해시 품질: 한 픽셀만 다른 칸 수천 개(칸 안 자리·값을 돌려 가며)에서 해시가 늘 달라야 하고,
+    /// 서로 다른 칸 수만 개에서 해시가 겹치지 않아야 한다
+    #[test]
+    fn tile_hash_differs_for_every_single_pixel_change() {
+        let init = Init::new(seed());
+        let mut seed_rng = 99u64;
+        let mut seen = std::collections::HashSet::new();
+        let mut n = 0;
+        for len in [TILE_W, 17, 1, 16, 33] {
+            let base = vec![0xff1e_1e2eu32; len];
+            let hb = tile_hash(&base, &init);
+            for pos in 0..len {
+                for _ in 0..200 {
+                    let mut t = base.clone();
+                    let v = lcg(&mut seed_rng) as u32;
+                    if v == t[pos] {
+                        continue;
+                    }
+                    t[pos] = v;
+                    let h = tile_hash(&t, &init);
+                    assert_ne!(h, hb, "len {len} pos {pos}: 한 픽셀이 달라도 해시가 같다");
+                    if len == TILE_W {
+                        n += 1;
+                        assert!(seen.insert(h), "서로 다른 칸 {n}개 안에서 해시가 겹쳤다");
+                    }
+                }
+            }
+        }
+        assert!(n > 10_000, "{n}");
+    }
+
     #[test]
     fn tile_hashes_are_a_small_fraction_of_the_copy() {
         let t = TileHashes::zeroed(2000, 1360);
@@ -492,7 +553,7 @@ mod tests {
         let (w, h) = (2000u32, 1360u32);
         let n = (w * h) as usize;
         let mut seed = 1u64;
-        let base: Vec<u32> = (0..n)
+        let noisy: Vec<u32> = (0..n)
             .map(|_| {
                 if lcg(&mut seed) & 3 == 0 {
                     lcg(&mut seed) as u32 | 1
@@ -501,16 +562,13 @@ mod tests {
                 }
             })
             .collect();
-        let few = {
-            let mut v = base.clone();
-            for y in [100usize, 101, 700] {
-                for x in 10..60 {
-                    v[y * w as usize + x] ^= 0x00ff_ff00;
-                }
+        // 실제 아래층과 비슷하게: 거의 모든 픽셀이 같은 불투명 바탕색, 탭 막대만 다른 색
+        let mut solid = vec![0xff1e_1e2eu32; n];
+        for y in 0..40usize {
+            for x in 0..w as usize {
+                solid[y * w as usize + x] = 0xff31_3244 ^ ((x as u32 / 90) << 8);
             }
-            v
-        };
-        let all: Vec<u32> = base.iter().map(|p| p ^ 0x0101_0101).collect();
+        }
         let median = |f: &mut dyn FnMut()| {
             let mut ts: Vec<f64> = (0..21)
                 .map(|_| {
@@ -522,39 +580,49 @@ mod tests {
             ts.sort_by(f64::total_cmp);
             ts[ts.len() / 2]
         };
-        for (name, new) in [("바뀐 것 없음", &base), ("몇 줄 바뀜", &few), ("통째 바뀜", &all)] {
-            // 옛 방식은 견주기 + 사본 갱신 + 0이 아닌 수 세기(옛 올리기 반복문이 하던 CPU 일)까지 잰다
-            let mut shadows: Vec<Vec<u32>> = (0..21).map(|_| base.clone()).collect();
-            let mut j = 0;
-            let old = median(&mut || {
-                let shadow = &mut shadows[j];
-                j += 1;
-                let mut nz = 0usize;
-                for r in changed_rects(shadow, new, w, h) {
-                    for y in r.y..r.y + r.h {
-                        let at = (y * w + r.x) as usize;
-                        let n = r.w as usize;
-                        nz += shadow[at..at + n].iter().filter(|p| **p != 0).count();
-                        nz += new[at..at + n].iter().filter(|p| **p != 0).count();
-                        shadow[at..at + n].copy_from_slice(&new[at..at + n]);
-                    }
+        for (input, base) in [("무작위 25%", &noisy), ("바탕색 하나", &solid)] {
+            let few = {
+                let mut v = base.clone();
+                for x in 10..60 {
+                    v[700 * w as usize + x] ^= 0x00ff_ff00;
                 }
-                std::hint::black_box(nz);
-            });
-            // 새 방식: base를 담은 상태를 미리 만들어 두고 new를 준다(상태 만들기는 재지 않는다)
-            let mut states: Vec<TileHashes> = (0..21)
-                .map(|_| {
-                    let mut s = TileHashes::zeroed(w, h);
-                    s.update(&base);
-                    s
-                })
-                .collect();
-            let mut i = 0;
-            let tile = median(&mut || {
-                std::hint::black_box(states[i].update(new));
-                i += 1;
-            });
-            eprintln!("{name}: 옛 {old:.3}ms, 칸 해시 {tile:.3}ms");
+                v
+            };
+            let all: Vec<u32> = base.iter().map(|p| p ^ 0x0101_0101).collect();
+            for (name, new) in [("바뀐 것 없음", base), ("한 줄 바뀜", &few), ("통째 바뀜", &all)] {
+                // 옛 방식은 견주기 + 사본 갱신 + 0이 아닌 수 세기(옛 올리기 반복문이 하던 CPU 일)까지 잰다
+                let mut shadows: Vec<Vec<u32>> = (0..21).map(|_| base.clone()).collect();
+                let mut j = 0;
+                let old = median(&mut || {
+                    let shadow = &mut shadows[j];
+                    j += 1;
+                    let mut nz = 0usize;
+                    for r in changed_rects(shadow, new, w, h) {
+                        for y in r.y..r.y + r.h {
+                            let at = (y * w + r.x) as usize;
+                            let n = r.w as usize;
+                            nz += shadow[at..at + n].iter().filter(|p| **p != 0).count();
+                            nz += new[at..at + n].iter().filter(|p| **p != 0).count();
+                            shadow[at..at + n].copy_from_slice(&new[at..at + n]);
+                        }
+                    }
+                    std::hint::black_box(nz);
+                });
+                // 새 방식: base를 담은 상태를 미리 만들어 두고 new를 준다(상태 만들기는 재지 않는다)
+                let mut states: Vec<TileHashes> = (0..21)
+                    .map(|_| {
+                        let mut s = TileHashes::zeroed(w, h);
+                        s.update(base);
+                        s
+                    })
+                    .collect();
+                let mut i = 0;
+                let tile = median(&mut || {
+                    std::hint::black_box(states[i].update(new));
+                    i += 1;
+                });
+                eprintln!("{input} {name}: 옛 {old:.3}ms, 칸 해시 {tile:.3}ms");
+            }
         }
     }
 }
