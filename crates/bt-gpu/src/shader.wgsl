@@ -70,6 +70,8 @@ struct GlyphOut {
     @location(1) @interpolate(flat) atlas: vec2<f32>,
     @location(2) @interpolate(flat) color: vec4<f32>,
     @location(3) @interpolate(flat) kind: u32,
+    // 글리프가 얹히는 칸의 바탕색(0~1, sRGB 값). `kind`의 위 24비트에 실려 온다
+    @location(4) @interpolate(flat) bg: vec3<f32>,
 };
 
 @vertex
@@ -81,16 +83,73 @@ fn glyph_vs(in: GlyphIn) -> GlyphOut {
     out.atlas = in.atlas;
     out.color = in.color;
     out.kind = in.kind;
+    out.bg = vec3<f32>(
+        f32((in.kind >> 8u) & 255u),
+        f32((in.kind >> 16u) & 255u),
+        f32((in.kind >> 24u) & 255u),
+    ) / 255.0;
     return out;
 }
 
 @fragment
 fn glyph_fs(in: GlyphOut) -> @location(0) vec4<f32> {
     let texel = vec2<i32>(floor(in.atlas + in.local));
-    if in.kind == 0u {
+    if (in.kind & 255u) == 0u {
         let a = textureLoad(gray_atlas, texel, 0).r;
         return vec4<f32>(in.color.rgb, a * in.color.a);
     }
     let c = textureLoad(color_atlas, texel, 0);
     return vec4<f32>(c.rgb, c.a * in.color.a);
+}
+
+// 선형 섞기(`alpha-blending = linear`·`linear-corrected`, #405). 대상을 sRGB 꼴 뷰로 열어 하드웨어가 선형에서 섞게 한다:
+// 셰이더는 글자색을 선형으로 바꿔 내고, 대상에서 읽은 바탕은 하드웨어가 선형으로 풀었다가 섞은 뒤 다시 sRGB로 쓴다
+fn srgb_to_linear(c: vec3<f32>) -> vec3<f32> {
+    let lo = c / 12.92;
+    let hi = pow((c + vec3<f32>(0.055)) / 1.055, vec3<f32>(2.4));
+    return select(hi, lo, c <= vec3<f32>(0.04045));
+}
+
+fn linear_to_srgb_f(v: f32) -> f32 {
+    return select(pow(v, 1.0 / 2.4) * 1.055 - 0.055, v * 12.92, v <= 0.0031308);
+}
+
+fn srgb_to_linear_f(v: f32) -> f32 {
+    return select(pow((v + 0.055) / 1.055, 2.4), v / 12.92, v <= 0.04045);
+}
+
+fn luminance(c: vec3<f32>) -> f32 {
+    return dot(c, vec3<f32>(0.2126, 0.7152, 0.0722));
+}
+
+fn glyph_linear(in: GlyphOut, corrected: bool) -> vec4<f32> {
+    let texel = vec2<i32>(floor(in.atlas + in.local));
+    if (in.kind & 255u) == 0u {
+        var a = textureLoad(gray_atlas, texel, 0).r;
+        let fg = srgb_to_linear(in.color.rgb);
+        if corrected {
+            // Ghostty(shaders.metal의 cell_text_fragment)와 같은 보정: 글자·바탕 밝기를 sRGB 값으로 섞은 밝기에서
+            // 선형 섞기가 그 밝기를 내는 덮음 정도를 다시 구한다. 밝기가 거의 같으면(0.001 안) 보정하지 않는다
+            let bg = srgb_to_linear(in.bg);
+            let fg_l = luminance(fg);
+            let bg_l = luminance(bg);
+            if abs(fg_l - bg_l) > 0.001 {
+                let blend_l = srgb_to_linear_f(linear_to_srgb_f(fg_l) * a + linear_to_srgb_f(bg_l) * (1.0 - a));
+                a = clamp((blend_l - bg_l) / (fg_l - bg_l), 0.0, 1.0);
+            }
+        }
+        return vec4<f32>(fg, a * in.color.a);
+    }
+    let c = textureLoad(color_atlas, texel, 0);
+    return vec4<f32>(srgb_to_linear(c.rgb), c.a * in.color.a);
+}
+
+@fragment
+fn glyph_fs_linear(in: GlyphOut) -> @location(0) vec4<f32> {
+    return glyph_linear(in, false);
+}
+
+@fragment
+fn glyph_fs_corrected(in: GlyphOut) -> @location(0) vec4<f32> {
+    return glyph_linear(in, true);
 }

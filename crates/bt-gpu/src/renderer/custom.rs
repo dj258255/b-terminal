@@ -455,11 +455,16 @@ impl GpuRenderer {
 
     /// 한 프레임의 그리기 명령. 셰이더가 없으면 `encode_compose` 하나(지금 길 그대로)이고, 있으면 합친 화면을 앞 텍스처에 그린 뒤
     /// 셰이더를 차례로 돌려 마지막 것이 `view`에 그린다
-    pub(super) fn encode_frame(&self, view: &wgpu::TextureView) -> Vec<wgpu::CommandBuffer> {
+    /// `srgb`는 `view`의 sRGB 꼴 뷰(선형 섞기용). 셰이더가 돌 때는 장면 텍스처에 그리므로 쓰지 않는다: 그때는 `alpha-blending`이 `native`로 그려진다
+    pub(super) fn encode_frame(
+        &self,
+        view: &wgpu::TextureView,
+        srgb: Option<&wgpu::TextureView>,
+    ) -> Vec<wgpu::CommandBuffer> {
         let Some((chain, tex)) = self.custom.as_ref().and_then(|c| c.textures.as_ref().map(|t| (c, t))) else {
-            return vec![self.encode_compose(view)];
+            return vec![self.encode_compose(view, srgb)];
         };
-        let scene = self.encode_compose(&tex.views[0]);
+        let scene = self.encode_compose(&tex.views[0], None);
         let mut enc = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("bt-gpu custom shaders"),
         });

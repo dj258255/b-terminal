@@ -211,6 +211,7 @@ config-file = ?~/.config/b-terminal/local   # ?가 붙으면 없어도 된다
 | `background-image-position` | `top-left` `top-center` `top-right` `center-left` `center` `center-right` `bottom-left` `bottom-center` `bottom-right` | `center` | 그림 자리 |
 | `background-image-fit` | `contain` `cover` `stretch` `none` | `contain` | 맞추기: 다 보이게 / 빈 곳 없이 덮게 / 늘려서 / 원래 크기 |
 | `background-image-repeat` | `true` `false` | `false` | 놓은 자리에서 사방으로 이어 깝니다 |
+| `alpha-blending` | `native` / `linear` / `linear-corrected` | `native` | 투명도가 있는 글자(가장자리의 반투명 픽셀과 이모지)를 섞을 색 공간입니다(Ghostty 1.1). `native`는 sRGB 값 그대로 섞어 지금까지의 화면과 같습니다. `linear`는 선형 공간에서 섞어 빨강 글자/초록 바탕 같은 짝에서 가장자리가 어두워지는 것이 없어지지만 어두운 글자는 가늘고 밝은 글자는 굵어 보입니다. `linear-corrected`는 `linear`에 Ghostty와 같은 덮음 정도 보정(글자·바탕 밝기에서 sRGB로 섞은 밝기를 구해 그 밝기에 맞게 알파를 다시 구함)을 더해 `native`와 거의 같은 굵기로 보이게 합니다. **GPU 길에서만 적용합니다**: CPU 길(`BT_GPU=0` 등)은 늘 `native`로 그리고, 그때 이 키가 `native`가 아니면 로그에 경고를 남깁니다. 설정을 다시 읽으면 열려 있는 GPU 창도 다음 프레임부터 바뀝니다. 글자만 선형으로 섞고 칸 바탕·커서·밑줄·고른 영역·층(그림, 탭 막대 등)은 지금처럼 sRGB 값으로 섞습니다. 사용자 셰이더(`custom-shader`)가 도는 동안에는 `native`로 그리고, 셰이더가 받는 색은 이 키와 관계없이 sRGB 값입니다. 투명 창에서는 글자 바탕을 곱한 알파 값 그대로 읽어 섞습니다(재지 않음) |
 | `window-colorspace` | `display-p3` / `srgb` | `display-p3` | macOS. `display-p3`는 화면 색 공간으로 그대로 넘겨 빠르고(색은 맞추지 않음), `srgb`는 테마 색을 정확히 맞추지만 큰 창에서 프레임마다 약 10ms가 더 듭니다(실험 E3). 새 창부터 따릅니다. 두 값 모두 IOSurface에 해당 색 공간을 붙여 올립니다(#346, 실제 창에서 색은 아직 보지 않음) |
 | `unfocused-split-opacity` | `0.15`~`1` | `0.7` | 화면을 나눴을 때 고르지 않은 칸의 불투명도. 낮을수록 흐립니다 |
 | `unfocused-split-fill` | `#rrggbb` | 바탕색 | 고르지 않은 칸을 덮는 색 |
@@ -229,7 +230,7 @@ config-file = ?~/.config/b-terminal/local   # ?가 붙으면 없어도 된다
 | `gtk-custom-css` `gtk-horizontal-tab-scroll` `gtk-opengl-debug` `gtk-quick-terminal-layer` `gtk-quick-terminal-namespace` `gtk-tabs-inverted` `gtk-tabs-location` `gtk-titlebar-hide-when-maximized` `gtk-titlebar-style` `gtk-toolbar-style` `gtk-wide-tabs` | GTK 전용입니다(`gtk-titlebar`·`gtk-single-instance`는 앞서 받기만 하던 것) |
 | `linux-cgroup` `linux-cgroup-memory-limit` `linux-cgroup-processes-limit` `linux-cgroup-hard-fail` `async-backend` | 리눅스 전용입니다(cgroup, epoll·io_uring 고르기). macOS는 kqueue 하나입니다 |
 | `quick-terminal-keyboard-interactivity` | Wayland 레이어 셸 전용입니다 |
-| `alpha-blending` `freetype-load-flags` | Ghostty의 글자 그리기(선형 알파 섞기, FreeType 옵션)에 대한 것입니다. b-terminal은 글꼴을 FreeType이 아니라 swash(순수 Rust)로 그려서 `freetype-load-flags`가 하는 일이 없습니다 |
+| `freetype-load-flags` | Ghostty의 FreeType 글꼴 옵션입니다. b-terminal은 글꼴을 FreeType이 아니라 swash(순수 Rust)로 그려서 하는 일이 없습니다 |
 | `scrollback-compression` | Ghostty 화면 엔진(페이지 메모리 압축)의 옵션입니다. b-terminal의 VT 엔진에는 그 단계가 없습니다 |
 | `drag-handle` | 마우스로 칸을 끌어 옮기는 손잡이입니다. b-terminal에는 그 기능이 없습니다 |
 

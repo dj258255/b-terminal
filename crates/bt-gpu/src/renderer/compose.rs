@@ -9,7 +9,7 @@ use bt_core::Rgb;
 use bt_render::{Fonts, GridView};
 
 use super::layer_diff::TileHashes;
-use super::{FrameTimings, GpuRenderer, upload_instances};
+use super::{FrameTimings, GpuRenderer, Passes, upload_instances};
 use crate::scene::{GLYPH_STRIDE, GlyphInst, RECT_STRIDE, RectInst};
 
 /// 합칠 칸 하나: 격자를 놓을 왼쪽 위 자리(창 픽셀)와 격자, 그리고 그 칸의 바탕색(`Scene::build`의 `clear`)
@@ -320,7 +320,7 @@ impl GpuRenderer {
         let Some(target) = self.target.as_ref() else {
             return Vec::new();
         };
-        let cbs = self.encode_frame(&target.view);
+        let cbs = self.encode_frame(&target.view, target.srgb_view.as_ref());
         self.queue.submit(cbs);
         let _ = self.device.poll(wgpu::PollType::wait_indefinitely());
         self.timings.gpu_ms = t.elapsed().as_secs_f64() * 1000.0;
@@ -406,65 +406,66 @@ impl GpuRenderer {
         self.prepare_custom(size);
     }
 
-    /// 한 번의 그리기 패스로 아래층 → 칸마다(바탕, 글자, 커서) → 위층을 `view`에 그리는 명령을 만든다
-    pub(super) fn encode_compose(&self, view: &wgpu::TextureView) -> wgpu::CommandBuffer {
+    /// 아래층 → 칸마다(바탕, 글자, 커서) → 위층을 `view`에 그리는 명령을 만든다. `alpha-blending`이 `native`면 패스 하나이고,
+    /// 선형이면(`srgb`가 `view`의 sRGB 꼴 뷰) 글자는 sRGB 꼴 뷰에 그려야 해서 글자와 나머지가 번갈아 나올 때마다 패스를 바꾼다
+    pub(super) fn encode_compose(
+        &self,
+        view: &wgpu::TextureView,
+        srgb: Option<&wgpu::TextureView>,
+    ) -> wgpu::CommandBuffer {
         let mut enc = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("bt-gpu compose"),
         });
         {
-            let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("bt-gpu compose"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view,
-                    depth_slice: None,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: None,
-                timestamp_writes: None,
-                occlusion_query_set: None,
-                multiview_mask: None,
-            });
+            let (glyph_pipeline, glyphs_srgb) = self.glyph_draw(srgb.is_some());
+            let mut passes = Passes::new(
+                &mut enc,
+                "bt-gpu compose",
+                view,
+                srgb,
+                &self.bind_group,
+                wgpu::Color::BLACK,
+            );
             let ls = &self.layers;
             if let Some(t) = ls.visible(false) {
+                let pass = passes.pass(false);
                 pass.set_pipeline(&ls.lower_pipeline);
                 pass.set_bind_group(0, &t.bind_group, &[]);
                 pass.draw(0..3, 0..1);
+                pass.set_bind_group(0, &self.bind_group, &[]);
             }
-            pass.set_bind_group(0, &self.bind_group, &[]);
-            let draw_rects_with =
-                |pass: &mut wgpu::RenderPass<'_>, pipeline: &wgpu::RenderPipeline, range: &Range<usize>| {
-                    if let (Some(buf), false) = (&self.rect_buf, range.is_empty()) {
-                        pass.set_pipeline(pipeline);
-                        pass.set_vertex_buffer(0, buf.slice(..));
-                        pass.draw(0..6, range.start as u32..range.end as u32);
-                    }
-                };
-            let draw_rects = |pass: &mut wgpu::RenderPass<'_>, range: &Range<usize>| {
-                draw_rects_with(pass, &self.rect_pipeline, range)
+            let draw_rects_with = |passes: &mut Passes<'_>, pipeline: &wgpu::RenderPipeline, range: &Range<usize>| {
+                if let (Some(buf), false) = (&self.rect_buf, range.is_empty()) {
+                    let pass = passes.pass(false);
+                    pass.set_pipeline(pipeline);
+                    pass.set_vertex_buffer(0, buf.slice(..));
+                    pass.draw(0..6, range.start as u32..range.end as u32);
+                }
             };
-            let draw_glyphs = |pass: &mut wgpu::RenderPass<'_>, range: &Range<usize>| {
+            let draw_rects =
+                |passes: &mut Passes<'_>, range: &Range<usize>| draw_rects_with(passes, &self.rect_pipeline, range);
+            let draw_glyphs = |passes: &mut Passes<'_>, range: &Range<usize>| {
                 if let (Some(buf), false) = (&self.glyph_buf, range.is_empty()) {
-                    pass.set_pipeline(&self.glyph_pipeline);
+                    let pass = passes.pass(glyphs_srgb);
+                    pass.set_pipeline(glyph_pipeline);
                     pass.set_vertex_buffer(0, buf.slice(..));
                     pass.draw(0..6, range.start as u32..range.end as u32);
                 }
             };
             for s in &ls.segments {
-                draw_rects_with(&mut pass, &self.rect_replace_pipeline, &s.rects_bg);
-                draw_rects(&mut pass, &s.rects_pre);
-                draw_glyphs(&mut pass, &s.glyphs_pre);
-                draw_rects(&mut pass, &s.rects_post);
-                draw_glyphs(&mut pass, &s.glyphs_post);
+                draw_rects_with(&mut passes, &self.rect_replace_pipeline, &s.rects_bg);
+                draw_rects(&mut passes, &s.rects_pre);
+                draw_glyphs(&mut passes, &s.glyphs_pre);
+                draw_rects(&mut passes, &s.rects_post);
+                draw_glyphs(&mut passes, &s.glyphs_post);
             }
             if let Some(t) = ls.visible(true) {
+                let pass = passes.pass(false);
                 pass.set_pipeline(&ls.upper_pipeline);
                 pass.set_bind_group(0, &t.bind_group, &[]);
                 pass.draw(0..3, 0..1);
             }
+            passes.finish();
         }
         enc.finish()
     }
@@ -491,6 +492,7 @@ mod tests {
             atlas: [9.0, 9.0],
             color: [1, 2, 3, 4],
             kind: 1,
+            bg: [11, 12, 13],
         }];
         shift_instances(&mut rects, &mut glyphs, 100, -7);
         assert_eq!(rects[0].pos, [101.0, -5.0]);
@@ -499,5 +501,6 @@ mod tests {
         assert_eq!(glyphs[0].pos, [110.0, 13.0]);
         assert_eq!(glyphs[0].atlas, [9.0, 9.0]);
         assert_eq!(glyphs[0].kind, 1);
+        assert_eq!(glyphs[0].bg, [11, 12, 13]);
     }
 }

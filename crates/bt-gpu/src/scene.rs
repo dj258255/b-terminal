@@ -26,14 +26,17 @@ pub struct RectInst {
     pub color: [u8; 4],
 }
 
-/// 글리프 하나. `atlas`는 아틀라스 안의 왼쪽 위 텍셀, `kind` 0은 회색조·1은 색
+/// 글리프 하나. `atlas`는 아틀라스 안의 왼쪽 위 텍셀, `kind` 0은 회색조·1은 색.
+/// `bg`는 이 글리프가 얹히는 칸의 바탕색이다: `alpha-blending = linear-corrected`가 덮음 정도를 보정하는 데 쓴다(#405).
+/// `kind`와 `bg`는 인스턴스 한 칸(u32)에 같이 실려(`kind | bg.r << 8 | bg.g << 16 | bg.b << 24`) 크기가 늘지 않는다
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct GlyphInst {
     pub pos: [f32; 2],
     pub size: [f32; 2],
     pub atlas: [f32; 2],
     pub color: [u8; 4],
-    pub kind: u32,
+    pub kind: u8,
+    pub bg: [u8; 3],
 }
 
 pub const RECT_STRIDE: usize = 20;
@@ -54,7 +57,7 @@ impl GlyphInst {
             out.extend_from_slice(&v.to_le_bytes());
         }
         out.extend_from_slice(&self.color);
-        out.extend_from_slice(&self.kind.to_le_bytes());
+        out.extend_from_slice(&[self.kind, self.bg[0], self.bg[1], self.bg[2]]);
     }
 }
 
@@ -74,6 +77,8 @@ pub struct Scene {
     cells_alpha: Option<u8>,
     /// 배경 그림 층(CPU `Canvas::set_backdrop`): 이 색 바탕은 아래층의 그림 그대로 두므로 그리지 않는다
     backdrop: Option<Rgb>,
+    /// 지금 놓는 글리프가 얹히는 바탕색(`GlyphInst::bg`)
+    glyph_bg: [u8; 3],
 }
 
 fn rgba(c: Rgb, a: u8) -> [u8; 4] {
@@ -156,7 +161,8 @@ impl Scene {
             size: [e.w as f32, e.h as f32],
             atlas: [e.x as f32, e.y as f32],
             color: rgba(fg, 255),
-            kind: e.color as u32,
+            kind: e.color as u8,
+            bg: self.glyph_bg,
         });
     }
 
@@ -171,6 +177,7 @@ impl Scene {
             atlas: [e.x as f32, e.y as f32],
             color: rgba(color, 255),
             kind: 0,
+            bg: self.glyph_bg,
         });
     }
 
@@ -247,6 +254,8 @@ impl Scene {
                     continue;
                 }
                 let px = col as i32 * cw;
+                let under = if cell.selected { view.selection_bg } else { cell.bg };
+                self.glyph_bg = [under.r, under.g, under.b];
                 if let Some(text) = &cell.cluster {
                     let span = cell.cluster_cells.max(1) as i32;
                     let e = cache.get(Key::Cluster(text.clone()), || fonts.cluster_glyph(text));
@@ -317,6 +326,7 @@ impl Scene {
                 let px = cur.col as i32 * cw;
                 let py = cur.row as i32 * ch;
                 if let Some(pre) = view.preedit.filter(|p| !p.is_empty()) {
+                    self.glyph_bg = [view.selection_bg.r, view.selection_bg.g, view.selection_bg.b];
                     self.preedit(cache, fonts, m, px, py, pre, cur.color, view.selection_bg);
                 } else {
                     self.cursor(
@@ -446,6 +456,7 @@ impl Scene {
         match cur.style {
             CursorStyle::Block => {
                 paint(self, px, cy, w, ch);
+                self.glyph_bg = [cur.color.r, cur.color.g, cur.color.b];
                 let text = if alpha == 255 {
                     cur.text_color
                 } else {

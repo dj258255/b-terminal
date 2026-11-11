@@ -3758,6 +3758,14 @@ impl App {
         icon::apply(self.config.macos_icon, self.config.macos_custom_icon.as_deref());
         self.load_background();
         self.load_shaders();
+        // 열려 있는 GPU 창은 다음 프레임부터 새 섞기 공간으로 그린다(#405)
+        for w in std::iter::once(&mut self.w).chain(&mut self.others) {
+            let Some(g) = w.gfx.as_mut() else { continue };
+            if let Some(gpu) = g.gpu.as_mut() {
+                gpu.set_alpha_blending(self.config.alpha_blending);
+                g.window.request_redraw();
+            }
+        }
         self.load_fonts();
         self.for_each_window(|app| app.resize_all());
         self.register_hotkeys();
@@ -3985,6 +3993,15 @@ impl App {
         );
         if let Some(why) = fallback {
             log::warn!("GPU 길을 쓰지 못해 CPU 길로 그린다: {why}");
+        }
+        // 글자를 섞을 색 공간(#405). GPU 길에서만 뜻이 있다: CPU 길은 늘 sRGB 값 그대로 섞는다
+        let mut gpu = gpu;
+        match gpu.as_mut() {
+            Some(g) => g.set_alpha_blending(self.config.alpha_blending),
+            None if self.config.alpha_blending != bt_core::AlphaBlending::Native => {
+                log::warn!("alpha-blending: CPU 길은 native로만 섞습니다(GPU 길에서만 적용)");
+            }
+            None => {}
         }
         if gpu.is_some() {
             log::info!(
