@@ -99,7 +99,7 @@ impl App {
         let theme = self.config.theme.clone();
         let scale = self.scale;
         let Some(gfx) = self.w.gfx.as_mut() else { return };
-        let Some(fonts) = self.fonts.as_mut() else { return };
+        let Some(fonts) = self.w.fonts.as_mut() else { return };
         let Some(gpu) = gfx.gpu.as_mut() else { return };
         let size = gfx.window.inner_size();
         let (sw, sh) = (size.width, size.height);
@@ -230,7 +230,7 @@ impl App {
                 tabbar::draw_with_title_font(
                     &mut lower,
                     fonts,
-                    self.title_fonts.as_mut(),
+                    self.w.title_fonts.as_mut(),
                     &theme,
                     labels,
                     top_inset as i32,

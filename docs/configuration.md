@@ -59,7 +59,7 @@ config-file = ?~/.config/b-terminal/local   # ?가 붙으면 없어도 된다
 | `font-family` | 글꼴 이름(여러 번) | 넣어 둔 JetBrains Mono | 첫째가 기본, 나머지는 대체 글꼴(그 뒤에 한글·기호 기본 대체 글꼴이 붙음) |
 | `font-family-bold` / `-italic` / `-bold-italic` | 글꼴 이름 | 기본 글꼴의 그 꼴 | |
 | `font-feature` | 글꼴 기능(여러 번, 쉼표로 여럿): `-calt` 끔, `ss01` 켬, `cv01=2` 값 | 글꼴의 기본(calt·liga 켬) | 합자(`->` `!=` `===`)를 끄려면 `-calt`(JetBrains Mono·Fira Code). 커서 칸에서는 합자를 풀어 보입니다. 쓸 수 있는 모양: `calt`·`+calt`·`calt on`·`calt=1`(켬), `-calt`·`calt off`·`calt=0`(끔), `ss01=2`·`ss01 2`(값), 이름을 따옴표로 감싸도 됩니다(`"calt" off`). 읽지 못하는 설정은 경고하고 넘깁니다. 빈 값이면 지움 |
-| `font-size` | 포인트 | `13` | Cmd-= / Cmd-- / Cmd-0 |
+| `font-size` | 포인트 | `13` | 새 창의 처음 크기(`window-inherit-font-size = false`면 늘). Cmd-= / Cmd-- / Cmd-0은 지금 창만 바꿉니다. 설정을 다시 읽을 때 이 값이 바뀌었으면 모든 창이 새 값으로 바뀌고, 안 바뀌었으면 창마다 고른 크기를 그대로 둡니다 |
 | `adjust-cell-height` / `adjust-cell-width` | `10%` 또는 포인트(`2`, `-1`) | 없음 | 높이를 바꾸면 글자를 가운데에 둡니다 |
 | `adjust-font-baseline` | `10%` 또는 포인트 | 없음 | 셀 아래에서 기준선까지의 거리를 바꿉니다. 늘리면 글자가 위로 올라갑니다 |
 | `adjust-underline-position` / `adjust-strikethrough-position` / `adjust-overline-position` | `10%` 또는 포인트 | 없음 | 셀 위에서 그 줄 위 가장자리까지의 거리. 늘리면 줄이 아래로 내려가고, 줄이 셀 안에 들어가게 자릅니다. 밑줄은 곧은 줄·이중·물결·점·파선 다섯 모양 모두에 적용됩니다. 윗줄(SGR 53)의 기본 자리는 셀 맨 위입니다 |
@@ -147,7 +147,7 @@ config-file = ?~/.config/b-terminal/local   # ?가 붙으면 없어도 된다
 | `window-vsync` | `true` `false` | `true` | GPU 길로 그리는 창을 화면 갱신에 맞춰 올릴지 정합니다(Ghostty와 같음, macOS 전용). `true`는 화면 갱신에 맞춰 그려 찢어짐이 적지만 입력 지연이 늘 수 있습니다. `false`는 맞추지 않고 가능한 한 자주 그려 지연이 줄 수 있지만 화면이 찢어질 수 있고, 부하가 크면 CPU·전력을 더 씁니다. Ghostty는 macOS 14.4 이상에서 맞추지 않은 그리기가 커널 패닉을 낼 수 있고 DisplayLink를 쓰는 외부 화면에서 느려질 수 있다고 적어 기본을 `true`로 둡니다. b-terminal에서 `false`는 GPU 길 창의 올리기 방식을 `Immediate`로 바꾸고 프레임 미룸도 끕니다. 화면이 `Immediate`를 주지 않으면 경고하고 `true`처럼 동작합니다. 설정을 다시 읽어도 이미 열린 창은 그대로이고 새로 여는 창부터 바뀝니다. CPU 길 창에는 영향이 없습니다. Apple M2 Pro 내장 120Hz 화면에서 잰 값(세 쌍): `seq 1 300000`이 0.57~0.93초에서 0.39~0.43초로 빨라졌지만, 출력 중 그림판을 얻느라 프레임마다 약 15ms씩 메인 스레드가 막혔습니다(`true`는 0.03ms 안팎). 키를 친 뒤 보이기까지의 지연은 재지 않았습니다 |
 | `drag-handle` | `always` `auto` `never` | `auto` | 분할 칸을 마우스로 끌어 다시 배치하는 손잡이입니다(Ghostty 1.4와 같은 이름). 손잡이는 칸 위쪽 가운데의 점 셋(`…`)입니다. 손잡이를 누른 채 다른 칸 위로 끌면 그 칸에서 가장 가까운 변(위·아래·왼·오른쪽)의 절반이 강조색(커서 색)으로 덮여 놓을 자리를 미리 보이고, 놓으면 끌던 칸을 떼어 그 칸의 그쪽으로 반반 나눠 붙입니다. Esc나 칸 밖(경계선·탭 줄)·자기 자신 위에서 놓으면 취소입니다. 옮긴 뒤에는 옮긴 칸을 고릅니다. `always`는 칸이 하나여도 점이 늘 보입니다. `auto`는 칸이 둘 이상이고 마우스가 칸 위쪽 띠(칸 높이의 20%, 최소 손잡이 높이)에 있을 때 보입니다. Ghostty macOS는 칸이 하나여도 보이지만(끌어서 새 창을 만듦) b-terminal에는 그 기능이 없어 숨깁니다. `never`는 끕니다. 칸이 하나이거나 칸 하나를 크게 보는 중이면 누르는 것은 손잡이가 아니라 평소처럼 칸이 받습니다. 손잡이를 누른 것은 마우스 보고 모드의 프로그램에도 보내지 않고 글도 고르지 않습니다. 손잡이 위에서는 포인터가 잡는 손이 됩니다. 점의 크기와 자리, 띠 높이는 Ghostty macOS 소스(`SurfaceGrabHandle.swift`)의 글을 따랐고 Ghostty 창과 나란히 놓고 비교하지는 않았습니다. 다른 창·탭으로 끌기와 끌어서 새 창 만들기는 없습니다 |
 | `window-inherit-working-directory` / `tab-inherit-working-directory` / `split-inherit-working-directory` | `true` `false` | `true` | 새 창·탭·분할이 고른 칸의 작업 폴더를 이어받습니다(Ghostty와 같음). 켜져 있으면 `working-directory`보다 앞서고, 끄면 `working-directory`를 씁니다. 이어받을 폴더를 알 수 없으면 `working-directory`입니다. 셸 통합이 OSC 7(`file://`, `kitty-shell-cwd://`)로 알린 폴더가 먼저이고, 알린 적이 없으면 칸 프로세스의 현재 폴더를 씁니다. 셸이 빈 OSC 7을 보내 폴더를 지웠으면 프로세스 폴더 대신 `working-directory`입니다. 전에는 `working-directory = inherit`일 때만 이어받았는데, 이제 `home`·경로여도 이어받습니다 |
-| `window-inherit-font-size` | `true` `false` | `true` | 값만 받고 하는 일이 없습니다. b-terminal은 글자 크기가 앱 전체 하나라 새 창은 늘 지금 크기(⌘+/⌘-로 바꾼 값)를 씁니다. `false`(새 창은 `font-size`로)를 지키려면 창마다 글자 크기를 두어야 해서 이번에는 하지 않았습니다 |
+| `window-inherit-font-size` | `true` `false` | `true` | 글자 크기는 창마다 따로입니다. 새 창이 지금 창(⌘+/⌘-/⌘0으로 바꾼 값 그대로)의 글자 크기로 열립니다(Ghostty와 같음). `false`면 새 창은 `font-size`로 엽니다. 지금 창이 없으면(마지막 창을 닫고 앱이 남은 상태에서 btctl로 연 창) 마지막으로 보던 창의 크기이고, 그것도 없으면 `font-size`입니다. 새 탭·분할은 같은 창이라 그 창의 크기를 그대로 씁니다(이 설정과 상관없음). 퀵 터미널 창은 늘 `font-size`로 엽니다. 탭을 새 창으로 떼어 내면(`move_tab_to_new_window`) 보던 크기 그대로입니다. 한계: Ghostty는 글자 크기가 칸(surface)마다지만 b-terminal은 창마다라, 한 창의 분할 칸은 모두 같은 크기입니다. `window-save-state`는 창마다의 글자 크기를 적지 않아 되살린 창은 모두 `font-size`로 엽니다 |
 | `window-new-tab-position` | `current` `end` | `current` | 새 탭을 둘 자리. `current`는 지금 탭 바로 뒤, `end`는 맨 끝. 전에는 늘 맨 끝이었습니다 |
 | `window-show-tab-bar` | `auto` `always` `never` | `auto` | 탭 막대를 언제 보일지. `auto`는 탭이 둘 이상일 때만, `always`는 하나여도, `never`는 안 보임(탭은 키·팔레트로 다룸). 막대가 없는 동안 진행 막대는 칸 맨 위에 그립니다 |
 | `mouse-hide-while-typing` | `true` / `false` | `false` | |
@@ -297,7 +297,7 @@ keybind = nav/escape=deactivate_key_table
 | `equalize_splits` | 같은 줄에 선 칸들을 같은 크기로 | `super+ctrl+equal` |
 | `toggle_split_zoom` | 고른 칸만 탭 전체로 크게 보기 / 되돌리기 | `super+shift+enter` |
 | `undo` / `redo` | 닫은 칸·탭을 원래 자리에 되살리기(`undo-timeout` 안에서) / 되살린 것을 다시 닫기. 되살릴 것이 없으면 키는 프로그램으로 갑니다(Ghostty의 `performable`과 같다) | `super+z` `super+shift+t` / `super+shift+z`(macOS만) |
-| `increase_font_size:N` / `decrease_font_size:N` / `reset_font_size` | 글자 크기 | `super+=` / `super+-` / `super+0` |
+| `increase_font_size:N` / `decrease_font_size:N` / `reset_font_size` | 지금 창의 글자 크기(다른 창은 그대로). `reset_font_size`는 `font-size`로 | `super+=` / `super+-` / `super+0` |
 | `scroll_page_up` / `scroll_page_down` | 스크롤백 한 쪽 | `shift+page_up` `super+page_up` / 아래도 같음 |
 | `jump_to_prompt:-1` / `jump_to_prompt:1` | 앞·뒤 프롬프트로(셸 통합) | `super+arrow_up` / `super+arrow_down` |
 | `scroll_to_top` / `scroll_to_bottom` | 맨 위 / 맨 아래 | `shift+home` `super+home` / `shift+end` `super+end` |
@@ -339,7 +339,7 @@ keybind = nav/escape=deactivate_key_table
 | `scroll_to_row:N` | 스크롤백 맨 위를 0으로 센 N번째 줄이 화면 맨 위에 오게 스크롤. 범위를 넘으면 맨 아래 | (없음) |
 | `scroll_to_selection` | 고른 곳이 보이게 스크롤(시작 줄이 이미 보이면 그대로, 아니면 그 줄이 맨 위로). 고른 것이 없으면 아무것도 하지 않습니다 | (없음) |
 | `search:글` / `search_selection` | 그 글로 / 고른 글로 찾기를 시작하고 찾기 막대에 보입니다. 이미 찾는 중이면 글을 바꿉니다. `search:`처럼 글이 비면 찾기만 취소하고 막대는 닫지 않습니다. 글은 이스케이프를 풀지 않고, 첫 줄·256자까지 씁니다. `search_selection`은 고른 것이 없으면 아무것도 하지 않습니다 | (없음) |
-| `set_font_size:N` | 글자 크기를 N pt로(`increase_font_size`와 같이 6~72로 제한) | (없음) |
+| `set_font_size:N` | 지금 창의 글자 크기를 N pt로(`increase_font_size`와 같이 6~72로 제한) | (없음) |
 | `unbind` | 그 트리거 지우기 | |
 
 ### 받기만 하는 키 묶음 동작

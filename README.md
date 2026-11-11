@@ -27,7 +27,7 @@ open ~/Applications/b-terminal.app
 | 키(macOS 기본) | 하는 일 |
 |---|---|
 | Cmd-C / Cmd-V | 복사 / 붙여넣기(괄호 붙여넣기 모드면 감싸서). 고르기만 해도 복사됩니다(copy-on-select) |
-| Cmd-= / Cmd-- / Cmd-0 | 글자 크기 |
+| Cmd-= / Cmd-- / Cmd-0 | 지금 창의 글자 크기 |
 | Cmd-N / Cmd-T / Cmd-W / Cmd-Opt-W | 새 창 / 새 탭 / 칸 닫기(칸이 하나면 탭) / 탭 닫기 |
 | Cmd-1~8, Cmd-9, Cmd-Shift-[ / Cmd-Shift-] | 탭 옮기기(탭 줄을 눌러도 됩니다) |
 | Cmd-D / Cmd-Shift-D | 화면을 오른쪽 / 아래로 나누기 |
