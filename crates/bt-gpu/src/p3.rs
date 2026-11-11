@@ -1,4 +1,4 @@
-//! 실험 E26(#466): sRGB 값을 Display P3 값으로 바꾼다. 화면(surface)을 Display P3로 설정하면 합성기가 P3에서 화면으로
+//! `window-colorspace = srgb`(#466): sRGB 값을 Display P3 값으로 바꾼다. 화면(surface)을 Display P3로 설정하면 합성기가 P3에서 화면으로
 //! 색을 맞추므로, 마지막에 바꿔 쓰면 CPU 길의 `window-colorspace = srgb`와 같은 색이 된다.
 
 /// 선형 sRGB(D65) → 선형 Display P3(D65) 행 우선 3x3.
@@ -40,7 +40,7 @@ pub fn srgb_to_display_p3_u8(rgb: [u8; 3]) -> [u8; 3] {
     srgb_to_display_p3(rgb.map(|c| c as f32 / 255.0)).map(|c| (c * 255.0).round() as u8)
 }
 
-/// 마지막 변환 패스: 중간 텍스처(sRGB 값)를 읽어 surface(Display P3 값)에 쓴다(안 E26-나)
+/// 마지막 변환 패스: 중간 텍스처(sRGB 값)를 읽어 surface(Display P3 값)에 쓴다
 pub(crate) struct P3Convert {
     pipeline: wgpu::RenderPipeline,
     layout: wgpu::BindGroupLayout,

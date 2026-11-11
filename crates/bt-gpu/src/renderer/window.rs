@@ -26,11 +26,11 @@ pub(super) struct WindowSurface {
     pacer: FramePacer,
     /// 창이 보이는지 아는 것. 모르거나 가려졌으면 층을 올리기 전에 그림판부터 얻어 본다(ADR-038)
     visibility: SurfaceVisibility,
-    /// 실험 E26(#466): surface를 Display P3로 두고 마지막에 sRGB 값을 P3 값으로 바꿔 쓴다. 꺼져 있으면 없다
+    /// `window-colorspace = srgb`(#466): surface를 Display P3로 두고 마지막에 sRGB 값을 P3 값으로 바꿔 쓴다. 꺼져 있으면 없다
     p3: Option<P3Out>,
 }
 
-/// E26 변환 패스와 그 앞 중간 텍스처(창 크기, surface와 같은 꼴). 안 (나): 모든 파이프라인(셀·층·사용자 셰이더·덧그림)이 이 텍스처에
+/// sRGB 변환 패스와 그 앞 중간 텍스처(창 크기, surface와 같은 꼴). 안 (나): 모든 파이프라인(셀·층·사용자 셰이더·덧그림)이 이 텍스처에
 /// 그대로 그리고, 마지막에 한 번 바꿔 surface에 쓴다. 그래서 섞기는 늘 sRGB 값에서 일어나 CPU `srgb`와 같다
 pub(super) struct P3Out {
     convert: P3Convert,
@@ -111,7 +111,7 @@ impl GpuRenderer {
         Self::open_window(target, size, transparent, vsync, false)
     }
 
-    /// 실험 E26(#466): `new_for_window_with`에 surface를 Display P3로 설정하고 sRGB 값을 P3 값으로 바꿔 쓰는 길을 더한다
+    /// `window-colorspace = srgb`(#466): `new_for_window_with`에 surface를 Display P3로 설정하고 sRGB 값을 P3 값으로 바꿔 쓰는 길을 더한다
     /// (`window-colorspace = srgb`용). surface가 Display P3를 주지 않으면 경고를 남기고 없다(앱이 CPU 길로 돌아간다)
     pub fn new_for_window_srgb_p3(
         target: impl Into<wgpu::SurfaceTarget<'static>>,
@@ -145,7 +145,7 @@ impl GpuRenderer {
         };
         if p3 && !caps.color_spaces(format).contains(wgpu::SurfaceColorSpaces::DISPLAY_P3) {
             log::warn!(
-                "E26 sRGB: 창 surface가 {format:?}에 Display P3를 주지 않는다({:?}): CPU 길로 돌아간다",
+                "window-colorspace = srgb: 창 surface가 {format:?}에 Display P3를 주지 않는다({:?}): CPU 길로 돌아간다",
                 caps.color_spaces(format)
             );
             return None;
@@ -207,7 +207,7 @@ impl GpuRenderer {
         }
         log::info!("GPU 창 길: {} ({format:?}, {alpha_mode:?})", me.adapter_name());
         if p3 {
-            log::info!("E26 sRGB: GPU 길, surface DisplayP3, 변환 나(중간 텍스처 + 마지막 변환 패스)");
+            log::info!("sRGB 색 맞춤: GPU 길(surface Display P3 + 마지막 변환 패스)");
             let convert = P3Convert::new(&me.device, format);
             let mut me = me;
             if let Some(w) = me.window.as_mut() {
@@ -218,7 +218,7 @@ impl GpuRenderer {
         Some(me)
     }
 
-    /// E26: 중간 텍스처에 늘 하던 대로 그리고(`encode_frame`) 마지막에 변환 패스로 surface에 쓴다
+    /// `srgb`: 중간 텍스처에 늘 하던 대로 그리고(`encode_frame`) 마지막에 변환 패스로 surface에 쓴다
     fn encode_frame_p3(&mut self, surface_view: &wgpu::TextureView, size: (u32, u32)) -> Vec<wgpu::CommandBuffer> {
         let format = self.format;
         let twin = srgb_twin(format);

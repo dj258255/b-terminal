@@ -1,4 +1,4 @@
-// 실험 E26(#466): 중간 텍스처의 sRGB 값을 Display P3 값으로 바꿔 surface에 쓴다. `p3.rs`의 `srgb_to_display_p3`와 같은 식.
+// `window-colorspace = srgb`(#466): 중간 텍스처의 sRGB 값을 Display P3 값으로 바꿔 surface에 쓴다. `p3.rs`의 `srgb_to_display_p3`와 같은 식.
 // 입력은 곱한 알파(창이 투명일 때)일 수 있으므로 알파로 나눠 바꾸고 다시 곱한다
 
 @group(0) @binding(0) var src: texture_2d<f32>;
