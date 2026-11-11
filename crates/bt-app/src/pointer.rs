@@ -56,6 +56,9 @@ pub struct PointerInput {
     /// 지금 누른 수식 키 그대로 마우스를 프로그램이 받는다(마우스 보고 모드가 켜져 있고 Shift가 그것을 막지 않는다).
     /// 프로그램이 받으면 마우스는 프로그램의 것이라 Shift 모양을 보이지 않는다
     pub reports_to_program: bool,
+    /// 칸의 마우스 보고 모드(X10·버튼·움직임)가 켜져 있다. `reports_to_program`과 달리 Shift나 `mouse-reporting`과 상관없이
+    /// 모드 자체만 본다(Ghostty `terminal.flags.mouse_event != .none`). 정한 모양이 없을 때의 기본이 이것으로 갈린다
+    pub mouse_mode: bool,
     /// 사각 고르기 수식 키를 누르고 있다(macOS Option, 그 밖에는 Ctrl+Alt. `mouse::is_rectangle_select`)
     pub rectangle: bool,
     /// 마우스 포인터를 숨겼다(입력 중 숨김)
@@ -78,7 +81,9 @@ pub enum HandleCursor {
 
 /// 지금 보일 포인터. Ghostty(surface_mouse.zig)처럼 링크 위의 손가락이 가장 앞서고, 그다음 사각 고르기 수식 키를 누른 채
 /// 마우스가 고르기를 하게 될 때의 십자(`crosshair`), 그다음 Shift를 누른 채 고르기를 하게 될 때의 I자, 아니면 프로그램이 정한
-/// 모양, 정한 것이 없으면(OSC 22를 받은 적 없거나 되돌렸으면) 기본 화살표를 쓴다. 마우스를 숨겼으면 키가 모양을 바꾸지 않는다.
+/// 모양, 정한 것이 없으면(OSC 22를 받은 적 없거나 되돌렸으면) 마우스 보고 모드가 꺼져 있을 때 I자(`text`), 켜져 있을 때
+/// 화살표를 쓴다(Ghostty `Terminal.mouse_shape` 기본값 `.text`, `stream_handler.zig`가 모드를 켜면 `.default`·끄면 `.text`,
+/// `OSC 22` 지움은 모드에 따라 `.default`·`.text`). 마우스를 숨겼으면 키가 모양을 바꾸지 않는다.
 /// 마우스 보고 중에는 Shift가 보고를 끊을 때(`reports_to_program`이 거짓)만 십자·I자가 된다(Ghostty `keyToMouseShape`와 같다)
 pub fn decide(input: PointerInput) -> CursorIcon {
     // 칸을 끌어 옮기는 중이나 손잡이 위에서는 잡는 손이 모든 것에 앞선다(손잡이 위는 칸의 글이 아니다)
@@ -96,7 +101,12 @@ pub fn decide(input: PointerInput) -> CursorIcon {
     if input.shift && !input.reports_to_program && !input.hidden {
         return CursorIcon::Text;
     }
-    input.program.map_or(CursorIcon::Default, icon_for)
+    let base = if input.mouse_mode {
+        CursorIcon::Default
+    } else {
+        CursorIcon::Text
+    };
+    input.program.map_or(base, icon_for)
 }
 
 #[cfg(test)]
@@ -182,7 +192,60 @@ mod tests {
         let with = |p| PointerInput { program: p, ..input() };
         assert_eq!(decide(with(Some(MouseShape::Crosshair))), CursorIcon::Crosshair);
         assert_eq!(decide(with(Some(MouseShape::Default))), CursorIcon::Default);
-        assert_eq!(decide(with(None)), CursorIcon::Default);
+        // 정한 것이 없으면 마우스 보고가 꺼진 칸은 I자(Ghostty 기본)
+        assert_eq!(decide(with(None)), CursorIcon::Text);
+    }
+
+    #[test]
+    fn mouse_reporting_mode_makes_the_default_an_arrow() {
+        // 마우스 보고 모드가 켜져 있으면 정한 모양이 없을 때 화살표다(Ghostty는 모드를 켜면 default, 끄면 text)
+        let on = PointerInput {
+            mouse_mode: true,
+            reports_to_program: true,
+            ..input()
+        };
+        assert_eq!(decide(on), CursorIcon::Default);
+        // 프로그램이 정한 모양은 모드와 상관없이 그대로
+        assert_eq!(
+            decide(PointerInput {
+                program: Some(MouseShape::Crosshair),
+                ..on
+            }),
+            CursorIcon::Crosshair
+        );
+        assert_eq!(
+            decide(PointerInput {
+                program: Some(MouseShape::Text),
+                ..on
+            }),
+            CursorIcon::Text
+        );
+        // 모드는 켜져 있지만 보고하지 않는 때(mouse-reporting 끔·읽기 전용 칸)도 Ghostty처럼 모드만 본다
+        assert_eq!(
+            decide(PointerInput {
+                reports_to_program: false,
+                ..on
+            }),
+            CursorIcon::Default
+        );
+        // Shift가 보고를 끊으면 고르기라 I자
+        assert_eq!(
+            decide(PointerInput {
+                shift: true,
+                reports_to_program: false,
+                ..on
+            }),
+            CursorIcon::Text
+        );
+        // 링크 손가락과 칸 끌기 손잡이는 그대로 앞선다
+        assert_eq!(decide(PointerInput { over_link: true, ..on }), CursorIcon::Pointer);
+        assert_eq!(
+            decide(PointerInput {
+                handle: HandleCursor::Over,
+                ..on
+            }),
+            CursorIcon::Grab
+        );
     }
 
     #[test]
@@ -249,7 +312,15 @@ mod tests {
             ..input()
         };
         assert_eq!(decide(i), CursorIcon::Pointer);
-        assert_eq!(decide(PointerInput { program: None, ..i }), CursorIcon::Default);
+        // 프로그램이 마우스를 받고 있으니 모드가 켜져 있고, 정한 모양이 없으면 화살표
+        assert_eq!(
+            decide(PointerInput {
+                program: None,
+                mouse_mode: true,
+                ..i
+            }),
+            CursorIcon::Default
+        );
     }
 
     #[test]
