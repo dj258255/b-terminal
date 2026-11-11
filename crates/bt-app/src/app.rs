@@ -689,10 +689,18 @@ struct Gfx {
     first: FirstFrame,
 }
 
+/// `from`에서 `to`까지의 ms. `to`가 앞이면 음수(첫 프레임 로그, 실험 E12)
+fn since_ms(from: Instant, to: Instant) -> f64 {
+    let ms = |d: Duration| d.as_secs_f64() * 1000.0;
+    if to >= from { ms(to - from) } else { -ms(from - to) }
+}
+
 /// 창을 만든 때, 첫 프레임을 올린 때, macOS가 창이 보이게 됐다고 처음 알린 때(실험 E10).
 /// 둘 중 나중에 오는 쪽에서 한 번 로그에 남긴다
 struct FirstFrame {
     made: Instant,
+    /// 아직 첫 프레임을 올리지 못했을 때 마지막으로 다시 그리기를 시작한 때(첫 프레임이 언제 시작됐는지 남긴다)
+    began: Option<Instant>,
     presented: Option<Instant>,
     visible: Option<Instant>,
 }
@@ -701,8 +709,16 @@ impl FirstFrame {
     fn new(made: Instant) -> Self {
         Self {
             made,
+            began: None,
             presented: None,
             visible: None,
+        }
+    }
+
+    /// 다시 그리기를 시작한다. 첫 프레임을 올리기 전까지는 그때를 적어 둔다
+    fn began(&mut self) {
+        if self.presented.is_none() {
+            self.began = Some(Instant::now());
         }
     }
 
@@ -717,7 +733,13 @@ impl FirstFrame {
         let since_start = crate::STARTED.get().map_or(0.0, |t| ms(now - *t));
         let after_visible = self.visible.map_or_else(
             || "창이 보이기 전".to_string(),
-            |v| format!("창이 보인 뒤 {:.1}ms", ms(now - v)),
+            |v| {
+                // 그 프레임의 다시 그리기를 시작한 때(창이 보인 때 기준, 앞이면 음수)
+                let began = self
+                    .began
+                    .map_or(String::new(), |b| format!("(그 프레임 시작 {:+.1}ms)", since_ms(v, b)));
+                format!("창이 보인 뒤 {:.1}ms{began}", ms(now - v))
+            },
         );
         log::info!(
             "첫 프레임({path}): 창을 만든 뒤 {:.1}ms, 앱을 띄운 뒤 {since_start:.1}ms, {after_visible}",
@@ -4815,6 +4837,9 @@ impl App {
 
     fn redraw(&mut self) {
         self.redraw_pending.store(false, Ordering::Release);
+        if let Some(g) = self.w.gfx.as_mut() {
+            g.first.began();
+        }
         // GPU 길: 가려진 창은 그리지 않고, 그림판 얻기가 막힐 것 같으면 미룬다(ADR-038)
         if self.gpu_frame_gate() {
             return;
@@ -5900,12 +5925,13 @@ impl ApplicationHandler<UserEvent> for App {
             WindowEvent::Occluded(occluded) => {
                 self.w.occluded = occluded;
                 self.sync_visibility();
-                // 보이게 되면 가려진 동안 건너뛴 내용을 그린다(GPU 길은 층을 통째로, ADR-038)
+                // 보이게 되면 가려진 동안 건너뛴 내용을 그린다(GPU 길은 층을 통째로, ADR-038).
+                // 요청만 하면 winit이 이벤트 고리 끝까지 미뤄 빈 창이 0~49ms 더 보였다(실험 E12): 이 자리에서 바로 그린다
                 if !occluded {
                     if let Some(g) = self.w.gfx.as_mut() {
                         g.first.became_visible();
                     }
-                    self.request_redraw();
+                    self.redraw();
                 }
             }
             WindowEvent::ThemeChanged(theme) => self.system_look_changed(theme == winit::window::Theme::Dark),
@@ -6896,6 +6922,15 @@ mod tests {
         assert!(resize_overlay_due(AfterFirst, late));
         assert!(resize_overlay_due(Always, early));
         assert!(!resize_overlay_due(Never, late));
+    }
+
+    #[test]
+    fn since_ms_is_signed() {
+        let a = Instant::now();
+        let b = a + Duration::from_micros(7_500);
+        assert!((since_ms(a, b) - 7.5).abs() < 1e-9, "뒤면 양수");
+        assert!((since_ms(b, a) + 7.5).abs() < 1e-9, "앞이면 음수");
+        assert_eq!(since_ms(a, a), 0.0);
     }
 
     #[test]
