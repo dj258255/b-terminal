@@ -354,6 +354,7 @@ struct Inner {
     /// 셀 크기(px). 그림을 칸에 맞출 때 쓴다
     cell: (u32, u32),
     /// 고르기의 움직이는 끝점(#138 adjust_selection). 고르기를 시작·늘이면 바뀐다
+    sel_start: Option<Point>,
     sel_end: Option<Point>,
 }
 
@@ -704,6 +705,7 @@ impl Session {
                     .map_or(crate::graphics::DEFAULT_STORE, |n| n as usize),
             ),
             cell: (size.cell_width.max(1) as u32, size.cell_height.max(1) as u32),
+            sel_start: None,
             sel_end: None,
         }));
         let integrated = Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -1382,16 +1384,45 @@ impl Session {
             SelectKind::Simple => SelectionType::Simple,
             SelectKind::Word => SelectionType::Semantic,
             SelectKind::Line => SelectionType::Lines,
+            SelectKind::Block => SelectionType::Block,
         };
         g.term.selection = Some(Selection::new(ty, point, Side::Left));
+        g.sel_start = Some(point);
         g.sel_end = Some(point);
+    }
+
+    /// 끄는 중인 글자 고르기를 사각으로 바꾸거나 되돌린다(Ghostty는 끌 때마다 그 순간의 수식 키로 사각 여부를 정한다).
+    /// 낱말·줄 고르기는 바꾸지 않는다(Ghostty도 낱말·줄 끌기는 사각을 보지 않는다). 고른 것이 없으면 아무것도 안 한다
+    pub fn select_set_block(&self, block: bool) {
+        let mut g = self.inner.lock();
+        if let Some(sel) = g.term.selection.as_mut() {
+            match (sel.ty, block) {
+                (SelectionType::Simple, true) => sel.ty = SelectionType::Block,
+                (SelectionType::Block, false) => sel.ty = SelectionType::Simple,
+                _ => {}
+            }
+        }
     }
 
     pub fn select_update(&self, col: usize, row: usize) {
         let mut g = self.inner.lock();
         let point = viewport_point(&g.term, col, row);
+        let start = g.sel_start;
         if let Some(sel) = g.term.selection.as_mut() {
-            sel.update(point, Side::Right);
+            match start {
+                // 사각은 왼쪽으로 끌 때 누른 칸과 끝 칸이 빠지지 않게 가장자리 쪽을 맞춘다(엔진은 시작 칸의 쪽을 처음에 정해 둔다)
+                Some(st) if sel.ty == SelectionType::Block => {
+                    let (from, to) = if point.column < st.column {
+                        (Side::Right, Side::Left)
+                    } else {
+                        (Side::Left, Side::Right)
+                    };
+                    let mut next = Selection::new(SelectionType::Block, st, from);
+                    next.update(point, to);
+                    *sel = next;
+                }
+                _ => sel.update(point, Side::Right),
+            }
         }
         g.sel_end = Some(point);
     }
@@ -1417,6 +1448,7 @@ impl Session {
     pub fn select_clear(&self) {
         let mut g = self.inner.lock();
         g.term.selection = None;
+        g.sel_start = None;
         g.sel_end = None;
     }
 
@@ -1522,6 +1554,8 @@ pub enum SelectKind {
     Simple,
     Word,
     Line,
+    /// 사각(세로 덩어리) 고르기. 줄을 따라가지 않고 두 끝점이 이루는 사각 안의 칸만 고른다(#433)
+    Block,
 }
 
 fn dirs_home() -> Option<PathBuf> {

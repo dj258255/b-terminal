@@ -1,6 +1,7 @@
 //! 마우스 보고(xterm 9/1000/1002/1003, 형식 1005/1006/1015/1016). vim·htop·less 같은 프로그램이 마우스를 쓸 때 켠다
 
 use bt_core::config::{MiddleClickAction, MouseShiftCapture};
+use bt_term::SelectKind;
 use std::time::Duration;
 
 /// 이 클릭·움직임·휠을 프로그램(마우스 보고)에 보내는가. `mouse-reporting`을 끄면 늘 아니오.
@@ -8,6 +9,23 @@ use std::time::Duration;
 /// 프로그램이 XTSHIFTESCAPE로 정한 값(`program`)이 있으면 그 값을, 없으면 설정 값을 따른다(#327)
 pub fn reports_to_program(reporting: bool, capture: MouseShiftCapture, program: Option<bool>, shift: bool) -> bool {
     reporting && (!shift || capture.allows(program))
+}
+
+/// 끌면 사각으로 고르게 하는 수식 키인가(Ghostty `surface_mouse.zig` `isRectangleSelectState`, #433).
+/// macOS는 Option(alt) 하나, 그 밖에는 Ctrl 또는 Super와 Alt를 함께
+pub fn is_rectangle_select(macos: bool, alt: bool, ctrl: bool, super_key: bool) -> bool {
+    if macos { alt } else { (ctrl || super_key) && alt }
+}
+
+/// 왼쪽 단추를 누른 횟수로 정하는 고르기 종류. 두 번은 낱말, 세 번은 줄, 한 번은 글자이고 사각 수식 키가 있으면 사각이다.
+/// 낱말·줄 고르기는 사각을 보지 않는다(Ghostty `SelectionGesture.drag`는 한 번 누르기(cell)에서만 `rectangle`을 쓴다)
+pub fn select_kind(clicks: u8, rectangle: bool) -> SelectKind {
+    match clicks {
+        2 => SelectKind::Word,
+        3 => SelectKind::Line,
+        _ if rectangle => SelectKind::Block,
+        _ => SelectKind::Simple,
+    }
 }
 
 /// 두 번·세 번 누르기 간격. 설정이 0이면 플랫폼 값(macOS는 OS 설정, 그 밖에는 500ms)
@@ -277,6 +295,33 @@ pub fn encode(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #433: 사각 고르기 수식 키. macOS는 Option 하나, 그 밖에는 Ctrl(또는 Super)+Alt(Ghostty surface_mouse.zig isRectangleSelectState)
+    #[test]
+    fn rectangle_select_modifiers_follow_ghostty() {
+        // macOS: Option(alt)만 보고, 다른 키는 상관없다
+        assert!(is_rectangle_select(true, true, false, false));
+        assert!(is_rectangle_select(true, true, true, true));
+        assert!(!is_rectangle_select(true, false, true, true), "Option 없이는 아니다");
+        assert!(!is_rectangle_select(true, false, false, false));
+        // 그 밖: Alt만으로는 아니고 Ctrl 또는 Super가 함께여야 한다
+        assert!(!is_rectangle_select(false, true, false, false));
+        assert!(is_rectangle_select(false, true, true, false));
+        assert!(is_rectangle_select(false, true, false, true));
+        assert!(!is_rectangle_select(false, false, true, true), "Alt 없이는 아니다");
+    }
+
+    /// #433: 누르기 횟수가 낱말·줄을 정하고, 한 번 누르기만 사각 여부를 따른다(낱말·줄 고르기는 사각을 보지 않는다)
+    #[test]
+    fn select_kind_follows_clicks_and_only_single_click_takes_the_rectangle() {
+        use bt_term::SelectKind::*;
+        assert_eq!(select_kind(1, false), Simple);
+        assert_eq!(select_kind(1, true), Block);
+        assert_eq!(select_kind(2, false), Word);
+        assert_eq!(select_kind(2, true), Word);
+        assert_eq!(select_kind(3, false), Line);
+        assert_eq!(select_kind(3, true), Line);
+    }
 
     #[test]
     fn report_decision() {

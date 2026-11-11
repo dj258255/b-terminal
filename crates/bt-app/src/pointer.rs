@@ -56,6 +56,8 @@ pub struct PointerInput {
     /// 지금 누른 수식 키 그대로 마우스를 프로그램이 받는다(마우스 보고 모드가 켜져 있고 Shift가 그것을 막지 않는다).
     /// 프로그램이 받으면 마우스는 프로그램의 것이라 Shift 모양을 보이지 않는다
     pub reports_to_program: bool,
+    /// 사각 고르기 수식 키를 누르고 있다(macOS Option, 그 밖에는 Ctrl+Alt. `mouse::is_rectangle_select`)
+    pub rectangle: bool,
     /// 마우스 포인터를 숨겼다(입력 중 숨김)
     pub hidden: bool,
     /// 칸 끌기 손잡이와 마우스의 관계(`drag-handle`)
@@ -74,9 +76,10 @@ pub enum HandleCursor {
     Dragging,
 }
 
-/// 지금 보일 포인터. Ghostty(surface_mouse.zig)처럼 링크 위의 손가락이 가장 앞서고, 그다음 Shift를 누른 채 마우스가 고르기를
-/// 하게 될 때의 I자, 아니면 프로그램이 정한 모양, 정한 것이 없으면(OSC 22를 받은 적 없거나 되돌렸으면) 기본 화살표를 쓴다.
-/// 마우스를 숨겼으면 키가 모양을 바꾸지 않는다. Ghostty의 사각 고르기 `crosshair`는 b-terminal에 사각 고르기가 없어 뺐다
+/// 지금 보일 포인터. Ghostty(surface_mouse.zig)처럼 링크 위의 손가락이 가장 앞서고, 그다음 사각 고르기 수식 키를 누른 채
+/// 마우스가 고르기를 하게 될 때의 십자(`crosshair`), 그다음 Shift를 누른 채 고르기를 하게 될 때의 I자, 아니면 프로그램이 정한
+/// 모양, 정한 것이 없으면(OSC 22를 받은 적 없거나 되돌렸으면) 기본 화살표를 쓴다. 마우스를 숨겼으면 키가 모양을 바꾸지 않는다.
+/// 마우스 보고 중에는 Shift가 보고를 끊을 때(`reports_to_program`이 거짓)만 십자·I자가 된다(Ghostty `keyToMouseShape`와 같다)
 pub fn decide(input: PointerInput) -> CursorIcon {
     // 칸을 끌어 옮기는 중이나 손잡이 위에서는 잡는 손이 모든 것에 앞선다(손잡이 위는 칸의 글이 아니다)
     match input.handle {
@@ -86,6 +89,9 @@ pub fn decide(input: PointerInput) -> CursorIcon {
     }
     if input.over_link {
         return CursorIcon::Pointer;
+    }
+    if input.rectangle && !input.reports_to_program && !input.hidden {
+        return CursorIcon::Crosshair;
     }
     if input.shift && !input.reports_to_program && !input.hidden {
         return CursorIcon::Text;
@@ -177,6 +183,46 @@ mod tests {
         assert_eq!(decide(with(Some(MouseShape::Crosshair))), CursorIcon::Crosshair);
         assert_eq!(decide(with(Some(MouseShape::Default))), CursorIcon::Default);
         assert_eq!(decide(with(None)), CursorIcon::Default);
+    }
+
+    #[test]
+    fn rectangle_modifiers_show_a_crosshair_when_the_mouse_selects() {
+        // 사각 고르기 수식 키를 누르면 십자다. 프로그램이 정한 모양과 Shift I자보다 앞선다(Ghostty keyToMouseShape)
+        let i = PointerInput {
+            rectangle: true,
+            program: Some(MouseShape::Progress),
+            ..input()
+        };
+        assert_eq!(decide(i), CursorIcon::Crosshair);
+        assert_eq!(
+            decide(PointerInput { shift: true, ..i }),
+            CursorIcon::Crosshair,
+            "Shift I자보다 앞"
+        );
+        assert_eq!(
+            decide(PointerInput { rectangle: false, ..i }),
+            CursorIcon::Progress,
+            "떼면 프로그램 모양"
+        );
+        // 링크 위 손가락이 앞서고, 칸 끌기 손잡이가 그보다 앞선다
+        assert_eq!(decide(PointerInput { over_link: true, ..i }), CursorIcon::Pointer);
+        assert_eq!(
+            decide(PointerInput {
+                handle: HandleCursor::Over,
+                ..i
+            }),
+            CursorIcon::Grab
+        );
+        // 마우스를 숨겼으면 모양을 바꾸지 않는다
+        assert_eq!(decide(PointerInput { hidden: true, ..i }), CursorIcon::Progress);
+        // 프로그램이 마우스를 받는 동안(고르기가 아니다)은 바꾸지 않는다
+        assert_eq!(
+            decide(PointerInput {
+                reports_to_program: true,
+                ..i
+            }),
+            CursorIcon::Progress
+        );
     }
 
     #[test]
