@@ -3221,7 +3221,7 @@ impl App {
         )
     }
 
-    /// 창의 마우스 포인터 모양을 맞춘다(#239): 링크 위면 손가락, 아니면 마우스 아래 칸이 OSC 22로 정한 모양, 없으면 화살표
+    /// 창의 마우스 포인터 모양을 맞춘다(#239): 링크 위면 손가락, 아니면 마우스 아래 칸이 OSC 22로 정한 모양, 없으면 마우스 보고 모드에 따라 I자·화살표
     fn refresh_pointer(&mut self) {
         let pos = self.w.cursor_pos;
         // 마우스가 글 영역 위에 있는 칸. 모양·Shift는 거기서만 일한다(#250)
@@ -3236,6 +3236,11 @@ impl App {
             shift: over.is_some() && self.mods.shift_key(),
             rectangle: over.is_some() && self.rectangle_select_mods(),
             reports_to_program: over.is_some_and(|i| self.mouse_reporting(i).is_some()),
+            mouse_mode: over.is_some_and(|i| {
+                self.panes
+                    .get(i)
+                    .is_some_and(|p| Self::mouse_mode_on(p.session.modes()))
+            }),
             hidden: self.w.pointer_hidden,
             handle: if self.w.pane_drag.is_active() {
                 crate::pointer::HandleCursor::Dragging
@@ -4080,6 +4085,11 @@ impl App {
         self.mods = keys::remapped_state(&self.config.key_remap, self.raw_mods);
     }
 
+    /// 칸의 마우스 보고 모드(X10·누름·버튼·움직임)가 켜져 있는가. Shift·`mouse-reporting`·읽기 전용과 상관없이 모드만 본다(#459)
+    fn mouse_mode_on(m: bt_term::Modes) -> bool {
+        m.mouse_x10 || m.mouse_report || m.mouse_drag || m.mouse_motion
+    }
+
     /// 칸 idx의 프로그램이 마우스 보고를 켰으면 그 모드
     fn mouse_reporting(&self, idx: usize) -> Option<bt_term::Modes> {
         let pane = self.panes.get(idx)?;
@@ -4090,16 +4100,14 @@ impl App {
         let m = pane.session.modes();
         // mouse-reporting을 끄면 보내지 않는다. Shift를 누르면 mouse-shift-capture가 true·always일 때만
         // 프로그램이 받고, 아니면 고르기를 한다(xterm 관례)
-        (m.mouse_report || m.mouse_drag || m.mouse_motion)
-            .then_some(m)
-            .filter(|_| {
-                mouse::reports_to_program(
-                    crate::toggles::mouse_reporting_on(self.config.mouse_reporting, pane.mouse_reporting_over),
-                    self.config.mouse_shift_capture,
-                    pane.session.mouse_shift_capture(),
-                    self.mods.shift_key(),
-                )
-            })
+        Self::mouse_mode_on(m).then_some(m).filter(|_| {
+            mouse::reports_to_program(
+                crate::toggles::mouse_reporting_on(self.config.mouse_reporting, pane.mouse_reporting_over),
+                self.config.mouse_shift_capture,
+                pane.session.mouse_shift_capture(),
+                self.mods.shift_key(),
+            )
+        })
     }
 
     fn send_mouse(&mut self, idx: usize, button: mouse::Button, action: mouse::Action) {
@@ -7087,6 +7095,21 @@ fn apply_hidden_from_dock(hidden: bt_core::config::MacHidden) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mouse_mode_counts_x10_like_ghostty() {
+        // 엔진은 DECSET 9를 켜면 다른 마우스 모드를 모두 지우고 X10만 남긴다. 그래도 보고 모드다(Ghostty `mouse_event`)
+        let m = |f: fn(&mut bt_term::Modes)| {
+            let mut m = bt_term::Modes::default();
+            f(&mut m);
+            App::mouse_mode_on(m)
+        };
+        assert!(!m(|_| {}));
+        assert!(m(|m| m.mouse_x10 = true), "X10만 켠 칸");
+        assert!(m(|m| m.mouse_report = true));
+        assert!(m(|m| m.mouse_drag = true));
+        assert!(m(|m| m.mouse_motion = true));
+    }
 
     #[test]
     fn inherited_cwd_forgets_process_cwd_after_empty_osc7() {
