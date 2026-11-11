@@ -225,6 +225,7 @@ fn run(name: &str, s: Setup, with_upper: bool) {
     g.set_cells_alpha(s.cells);
     g.set_backdrop(s.image.map(|_| BG));
     let panes = [PaneDraw {
+        font: 0,
         x: l.at.0,
         y: l.at.1,
         view: &view,

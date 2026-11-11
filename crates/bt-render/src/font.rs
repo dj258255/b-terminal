@@ -720,6 +720,12 @@ impl Fonts {
         self.metrics
     }
 
+    /// 이 글꼴 묶음이 글리프를 그리는 픽셀 크기(글자 크기 × 화면 배율). 같은 글자도 크기마다 다른 그림이라,
+    /// 글리프를 크기를 넘어 나눠 쓰는 캐시(GPU 아틀라스)가 열쇠에 넣는다(#422)
+    pub fn px(&self) -> f32 {
+        self.px
+    }
+
     /// 색 이모지 글꼴을 찾았는가
     pub fn has_color_emoji(&self) -> bool {
         self.emoji.is_some()

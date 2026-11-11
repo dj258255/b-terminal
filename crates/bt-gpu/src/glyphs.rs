@@ -4,8 +4,8 @@ use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::Arc;
 
-use bt_render::FontStyle;
 use bt_render::font::{CellMetrics, Glyph};
+use bt_render::{FontStyle, Fonts};
 
 use crate::atlas::Atlas;
 
@@ -55,12 +55,32 @@ pub struct Upload {
 /// 모자라면 두 배씩 큰다
 pub const COLOR_ATLAS_FIRST: u32 = 256;
 
+/// 글리프를 그린 글꼴 크기(#422). 같은 글자도 크기마다 다른 그림이라 열쇠에 이 값이 들어간다.
+/// 칸마다 글자 크기가 달라 한 프레임에 크기가 여럿 섞인다. 픽셀 크기(비트)와 칸 치수가 모두 같아야 같은 크기다
+/// (칸 치수만 같고 픽셀 크기가 다른 글꼴이나, 글꼴 설정만 바뀌어 칸 치수가 달라진 글꼴을 같게 보지 않는다)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SizeSig {
+    px_bits: u32,
+    metrics: CellMetrics,
+}
+
+impl SizeSig {
+    pub fn of(fonts: &Fonts) -> Self {
+        Self {
+            px_bits: fonts.px().to_bits(),
+            metrics: fonts.metrics(),
+        }
+    }
+}
+
 pub struct GlyphCache {
     pub gray: Atlas,
     pub color: Atlas,
-    map: HashMap<Key, Option<Entry>>,
-    /// 캐시를 채운 때의 글꼴 치수. 달라지면(글꼴 크기·배율 변경) 비운다
-    metrics: Option<CellMetrics>,
+    /// 열쇠는 (크기 번호, 글리프): 크기 번호는 `sizes`의 자리다
+    map: HashMap<(u16, Key), Option<Entry>>,
+    /// 캐시가 아는 글꼴 크기들(자리가 크기 번호)과 지금 글리프를 넣는 크기
+    sizes: Vec<SizeSig>,
+    cur: u16,
     pub uploads: Vec<Upload>,
 }
 
@@ -70,22 +90,42 @@ impl GlyphCache {
             gray: Atlas::new(initial, 1, max),
             color: Atlas::lazy(initial.min(COLOR_ATLAS_FIRST), 4, max),
             map: HashMap::new(),
-            metrics: None,
+            sizes: Vec::new(),
+            cur: 0,
             uploads: Vec::new(),
         }
     }
 
-    /// 글꼴 치수가 바뀌었으면 캐시를 비운다(아틀라스 크기는 그대로, 채움만 처음부터)
-    pub fn check_metrics(&mut self, m: CellMetrics) {
-        if self.metrics != Some(m) {
-            if self.metrics.is_some() {
-                self.map.clear();
-                self.gray = self.gray.emptied();
-                self.color = self.color.emptied();
-                self.uploads.clear();
-            }
-            self.metrics = Some(m);
+    /// 한 프레임을 만들기 전에 그 프레임이 쓰는 글꼴 크기를 알린다. 전에 쓰던 크기 가운데 이번에 쓰지 않는 것이 있으면
+    /// (글자 크기를 바꿨거나 그 크기의 칸이 사라졌다) 캐시를 비운다(아틀라스 크기는 그대로, 채움만 처음부터).
+    /// 크기가 여럿 섞인 프레임은 각 크기의 글리프를 열쇠로 구분해 한 아틀라스에 함께 둔다
+    pub fn begin_frame(&mut self, in_use: &[SizeSig]) {
+        if self.sizes.iter().any(|s| !in_use.contains(s)) {
+            self.map.clear();
+            self.gray = self.gray.emptied();
+            self.color = self.color.emptied();
+            self.uploads.clear();
+            self.sizes.clear();
         }
+        for s in in_use {
+            self.use_size(*s);
+        }
+    }
+
+    /// 이어서 넣고 찾을 글리프의 글꼴 크기를 고른다. 처음 보는 크기면 더한다
+    pub fn use_size(&mut self, sig: SizeSig) {
+        self.cur = match self.sizes.iter().position(|s| *s == sig) {
+            Some(i) => i as u16,
+            None => {
+                self.sizes.push(sig);
+                (self.sizes.len() - 1) as u16
+            }
+        };
+    }
+
+    /// 캐시가 아는 글꼴 크기의 수
+    pub fn size_count(&self) -> usize {
+        self.sizes.len()
     }
 
     pub fn len(&self) -> usize {
@@ -98,6 +138,7 @@ impl GlyphCache {
 
     /// 열쇠의 글리프 자리. 처음이면 `make`로 래스터해 아틀라스에 채운다. 글리프가 없거나 아틀라스를 한도까지 키워도 자리가 없으면 없다
     pub fn get(&mut self, key: Key, make: impl FnOnce() -> Option<Rc<Glyph>>) -> Option<Entry> {
+        let key = (self.cur, key);
         if let Some(e) = self.map.get(&key) {
             return *e;
         }
@@ -109,6 +150,7 @@ impl GlyphCache {
     /// 마스크(`w × h` 회색조)를 글리프처럼 아틀라스에 놓는다. 셀 왼쪽 위가 기준(`left`·`top` 0)이다.
     /// `make`가 없으면(그리지 않는 모양) 없다
     pub fn get_mask(&mut self, key: Key, w: u32, h: u32, make: impl FnOnce() -> Option<Vec<u8>>) -> Option<Entry> {
+        let key = (self.cur, key);
         if let Some(e) = self.map.get(&key) {
             return *e;
         }

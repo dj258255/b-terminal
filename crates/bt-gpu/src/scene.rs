@@ -185,7 +185,7 @@ impl Scene {
     pub fn build(&mut self, cache: &mut GlyphCache, fonts: &mut Fonts, view: &GridView, clear: Rgb) {
         self.clear();
         let m = fonts.metrics();
-        cache.check_metrics(m);
+        cache.use_size(crate::glyphs::SizeSig::of(fonts));
         let (cw, ch) = (m.width as i32, m.height as i32);
 
         // 1) 바탕. 투명 창이면 렌더러가 투명으로 지우므로 기본 바탕 칸도 알파로 그린다(칸이 화면을 덮는다)

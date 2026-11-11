@@ -24,6 +24,7 @@ use crate::icon;
 use crate::keymap::{Action, Keymap, SplitTarget};
 use crate::keys;
 use crate::mouse;
+use crate::pane_font::{self, SizedFonts};
 use crate::split::{Direction, Node, Rect, Slot};
 use crate::tabbar;
 use crate::undo::UndoStack;
@@ -183,6 +184,9 @@ pub struct Pane {
     password: bool,
     /// 명령이 끝나도 칸을 남긴다: Dock에 놓은 파일을 실행한 칸(#279). `wait-after-command`와 같다
     wait_after_exit: bool,
+    /// 이 칸의 글자 크기(pt). 칸마다 따로다(#422, Ghostty는 surface마다). 칸 격자·마우스 좌표·커서·스크롤 막대는 이 크기의 칸 크기를 쓴다.
+    /// 칸을 다른 창으로 옮겨도(탭 떼어 내기) 그대로다
+    pub font_size: f32,
 }
 
 impl Pane {
@@ -662,6 +666,9 @@ struct PaneView {
     screen: Screen,
     focused: bool,
     progress: Option<(u8, u8)>,
+    /// 이 칸의 글자 크기(pt)와 그 크기의 칸 크기: 격자·커서·그림·스크롤 막대가 이 칸 크기를 쓴다(#422)
+    font_size: f32,
+    metrics: bt_render::font::CellMetrics,
 }
 
 /// 창에 사용자 셰이더를 건다(#376). GPU 길이면 GLSL 오류는 곧바로 돌려주고 파이프라인은 다른 스레드에서 만든다(#381):
@@ -772,8 +779,12 @@ impl FirstFrame {
 
 /// 창 하나의 상태(#36). 칸(셸)은 모든 창이 App에서 함께 든다
 struct Win {
-    /// 이 창의 글꼴 묶음과 글자 크기(pt). 창마다 따로다(#416). 글꼴 파일 자료는 창끼리 나눠 쓰고 글리프 캐시만 창마다 든다
-    fonts: Option<Fonts>,
+    /// 이 창의 글꼴 묶음: 글자 크기마다 한 벌(#422). 칸이 쓰는 크기들과 창의 기준 크기를 든다. 같은 크기의 칸은 한 벌을 나눠 쓴다.
+    /// 글꼴 파일 자료는 창끼리도 나눠 쓰고 글리프 캐시만 묶음마다 든다
+    fonts: SizedFonts<Fonts>,
+    /// 창의 기준 글자 크기(pt, #416·#422): 탭 줄·알림 띠·확인 막대·찾기 막대 같은 창 덧그림과 창 크기 계산(`window-step-resize`·
+    /// `window-width`)이 쓴다. 이 창에서 가장 최근에 ⌘+·⌘-·⌘0·`set_font_size`로 바꾼 크기이고, 처음에는 새 창의 크기다.
+    /// 칸 안은 칸마다 `Pane::font_size`다
     font_size: f32,
     /// 탭 줄 제목 글꼴(#241 `window-title-font-family`). 키가 없거나 글꼴을 못 찾았으면 없고, 그러면 터미널 글꼴로 그린다
     title_fonts: Option<Fonts>,
@@ -866,7 +877,7 @@ impl Win {
         static NEXT_SERIAL: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
         Self {
             serial: NEXT_SERIAL.fetch_add(1, Ordering::Relaxed),
-            fonts: None,
+            fonts: SizedFonts::default(),
             font_size,
             title_fonts: None,
             gfx: None,
@@ -1063,32 +1074,98 @@ impl App {
         }
     }
 
+    /// 이 창의 글꼴 묶음을 모두 새로 만든다(설정·화면 배율이 바뀌었을 때, 창을 처음 열 때). 글자 크기마다 한 벌이다
     fn load_fonts(&mut self) {
-        let cfg = font_config(&self.config, self.w.font_size, self.scale as f32);
-        match Fonts::new_with_title(&cfg, self.config.window_title_font_family.as_deref()) {
-            Ok(set) => {
-                log::info!(
-                    "글꼴: {} {}pt × {}",
-                    set.terminal.family_name,
-                    self.w.font_size,
-                    self.scale
-                );
-                if let Some(w) = set.title_warning {
-                    log::warn!("설정: {w}");
-                    // 같은 경고를 글꼴을 다시 읽을 때마다 쌓지 않는다
-                    if !self.config.warnings.contains(&w) {
-                        self.config.warnings.push(w);
-                    }
-                }
-                self.w.fonts = Some(set.terminal);
-                self.w.title_fonts = set.title;
+        self.w.fonts.clear();
+        self.w.title_fonts = None;
+        self.sync_fonts();
+    }
+
+    /// 창의 칸들이 쓰는 글자 크기에 글꼴 묶음을 맞춘다(#422): 이미 있는 크기는 그대로 쓰고, 없는 크기만 만들고,
+    /// 쓰지 않는 크기는 버린다. 칸마다 크기가 달라도 같은 크기끼리는 한 벌을 나눠 쓴다
+    fn sync_fonts(&mut self) {
+        let base = self.w.font_size;
+        let sizes = pane_font::needed_sizes(base, self.window_pane_sizes());
+        let prev_chrome = self.w.fonts.chrome_size();
+        let (config, scale) = (&self.config, self.scale as f32);
+        let mut title: Option<Option<Fonts>> = None;
+        let mut warnings: Vec<String> = Vec::new();
+        self.w.fonts.sync(base, &sizes, |size| {
+            let want_title = pane_font::size_key(size) == pane_font::size_key(base);
+            let (terminal, t, warn) = build_fonts(config, scale, size, want_title)?;
+            warnings.extend(warn);
+            if want_title {
+                title = Some(t);
             }
-            Err(e) => {
-                log::error!("{e}");
-                self.w.fonts = None;
-                self.w.title_fonts = None;
+            Some(terminal)
+        });
+        // 기준 크기가 바뀌었는데 그 크기의 묶음이 이미 있었다면(다른 칸이 쓰던 크기) 제목 글꼴만 새로 만든다
+        if title.is_none() && prev_chrome.map(pane_font::size_key) != Some(pane_font::size_key(base)) {
+            if let Some((_, t, warn)) = build_fonts(config, scale, base, true) {
+                warnings.extend(warn);
+                title = Some(t);
             }
         }
+        for w in warnings {
+            // 같은 경고를 글꼴을 다시 읽을 때마다 쌓지 않는다
+            if !self.config.warnings.contains(&w) {
+                self.config.warnings.push(w);
+            }
+        }
+        if self.w.fonts.chrome().is_none() {
+            // 기준 글꼴을 읽지 못했다: 창은 글을 그리지 못한다(처음 창을 여는 쪽이 앱을 끝낸다)
+            self.w.fonts.clear();
+            self.w.title_fonts = None;
+        } else if let Some(t) = title {
+            self.w.title_fonts = t;
+        }
+    }
+
+    /// 크기 `size`의 글꼴 묶음이 없으면 만든다(새 칸의 격자 크기를 재기 전에 부른다). 만들지 못하면 기준 크기를 쓴다
+    fn ensure_font_size(&mut self, size: f32) {
+        let (config, scale, base) = (&self.config, self.scale as f32, self.w.font_size);
+        self.w
+            .fonts
+            .ensure(size, base, |s| build_fonts(config, scale, s, false).map(|(f, _, _)| f));
+    }
+
+    /// 창이 든 칸들의 글자 크기(탭·분할 차례)
+    fn window_pane_sizes(&self) -> Vec<f32> {
+        self.w
+            .tabs
+            .iter()
+            .flat_map(|g| g.layout.leaves())
+            .filter_map(|id| self.pane_index(id).map(|i| self.panes[i].font_size))
+            .collect()
+    }
+
+    /// 창 덧그림(탭 줄 등)이 쓰는 기준 크기의 칸 크기
+    fn chrome_metrics(&self) -> Option<bt_render::font::CellMetrics> {
+        self.w.fonts.chrome().map(|f| f.metrics())
+    }
+
+    /// 칸의 글자 크기(pt)
+    fn pane_font_size(&self, id: u64) -> Option<f32> {
+        self.pane_index(id).map(|i| self.panes[i].font_size)
+    }
+
+    /// 글자 크기 `size`의 칸 크기. 그 크기의 묶음이 없으면 기준 크기의 것
+    fn metrics_at(&self, size: f32) -> Option<bt_render::font::CellMetrics> {
+        self.w
+            .fonts
+            .get(size)
+            .or_else(|| self.w.fonts.chrome())
+            .map(|f| f.metrics())
+    }
+
+    /// 칸의 칸 크기(그 칸의 글자 크기)
+    fn pane_metrics(&self, id: u64) -> Option<bt_render::font::CellMetrics> {
+        self.metrics_at(self.pane_font_size(id)?)
+    }
+
+    /// 칸의 격자 자리(바깥 사각형에서 여백을 뺀 곳)
+    fn pane_inner(&self, id: u64) -> Option<Rect> {
+        Some(self.inner_rect(self.pane_rect(id)?, self.pane_font_size(id)?))
     }
 
     /// 탭 줄 아래 칸들이 차지하는 자리. 여백은 칸마다 따로 뺀다(Ghostty처럼)
@@ -1099,8 +1176,8 @@ impl App {
         Rect::new(0, top as i32, size.width, size.height.saturating_sub(top))
     }
 
-    /// 칸의 바깥 사각형에서 여백을 뺀 격자 자리
-    fn inner_rect(&self, r: Rect) -> Rect {
+    /// 칸의 바깥 사각형에서 여백을 뺀 격자 자리. `font_size`는 그 칸의 글자 크기다(남는 자리를 고르게 나눌 때 그 크기의 칸 크기를 쓴다)
+    fn inner_rect(&self, r: Rect, font_size: f32) -> Rect {
         let px = |pt: f32| (pt as f64 * self.scale).round() as i32;
         let (left, right) = (px(self.config.padding_x.0), px(self.config.padding_x.1));
         let (top, bottom) = (px(self.config.padding_y.0), px(self.config.padding_y.1));
@@ -1111,8 +1188,8 @@ impl App {
             (r.h as i32 - top - bottom).max(0) as u32,
         );
         // 남는 자리를 네 변에 고르게(window-padding-balance, #136)
-        match (&self.w.fonts, self.config.padding_balance) {
-            (Some(f), true) => crate::padding::balance(inner, f.metrics().width, f.metrics().height),
+        match (self.metrics_at(font_size), self.config.padding_balance) {
+            (Some(m), true) => crate::padding::balance(inner, m.width, m.height),
             _ => inner,
         }
     }
@@ -1148,8 +1225,8 @@ impl App {
 
     /// 칸의 스크롤 막대 트랙: (맨 위 픽셀 y, 길이 픽셀). 막대를 그리는 곳과 같다(칸 안쪽 맨 위에서 보이는 줄 수만큼)
     fn scrollbar_track(&self, id: u64, rows: usize) -> Option<(i32, u32)> {
-        let m = self.w.fonts.as_ref()?.metrics();
-        let inner = self.inner_rect(self.pane_rect(id)?);
+        let m = self.pane_metrics(id)?;
+        let inner = self.pane_inner(id)?;
         Some((inner.y, rows as u32 * m.height))
     }
 
@@ -1261,7 +1338,7 @@ impl App {
 
     /// 탭 줄 높이. 탭이 하나면 없다(Ghostty처럼)
     fn tabbar_height(&self) -> u32 {
-        match &self.w.fonts {
+        match self.w.fonts.chrome() {
             Some(f) if self.config.window_show_tab_bar.visible(self.w.tabs.len()) => tabbar::height_px(f),
             _ => 0,
         }
@@ -1479,19 +1556,12 @@ impl App {
         self.request_redraw();
     }
 
-    /// 칸의 바깥 사각형에 들어가는 격자 크기
-    fn grid_size_for(&self, outer: Rect) -> GridSize {
-        let Some(f) = &self.w.fonts else {
+    /// 칸의 바깥 사각형에 들어가는 격자 크기. `font_size`는 그 칸의 글자 크기다
+    fn grid_size_for(&self, outer: Rect, font_size: f32) -> GridSize {
+        let Some(m) = self.metrics_at(font_size) else {
             return GridSize::new(80, 24);
         };
-        let m = f.metrics();
-        let Rect { w, h, .. } = self.inner_rect(outer);
-        GridSize {
-            cols: (w / m.width).max(2) as u16,
-            rows: (h / m.height).max(1) as u16,
-            cell_width: m.width as u16,
-            cell_height: m.height as u16,
-        }
+        grid_for(self.inner_rect(outer, font_size), &m)
     }
 
     fn sink(&self, id: u64) -> bt_term::EventSink {
@@ -1511,7 +1581,7 @@ impl App {
     }
 
     /// 셸 하나를 띄워 칸을 만든다(아직 어느 탭에도 넣지 않는다)
-    fn spawn_pane(&mut self, options: SpawnOptions, size: GridSize) -> Option<Pane> {
+    fn spawn_pane(&mut self, options: SpawnOptions, size: GridSize, font_size: f32) -> Option<Pane> {
         let id = self.next_id;
         self.next_id += 1;
         let mut options = SpawnOptions {
@@ -1598,6 +1668,7 @@ impl App {
                 running: None,
                 last_command: None,
                 wait_after_exit: false,
+                font_size,
             }),
             Err(e) => {
                 log::error!("셸을 띄우지 못했습니다: {e}");
@@ -1613,12 +1684,15 @@ impl App {
         let now = self.config.window_show_tab_bar.visible(self.w.tabs.len());
         let next = self.config.window_show_tab_bar.visible(self.w.tabs.len() + 1);
         if next && !now {
-            let bar = self.w.fonts.as_ref().map(tabbar::height_px).unwrap_or(0);
+            let bar = self.w.fonts.chrome().map(tabbar::height_px).unwrap_or(0);
             area.y += bar as i32;
             area.h = area.h.saturating_sub(bar);
         }
-        let size = self.grid_size_for(area);
-        let pane = self.spawn_pane(options, size)?;
+        // 새 탭의 글자 크기: `window-inherit-font-size`가 켜져 있으면 고른 칸의 크기(창의 첫 탭이면 창의 크기)
+        let font_size = self.new_pane_font_size(pane_font::NewPane::Tab);
+        self.ensure_font_size(font_size);
+        let size = self.grid_size_for(area, font_size);
+        let pane = self.spawn_pane(options, size, font_size)?;
         let id = pane.id;
         self.panes.push(pane);
         let before = self.focused_id();
@@ -1658,8 +1732,11 @@ impl App {
             .into_iter()
             .find(|(id, _)| *id == new_id)
             .map(|(_, r)| r)?;
-        let size = self.grid_size_for(rect);
-        let pane = self.spawn_pane(options, size)?;
+        // 새 분할은 늘 고른 칸의 글자 크기를 물려받는다
+        let font_size = self.new_pane_font_size(pane_font::NewPane::Split);
+        self.ensure_font_size(font_size);
+        let size = self.grid_size_for(rect, font_size);
+        let pane = self.spawn_pane(options, size, font_size)?;
         debug_assert_eq!(pane.id, new_id);
         self.panes.push(pane);
         let before = self.focused_id();
@@ -2912,48 +2989,74 @@ impl App {
 
     /// 모든 탭의 칸을 지금 배치에 맞춘다(창 크기·글꼴·분할이 바뀐 뒤)
     fn resize_all(&mut self) {
+        // 칸이 늘거나 줄거나 크기가 바뀌었을 수 있다: 글꼴 묶음을 칸들이 쓰는 크기에 맞춘다
+        self.sync_fonts();
         self.apply_step_resize();
         for gi in 0..self.w.tabs.len() {
             for (id, rect) in self.group_layout(gi) {
-                let size = self.grid_size_for(rect);
-                if let Some(i) = self.pane_index(id) {
-                    // 칸·줄 수가 바뀌면 크기 표시(resize-overlay, #122)
-                    let p = &mut self.panes[i];
-                    let old = p.session.size();
-                    if (old.cols, old.rows) != (size.cols, size.rows)
-                        && resize_overlay_due(self.config.resize_overlay, p.created.elapsed())
-                    {
-                        p.overlay_until = Some(Instant::now() + self.config.resize_overlay_duration);
-                    }
-                    p.session.resize(size);
+                let Some(i) = self.pane_index(id) else { continue };
+                let size = self.grid_size_for(rect, self.panes[i].font_size);
+                // 칸·줄 수가 바뀌면 크기 표시(resize-overlay, #122)
+                let p = &mut self.panes[i];
+                let old = p.session.size();
+                if (old.cols, old.rows) != (size.cols, size.rows)
+                    && resize_overlay_due(self.config.resize_overlay, p.created.elapsed())
+                {
+                    p.overlay_until = Some(Instant::now() + self.config.resize_overlay_duration);
                 }
+                p.session.resize(size);
             }
         }
         self.request_redraw();
     }
 
-    /// 지금 창의 글자 크기만 바꾼다(#416). 다른 창은 그대로다
+    /// 고른 칸의 글자 크기만 바꾼다(#422, Ghostty의 `increase_font_size`는 surface 동작이다). 같은 창의 다른 칸과 다른 창은 그대로다.
+    /// 창의 기준 크기(탭 줄 등 창 덧그림)도 이 크기가 된다
     fn set_font_size(&mut self, size: f32) {
-        self.w.font_size = bt_core::config::clamp_font_size(size);
-        self.load_fonts();
+        let Some(i) = self.focused_id().and_then(|id| self.pane_index(id)) else {
+            return;
+        };
+        let size = bt_core::config::clamp_font_size(size);
+        self.panes[i].font_size = size;
+        self.w.font_size = size;
+        // resize_all이 글꼴 묶음을 맞춘다(새 크기만 만들고 다른 칸의 묶음은 그대로 쓴다)
         self.resize_all();
     }
 
-    /// 새 창이 열릴 때의 글자 크기(`window-inherit-font-size`). 직전에 고른 창은 지금 창이고,
-    /// 지금 창이 없으면(btctl 등 창 밖 요청) 마지막으로 보던 창이다. 퀵 터미널은 늘 설정 `font-size`다
+    /// 고른 칸의 글자 크기(고른 칸이 없으면 창의 기준 크기)
+    fn focused_font_size(&self) -> f32 {
+        self.focused_id()
+            .and_then(|id| self.pane_font_size(id))
+            .unwrap_or(self.w.font_size)
+    }
+
+    /// 새 창이 열릴 때의 글자 크기(`window-inherit-font-size`). 직전에 고른 창은 지금 창이고 그 창에서 고른 칸의 크기다.
+    /// 지금 창이 없으면(btctl 등 창 밖 요청) 마지막으로 보던 창의 고른 칸이다. 퀵 터미널은 늘 설정 `font-size`다
     fn new_window_font_size(&self, quick: bool) -> f32 {
+        let size_of = |w: &Win| {
+            w.tabs
+                .get(w.active)
+                .and_then(|g| self.pane_font_size(g.focus))
+                .unwrap_or(w.font_size)
+        };
         let previous = if quick {
             None
         } else if self.w.gfx.is_some() {
-            Some(self.w.font_size)
+            Some(size_of(&self.w))
         } else {
             let last = self.last_focused;
             std::iter::once(&self.w)
                 .chain(&self.others)
                 .find(|w| last.is_some() && w.id() == last)
-                .map(|w| w.font_size)
+                .map(size_of)
         };
         self.config.new_window_font_size(previous)
+    }
+
+    /// 새 칸의 글자 크기. 분할은 고른 칸, 새 탭은 `window-inherit-font-size`를 따른다(`pane_font::new_pane_size`)
+    fn new_pane_font_size(&self, kind: pane_font::NewPane) -> f32 {
+        let focused = self.focused_id().and_then(|id| self.pane_font_size(id));
+        pane_font::new_pane_size(&self.config, kind, focused, self.w.font_size)
     }
 
     /// 창 좌표 아래의 칸(보고 있는 탭에서)
@@ -3036,13 +3139,22 @@ impl App {
 
     /// 창 좌표 → 칸 idx의 격자 칸. 칸 밖이면 가장자리 칸으로 붙인다(고르며 끌다 칸을 벗어나도)
     fn cell_in(&self, idx: usize, pos: PhysicalPosition<f64>) -> Option<(usize, usize)> {
-        let m = self.w.fonts.as_ref()?.metrics();
         let pane = self.panes.get(idx)?;
-        let r = self.inner_rect(self.pane_rect(pane.id)?);
+        // 그 칸의 글자 크기의 칸 크기로 잰다(#422)
+        let m = self.metrics_at(pane.font_size)?;
+        let r = self.pane_inner(pane.id)?;
         let (cols, rows) = pane_cells(&pane.session);
         let col = ((pos.x - r.x as f64) / m.width as f64).floor().max(0.0) as usize;
         let row = ((pos.y - r.y as f64) / m.height as f64).floor().max(0.0) as usize;
         Some((col.min(cols.saturating_sub(1)), row.min(rows.saturating_sub(1))))
+    }
+
+    /// 휠이 가리키는 칸의 칸 크기: 마우스 아래 칸, 없으면 고른 칸, 그것도 없으면 창의 기준 크기
+    fn wheel_cell(&self) -> Option<bt_render::font::CellMetrics> {
+        self.pane_at(self.w.cursor_pos)
+            .or_else(|| self.focused_id())
+            .and_then(|id| self.pane_metrics(id))
+            .or_else(|| self.chrome_metrics())
     }
 
     /// 링크를 짚는 수식 키: macOS는 Cmd, 그 밖에는 Ctrl(Ghostty와 같다)
@@ -3058,7 +3170,7 @@ impl App {
     fn link_under(&self, pos: PhysicalPosition<f64>) -> Option<(u64, bt_term::links::LinkHit)> {
         let id = self.pane_at(pos)?;
         let i = self.pane_index(id)?;
-        if !self.inner_rect(self.pane_rect(id)?).contains(pos.x, pos.y) {
+        if !self.pane_inner(id)?.contains(pos.x, pos.y) {
             return None;
         }
         let (c, r) = self.cell_in(i, pos)?;
@@ -3089,7 +3201,7 @@ impl App {
         let pos = self.w.cursor_pos;
         // 마우스가 글 영역 위에 있는 칸. 모양·Shift는 거기서만 일한다(#250)
         let over = self.pane_at(pos).and_then(|id| {
-            let inside = self.inner_rect(self.pane_rect(id)?).contains(pos.x, pos.y);
+            let inside = self.pane_inner(id)?.contains(pos.x, pos.y);
             inside.then(|| self.pane_index(id)).flatten()
         });
         let program = over.and_then(|i| self.panes.get(i)?.session.mouse_shape());
@@ -3459,8 +3571,8 @@ impl App {
                     self.paste(text);
                 }
             }
-            Action::FontBigger(n) => self.set_font_size(self.w.font_size + n),
-            Action::FontSmaller(n) => self.set_font_size(self.w.font_size - n),
+            Action::FontBigger(n) => self.set_font_size(self.focused_font_size() + n),
+            Action::FontSmaller(n) => self.set_font_size(self.focused_font_size() - n),
             Action::FontReset => self.set_font_size(self.config.font_size),
             // 새 탭·새 칸은 고른 칸의 폴더에서 연다
             Action::NewTab => {
@@ -3839,8 +3951,16 @@ impl App {
         for w in std::iter::once(&mut self.w).chain(&mut self.others) {
             w.keyseq = Default::default();
         }
-        // 설정의 `font-size`가 바뀌었으면 모든 창을 새 값으로, 아니면 창마다 고른 크기를 둔다(#416)
+        // 설정의 `font-size`가 바뀌었으면 모든 칸(과 창의 기준 크기)을 새 값으로, 아니면 칸마다 고른 크기를 둔다(#416·#422)
         let (old_size, new_size) = (self.config.font_size, next.font_size);
+        let current: Vec<f32> = self.panes.iter().map(|p| p.font_size).collect();
+        for (p, size) in self
+            .panes
+            .iter_mut()
+            .zip(pane_font::sizes_after_reload(old_size, new_size, &current))
+        {
+            p.font_size = size;
+        }
         for w in std::iter::once(&mut self.w).chain(&mut self.others) {
             w.font_size = bt_core::config::font_size_after_reload(old_size, new_size, w.font_size);
         }
@@ -3972,9 +4092,11 @@ impl App {
         let Some(rect) = self.pane_rect(self.panes[idx].id) else {
             return;
         };
-        let Some(fonts) = self.w.fonts.as_ref() else { return };
-        let (cw, ch) = (fonts.metrics().width as f64, fonts.metrics().height as f64);
-        let inner = self.inner_rect(rect);
+        let Some(cm) = self.metrics_at(self.panes[idx].font_size) else {
+            return;
+        };
+        let (cw, ch) = (cm.width as f64, cm.height as f64);
+        let inner = self.inner_rect(rect, self.panes[idx].font_size);
         let (grid_cols, grid_rows) = pane_cells(&self.panes[idx].session);
         // 좌표는 칸(창) 왼쪽 위에서 잰 실제 픽셀이다(배율을 곱한 픽셀. Ghostty도 표면 픽셀을 그대로 쓴다).
         // 1016은 거기서 격자 원점(여백을 뺀 자리)까지 뺀 값을 보낸다
@@ -4197,10 +4319,10 @@ impl App {
 
     /// window-step-resize: 칸 크기 단위로 창 크기가 바뀌게 한다(끄면 픽셀 단위로 되돌린다)
     fn apply_step_resize(&self) {
-        let (Some(f), Some(g)) = (&self.w.fonts, &self.w.gfx) else {
+        // 창 크기 단위는 창의 기준 크기의 칸 크기다(칸마다 크기가 달라도 창은 한 단위로 움직인다)
+        let (Some(m), Some(g)) = (self.chrome_metrics(), &self.w.gfx) else {
             return;
         };
-        let m = f.metrics();
         let inc = crate::startup::step_increments(self.config.window_step_resize, m.width, m.height);
         g.window
             .set_resize_increments(inc.map(|(w, h)| PhysicalSize::new(w, h)));
@@ -4211,9 +4333,7 @@ impl App {
     /// 40열 × 10행보다 작게는 줄이지 않고 화면보다 크게는 키우지 않는다
     fn on_window_resize_request(&mut self, idx: usize, rows: u16, cols: u16) {
         let Some(pane) = self.panes.get(idx) else { return };
-        let (Some(g), Some(f)) = (&self.w.gfx, &self.w.fonts) else {
-            return;
-        };
+        let Some(g) = &self.w.gfx else { return };
         let single = self.w.tabs.len() == 1 && self.w.tabs[0].layout.leaves() == [pane.id];
         #[cfg(target_os = "macos")]
         let simple_fullscreen = {
@@ -4226,7 +4346,10 @@ impl App {
             log::debug!("창 크기 바꾸기 요청을 무시했습니다(탭·분할·퀵·전체 화면·최대화)");
             return;
         }
-        let m = f.metrics();
+        // 칸이 하나뿐이라 그 칸의 글자 크기의 칸 크기다
+        let Some(m) = self.metrics_at(pane.font_size) else {
+            return;
+        };
         let px = |pt: f32| (pt as f64 * self.scale).round() as u32;
         let (pad_w, pad_h) = (
             px(self.config.padding_x.0) + px(self.config.padding_x.1),
@@ -4252,9 +4375,8 @@ impl App {
 
     /// 설정의 window-width·window-height(셀)로 지금 창 크기를 맞춘다
     fn apply_initial_size(&self) {
-        if let (Some(f), Some(g)) = (&self.w.fonts, &self.w.gfx) {
+        if let (Some(m), Some(g)) = (self.chrome_metrics(), &self.w.gfx) {
             if let (Some(cols), Some(rows)) = (self.config.window_width, self.config.window_height) {
-                let m = f.metrics();
                 let (w, h) = self.window_inner_for(Some((cols as u32, rows as u32)), (m.width, m.height));
                 let _ = g.window.request_inner_size(PhysicalSize::new(w, h));
             }
@@ -4278,8 +4400,7 @@ impl App {
 
     /// `reset_window_size`: 창을 새 창이 만들어질 크기로 되돌린다. 전체 화면이면 하지 않는다(Ghostty). 최대화는 풀고 되돌린다
     fn reset_window_size(&mut self) {
-        let Some(f) = &self.w.fonts else { return };
-        let m = f.metrics();
+        let Some(m) = self.chrome_metrics() else { return };
         let cells = match (self.config.window_width, self.config.window_height) {
             (Some(c), Some(r)) => Some((c as u32, r as u32)),
             _ => None,
@@ -4372,8 +4493,9 @@ impl App {
         let old_focused = self.w.focused;
         let new_focused = gfx.window.has_focus();
         let moved_focus = moved.focus;
-        // 옮긴 탭은 보던 크기 그대로 보인다(`window-inherit-font-size`와 상관없이 떠난 창의 크기)
-        let mut win = Win::new(self.w.font_size);
+        // 옮긴 탭의 칸들은 보던 크기 그대로 보인다(`window-inherit-font-size`와 상관없이 칸마다 크기를 그대로 둔다).
+        // 새 창의 기준 크기는 옮긴 탭에서 고른 칸의 크기다
+        let mut win = Win::new(self.pane_font_size(moved.focus).unwrap_or(self.w.font_size));
         win.focused = new_focused;
         win.gfx = Some(gfx);
         win.tabs.push(moved);
@@ -4719,14 +4841,17 @@ impl App {
                 }
             }
             for st in &sw.tabs {
-                let size = self.grid_size_for(self.content_rect());
+                // 되살린 칸은 창의 기준 크기로 연다(`window-save-state`는 칸마다 크기를 적지 않는다)
+                let font_size = self.w.font_size;
+                self.ensure_font_size(font_size);
+                let size = self.grid_size_for(self.content_rect(), font_size);
                 let mut ids = Vec::new();
                 for cwd in st.layout.panes() {
                     let mut opts = self.default_spawn();
                     if let Some(dir) = cwd.filter(|d| d.is_dir()) {
                         opts.cwd = Some(dir);
                     }
-                    if let Some(p) = self.spawn_pane(opts, size) {
+                    if let Some(p) = self.spawn_pane(opts, size, font_size) {
                         ids.push(p.id);
                         self.panes.push(p);
                     }
@@ -5048,7 +5173,9 @@ impl App {
                 Some(PaneView {
                     id: *id,
                     outer: *outer,
-                    inner: self.inner_rect(*outer),
+                    inner: self.inner_rect(*outer, p.font_size),
+                    font_size: p.font_size,
+                    metrics: self.metrics_at(p.font_size)?,
                     screen: {
                         // 격자가 창보다 넓으면(DECCOLM 132열, #324) 창 밖은 잘라 그린다. 좁으면 그대로 그리고 오른쪽은 바탕이다
                         let mut screen = p.session.snapshot();
@@ -5262,9 +5389,12 @@ impl App {
             })
             .collect();
         let Some(gfx) = self.w.gfx.as_mut() else { return };
-        let Some(fonts) = self.w.fonts.as_mut() else { return };
+        let Some(mut fonts) = self.w.fonts.parts_mut() else {
+            return;
+        };
         let size = gfx.window.inner_size();
-        let m = fonts.metrics();
+        // 창 덧그림(탭 줄 등)은 기준 크기의 칸 크기다. 칸 안은 칸마다 `PaneView::metrics`다
+        let m = fonts.chrome().metrics();
         // 격자 밖에 그리는 모든 것. 하나라도 바뀌면 통째로 다시 그린다.
         // 격자 위에 겹쳐 그리는 것(알림 띠, 주소 띠, 찾기 막대, 진행 막대)이 있으면 늘 통째로
         let chrome = Chrome {
@@ -5281,6 +5411,7 @@ impl App {
                         v.screen.background,
                         v.screen.cols,
                         v.screen.rows,
+                        (v.metrics.width, v.metrics.height),
                     )
                 })
                 .collect(),
@@ -5398,7 +5529,7 @@ impl App {
                 if !labels.is_empty() {
                     tabbar::draw_with_title_font(
                         &mut canvas,
-                        fonts,
+                        fonts.chrome(),
                         self.w.title_fonts.as_mut(),
                         &theme,
                         &labels,
@@ -5408,11 +5539,12 @@ impl App {
             }
             for (((v, (cells, cursor, pre)), pad), bar) in views.iter().zip(&drawn).zip(&pads).zip(&bars) {
                 let screen = &v.screen;
+                let vm = v.metrics;
                 let grid_rect = Rect::new(
                     v.inner.x,
                     v.inner.y,
-                    screen.cols as u32 * m.width,
-                    screen.rows as u32 * m.height,
+                    screen.cols as u32 * vm.width,
+                    screen.rows as u32 * vm.height,
                 );
                 let view = GridView {
                     cols: screen.cols,
@@ -5426,14 +5558,14 @@ impl App {
                 };
                 if full {
                     canvas.fill_rect(v.outer.x, v.outer.y, v.outer.w, v.outer.h, screen.background);
-                    draw_grid(&mut canvas, fonts, v.inner.x, v.inner.y, &view);
+                    draw_grid(&mut canvas, fonts.for_size(v.font_size), v.inner.x, v.inner.y, &view);
                     if let Some(p) = pad {
                         crate::padding::paint(
                             &mut canvas,
                             v.outer,
                             grid_rect,
-                            m.width,
-                            m.height,
+                            vm.width,
+                            vm.height,
                             p,
                             screen.background,
                             None,
@@ -5443,21 +5575,21 @@ impl App {
                     let grid_clip = (
                         v.inner.x,
                         v.inner.y,
-                        v.inner.x + (screen.cols as u32 * m.width) as i32,
-                        v.inner.y + (screen.rows as u32 * m.height) as i32,
+                        v.inner.x + (screen.cols as u32 * vm.width) as i32,
+                        v.inner.y + (screen.rows as u32 * vm.height) as i32,
                     );
                     for im in &screen.images {
-                        let (cw, chh) = (im.cols * m.width, im.rows * m.height);
+                        let (cw, chh) = (im.cols * vm.width, im.rows * vm.height);
                         let (w, h) = if im.scaled { (cw, chh) } else { (im.width, im.height) };
                         let clip = (
                             grid_clip.0,
                             grid_clip.1,
-                            grid_clip.2.min(v.inner.x + (im.col as u32 * m.width + cw) as i32),
+                            grid_clip.2.min(v.inner.x + (im.col as u32 * vm.width + cw) as i32),
                             grid_clip.3,
                         );
                         canvas.draw_rgba(
-                            v.inner.x + (im.col as u32 * m.width) as i32,
-                            v.inner.y + im.row * m.height as i32,
+                            v.inner.x + (im.col as u32 * vm.width) as i32,
+                            v.inner.y + im.row * vm.height as i32,
                             w,
                             h,
                             &im.rgba,
@@ -5488,14 +5620,21 @@ impl App {
                         dirty.iter_mut().for_each(|d| *d = true);
                     }
                     repainted_rows += dirty.iter().filter(|d| **d).count();
-                    let spans = draw_grid_rows(&mut canvas, fonts, v.inner.x, v.inner.y, &view, &dirty);
+                    let spans = draw_grid_rows(
+                        &mut canvas,
+                        fonts.for_size(v.font_size),
+                        v.inner.x,
+                        v.inner.y,
+                        &view,
+                        &dirty,
+                    );
                     if let Some(p) = pad {
                         crate::padding::paint(
                             &mut canvas,
                             v.outer,
                             grid_rect,
-                            m.width,
-                            m.height,
+                            vm.width,
+                            vm.height,
                             p,
                             screen.background,
                             (!edge).then_some(&dirty[..]),
@@ -5520,10 +5659,10 @@ impl App {
                 }
                 if v.focused {
                     // IME 후보 창을 커서 옆에 띄운다
-                    let px = v.inner.x + (screen.cursor.col as u32 * m.width) as i32;
-                    let py = v.inner.y + (screen.cursor.row as u32 * m.height) as i32;
+                    let px = v.inner.x + (screen.cursor.col as u32 * vm.width) as i32;
+                    let py = v.inner.y + (screen.cursor.row as u32 * vm.height) as i32;
                     gfx.window
-                        .set_ime_cursor_area(PhysicalPosition::new(px, py), PhysicalSize::new(m.width, m.height));
+                        .set_ime_cursor_area(PhysicalPosition::new(px, py), PhysicalSize::new(vm.width, vm.height));
                 }
                 if !full {
                     continue;
@@ -5531,7 +5670,7 @@ impl App {
                 if let Some((_, query, status, missing)) = search.as_ref().filter(|s| s.0 == v.id) {
                     tabbar::draw_search_bar(
                         &mut canvas,
-                        fonts,
+                        fonts.chrome(),
                         &theme,
                         v.outer,
                         &format!("{query}{preedit}"),
@@ -5542,7 +5681,7 @@ impl App {
                 if resize_overlays.contains(&v.id) {
                     tabbar::draw_resize_overlay(
                         &mut canvas,
-                        fonts,
+                        fonts.chrome(),
                         &theme,
                         v.outer,
                         self.config.resize_overlay_position,
@@ -5555,7 +5694,7 @@ impl App {
                         &mut canvas,
                         v.outer.right() - width as i32 - self.scale.round().max(1.0) as i32,
                         v.inner.y,
-                        screen.rows as u32 * m.height,
+                        screen.rows as u32 * vm.height,
                         width,
                         screen.rows,
                         screen.history,
@@ -5566,7 +5705,7 @@ impl App {
                 }
                 // 탭 막대가 없으면 진행 막대를 칸 맨 위에 얇게(Ghostty와 같은 자리). 있으면 탭 줄에 보인다
                 if let (true, Some(p)) = (single_tab, v.progress) {
-                    tabbar::draw_progress(&mut canvas, &theme, v.outer.x, v.outer.y, v.outer.w, p, m.stroke * 3);
+                    tabbar::draw_progress(&mut canvas, &theme, v.outer.x, v.outer.y, v.outer.w, p, vm.stroke * 3);
                 }
             }
             if full {
@@ -5582,21 +5721,33 @@ impl App {
                 // 실제 주소를 창 왼쪽 아래에 보인다(OSC 8 링크는 보이는 글과 주소가 다를 수 있다)
                 // `link-previews`가 끈 링크는 띠 없이 밑줄만 보인다
                 if let Some((_, hit)) = hover.as_ref().filter(|(_, h)| link_previews.shows(h.explicit)) {
-                    tabbar::draw_link_hint(&mut canvas, fonts, &theme, &bt_core::proto::printable(&hit.url));
+                    tabbar::draw_link_hint(
+                        &mut canvas,
+                        fonts.chrome(),
+                        &theme,
+                        &bt_core::proto::printable(&hit.url),
+                    );
                 }
                 if let Some((q, rows, sel)) = &palette {
-                    tabbar::draw_palette(&mut canvas, fonts, &theme, &format!("{q}{preedit}"), rows, *sel);
+                    tabbar::draw_palette(
+                        &mut canvas,
+                        fonts.chrome(),
+                        &theme,
+                        &format!("{q}{preedit}"),
+                        rows,
+                        *sel,
+                    );
                 }
                 if let Some((text, _)) = &toast {
-                    crate::tabbar::draw_toast(&mut canvas, fonts, &theme, text);
+                    crate::tabbar::draw_toast(&mut canvas, fonts.chrome(), &theme, text);
                 }
                 if secure_badge {
-                    crate::tabbar::draw_secure_badge(&mut canvas, fonts, &theme, badge_top);
+                    crate::tabbar::draw_secure_badge(&mut canvas, fonts.chrome(), &theme, badge_top);
                 }
                 if let Some((label, text)) = &title_prompt {
                     tabbar::draw_prompt(
                         &mut canvas,
-                        fonts,
+                        fonts.chrome(),
                         &theme,
                         label,
                         &format!("{text}{preedit}"),
@@ -5609,7 +5760,7 @@ impl App {
                     } else {
                         format!("↩ {yes}    esc 취소")
                     };
-                    tabbar::draw_confirm(&mut canvas, fonts, &theme, message, &hint);
+                    tabbar::draw_confirm(&mut canvas, fonts.chrome(), &theme, message, &hint);
                 }
             }
         }
@@ -5691,8 +5842,8 @@ impl App {
 /// 커서 깜빡임 간격
 const BLINK: Duration = Duration::from_millis(600);
 
-/// 칸 하나의 격자 밖 모양: id, 바깥·격자 자리, 고른 칸인가, 바탕색, 칸·줄 수
-type PaneKey = (u64, Rect, Rect, bool, bt_core::Rgb, usize, usize);
+/// 칸 하나의 격자 밖 모양: id, 바깥·격자 자리, 고른 칸인가, 바탕색, 칸·줄 수, 칸 크기(칸마다 글자 크기가 다르다, #422)
+type PaneKey = (u64, Rect, Rect, bool, bt_core::Rgb, usize, usize, (u32, u32));
 /// 탭 줄 한 칸: 제목, 보고 있음, 안 읽음, 진행
 type LabelKey = (String, bool, bool, Option<(u8, u8)>);
 /// 앞 프레임의 칸 하나: id, 셀, 커서, 조합 글
@@ -5751,6 +5902,48 @@ fn dirty_rows(
         }
     }
     dirty
+}
+
+/// 격자 자리(`inner`)에 들어가는 격자 크기(칸 크기 `m`). 칸마다 칸 크기가 달라 같은 자리도 칸마다 다른 열·줄 수가 된다(#422)
+fn grid_for(inner: Rect, m: &bt_render::font::CellMetrics) -> GridSize {
+    GridSize {
+        cols: (inner.w / m.width).max(2) as u16,
+        rows: (inner.h / m.height).max(1) as u16,
+        cell_width: m.width as u16,
+        cell_height: m.height as u16,
+    }
+}
+
+/// 글꼴 묶음 하나를 만든다(글자 크기 `size`). `want_title`이면 탭 줄 제목 글꼴도 함께. 돌려주는 것: 터미널 글꼴, 제목 글꼴, 제목 글꼴 경고.
+/// 글꼴 파일·시스템 글꼴 목록은 `bt_render`가 나눠 써서 크기가 다른 묶음을 더 만들어도 파일을 다시 읽지 않는다
+fn build_fonts(
+    config: &AppConfig,
+    scale: f32,
+    size: f32,
+    want_title: bool,
+) -> Option<(Fonts, Option<Fonts>, Option<String>)> {
+    let cfg = font_config(config, size, scale);
+    let built = if want_title {
+        Fonts::new_with_title(&cfg, config.window_title_font_family.as_deref()).map(|set| {
+            let warn = set.title_warning;
+            (set.terminal, set.title, warn)
+        })
+    } else {
+        Fonts::new(&cfg).map(|f| (f, None, None))
+    };
+    match built {
+        Ok((terminal, title, warn)) => {
+            log::info!("글꼴: {} {}pt × {}", terminal.family_name, size, scale);
+            if let Some(w) = &warn {
+                log::warn!("설정: {w}");
+            }
+            Some((terminal, title, warn))
+        }
+        Err(e) => {
+            log::error!("{e}");
+            None
+        }
+    }
 }
 
 /// 새 칸이 이어받을 폴더(#328). OSC 7로 알린 폴더가 먼저고, 한 번도 알린 적 없으면 프로세스에게 묻는다.
@@ -5898,7 +6091,7 @@ impl ApplicationHandler<UserEvent> for App {
         apply_hidden_from_dock(self.config.macos_hidden);
         icon::apply(self.config.macos_icon, self.config.macos_custom_icon.as_deref());
         self.load_fonts();
-        if self.w.fonts.is_none() {
+        if self.w.fonts.chrome().is_none() {
             event_loop.exit();
             return;
         }
@@ -6408,7 +6601,7 @@ impl ApplicationHandler<UserEvent> for App {
                         let hit = self
                             .w
                             .fonts
-                            .as_ref()
+                            .chrome()
                             .and_then(|f| tabbar::hit(f, width, self.w.cursor_pos.x, self.w.tabs.len()));
                         if let Some(i) = hit {
                             self.activate(i);
@@ -6569,7 +6762,8 @@ impl ApplicationHandler<UserEvent> for App {
                 let lines = match delta {
                     MouseScrollDelta::LineDelta(_, y) => y as f64 * discrete,
                     MouseScrollDelta::PixelDelta(p) => {
-                        let ch = self.w.fonts.as_ref().map(|f| f.metrics().height as f64).unwrap_or(16.0);
+                        // 마우스 아래 칸의 줄 높이(#422): 칸마다 글자 크기가 다르다
+                        let ch = self.wheel_cell().map_or(16.0, |m| m.height as f64);
                         p.y / ch * precision
                     }
                 };
@@ -6578,7 +6772,7 @@ impl ApplicationHandler<UserEvent> for App {
                 let xlines = match delta {
                     MouseScrollDelta::LineDelta(x, _) => x as f64 * discrete,
                     MouseScrollDelta::PixelDelta(p) => {
-                        let cw = self.w.fonts.as_ref().map(|f| f.metrics().width as f64).unwrap_or(8.0);
+                        let cw = self.wheel_cell().map_or(8.0, |m| m.width as f64);
                         p.x / cw * precision
                     }
                 };
@@ -7470,6 +7664,28 @@ mod tests {
             vec![true; 3],
             "앞 프레임이 없으면 모두"
         );
+    }
+
+    /// 칸마다 글자 크기가 달라(#422) 같은 격자 자리도 칸마다 다른 열·줄 수가 된다. 칸 크기는 그 칸의 크기에서 온다
+    #[test]
+    fn the_same_area_holds_a_different_grid_per_font_size() {
+        let at = |size: f32| {
+            Fonts::new(&FontConfig {
+                size,
+                scale: 1.0,
+                ..FontConfig::default()
+            })
+            .expect("넣어 둔 글꼴은 늘 있다")
+            .metrics()
+        };
+        let (small, big) = (at(13.0), at(26.0));
+        let inner = Rect::new(0, 0, 800, 400);
+        let (a, b) = (grid_for(inner, &small), grid_for(inner, &big));
+        assert_eq!((a.cell_width as u32, a.cell_height as u32), (small.width, small.height));
+        assert_eq!((b.cell_width as u32, b.cell_height as u32), (big.width, big.height));
+        assert_eq!((a.cols as u32, a.rows as u32), (800 / small.width, 400 / small.height));
+        assert_eq!((b.cols as u32, b.rows as u32), (800 / big.width, 400 / big.height));
+        assert!(a.cols > b.cols && a.rows > b.rows, "작은 글자 칸에 열·줄이 더 들어간다");
     }
 
     /// 보안 검토(#36): 새 창은 포커스 사건이 오기 전까지 보고 있지 않은 창이다(클립보드 쓰기를 받지 않는다)

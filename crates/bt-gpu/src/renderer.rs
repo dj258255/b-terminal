@@ -536,6 +536,7 @@ impl GpuRenderer {
             (m.height * view.rows as u32).max(1),
         );
         self.ensure_target(w, h);
+        self.cache.begin_frame(&[crate::glyphs::SizeSig::of(fonts)]);
         self.scene.build(&mut self.cache, fonts, view, clear);
         self.sync_atlases();
 

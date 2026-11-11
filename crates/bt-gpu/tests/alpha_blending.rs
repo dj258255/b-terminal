@@ -295,6 +295,7 @@ fn composed_path_blends_like_the_direct_path() {
         let direct = frame(&mut g, &mut f, &cells, GREEN, mode);
         g.set_alpha_blending(mode);
         let panes = [PaneDraw {
+            font: 0,
             x: 0,
             y: 0,
             view: &v,
@@ -344,6 +345,7 @@ fn frame_time_by_alpha_blending() {
     let (w, h) = (m.width * cols as u32, m.height * rows as u32);
     let lower = vec![0xff00_0000u32 | (bg.r as u32) << 16 | (bg.g as u32) << 8 | bg.b as u32; (w * h) as usize];
     let pane = [PaneDraw {
+        font: 0,
         x: 0,
         y: 0,
         view: &v,

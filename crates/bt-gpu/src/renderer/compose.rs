@@ -18,6 +18,9 @@ pub struct PaneDraw<'a> {
     pub y: i32,
     pub view: &'a GridView<'a>,
     pub clear: Rgb,
+    /// 이 칸을 그릴 글꼴 묶음의 자리(`compose_with`·`present_with`에 넘긴 묶음 목록에서). 칸마다 글자 크기가 달라 묶음이 여럿이다(#422).
+    /// `compose`·`present`는 묶음이 하나라 0이다. 범위를 넘으면 0을 쓴다
+    pub font: usize,
 }
 
 /// 이번 프레임에 새로 올릴 층. `None`이면 앞서 올린 것을 그대로 쓴다(바뀐 프레임에만 올린다)
@@ -313,6 +316,17 @@ impl GpuRenderer {
         layers: LayerUpdate,
         panes: &[PaneDraw],
     ) -> Vec<u32> {
+        self.compose_with(&mut [fonts], size, layers, panes)
+    }
+
+    /// `compose`. 칸마다 다른 글꼴 묶음(`PaneDraw::font`)으로 그린다(#422)
+    pub fn compose_with(
+        &mut self,
+        fonts: &mut [&mut Fonts],
+        size: (u32, u32),
+        layers: LayerUpdate,
+        panes: &[PaneDraw],
+    ) -> Vec<u32> {
         let (w, h) = (size.0.max(1), size.1.max(1));
         self.ensure_target(w, h);
         self.prepare_compose(fonts, (w, h), layers, panes);
@@ -331,7 +345,7 @@ impl GpuRenderer {
     /// 올릴 층을 올리고, 칸마다 인스턴스를 만들어 자리로 옮기고, 아틀라스와 인스턴스 버퍼를 올린다
     pub(super) fn prepare_compose(
         &mut self,
-        fonts: &mut Fonts,
+        fonts: &mut [&mut Fonts],
         size: (u32, u32),
         layers: LayerUpdate,
         panes: &[PaneDraw],
@@ -348,12 +362,24 @@ impl GpuRenderer {
         let upload = t0.elapsed();
 
         let t1 = Instant::now();
+        // 이 프레임이 쓰는 글꼴 크기를 알린다: 칸마다 크기가 달라도 한 아틀라스에 함께 두고, 안 쓰는 크기가 생기면 비운다(#422)
+        let count = fonts.len();
+        let pick = |i: usize| if i < count { i } else { 0 };
+        let mut sigs: Vec<crate::glyphs::SizeSig> = Vec::new();
+        for p in panes {
+            let sig = crate::glyphs::SizeSig::of(&*fonts[pick(p.font)]);
+            if !sigs.contains(&sig) {
+                sigs.push(sig);
+            }
+        }
+        self.cache.begin_frame(&sigs);
         let ls = &mut self.layers;
         ls.rects.clear();
         ls.glyphs.clear();
         ls.segments.clear();
         for p in panes {
-            self.scene.build(&mut self.cache, fonts, p.view, p.clear);
+            self.scene
+                .build(&mut self.cache, &mut *fonts[pick(p.font)], p.view, p.clear);
             let (r0, g0) = (ls.rects.len(), ls.glyphs.len());
             ls.rects.extend_from_slice(&self.scene.rects);
             ls.glyphs.extend_from_slice(&self.scene.glyphs);

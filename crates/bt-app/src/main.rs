@@ -20,6 +20,7 @@ mod mouse;
 mod padding;
 mod palette;
 mod pane_drag;
+mod pane_font;
 mod pointer;
 mod quick;
 mod render_path;

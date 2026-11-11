@@ -1883,3 +1883,68 @@ fn undercurl_from_the_vt_draws_a_wave_in_its_color() {
         "글자색(밝은 쪽)으로 그어진 픽셀은 없다"
     );
 }
+
+/// 칸마다 글자 크기가 다르다(#422): 크기가 다른 두 칸을 한 캔버스에 나란히 그리면 칸마다 그 크기로 혼자 그린 화면과 같다.
+/// 한글(두 칸 글자)도 칸마다 그 칸의 칸 크기를 따른다
+#[test]
+fn two_panes_of_different_font_sizes_draw_like_their_own_frames() {
+    let at = |size: f32| {
+        Fonts::new(&FontConfig {
+            size,
+            scale: 1.0,
+            ..FontConfig::default()
+        })
+    };
+    let (Ok(mut small), Ok(mut big)) = (at(13.0), at(26.0)) else {
+        eprintln!("건너뜀: 글꼴을 읽지 못했다");
+        return;
+    };
+    let text = "ab 한글 cd\r\nAB 12 ef".as_bytes();
+    let (cols, rows) = (10, 2);
+    let (alone_small, alone_big) = (
+        render(&mut small, text, cols, rows, false),
+        render(&mut big, text, cols, rows, false),
+    );
+    assert!(alone_big.cw > alone_small.cw && alone_big.ch > alone_small.ch);
+
+    // 한 창에 나란히: 작은 칸은 (0,0), 큰 칸은 그 오른쪽
+    let gap = 3;
+    let (w, h) = (alone_small.w + gap + alone_big.w, alone_small.h.max(alone_big.h));
+    let mut buf = vec![0u32; (w * h) as usize];
+    let mut canvas = Canvas::new(&mut buf, w, h);
+    canvas.clear(Theme::default().background);
+    for (fonts, x) in [(&mut small, 0), (&mut big, (alone_small.w + gap) as i32)] {
+        let mut e = Emulator::new(GridSize::new(cols, rows), Theme::default());
+        e.feed(text);
+        let s = e.snapshot();
+        let dc = cells(&s);
+        let t = Theme::default();
+        let view = GridView {
+            cols: s.cols,
+            rows: s.rows,
+            cells: &dc,
+            cursor: None,
+            selection_bg: t.selection_background,
+            selection_fg: t.selection_foreground,
+            preedit: None,
+            min_contrast: 1.0,
+        };
+        draw_grid(&mut canvas, fonts, x, 0, &view);
+    }
+    let crop = |x0: u32, f: &Frame| -> Vec<u32> {
+        (0..f.h)
+            .flat_map(|y| (0..f.w).map(move |x| (y * w + x0 + x) as usize))
+            .map(|i| buf[i])
+            .collect()
+    };
+    assert_eq!(
+        crop(0, &alone_small),
+        alone_small.buf,
+        "작은 칸이 혼자 그린 화면과 다르다"
+    );
+    assert_eq!(
+        crop(alone_small.w + gap, &alone_big),
+        alone_big.buf,
+        "큰 칸이 혼자 그린 화면과 다르다"
+    );
+}
