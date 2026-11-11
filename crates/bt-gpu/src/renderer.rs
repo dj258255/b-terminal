@@ -14,8 +14,10 @@ mod compose;
 mod custom;
 pub use custom::{CompileStages, ShaderWaker};
 mod layer_diff;
+mod memory;
 mod window;
 pub use compose::{LayerMemory, LayerUpdate, PaneDraw};
+pub use memory::GpuMemory;
 pub use window::PresentOutcome;
 
 /// 한 프레임의 구간별 시간(ms). 마지막으로 그린 프레임의 값이다
@@ -268,8 +270,19 @@ impl GpuRenderer {
             contents: &[0u8; 16],
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
-        let gray_tex = atlas_texture(&device, initial, wgpu::TextureFormat::R8Unorm, "bt-gpu gray atlas");
-        let color_tex = atlas_texture(&device, initial, wgpu::TextureFormat::Rgba8Unorm, "bt-gpu color atlas");
+        let cache = GlyphCache::new(initial, max);
+        let gray_tex = atlas_texture(
+            &device,
+            cache.gray.size(),
+            wgpu::TextureFormat::R8Unorm,
+            "bt-gpu gray atlas",
+        );
+        let color_tex = atlas_texture(
+            &device,
+            cache.color.size(),
+            wgpu::TextureFormat::Rgba8Unorm,
+            "bt-gpu color atlas",
+        );
         let bind_group = make_bind_group(&device, &layout, &globals, &gray_tex, &color_tex);
         let layers = compose::Layers::new(&device, format);
         Some(Self {
@@ -287,7 +300,7 @@ impl GpuRenderer {
             rect_buf: None,
             glyph_buf: None,
             target: None,
-            cache: GlyphCache::new(initial, max),
+            cache,
             scene: Scene::default(),
             bytes: Vec::new(),
             timings: FrameTimings::default(),
@@ -542,7 +555,7 @@ impl GpuRenderer {
 
     /// 캐시에 새로 채운 글리프를 GPU 텍스처로 올린다. 아틀라스가 커졌으면 텍스처를 새로 만들어 통째로 올린다
     fn sync_atlases(&mut self) {
-        let mut rebuilt = false;
+        let mut rebuilt = [false; 2];
         for color in [false, true] {
             let (atlas, tex, format, label) = if color {
                 (
@@ -562,10 +575,10 @@ impl GpuRenderer {
             if atlas.size() != tex.size {
                 *tex = atlas_texture(&self.device, atlas.size(), format, label);
                 write_whole(&self.queue, tex, atlas, if color { 4 } else { 1 });
-                rebuilt = true;
+                rebuilt[color as usize] = true;
             }
         }
-        if rebuilt {
+        if rebuilt.contains(&true) {
             self.bind_group = make_bind_group(
                 &self.device,
                 &self.layout,
@@ -573,6 +586,7 @@ impl GpuRenderer {
                 &self.gray_tex,
                 &self.color_tex,
             );
+            self.log_memory("아틀라스를 새로 만들었다");
         }
         for u in self.cache.uploads.drain(..) {
             let (atlas, tex, bpp) = if u.color {
@@ -580,8 +594,8 @@ impl GpuRenderer {
             } else {
                 (&self.cache.gray, &self.gray_tex, 1usize)
             };
-            // 방금 통째로 올렸으면 이미 들어 있다
-            if rebuilt && atlas.size() == tex.size {
+            // 방금 통째로 올린 아틀라스에는 이미 들어 있다
+            if rebuilt[u.color as usize] {
                 continue;
             }
             let stride = atlas.size() as usize * bpp;

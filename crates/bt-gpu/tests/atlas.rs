@@ -45,6 +45,28 @@ fn full_atlas_reports_full_until_it_grows() {
 }
 
 #[test]
+fn lazy_atlas_stays_tiny_until_the_first_piece_then_jumps_to_its_first_size() {
+    let mut a = Atlas::lazy(64, 4, 256);
+    assert_eq!((a.size(), a.data().len()), (1, 4), "쓰기 전에는 1x1");
+    assert_eq!(a.insert(8, 8, &[9; 8 * 8 * 4]), Err(Full));
+    // 첫 잡기는 한 번에 처음 크기로 가고, 키운 횟수에 세지 않는다
+    let p = a.insert_growing(8, 8, &[9; 8 * 8 * 4]).unwrap();
+    assert_eq!((a.size(), a.grows(), a.data().len()), (64, 0, 64 * 64 * 4));
+    assert_eq!(a.data()[(p.1 * 64 + p.0) as usize * 4], 9);
+    // 그 뒤에는 두 배씩
+    assert!(a.grow());
+    assert_eq!((a.size(), a.grows()), (128, 1));
+    // 비운 아틀라스는 같은 크기에서 다시 시작한다
+    let e = a.emptied();
+    assert_eq!((e.size(), e.grows()), (128, 0));
+    // 아직 쓰지 않은 지연 아틀라스를 비우면 여전히 지연이다
+    let mut l = Atlas::lazy(64, 4, 256).emptied();
+    assert_eq!(l.size(), 1);
+    assert!(l.insert_growing(8, 8, &[1; 8 * 8 * 4]).is_some());
+    assert_eq!(l.size(), 64);
+}
+
+#[test]
 fn growing_keeps_existing_tiles_where_they_were() {
     let mut a = Atlas::new(16, 1, 64);
     let p = a.insert(8, 8, &tile(8, 8, 7)).unwrap();

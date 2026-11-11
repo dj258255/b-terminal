@@ -269,6 +269,35 @@ fn color_emoji_matches_cpu() {
     assert!(colored > 100, "색 있는 픽셀 {colored}");
 }
 
+/// 색 아틀라스는 처음 쓸 때 잡고(#400) 모자라면 커진다. 작은 아틀라스에서 이모지가 많아도 큰 것과 같은 그림이다
+#[test]
+fn lazy_color_atlas_grows_with_many_emoji_and_renders_the_same() {
+    let (Some(mut small), Some(mut big)) = (gpu(16), gpu(2048)) else {
+        return;
+    };
+    let mut f = fonts(2.0);
+    if !f.has_color_emoji() {
+        eprintln!("건너뜀: 색 이모지 글꼴이 없다");
+        return;
+    }
+    let (s, t) = screen(
+        "a 😀 😁 😂 🎉 🚀 🌈 🍎 🐱 🐶 ❤\u{fe0f} b\r\n🍕 🍔 🎸 🏀 ⚽ 🌙 ⭐ 🔥 💧 🌸 c",
+        40,
+        2,
+    );
+    let dc = cells(&s);
+    let v = view(&s, &dc, &t, None);
+    assert_eq!(small.gpu_memory().color_atlas, 4, "그리기 전에는 1x1");
+    let a = small.render(&mut f, &v, s.background);
+    let b = big.render(&mut f, &v, s.background);
+    let m = small.gpu_memory();
+    eprintln!("작은 것 {m:?}, 키운 횟수 {}", small.atlas_grow_count());
+    assert!(m.color_atlas > 4, "{m:?}");
+    assert!(small.atlas_grow_count() >= 1, "16px 색 아틀라스는 커져야 한다");
+    assert_eq!(a, b, "아틀라스 크기가 그림을 바꾸면 안 된다");
+    assert_eq!(small.render(&mut f, &v, s.background), b);
+}
+
 #[test]
 fn small_atlas_grows_and_renders_the_same() {
     let (Some(mut small), Some(mut big)) = (gpu(16), gpu(2048)) else {

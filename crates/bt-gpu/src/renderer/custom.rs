@@ -377,6 +377,17 @@ impl GpuRenderer {
         }
     }
 
+    /// 사용자 셰이더 유니폼 버퍼의 바이트
+    pub(super) fn custom_uniform_bytes(&self) -> usize {
+        self.custom.as_ref().map_or(0, |c| c.uniforms.size() as usize)
+    }
+
+    /// 사용자 셰이더 중간 텍스처 둘의 바이트
+    pub(super) fn custom_texture_bytes(&self) -> usize {
+        let bytes = |t: &PingPong| t.size.0 as usize * t.size.1 as usize * 4 * 2;
+        self.custom.as_ref().and_then(|c| c.textures.as_ref()).map_or(0, bytes)
+    }
+
     /// 사용자 셰이더가 하나라도 켜져 있는가
     pub fn has_custom_shaders(&self) -> bool {
         self.custom.is_some()

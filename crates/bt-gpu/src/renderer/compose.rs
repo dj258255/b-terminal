@@ -265,7 +265,7 @@ impl Layers {
     }
 
     /// 쥔 메모리
-    fn memory(&self) -> LayerMemory {
+    pub(super) fn memory(&self) -> LayerMemory {
         let mut m = LayerMemory {
             scratch_bytes: self.scratch.capacity(),
             ..LayerMemory::default()
