@@ -7,18 +7,28 @@ use std::time::{Duration, Instant};
 /// 화면 주사율을 모를 때 쓰는 값(60Hz)
 pub const DEFAULT_REFRESH: Duration = Duration::from_nanos(16_666_667);
 
-/// 프레임 지연(`desired_maximum_frame_latency`)의 기본값. 1이면 그림판이 2장이다.
-/// 실험 E14(Apple M2 Pro 내장 120Hz, 2000×1360)에서 그림판 한 장이 약 10.5MB여서 3장(지연 2)보다 창 하나의 물리 메모리가
-/// 약 10.5MB 줄었고, 그림판을 얻는 시간은 늘지 않았다. 외부 화면·60Hz 화면은 재지 않았다. 지연 2는 `BT_FRAME_LATENCY=2`로 고른다
+/// 줄 깊이(`FramePacer`가 줄 서 있다고 세는 프레임 수)의 기본값. surface에는 이보다 하나 큰 값(`surface_latency`, 최대 2)을 청한다.
+/// 줄 깊이 1이면 보통 그림판은 2장만 쓰인다. 실험 E14(Apple M2 Pro 내장 120Hz, 2000×1360)에서 그림판 한 장이 약 10.5MB여서
+/// 3장보다 창 하나의 물리 메모리가 약 10.5MB 줄었고, 그림판을 얻는 시간은 늘지 않았다. 외부 화면·60Hz 화면은 재지 않았다.
+/// 다만 surface에 청한 지연을 줄 깊이와 같은 1로 하면(그림판 최대 2장) 화면이 그림판을 오래 쥘 때 마지막 프레임이 화면에 붙지 않고
+/// 멈추는 일이 있었다(#447, 실험 E22에서 main 25회 중 11회). 지금은 surface 지연을 2로 청해 그림판을 최대 3장까지 허락하고, 셋째 장은
+/// 화면이 그림판을 오래 쥘 때만 생긴다(셰이더 없는 창 10회 중 4회, 셰이더를 건 창은 늘). 고친 뒤 10회 중 0회가 멈췄다. 줄 깊이는 `BT_FRAME_LATENCY`(1~3)로 고른다
 pub const DEFAULT_FRAME_LATENCY: u32 = 1;
 
-/// 측정용 환경 변수 `BT_FRAME_LATENCY`의 값에서 프레임 지연을 고른다. 1~3이면 그 값, 없거나 그 밖이면 기본값이다.
-/// Metal은 그림판을 지연 + 1장 돌려 쓰므로 1이면 2장, 2면 3장, 3이면 4장이다
+/// 측정용 환경 변수 `BT_FRAME_LATENCY`의 값에서 줄 깊이를 고른다. 1~3이면 그 값, 없거나 그 밖이면 기본값이다.
+/// surface에 청하는 지연은 `surface_latency`가 따로 정한다
 pub fn frame_latency_from_env(value: Option<&str>) -> u32 {
     match value.and_then(|v| v.trim().parse::<u32>().ok()) {
         Some(n) if (1..=3).contains(&n) => n,
         _ => DEFAULT_FRAME_LATENCY,
     }
+}
+
+/// surface에 청하는 `desired_maximum_frame_latency`: 줄 깊이 + 1, 단 2를 넘지 않게(#447).
+/// wgpu-hal metal은 이 값 + 1장을 `maximumDrawableCount`로 정하고 Metal은 2~3장만 받는다. 줄 깊이와 같게 청하면(깊이 1이면 지연 1,
+/// 그림판 2장) 화면이 그림판을 오래 쥘 때 마지막 프레임이 화면에 붙지 않고 멈추는 일이 있었다. 미루기 계산은 줄 깊이를 그대로 쓴다
+pub fn surface_latency(depth: u32) -> u32 {
+    (depth + 1).min(2)
 }
 
 /// `FramePacer::check`의 답
@@ -39,7 +49,8 @@ pub fn interval_from_millihertz(millihertz: Option<u32>) -> Duration {
     }
 }
 
-/// 올린 프레임이 아직 화면에 오르지 않고 줄 서 있다고 보고 세어, 줄이 가득 차면 다음 프레임을 미룬다.
+/// 올린 프레임이 아직 화면에 오르지 않고 줄 서 있다고 보고 세어, 줄이 가득 차면 다음 프레임을 미룬다(`depth`가 줄 깊이).
+/// 줄 깊이는 surface 지연(`surface_latency`)과 다를 수 있다: surface는 그림판을 하나 더 허락하고 미룸 계산은 `depth`장만 센다.
 ///
 /// Metal은 `nextDrawable`을 `desired_maximum_frame_latency + 1`장으로 돌려 쓰고(`wgpu-hal` metal `surface.rs` 330줄)
 /// 모두 쓰는 중이면 그 호출이 빈 장이 날 때까지 막는다(334줄 `setAllowsNextDrawableTimeout(false)`, 375줄 `nextDrawable`).
@@ -61,7 +72,7 @@ const BLOCKED: Duration = Duration::from_millis(1);
 const UNLEARN: f64 = 0.99;
 
 impl FramePacer {
-    /// `depth`는 `desired_maximum_frame_latency`와 같은 값
+    /// `depth`는 줄 깊이(surface 지연은 `surface_latency(depth)`)
     pub fn new(depth: usize, interval: Duration) -> Self {
         Self {
             interval,
@@ -165,6 +176,13 @@ mod tests {
 
     fn ms(n: u64) -> Duration {
         Duration::from_millis(n)
+    }
+
+    #[test]
+    fn surface_latency_is_one_more_than_the_queue_depth_but_at_most_two() {
+        assert_eq!(surface_latency(1), 2);
+        assert_eq!(surface_latency(2), 2);
+        assert_eq!(surface_latency(3), 2);
     }
 
     #[test]
