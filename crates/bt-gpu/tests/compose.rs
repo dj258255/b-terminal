@@ -699,3 +699,61 @@ fn upload_cost_2000x1360() {
         &lower,
     );
 }
+
+#[test]
+fn empty_upper_slice_releases_the_upper_layer_and_it_comes_back() {
+    let Some(mut g) = gpu() else { return };
+    let mut fx = fixture();
+    let (va, vb) = (view(&fx.sa, &fx.ca, &fx.t), view(&fx.sb, &fx.cb, &fx.t));
+    let panes = [
+        PaneDraw {
+            x: fx.l.a.0,
+            y: fx.l.a.1,
+            view: &va,
+            clear: fx.sa.background,
+        },
+        PaneDraw {
+            x: fx.l.b.0,
+            y: fx.l.b.1,
+            view: &vb,
+            clear: fx.sb.background,
+        },
+    ];
+    let size = (fx.l.w, fx.l.h);
+    let layer = fx.l.w as usize * fx.l.h as usize * 4;
+    let with_upper = cpu_reference(&mut fx.f, &fx.l, fx.sa.background, [&va, &vb], true);
+    let without_upper = cpu_reference(&mut fx.f, &fx.l, fx.sa.background, [&va, &vb], false);
+
+    let up = LayerUpdate {
+        lower: Some(&fx.lower),
+        upper: Some(&fx.upper),
+    };
+    let got = g.compose(&mut fx.f, size, up, &panes);
+    assert_close("위층이 있는 프레임", &with_upper, &got);
+    let m = g.layer_memory();
+    assert_eq!(m.texture_bytes, 2 * layer, "두 층 텍스처: {m:?}");
+    assert!(m.shadow_bytes >= 2 * layer, "두 층 사본: {m:?}");
+
+    // 위층이 비었다: 텍스처와 사본을 놓고, 화면은 위층 없는 기준과 같다
+    let empty = LayerUpdate {
+        lower: None,
+        upper: Some(&[]),
+    };
+    let got = g.compose(&mut fx.f, size, empty, &panes);
+    assert_close("위층을 놓은 프레임", &without_upper, &got);
+    let m = g.layer_memory();
+    assert_eq!(m.texture_bytes, layer, "아래층 텍스처만 남는다: {m:?}");
+    assert!(
+        m.shadow_bytes >= layer && m.shadow_bytes < 2 * layer,
+        "아래층 사본만 남는다: {m:?}"
+    );
+
+    // 다시 위층을 주면 돌아온다
+    let back = LayerUpdate {
+        lower: None,
+        upper: Some(&fx.upper),
+    };
+    let got = g.compose(&mut fx.f, size, back, &panes);
+    assert_close("위층이 돌아온 프레임", &with_upper, &got);
+    assert_eq!(g.layer_memory().texture_bytes, 2 * layer);
+}

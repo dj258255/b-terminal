@@ -171,9 +171,7 @@ impl App {
             resize_overlay: !resize_overlays.is_empty(),
             images: views.iter().any(|v| !v.screen.images.is_empty()),
         });
-        let structural = self.w.last_frame.as_ref().is_none_or(|l| l.chrome != chrome)
-            || self.w.frame.len() != n
-            || self.w.upper.len() != n;
+        let structural = self.w.last_frame.as_ref().is_none_or(|l| l.chrome != chrome) || self.w.frame.len() != n;
         let reuse = !structural && chrome.overlay && key.is_some() && key == self.w.layer_key;
         let full = structural || (chrome.overlay && !reuse);
         if full {
@@ -186,9 +184,6 @@ impl App {
         if full {
             if self.w.frame.len() != n {
                 self.w.frame = vec![0; n];
-            }
-            if self.w.upper.len() != n {
-                self.w.upper = vec![0; n];
             }
             // 아래층: 격자 밑에 깔리는 것. 투명 창이면 곱한 알파, 배경 그림이 있으면 그 층을 깐다(CPU 길과 같은 캔버스 설정)
             super::backdrop::refresh(
@@ -255,8 +250,13 @@ impl App {
                 }
             }
 
-            // 위층: 투명 바탕(0)에 그린다. 캔버스의 섞기가 곱한 알파로 쌓아 준다
-            self.w.upper.fill(0);
+            // 위층: 투명 바탕(0)에 그린다. 캔버스의 섞기가 곱한 알파로 쌓아 준다.
+            // 지난 프레임에 비어 놓았으면 새로 잡는다(새로 잡은 것은 이미 0)
+            if self.w.upper.len() == n {
+                self.w.upper.fill(0);
+            } else {
+                self.w.upper = vec![0; n];
+            }
             let mut upper = Canvas::new(&mut self.w.upper, sw, sh);
             for ((v, (_, _, _)), bar) in views.iter().zip(&drawn).zip(bars) {
                 let screen = &v.screen;
@@ -364,6 +364,10 @@ impl App {
                 tabbar::draw_confirm(&mut upper, fonts, &theme, message, &hint);
             }
             repainted_rows = views.iter().map(|v| v.screen.rows).sum();
+            // 위층에 그린 것이 없으면 버퍼를 놓는다. 빈 조각을 받은 렌더러도 위층 텍스처와 사본을 놓는다(#387)
+            if !self.w.upper.iter().any(|&p| p != 0) {
+                self.w.upper = Vec::new();
+            }
         } else {
             // 바뀐 줄만 바뀐 프레임: 층은 그대로, 몇 줄이 바뀌었는지만 센다(GPU는 격자를 늘 통째로 그린다)
             for (v, (cells, cursor, pre)) in views.iter().zip(&drawn) {
