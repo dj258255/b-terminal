@@ -1,7 +1,7 @@
 //! 마우스 보고(xterm 9/1000/1002/1003, 형식 1005/1006/1015/1016). vim·htop·less 같은 프로그램이 마우스를 쓸 때 켠다
 
 use bt_core::config::{MiddleClickAction, MouseShiftCapture};
-use bt_term::SelectKind;
+use bt_term::{CellSide, SelectKind};
 use std::time::Duration;
 
 /// 이 클릭·움직임·휠을 프로그램(마우스 보고)에 보내는가. `mouse-reporting`을 끄면 늘 아니오.
@@ -292,9 +292,57 @@ pub fn encode(
     }
 }
 
+/// 격자 왼쪽 끝에서 잰 가로 픽셀이 칸의 어느 쪽인가(#437). Ghostty `SelectionGesture.zig` `dragSelection`(740~783줄)과 같다:
+/// 칸 안 자리가 칸 너비의 60%(반올림) 이상이면 `Right`, 아니면 `Left`. 이 쪽이 글자 고르기에서 누른 칸과 끝 칸을 넣을지 정한다
+/// (오른쪽으로 끌 때 누른 칸은 `Left`여야, 끝 칸은 `Right`여야 들어가고 왼쪽으로 끌 때는 반대다).
+/// 격자 왼쪽 밖은 첫 칸의 왼쪽, 격자 오른쪽 밖은 마지막 칸의 오른쪽이다(Ghostty는 `max_x`로 붙인다)
+pub fn cell_side(x_in_grid: f64, cell_width: u32, cols: usize) -> CellSide {
+    if cell_width == 0 || cols == 0 {
+        return CellSide::Left;
+    }
+    let cw = u64::from(cell_width);
+    let max_x = cols as u64 * cw - 1;
+    // NaN과 음수는 0으로 붙는다(`as`가 그렇게 바꾼다)
+    let x = (x_in_grid.floor() as u64).min(max_x);
+    let threshold = (f64::from(cell_width) * 0.6).round() as u64;
+    if x % cw >= threshold {
+        CellSide::Right
+    } else {
+        CellSide::Left
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #437: 칸 안 자리 → 쪽. 칸 너비 10이면 경계는 6(60%): 0~5는 왼쪽, 6~9는 오른쪽(Ghostty `SelectionGesture.zig` 테스트의 cell_width 10과 같다)
+    #[test]
+    fn cell_side_splits_a_cell_at_sixty_percent() {
+        for x in [0.0, 3.0, 5.0, 5.99] {
+            assert_eq!(cell_side(x, 10, 80), CellSide::Left, "x={x}");
+        }
+        for x in [6.0, 9.0, 9.99] {
+            assert_eq!(cell_side(x, 10, 80), CellSide::Right, "x={x}");
+        }
+        // 다음 칸도 같다
+        assert_eq!(cell_side(15.0, 10, 80), CellSide::Left);
+        assert_eq!(cell_side(16.0, 10, 80), CellSide::Right);
+        // 경계가 반올림된다: 너비 8이면 4.8 -> 5
+        assert_eq!(cell_side(4.0, 8, 80), CellSide::Left);
+        assert_eq!(cell_side(5.0, 8, 80), CellSide::Right);
+    }
+
+    /// #437: 격자 밖은 가장자리 칸에 붙는다. 왼쪽 밖은 왼쪽, 오른쪽 밖은 마지막 칸의 오른쪽. 쓸 수 없는 값은 왼쪽
+    #[test]
+    fn cell_side_clamps_outside_the_grid() {
+        assert_eq!(cell_side(-50.0, 10, 80), CellSide::Left);
+        assert_eq!(cell_side(f64::NAN, 10, 80), CellSide::Left);
+        assert_eq!(cell_side(800.0, 10, 80), CellSide::Right, "격자 오른쪽 밖");
+        assert_eq!(cell_side(5000.0, 10, 80), CellSide::Right);
+        assert_eq!(cell_side(1.0, 0, 80), CellSide::Left, "칸 너비 0");
+        assert_eq!(cell_side(1.0, 10, 0), CellSide::Left, "열 0");
+    }
 
     /// #433: 사각 고르기 수식 키. macOS는 Option 하나, 그 밖에는 Ctrl(또는 Super)+Alt(Ghostty surface_mouse.zig isRectangleSelectState)
     #[test]

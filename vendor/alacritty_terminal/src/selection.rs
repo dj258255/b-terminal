@@ -374,6 +374,13 @@ impl Selection {
             mem::swap(&mut start.point.column, &mut end.point.column);
         }
 
+        // b-terminal(#437): 같은 열에서 시작이 오른쪽, 끝이 왼쪽이면(눌렀다 놓은 칸 안에서 왼쪽으로 조금 움직인 세로 끌기)
+        // 아래 두 보정이 겹쳐 열이 뒤집힌다. Ghostty는 그 열 하나를 고른다(`dragSelection`에서 같은 열은 쪽만 본다)
+        if start.point.column == end.point.column && start.side == Side::Right && end.side == Side::Left {
+            start.side = Side::Left;
+            end.side = Side::Right;
+        }
+
         // Remove last cell if selection ends to the left of a cell.
         if end.side == Side::Left && start.point != end.point && end.point.column.0 > 0 {
             end.point.column -= 1;
