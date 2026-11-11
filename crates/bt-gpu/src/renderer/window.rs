@@ -4,8 +4,9 @@ use std::time::{Duration, Instant};
 
 use bt_render::Fonts;
 
-use super::{GpuRenderer, LayerUpdate, PaneDraw, pick_adapter};
+use super::{GpuRenderer, LayerUpdate, PaneDraw, pick_adapter, srgb_twin, srgb_view_of};
 use crate::pacing::{DEFAULT_REFRESH, FramePacer, PaceDecision, SurfaceVisibility, frame_latency_from_env};
+use bt_core::AlphaBlending;
 
 /// 창이 가려졌을 때 `present`가 돌려주는 이유
 const OCCLUDED: &str = "창이 가려졌다";
@@ -158,6 +159,33 @@ impl GpuRenderer {
         Some(me)
     }
 
+    /// `alpha-blending`이 선형이면 surface를 sRGB 꼴 뷰도 열 수 있게 다시 설정하도록 표시한다(`present`가 다음 프레임 앞에서 한다).
+    /// `native`일 때는 뷰 꼴 목록을 비워 둔다: 지금까지의 설정과 같다
+    pub(super) fn sync_window_view_formats(&mut self) {
+        let want: Vec<wgpu::TextureFormat> = if self.alpha_blending == AlphaBlending::Native {
+            Vec::new()
+        } else {
+            srgb_twin(self.format).into_iter().collect()
+        };
+        if let Some(w) = self.window.as_mut() {
+            if w.config.view_formats != want {
+                w.config.view_formats = want;
+                w.stale = true;
+            }
+        }
+    }
+
+    /// 이번 프레임의 surface 텍스처를 sRGB 꼴 뷰로 연다. 선형 섞기가 아니거나 surface가 그 뷰 꼴을 허락하지 않으면 없다
+    pub(super) fn frame_srgb_view(&self, texture: &wgpu::Texture) -> Option<wgpu::TextureView> {
+        let twin = srgb_twin(self.format)?;
+        let allowed = self
+            .window
+            .as_ref()
+            .is_some_and(|w| w.config.view_formats.contains(&twin));
+        (self.alpha_blending != AlphaBlending::Native && self.glyph_linear.is_some() && allowed)
+            .then(|| srgb_view_of(texture, twin))
+    }
+
     /// 이 창 surface를 곱한 알파로 열었는가(투명 창). 열린 뒤에 설정이 바뀌어도 이 값은 그대로다
     pub fn window_transparent(&self) -> bool {
         self.window.as_ref().is_some_and(|w| w.transparent)
@@ -262,7 +290,8 @@ impl GpuRenderer {
         };
         let t_encode = Instant::now();
         let view = frame.texture.create_view(&wgpu::TextureViewDescriptor::default());
-        let cbs = self.encode_frame(&view);
+        let srgb = self.frame_srgb_view(&frame.texture);
+        let cbs = self.encode_frame(&view, srgb.as_ref());
         let encode_ms = t_encode.elapsed().as_secs_f64() * 1000.0;
         let t_submit = Instant::now();
         self.queue.submit(cbs);

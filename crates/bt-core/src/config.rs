@@ -215,6 +215,18 @@ pub enum GraphemeWidthMethod {
     Unicode,
 }
 
+/// 투명도가 있는 글자·그림을 섞을 색 공간(Ghostty `alpha-blending`, #405). GPU 그리기 길에서만 뜻이 있다
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum AlphaBlending {
+    /// sRGB 값 그대로 섞는다(기본, 지금까지의 화면)
+    #[default]
+    Native,
+    /// 선형 공간으로 섞는다. 어두운 글자는 가늘고 밝은 글자는 굵어 보인다
+    Linear,
+    /// 선형으로 섞되 글자 덮음 정도를 보정해 `Native`와 거의 같은 굵기로 보이게 한다
+    LinearCorrected,
+}
+
 /// 색 질의(OSC 4·10·11)에 답하는 꼴(Ghostty `osc-color-report-format`, #151)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum OscColorReportFormat {
@@ -629,6 +641,8 @@ pub struct Config {
     /// macOS에서 색 맞춤을 하는가(`window-colorspace = srgb`). 기본은 끔(`display-p3`): 화면 색 공간으로 그대로 넘겨
     /// 프레임마다의 변환을 피한다(실험 E3, ADR-009)
     pub colorspace_srgb: bool,
+    /// 글자·그림을 섞을 색 공간(`alpha-blending`, #405). GPU 길에서만 적용한다
+    pub alpha_blending: AlphaBlending,
     /// 바탕 불투명도(0~1, Ghostty `background-opacity`). 1보다 작으면 기본 바탕색 칸으로 창 뒤가 비친다(#78)
     pub background_opacity: f32,
     /// 창 뒤를 흐리는 세기 0~255(Ghostty `background-blur`, #238). 0이면 끔. macOS는 이 값을 그대로 반지름으로 쓴다
@@ -1623,6 +1637,7 @@ impl Default for Config {
             unfocused_split_fill: None,
             split_divider_color: None,
             colorspace_srgb: false,
+            alpha_blending: AlphaBlending::Native,
             background_opacity: 1.0,
             background_blur: 0,
             window_save_state: true,
@@ -3452,6 +3467,12 @@ impl Config {
                 Ok(o) if o.is_finite() => self.background_opacity = o.clamp(0.0, 1.0),
                 _ => bad(warnings),
             },
+            "alpha-blending" => match v {
+                "native" => self.alpha_blending = AlphaBlending::Native,
+                "linear" => self.alpha_blending = AlphaBlending::Linear,
+                "linear-corrected" => self.alpha_blending = AlphaBlending::LinearCorrected,
+                _ => bad(warnings),
+            },
             "window-colorspace" => match v {
                 "srgb" => self.colorspace_srgb = true,
                 "display-p3" => self.colorspace_srgb = false,
@@ -3608,6 +3629,15 @@ impl Config {
         push("palette-generate", self.palette_generate.to_string());
         push("palette-harmonious", self.palette_harmonious.to_string());
         push("background-opacity-cells", self.background_opacity_cells.to_string());
+        push(
+            "alpha-blending",
+            match self.alpha_blending {
+                AlphaBlending::Native => "native",
+                AlphaBlending::Linear => "linear",
+                AlphaBlending::LinearCorrected => "linear-corrected",
+            }
+            .to_string(),
+        );
         push("link-url", self.link_url.to_string());
         push("link-osc8", self.link_osc8.to_string());
         push(
@@ -3951,7 +3981,6 @@ const KNOWN_IGNORED: &[&str] = &[
     "async-backend",
     "quick-terminal-keyboard-interactivity",
     // 그리기·엔진 쪽(b-terminal의 그리기와 VT 엔진이 다르다)
-    "alpha-blending",
     "freetype-load-flags",
     "scrollback-compression",
     "drag-handle",
@@ -5437,7 +5466,6 @@ mod tests {
             "linux-cgroup-memory-limit = 1",
             "linux-cgroup-processes-limit = 1",
             "linux-cgroup-hard-fail = true",
-            "alpha-blending = linear",
             "freetype-load-flags = light",
             "async-backend = epoll",
             "window-title-font-family = Menlo",
@@ -6095,6 +6123,28 @@ mod tests {
             "1로 묶는다"
         );
         assert_eq!(Config::from_text("background-opacity = x\n", true).warnings.len(), 1);
+    }
+
+    #[test]
+    fn alpha_blending_key() {
+        assert_eq!(Config::default().alpha_blending, AlphaBlending::Native);
+        for (v, want) in [
+            ("native", AlphaBlending::Native),
+            ("linear", AlphaBlending::Linear),
+            ("linear-corrected", AlphaBlending::LinearCorrected),
+        ] {
+            let c = Config::from_text(&format!("alpha-blending = {v}\n"), true);
+            assert_eq!(c.alpha_blending, want, "{v}");
+            assert!(c.warnings.is_empty(), "{v}: {:?}", c.warnings);
+        }
+        // 잘못된 값은 경고하고 앞의 값을 지킨다
+        let c = Config::from_text("alpha-blending = linear\nalpha-blending = srgb\n", true);
+        assert_eq!(c.warnings.len(), 1);
+        assert_eq!(c.alpha_blending, AlphaBlending::Linear);
+        // 내보내기에 들어간다
+        let shown = Config::from_text("alpha-blending = linear-corrected\n", true).render();
+        assert!(shown.contains("alpha-blending = linear-corrected"), "{shown}");
+        assert!(Config::default().render().contains("alpha-blending = native"));
     }
 
     #[test]

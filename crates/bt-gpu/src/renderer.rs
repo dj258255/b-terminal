@@ -2,7 +2,7 @@
 
 use std::time::Instant;
 
-use bt_core::Rgb;
+use bt_core::{AlphaBlending, Rgb};
 use bt_render::{Fonts, GridView};
 use wgpu::util::DeviceExt;
 
@@ -52,6 +52,8 @@ const TARGET_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 struct Target {
     texture: wgpu::Texture,
     view: wgpu::TextureView,
+    /// 같은 텍스처의 sRGB 꼴 뷰(선형 섞기용). 대상 꼴에 sRGB 짝이 없으면 없다
+    srgb_view: Option<wgpu::TextureView>,
     readback: wgpu::Buffer,
     width: u32,
     height: u32,
@@ -99,6 +101,111 @@ pub struct GpuRenderer {
     custom_job: Option<custom::CustomJob>,
     /// 컴파일이 끝났을 때 앱을 깨우는 함수
     shader_waker: Option<custom::ShaderWaker>,
+    /// 글자를 섞을 색 공간(#405)
+    alpha_blending: AlphaBlending,
+    /// 선형 섞기 글리프 파이프라인(`linear`·`linear-corrected`를 처음 고를 때 만든다). 대상의 sRGB 꼴 뷰에 그린다
+    glyph_linear: Option<LinearGlyphPipelines>,
+    /// 글리프 파이프라인을 만드는 데 쓴 모듈과 레이아웃(선형 파이프라인을 나중에 만들려고 쥔다)
+    shader: (wgpu::ShaderModule, wgpu::PipelineLayout),
+}
+
+/// 선형 섞기 글리프 파이프라인 둘: `linear`, `linear-corrected`
+struct LinearGlyphPipelines {
+    plain: wgpu::RenderPipeline,
+    corrected: wgpu::RenderPipeline,
+}
+
+/// 대상 꼴의 sRGB 짝(같은 텍스처를 sRGB 꼴 뷰로 열어 하드웨어가 선형에서 섞게 한다). 짝이 없으면 선형 섞기를 못 한다
+pub(super) fn srgb_twin(format: wgpu::TextureFormat) -> Option<wgpu::TextureFormat> {
+    match format {
+        wgpu::TextureFormat::Rgba8Unorm => Some(wgpu::TextureFormat::Rgba8UnormSrgb),
+        wgpu::TextureFormat::Bgra8Unorm => Some(wgpu::TextureFormat::Bgra8UnormSrgb),
+        _ => None,
+    }
+}
+
+/// 같은 텍스처에 이어 그리는 그리기 패스들. 섞기 공간이 다른 글리프는 sRGB 꼴 뷰에, 나머지는 원래 꼴 뷰에 그리므로
+/// 둘이 번갈아 나오면 패스를 바꾼다(앞 패스의 그림은 `Load`로 이어 받는다). 선형 섞기가 아니면 패스는 하나다
+pub(super) struct Passes<'a> {
+    enc: &'a mut wgpu::CommandEncoder,
+    label: &'static str,
+    plain: &'a wgpu::TextureView,
+    srgb: Option<&'a wgpu::TextureView>,
+    bind: &'a wgpu::BindGroup,
+    /// 첫 패스를 지울 색. 첫 패스가 열리면 비운다
+    clear: Option<wgpu::Color>,
+    cur: Option<(bool, wgpu::RenderPass<'static>)>,
+}
+
+impl<'a> Passes<'a> {
+    pub(super) fn new(
+        enc: &'a mut wgpu::CommandEncoder,
+        label: &'static str,
+        plain: &'a wgpu::TextureView,
+        srgb: Option<&'a wgpu::TextureView>,
+        bind: &'a wgpu::BindGroup,
+        clear: wgpu::Color,
+    ) -> Self {
+        Self {
+            enc,
+            label,
+            plain,
+            srgb,
+            bind,
+            clear: Some(clear),
+            cur: None,
+        }
+    }
+
+    /// `srgb`가 참이면 sRGB 꼴 뷰에 그리는 패스를 돌려준다. 새로 열린 패스에는 칸 바인드 그룹이 걸려 있다
+    pub(super) fn pass(&mut self, srgb: bool) -> &mut wgpu::RenderPass<'static> {
+        // 지우기는 원래 꼴 뷰에서 한다: sRGB 꼴 뷰는 지우는 색을 선형 값으로 읽어 sRGB로 바꿔 쓰므로 바탕색이 달라진다
+        if srgb && self.clear.is_some() {
+            let _ = self.pass(false);
+        }
+        if self.cur.as_ref().is_none_or(|(s, _)| *s != srgb) {
+            self.cur = None;
+            let view = if srgb {
+                self.srgb.expect("sRGB 뷰 없이 sRGB 패스를 요청했다")
+            } else {
+                self.plain
+            };
+            let load = match self.clear.take() {
+                Some(c) => wgpu::LoadOp::Clear(c),
+                None => wgpu::LoadOp::Load,
+            };
+            let mut pass = self
+                .enc
+                .begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some(self.label),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view,
+                        depth_slice: None,
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            load,
+                            store: wgpu::StoreOp::Store,
+                        },
+                    })],
+                    depth_stencil_attachment: None,
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                    multiview_mask: None,
+                })
+                .forget_lifetime();
+            pass.set_bind_group(0, self.bind, &[]);
+            self.cur = Some((srgb, pass));
+        }
+        &mut self.cur.as_mut().expect("방금 열었다").1
+    }
+
+    /// 아무것도 그리지 않았어도 첫 패스(지우기)는 연다. 그리기가 끝났으면 부른다
+    pub(super) fn finish(mut self) {
+        if self.clear.is_some() {
+            let _ = self.pass(false);
+        }
+        self.cur = None;
+    }
 }
 
 /// 어댑터를 고른다. 진짜 GPU가 없으면 소프트웨어 어댑터(lavapipe 등)를 찾는다. `surface`가 있으면 그것을 그릴 수 있는 것만
@@ -130,6 +237,14 @@ fn atlas_texture(device: &wgpu::Device, size: u32, format: wgpu::TextureFormat, 
     });
     let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
     AtlasTexture { texture, view, size }
+}
+
+/// 텍스처를 `format` 꼴 뷰로 연다(같은 텍스처가 `view_formats`에 그 꼴을 가졌어야 한다)
+pub(super) fn srgb_view_of(texture: &wgpu::Texture, format: wgpu::TextureFormat) -> wgpu::TextureView {
+    texture.create_view(&wgpu::TextureViewDescriptor {
+        format: Some(format),
+        ..Default::default()
+    })
 }
 
 fn blend_over() -> wgpu::BlendState {
@@ -312,6 +427,82 @@ impl GpuRenderer {
             shader_uniforms: Box::default(),
             custom_job: None,
             shader_waker: None,
+            alpha_blending: AlphaBlending::Native,
+            glyph_linear: None,
+            shader: (module, pl),
+        })
+    }
+
+    /// 글자를 섞을 색 공간을 정한다(`alpha-blending`). 다음 프레임부터 바뀐다.
+    /// 대상 꼴에 sRGB 짝이 없으면 `native`로 남는다. 사용자 셰이더가 도는 동안에는 `native`로 그린다
+    pub fn set_alpha_blending(&mut self, mode: AlphaBlending) {
+        if mode != AlphaBlending::Native && self.glyph_linear.is_none() {
+            match self.build_linear_glyphs() {
+                Some(p) => self.glyph_linear = Some(p),
+                None => {
+                    log::warn!(
+                        "alpha-blending: 이 대상 꼴({:?})은 선형 섞기를 못 한다. native로 그린다",
+                        self.format
+                    );
+                    self.alpha_blending = AlphaBlending::Native;
+                    return;
+                }
+            }
+        }
+        self.alpha_blending = mode;
+        // 창 surface는 sRGB 꼴 뷰를 열 수 있게 다시 설정한다(`present`가 다음 프레임 앞에서 한다)
+        self.sync_window_view_formats();
+    }
+
+    /// 지금 고른 섞기 공간으로 글리프를 그릴 파이프라인과, 그것이 sRGB 꼴 뷰에 그려야 하는가
+    pub(super) fn glyph_draw(&self, srgb_view_available: bool) -> (&wgpu::RenderPipeline, bool) {
+        match (self.alpha_blending, &self.glyph_linear, srgb_view_available) {
+            (AlphaBlending::Linear, Some(p), true) => (&p.plain, true),
+            (AlphaBlending::LinearCorrected, Some(p), true) => (&p.corrected, true),
+            _ => (&self.glyph_pipeline, false),
+        }
+    }
+
+    /// 선형 섞기용 글리프 파이프라인(대상의 sRGB 꼴). 짝이 없으면 없다
+    fn build_linear_glyphs(&self) -> Option<LinearGlyphPipelines> {
+        let format = srgb_twin(self.format)?;
+        let (module, pl) = &self.shader;
+        let attrs =
+            wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32x2, 2 => Float32x2, 3 => Unorm8x4, 4 => Uint32];
+        let make = |label: &str, fs: &str| {
+            self.device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some(label),
+                layout: Some(pl),
+                vertex: wgpu::VertexState {
+                    module,
+                    entry_point: Some("glyph_vs"),
+                    compilation_options: Default::default(),
+                    buffers: &[Some(wgpu::VertexBufferLayout {
+                        array_stride: GLYPH_STRIDE as u64,
+                        step_mode: wgpu::VertexStepMode::Instance,
+                        attributes: &attrs,
+                    })],
+                },
+                fragment: Some(wgpu::FragmentState {
+                    module,
+                    entry_point: Some(fs),
+                    compilation_options: Default::default(),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format,
+                        blend: Some(blend_over()),
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                }),
+                primitive: wgpu::PrimitiveState::default(),
+                depth_stencil: None,
+                multisample: wgpu::MultisampleState::default(),
+                multiview_mask: None,
+                cache: None,
+            })
+        };
+        Some(LinearGlyphPipelines {
+            plain: make("bt-gpu glyphs linear", "glyph_fs_linear"),
+            corrected: make("bt-gpu glyphs linear-corrected", "glyph_fs_corrected"),
         })
     }
 
@@ -386,52 +577,48 @@ impl GpuRenderer {
             label: Some("bt-gpu frame"),
         });
         {
-            let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("bt-gpu cells"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &target.view,
-                    depth_slice: None,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        // 투명 창이면 투명으로 지우고 칸이 화면을 덮는다(#353, Scene::is_transparent)
-                        load: wgpu::LoadOp::Clear(if self.scene.is_transparent() {
-                            wgpu::Color::TRANSPARENT
-                        } else {
-                            wgpu::Color {
-                                r: clear.r as f64 / 255.0,
-                                g: clear.g as f64 / 255.0,
-                                b: clear.b as f64 / 255.0,
-                                a: 1.0,
-                            }
-                        }),
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: None,
-                timestamp_writes: None,
-                occlusion_query_set: None,
-                multiview_mask: None,
-            });
-            pass.set_bind_group(0, &self.bind_group, &[]);
+            // 투명 창이면 투명으로 지우고 칸이 화면을 덮는다(#353, Scene::is_transparent)
+            let clear_color = if self.scene.is_transparent() {
+                wgpu::Color::TRANSPARENT
+            } else {
+                wgpu::Color {
+                    r: clear.r as f64 / 255.0,
+                    g: clear.g as f64 / 255.0,
+                    b: clear.b as f64 / 255.0,
+                    a: 1.0,
+                }
+            };
+            let (glyph_pipeline, glyphs_srgb) = self.glyph_draw(target.srgb_view.is_some());
+            let mut passes = Passes::new(
+                &mut enc,
+                "bt-gpu cells",
+                &target.view,
+                target.srgb_view.as_ref(),
+                &self.bind_group,
+                clear_color,
+            );
             let sc = &self.scene;
-            let draw_rects = |pass: &mut wgpu::RenderPass<'_>, range: std::ops::Range<usize>| {
+            let draw_rects = |passes: &mut Passes<'_>, range: std::ops::Range<usize>| {
                 if let (Some(buf), false) = (&self.rect_buf, range.is_empty()) {
+                    let pass = passes.pass(false);
                     pass.set_pipeline(&self.rect_pipeline);
                     pass.set_vertex_buffer(0, buf.slice(..));
                     pass.draw(0..6, range.start as u32..range.end as u32);
                 }
             };
-            let draw_glyphs = |pass: &mut wgpu::RenderPass<'_>, range: std::ops::Range<usize>| {
+            let draw_glyphs = |passes: &mut Passes<'_>, range: std::ops::Range<usize>| {
                 if let (Some(buf), false) = (&self.glyph_buf, range.is_empty()) {
-                    pass.set_pipeline(&self.glyph_pipeline);
+                    let pass = passes.pass(glyphs_srgb);
+                    pass.set_pipeline(glyph_pipeline);
                     pass.set_vertex_buffer(0, buf.slice(..));
                     pass.draw(0..6, range.start as u32..range.end as u32);
                 }
             };
-            draw_rects(&mut pass, 0..sc.rects_pre);
-            draw_glyphs(&mut pass, 0..sc.glyphs_pre);
-            draw_rects(&mut pass, sc.rects_pre..sc.rects.len());
-            draw_glyphs(&mut pass, sc.glyphs_pre..sc.glyphs.len());
+            draw_rects(&mut passes, 0..sc.rects_pre);
+            draw_glyphs(&mut passes, 0..sc.glyphs_pre);
+            draw_rects(&mut passes, sc.rects_pre..sc.rects.len());
+            draw_glyphs(&mut passes, sc.glyphs_pre..sc.glyphs.len());
+            passes.finish();
         }
         self.queue.submit([enc.finish()]);
         let _ = self.device.poll(wgpu::PollType::wait_indefinitely());
@@ -512,6 +699,7 @@ impl GpuRenderer {
     }
 
     fn ensure_target(&mut self, width: u32, height: u32) {
+        let twin = srgb_twin(self.format);
         if self
             .target
             .as_ref()
@@ -531,9 +719,10 @@ impl GpuRenderer {
             dimension: wgpu::TextureDimension::D2,
             format: self.format,
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
-            view_formats: &[],
+            view_formats: twin.as_slice(),
         });
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let srgb_view = twin.map(|f| srgb_view_of(&texture, f));
         let align = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
         let padded_row = (width * 4).div_ceil(align) * align;
         let readback = self.device.create_buffer(&wgpu::BufferDescriptor {
@@ -545,6 +734,7 @@ impl GpuRenderer {
         self.target = Some(Target {
             texture,
             view,
+            srgb_view,
             readback,
             width,
             height,
