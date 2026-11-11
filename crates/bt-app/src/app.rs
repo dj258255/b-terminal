@@ -2942,18 +2942,17 @@ impl App {
             .map(|(id, _)| id)
     }
 
-    /// 이 탭의 칸 수, 크게 보는 중인가, 창이 전체 화면인가(손잡이를 보일지·잡을지 정한다)
-    fn handle_env(&self) -> (usize, bool, bool) {
-        let fullscreen = self.w.gfx.as_ref().is_some_and(|g| window_is_fullscreen(&g.window));
+    /// 이 탭의 칸 수와 크게 보는 중인가(손잡이를 보일지·잡을지 정한다)
+    fn handle_env(&self) -> (usize, bool) {
         match self.w.tabs.get(self.w.active) {
-            Some(g) => (g.layout.leaves().len(), g.zoomed, fullscreen),
-            None => (0, false, fullscreen),
+            Some(g) => (g.layout.leaves().len(), g.zoomed),
+            None => (0, false),
         }
     }
 
     /// 마우스가 잡을 수 있는 손잡이 위에 있으면 그 칸(`drag-handle`). 손잡이가 없거나 옮길 칸이 하나뿐이면 없다
     fn handle_under_cursor(&self) -> Option<u64> {
-        let (panes, zoomed, _) = self.handle_env();
+        let (panes, zoomed) = self.handle_env();
         if !crate::pane_drag::grabbable(self.config.drag_handle, panes, zoomed) {
             return None;
         }
@@ -5053,15 +5052,13 @@ impl App {
             .collect();
         let split = views.len() > 1;
         // 칸 끌기 손잡이(`drag-handle`)와 놓을 자리 미리 보기. 둘 다 위층에 그리고 `Chrome`에 들어 있어 바뀌면 통째로 다시 그린다
-        let (handle_panes, handle_zoomed, handle_fullscreen) = self.handle_env();
+        let (handle_panes, handle_zoomed) = self.handle_env();
         let handles: Vec<crate::pane_drag::Look> = views
             .iter()
             .map(|v| {
                 let hover = self.w.handle_hover.filter(|h| h.0 == v.id);
                 crate::pane_drag::look(crate::pane_drag::HandleInput {
                     mode: self.config.drag_handle,
-                    macos: cfg!(target_os = "macos"),
-                    fullscreen: handle_fullscreen,
                     panes: handle_panes,
                     zoomed: handle_zoomed,
                     in_band: hover.is_some(),

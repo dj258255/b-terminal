@@ -52,9 +52,6 @@ pub enum Look {
 #[derive(Debug, Clone, Copy)]
 pub struct HandleInput {
     pub mode: DragHandle,
-    /// macOS인가(전체 화면 판단이 다르다)
-    pub macos: bool,
-    pub fullscreen: bool,
     /// 이 탭의 칸 수
     pub panes: usize,
     /// 칸 하나를 크게 보는 중
@@ -67,7 +64,7 @@ pub struct HandleInput {
     pub dragging: bool,
 }
 
-/// 손잡이를 보일지, 얼마나 진하게 보일지. `auto`는 macOS에서 전체 화면의 칸 하나만 숨기고 Linux에서는 칸이 둘 이상일 때만 보인다.
+/// 손잡이를 보일지, 얼마나 진하게 보일지. `auto`는 칸이 둘 이상일 때만 보인다(끌어서 새 창 만들기가 없어서).
 /// 크게 보는 중에는 끌 수 없으므로 `always`만 보인다(Ghostty는 그때도 그리지만 끌 수 없는 손잡이는 혼란만 준다)
 pub fn look(i: HandleInput) -> Look {
     let strong = i.over_handle || i.dragging;
@@ -81,11 +78,9 @@ pub fn look(i: HandleInput) -> Look {
             }
         }
         DragHandle::Auto => {
-            let allowed = if i.macos {
-                !i.fullscreen || i.panes > 1
-            } else {
-                i.panes > 1
-            };
+            // Ghostty macOS는 칸 하나여도 보인다(끌어서 새 창을 만든다). b-terminal은 그 기능이 없어
+            // 칸 하나의 손잡이는 눌러도 하는 일이 없으므로 모든 OS에서 칸이 둘 이상일 때만 보인다
+            let allowed = i.panes > 1;
             if !allowed || i.zoomed || !(i.in_band || strong) {
                 Look::Hidden
             } else if strong {
@@ -239,8 +234,6 @@ mod tests {
     fn input() -> HandleInput {
         HandleInput {
             mode: DragHandle::Auto,
-            macos: true,
-            fullscreen: false,
             panes: 2,
             zoomed: false,
             in_band: false,
@@ -268,7 +261,6 @@ mod tests {
         let one = HandleInput {
             mode: DragHandle::Always,
             panes: 1,
-            fullscreen: true,
             ..input()
         };
         assert_eq!(look(one), Look::Dim);
@@ -311,34 +303,14 @@ mod tests {
     }
 
     #[test]
-    fn auto_on_macos_fullscreen_hides_only_a_single_pane() {
-        let fs = HandleInput {
-            fullscreen: true,
+    fn auto_needs_two_panes() {
+        // Ghostty macOS는 칸 하나여도 보이지만(끌어서 새 창), 그 기능이 없어 숨긴다
+        let band = HandleInput {
             in_band: true,
             ..input()
         };
-        assert_eq!(look(HandleInput { panes: 1, ..fs }), Look::Hidden);
-        assert_eq!(look(HandleInput { panes: 2, ..fs }), Look::Dim);
-        // 전체 화면이 아니면 칸 하나여도 보인다(Ghostty)
-        assert_eq!(
-            look(HandleInput {
-                panes: 1,
-                in_band: true,
-                ..input()
-            }),
-            Look::Dim
-        );
-    }
-
-    #[test]
-    fn auto_on_linux_needs_two_panes() {
-        let linux = HandleInput {
-            macos: false,
-            in_band: true,
-            ..input()
-        };
-        assert_eq!(look(HandleInput { panes: 1, ..linux }), Look::Hidden);
-        assert_eq!(look(HandleInput { panes: 2, ..linux }), Look::Dim);
+        assert_eq!(look(HandleInput { panes: 1, ..band }), Look::Hidden);
+        assert_eq!(look(HandleInput { panes: 2, ..band }), Look::Dim);
     }
 
     #[test]
