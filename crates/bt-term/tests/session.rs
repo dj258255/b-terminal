@@ -362,6 +362,31 @@ fn block_select_takes_only_the_rectangle() {
     assert_eq!(s.selection_text().as_deref(), Some("c\ni\no"));
 }
 
+/// #433: 사각으로 끄는 도중 출력이 들어와 줄이 올라가도 사각은 처음 누른 글자에 붙어 있다
+/// (엔진은 스크롤할 때 고르기를 함께 옮긴다. 시작점을 따로 들고 있으면 옛 화면 줄에서 사각을 다시 만든다)
+#[test]
+fn block_select_follows_the_text_when_output_scrolls_mid_drag() {
+    use bt_term::SelectKind::Block;
+    let (s, rx) = sh(
+        "printf 'abcdef\\nghijkl\\nmnopqr\\n'; read x; printf 'X\\nY\\nZ\\n'",
+        GridSize::new(20, 6),
+    );
+    wait_until(&s, |t| t.contains("mnopqr"));
+    s.select_start(1, 0, Block);
+    s.select_update(3, 2);
+    assert_eq!(s.selection_text().as_deref(), Some("bcd\nhij\nnop"));
+    s.write(b"\r");
+    wait_exit(&rx);
+    let text = wait_until(&s, |t| t.contains('Z'));
+    let row = text
+        .lines()
+        .position(|l| l.starts_with("mnopqr"))
+        .expect("mnopqr가 화면에 있다");
+    assert!(row < 2, "줄이 올라갔다:\n{text}");
+    s.select_update(3, row);
+    assert_eq!(s.selection_text().as_deref(), Some("bcd\nhij\nnop"), "화면:\n{text}");
+}
+
 /// #433: 사각의 왼쪽·오른쪽 가장자리에 넓은 글자(두 칸)가 걸치면 그 글자를 통째로 가져온다(반쪽을 자르거나 빼먹지 않는다).
 /// 줄 끝 공백은 줄마다 지우고 줄 가운데 공백은 남긴다. 공백뿐인 줄은 빈 줄이 된다(실측: VT 엔진 0.26, 재현은 이 시험)
 #[test]

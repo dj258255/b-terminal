@@ -129,6 +129,11 @@ impl Selection {
         }
     }
 
+    /// b-terminal(#433): 고르기를 시작한 칸. 스크롤로 옮겨진 뒤의 값이다(사각을 다시 만들 때 쓴다)
+    pub fn start_point(&self) -> Point {
+        self.region.start.point
+    }
+
     /// Update the end of the selection.
     pub fn update(&mut self, point: Point, side: Side) {
         self.region.end = Anchor::new(point, side);
