@@ -194,6 +194,10 @@ impl GpuRenderer {
     /// 화면 주사율이 한 장 오르는 간격(`pacing::interval_from_millihertz`)을 알린다. 앱이 창이 있는 화면에서 읽어 넘긴다
     pub fn set_refresh_interval(&mut self, interval: std::time::Duration) {
         if let Some(w) = self.window.as_mut() {
+            // 화면이 알려 준 한 장 간격이 바뀔 때만 남긴다(ProMotion·저전력 모드에서 실제로 받는 주사율을 보려고, #429)
+            if w.pacer.interval() != interval {
+                log::info!("화면 한 장 간격: {:.2}ms", interval.as_secs_f64() * 1000.0);
+            }
             w.pacer.set_interval(interval);
         }
     }
