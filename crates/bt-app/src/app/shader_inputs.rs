@@ -1,7 +1,7 @@
 //! 사용자 셰이더(`custom-shader`)에 넘길 값을 앱 상태에서 만드는 순수한 부분(#373, 앱 연결 #376).
 //! 렌더러(bt-gpu)와 창에 기대지 않아 시계·창 없이 시험한다. 값의 규칙은 Ghostty의 `generic.zig`
 //! (`updateCustomShaderUniformsFromState`·`updateCustomShaderUniformsForFrame`·`setFocus`·`animationWake`)를 따른다.
-//! 앱은 GPU 프레임마다 `ShaderState::frame`으로 값을 모아 `to_uniforms`로 렌더러에 넘기고(`gpu_frame.rs`),
+//! 앱은 GPU 프레임마다 `ShaderState::regions`로 칸마다 값을 모아 렌더러에 넘기고(`gpu_frame.rs`),
 //! `about_to_wait`가 `shader_wake`로 움직이는 창을 깨운다.
 
 use std::io::Read;
@@ -285,6 +285,11 @@ impl FocusTracker {
         self.pending = true;
     }
 
+    /// 이 초점 값이 지금과 다른가(칸의 초점이 바뀌면 그 칸을 다시 그린다)
+    pub fn changes(&self, focus: bool) -> bool {
+        self.focus != focus
+    }
+
     /// 프레임마다 한 번: (iFocus, iTimeFocus). Ghostty는 초점을 **얻었을 때만** 그 프레임의 time으로 옮긴다
     /// (generic.zig 2546~2554줄). 잃었을 때는 옮기지 않고, 아직 얻지 못했으면 바뀜 표시를 남겨 둔다
     pub fn frame(&mut self, time: f32) -> (i32, f32) {
@@ -381,17 +386,124 @@ pub struct FrameCursor {
     pub glyph: Option<([f32; 4], [f32; 4])>,
 }
 
-/// 창 하나의 셰이더 상태(#376). 셰이더를 다시 걸면 새로 만든다(시간이 0부터 다시 간다)
+/// 칸 하나의 셰이더 상태(#441). Ghostty는 분할(surface)마다 렌더러가 따로라 시간(`first_frame_time`)·커서·초점이 칸마다다.
+/// 칸이 열릴 때 만들고 닫힐 때 지운다(`ShaderState::regions`)
 #[derive(Debug, Default, Clone, Copy)]
-pub struct ShaderState {
+pub struct PaneShader {
     pub clock: ShaderClock,
     pub cursor: CursorTracker,
     pub focus: FocusTracker,
+    /// 앞서 이 칸을 그릴 때 셰이더에 준 값. 이 칸을 다시 그리지 않는 프레임은 이 값을 그대로 쓴다
+    pub last: Option<ShaderInputs>,
+}
+
+/// 창 하나의 셰이더 상태(#376, 칸마다 #441). 셰이더를 다시 걸면 새로 만든다(시간이 0부터 다시 간다)
+#[derive(Debug, Default, Clone)]
+pub struct ShaderState {
+    /// 칸 id별 상태. 보이지 않는 칸(닫힌 칸, 다른 탭의 칸)은 `regions`가 지운다
+    pub panes: std::collections::HashMap<u64, PaneShader>,
     /// 셰이더가 움직이는 동안 다음에 그리기를 깨울 때
     pub wake: Option<Instant>,
 }
 
+/// `ShaderState::regions`가 받는 칸 하나의 입력
+#[derive(Debug, Clone)]
+pub struct PaneShaderInput {
+    pub id: u64,
+    /// 칸의 바깥 사각형(여백 포함, 창 픽셀): Ghostty가 셰이더에 주는 surface 전체와 같다
+    pub outer: (i32, i32, u32, u32),
+    /// 격자 왼쪽 위(창 픽셀, 여백을 뺀 자리)
+    pub inner: (i32, i32),
+    pub metrics: CursorMetrics,
+    /// 터미널의 커서 모양과 보임
+    pub shape: bt_term::CursorShape,
+    pub visible: bool,
+    /// 이번 프레임에 그려지는 커서(숨김·깜빡임이면 없다)
+    pub glyph: Option<bt_render::DrawCursor>,
+    /// 이 칸에 초점이 있는가: 창에 초점이 있고 이 칸이 고른 칸이다(Ghostty는 surface의 초점)
+    pub focused: bool,
+    /// 이번 프레임에 이 칸의 내용이 바뀌었는가
+    pub dirty: bool,
+    /// 칸이 바꾼 바탕색(OSC 11)
+    pub background: Rgb,
+}
+
+/// 칸 안의 커서(#441): 자리는 **칸 왼쪽 위**에서 잰 픽셀이다(Ghostty의 `iCurrentCursor`는 surface 좌표이고 여백을 더한다).
+/// 창 좌표를 그대로 쓰면 칸이 창 가운데 있을 때 커서가 칸 크기 밖으로 나간다
+pub fn pane_cursor(p: &PaneShaderInput) -> FrameCursor {
+    let origin = (p.inner.0 - p.outer.0, p.inner.1 - p.outer.1);
+    FrameCursor {
+        style: screen_style_code(p.shape),
+        visible: p.visible,
+        glyph: p.glyph.map(|c| {
+            (
+                cursor_rect(c.col, c.row, c.wide, c.style, origin, p.metrics),
+                cursor_rgba(c.color, c.opacity, p.focused),
+            )
+        }),
+    }
+}
+
 impl ShaderState {
+    /// 이번 프레임에 셰이더가 도는 칸마다 (칸 사각형, 그 칸의 유니폼 값)을 만든다(#441). 칸마다 시간·커서·초점이 따로다.
+    /// 칸을 다시 그리는 때(`pane_redraws`)가 아니면 앞서 준 값을 그대로 준다: Ghostty는 그 칸의 렌더러가 깨지 않으면 그 칸을 다시
+    /// 그리지 않으므로 움직이는 셰이더가 멈춰 보인다. `alive`에 없는 칸(닫힌 칸)의 상태는 지운다. 다른 탭에 가려진 칸은 살아 있으므로
+    /// 지우지 않는다(Ghostty: 가려진 surface의 렌더러도 살아 있어 시간이 이어진다)
+    pub fn regions(
+        &mut self,
+        now: Instant,
+        theme: &Theme,
+        setting: CustomShaderAnimation,
+        alive: &[u64],
+        panes: &[PaneShaderInput],
+    ) -> Vec<bt_gpu::ShaderRegion> {
+        self.panes.retain(|id, _| alive.contains(id));
+        panes
+            .iter()
+            .map(|p| {
+                let state = self.panes.entry(p.id).or_default();
+                let redraw = state.last.is_none()
+                    || pane_redraws(
+                        shader_animates(true, setting, p.focused),
+                        p.dirty,
+                        state.focus.changes(p.focused),
+                    );
+                let inputs = match state.last.filter(|_| !redraw) {
+                    Some(last) => last,
+                    None => {
+                        let colors = shader_colors(
+                            theme,
+                            &ColorOverrides {
+                                background: Some(p.background),
+                                ..Default::default()
+                            },
+                        );
+                        let u = state.frame(now, p.dirty, p.focused, &pane_cursor(p), &colors);
+                        state.last = Some(u);
+                        u
+                    }
+                };
+                bt_gpu::ShaderRegion {
+                    key: p.id,
+                    rect: Some(bt_gpu::PixelRect {
+                        x: p.outer.0,
+                        y: p.outer.1,
+                        w: p.outer.2,
+                        h: p.outer.3,
+                    }),
+                    uniforms: inputs.to_uniforms(),
+                }
+            })
+            .collect()
+    }
+}
+
+/// 이 칸을 이번 프레임에 다시 그리는가(Ghostty): 칸의 셰이더가 움직이는 중이거나, 칸 내용이 바뀌었거나, 칸의 초점이 바뀌었을 때
+pub fn pane_redraws(animates: bool, dirty: bool, focus_changed: bool) -> bool {
+    animates || dirty || focus_changed
+}
+
+impl PaneShader {
     /// 한 프레임의 값. `dirty`는 화면 내용이 바뀐 프레임이다: Ghostty는 터미널 상태가 dirty일 때만 커서 모양·보임을 옮기고
     /// (`updateCustomShaderUniformsFromState`, 2343~2348줄) 그때마다 앞 모양을 지금 모양으로 민다.
     /// 시간·커서 자리·초점은 프레임마다(`updateCustomShaderUniformsForFrame`)
@@ -863,7 +975,7 @@ mod tests {
     #[test]
     fn state_frame_counts_time_and_frames_and_takes_colors() {
         let t0 = Instant::now();
-        let mut s = ShaderState::default();
+        let mut s = PaneShader::default();
         let a = s.frame(t0, true, true, &cur(0, None), &colors());
         assert_eq!((a.time, a.time_delta, a.frame), (0.0, 0.0, 1));
         let b = s.frame(t0 + Duration::from_millis(500), false, true, &cur(0, None), &colors());
@@ -879,7 +991,7 @@ mod tests {
     #[test]
     fn state_frame_moves_cursor_style_only_on_dirty_frames_like_ghostty() {
         let t0 = Instant::now();
-        let mut s = ShaderState::default();
+        let mut s = PaneShader::default();
         s.frame(t0, true, true, &cur(0, None), &colors());
         // 모양이 막대로 바뀐 dirty 프레임: 앞 0, 지금 2
         let a = s.frame(t0, true, true, &cur(2, None), &colors());
@@ -902,7 +1014,7 @@ mod tests {
     #[test]
     fn state_frame_stamps_cursor_change_and_focus_gain() {
         let t0 = Instant::now();
-        let mut s = ShaderState::default();
+        let mut s = PaneShader::default();
         let r1 = ([10.0, 40.0, 8.0, 16.0], [1.0, 1.0, 1.0, 1.0]);
         let r2 = ([18.0, 40.0, 8.0, 16.0], [1.0, 1.0, 1.0, 1.0]);
         s.frame(t0, true, true, &cur(0, Some(r1)), &colors());
@@ -918,6 +1030,196 @@ mod tests {
         let d = s.frame(t0 + Duration::from_secs(4), false, true, &cur(0, None), &colors());
         assert_eq!(d.focus, 1);
         assert!((d.time_focus - 4.0).abs() < 1e-6, "{d:?}");
+    }
+
+    // ---- 칸마다(#441) ----
+
+    fn pane(id: u64, outer: (i32, i32, u32, u32), focused: bool, glyph: Option<(usize, usize)>) -> PaneShaderInput {
+        PaneShaderInput {
+            id,
+            outer,
+            // 여백: 왼쪽 5, 위 7
+            inner: (outer.0 + 5, outer.1 + 7),
+            metrics: metrics(),
+            shape: bt_term::CursorShape::Block,
+            visible: true,
+            glyph: glyph.map(|(col, row)| bt_render::DrawCursor {
+                col,
+                row,
+                style: CursorStyle::Block,
+                wide: false,
+                color: Rgb::new(255, 255, 255),
+                text_color: Rgb::new(0, 0, 0),
+                opacity: 1.0,
+            }),
+            focused,
+            dirty: false,
+            background: Rgb::new(1, 2, 3),
+        }
+    }
+
+    const LEFT: (i32, i32, u32, u32) = (0, 30, 400, 300);
+    const RIGHT: (i32, i32, u32, u32) = (410, 30, 390, 300);
+
+    fn regions(
+        s: &mut ShaderState,
+        t: Instant,
+        setting: CustomShaderAnimation,
+        panes: &[PaneShaderInput],
+    ) -> Vec<bt_gpu::ShaderRegion> {
+        let alive: Vec<u64> = panes.iter().map(|p| p.id).collect();
+        s.regions(t, &Theme::default(), setting, &alive, panes)
+    }
+
+    #[test]
+    fn pane_cursor_is_measured_from_the_panes_own_corner() {
+        // 같은 칸 (3, 2)의 커서는 칸이 창 어디에 있든 같은 자리다: 칸 왼쪽 위에서 여백(5, 7)에 칸 자리를 더한 값.
+        // 창 좌표를 쓰면 오른쪽 칸의 x가 410 더 커지고, 칸 크기(iResolution) 밖으로 나가기도 한다
+        let left = pane_cursor(&pane(1, LEFT, true, Some((3, 2))));
+        let right = pane_cursor(&pane(2, RIGHT, true, Some((3, 2))));
+        let want = cursor_rect(3, 2, false, CursorStyle::Block, (5, 7), metrics());
+        assert_eq!(left.glyph.unwrap().0, want);
+        assert_eq!(right.glyph.unwrap().0, want);
+        assert_eq!(want, [35.0, 67.0, 10.0, 20.0]);
+    }
+
+    #[test]
+    fn each_region_has_its_own_rect_cursor_focus_and_background() {
+        let t0 = Instant::now();
+        let mut s = ShaderState::default();
+        let r = regions(
+            &mut s,
+            t0,
+            CustomShaderAnimation::True,
+            &[pane(1, LEFT, true, Some((3, 2))), pane(2, RIGHT, false, Some((0, 0)))],
+        );
+        assert_eq!(r.len(), 2);
+        assert_eq!((r[0].key, r[1].key), (1, 2));
+        // 영역은 칸의 바깥 사각형(여백 포함)이다
+        assert_eq!(
+            r[0].rect,
+            Some(bt_gpu::PixelRect {
+                x: 0,
+                y: 30,
+                w: 400,
+                h: 300
+            })
+        );
+        assert_eq!(
+            r[1].rect,
+            Some(bt_gpu::PixelRect {
+                x: 410,
+                y: 30,
+                w: 390,
+                h: 300
+            })
+        );
+        // 커서·초점은 그 칸의 것
+        assert_eq!(r[0].uniforms.current_cursor, [35.0, 67.0, 10.0, 20.0]);
+        assert_eq!(r[1].uniforms.current_cursor, [5.0, 27.0, 10.0, 20.0]);
+        assert_eq!((r[0].uniforms.focus, r[1].uniforms.focus), (1, 0));
+        assert_eq!(r[0].uniforms.background, [1.0 / 255.0, 2.0 / 255.0, 3.0 / 255.0]);
+    }
+
+    #[test]
+    fn time_cursor_history_and_frames_are_kept_per_pane() {
+        let t0 = Instant::now();
+        let at = |ms| t0 + Duration::from_millis(ms);
+        let mut s = ShaderState::default();
+        let a = |col| pane(1, LEFT, true, Some((col, 0)));
+        let b = |col| pane(2, RIGHT, true, Some((col, 0)));
+        // 칸 1만 있다가 1초 뒤에 칸 2가 생긴다: 칸 2의 시간은 0에서 시작한다(Ghostty: 칸마다 첫 프레임부터)
+        regions(&mut s, at(0), CustomShaderAnimation::Always, &[a(0)]);
+        let r = regions(&mut s, at(1000), CustomShaderAnimation::Always, &[a(1), b(4)]);
+        assert!(
+            (r[0].uniforms.time - 1.0).abs() < 1e-6 && r[0].uniforms.frame == 2,
+            "{:?}",
+            r[0].uniforms.time
+        );
+        assert_eq!((r[1].uniforms.time, r[1].uniforms.frame), (0.0, 1));
+        // 칸 1의 커서가 옮겨 가도 칸 2의 앞 커서·바뀐 시각은 건드리지 않는다
+        let first = r[1].uniforms.current_cursor;
+        let r = regions(&mut s, at(2000), CustomShaderAnimation::Always, &[a(2), b(4)]);
+        assert_ne!(r[0].uniforms.current_cursor, r[0].uniforms.previous_cursor);
+        assert_eq!(r[1].uniforms.current_cursor, first);
+        assert_eq!(r[1].uniforms.time_cursor_change, 0.0);
+        assert!((r[0].uniforms.time_cursor_change - 2.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn animation_true_moves_only_the_focused_pane_and_always_moves_both() {
+        let t0 = Instant::now();
+        let at = |s| t0 + Duration::from_secs(s);
+        let panes = [pane(1, LEFT, true, None), pane(2, RIGHT, false, None)];
+        let mut s = ShaderState::default();
+        regions(&mut s, at(0), CustomShaderAnimation::True, &panes);
+        let r = regions(&mut s, at(3), CustomShaderAnimation::True, &panes);
+        // 초점이 없는 칸은 다시 그리지 않으니 앞서 준 값(시간 0)이 그대로다
+        assert!((r[0].uniforms.time - 3.0).abs() < 1e-6, "초점이 있는 칸은 움직인다");
+        assert_eq!(r[1].uniforms.time, 0.0, "초점이 없는 칸은 멈춘다");
+        // 내용이 바뀐 프레임에는 그 칸도 다시 그린다
+        let mut dirty = panes.clone();
+        dirty[1].dirty = true;
+        let r = regions(&mut s, at(4), CustomShaderAnimation::True, &dirty);
+        assert!((r[1].uniforms.time - 4.0).abs() < 1e-6);
+        // always는 둘 다 움직인다
+        let mut s = ShaderState::default();
+        regions(&mut s, at(0), CustomShaderAnimation::Always, &panes);
+        let r = regions(&mut s, at(3), CustomShaderAnimation::Always, &panes);
+        assert!((r[0].uniforms.time - 3.0).abs() < 1e-6 && (r[1].uniforms.time - 3.0).abs() < 1e-6);
+        // false는 내용이 바뀌지 않는 한 어느 칸도 움직이지 않는다
+        let mut s = ShaderState::default();
+        regions(&mut s, at(0), CustomShaderAnimation::False, &panes);
+        let r = regions(&mut s, at(3), CustomShaderAnimation::False, &panes);
+        assert_eq!((r[0].uniforms.time, r[1].uniforms.time), (0.0, 0.0));
+    }
+
+    #[test]
+    fn gaining_focus_redraws_that_pane_and_stamps_its_focus_time() {
+        let t0 = Instant::now();
+        let at = |s| t0 + Duration::from_secs(s);
+        let mut s = ShaderState::default();
+        let a = |f| pane(1, LEFT, f, None);
+        let b = |f| pane(2, RIGHT, f, None);
+        regions(&mut s, at(0), CustomShaderAnimation::True, &[a(true), b(false)]);
+        // 5초 뒤 초점이 칸 2로 옮겨 간다: 칸 2는 다시 그려져 time_focus가 5, 칸 1은 초점을 잃어 다시 그려지고 time_focus는 그대로
+        let r = regions(&mut s, at(5), CustomShaderAnimation::True, &[a(false), b(true)]);
+        assert_eq!((r[0].uniforms.focus, r[1].uniforms.focus), (0, 1));
+        assert!(
+            (r[1].uniforms.time_focus - 5.0).abs() < 1e-6,
+            "{}",
+            r[1].uniforms.time_focus
+        );
+        assert_eq!(r[0].uniforms.time_focus, 0.0);
+    }
+
+    #[test]
+    fn closed_panes_are_dropped_but_hidden_ones_keep_their_state() {
+        let t0 = Instant::now();
+        let mut s = ShaderState::default();
+        let panes = [pane(1, LEFT, true, None), pane(2, RIGHT, false, None)];
+        regions(&mut s, t0, CustomShaderAnimation::Always, &panes);
+        assert_eq!(s.panes.len(), 2);
+        // 칸 2가 다른 탭으로 가려졌다(그려지지 않지만 살아 있다): 상태를 지키므로 돌아오면 시간이 이어진다
+        s.regions(
+            t0,
+            &Theme::default(),
+            CustomShaderAnimation::Always,
+            &[1, 2],
+            &panes[..1],
+        );
+        assert_eq!(s.panes.len(), 2);
+        // 칸 2가 닫혔다: 상태를 놓는다
+        s.regions(t0, &Theme::default(), CustomShaderAnimation::Always, &[1], &panes[..1]);
+        assert_eq!(s.panes.keys().copied().collect::<Vec<_>>(), vec![1]);
+    }
+
+    #[test]
+    fn pane_redraw_rule() {
+        assert!(!pane_redraws(false, false, false));
+        assert!(pane_redraws(true, false, false));
+        assert!(pane_redraws(false, true, false));
+        assert!(pane_redraws(false, false, true));
     }
 
     #[test]

@@ -12,7 +12,7 @@ use crate::scene::{GLYPH_STRIDE, GlyphInst, RECT_STRIDE, RectInst, Scene};
 
 mod compose;
 mod custom;
-pub use custom::{CompileStages, ShaderWaker};
+pub use custom::{CompileStages, PixelRect, ShaderRegion, ShaderWaker};
 mod layer_diff;
 mod memory;
 mod window;
@@ -97,6 +97,8 @@ pub struct GpuRenderer {
     custom: Option<custom::CustomChain>,
     /// 다음 프레임에 셰이더에 줄 유니폼 값
     shader_uniforms: Box<crate::shadertoy::ShaderUniforms>,
+    /// 칸마다 셰이더를 돌릴 칸들과 유니폼(#441). 비었으면 `shader_uniforms`로 창 전체에 한 번
+    shader_regions: Vec<custom::ShaderRegion>,
     /// 도는 사용자 셰이더 컴파일(ADR-042). 끝나면 `poll_custom_shaders`가 `custom`에 끼운다
     custom_job: Option<custom::CustomJob>,
     /// 컴파일이 끝났을 때 앱을 깨우는 함수
@@ -425,6 +427,7 @@ impl GpuRenderer {
             window,
             custom: None,
             shader_uniforms: Box::default(),
+            shader_regions: Vec::new(),
             custom_job: None,
             shader_waker: None,
             alpha_blending: AlphaBlending::Native,

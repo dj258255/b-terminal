@@ -851,6 +851,8 @@ struct Win {
     frame: Vec<u32>,
     /// GPU 길의 위층(격자 위에 겹치는 것, 곱한 알파). 아래층은 `frame`이 든다. 그린 것이 없으면 비워 둔다(#387)
     upper: Vec<u32>,
+    /// GPU 길: 셰이더 뒤에 얹는 층의 픽셀(셰이더가 돌 때만 쓴다, #441)
+    top: Vec<u32>,
     last_frame: Option<FrameMemo>,
     /// 커서 깜빡임: 지금 보이는가, 다음에 바꿀 때, 깜빡일 커서가 있는가
     blink_on: bool,
@@ -916,6 +918,7 @@ impl Win {
             force_present: false,
             frame: Vec::new(),
             upper: Vec::new(),
+            top: Vec::new(),
             last_frame: None,
             blink_on: true,
             blink_next: Instant::now(),
@@ -5458,6 +5461,7 @@ impl App {
                 // 손잡이와 놓을 자리는 위층에 그린다. 위층을 쓰는 판단(`chrome.overlay || split`)에 빠지면 단언이 걸린다
                 || crate::pane_drag::needs_upper(&handles, drop_preview.is_some())
                 || (single_tab && views.iter().any(|v| v.progress.is_some())),
+            shader_layers: gfx.gpu.as_ref().is_some_and(|g| g.has_custom_shaders()),
             theme: (theme.background, theme.foreground),
             dim: (dim_alpha, dim_fill, divider_color),
         };
@@ -5884,6 +5888,8 @@ struct Chrome {
     /// 끌어다 놓을 자리 미리 보기: 놓일 칸의 바깥 사각형과 쪽
     drop: Option<(Rect, crate::split::Direction)>,
     overlay: bool,
+    /// GPU 길에서 사용자 셰이더가 돈다: 칸 밖 덧그림을 셰이더 뒤 층에 그린다(#441). 바뀌면 층을 통째로 다시 그린다
+    shader_layers: bool,
     theme: (bt_core::Rgb, bt_core::Rgb),
     dim: (u8, bt_core::Rgb, bt_core::Rgb),
 }

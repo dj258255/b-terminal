@@ -68,6 +68,29 @@ struct Segment {
     glyphs_post: Range<usize>,
 }
 
+/// 층 셋 가운데 어느 것인가
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Which {
+    Lower,
+    Upper,
+    /// 셰이더 뒤에 얹는 층(#441)
+    Top,
+}
+
+/// 층 셋 가운데 `which`의 자리(다른 필드는 빌리지 않도록 세 자리를 따로 받는다)
+fn slot_of<'a>(
+    lower: &'a mut Option<LayerTex>,
+    upper: &'a mut Option<LayerTex>,
+    top: &'a mut Option<LayerTex>,
+    which: Which,
+) -> &'a mut Option<LayerTex> {
+    match which {
+        Which::Lower => lower,
+        Which::Upper => upper,
+        Which::Top => top,
+    }
+}
+
 /// 층 합치기가 프레임 사이에 들고 있는 것
 pub(super) struct Layers {
     layout: wgpu::BindGroupLayout,
@@ -77,6 +100,8 @@ pub(super) struct Layers {
     upper_pipeline: wgpu::RenderPipeline,
     lower: Option<LayerTex>,
     upper: Option<LayerTex>,
+    /// 셰이더 뒤에 얹는 층(#441): 칸 안 화면(격자·kitty 그림)이 아닌 덧그림. 셰이더가 있을 때만 쓴다
+    top: Option<LayerTex>,
     /// 이번 프레임의 크기. 크기가 다른 층은 그리지 않는다
     size: (u32, u32),
     scratch: Vec<u8>,
@@ -156,6 +181,7 @@ impl Layers {
             upper_pipeline,
             lower: None,
             upper: None,
+            top: None,
             size: (0, 0),
             scratch: Vec::new(),
             rects: Vec::new(),
@@ -170,13 +196,13 @@ impl Layers {
         &mut self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
-        upper: bool,
+        which: Which,
         px: &[u32],
         (w, h): (u32, u32),
     ) -> usize {
-        if upper && px.is_empty() {
+        if which != Which::Lower && px.is_empty() {
             // 위층이 비었다: 텍스처와 사본을 놓는다. 다시 그리면 새로 만든다(#387)
-            self.upper = None;
+            *slot_of(&mut self.lower, &mut self.upper, &mut self.top, which) = None;
             return 0;
         }
         if w == 0 || h == 0 || px.len() < w as usize * h as usize {
@@ -184,13 +210,13 @@ impl Layers {
             return 0;
         }
         let px = &px[..w as usize * h as usize];
-        let slot = if upper { &mut self.upper } else { &mut self.lower };
+        let slot = slot_of(&mut self.lower, &mut self.upper, &mut self.top, which);
         if slot.as_ref().is_none_or(|t| (t.width, t.height) != (w, h)) {
             let texture = device.create_texture(&wgpu::TextureDescriptor {
-                label: Some(if upper {
-                    "bt-gpu upper layer"
-                } else {
-                    "bt-gpu lower layer"
+                label: Some(match which {
+                    Which::Lower => "bt-gpu lower layer",
+                    Which::Upper => "bt-gpu upper layer",
+                    Which::Top => "bt-gpu top layer",
                 }),
                 size: wgpu::Extent3d {
                     width: w,
@@ -273,7 +299,7 @@ impl Layers {
             scratch_bytes: self.scratch.capacity(),
             ..LayerMemory::default()
         };
-        for t in [&self.lower, &self.upper].into_iter().flatten() {
+        for t in [&self.lower, &self.upper, &self.top].into_iter().flatten() {
             m.texture_bytes += t.width as usize * t.height as usize * 4;
             m.shadow_bytes += t.tiles.bytes();
         }
@@ -281,11 +307,15 @@ impl Layers {
     }
 
     /// 지금 크기와 같은 층만
-    fn visible(&self, upper: bool) -> Option<&LayerTex> {
-        let t = if upper { &self.upper } else { &self.lower };
+    fn visible(&self, which: Which) -> Option<&LayerTex> {
+        let t = match which {
+            Which::Lower => &self.lower,
+            Which::Upper => &self.upper,
+            Which::Top => &self.top,
+        };
         // 비어 있는 위층은 그리지 않는다(칸마다 화면을 한 번 덮는 일을 아낀다)
         t.as_ref()
-            .filter(|t| (t.width, t.height) == self.size && !(upper && t.tiles.nonzero() == 0))
+            .filter(|t| (t.width, t.height) == self.size && !(which != Which::Lower && t.tiles.nonzero() == 0))
     }
 }
 
@@ -327,9 +357,22 @@ impl GpuRenderer {
         layers: LayerUpdate,
         panes: &[PaneDraw],
     ) -> Vec<u32> {
+        self.compose_layers(fonts, size, layers, None, panes)
+    }
+
+    /// `compose_with`. 셰이더 뒤에 얹는 층(`top`, #441)도 받는다: 칸 안 화면이 아닌 덧그림(탭 막대 위 알림, 팔레트 등).
+    /// 셰이더가 없으면 위층 바로 뒤에 같은 방식으로 얹힌다. `None`이면 앞서 올린 것을 그대로 쓰고, 빈 조각이면 놓는다
+    pub fn compose_layers(
+        &mut self,
+        fonts: &mut [&mut Fonts],
+        size: (u32, u32),
+        layers: LayerUpdate,
+        top: Option<&[u32]>,
+        panes: &[PaneDraw],
+    ) -> Vec<u32> {
         let (w, h) = (size.0.max(1), size.1.max(1));
         self.ensure_target(w, h);
-        self.prepare_compose(fonts, (w, h), layers, panes);
+        self.prepare_compose(fonts, (w, h), layers, top, panes);
         let t = Instant::now();
         let Some(target) = self.target.as_ref() else {
             return Vec::new();
@@ -348,16 +391,20 @@ impl GpuRenderer {
         fonts: &mut [&mut Fonts],
         size: (u32, u32),
         layers: LayerUpdate,
+        top: Option<&[u32]>,
         panes: &[PaneDraw],
     ) {
         let t0 = Instant::now();
         self.layers.size = size;
         let mut upload_bytes = 0;
         if let Some(px) = layers.lower {
-            upload_bytes += self.layers.upload(&self.device, &self.queue, false, px, size);
+            upload_bytes += self.layers.upload(&self.device, &self.queue, Which::Lower, px, size);
         }
         if let Some(px) = layers.upper {
-            upload_bytes += self.layers.upload(&self.device, &self.queue, true, px, size);
+            upload_bytes += self.layers.upload(&self.device, &self.queue, Which::Upper, px, size);
+        }
+        if let Some(px) = top {
+            upload_bytes += self.layers.upload(&self.device, &self.queue, Which::Top, px, size);
         }
         let upload = t0.elapsed();
 
@@ -434,10 +481,12 @@ impl GpuRenderer {
 
     /// 아래층 → 칸마다(바탕, 글자, 커서) → 위층을 `view`에 그리는 명령을 만든다. `alpha-blending`이 `native`면 패스 하나이고,
     /// 선형이면(`srgb`가 `view`의 sRGB 꼴 뷰) 글자는 sRGB 꼴 뷰에 그려야 해서 글자와 나머지가 번갈아 나올 때마다 패스를 바꾼다
+    /// `with_top`가 거짓이면 셰이더 뒤에 얹는 층은 그리지 않는다(`encode_top`이 셰이더 뒤에 그린다)
     pub(super) fn encode_compose(
         &self,
         view: &wgpu::TextureView,
         srgb: Option<&wgpu::TextureView>,
+        with_top: bool,
     ) -> wgpu::CommandBuffer {
         let mut enc = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("bt-gpu compose"),
@@ -453,7 +502,7 @@ impl GpuRenderer {
                 wgpu::Color::BLACK,
             );
             let ls = &self.layers;
-            if let Some(t) = ls.visible(false) {
+            if let Some(t) = ls.visible(Which::Lower) {
                 let pass = passes.pass(false);
                 pass.set_pipeline(&ls.lower_pipeline);
                 pass.set_bind_group(0, &t.bind_group, &[]);
@@ -485,15 +534,45 @@ impl GpuRenderer {
                 draw_rects(&mut passes, &s.rects_post);
                 draw_glyphs(&mut passes, &s.glyphs_post);
             }
-            if let Some(t) = ls.visible(true) {
-                let pass = passes.pass(false);
-                pass.set_pipeline(&ls.upper_pipeline);
-                pass.set_bind_group(0, &t.bind_group, &[]);
-                pass.draw(0..3, 0..1);
+            for which in [Which::Upper, Which::Top] {
+                if which == Which::Top && !with_top {
+                    continue;
+                }
+                if let Some(t) = ls.visible(which) {
+                    let pass = passes.pass(false);
+                    pass.set_pipeline(&ls.upper_pipeline);
+                    pass.set_bind_group(0, &t.bind_group, &[]);
+                    pass.draw(0..3, 0..1);
+                }
             }
             passes.finish();
         }
         enc.finish()
+    }
+
+    /// 셰이더가 돈 뒤 `view`에 셰이더 뒤에 얹는 층(#441)을 곱한 알파로 얹는다. 층이 없거나 비었으면 아무것도 하지 않는다
+    pub(super) fn encode_top(&self, enc: &mut wgpu::CommandEncoder, view: &wgpu::TextureView) {
+        let ls = &self.layers;
+        let Some(t) = ls.visible(Which::Top) else { return };
+        let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("bt-gpu top layer"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view,
+                depth_slice: None,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Load,
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+            multiview_mask: None,
+        });
+        pass.set_pipeline(&ls.upper_pipeline);
+        pass.set_bind_group(0, &t.bind_group, &[]);
+        pass.draw(0..3, 0..1);
     }
 }
 

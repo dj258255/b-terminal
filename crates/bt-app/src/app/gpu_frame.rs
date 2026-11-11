@@ -191,6 +191,11 @@ impl App {
         }
 
         let mut repainted_rows = 0;
+        // 칸마다 바뀐 것이 있는가(셰이더가 칸마다 도니 칸마다 알아야 한다, #441). 통째 프레임은 모든 칸이 바뀐 것이다
+        let mut pane_dirty = vec![full; views.len()];
+        // 셰이더가 돌면 칸 안 화면(격자와 kitty 그림)만 셰이더가 덮고 나머지 덧그림은 셰이더 뒤에 얹는다(Ghostty는 탭 막대·팔레트·
+        // 칸 사이 틈·스크롤 막대 등이 렌더러 밖의 OS 화면이다). 그래서 그것들을 위층이 아닌 맨 위층에 그린다
+        let split_layers = chrome.shader_layers;
         if full {
             if self.w.frame.len() != n {
                 self.w.frame = vec![0; n];
@@ -264,16 +269,41 @@ impl App {
             // 위층: 투명 바탕(0)에 그린다. 캔버스의 섞기가 곱한 알파로 쌓아 준다.
             // 위층에 그리는 것은 덧그림(`chrome.overlay`)과, 화면을 나눴을 때의 흐린 칸·경계선뿐이다.
             // 둘 다 없으면 그리지 않고 버퍼를 놓는다. 빈 조각을 받은 렌더러도 위층 텍스처와 사본을 놓는다(#387).
-            // debug 빌드는 그래도 그려 보고 정말 비었는지 본다(판단에 빠진 그리기를 잡는다)
+            // debug 빌드는 그래도 그려 보고 정말 비었는지 본다(판단에 빠진 그리기를 잡는다).
+            // 셰이더가 돌면(`split_layers`) 위층에는 kitty 그림만 그리고 나머지는 맨 위층(`top`)에 그린다
             let uses_upper = chrome.overlay || split;
-            if uses_upper || cfg!(debug_assertions) {
+            let uses_images = views.iter().any(|v| !v.screen.images.is_empty());
+            let upper_used = if split_layers { uses_images } else { uses_upper };
+            let top_used = split_layers && uses_upper;
+            if upper_used || cfg!(debug_assertions) {
                 // 지난 프레임에 놓았으면 새로 잡는다(새로 잡은 것은 이미 0)
                 if self.w.upper.len() == n {
                     self.w.upper.fill(0);
                 } else {
                     self.w.upper = vec![0; n];
                 }
+            }
+            if split_layers && (top_used || cfg!(debug_assertions)) {
+                if self.w.top.len() == n {
+                    self.w.top.fill(0);
+                } else {
+                    self.w.top = vec![0; n];
+                }
+            } else {
+                self.w.top = Vec::new();
+            }
+            if upper_used || top_used || cfg!(debug_assertions) {
                 let mut upper = Canvas::new(&mut self.w.upper, sw, sh);
+                let mut top_canvas = split_layers.then(|| Canvas::new(&mut self.w.top, sw, sh));
+                // 칸 안 화면이 아닌 덧그림이 가는 캔버스: 셰이더가 돌면 맨 위층, 아니면 위층
+                macro_rules! ui {
+                    () => {
+                        match top_canvas.as_mut() {
+                            Some(t) => t,
+                            None => &mut upper,
+                        }
+                    };
+                }
                 for ((v, (_, _, _)), bar) in views.iter().zip(&drawn).zip(bars) {
                     let screen = &v.screen;
                     let vm = v.metrics;
@@ -305,11 +335,11 @@ impl App {
                         );
                     }
                     if split && !v.focused && dim_alpha > 0 {
-                        upper.blend_rect(v.outer.x, v.outer.y, v.outer.w, v.outer.h, dim_fill, dim_alpha);
+                        ui!().blend_rect(v.outer.x, v.outer.y, v.outer.w, v.outer.h, dim_fill, dim_alpha);
                     }
                     if let Some((_, query, status, missing)) = search.as_ref().filter(|s| s.0 == v.id) {
                         tabbar::draw_search_bar(
-                            &mut upper,
+                            ui!(),
                             fonts.chrome(),
                             &theme,
                             v.outer,
@@ -320,7 +350,7 @@ impl App {
                     }
                     if resize_overlays.contains(&v.id) {
                         tabbar::draw_resize_overlay(
-                            &mut upper,
+                            ui!(),
                             fonts.chrome(),
                             &theme,
                             v.outer,
@@ -331,7 +361,7 @@ impl App {
                     if bar.0 {
                         let width = (bt_render::scrollbar::BAR_WIDTH as f64 * scale).round() as u32;
                         bt_render::scrollbar::draw(
-                            &mut upper,
+                            ui!(),
                             v.outer.right() - width as i32 - scale.round().max(1.0) as i32,
                             v.inner.y,
                             screen.rows as u32 * vm.height,
@@ -344,33 +374,33 @@ impl App {
                         );
                     }
                     if let (true, Some(p)) = (single_tab, v.progress) {
-                        tabbar::draw_progress(&mut upper, &theme, v.outer.x, v.outer.y, v.outer.w, p, vm.stroke * 3);
+                        tabbar::draw_progress(ui!(), &theme, v.outer.x, v.outer.y, v.outer.w, p, vm.stroke * 3);
                     }
                 }
                 for d in dividers {
-                    upper.fill_rect(d.x, d.y, d.w, d.h, divider_color);
+                    ui!().fill_rect(d.x, d.y, d.w, d.h, divider_color);
                 }
                 for (v, look) in views.iter().zip(handles) {
-                    crate::pane_drag::draw_handle(&mut upper, v.outer, *look, theme.foreground, scale);
+                    crate::pane_drag::draw_handle(ui!(), v.outer, *look, theme.foreground, scale);
                 }
                 if let Some((rect, dir)) = drop_preview {
-                    crate::pane_drag::draw_drop(&mut upper, rect, dir, theme.cursor);
+                    crate::pane_drag::draw_drop(ui!(), rect, dir, theme.cursor);
                 }
                 if let Some((_, hit)) = hover.as_ref().filter(|(_, h)| link_previews.shows(h.explicit)) {
-                    tabbar::draw_link_hint(&mut upper, fonts.chrome(), &theme, &bt_core::proto::printable(&hit.url));
+                    tabbar::draw_link_hint(ui!(), fonts.chrome(), &theme, &bt_core::proto::printable(&hit.url));
                 }
                 if let Some((q, rows, sel)) = palette {
-                    tabbar::draw_palette(&mut upper, fonts.chrome(), &theme, &format!("{q}{preedit}"), rows, *sel);
+                    tabbar::draw_palette(ui!(), fonts.chrome(), &theme, &format!("{q}{preedit}"), rows, *sel);
                 }
                 if let Some((text, _)) = toast {
-                    tabbar::draw_toast(&mut upper, fonts.chrome(), &theme, text);
+                    tabbar::draw_toast(ui!(), fonts.chrome(), &theme, text);
                 }
                 if secure_badge {
-                    tabbar::draw_secure_badge(&mut upper, fonts.chrome(), &theme, badge_top);
+                    tabbar::draw_secure_badge(ui!(), fonts.chrome(), &theme, badge_top);
                 }
                 if let Some((label, text)) = title_prompt {
                     tabbar::draw_prompt(
-                        &mut upper,
+                        ui!(),
                         fonts.chrome(),
                         &theme,
                         label,
@@ -384,29 +414,38 @@ impl App {
                     } else {
                         format!("↩ {yes}    esc 취소")
                     };
-                    tabbar::draw_confirm(&mut upper, fonts.chrome(), &theme, message, &hint);
+                    tabbar::draw_confirm(ui!(), fonts.chrome(), &theme, message, &hint);
                 }
             }
-            if !uses_upper {
+            if !upper_used {
                 debug_assert!(
                     self.w.upper.iter().all(|&p| p == 0),
                     "위층을 쓰지 않는다고 봤는데 그린 것이 있다"
                 );
                 self.w.upper = Vec::new();
             }
+            if split_layers && !top_used {
+                debug_assert!(
+                    self.w.top.iter().all(|&p| p == 0),
+                    "맨 위층을 쓰지 않는다고 봤는데 그린 것이 있다"
+                );
+                self.w.top = Vec::new();
+            }
             repainted_rows = views.iter().map(|v| v.screen.rows).sum();
         } else {
             // 바뀐 줄만 바뀐 프레임: 층은 그대로, 몇 줄이 바뀌었는지만 센다(GPU는 격자를 늘 통째로 그린다)
-            for (v, (cells, cursor, pre)) in views.iter().zip(&drawn) {
+            for (i, (v, (cells, cursor, pre))) in views.iter().zip(&drawn).enumerate() {
                 let prev = self
                     .w
                     .last_frame
                     .as_ref()
                     .and_then(|l| l.panes.iter().find(|p| p.0 == v.id));
-                repainted_rows += dirty_rows(v.screen.cols, v.screen.rows, cells, *cursor, pre, prev)
+                let rows = dirty_rows(v.screen.cols, v.screen.rows, cells, *cursor, pre, prev)
                     .iter()
                     .filter(|d| **d)
                     .count();
+                pane_dirty[i] = rows > 0;
+                repainted_rows += rows;
             }
         }
         if let Some(v) = views.iter().find(|v| v.focused) {
@@ -465,18 +504,26 @@ impl App {
                 lower: full.then_some(&self.w.frame[..]),
                 upper: full.then_some(&self.w.upper[..]),
             };
+            // 셰이더 뒤에 얹는 층(#441): 셰이더가 돌 때만 쓴다. 쓰지 않는데 통째 프레임이면 빈 조각으로 놓는다
+            let top = full.then_some(&self.w.top[..]);
             if shaders {
-                let u = shader_frame(
+                // 칸마다 그 칸의 영역·시간·커서·초점으로 셰이더를 돌린다(#441)
+                let alive: Vec<u64> = self.panes.iter().map(|p| p.id).collect();
+                let regions = shader_regions(
                     &mut self.w.shader,
-                    &theme,
+                    ShaderCtx {
+                        theme: &theme,
+                        setting: self.config.custom_shader_animation,
+                        alive: &alive,
+                        window_focused: self.w.focused,
+                    },
                     views,
                     &drawn,
-                    self.w.focused,
-                    full || repainted_rows > 0,
+                    &pane_dirty,
                 );
-                gpu.set_shader_uniforms(&u);
+                gpu.set_shader_regions(&regions);
             }
-            outcome = Some(gpu.present_with(&mut fonts.all(), (sw, sh), layers, &panes));
+            outcome = Some(gpu.present_layers(&mut fonts.all(), (sw, sh), layers, top, &panes));
         }
         let end = Instant::now();
         self.w.last_frame = Some(FrameMemo {
@@ -531,64 +578,56 @@ impl App {
     }
 }
 
-/// 사용자 셰이더에 넘길 이번 프레임의 값(#376). 셰이더는 창 전체에 한 번 돈다: 커서는 고른 칸의 것이고(여백·칸 자리를 더한 창 픽셀),
-/// 초점은 창의 초점이다. 색은 테마에 칸이 바꾼 바탕색(OSC 11)을 얹는다. OSC 4·10·12로 바뀐 색은 VT 엔진이 화면 상태로 내보내지 않아
-/// 테마 값이다
-fn shader_frame(
+/// `shader_regions`가 칸과 상관없이 받는 값
+struct ShaderCtx<'a> {
+    theme: &'a bt_core::Theme,
+    setting: bt_core::config::CustomShaderAnimation,
+    /// 살아 있는 모든 칸의 id(다른 탭에 가려진 칸 포함): 이 밖의 칸 상태는 지운다
+    alive: &'a [u64],
+    window_focused: bool,
+}
+
+/// 사용자 셰이더를 돌릴 칸마다 이번 프레임의 영역과 유니폼 값(#376, 칸마다 #441). 셰이더는 칸마다 돈다: 영역은 칸의 바깥 사각형
+/// (여백 포함, Ghostty의 surface 전체)이고, `iCurrentCursor`는 그 칸의 커서(칸 왼쪽 위에서 잰 픽셀), `iFocus`는 그 칸의 초점
+/// (창에 초점이 있고 고른 칸), 시간은 그 칸의 것이다. 색은 테마에 칸이 바꾼 바탕색(OSC 11)을 얹는다. OSC 4·10·12로 바뀐 색은
+/// VT 엔진이 화면 상태로 내보내지 않아 테마 값이다. 규칙은 `ShaderState::regions`(순수 함수, 시험)에 있다
+fn shader_regions(
     state: &mut super::shader_inputs::ShaderState,
-    theme: &bt_core::Theme,
+    ctx: ShaderCtx<'_>,
     views: &[PaneView],
     drawn: &[(Vec<DrawCell>, Option<DrawCursor>, Option<String>)],
-    focused: bool,
-    dirty: bool,
-) -> bt_gpu::ShaderUniforms {
+    pane_dirty: &[bool],
+) -> Vec<bt_gpu::ShaderRegion> {
+    let ShaderCtx {
+        theme,
+        setting,
+        alive,
+        window_focused,
+    } = ctx;
     use super::shader_inputs as si;
-    let pane = views.iter().zip(drawn).find(|(v, _)| v.focused);
-    // 커서 자리는 고른 칸의 글자 크기의 칸 크기다(#422)
-    let metrics = pane.map_or(
-        si::CursorMetrics {
-            cell_w: 0,
-            cell_h: 0,
-            cursor_h: 0,
-            beam: 0,
-            stroke: 0,
-        },
-        |(v, _)| si::CursorMetrics {
-            cell_w: v.metrics.width,
-            cell_h: v.metrics.height,
-            cursor_h: v.metrics.cursor_height,
-            beam: v.metrics.cursor_beam,
-            stroke: v.metrics.stroke,
-        },
-    );
-    let cursor = pane.map_or(
-        si::FrameCursor {
-            style: 0,
-            visible: false,
-            glyph: None,
-        },
-        |(v, (_, c, _))| si::FrameCursor {
-            style: si::screen_style_code(v.screen.cursor.shape),
+    let inputs: Vec<si::PaneShaderInput> = views
+        .iter()
+        .zip(drawn)
+        .zip(pane_dirty)
+        .map(|((v, (_, cursor, _)), dirty)| si::PaneShaderInput {
+            id: v.id,
+            outer: (v.outer.x, v.outer.y, v.outer.w, v.outer.h),
+            inner: (v.inner.x, v.inner.y),
+            // 커서 자리는 그 칸의 글자 크기의 칸 크기다(#422)
+            metrics: si::CursorMetrics {
+                cell_w: v.metrics.width,
+                cell_h: v.metrics.height,
+                cursor_h: v.metrics.cursor_height,
+                beam: v.metrics.cursor_beam,
+                stroke: v.metrics.stroke,
+            },
+            shape: v.screen.cursor.shape,
             visible: v.screen.cursor.visible,
-            glyph: c.map(|c| {
-                (
-                    si::cursor_rect(c.col, c.row, c.wide, c.style, (v.inner.x, v.inner.y), metrics),
-                    si::cursor_rgba(c.color, c.opacity, focused),
-                )
-            }),
-        },
-    );
-    let overrides = si::ColorOverrides {
-        background: pane.map(|(v, _)| v.screen.background),
-        ..Default::default()
-    };
-    state
-        .frame(
-            Instant::now(),
-            dirty,
-            focused,
-            &cursor,
-            &si::shader_colors(theme, &overrides),
-        )
-        .to_uniforms()
+            glyph: *cursor,
+            focused: v.focused && window_focused,
+            dirty: *dirty,
+            background: v.screen.background,
+        })
+        .collect();
+    state.regions(Instant::now(), theme, setting, alive, &inputs)
 }
