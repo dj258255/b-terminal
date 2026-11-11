@@ -639,7 +639,7 @@ pub struct Config {
     pub app_notifications: AppNotifications,
     /// OSC 52로 프로그램이 클립보드에 쓰는 것(Ghostty 기본 allow). ask는 창 안 확인 막대로 묻는다(#220)
     pub clipboard_write: crate::clipboard::ClipboardAccess,
-    /// OSC 52로 프로그램이 클립보드를 읽는 것(기본 deny. Ghostty 기본은 ask라 다르다, ADR-019)
+    /// OSC 52로 프로그램이 클립보드를 읽는 것(기본 ask, Ghostty와 같다. ADR-019·ADR-046)
     pub clipboard_read: crate::clipboard::ClipboardAccess,
     /// 위험해 보이는 붙여넣기(괄호 붙여넣기가 꺼진 프로그램에 줄바꿈)를 묻는다(Ghostty `clipboard-paste-protection`, #109)
     pub paste_protection: bool,
