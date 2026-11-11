@@ -77,59 +77,86 @@ fn seed() -> u64 {
 }
 
 /// 32비트 곱하기 섞기 상수(홀수)
-const MUL32: u32 = 0x85eb_ca6b;
-/// 한 번에 섞는 픽셀 수(u32 갈래 수). NEON·AVX가 한 번에 곱할 수 있는 꼴이다
+const MUL32_A: u32 = 0x85eb_ca6b;
+/// 출발 상태를 만들 때만 쓰는 두 번째 상수(홀수)
+const MUL32_B: u32 = 0xc2b2_ae35;
+/// 한 번에 섞는 픽셀 수(갈래 수). NEON·AVX가 한 번에 곱할 수 있는 꼴이다
 const LANES: usize = 16;
 
-/// 한 칸(한 줄의 일부) 픽셀의 64비트 해시. 픽셀(u32)마다 갈래 하나에 `xor → 홀수 곱 → 회전`으로 섞는다.
-/// 64비트 곱셈 사슬은 M2에서 벡터화되지 않아 느렸다(#393): u32 곱셈은 벡터로 돌고, 갈래 16개를 칸 끝에서 한 번만
-/// 64비트로 모은다. 갈래마다 한 단계는 상태에 대해 일대일이라, 한 픽셀만 바뀐 칸은 그 갈래의 상태가 반드시 달라진다
+/// 한 칸(한 줄의 일부) 픽셀의 64비트 해시. 갈래마다 상태가 둘이다: `s`는 픽셀마다 `xor → 홀수 곱 → 바이트 뒤집기`로
+/// 섞고, `t`는 지나온 `s`를 더한다. 갈래 상태가 `s` 하나(32비트)면 같은 갈래 안의 서로 다른 변형이 생일 한계(약 2^16개)에서
+/// 겹쳤다(CI ubuntu에서 14631개째, #393). `t`가 지나온 길을 쥐므로 `s`가 겹쳐도 길이 다르면 `t`가 다르다(갈래당 64비트).
+/// 한 픽셀만 바뀐 칸은 늘 달라진다: 한 단계가 `s`에 대해 일대일이라 그 갈래의 `s`가 달라지고, 모을 때 갈래마다 다른
+/// 홀수를 곱해 더하므로 한 갈래의 차이는 지워지지 않는다. 바이트 뒤집기는 곱하기가 못 하는 일(위 비트를 아래로 내리기)을
+/// 벡터 명령 하나로 한다. 회전(명령 둘)은 M2에서 이 칸 해시를 옛 사본 견주기보다 느리게 했다. 곱하기만 쓰면 위 비트만
+/// 다른 변형이 겹친다(시험 `tile_hash_separates_structured_differences`).
+/// u64 곱셈 사슬은 M2에서 벡터화되지 않아 느렸다: 갈래는 u32다
 fn tile_hash(px: &[u32], init: &Init) -> u64 {
-    let mut lane = init.lane;
-    let mut chunks = px.chunks_exact(LANES);
-    for c in chunks.by_ref() {
-        // 길이를 아는 배열로 받아 경계 검사 없이 벡터로 돌게 한다
-        let c: &[u32; LANES] = c.try_into().unwrap_or(&[0; LANES]);
-        for i in 0..LANES {
-            lane[i] = (lane[i] ^ c[i]).wrapping_mul(MUL32).rotate_left(13);
-        }
+    let (a, b) = lanes(px, init);
+    // 갈래마다 다른 홀수를 곱해 더한다(벡터로 돈다). 갈래 하나만 달라도 합은 달라진다(홀수 곱은 일대일)
+    let (mut hs, mut ht) = (0u32, 0u32);
+    for i in 0..LANES {
+        hs = hs.wrapping_add(a[i].wrapping_mul(FOLD_S[i]));
+        ht = ht.wrapping_add(b[i].wrapping_mul(FOLD_T[i]));
     }
-    for (l, p) in lane.iter_mut().zip(chunks.remainder()) {
-        *l = (*l ^ p).wrapping_mul(MUL32).rotate_left(13);
-    }
-    // 갈래 16개를 64비트 넷으로 모은다(서로 기다리지 않는 곱셈 넷)
-    let mut acc = [
-        px.len() as u64 ^ init.seed,
-        init.seed.rotate_left(21),
-        init.seed.rotate_left(42),
-        !init.seed,
-    ];
-    for (i, a) in acc.iter_mut().enumerate() {
-        for j in 0..2 {
-            let v = u64::from(lane[4 * i + 2 * j]) | u64::from(lane[4 * i + 2 * j + 1]) << 32;
-            *a = (*a ^ v).wrapping_mul(MUL).rotate_left(31);
-        }
-    }
-    let mut h = acc[0] ^ acc[1].rotate_left(16) ^ acc[2].rotate_left(32) ^ acc[3].rotate_left(48);
+    let mut h = (u64::from(hs) | u64::from(ht) << 32) ^ (px.len() as u64).wrapping_mul(MUL) ^ init.seed;
     h ^= h >> 32;
     h = h.wrapping_mul(MUL);
     h ^ (h >> 29)
 }
 
+/// 갈래를 모을 때 곱하는 홀수들(갈래마다 다르다)
+const FOLD_S: [u32; LANES] = fold_consts(0x2545_f491);
+const FOLD_T: [u32; LANES] = fold_consts(0x6c07_8965);
+
+const fn fold_consts(mut x: u32) -> [u32; LANES] {
+    let mut v = [0u32; LANES];
+    let mut i = 0;
+    while i < LANES {
+        x = x.wrapping_mul(0x9e37_79b1).wrapping_add(0x7f4a_7c15);
+        v[i] = x | 1;
+        i += 1;
+    }
+    v
+}
+
+/// 갈래 `LANES`개의 상태 둘(`s`: 섞는 상태, `t`: 지나온 `s`의 합)에 칸 픽셀을 섞는다
+#[inline(always)]
+fn lanes(px: &[u32], init: &Init) -> ([u32; LANES], [u32; LANES]) {
+    let (mut s, mut t) = (init.a, init.b);
+    let mut chunks = px.chunks_exact(LANES);
+    for c in chunks.by_ref() {
+        let c: &[u32; LANES] = c.try_into().unwrap_or(&[0; LANES]);
+        for i in 0..LANES {
+            // 곱하기는 위 비트를 아래로 옮기지 못한다: 바이트를 뒤집어(벡터 명령 하나) 위 비트가 아래로 내려오게 한다
+            s[i] = (s[i] ^ c[i]).wrapping_mul(MUL32_A).swap_bytes();
+            t[i] = t[i].wrapping_add(s[i]);
+        }
+    }
+    for ((s, t), p) in s.iter_mut().zip(t.iter_mut()).zip(chunks.remainder()) {
+        *s = (*s ^ p).wrapping_mul(MUL32_A).swap_bytes();
+        *t = t.wrapping_add(*s);
+    }
+    (s, t)
+}
+
 /// 칸 해시의 출발 상태(시드에서 한 번 만든다)
 struct Init {
     seed: u64,
-    lane: [u32; LANES],
+    a: [u32; LANES],
+    b: [u32; LANES],
 }
 
 impl Init {
     fn new(seed: u64) -> Self {
         let (lo, hi) = (seed as u32, (seed >> 32) as u32);
-        let mut lane = [0u32; LANES];
-        for (i, l) in lane.iter_mut().enumerate() {
-            *l = lo.wrapping_add(hi.wrapping_mul(i as u32 + 1)) ^ MUL32.rotate_left(i as u32);
+        let mut a = [0u32; LANES];
+        let mut b = [0u32; LANES];
+        for i in 0..LANES {
+            a[i] = lo.wrapping_add(hi.wrapping_mul(i as u32 + 1)) ^ MUL32_A.rotate_left(i as u32);
+            b[i] = hi.wrapping_add(lo.wrapping_mul(i as u32 + 1)) ^ MUL32_B.rotate_left(i as u32);
         }
-        Self { seed, lane }
+        Self { seed, a, b }
     }
 }
 
@@ -507,35 +534,85 @@ mod tests {
         }
     }
 
-    /// 해시 품질: 한 픽셀만 다른 칸 수천 개(칸 안 자리·값을 돌려 가며)에서 해시가 늘 달라야 하고,
-    /// 서로 다른 칸 수만 개에서 해시가 겹치지 않아야 한다
+    /// 해시 품질(고정 시드 여러 개라 CI와 로컬이 같다): 한 픽셀만 다른 칸은 해시가 늘 달라야 하고, 같은 갈래(자리
+    /// % 16이 같은 자리들)의 서로 다른 변형 수만 개도 겹치지 않아야 한다. 갈래 상태가 32비트면 생일 한계로 겹친다(#393)
     #[test]
     fn tile_hash_differs_for_every_single_pixel_change() {
+        let mut rng = 99u64;
+        for s in 1..=8u64 {
+            let init = Init::new(s.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1);
+            let mut base = vec![0xff1e_1e2eu32; TILE_W];
+            let hb = tile_hash(&base, &init);
+            // 갈래 3의 자리들(3, 19, 35, ...)에서 값을 바꿔 가며 모은다
+            let mut seen = std::collections::HashMap::new();
+            for pos in (3..TILE_W).step_by(LANES) {
+                for _ in 0..20_000 {
+                    let v = lcg(&mut rng) as u32;
+                    if v == 0xff1e_1e2e {
+                        continue;
+                    }
+                    base[pos] = v;
+                    let h = tile_hash(&base, &init);
+                    assert_ne!(h, hb, "seed {s} pos {pos}: 한 픽셀이 달라도 해시가 같다");
+                    if let Some(prev) = seen.insert(h, (pos, v)) {
+                        assert_eq!(
+                            prev,
+                            (pos, v),
+                            "seed {s}: 같은 갈래의 서로 다른 칸이 겹쳤다: {prev:x?} == {:x?}",
+                            (pos, v)
+                        );
+                    }
+                }
+                base[pos] = 0xff1e_1e2e;
+            }
+        }
+        // 갈래마다·길이마다 한 픽셀 차이는 늘 달라진다
         let init = Init::new(seed());
-        let mut seed_rng = 99u64;
-        let mut seen = std::collections::HashSet::new();
-        let mut n = 0;
         for len in [TILE_W, 17, 1, 16, 33] {
             let base = vec![0xff1e_1e2eu32; len];
             let hb = tile_hash(&base, &init);
             for pos in 0..len {
-                for _ in 0..200 {
+                let mut t = base.clone();
+                t[pos] ^= 1 << (pos % 32);
+                assert_ne!(tile_hash(&t, &init), hb, "len {len} pos {pos}");
+            }
+        }
+    }
+
+    /// 구조가 있는 차이(실제 그림에서 나오는 꼴): 한 픽셀의 비트 하나, 두 픽셀의 비트 하나씩이 서로 다른 칸 모두에서
+    /// 해시가 겹치지 않아야 한다. 곱하기만 쓰는 섞기는 위 비트만 다른 값끼리 약하기 쉽다
+    #[test]
+    fn tile_hash_separates_structured_differences() {
+        for s in 1..=4u64 {
+            let init = Init::new(s.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1);
+            let base = vec![0xff1e_1e2eu32; TILE_W];
+            let mut seen = std::collections::HashSet::new();
+            seen.insert(tile_hash(&base, &init));
+            let mut n = 1;
+            for p in 0..TILE_W {
+                for bit in 0..32 {
                     let mut t = base.clone();
-                    let v = lcg(&mut seed_rng) as u32;
-                    if v == t[pos] {
-                        continue;
-                    }
-                    t[pos] = v;
-                    let h = tile_hash(&t, &init);
-                    assert_ne!(h, hb, "len {len} pos {pos}: 한 픽셀이 달라도 해시가 같다");
-                    if len == TILE_W {
+                    t[p] ^= 1 << bit;
+                    n += 1;
+                    assert!(seen.insert(tile_hash(&t, &init)), "seed {s}: 한 픽셀 {p} 비트 {bit}");
+                }
+            }
+            for p in 0..TILE_W {
+                for q in (p + 1)..TILE_W {
+                    for (bp, bq) in [(0, 0), (31, 31), (7, 24), (24, 7)] {
+                        let mut t = base.clone();
+                        t[p] ^= 1 << bp;
+                        t[q] ^= 1 << bq;
                         n += 1;
-                        assert!(seen.insert(h), "서로 다른 칸 {n}개 안에서 해시가 겹쳤다");
+                        assert!(
+                            seen.insert(tile_hash(&t, &init)),
+                            "seed {s}: 두 픽셀 {p},{q} 비트 {bp},{bq}"
+                        );
                     }
                 }
             }
+            assert!(n > 30_000, "{n}");
         }
-        assert!(n > 10_000, "{n}");
     }
 
     #[test]
