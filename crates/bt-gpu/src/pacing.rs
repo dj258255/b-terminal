@@ -71,6 +71,11 @@ impl FramePacer {
         }
     }
 
+    /// 지금 쓰는 화면 한 장 간격(들은 주기)
+    pub fn interval(&self) -> Duration {
+        self.interval
+    }
+
     /// 화면 주사율이 바뀌었다(다른 화면으로 옮겨 갔을 때)
     pub fn set_interval(&mut self, interval: Duration) {
         if interval != self.interval {
@@ -371,5 +376,17 @@ mod tests {
         // 다른 화면으로 옮겨 주기가 바뀌면 배운 값을 버린다
         p.set_interval(ms(16));
         assert_eq!(p.check(now + ms(33)), PaceDecision::Go, "16ms × 2 = 32ms가 지났다");
+    }
+
+    #[test]
+    fn interval_reports_the_period_the_screen_announced_not_the_learned_one() {
+        // 로그 "화면 한 장 간격"은 들은 값을 찍는다(#429): 배운 간격이 있어도 바뀌지 않는다
+        let now = Instant::now();
+        let mut p = FramePacer::new(1, ms(8));
+        p.record_present(now);
+        p.record_present_waited(now + ms(16), ms(8));
+        assert_eq!(p.interval(), ms(8));
+        p.set_interval(ms(16));
+        assert_eq!(p.interval(), ms(16));
     }
 }
