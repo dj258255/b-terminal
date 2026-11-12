@@ -44,7 +44,7 @@ pub fn draw_progress(canvas: &mut Canvas, theme: &Theme, x: i32, y: i32, w: u32,
 }
 
 /// 탭 줄의 높이·구분선 같은 자리를 셀 글꼴: 제목 글꼴이 있으면 그것(터미널 글꼴 크기를 따르지 않는다, #474),
-/// 없으면 터미널 글꼴. 그리는 쪽(`draw_with_title_font`)과 높이·누른 자리를 세는 쪽이 모두 이것을 거친다
+/// 없으면 터미널 글꼴. 그리는 쪽(`draw_with_title_font`)과 높이를 세는 쪽이 이것을 거친다. 탭 자리(`slots`·`hit`)는 글꼴을 보지 않는다(#478)
 pub fn bar_fonts<'a>(terminal: &'a Fonts, title: Option<&'a Fonts>) -> &'a Fonts {
     title.unwrap_or(terminal)
 }
@@ -92,7 +92,7 @@ pub fn draw_with_title_font(
     tabs: &[TabLabel],
     top: i32,
 ) {
-    // 높이·구분선·점·진행 막대는 모두 제목 글꼴이 있으면 그 지표로 센다(#474). 누른 자리 판정(`hit`)과 같은 값이다
+    // 높이·구분선·점·진행 막대는 모두 제목 글꼴이 있으면 그 지표로 센다(#474). 탭 자리는 누른 자리 판정(`hit`)과 같은 `slots`다
     let m = bar_fonts(fonts, title_fonts.as_deref()).metrics();
     let h = bar_height(fonts, title_fonts.as_deref());
     let bar = theme.background.mix(theme.foreground, 0.06);
