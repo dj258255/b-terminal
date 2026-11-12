@@ -1355,14 +1355,6 @@ impl App {
             .map_or(0, |term| tabbar::bar_height(term, self.w.title_fonts.as_ref()))
     }
 
-    /// 탭 줄의 높이·폭·누른 자리를 세는 글꼴(#474): 제목 글꼴이 있으면 그것, 없으면 터미널 글꼴. 그리는 쪽과 같은 선택이다
-    fn tabbar_fonts(&self) -> Option<&Fonts> {
-        self.w
-            .fonts
-            .chrome()
-            .map(|term| tabbar::bar_fonts(term, self.w.title_fonts.as_ref()))
-    }
-
     fn activate(&mut self, index: usize) {
         if index < self.w.tabs.len() && index != self.w.active {
             let before = self.focused_id();
@@ -6661,9 +6653,7 @@ impl ApplicationHandler<UserEvent> for App {
                 if (self.w.cursor_pos.y as u32) < top_inset + self.tabbar_height() {
                     if state == ElementState::Pressed && button == MouseButton::Left {
                         let width = self.w.gfx.as_ref().map(|g| g.window.inner_size().width).unwrap_or(0);
-                        let hit = self
-                            .tabbar_fonts()
-                            .and_then(|f| tabbar::hit(f, width, self.w.cursor_pos.x, self.w.tabs.len()));
+                        let hit = tabbar::hit(width, self.w.cursor_pos.x, self.w.tabs.len());
                         if let Some(i) = hit {
                             self.activate(i);
                         }

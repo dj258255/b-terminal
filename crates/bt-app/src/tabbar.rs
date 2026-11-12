@@ -43,10 +43,7 @@ pub fn draw_progress(canvas: &mut Canvas, theme: &Theme, x: i32, y: i32, w: u32,
     }
 }
 
-/// 탭 하나의 최대 폭(셀 수). 셀은 `bar_fonts`가 고른 글꼴의 `M` 폭이다
-const MAX_TAB_CELLS: u32 = 28;
-
-/// 탭 줄의 높이·폭 상한·구분선 같은 자리를 셀 글꼴: 제목 글꼴이 있으면 그것(터미널 글꼴 크기를 따르지 않는다, #474),
+/// 탭 줄의 높이·구분선 같은 자리를 셀 글꼴: 제목 글꼴이 있으면 그것(터미널 글꼴 크기를 따르지 않는다, #474),
 /// 없으면 터미널 글꼴. 그리는 쪽(`draw_with_title_font`)과 높이·누른 자리를 세는 쪽이 모두 이것을 거친다
 pub fn bar_fonts<'a>(terminal: &'a Fonts, title: Option<&'a Fonts>) -> &'a Fonts {
     title.unwrap_or(terminal)
@@ -71,19 +68,22 @@ pub fn bar_height(terminal: &Fonts, title: Option<&Fonts>) -> u32 {
     }
 }
 
-/// 탭마다 (x, 폭). 창 폭을 고르게 나누되 한 칸은 MAX_TAB_CELLS를 넘지 않는다
-fn slots(fonts: &Fonts, width: u32, count: usize) -> Vec<(i32, u32)> {
+/// 탭마다 (x, 폭). 상한 없이 창 폭을 탭 수로 고르게 나누고, 나머지 픽셀은 마지막 탭이 가져 오른쪽 끝까지 채운다(#478).
+/// 폭이 탭 수보다 작으면 탭마다 1px로 하고 창 밖으로 넘어간다(패닉은 없다)
+fn slots(width: u32, count: usize) -> Vec<(i32, u32)> {
     if count == 0 {
         return Vec::new();
     }
-    let cap = fonts.metrics().width * MAX_TAB_CELLS;
-    let w = (width / count as u32).min(cap).max(1);
-    (0..count).map(|i| (i as i32 * w as i32, w)).collect()
+    let w = (width / count as u32).max(1);
+    let last = width.saturating_sub(w * (count as u32 - 1)).max(1);
+    (0..count)
+        .map(|i| (i as i32 * w as i32, if i + 1 == count { last } else { w }))
+        .collect()
 }
 
 /// 탭 줄을 `top`(창 위에서 내려온 픽셀)부터 그린다. 제목 막대 밑으로 콘텐츠가 들어가는 창에서는 `top`이 제목 막대 높이다(#192).
 /// 제목 글꼴을 따로 쓰는 탭 줄(#241 `window-title-font-family`). `title_fonts`가 없으면 터미널 글꼴로 셀 격자에 맞춰 그린다.
-/// 있으면 글자마다 advance로 자리를 잡고(비례폭도 겹치지 않게) 잘림도 그 폭으로 센다. 탭 높이·폭 상한·구분선·안 읽음 점·진행 막대도 제목 글꼴 지표로 센다(#474)
+/// 있으면 글자마다 advance로 자리를 잡고(비례폭도 겹치지 않게) 잘림도 그 폭으로 센다. 탭 높이·구분선·안 읽음 점·진행 막대도 제목 글꼴 지표로 센다(#474)
 pub fn draw_with_title_font(
     canvas: &mut Canvas,
     fonts: &mut Fonts,
@@ -92,7 +92,7 @@ pub fn draw_with_title_font(
     tabs: &[TabLabel],
     top: i32,
 ) {
-    // 높이·폭 상한·구분선·점·진행 막대는 모두 제목 글꼴이 있으면 그 지표로 센다(#474). 누른 자리 판정(`hit`)과 같은 값이다
+    // 높이·구분선·점·진행 막대는 모두 제목 글꼴이 있으면 그 지표로 센다(#474). 누른 자리 판정(`hit`)과 같은 값이다
     let m = bar_fonts(fonts, title_fonts.as_deref()).metrics();
     let h = bar_height(fonts, title_fonts.as_deref());
     let bar = theme.background.mix(theme.foreground, 0.06);
@@ -103,11 +103,7 @@ pub fn draw_with_title_font(
     canvas.fill_rect(0, top, canvas.width, h, bar);
     canvas.fill_rect(0, top + h as i32 - 1, canvas.width, 1, border);
     let cw = m.width as i32;
-    for (tab, (x, w)) in tabs.iter().zip(slots(
-        bar_fonts(fonts, title_fonts.as_deref()),
-        canvas.width,
-        tabs.len(),
-    )) {
+    for (tab, (x, w)) in tabs.iter().zip(slots(canvas.width, tabs.len())) {
         if tab.active {
             canvas.fill_rect(x, top, w, h, active_bg);
         }
@@ -154,8 +150,8 @@ pub fn fit_title(title: &str, room_px: f32, mut advance: impl FnMut(char) -> f32
 }
 
 /// 창 좌표가 몇 번째 탭인가
-pub fn hit(fonts: &Fonts, width: u32, x: f64, count: usize) -> Option<usize> {
-    slots(fonts, width, count)
+pub fn hit(width: u32, x: f64, count: usize) -> Option<usize> {
+    slots(width, count)
         .iter()
         .position(|&(sx, w)| x >= sx as f64 && x < (sx + w as i32) as f64)
 }
@@ -647,20 +643,59 @@ mod tests {
             height_px(&b.terminal),
             "터미널 글꼴 높이는 크기를 따른다"
         );
-        let (fa, fb) = (bar_fonts(&a.terminal, Some(ta)), bar_fonts(&b.terminal, Some(tb)));
         assert_eq!(bar_height(&a.terminal, Some(ta)), bar_height(&b.terminal, Some(tb)));
-        for (width, count) in [(2000u32, 2usize), (2000, 5), (400, 1)] {
-            assert_eq!(
-                slots(fa, width, count),
-                slots(fb, width, count),
-                "폭 {width} 탭 {count}"
-            );
-            for x in [0.0, 10.0, 399.0, 600.0, 1999.0] {
-                assert_eq!(hit(fa, width, x, count), hit(fb, width, x, count), "x {x}");
-            }
-        }
+        // 탭 자리(`slots`·`hit`)는 글꼴이 아니라 창 폭과 탭 수만 보므로(#478) 글꼴 크기와 상관없다
         // 제목 글꼴이 없으면 터미널 글꼴로 센다
         assert_eq!(bar_height(&b.terminal, None), height_px(&b.terminal));
+    }
+
+    /// #478: 탭 폭에 상한이 없다. 폭 합이 창 폭과 같고 이웃 탭이 빈틈·겹침 없이 이어진다
+    #[test]
+    fn slots_fill_the_whole_width() {
+        for count in [1usize, 2, 3, 7] {
+            let s = slots(2000, count);
+            assert_eq!(s.len(), count);
+            assert_eq!(s.iter().map(|&(_, w)| w).sum::<u32>(), 2000, "탭 {count}: 폭 합");
+            assert_eq!(s[0].0, 0);
+            for pair in s.windows(2) {
+                assert_eq!(pair[0].0 + pair[0].1 as i32, pair[1].0, "탭 {count}: 이웃이 이어짐");
+            }
+            let last = s[count - 1];
+            assert_eq!(last.0 + last.1 as i32, 2000, "탭 {count}: 오른쪽 끝");
+            let first_w = s[0].1;
+            assert!(
+                s[..count - 1].iter().all(|&(_, w)| w == first_w),
+                "나머지는 마지막 탭만 가진다"
+            );
+        }
+    }
+
+    /// #478: 누른 자리는 그린 자리와 같다. x=0, 경계 양쪽, 오른쪽 끝(width-1)
+    #[test]
+    fn hit_matches_the_slots() {
+        for count in [1usize, 2, 3, 7] {
+            let s = slots(2000, count);
+            assert_eq!(hit(2000, 0.0, count), Some(0));
+            assert_eq!(hit(2000, 1999.0, count), Some(count - 1), "탭 {count}: 오른쪽 끝");
+            assert_eq!(hit(2000, 2000.0, count), None);
+            for (i, &(x, _)) in s.iter().enumerate().skip(1) {
+                assert_eq!(hit(2000, x as f64 - 1.0, count), Some(i - 1));
+                assert_eq!(hit(2000, x as f64, count), Some(i));
+            }
+        }
+        assert_eq!(hit(2000, 5.0, 0), None);
+    }
+
+    /// #478: 폭이 0이거나 탭 수보다 작아도 패닉이 나지 않는다
+    #[test]
+    fn slots_do_not_panic_on_tiny_widths() {
+        assert!(slots(2000, 0).is_empty());
+        for (width, count) in [(0u32, 3usize), (1, 3), (3, 7), (5, 5)] {
+            let s = slots(width, count);
+            assert_eq!(s.len(), count);
+            assert!(s.iter().all(|&(_, w)| w >= 1));
+            let _ = hit(width, 0.0, count);
+        }
     }
 
     #[test]
