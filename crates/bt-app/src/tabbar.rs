@@ -52,14 +52,23 @@ pub fn bar_fonts<'a>(terminal: &'a Fonts, title: Option<&'a Fonts>) -> &'a Fonts
     title.unwrap_or(terminal)
 }
 
-/// 탭 줄 높이: 글꼴 셀 높이의 1.5배
-fn height_of(m: bt_render::CellMetrics) -> u32 {
+/// 터미널 글꼴로 셀 때의 탭 줄 높이(px): 셀 높이의 1.5배
+fn height_px(fonts: &Fonts) -> u32 {
+    let m = fonts.metrics();
     m.height + m.height / 2
 }
 
-/// 탭 줄 높이(px). `fonts`는 `bar_fonts`가 고른 글꼴이다
-pub fn height_px(fonts: &Fonts) -> u32 {
-    height_of(fonts.metrics())
+/// 탭 줄 높이(px). 그리는 쪽·격자 자리·새 탭 줄 자리가 모두 이것을 쓴다.
+/// 제목 글꼴이 있으면 그 셀 높이의 5/3이다(#474). 시스템 UI 글꼴(SF) 13pt는 셀 높이가 터미널 글꼴보다 낮아(배율 2에서 31px)
+/// 1.5배면 46px로 0.50.0의 52px보다 눈에 띄게 낮아진다. 5/3이면 51px다. 제목 글꼴이 없으면 터미널 셀 높이의 1.5배 그대로다
+pub fn bar_height(terminal: &Fonts, title: Option<&Fonts>) -> u32 {
+    match title {
+        Some(t) => {
+            let h = t.metrics().height;
+            h + h * 2 / 3
+        }
+        None => height_px(terminal),
+    }
 }
 
 /// 탭마다 (x, 폭). 창 폭을 고르게 나누되 한 칸은 MAX_TAB_CELLS를 넘지 않는다
@@ -85,7 +94,7 @@ pub fn draw_with_title_font(
 ) {
     // 높이·폭 상한·구분선·점·진행 막대는 모두 제목 글꼴이 있으면 그 지표로 센다(#474). 누른 자리 판정(`hit`)과 같은 값이다
     let m = bar_fonts(fonts, title_fonts.as_deref()).metrics();
-    let h = height_of(m);
+    let h = bar_height(fonts, title_fonts.as_deref());
     let bar = theme.background.mix(theme.foreground, 0.06);
     let active_bg = theme.background;
     let border = theme.background.mix(theme.foreground, 0.16);
@@ -542,7 +551,7 @@ mod tests {
         draw_with_title_font(&mut c, &mut fonts, title.as_mut(), &theme, &tabs, 0);
         // 둘째 탭(x 150..299)은 제목이 없으니 바탕·구분선·밑줄 말고는 아무것도 없어야 한다
         let bar = theme.background.mix(theme.foreground, 0.06);
-        let bh = height_px(bar_fonts(&fonts, title.as_ref()));
+        let bh = bar_height(&fonts, title.as_ref());
         for y in 0..bh - 1 {
             for x in 150..299 {
                 assert_eq!(c.pixel(x, y), bar, "({x},{y})에 첫 탭 제목이 넘어 나왔다");
@@ -562,7 +571,7 @@ mod tests {
             eprintln!("건너뜀: 시스템 UI 글꼴이 없어 터미널 글꼴로 그린다");
             return;
         };
-        let bh = height_px(bar_fonts(&fonts, Some(tf)));
+        let bh = bar_height(&fonts, Some(tf));
         assert!(
             tf.metrics().height <= bh,
             "제목 글꼴 키 {} > 탭 줄 {bh}",
@@ -595,6 +604,29 @@ mod tests {
         }
     }
 
+    /// #474: 기본 설정(시스템 UI 제목 글꼴 13pt, 배율 2)의 탭 줄 높이는 0.50.0의 52px에서 크게 바뀌지 않는다(48~56px)
+    #[test]
+    fn default_tab_bar_height_stays_near_0_50() {
+        let cfg = bt_render::FontConfig {
+            scale: 2.0,
+            ..bt_render::FontConfig::default()
+        };
+        let Ok(set) = Fonts::new_with_title(&cfg, None) else {
+            return;
+        };
+        let Some(tf) = set.title.as_ref() else {
+            eprintln!("건너뜀: 시스템 UI 글꼴이 없다");
+            return;
+        };
+        let h = bar_height(&set.terminal, Some(tf));
+        assert!(
+            (48..=56).contains(&h),
+            "탭 줄 {h}px, 제목 셀 높이 {}",
+            tf.metrics().height
+        );
+        assert!(tf.metrics().height <= h);
+    }
+
     /// #474: 제목 글꼴이 있으면 탭 줄의 높이와 탭 자리는 터미널 글꼴 크기(13과 20)와 상관없이 같다
     #[test]
     fn tab_bar_ignores_terminal_font_size_with_title_font() {
@@ -616,7 +648,7 @@ mod tests {
             "터미널 글꼴 높이는 크기를 따른다"
         );
         let (fa, fb) = (bar_fonts(&a.terminal, Some(ta)), bar_fonts(&b.terminal, Some(tb)));
-        assert_eq!(height_px(fa), height_px(fb));
+        assert_eq!(bar_height(&a.terminal, Some(ta)), bar_height(&b.terminal, Some(tb)));
         for (width, count) in [(2000u32, 2usize), (2000, 5), (400, 1)] {
             assert_eq!(
                 slots(fa, width, count),
@@ -628,7 +660,7 @@ mod tests {
             }
         }
         // 제목 글꼴이 없으면 터미널 글꼴로 센다
-        assert_eq!(height_px(bar_fonts(&b.terminal, None)), height_px(&b.terminal));
+        assert_eq!(bar_height(&b.terminal, None), height_px(&b.terminal));
     }
 
     #[test]

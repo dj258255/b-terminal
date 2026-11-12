@@ -1340,10 +1340,19 @@ impl App {
 
     /// 탭 줄 높이. 탭이 하나면 없다(Ghostty처럼)
     fn tabbar_height(&self) -> u32 {
-        match self.tabbar_fonts() {
-            Some(f) if self.config.window_show_tab_bar.visible(self.w.tabs.len()) => tabbar::height_px(f),
-            _ => 0,
+        if self.config.window_show_tab_bar.visible(self.w.tabs.len()) {
+            self.tabbar_px()
+        } else {
+            0
         }
+    }
+
+    /// 탭 줄이 보일 때의 높이(#474: 제목 글꼴이 있으면 그 기준). 글꼴을 읽지 못했으면 0
+    fn tabbar_px(&self) -> u32 {
+        self.w
+            .fonts
+            .chrome()
+            .map_or(0, |term| tabbar::bar_height(term, self.w.title_fonts.as_ref()))
     }
 
     /// 탭 줄의 높이·폭·누른 자리를 세는 글꼴(#474): 제목 글꼴이 있으면 그것, 없으면 터미널 글꼴. 그리는 쪽과 같은 선택이다
@@ -1694,7 +1703,7 @@ impl App {
         let now = self.config.window_show_tab_bar.visible(self.w.tabs.len());
         let next = self.config.window_show_tab_bar.visible(self.w.tabs.len() + 1);
         if next && !now {
-            let bar = self.tabbar_fonts().map(tabbar::height_px).unwrap_or(0);
+            let bar = self.tabbar_px();
             area.y += bar as i32;
             area.h = area.h.saturating_sub(bar);
         }
