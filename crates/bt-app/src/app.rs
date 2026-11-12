@@ -1082,20 +1082,25 @@ impl App {
     fn load_fonts(&mut self) {
         self.w.fonts.clear();
         self.w.title_fonts = None;
-        self.sync_fonts();
+        self.sync_fonts_with(true);
     }
 
     /// 창의 칸들이 쓰는 글자 크기에 글꼴 묶음을 맞춘다(#422): 이미 있는 크기는 그대로 쓰고, 없는 크기만 만들고,
     /// 쓰지 않는 크기는 버린다. 칸마다 크기가 달라도 같은 크기끼리는 한 벌을 나눠 쓴다
     fn sync_fonts(&mut self) {
+        self.sync_fonts_with(false);
+    }
+
+    /// `sync_fonts`. `rebuild_title`이면(`load_fonts`: 설정·배율이 바뀌었다) 제목 글꼴도 다시 만든다. 제목 글꼴은 터미널 글꼴
+    /// 크기를 따르지 않으므로(#474) 기준 크기가 바뀌어도 다시 만들지 않는다
+    fn sync_fonts_with(&mut self, rebuild_title: bool) {
         let base = self.w.font_size;
         let sizes = pane_font::needed_sizes(base, self.window_pane_sizes());
-        let prev_chrome = self.w.fonts.chrome_size();
         let (config, scale) = (&self.config, self.scale as f32);
         let mut title: Option<Option<Fonts>> = None;
         let mut warnings: Vec<String> = Vec::new();
         self.w.fonts.sync(base, &sizes, |size| {
-            let want_title = pane_font::size_key(size) == pane_font::size_key(base);
+            let want_title = rebuild_title && pane_font::size_key(size) == pane_font::size_key(base);
             let (terminal, t, warn) = build_fonts(config, scale, size, want_title)?;
             warnings.extend(warn);
             if want_title {
@@ -1103,13 +1108,6 @@ impl App {
             }
             Some(terminal)
         });
-        // 기준 크기가 바뀌었는데 그 크기의 묶음이 이미 있었다면(다른 칸이 쓰던 크기) 제목 글꼴만 새로 만든다
-        if title.is_none() && prev_chrome.map(pane_font::size_key) != Some(pane_font::size_key(base)) {
-            if let Some((_, t, warn)) = build_fonts(config, scale, base, true) {
-                warnings.extend(warn);
-                title = Some(t);
-            }
-        }
         for w in warnings {
             // 같은 경고를 글꼴을 다시 읽을 때마다 쌓지 않는다
             if !self.config.warnings.contains(&w) {
@@ -1342,10 +1340,27 @@ impl App {
 
     /// 탭 줄 높이. 탭이 하나면 없다(Ghostty처럼)
     fn tabbar_height(&self) -> u32 {
-        match self.w.fonts.chrome() {
-            Some(f) if self.config.window_show_tab_bar.visible(self.w.tabs.len()) => tabbar::height_px(f),
-            _ => 0,
+        if self.config.window_show_tab_bar.visible(self.w.tabs.len()) {
+            self.tabbar_px()
+        } else {
+            0
         }
+    }
+
+    /// 탭 줄이 보일 때의 높이(#474: 제목 글꼴이 있으면 그 기준). 글꼴을 읽지 못했으면 0
+    fn tabbar_px(&self) -> u32 {
+        self.w
+            .fonts
+            .chrome()
+            .map_or(0, |term| tabbar::bar_height(term, self.w.title_fonts.as_ref()))
+    }
+
+    /// 탭 줄의 높이·폭·누른 자리를 세는 글꼴(#474): 제목 글꼴이 있으면 그것, 없으면 터미널 글꼴. 그리는 쪽과 같은 선택이다
+    fn tabbar_fonts(&self) -> Option<&Fonts> {
+        self.w
+            .fonts
+            .chrome()
+            .map(|term| tabbar::bar_fonts(term, self.w.title_fonts.as_ref()))
     }
 
     fn activate(&mut self, index: usize) {
@@ -1688,7 +1703,7 @@ impl App {
         let now = self.config.window_show_tab_bar.visible(self.w.tabs.len());
         let next = self.config.window_show_tab_bar.visible(self.w.tabs.len() + 1);
         if next && !now {
-            let bar = self.w.fonts.chrome().map(tabbar::height_px).unwrap_or(0);
+            let bar = self.tabbar_px();
             area.y += bar as i32;
             area.h = area.h.saturating_sub(bar);
         }
@@ -6647,9 +6662,7 @@ impl ApplicationHandler<UserEvent> for App {
                     if state == ElementState::Pressed && button == MouseButton::Left {
                         let width = self.w.gfx.as_ref().map(|g| g.window.inner_size().width).unwrap_or(0);
                         let hit = self
-                            .w
-                            .fonts
-                            .chrome()
+                            .tabbar_fonts()
                             .and_then(|f| tabbar::hit(f, width, self.w.cursor_pos.x, self.w.tabs.len()));
                         if let Some(i) = hit {
                             self.activate(i);

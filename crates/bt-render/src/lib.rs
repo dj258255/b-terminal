@@ -16,7 +16,7 @@ pub mod underline;
 pub use canvas::{Canvas, cells_alpha};
 pub use font::{
     CellMetrics, CodepointFont, FaceEntry, FaceSource, FontConfig, FontError, FontSet, FontStyle, FontStyleName, Fonts,
-    MetricAdjust, SyntheticStyle, Variations, forget_system_fonts, list_system_faces,
+    MetricAdjust, SyntheticStyle, TITLE_FONT_SIZE, Variations, forget_system_fonts, list_system_faces,
 };
 pub use grid::{
     CursorStyle, DrawCell, DrawCursor, GridView, draw_grid, draw_grid_rows, ligatures, lock_rects, text_color,
