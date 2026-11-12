@@ -1373,6 +1373,10 @@ pub struct FontSet {
     pub title_warning: Option<String>,
 }
 
+/// 탭 줄 제목 글꼴의 논리 크기(pt, #474). Ghostty가 제목 글꼴을 `NSFont.systemFontSize`(13pt)로 만드는 것과 같다.
+/// 터미널 글꼴 크기(`font-size`, 확대·축소)를 따르지 않는다. 화면 배율을 곱해 픽셀로 쓴다
+pub const TITLE_FONT_SIZE: f32 = 13.0;
+
 /// 시스템 UI 글꼴을 찾을 때 시도하는 이름과 순서(#460). macOS 26에서 `.SF NS`와 `System Font`는 둘 다 `SFNS.ttf`(가변 글꼴)의
 /// 이름이고 fontdb가 그대로 본다. `.SF NS Text`는 macOS 10.11~10.15의 시스템 글꼴 이름이다(이 기기에서는 확인하지 못했다).
 /// `unsafe` 없이 시스템이 알려 주는 UI 글꼴(CoreText)을 부를 수 없어 이름 목록으로 찾는다. 하나도 없으면 없다
@@ -1385,7 +1389,7 @@ fn system_ui_family(has: impl Fn(&str) -> bool) -> Option<&'static str> {
 
 impl Fonts {
     /// 터미널 글꼴과 제목 글꼴을 한 번에 만든다(시스템 글꼴 읽기는 한 번).
-    /// 제목 글꼴은 터미널 글꼴과 같은 크기이고, 그 글꼴에 없는 글자(한글·기호·이모지)는 터미널의 기본 글꼴 다음
+    /// 제목 글꼴은 터미널 글꼴 크기와 상관없이 `TITLE_FONT_SIZE`(13pt) × 화면 배율이고(#474), 그 글꼴에 없는 글자(한글·기호·이모지)는 터미널의 기본 글꼴 다음
     /// 터미널과 같은 대체 순서로 찾는다. 이름의 글꼴을 못 찾으면 제목 글꼴은 없고 경고가 있다
     pub fn new_with_title(config: &FontConfig, title_family: Option<&str>) -> Result<FontSet, FontError> {
         let db = system_db();
@@ -1412,7 +1416,7 @@ impl Fonts {
                     family: Some(name.to_string()),
                     static_family: true,
                     fallbacks,
-                    size: config.size,
+                    size: TITLE_FONT_SIZE,
                     scale: config.scale,
                     ..FontConfig::default()
                 };
@@ -1634,6 +1638,29 @@ mod title_font_tests {
         };
         for c in ['A', 'g', 'W', '0', '/', 'a', 'T'] {
             assert_eq!(outline(&full, c), outline(&fixed, c), "{c:?}");
+        }
+    }
+
+    /// #474: 제목 글꼴의 크기는 터미널 글꼴 크기와 상관없이 13pt × 화면 배율이다
+    #[test]
+    fn title_font_size_ignores_terminal_size() {
+        let at = |size: f32, scale: f32| {
+            let cfg = FontConfig {
+                size,
+                scale,
+                ..FontConfig::default()
+            };
+            Fonts::new_with_title(&cfg, Some("JetBrains Mono")).unwrap()
+        };
+        for scale in [1.0, 2.0] {
+            let (small, big) = (at(13.0, scale), at(20.0, scale));
+            let (ts, tb) = (small.title.as_ref().unwrap(), big.title.as_ref().unwrap());
+            assert_eq!(ts.px(), TITLE_FONT_SIZE * scale, "배율 {scale}");
+            assert_eq!(tb.px(), TITLE_FONT_SIZE * scale, "터미널 20pt, 배율 {scale}");
+            assert_eq!(ts.metrics(), tb.metrics());
+            // 터미널 글꼴은 그대로 자기 크기를 따른다
+            assert_eq!(small.terminal.px(), 13.0 * scale);
+            assert_eq!(big.terminal.px(), 20.0 * scale);
         }
     }
 

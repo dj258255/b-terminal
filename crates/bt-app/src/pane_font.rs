@@ -71,11 +71,6 @@ impl<T> SizedFonts<T> {
         self.chrome.as_ref().map(|(_, t)| t)
     }
 
-    /// 기준 크기(묶음이 있으면)
-    pub fn chrome_size(&self) -> Option<f32> {
-        self.chrome.as_ref().map(|(s, _)| *s)
-    }
-
     /// 들고 있는 크기의 수(기준 크기 포함)
     #[cfg(test)]
     pub fn len(&self) -> usize {
