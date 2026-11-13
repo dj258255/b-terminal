@@ -195,37 +195,66 @@ impl<T> Term<T> {
         self.semantic = SemanticState::default();
     }
 
-    /// 크기를 바꾼 뒤, 커서가 프롬프트·입력에 있으면 프롬프트 줄을 비워 셸이 다시 그리게 한다
-    /// (Ghostty `Screen.clearPromptForRedraw`, Screen.zig 2447~2505줄. 주 화면만 한다).
-    /// `redraw=1`(기본)이면 커서를 따라 올라가 프롬프트 첫 줄부터 화면 맨 아래까지, `last`면 커서 줄만, `0`이면 아무것도 하지 않는다.
-    /// 칸만 비우고 줄의 표시와 줄 이음(WRAPLINE)은 남긴다(Ghostty는 줄 자체를 지우지 않는다).
-    /// 프롬프트 첫 줄을 찾는 규칙은 PageList.promptIterator 원문이 없어 Ghostty 동작을 읽고 추정한 것이다:
+    /// 다시 그리기 조건이 맞을 때 셸이 지울 줄 범위(첫 줄, 끝 줄, 둘 다 포함). 주 화면의 격자(대체 화면이면 밀려난 주 화면)를 본다.
+    /// 조건: `redraw`가 `0`이 아니고 커서가 프롬프트·입력에 있음. `redraw=1`(기본)이면 커서를 따라 올라가 프롬프트 첫 줄부터 화면 맨 아래까지,
+    /// `last`면 커서 줄만이다. 프롬프트 첫 줄을 찾는 규칙은 PageList.promptIterator 원문이 없어 Ghostty 동작을 읽고 추정한 것이다:
     /// 커서 줄에서 위로 올라가며 이어진 줄·표시 없는 줄을 지나 처음 만나는 프롬프트 줄
-    pub(super) fn semantic_clear_prompt_for_redraw(&mut self) {
+    fn semantic_redraw_span(&self) -> Option<(i32, i32)> {
         let redraw = self.semantic.redraw;
         if redraw == Redraw::False || self.semantic.content == SemanticContent::Output {
-            return;
+            return None;
         }
-        let grid = if self.mode.contains(TermMode::ALT_SCREEN) { &mut self.inactive_grid } else { &mut self.grid };
+        let grid = if self.mode.contains(TermMode::ALT_SCREEN) { &self.inactive_grid } else { &self.grid };
         let cursor_line = grid.cursor.point.line.0;
-        let first = match redraw {
-            Redraw::False => return,
-            Redraw::Last => cursor_line,
+        match redraw {
+            Redraw::False => None,
+            Redraw::Last => Some((cursor_line, cursor_line)),
             Redraw::True => {
                 let top = -(grid.history_size() as i32);
                 let mut line = cursor_line;
                 loop {
                     if mark_of(grid[Line(line)][Column(0)].flags) == RowPrompt::Prompt {
-                        break line;
+                        return Some((line, grid.screen_lines() as i32 - 1));
                     }
                     if line <= top {
-                        return;
+                        return None;
                     }
                     line -= 1;
                 }
             },
-        };
-        let last = if redraw == Redraw::Last { cursor_line } else { grid.screen_lines() as i32 - 1 };
+        }
+    }
+
+    /// b-terminal(#482): 크기를 바꾸기 **전에**, 다시 그릴 줄들을 "각자 줄을 끝내는 빈 줄"로 바꾼다
+    /// (Ghostty #15199 `PageList.Resize.blank`와 `reflowBlankRow`).
+    /// 셸(zsh)은 SIGWINCH 뒤 "옛 폭에서 프롬프트가 차지한 줄 수"만큼 커서를 올려 다시 그린다. 줄 나누기(reflow)가 프롬프트를 새 폭에서
+    /// 더 많은(적은) 줄로 바꾸면 셸이 올라간 자리가 프롬프트 첫 줄과 어긋나 위에 빈 줄이 남는다. 칸을 비우고 줄 이음(WRAPLINE)을 떼면
+    /// `Row::shrink`는 빈 칸만 남은 줄을 나누지 않고(`is_empty`는 줄 표시 flags를 보지 않는다), `grow_columns`는 이어진 줄이 아닌 줄을 잇지 않아
+    /// 프롬프트가 옛 폭에서의 줄 수를 그대로 가진다. 줄의 표시(0번 칸)는 남긴다. 커서는 줄을 그대로 두고 새 폭 안으로만 옮긴다
+    /// (새 폭보다 오른쪽의 커서는 reflow가 빈 칸을 이어 줄을 늘린다)
+    pub(super) fn semantic_blank_prompt_for_resize(&mut self, new_columns: usize) {
+        let Some((first, last)) = self.semantic_redraw_span() else { return };
+        let grid = if self.mode.contains(TermMode::ALT_SCREEN) { &mut self.inactive_grid } else { &mut self.grid };
+        let columns = grid.columns();
+        for line in first..=last {
+            let row = &mut grid[Line(line)];
+            let marks = row[Column(0)].flags & ROW_MARKS;
+            for column in 0..columns {
+                row[Column(column)] = Cell::default();
+            }
+            row[Column(0)].flags.insert(marks);
+        }
+        let cursor = &mut grid.cursor;
+        cursor.point.column = Column(cmp::min(cursor.point.column.0, new_columns.saturating_sub(1)));
+    }
+
+    /// 크기를 바꾼 뒤, 커서가 프롬프트·입력에 있으면 프롬프트 줄을 비워 셸이 다시 그리게 한다
+    /// (Ghostty `Screen.clearPromptForRedraw`, Screen.zig 2447~2505줄. 주 화면만 한다).
+    /// b-terminal(#482): 줄 나누기는 `semantic_blank_prompt_for_resize`가 크기를 바꾸기 전에 이미 빈 줄로 만들어 두었다.
+    /// 이 지우기는 그 줄들이 그대로인지 확인하는 안전망이고(칸만 비우고 줄의 표시와 줄 이음은 남긴다), 크기를 바꾼 뒤에 칸이 남았을 때를 덮는다
+    pub(super) fn semantic_clear_prompt_for_redraw(&mut self) {
+        let Some((first, last)) = self.semantic_redraw_span() else { return };
+        let grid = if self.mode.contains(TermMode::ALT_SCREEN) { &mut self.inactive_grid } else { &mut self.grid };
         let columns = grid.columns();
         for line in first..=last {
             let row = &mut grid[Line(line)];
