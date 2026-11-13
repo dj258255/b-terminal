@@ -483,8 +483,8 @@ mod tests {
     fn link_options_turn_each_kind_off() {
         let mut s = screen(&["click here or https://shown.example"], 40, &[]);
         s.links = vec!["https://real.example/".into()];
-        for c in 6..10 {
-            s.cells[c].link = Some(0);
+        for cell in &mut s.cells[6..10] {
+            cell.link = Some(0);
         }
         let all = LinkOptions::default();
         assert!(link_at_with(&s, 7, 0, all).unwrap().explicit);
@@ -518,8 +518,8 @@ mod tests {
         // OSC 8 링크의 글이 그대로 URL이면, 끈 뒤에는 글에서 찾은 링크로 다룬다(주소는 보이는 글 그대로)
         let mut s = screen(&["https://shown.example"], 30, &[]);
         s.links = vec!["https://real.example/".into()];
-        for c in 0..21 {
-            s.cells[c].link = Some(0);
+        for cell in &mut s.cells[0..21] {
+            cell.link = Some(0);
         }
         let hit = link_at_with(&s, 3, 0, LinkOptions { url: true, osc8: false }).unwrap();
         assert_eq!(
@@ -533,8 +533,8 @@ mod tests {
     fn osc8_link_wins_and_spans_all_its_cells() {
         let mut s = screen(&["click here or https://shown.example"], 40, &[]);
         s.links = vec!["https://real.example/".into()];
-        for c in 6..10 {
-            s.cells[c].link = Some(0);
+        for cell in &mut s.cells[6..10] {
+            cell.link = Some(0);
         }
         let hit = link_at(&s, 7, 0).unwrap();
         assert_eq!(hit.url, "https://real.example/");
