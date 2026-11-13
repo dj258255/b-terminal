@@ -515,13 +515,156 @@ fn resize_does_not_clear_the_primary_prompt_while_the_alternate_screen_runs() {
 }
 
 #[test]
-fn resize_reflowed_prompt_rows_are_cleared_from_the_first_wrapped_row() {
-    // 줄이면 프롬프트가 두 줄로 감긴다. 첫 줄부터 지운다
+fn resize_blanks_a_wrapped_prompt_without_reflowing_it() {
+    // #482: 줄이면 프롬프트가 세 줄로 감기지 않는다. 크기를 바꾸기 전에 옛 폭의 두 줄이 그대로 빈 줄로 남아, 셸이 올라갈 줄 수가 맞는다
+    // (#329에서는 "out"이 스크롤백으로 밀리고 감긴 세 줄이 비워졌다)
     let mut t = T::new(10, 5);
     t.feed("out\r\n").osc("A").feed("$ ").osc("B").feed("abcdefghijkl");
     t.resize(6, 5);
-    // 줄이면서 엔진이 "out"을 스크롤백으로 올렸다. 프롬프트의 감긴 세 줄이 모두 비워진다
-    assert_eq!(t.history_text(), vec!["out"]);
-    assert_eq!(t.plain(), "");
-    assert_eq!(t.mark(0), P);
+    assert_eq!(t.history(), 0);
+    assert_eq!(t.plain(), "out");
+    assert_eq!(t.mark(1), P);
+    assert_eq!(t.cursor().1, 2, "커서는 프롬프트 첫 줄에서 옛 폭과 같은 줄 차이에 있다");
+}
+
+// ---- 창 폭을 바꿀 때 프롬프트 위에 빈 줄이 쌓이지 않음(#482, Ghostty #15199) ----
+
+/// 폭을 꽉 채운 줄과 `% ` 줄로 된 두 줄 프롬프트(셸 통합 zsh의 `PROMPT='${(l:$COLUMNS::=:)}'$'\n''%# '`).
+/// 프롬프트를 그리고 커서는 입력 자리에 둔다
+fn draw_prompt(t: &mut T, redraw: &str) {
+    let cols = t.term.columns();
+    t.osc(&format!("A{redraw}"))
+        .feed(&"=".repeat(cols))
+        .feed("\r\n")
+        .osc("A;k=s")
+        .feed("% ")
+        .osc("B");
+}
+
+/// SIGWINCH를 받은 zsh의 다시 그리기: 옛 폭에서 프롬프트가 차지한 줄 수 - 1만큼 올라가 줄 처음으로 가서 화면 끝까지 지우고 다시 쓴다
+fn zsh_redraw(t: &mut T, old_rows: usize, redraw: &str) {
+    t.feed(&format!("\x1b[{}A\r\x1b[J", old_rows - 1));
+    draw_prompt(t, redraw);
+}
+
+/// 스크롤백과 보이는 줄을 이어 맨 위부터 읽는다(줄을 줄이면 엔진이 위 줄을 스크롤백으로 올리므로, 빈 줄이 쌓였는지는 이어서 봐야 안다)
+impl T {
+    fn full(&self) -> String {
+        let mut lines = self.history_text();
+        lines.extend(self.plain().split('\n').map(String::from));
+        while lines.last().is_some_and(|l| l.is_empty()) {
+            lines.pop();
+        }
+        lines.join("\n")
+    }
+}
+
+fn scene(cols: usize, rows: usize) -> T {
+    let mut t = T::new(cols, rows);
+    t.feed("o1\r\no2\r\n");
+    draw_prompt(&mut t, "");
+    t
+}
+
+fn expected(cols: usize) -> String {
+    format!("o1\no2\n{}\n%", "=".repeat(cols))
+}
+
+#[test]
+fn narrowing_keeps_the_prompt_row_count_so_the_redraw_leaves_no_blank_line() {
+    let mut t = scene(10, 10);
+    t.resize(4, 10);
+    zsh_redraw(&mut t, 2, "");
+    assert_eq!(t.full(), expected(4));
+    assert_eq!(t.history(), 0);
+}
+
+#[test]
+fn widening_keeps_the_prompt_row_count_so_the_redraw_leaves_no_blank_line() {
+    let mut t = scene(10, 10);
+    t.resize(16, 10);
+    zsh_redraw(&mut t, 2, "");
+    assert_eq!(t.full(), expected(16));
+}
+
+#[test]
+fn repeated_narrowing_and_widening_stack_no_blank_lines() {
+    let mut t = scene(10, 10);
+    for cols in [6, 14, 5, 9, 3, 12] {
+        t.resize(cols, 10);
+        zsh_redraw(&mut t, 2, "");
+        assert_eq!(t.full(), expected(cols), "{cols}열");
+        assert_eq!(t.cursor(), (2, 3), "{cols}열");
+    }
+}
+
+#[test]
+fn narrowing_with_the_cursor_past_the_new_width_still_keeps_the_row_count() {
+    // 입력이 길어 커서가 새 폭보다 오른쪽에 있어도 프롬프트는 줄 수가 늘지 않는다
+    let mut t = scene(20, 10);
+    t.feed("ls -la /usr/local");
+    t.resize(5, 10);
+    zsh_redraw(&mut t, 2, "");
+    assert_eq!(t.full(), expected(5));
+}
+
+#[test]
+fn narrowing_a_prompt_that_scrolled_into_history_keeps_the_output() {
+    let mut t = T::new(10, 4);
+    t.feed("o0\r\no1\r\no2\r\n");
+    draw_prompt(&mut t, "");
+    assert_eq!(t.history(), 1);
+    t.resize(4, 4);
+    zsh_redraw(&mut t, 2, "");
+    assert_eq!(t.full(), "o0\no1\no2\n====\n%");
+}
+
+#[test]
+fn changing_only_the_row_count_keeps_the_prompt_in_place() {
+    let mut t = scene(10, 10);
+    t.resize(10, 6);
+    zsh_redraw(&mut t, 2, "");
+    assert_eq!(t.full(), expected(10));
+}
+
+#[test]
+fn redraw_false_leaves_the_prompt_to_reflow_like_ordinary_text() {
+    let mut t = T::new(10, 10);
+    t.feed("o1\r\n");
+    draw_prompt(&mut t, ";redraw=0");
+    t.resize(6, 10);
+    assert_eq!(t.full(), "o1\n======\n====\n%");
+}
+
+#[test]
+fn redraw_last_blanks_only_the_cursor_row() {
+    let mut t = T::new(10, 10);
+    t.feed("o1\r\n");
+    draw_prompt(&mut t, ";redraw=last");
+    t.feed("ls");
+    t.resize(6, 10);
+    assert_eq!(t.full(), "o1\n======\n====");
+    // zsh는 커서 줄만 다시 그린다
+    t.feed("\r\x1b[J% ");
+    assert_eq!(t.full(), "o1\n======\n====\n%");
+}
+
+#[test]
+fn narrowing_while_the_alternate_screen_runs_keeps_the_main_prompt_row_count() {
+    let mut t = scene(10, 10);
+    t.feed("\x1b[?1049h\x1b[Hfull");
+    t.resize(4, 10);
+    t.feed("\x1b[?1049l");
+    zsh_redraw(&mut t, 2, "");
+    assert_eq!(t.full(), expected(4));
+}
+
+#[test]
+fn narrowing_with_the_cursor_waiting_to_wrap_keeps_the_row_count() {
+    // 입력이 마지막 칸까지 차 커서가 줄 넘김을 기다리는 때
+    let mut t = scene(10, 10);
+    t.feed("abcdefgh");
+    t.resize(4, 10);
+    zsh_redraw(&mut t, 2, "");
+    assert_eq!(t.full(), expected(4));
 }

@@ -814,6 +814,9 @@ impl<T> Term<T> {
 
         debug!("New num_cols is {num_cols} and num_lines is {num_lines}");
 
+        // b-terminal(#482): 줄 나누기 전에 프롬프트 줄들을 줄 수가 바뀌지 않는 빈 줄로 만든다
+        self.semantic_blank_prompt_for_resize(num_cols);
+
         // Move vi mode cursor with the content.
         let history_size = self.history_size();
         let mut delta = num_lines as i32 - old_lines as i32;
