@@ -33,7 +33,7 @@ winit이 같은 문제를 고친 판을 내면 패치를 지우고 그 판으로
   - `src/iosurface_pool.rs`(새 파일): 위의 고르기·비우기·줄 복사를 창 없이 시험할 수 있게 뺀 순수 함수. `crates/bt-app/tests/iosurface_pool.rs`가 부릅니다.
   - `src/lib.rs` 끝: `set_iosurface`(스위치, 기본 켬, 환경 변수 `BT_E5_CGIMAGE`가 있으면 앱이 끔)와 `Buffer::present_frame`(프레임을 버퍼를 거치지 않고 올림, 다른 백엔드는 복사 뒤 `present`). `src/backend_interface.rs`·`src/backend_dispatch.rs`에 `present_frame`을 더했습니다.
   - `Cargo.toml`: `objc2-io-surface 0.3.2`(잠금 파일에 이미 있던 크레이트, 새 외부 크레이트 아님)를 macOS 의존성으로 더하고 `objc2-core-foundation`에 `CFBase`·`CFDictionary`·`CFNumber`·`CFPropertyList`·`CFString` 기능을 더했습니다.
-  - 이유: 실험 E3·E4에서 큰 창에서 바뀐 줄 하나뿐인 프레임도 올리기까지 약 3~5ms였고 대부분이 프레임을 softbuffer 버퍼로 옮기는 일이었습니다. IOSurface에 곧장 쓰면 그 복사가 한 번으로 줄고 Ghostty와 같은 올리기 길이 됩니다. 실험 E5가 재기 전까지 이 길이 더 빠르다는 것은 확인하지 않았습니다.
+  - 이유: 실험 E3·E4에서 큰 창에서 바뀐 줄 하나뿐인 프레임도 올리기까지 약 3~5ms였고 대부분이 프레임을 softbuffer 버퍼로 옮기는 일이었습니다. IOSurface에 곧장 쓰면 그 복사가 한 번으로 줄고 Ghostty와 같은 올리기 길이 됩니다. 실험 E5(창 1000×680pt, 바뀐 줄 1줄, 번갈아 다섯 쌍, 한 기기)에서 올리기까지 중앙값이 CGImage 2.26ms에서 IOSurface 1.37ms로 줄었습니다([보고서](../docs/experiments/2026-11-10-e5-iosurface.md), ADR-034). macOS 기본 길이 GPU가 된 뒤(ADR-039)에는 CPU 길(`BT_GPU=0`)에서만 이 패치를 씁니다.
   - 되돌릴 조건: 실험 E5에서 올리기가 줄지 않으면 기본을 `BT_E5_CGIMAGE` 쪽(CGImage)으로 두거나 이 패치를 지웁니다. GPU 렌더러가 레이어를 직접 소유하게 되면 softbuffer와 함께 지웁니다.
 
 ### 왜
