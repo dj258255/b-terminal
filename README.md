@@ -2,9 +2,9 @@
 
 <img src="docs/images/icon.png" width="96" alt="b-terminal 아이콘: 어두운 둥근 사각형 위 초록 프롬프트 기호와 밑줄 커서, 왼쪽 위 파란 b">
 
-> AI 에이전트 시대를 위한 나만의 Rust 터미널. Claude Code·Codex 같은 AI CLI가 쓰는 신호(Shift+Enter, 알림, 진행 표시, 클립보드, 셸 통합)를 빠짐없이 받고, 에이전트가 터미널을 조종할 수 있습니다. Ghostty를 본보기로 삼았지만 Ghostty 없이 혼자 섭니다.
+> Ghostty 같은 순수 Rust 터미널. Ghostty와 같은 설정 문법과 키를 쓰되 Ghostty 없이 혼자 서고, 한글 입력을 고쳐 씁니다. Claude Code·Codex 같은 AI CLI가 쓰는 신호(Shift+Enter, 알림, 진행 표시, 클립보드, 셸 통합)도 빠짐없이 받고, 스크립트가 터미널을 조종하는 `btctl`이 있습니다.
 
-아직 만드는 중입니다. 계획과 진행은 [ROADMAP.md](ROADMAP.md)에 있습니다.
+아직 만드는 중입니다. 처음 보신다면 [docs/overview.md](docs/overview.md)부터 읽으세요. 계획과 진행은 [ROADMAP.md](ROADMAP.md)에 있습니다.
 
 <img src="docs/images/window-demo.png" width="760" alt="b-terminal 창. 위쪽 가로 탭 줄에 탭 셋, 그 아래 굵은 글자, 한글 문장, 16색·256색·24비트 색, 기울임·밑줄·반전·취소선 글자, 둥근 상자 선, 반칸 블록과 8단계 막대">
 
@@ -13,7 +13,7 @@
 
 ## 설치와 띄우기
 
-macOS 앱으로 묶어 씁니다(Rust 1.85 이상, Xcode 명령줄 도구).
+macOS 앱으로 묶어 씁니다(Rust 1.87 이상, Xcode 명령줄 도구).
 
 ```bash
 scripts/bundle-macos.sh --install   # ~/Applications/b-terminal.app (btctl도 앱 안에)
@@ -26,12 +26,13 @@ open ~/Applications/b-terminal.app
 
 | 키(macOS 기본) | 하는 일 |
 |---|---|
-| Cmd-C / Cmd-V | 복사 / 붙여넣기(괄호 붙여넣기 모드면 감싸서). 고르기만 해도 복사됩니다(copy-on-select) |
+| Cmd-C / Cmd-V | 시스템 클립보드로 복사 / 붙여넣기(괄호 붙여넣기 모드면 감싸서) |
+| Cmd-Shift-V(편집 메뉴 "선택 붙여넣기") | 고른 글 붙여넣기. 글을 고르기만 하면 앱 안 선택 클립보드에 담기고(`copy-on-select = primary`, 기본) Cmd-V의 시스템 클립보드는 그대로입니다. 고르면 시스템 클립보드로 복사하려면 `copy-on-select = clipboard` |
 | Cmd-= / Cmd-- / Cmd-0 | 지금 창의 글자 크기 |
 | Cmd-N / Cmd-T / Cmd-W / Cmd-Opt-W | 새 창 / 새 탭 / 칸 닫기(칸이 하나면 탭) / 탭 닫기 |
 | Cmd-1~8, Cmd-9, Cmd-Shift-[ / Cmd-Shift-] | 탭 옮기기(탭 줄을 눌러도 됩니다) |
 | Cmd-D / Cmd-Shift-D | 화면을 오른쪽 / 아래로 나누기 |
-| Cmd-[ / Cmd-], Cmd-Opt-방향키 | 앞·다음 칸, 그쪽 칸으로(칸을 눌러도 됩니다) |
+| Cmd-[ / Cmd-], Cmd-Opt-방향키 | 앞·다음 칸, 그쪽 칸으로(칸을 눌러도 됩니다. 고르지 않은 칸을 누르면 그 칸만 고르고 누름은 프로그램에 보내지 않습니다) |
 | Cmd-Ctrl-방향키 / Cmd-Ctrl-= / Cmd-Shift-Enter | 경계 밀기 / 칸 크기 고르게 / 칸 크게 보기 |
 | Shift-PageUp / PageDown | 스크롤백 |
 | Cmd-↑ / Cmd-↓ | 앞·뒤 프롬프트로(셸 통합) |
@@ -42,7 +43,7 @@ open ~/Applications/b-terminal.app
 | Cmd-Shift-, | 설정 다시 읽기 |
 | (전역, 직접 묶음) | 퀵 터미널: `keybind = global:ctrl+backquote=toggle_quick_terminal`이면 어느 앱에서든 Ctrl-` 로 화면 가장자리에서 미끄러져 나오는 창을 보였다 숨김(`quick-terminal-position` 등) |
 | Cmd-클릭 | 링크 열기(Cmd를 누르면 URL·OSC 8 링크에 밑줄과 실제 주소가 보입니다. 이미 밑줄 친 글은 이중 밑줄) |
-| 마우스 끌기, 두 번·세 번 누르기 | 글자·단어·줄 고르기(앱이 마우스를 쓰면 Shift를 누른 채로) |
+| 마우스 끌기, 두 번·세 번 누르기 | 글자·단어·줄 고르기(앱이 마우스를 쓰면 Shift를 누른 채로). 고른 글은 선택 클립보드에 담깁니다 |
 | Option을 누른 채 끌기(Linux는 Ctrl+Alt) | 사각 고르기(누르는 동안 포인터가 십자) |
 
 모든 키는 설정의 `keybind`로 바꿀 수 있습니다([docs/configuration.md](docs/configuration.md#키-묶음)).
@@ -86,9 +87,21 @@ btctl last --tab 2 --json                # 2번 탭에서 마지막으로 끝난
 
 제어 소켓은 같은 사용자만 닿는 폴더(0700)의 소켓(0600)입니다. 자세한 경계는 [SECURITY.md](SECURITY.md)에 있습니다.
 
-## 기여
+## 문서
 
-[CONTRIBUTING.md](CONTRIBUTING.md)와 코딩 에이전트(이 저장소를 고치는 도구)용 [AGENTS.md](AGENTS.md)를 봅니다.
+처음 보는 분
+
+- [docs/overview.md](docs/overview.md): b-terminal 한눈에(무엇인가, Ghostty와 같은 점·다른 점, 구조, 보안 모델, 한계)
+- [docs/configuration.md](docs/configuration.md): 설정 키와 기본값, 키 묶음
+- [docs/troubleshooting.md](docs/troubleshooting.md): 겪은 증상과 해결
+- [SECURITY.md](SECURITY.md): 보안 경계와 취약점 제보
+- [먼저 볼 ADR](docs/decisions.md#먼저-볼-adr): 설계 결정 기록 중 먼저 읽을 것
+
+개발 기록
+
+- [ROADMAP.md](ROADMAP.md), [CHANGELOG.md](CHANGELOG.md): 판마다의 계획과 변경
+- [docs/experiments/](docs/experiments/), [docs/research/](docs/research/): 실험 보고서와 조사 기록
+- [CONTRIBUTING.md](CONTRIBUTING.md), [AGENTS.md](AGENTS.md): 기여 방법과 코딩 에이전트(이 저장소를 고치는 도구)용 규칙
 
 ## 라이선스
 
