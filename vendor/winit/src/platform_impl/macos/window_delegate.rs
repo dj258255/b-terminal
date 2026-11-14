@@ -1919,6 +1919,16 @@ fn theme_to_appearance(theme: Option<Theme>) -> Option<Retained<NSAppearance>> {
 }
 
 impl WindowDelegate {
+    // b-terminal(#502): see `winit::platform::macos::selected_keyboard_input_source`.
+    pub(crate) fn selected_keyboard_input_source(&self) -> Option<String> {
+        self.view().selected_keyboard_input_source()
+    }
+
+    // b-terminal(#502): see `winit::platform::macos::discard_marked_text`.
+    pub(crate) fn discard_marked_text(&self) {
+        self.view().discard_marked_text()
+    }
+
     // b-terminal(#279): title bar proxy icon (the folder icon). `None` removes it.
     pub(crate) fn set_represented_path(&self, path: Option<&std::path::Path>) {
         let url = path

@@ -560,6 +560,19 @@ pub fn set_represented_path(window: &Window, path: Option<&std::path::Path>) {
     window.window.maybe_queue_on_main(move |w| w.set_represented_path(path.as_deref()))
 }
 
+/// Returns the identifier of the keyboard input source the window's input context has selected (for example
+/// `com.apple.inputmethod.Korean.2SetKorean`), or `None` when there is none. b-terminal(#502)
+pub fn selected_keyboard_input_source(window: &Window) -> Option<String> {
+    window.window.maybe_wait_on_main(|w| w.selected_keyboard_input_source())
+}
+
+/// Drops the window's marked (preedit) text without committing it and tells the input method to forget it
+/// (`NSTextInputContext.discardMarkedText`). No event is sent: the caller is expected to have taken the preedit text
+/// already. If the IME was in the preedit state it goes back to the ground state. b-terminal(#502)
+pub fn discard_marked_text(window: &Window) {
+    window.window.maybe_wait_on_main(|w| w.discard_marked_text())
+}
+
 /// Registers the function that receives the paths macOS asks the app to open (Dock drops, Finder "Open With",
 /// `open -a`). Paths that arrived before the call (a drop that launched the app) are passed first. The function runs
 /// on the main thread. b-terminal(#279)
