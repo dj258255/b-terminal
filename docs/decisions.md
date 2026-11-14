@@ -50,6 +50,7 @@
 - [ADR-045 `window-vsync = false`에서도 프레임 미룸을 쓴다](#adr-045-window-vsync--false에서도-프레임-미룸을-쓴다)
 - [ADR-046 `clipboard-read` 기본을 Ghostty처럼 `ask`로 한다](#adr-046-clipboard-read-기본을-ghostty처럼-ask로-한다)
 - [ADR-047 `window-colorspace = srgb`는 GPU 길에서 Display P3 표시와 마지막 변환 패스로 맞춘다](#adr-047-window-colorspace--srgb는-gpu-길에서-display-p3-표시와-마지막-변환-패스로-맞춘다)
+- [ADR-048 고르기 복사는 기본으로 앱 안 선택 클립보드에 두고, 시스템 클립보드는 덮지 않는다](#adr-048-고르기-복사는-기본으로-앱-안-선택-클립보드에-두고-시스템-클립보드는-덮지-않는다)
 
 ## ADR-001 VT 엔진은 alacritty_terminal로 시작하고, bt-term 밖으로 엔진 타입을 내보내지 않는다
 
@@ -1448,3 +1449,34 @@ E8의 실제 창 로그에서 10ms 넘는 GPU 프레임은 세 가지였다. (1)
 
 ### 보안
 입력 경계는 바뀌지 않는다.
+
+## ADR-048 고르기 복사는 기본으로 앱 안 선택 클립보드에 두고, 시스템 클립보드는 덮지 않는다
+
+상태: 채택
+관련: [#491](https://github.com/dj258255/b-terminal/issues/491), ADR-011(붙여넣기 보호), ADR-046(`clipboard-read`)
+
+### 맥락
+- Ghostty 1.4.0이 2026-10-27에 나왔다. 우리는 1.4를 아직 나오지 않은 판으로 보고 1.3의 기본을 따랐다.
+- macOS `copy-on-select`는 Ghostty 판마다 다르지만, 어느 판도 고른 글로 시스템 클립보드를 덮지 않는다. 1.3.1은 `true`가 Ghostty 전용 선택 pasteboard로 가고, 1.4.0은 기본 `none`, main(#15147)은 기본 `primary`(전용 pasteboard, `paste_from_selection`·⌘⇧V가 읽음)다.
+- b-terminal 0.54까지는 macOS에서 `true`(기본)가 시스템 클립보드로 복사했다. 고를 때마다 ⌘V 내용이 바뀌었고, 다른 앱도 그 글을 읽을 수 있었다.
+- Ghostty의 전용 pasteboard는 이름 붙은 NSPasteboard라 objc 호출이 필요하다. 작업 공간은 `unsafe_code = "deny"`다.
+
+### 결정
+1. `copy-on-select` 값은 Ghostty main과 같은 `none` `primary` `clipboard` `both`다. `true`는 macOS·Linux·FreeBSD에서 `primary`, 그 밖에서 `clipboard`이고, `false`는 `none`이다. 기본은 macOS·Linux에서 `primary`, 그 밖에서 `none`이다.
+2. 선택 클립보드는 앱 프로세스 안의 저장소다. 창·탭·칸이 나눠 쓰고, 다른 프로세스와는 나누지 않는다.
+3. `paste_from_selection`(macOS 기본 ⌘⇧V)은 선택 클립보드의 글을 붙여넣기 보호(ADR-011)를 거쳐 고른 칸에 붙여넣는다. 비었으면 아무것도 하지 않는다.
+4. 가운데 클릭 `primary-paste`와 OSC 52는 바꾸지 않는다.
+
+### 감수한 트레이드오프
+- 고르면 바로 다른 앱에 ⌘V로 붙여넣던 사람은 ⌘C를 한 번 더 눌러야 한다. `copy-on-select = clipboard`로 전처럼 돌아간다.
+- 다른 b-terminal 프로세스나 Ghostty와는 선택 클립보드를 나누지 않는다.
+- Linux에서도 시스템 PRIMARY 선택과 잇지 않는다(이 기기에서 잴 수 없음).
+
+### 하지 않은 것
+- 이름 붙은 NSPasteboard: `unsafe`가 필요하다.
+- 1.4.0 그대로(`none`): Ghostty main이 곧바로 `primary`로 고쳤다.
+
+### 보안
+- 선택 클립보드를 채우는 것은 사람이 고르는 동작뿐이다. 터미널에 찍힌 글(OSC 52 등)은 쓰지 못한다.
+- 선택 클립보드 붙여넣기는 ⌘V와 같은 붙여넣기 길을 거친다(괄호 붙여넣기 끝 표시 지우기, 줄바꿈 확인).
+- 기본에서 고른 글이 시스템 클립보드로 나가지 않아, 다른 앱이 읽을 수 있는 범위가 줄어든다.

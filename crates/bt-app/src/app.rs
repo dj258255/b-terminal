@@ -956,6 +956,8 @@ pub struct App {
     /// 바꾸기 전, 좌우를 나눈 수정 키 상태
     raw_mods: bt_core::config::SidedMods,
     clipboard: Option<arboard::Clipboard>,
+    /// 선택 클립보드(`copy-on-select = primary`·`both`). 앱 안 저장소라 창·탭·칸이 나눠 쓰고 다른 프로세스와는 나누지 않는다
+    selection_clipboard: Option<String>,
     first: Option<SpawnOptions>,
     next_poll: Instant,
     /// 셸 통합 스크립트를 풀어 둔 폴더(없으면 셸 통합을 싣지 않는다)
@@ -1039,6 +1041,7 @@ impl App {
             mods: ModifiersState::empty(),
             raw_mods: Default::default(),
             clipboard: arboard::Clipboard::new().ok(),
+            selection_clipboard: None,
             first: Some(first),
             next_poll: Instant::now(),
             #[cfg(target_os = "macos")]
@@ -2102,20 +2105,40 @@ impl App {
         self.request_redraw();
     }
 
-    /// 고른 글을 시스템 클립보드에 넣는다. `clipboard-trim-trailing-spaces`가 켜져 있으면 줄 끝 공백을 지운다.
-    /// 고른 글이 없으면 하지 않는다. 했으면 true
-    fn copy_selection(&mut self) -> bool {
-        let Some(mut text) = self.active_pane().and_then(|t| t.session.selection_text()) else {
-            return false;
-        };
+    /// 복사할 고른 글. `clipboard-trim-trailing-spaces`가 켜져 있으면 줄 끝 공백을 지우고,
+    /// `clipboard-codepoint-map`으로 글자를 바꾼다. 고른 글이 없으면 None
+    fn selection_for_copy(&mut self) -> Option<String> {
+        let mut text = self.active_pane().and_then(|t| t.session.selection_text())?;
         if self.config.clipboard_trim_trailing_spaces {
             text = bt_term::trim_trailing_spaces(&text);
         }
-        // 복사할 때 글자 바꾸기(clipboard-codepoint-map)
-        text = bt_core::config::map_clipboard_text(&self.config.clipboard_codepoint_map, &text);
+        Some(bt_core::config::map_clipboard_text(
+            &self.config.clipboard_codepoint_map,
+            &text,
+        ))
+    }
+
+    /// 고른 글을 시스템 클립보드에 넣는다. 고른 글이 없으면 하지 않는다. 했으면 true
+    fn copy_selection(&mut self) -> bool {
+        let Some(text) = self.selection_for_copy() else {
+            return false;
+        };
         match self.clipboard.as_mut() {
             Some(cb) => cb.set_text(text).is_ok(),
             None => false,
+        }
+    }
+
+    /// `copy-on-select`: 고르기를 마칠 때 값에 따라 선택 클립보드·시스템 클립보드로 보낸다
+    fn copy_on_select_now(&mut self) {
+        let (selection, system) = self.config.copy_on_select.targets();
+        if selection {
+            if let Some(text) = self.selection_for_copy() {
+                self.selection_clipboard = Some(text);
+            }
+        }
+        if system {
+            self.copy_selection();
         }
     }
 
@@ -2156,9 +2179,7 @@ impl App {
                 }
             };
             if picked {
-                if self.config.copy_on_select.copies() {
-                    self.copy_selection();
-                }
+                self.copy_on_select_now();
                 self.request_redraw();
             }
         }
@@ -3554,6 +3575,7 @@ impl App {
             | Action::ScrollToSelection
             | Action::SearchSelection
             | Action::WriteFile(crate::keymap::FileSource::Selection, _) => has_selection(self),
+            Action::PasteSelection => selection_paste_text(self.selection_clipboard.as_deref()).is_some(),
             Action::Paste => self
                 .clipboard
                 .as_mut()
@@ -3595,6 +3617,14 @@ impl App {
                     self.search_push(line);
                 }
             }
+            Action::PasteSelection if self.w.search.is_some() => {
+                let line = selection_paste_text(self.selection_clipboard.as_deref())
+                    .and_then(|t| t.lines().next())
+                    .map(str::to_owned);
+                if let Some(line) = line {
+                    self.search_push(&line);
+                }
+            }
             Action::StartSearch => self.start_search(),
             Action::ToggleQuickTerminal => self.toggle_quick(event_loop),
             Action::TogglePalette => {
@@ -3607,6 +3637,12 @@ impl App {
             Action::NavigateSearch(older) => self.search_step(older),
             Action::Paste => {
                 if let Some(text) = self.clipboard.as_mut().and_then(|cb| cb.get_text().ok()) {
+                    self.paste(text);
+                }
+            }
+            // 선택 클립보드 글을 시스템 클립보드와 같은 길(붙여넣기 보호)로 붙여넣는다. 비었으면 하지 않는다
+            Action::PasteSelection => {
+                if let Some(text) = selection_paste_text(self.selection_clipboard.as_deref()).map(str::to_owned) {
                     self.paste(text);
                 }
             }
@@ -6034,6 +6070,11 @@ fn clears_selection_after_copy(clear_on_copy: bool) -> bool {
     clear_on_copy
 }
 
+/// 선택 클립보드에서 붙여넣을 글. 비었으면(없거나 빈 글) 붙여넣을 것이 없다
+fn selection_paste_text(store: Option<&str>) -> Option<&str> {
+    store.filter(|t| !t.is_empty())
+}
+
 /// 칸의 밑줄 모양(#276). 숨김(SGR 8) 칸은 꾸밈도 그리지 않는다(Ghostty가 xterm을 따른다)
 fn underline_of(f: CellFlags) -> bt_render::Underline {
     use bt_render::Underline;
@@ -6796,11 +6837,8 @@ impl ApplicationHandler<UserEvent> for App {
                                 self.click_to_move(idx, col, row);
                             }
                         }
-                        // copy-on-select(Ghostty 기본 켬): 고르기를 마치면 바로 클립보드로
-                        // macOS에는 선택 클립보드가 없어 true·clipboard 모두 시스템 클립보드로 간다
-                        if self.config.copy_on_select.copies() {
-                            self.copy_selection();
-                        }
+                        // copy-on-select: 고르기를 마치면 값에 따라 선택 클립보드·시스템 클립보드로
+                        self.copy_on_select_now();
                     }
                 }
             }
@@ -7105,6 +7143,13 @@ fn apply_hidden_from_dock(hidden: bt_core::config::MacHidden) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn selection_paste_skips_empty_store() {
+        assert_eq!(selection_paste_text(None), None);
+        assert_eq!(selection_paste_text(Some("")), None);
+        assert_eq!(selection_paste_text(Some("abc")), Some("abc"));
+    }
 
     #[test]
     fn mouse_mode_counts_x10_like_ghostty() {

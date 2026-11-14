@@ -40,6 +40,7 @@ const ENTRIES: &[(&str, &str)] = &[
     ("찾기", "start_search"),
     ("복사", "copy_to_clipboard"),
     ("붙여넣기", "paste_from_clipboard"),
+    ("선택 붙여넣기", "paste_from_selection"),
     ("모두 고르기", "select_all"),
     ("화면 지우기", "clear_screen"),
     ("글자 크게", "increase_font_size:1"),
