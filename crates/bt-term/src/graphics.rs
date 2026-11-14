@@ -237,18 +237,21 @@ impl Graphics {
                 Err((code, why)) => self.error(&control, code, why),
             },
             "t" | "T" => {
-                let image = match self.decode(&control, &payload) {
-                    Ok(img) => img,
-                    Err((code, why)) => return self.error(&control, code, why),
-                };
                 let id = num(&control, b'i');
-                if id == 0 {
-                    return self.error(&control, "EINVAL", "그림 번호(i)가 필요합니다");
-                }
-                // 한 장이 저장 상한보다 크면 받지 않는다: 지금 넣은 것은 남기므로 상한을 넘겨 두게 된다
-                if cost(&image) > self.limit {
-                    return self.error(&control, "ENOSPC", "그림이 저장 상한(image-storage-limit)을 넘습니다");
-                }
+                // 명세: 같은 번호로 다시 보내면 옛 그림과 자리를 지운다. 성공이든 실패든 지우고(Ghostty #15184),
+                // 지우는 때는 조각(m=1)을 다 모은 뒤다(kitty는 첫 조각에서 지우지만 Ghostty와 같은 때)
+                let image = match self.transmitted(&control, &payload) {
+                    Ok(img) => img,
+                    Err((code, why)) => {
+                        // 실패 길
+                        if id != 0 {
+                            self.remove_image(id);
+                        }
+                        return self.error(&control, code, why);
+                    }
+                };
+                // 성공 길
+                self.remove_image(id);
                 self.store(id, image);
                 if action == "T" {
                     self.place(id, &control, cur)
@@ -269,6 +272,19 @@ impl Graphics {
             }
             _ => self.error(&control, "EINVAL", "모르는 동작입니다"),
         }
+    }
+
+    /// `t`/`T`로 받은 자료를 저장해도 되는 그림으로 만든다(번호·크기 상한 검사 포함)
+    fn transmitted(&self, c: &HashMap<u8, String>, payload: &[u8]) -> Result<Image, (&'static str, &'static str)> {
+        let image = self.decode(c, payload)?;
+        if num(c, b'i') == 0 {
+            return Err(("EINVAL", "그림 번호(i)가 필요합니다"));
+        }
+        // 한 장이 저장 상한보다 크면 받지 않는다: 지금 넣은 것은 남기므로 상한을 넘겨 두게 된다
+        if cost(&image) > self.limit {
+            return Err(("ENOSPC", "그림이 저장 상한(image-storage-limit)을 넘습니다"));
+        }
+        Ok(image)
     }
 
     /// 자료를 RGBA 그림으로 푼다
@@ -644,5 +660,87 @@ mod tests {
         g.handle(b"a=p,i=2,q=2", Cursor { alt: true, ..CUR });
         g.left_alt_screen();
         assert!(g.placements.is_empty(), "대체 화면의 그림은 나올 때 지운다");
+    }
+
+    /// 1×1 RGB 그림을 보내는 명령(자료 첫 바이트로 새 그림인지 가린다)
+    fn rgb1(action: &str, id: u32, px: [u8; 3]) -> String {
+        format!("a={action},f=24,s=1,v=1,i={id};{}", b64(&px))
+    }
+
+    #[test]
+    fn retransmit_with_display_replaces_old_placement() {
+        let mut g = Graphics::default();
+        g.handle(rgb1("T", 5, [255, 0, 0]).as_bytes(), CUR);
+        let out = g.handle(rgb1("T", 5, [0, 0, 255]).as_bytes(), Cursor { line: 10, ..CUR });
+        assert_eq!(out.reply.unwrap(), b"\x1b_Gi=5;OK\x1b\\");
+        assert_eq!(g.placements.len(), 1, "옛 자리가 남았다");
+        assert_eq!(g.placements[0].line, 10);
+        assert_eq!(&g.image(5).unwrap().rgba[..3], &[0, 0, 255]);
+    }
+
+    #[test]
+    fn retransmit_without_display_leaves_no_placement() {
+        let mut g = Graphics::default();
+        g.handle(rgb1("T", 5, [255, 0, 0]).as_bytes(), CUR);
+        let out = g.handle(rgb1("t", 5, [0, 0, 255]).as_bytes(), Cursor { line: 10, ..CUR });
+        assert_eq!(out.reply.unwrap(), b"\x1b_Gi=5;OK\x1b\\");
+        assert!(g.placements.is_empty(), "옛 자리가 남았다");
+        assert_eq!(&g.image(5).unwrap().rgba[..3], &[0, 0, 255]);
+    }
+
+    #[test]
+    fn retransmit_keeps_other_images_and_placements() {
+        let mut g = Graphics::default();
+        g.handle(rgb1("T", 5, [255, 0, 0]).as_bytes(), CUR);
+        g.handle(rgb1("T", 6, [0, 255, 0]).as_bytes(), Cursor { line: 20, ..CUR });
+        g.handle(rgb1("t", 5, [0, 0, 255]).as_bytes(), CUR);
+        assert_eq!(g.placements.len(), 1);
+        assert_eq!((g.placements[0].image, g.placements[0].line), (6, 20));
+        assert_eq!(&g.image(6).unwrap().rgba[..3], &[0, 255, 0]);
+    }
+
+    #[test]
+    fn failed_retransmit_removes_old_image_and_placement() {
+        let bad = [
+            ("a=T,f=24,s=1,v=1,i=5;!!!!".to_string(), "EINVAL"),
+            (format!("a=T,f=24,s=2,v=2,i=5;{}", b64(&[1, 2, 3])), "ENODATA"),
+            (format!("a=t,t=f,f=24,s=1,v=1,i=5;{}", b64(b"/etc/passwd")), "EINVAL"),
+        ];
+        for (cmd, code) in bad {
+            let mut g = Graphics::default();
+            g.handle(rgb1("T", 5, [255, 0, 0]).as_bytes(), CUR);
+            g.handle(rgb1("T", 6, [0, 255, 0]).as_bytes(), Cursor { line: 20, ..CUR });
+            let out = g.handle(cmd.as_bytes(), CUR);
+            assert_eq!(
+                out.reply.unwrap(),
+                format!("\x1b_Gi=5;{code}\x1b\\").into_bytes(),
+                "{cmd}"
+            );
+            assert!(g.image(5).is_none(), "옛 그림이 남았다: {cmd}");
+            assert!(g.placements.iter().all(|p| p.image != 5), "옛 자리가 남았다: {cmd}");
+            assert!(
+                g.image(6).is_some() && g.placements.len() == 1,
+                "다른 번호가 지워졌다: {cmd}"
+            );
+        }
+    }
+
+    #[test]
+    fn failed_retransmit_over_limit_removes_old_image() {
+        let mut g = Graphics::default();
+        g.handle(rgb1("T", 5, [255, 0, 0]).as_bytes(), CUR);
+        g.limit = 3; // 새 그림(1×1 RGBA 4바이트)이 상한을 넘는다
+        let out = g.handle(rgb1("T", 5, [0, 0, 255]).as_bytes(), CUR);
+        assert_eq!(out.reply.unwrap(), b"\x1b_Gi=5;ENOSPC\x1b\\");
+        assert!(g.image(5).is_none() && g.placements.is_empty());
+    }
+
+    #[test]
+    fn failed_transmit_without_id_touches_nothing() {
+        let mut g = Graphics::default();
+        g.handle(rgb1("T", 5, [255, 0, 0]).as_bytes(), CUR);
+        let out = g.handle(b"a=T,f=24,s=1,v=1;!!!!", CUR);
+        assert_eq!(out, Outcome::default());
+        assert!(g.image(5).is_some() && g.placements.len() == 1);
     }
 }
