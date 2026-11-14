@@ -353,7 +353,7 @@ impl Graphics {
             if val(b'o') == Some("z") {
                 put(b'o', "z".into());
             }
-            for k in [b's', b'v'] {
+            for k in *b"sv" {
                 if let Some(n) = nonzero(k).filter(|&n| n <= MAX_SIDE) {
                     put(k, n.to_string());
                 }
@@ -363,7 +363,7 @@ impl Graphics {
             }
         }
         if place {
-            for k in [b'c', b'r'] {
+            for k in *b"cr" {
                 if let Some(n) = nonzero(k) {
                     put(k, n.to_string());
                 }
