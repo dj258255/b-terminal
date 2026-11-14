@@ -25,6 +25,7 @@ pub fn action_for(id: &str) -> Option<MenuCommand> {
         "window_title" => MenuCommand::Action(Action::PromptWindowTitle),
         "copy" => MenuCommand::Action(Action::Copy),
         "paste" => MenuCommand::Action(Action::Paste),
+        "paste_selection" => MenuCommand::Action(Action::PasteSelection),
         "select_all" => MenuCommand::Action(Action::SelectAll),
         "clear_screen" => MenuCommand::Action(Action::ClearScreen),
         "bigger" => MenuCommand::Action(Action::FontBigger(1.0)),
@@ -110,6 +111,7 @@ pub fn build(secure_on: bool) -> (muda::Menu, muda::CheckMenuItem) {
         &[
             &item("copy", "복사"),
             &item("paste", "붙여넣기"),
+            &item("paste_selection", "선택 붙여넣기"),
             &item("select_all", "모두 고르기"),
             &PredefinedMenuItem::separator(),
             &item("clear_screen", "화면 지우기"),
@@ -192,6 +194,10 @@ mod tests {
         );
         assert_eq!(action_for("quit"), Some(MenuCommand::Action(Action::Quit)));
         assert_eq!(action_for("secure_input"), Some(MenuCommand::ToggleSecureKeyboardEntry));
+        assert_eq!(
+            action_for("paste_selection"),
+            Some(MenuCommand::Action(Action::PasteSelection))
+        );
         assert_eq!(action_for("nope"), None);
     }
 }
