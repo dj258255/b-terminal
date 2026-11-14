@@ -202,10 +202,30 @@ impl Graphics {
         };
         let control = parse_control(ctl);
         let more = num(&control, b'm') == 1;
+        let act = Self::action(&control);
+        // 기능 질의는 자료도 조각도 보지 않고 바로 답한다
+        if act == "q" && control.contains_key(&b'e') {
+            return self.feature_query(&control);
+        }
+        // 조각 전송 중에 온 명령 나누기(Ghostty graphics_exec.zig, #15184)
+        if self.pending.is_some() {
+            match act {
+                // 질의·놓기는 받던 전송을 건드리지 않고 따로 실행한다. m 값은 보지 않고 한 번에 실행한다
+                "q" | "p" => return self.execute(&control, payload.to_vec(), cur),
+                // 직접 전송의 다음 조각: 아래에서 잇는다
+                "t" | "T" if Self::medium(&control) == "d" => {}
+                // 지우기와 직접 전송이 아닌 전송: 받던 전송을 버리고 새 명령으로 처리한다
+                "d" | "t" | "T" => self.abort_pending(),
+                // 모르는 동작은 받던 전송을 건드리지 않고 지금처럼 답한다
+                _ => return self.error(&control, "EINVAL", "모르는 동작입니다"),
+            }
+        }
         // 조각 모으기: 첫 조각의 제어를 쓰고 자료를 잇는다
         let (control, payload) = match self.pending.take() {
             Some(mut p) => {
                 if p.payload.len() + payload.len() > MAX_PAYLOAD {
+                    // 상한을 넘으면 이 전송은 버린다. 바꾸려던 옛 그림은 지운다(Ghostty)
+                    self.remove_replaced(&p.control);
                     return self.error(&p.control, "EFBIG", "그림 자료가 상한을 넘습니다");
                 }
                 p.payload.extend_from_slice(payload);
@@ -229,7 +249,36 @@ impl Graphics {
                 (control, payload.to_vec())
             }
         };
-        let action = control.get(&b'a').map(String::as_str).unwrap_or("t");
+        self.execute(&control, payload, cur)
+    }
+
+    fn action(c: &HashMap<u8, String>) -> &str {
+        c.get(&b'a').map(String::as_str).unwrap_or("t")
+    }
+
+    fn medium(c: &HashMap<u8, String>) -> &str {
+        c.get(&b't').map(String::as_str).unwrap_or("d")
+    }
+
+    /// 받던 조각 전송을 버리고, 그 전송이 바꾸려던 옛 그림(첫 조각의 `i=`)을 지운다
+    fn abort_pending(&mut self) {
+        if let Some(p) = self.pending.take() {
+            self.remove_replaced(&p.control);
+        }
+    }
+
+    /// 번호(`i=`, 0이 아님)가 있으면 그 옛 그림과 놓인 자리를 지운다. `I=`만 있으면 지우지 않는다
+    fn remove_replaced(&mut self, control: &HashMap<u8, String>) {
+        let id = num(control, b'i');
+        if id != 0 {
+            self.remove_image(id);
+        }
+    }
+
+    /// 다 모은 명령 하나를 실행한다
+    fn execute(&mut self, control: &HashMap<u8, String>, payload: Vec<u8>, cur: Cursor) -> Outcome {
+        let action = Self::action(control);
+        let control = control.clone();
         match action {
             "q" => match self.decode(&control, &payload) {
                 // 질의: 그림을 저장하지 않고 받을 수 있는지만 답한다
@@ -271,6 +320,77 @@ impl Graphics {
                 Outcome::default()
             }
             _ => self.error(&control, "EINVAL", "모르는 동작입니다"),
+        }
+    }
+
+    /// 기능 질의(`a=q`에 `e=`, kitty 규약 "querying support for protocol features")에 답한다.
+    /// 자료는 풀지 않고 그림도 pending도 건드리지 않는다. 답에는 이 터미널이 실제로 따르는 키만, 검사한 값으로 다시 써서 넣는다
+    /// (요청의 바이트를 되돌리지 않는다). 키 차례는 `a`~`z` 다음 `A`~`Z`
+    fn feature_query(&self, c: &HashMap<u8, String>) -> Outcome {
+        let id = num(c, b'i');
+        let e = c.get(&b'e').map(String::as_bytes).unwrap_or_default();
+        let action = match e {
+            [b] if b.is_ascii_alphabetic() => *b,
+            _ => return self.error(c, "EINVAL", "기능 질의의 동작(e)은 ASCII 글자 하나여야 합니다"),
+        };
+        if id == 0 {
+            return self.error(c, "EINVAL", "그림 번호(i)가 필요합니다");
+        }
+        if Self::quiet(c) >= 1 {
+            return Outcome::default();
+        }
+        let val = |k: u8| c.get(&k).map(String::as_str);
+        let nonzero = |k: u8| Some(num(c, k)).filter(|&n| n != 0);
+        let mut keys: Vec<(u8, String)> = Vec::new();
+        let mut put = |k: u8, v: String| keys.push((k, v));
+        // 전송(t T q)과 놓기(T p) 키. 우리는 직접 전송(d)·zlib(z)·f 24·32·100·크기 상한 안의 s·v, 칸 수 c·r, 커서 고정 C=1만 따른다
+        let transmit = matches!(action, b't' | b'T' | b'q');
+        let place = matches!(action, b'T' | b'p');
+        if transmit {
+            if let Some(f) = Some(num(c, b'f')).filter(|f| matches!(f, 24 | 32 | 100)) {
+                put(b'f', f.to_string());
+            }
+            if val(b'o') == Some("z") {
+                put(b'o', "z".into());
+            }
+            for k in *b"sv" {
+                if let Some(n) = nonzero(k).filter(|&n| n <= MAX_SIDE) {
+                    put(k, n.to_string());
+                }
+            }
+            if val(b't') == Some("d") {
+                put(b't', "d".into());
+            }
+        }
+        if place {
+            for k in *b"cr" {
+                if let Some(n) = nonzero(k) {
+                    put(k, n.to_string());
+                }
+            }
+            if num(c, b'C') == 1 {
+                put(b'C', "1".into());
+            }
+        }
+        if action == b'd' {
+            if let Some(d) = val(b'd').filter(|d| matches!(*d, "a" | "A" | "i" | "I")) {
+                put(b'd', d.to_string());
+            }
+        }
+        // 지원하지 않는 동작(애니메이션 f·a·c 등)은 e= 없이 보통 OK
+        let known = transmit || place || action == b'd';
+        let mut reply = format!("\x1b_Gi={id}");
+        if known {
+            reply.push_str(&format!(",e={}", action as char));
+            keys.sort_by_key(|(k, _)| (k.is_ascii_uppercase(), *k));
+            for (k, v) in keys {
+                reply.push_str(&format!(",{}={v}", k as char));
+            }
+        }
+        reply.push_str(";OK\x1b\\");
+        Outcome {
+            reply: Some(reply.into_bytes()),
+            advance: None,
         }
     }
 
@@ -742,5 +862,205 @@ mod tests {
         let out = g.handle(b"a=T,f=24,s=1,v=1;!!!!", CUR);
         assert_eq!(out, Outcome::default());
         assert!(g.image(5).is_some() && g.placements.len() == 1);
+    }
+
+    // ---- 조각 전송 중 온 명령(Ghostty graphics_exec.zig, #15184) ----
+
+    /// 5번 그림(빨강)을 놓아 두고, 5번을 파랑으로 바꾸려는 조각 전송(a=T)의 첫 조각까지 보낸다
+    fn with_pending_replace() -> Graphics {
+        let mut g = Graphics::default();
+        g.handle(rgb1("T", 5, [255, 0, 0]).as_bytes(), CUR);
+        g.handle(rgb1("T", 6, [9, 9, 9]).as_bytes(), CUR);
+        let all = b64(&[0, 0, 255]); // 4글자
+        let out = g.handle(format!("a=T,f=24,s=1,v=1,i=5,m=1;{}", &all[..2]).as_bytes(), CUR);
+        assert_eq!(out, Outcome::default());
+        assert!(g.pending.is_some());
+        g
+    }
+
+    #[test]
+    fn delete_during_chunked_transfer_aborts_it_and_removes_old_image() {
+        let mut g = with_pending_replace();
+        // 다른 그림(6)을 지우는 명령이 왔다
+        let out = g.handle(b"a=d,d=I,i=6", CUR);
+        assert_eq!(out, Outcome::default());
+        assert!(g.pending.is_none(), "받던 전송이 남았다");
+        assert!(g.image(5).is_none(), "바꾸려던 옛 그림이 남았다");
+        assert!(g.placements.iter().all(|p| p.image != 5), "옛 자리가 남았다");
+        assert!(g.image(6).is_none(), "지우기가 실행되지 않았다");
+        // 뒤늦게 온 마지막 조각은 새 명령이라 그림을 만들지 않는다
+        let all = b64(&[0, 0, 255]);
+        g.handle(format!("m=0;{}", &all[2..]).as_bytes(), CUR);
+        assert!(g.image(5).is_none() && g.placements.is_empty());
+    }
+
+    #[test]
+    fn non_direct_transmit_during_chunked_transfer_aborts_it() {
+        for cmd in ["a=t,t=f,i=9;L3RtcC94", "a=T,t=t,i=9;L3RtcC94", "t=s,i=9;L3RtcC94"] {
+            let mut g = with_pending_replace();
+            let out = g.handle(cmd.as_bytes(), CUR);
+            assert_eq!(out.reply.unwrap(), b"\x1b_Gi=9;EINVAL\x1b\\", "{cmd}");
+            assert!(g.pending.is_none(), "{cmd}");
+            assert!(g.image(5).is_none(), "옛 그림이 남았다: {cmd}");
+            assert!(g.image(6).is_some(), "다른 그림이 지워졌다: {cmd}");
+        }
+    }
+
+    #[test]
+    fn query_and_put_during_chunked_transfer_run_without_touching_it() {
+        let mut g = with_pending_replace();
+        let out = g.handle(format!("a=q,i=31,s=1,v=1,f=24;{}", b64(&[0, 0, 0])).as_bytes(), CUR);
+        assert_eq!(out.reply.unwrap(), b"\x1b_Gi=31;OK\x1b\\");
+        // m=1이 붙은 질의도 한 번에 실행하고 받던 전송은 그대로다
+        let out = g.handle(format!("a=q,i=32,s=1,v=1,f=24,m=1;{}", b64(&[0, 0, 0])).as_bytes(), CUR);
+        assert_eq!(out.reply.unwrap(), b"\x1b_Gi=32;OK\x1b\\");
+        let out = g.handle(b"a=p,i=6", Cursor { line: 7, ..CUR });
+        assert_eq!(out.reply.unwrap(), b"\x1b_Gi=6;OK\x1b\\");
+        assert!(g.placements.iter().any(|p| p.image == 6 && p.line == 7));
+        assert!(g.pending.is_some());
+        assert!(g.image(5).is_some(), "받는 동안 옛 그림은 그대로다");
+        // 마지막 조각으로 그림이 완성된다
+        let all = b64(&[0, 0, 255]);
+        let out = g.handle(format!("m=0;{}", &all[2..]).as_bytes(), CUR);
+        assert_eq!(out.reply.unwrap(), b"\x1b_Gi=5;OK\x1b\\");
+        assert_eq!(g.image(5).unwrap().rgba.as_slice(), &[0, 0, 255, 255]);
+        assert!(g.pending.is_none());
+    }
+
+    #[test]
+    fn next_chunk_with_only_m_and_q_still_appends() {
+        let mut g = with_pending_replace();
+        let all = b64(&[0, 0, 255]);
+        let out = g.handle(format!("m=0,q=1;{}", &all[2..]).as_bytes(), CUR);
+        // 첫 조각의 제어(q 없음)를 쓰므로 답한다
+        assert_eq!(out.reply.unwrap(), b"\x1b_Gi=5;OK\x1b\\");
+        assert_eq!(g.image(5).unwrap().rgba.as_slice(), &[0, 0, 255, 255]);
+    }
+
+    #[test]
+    fn oversize_chunk_removes_old_image() {
+        let mut g = with_pending_replace();
+        let big = vec![b'A'; MAX_PAYLOAD / 2 + 1];
+        let mut cmd = b"m=1;".to_vec();
+        cmd.extend_from_slice(&big);
+        g.handle(&cmd, CUR);
+        let out = g.handle(&cmd, CUR);
+        assert_eq!(out.reply.unwrap(), b"\x1b_Gi=5;EFBIG\x1b\\");
+        assert!(g.pending.is_none());
+        assert!(g.image(5).is_none() && g.placements.iter().all(|p| p.image != 5));
+        assert!(g.image(6).is_some());
+    }
+
+    #[test]
+    fn chunked_transfer_without_numeric_id_deletes_nothing_on_abort() {
+        let mut g = Graphics::default();
+        g.handle(rgb1("T", 5, [255, 0, 0]).as_bytes(), CUR);
+        g.handle(b"a=T,f=24,s=1,v=1,I=5,m=1;AA", CUR);
+        g.handle(b"a=d,d=a", CUR);
+        assert!(g.pending.is_none() && g.image(5).is_some());
+    }
+
+    // ---- 기능 질의(a=q, e=) ----
+
+    fn query(g: &mut Graphics, cmd: &str) -> Option<String> {
+        g.handle(cmd.as_bytes(), CUR)
+            .reply
+            .map(|r| String::from_utf8(r).unwrap())
+    }
+
+    #[test]
+    fn feature_query_answers_only_supported_keys_in_order() {
+        let mut g = Graphics::default();
+        // 유니코드 자리표시(U)는 지원하지 않으므로 빠진다
+        assert_eq!(query(&mut g, "a=q,i=31,e=T,U=1").unwrap(), "\x1b_Gi=31,e=T;OK\x1b\\");
+        // 소문자 a~z, 대문자 A~Z 차례. 모르는 값(f=99, t=f)과 하지 않는 키(x, z)는 빠진다
+        assert_eq!(
+            query(&mut g, "a=q,i=1,e=t,t=d,f=100,o=z,s=10,v=10,x=3,z=1,m=0").unwrap(),
+            "\x1b_Gi=1,e=t,f=100,o=z,s=10,t=d,v=10;OK\x1b\\"
+        );
+        assert_eq!(
+            query(&mut g, "a=q,i=1,e=t,t=f,f=99,s=0,v=10001,o=x").unwrap(),
+            "\x1b_Gi=1,e=t;OK\x1b\\"
+        );
+        assert_eq!(
+            query(&mut g, "a=q,i=1,e=q,f=24").unwrap(),
+            "\x1b_Gi=1,e=q,f=24;OK\x1b\\"
+        );
+        // T는 놓기 키(c r C)도 답한다
+        assert_eq!(
+            query(&mut g, "a=q,i=2,e=T,c=4,r=0,C=1,f=32,X=1").unwrap(),
+            "\x1b_Gi=2,e=T,c=4,f=32,C=1;OK\x1b\\"
+        );
+        assert_eq!(query(&mut g, "a=q,i=2,e=T,C=2").unwrap(), "\x1b_Gi=2,e=T;OK\x1b\\");
+        // p는 놓기 키만
+        assert_eq!(
+            query(&mut g, "a=q,i=2,e=p,c=4,r=5,C=1,f=32,s=3").unwrap(),
+            "\x1b_Gi=2,e=p,c=4,r=5,C=1;OK\x1b\\"
+        );
+        // d는 처리하는 d 값만
+        assert_eq!(
+            query(&mut g, "a=q,i=2,e=d,d=I,x=1").unwrap(),
+            "\x1b_Gi=2,e=d,d=I;OK\x1b\\"
+        );
+        assert_eq!(query(&mut g, "a=q,i=2,e=d,d=z").unwrap(), "\x1b_Gi=2,e=d;OK\x1b\\");
+        assert_eq!(query(&mut g, "a=q,i=2,e=d").unwrap(), "\x1b_Gi=2,e=d;OK\x1b\\");
+    }
+
+    #[test]
+    fn feature_query_unknown_action_answers_plain_ok() {
+        let mut g = Graphics::default();
+        for e in ["f", "a", "c", "x", "Z"] {
+            assert_eq!(
+                query(&mut g, &format!("a=q,i=7,e={e},f=24")).unwrap(),
+                "\x1b_Gi=7;OK\x1b\\",
+                "{e}"
+            );
+        }
+    }
+
+    #[test]
+    fn feature_query_rejects_bad_action_and_missing_id() {
+        let mut g = Graphics::default();
+        for e in ["5", "tt", "", "\u{d55c}"] {
+            assert_eq!(
+                query(&mut g, &format!("a=q,i=7,e={e}")).unwrap(),
+                "\x1b_Gi=7;EINVAL\x1b\\",
+                "{e:?}"
+            );
+        }
+        // 번호가 없으면 오류 답 규칙대로 답이 없다
+        assert_eq!(query(&mut g, "a=q,e=T"), None);
+        assert_eq!(query(&mut g, "a=q,i=0,e=T"), None);
+        // 질의가 아닌 동작의 e=는 기능 질의가 아니다(자료를 푸는 보통 동작)
+        assert_eq!(
+            query(&mut g, "a=t,i=3,e=T,f=24,s=1,v=1;!!!!").unwrap(),
+            "\x1b_Gi=3;EINVAL\x1b\\"
+        );
+    }
+
+    #[test]
+    fn feature_query_ignores_payload_pending_and_quiet() {
+        let mut g = with_pending_replace();
+        // 잘못된 base64여도 풀지 않는다
+        assert_eq!(
+            query(&mut g, "a=q,i=7,e=t,f=24;$$$$").unwrap(),
+            "\x1b_Gi=7,e=t,f=24;OK\x1b\\"
+        );
+        assert!(g.pending.is_some() && g.image(7).is_none());
+        // m=1이어도 받는 전송을 만들지 않는다
+        let mut g = Graphics::default();
+        assert!(query(&mut g, "a=q,i=7,e=t,m=1;AA").is_some());
+        assert!(g.pending.is_none());
+        assert_eq!(query(&mut g, "a=q,i=7,e=T,q=1"), None);
+        assert_eq!(query(&mut g, "a=q,i=7,e=5,q=1"), Some("\x1b_Gi=7;EINVAL\x1b\\".into()));
+        assert_eq!(query(&mut g, "a=q,i=7,e=5,q=2"), None);
+    }
+
+    #[test]
+    fn feature_query_reply_never_echoes_request_bytes() {
+        let mut g = Graphics::default();
+        // 글자 값은 허용 목록의 글자만, 숫자는 파싱한 값을 다시 쓴다
+        let r = query(&mut g, "a=q,i=+07,e=t,t=d\x1b,o=z\x07,f=0100,s=00010,v=\x1b[1m").unwrap();
+        assert_eq!(r, "\x1b_Gi=7,e=t,f=100,s=10;OK\x1b\\");
     }
 }
