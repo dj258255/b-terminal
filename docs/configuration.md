@@ -180,7 +180,7 @@ config-file = ?~/.config/b-terminal/local   # ?가 붙으면 없어도 된다
 | `bell-features` | `system` `attention` `title` `audio`(쉼표로, 앞에 `no-`면 끔), `true` `false` | `attention,title` | 프로그램이 벨(BEL)을 울리면: `title`은 보지 않는 칸의 탭·창 제목 앞에 🔔를 붙이고 그 칸을 보면 뗍니다. `attention`은 창이 앞에 없을 때 Dock 아이콘을 튀깁니다. `system`은 시스템 경고음입니다(0.1초에 한 번까지). `audio`는 `bell-audio-path`의 소리 파일을 재생합니다(macOS만, 보고 있어도 납니다. 앞 소리가 아직 나는 중이거나 0.1초 안이면 건너뜁니다). Ghostty의 `border`는 받지만 하는 일이 없습니다 |
 | `bell-audio-path` | 파일 경로 | 없음 | `bell-features`에 `audio`가 있을 때 재생할 소리 파일(macOS가 읽을 수 있는 wav·aiff·mp3 등). `~/`는 홈, 상대 경로는 설정 파일이 있는 폴더 기준입니다. 파일을 읽지 못하면 소리 없이 지나갑니다. 빈 값은 지움 |
 | `bell-audio-volume` | 0.0~1.0 | `0.5` | `audio`로 재생할 크기(시스템 볼륨 대비). 범위 밖은 0.0~1.0으로 자릅니다 |
-| `clipboard-paste-protection` | `true` `false` | `true` | 괄호 붙여넣기를 쓰지 않는 프로그램에 줄바꿈(LF·CR)이 든 글을 붙여넣으면 먼저 묻습니다(줄바꿈이 바로 Enter가 되어 보지 못한 명령이 돌 수 있어서). ↩·`y` 붙여넣기, esc·`n` 버리기 |
+| `clipboard-paste-protection` | `true` `false` | `true` | 괄호 붙여넣기를 쓰지 않는 프로그램에 줄바꿈(LF·CR)이 든 글을 붙여넣으면 먼저 묻습니다(줄바꿈이 바로 Enter가 되어 보지 못한 명령이 돌 수 있어서). ↩·`y` 붙여넣기, esc·`n` 버리기. 암호 입력 중인 칸이면 막대에 글 대신 줄 수만 보입니다 |
 | `clipboard-paste-bracketed-safe` | `true` `false` | `true` | 괄호 붙여넣기 모드의 붙여넣기는 안전으로 봅니다. `false`면 그때도 줄바꿈이 있으면 묻습니다 |
 | `confirm-close-surface` | `true` `false` `always` | `true` | 칸·탭·창을 닫거나 끝낼 때(⌘W, ⌥⌘W, 창 닫기 단추, ⌘Q) 프로그램이 도는 칸이 있으면 창 위쪽에 확인 막대를 띄웁니다. ↩·`y`면 닫고 esc·`n`이면 그만둡니다. 셸 통합이 있으면 명령이 도는 중인지로, 없으면 전경 프로세스가 셸 자신인지로 봅니다. `always`는 셸이 살아 있으면 늘 묻습니다. Dock 메뉴나 로그아웃으로 끝낼 때는 묻지 못합니다 |
 | `resize-overlay` | `always` `never` `after-first` | `after-first` | 칸의 칸·줄 수가 바뀌면 칸 안에 `80 × 24`를 보입니다. `after-first`는 칸을 만든 직후(0.5초 안)의 크기 맞추기에는 보이지 않습니다 |

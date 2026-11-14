@@ -342,13 +342,24 @@ fn pane_busy(
     }
 }
 
-/// 줄바꿈이 든 붙여넣기를 물을 글(#109): 글이 든 줄 수와 첫 줄(제어 문자를 지우고 30칸까지)
-fn paste_prompt(text: &str) -> String {
+/// 줄바꿈이 든 붙여넣기를 물을 글(#109): 글이 든 줄 수와 첫 줄(제어 문자를 지우고 30칸까지).
+/// 암호 입력 중(`password`)이면 글은 한 글자도 넣지 않고 줄 수만 보인다(#508)
+fn paste_prompt(text: &str, password: bool) -> String {
     let mut lines = text.split(['\n', '\r']).filter(|l| !l.trim().is_empty());
     let first = lines.next().unwrap_or("");
     let n = 1 + lines.count();
+    if password {
+        return format!("붙여넣을 글({n}줄)의 줄바꿈이 바로 실행될 수 있습니다. 암호 입력 중이라 내용은 숨깁니다");
+    }
     let first = bt_render::truncate(bt_core::proto::printable(first).trim(), 30);
     format!("붙여넣을 글({n}줄)의 줄바꿈이 바로 실행될 수 있습니다: {first}")
+}
+
+/// 붙여넣기를 요청한 때 암호 입력으로 볼지(Ghostty #15114): 칸에 적어 둔 마지막 살핀 값과 요청 직전에 termios를 다시
+/// 읽은 값 중 하나라도 참이면 참. 살핌 주기(200ms) 사이에 켜진 암호 프롬프트를 놓치지 않으려는 것이고, 못 읽으면(`None`)
+/// 마지막 살핀 값만 본다
+fn paste_hidden(flag: bool, rechecked: Option<bool>) -> bool {
+    flag || rechecked == Some(true)
 }
 
 /// 퀵 창 움직임의 한 프레임(약 120Hz)
@@ -2289,11 +2300,13 @@ impl App {
             }
         }
         let (id, bracketed) = (t.id, t.session.modes().bracketed_paste);
+        // 요청한 때의 암호 상태. 막대가 떠 있는 동안 바뀌어도 막대 글은 다시 만들지 않는다
+        let password = paste_hidden(t.password, t.session.password_input());
         if !self.config.paste_protection || bt_term::paste_is_safe(&text, bracketed, self.config.paste_bracketed_safe) {
             self.paste_into(id, &text);
             return;
         }
-        let message = paste_prompt(&text);
+        let message = paste_prompt(&text, password);
         self.ask(Pending::Paste { pane: id, text }, message, "붙여넣기");
     }
 
@@ -7582,12 +7595,36 @@ mod tests {
 
     #[test]
     fn paste_prompt_counts_lines_and_strips_control_chars() {
-        let p = paste_prompt("\n  \necho \x1b[31mhi\r\nrm -rf ~\n\n");
+        let p = paste_prompt("\n  \necho \x1b[31mhi\r\nrm -rf ~\n\n", false);
         assert!(p.contains("(2줄)"), "{p}");
         assert!(p.ends_with("echo  [31mhi"), "첫 글 줄, 제어 문자는 빈칸: {p}");
         assert!(!p.contains('\x1b'));
-        let long = paste_prompt(&("x".repeat(100) + "\ny"));
+        let long = paste_prompt(&("x".repeat(100) + "\ny"), false);
         assert!(long.ends_with('…'), "{long}");
+    }
+
+    #[test]
+    fn paste_prompt_hides_the_text_at_a_password_prompt() {
+        let p = paste_prompt("hunter2secret\nrm -rf ~\n", true);
+        assert!(
+            !p.contains("hunter2"),
+            "암호 입력이면 글이 막대에 들어가면 안 된다: {p}"
+        );
+        assert!(!p.contains("rm -rf"), "{p}");
+        assert!(p.contains("(2줄)"), "줄 수는 보인다: {p}");
+        assert!(p.contains("암호 입력 중"), "{p}");
+    }
+
+    #[test]
+    fn paste_hidden_when_either_reading_says_password() {
+        assert!(!paste_hidden(false, None));
+        assert!(!paste_hidden(false, Some(false)));
+        assert!(paste_hidden(true, None), "읽지 못해도 마지막 살핀 값이 참이면 숨긴다");
+        assert!(paste_hidden(true, Some(false)));
+        assert!(
+            paste_hidden(false, Some(true)),
+            "200ms 사이에 켜진 것은 다시 읽은 값으로 잡는다"
+        );
     }
 
     #[test]
