@@ -861,6 +861,24 @@ impl WinitView {
             .unwrap_or_default()
     }
 
+    /// b-terminal(#502): the identifier of the selected keyboard input source (for example
+    /// `com.apple.inputmethod.Korean.2SetKorean`), or `None` when there is no input context.
+    pub(super) fn selected_keyboard_input_source(&self) -> Option<String> {
+        self.inputContext()?.selectedKeyboardInputSource().map(|s| s.to_string())
+    }
+
+    /// b-terminal(#502): drops the marked (preedit) text without committing it and tells the input
+    /// method to forget it. No event is sent; the caller already knows the preedit is gone.
+    pub(super) fn discard_marked_text(&self) {
+        *self.ivars().marked_text.borrow_mut() = NSMutableAttributedString::new();
+        if let Some(input_context) = self.inputContext() {
+            input_context.discardMarkedText();
+        }
+        if self.ivars().ime_state.get() == ImeState::Preedit {
+            self.ivars().ime_state.set(ImeState::Ground);
+        }
+    }
+
     pub(super) fn cursor_icon(&self) -> Retained<NSCursor> {
         self.ivars().cursor_state.borrow().cursor.clone()
     }

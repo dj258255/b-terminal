@@ -1361,8 +1361,57 @@ impl App {
             .map_or(0, |term| tabbar::bar_height(term, self.w.title_fonts.as_ref()))
     }
 
+    /// 확정 글을 알맞은 곳에 보낸다: 확인 막대면 버리고, 제목 입력·팔레트·찾기 막대가 열려 있으면 거기로, 아니면 고른 칸으로.
+    /// `Ime::Commit`과 포커스를 잃을 때 확정하는 조합 글자(#502)가 같은 길을 쓴다
+    fn commit_text(&mut self, text: &str) {
+        self.w.preedit.clear();
+        self.reset_blink();
+        // 확인 막대가 떠 있으면 글을 어디에도 보내지 않는다(Enter·Esc만 받는다)
+        if self.w.confirm.is_some() {
+            self.request_redraw();
+            return;
+        }
+        // 팔레트·찾기 막대가 열려 있으면 확정 글은 거기로
+        if let Some((_, t)) = self.w.title_prompt.as_mut() {
+            t.push_str(text);
+            self.request_redraw();
+        } else if let Some((q, sel)) = self.w.palette.as_mut() {
+            q.push_str(text);
+            *sel = 0;
+            self.request_redraw();
+        } else if self.w.search.is_some() {
+            self.search_push(text);
+        } else {
+            self.write_active(text.as_bytes());
+        }
+    }
+
+    /// 조합 중인 글자가 있고 입력기가 한국어면 지금(옛) 칸에 확정하고 입력기가 조합을 버리게 한다(#502, Ghostty #15137).
+    /// 창이 포커스를 잃을 때와 고른 칸·탭이 바뀌기 전에 부른다. 칸이 바뀌고 나면 조합 글자가 새 칸으로 따라간다.
+    /// macOS 밖에서는 아무것도 하지 않는다
+    fn settle_preedit(&mut self) {
+        #[cfg(target_os = "macos")]
+        {
+            if self.w.preedit.is_empty() {
+                return;
+            }
+            let Some(window) = self.w.gfx.as_ref().map(|g| g.window.clone()) else {
+                return;
+            };
+            let source = winit::platform::macos::selected_keyboard_input_source(&window);
+            if !ime_commits_on_focus_loss(source.as_deref()) {
+                return;
+            }
+            let text = std::mem::take(&mut self.w.preedit);
+            self.commit_text(&text);
+            winit::platform::macos::discard_marked_text(&window);
+            self.request_redraw();
+        }
+    }
+
     fn activate(&mut self, index: usize) {
         if index < self.w.tabs.len() && index != self.w.active {
+            self.settle_preedit();
             let before = self.focused_id();
             self.w.active = index;
             self.focus_changed(before);
@@ -1379,6 +1428,9 @@ impl App {
     /// `focus_pane`. `keep_zoom`이면 크게 보던 중에도 풀지 않고 새 칸을 크게 본다(split-preserve-zoom = navigation)
     fn focus_pane_keeping(&mut self, id: u64, keep_zoom: bool) {
         let Some(gi) = self.group_of(id) else { return };
+        if self.focused_id() != Some(id) {
+            self.settle_preedit();
+        }
         let before = self.focused_id();
         self.w.active = gi;
         let g = &mut self.w.tabs[gi];
@@ -1712,6 +1764,7 @@ impl App {
         let pane = self.spawn_pane(options, size, font_size)?;
         let id = pane.id;
         self.panes.push(pane);
+        self.settle_preedit();
         let before = self.focused_id();
         let at = self
             .config
@@ -1756,6 +1809,7 @@ impl App {
         let pane = self.spawn_pane(options, size, font_size)?;
         debug_assert_eq!(pane.id, new_id);
         self.panes.push(pane);
+        self.settle_preedit();
         let before = self.focused_id();
         let g = &mut self.w.tabs[gi];
         g.layout = layout;
@@ -6073,6 +6127,13 @@ fn clears_selection_after_copy(clear_on_copy: bool) -> bool {
     clear_on_copy
 }
 
+/// 창이나 칸이 포커스를 잃을 때 조합 글자를 확정 글로 보낼 입력 소스인가(#502, Ghostty #15137).
+/// 한국어 입력기는 포커스를 잃으면 `insertText`도 `unmarkText`도 부르지 않고 조합을 버린다.
+/// 일본어 등은 포커스가 돌아오면 조합을 이어 가므로 확정하면 `にほn`처럼 변환 전 글이 들어간다. 건드리지 않는다
+fn ime_commits_on_focus_loss(source: Option<&str>) -> bool {
+    source.is_some_and(|s| s.starts_with("com.apple.inputmethod.Korean"))
+}
+
 /// 선택 클립보드에서 붙여넣을 글. 비었으면(없거나 빈 글) 붙여넣을 것이 없다
 fn selection_paste_text(store: Option<&str>) -> Option<&str> {
     store.filter(|t| !t.is_empty())
@@ -6442,6 +6503,10 @@ impl ApplicationHandler<UserEvent> for App {
                 self.refresh_pointer();
             }
             WindowEvent::Focused(focused) => {
+                // 조합 중인 한글은 포커스 아웃(ESC[O)을 쓰기 전에 옛 칸에 확정한다(#502)
+                if !focused {
+                    self.settle_preedit();
+                }
                 let was_focused = self.w.focused;
                 self.w.focused = focused;
                 if !focused {
@@ -6507,28 +6572,7 @@ impl ApplicationHandler<UserEvent> for App {
                     self.w.preedit = text;
                     self.request_redraw();
                 }
-                Ime::Commit(text) => {
-                    self.w.preedit.clear();
-                    self.reset_blink();
-                    // 확인 막대가 떠 있으면 글을 어디에도 보내지 않는다(Enter·Esc만 받는다)
-                    if self.w.confirm.is_some() {
-                        self.request_redraw();
-                        return;
-                    }
-                    // 팔레트·찾기 막대가 열려 있으면 확정 글은 거기로
-                    if let Some((_, t)) = self.w.title_prompt.as_mut() {
-                        t.push_str(&text);
-                        self.request_redraw();
-                    } else if let Some((q, sel)) = self.w.palette.as_mut() {
-                        q.push_str(&text);
-                        *sel = 0;
-                        self.request_redraw();
-                    } else if self.w.search.is_some() {
-                        self.search_push(&text);
-                    } else {
-                        self.write_active(text.as_bytes());
-                    }
-                }
+                Ime::Commit(text) => self.commit_text(&text),
                 Ime::Enabled | Ime::Disabled => {
                     self.w.preedit.clear();
                     self.request_redraw();
@@ -7164,6 +7208,25 @@ fn apply_hidden_from_dock(hidden: bt_core::config::MacHidden) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ime_commits_on_focus_loss_only_for_korean() {
+        for s in [
+            "com.apple.inputmethod.Korean.2SetKorean",
+            "com.apple.inputmethod.Korean.3SetKorean",
+        ] {
+            assert!(ime_commits_on_focus_loss(Some(s)), "{s}");
+        }
+        for s in [
+            "com.apple.inputmethod.Japanese",
+            "com.apple.inputmethod.TCIM.Cangjie",
+            "com.apple.inputmethod.SCIM.ITABC",
+            "com.apple.keylayout.ABC",
+        ] {
+            assert!(!ime_commits_on_focus_loss(Some(s)), "{s}");
+        }
+        assert!(!ime_commits_on_focus_loss(None));
+    }
 
     #[test]
     fn selection_paste_skips_empty_store() {
