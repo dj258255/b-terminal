@@ -312,9 +312,76 @@ pub fn cell_side(x_in_grid: f64, cell_width: u32, cols: usize) -> CellSide {
     }
 }
 
+/// 고르지 않은 칸을 왼쪽 단추로 누르면 칸만 고르고 누름은 삼킨다(#500, Ghostty GTK `gcMouseDown`·macOS `SurfaceView_AppKit`).
+/// 오른쪽·가운데 단추는 칸을 고른 뒤 평소처럼 보낸다. 누른 자리에 칸이 없으면(경계선 등) 삼킬 것이 없다
+pub fn swallow_focus_click(left: bool, pane_under: Option<u64>, focused: Option<u64>) -> bool {
+    left && pane_under.is_some() && pane_under != focused
+}
+
+/// 삼킨 누름의 짝 떼기를 삼키기 위한 표시(Ghostty `suppress_left_mouse_release`). 창마다 하나
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct FocusClickGuard {
+    swallow_release: bool,
+}
+
+impl FocusClickGuard {
+    /// 왼쪽 단추 누름. 이전 표시는 지우고, 이 누름을 삼키면(`swallow`) 짝 떼기를 위해 새로 켠다. 삼키면 true
+    pub fn press_left(&mut self, swallow: bool) -> bool {
+        self.swallow_release = swallow;
+        swallow
+    }
+
+    /// 왼쪽 단추 떼기. 삼킨 누름의 짝이면 표시를 끄고 true
+    pub fn release_left(&mut self) -> bool {
+        std::mem::take(&mut self.swallow_release)
+    }
+
+    /// 창이 포커스를 잃었다: 짝 떼기는 이 창에 오지 않을 수 있어 표시를 지운다(Ghostty도 같다)
+    pub fn clear(&mut self) {
+        self.swallow_release = false;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn swallow_only_left_press_on_unfocused_pane() {
+        assert!(swallow_focus_click(true, Some(2), Some(1)));
+        assert!(swallow_focus_click(true, Some(2), None));
+        assert!(!swallow_focus_click(true, Some(1), Some(1)), "고른 칸");
+        assert!(!swallow_focus_click(true, None, Some(1)), "칸 밖");
+        assert!(!swallow_focus_click(false, Some(2), Some(1)), "오른쪽·가운데");
+    }
+
+    #[test]
+    fn guard_swallows_the_paired_release_once() {
+        let mut g = FocusClickGuard::default();
+        assert!(g.press_left(true));
+        assert!(g.release_left());
+        assert!(!g.release_left(), "짝 떼기는 한 번만");
+        // 삼키지 않은 누름의 떼기는 넘긴다
+        assert!(!g.press_left(false));
+        assert!(!g.release_left());
+    }
+
+    #[test]
+    fn guard_is_cleared_by_next_left_press() {
+        let mut g = FocusClickGuard::default();
+        assert!(g.press_left(true));
+        // 떼기가 오지 않은 채 다음 누름이 온다: 그 누름은 삼키지 않으니 표시도 남지 않는다
+        assert!(!g.press_left(false));
+        assert!(!g.release_left());
+    }
+
+    #[test]
+    fn guard_is_cleared_when_window_loses_focus() {
+        let mut g = FocusClickGuard::default();
+        assert!(g.press_left(true));
+        g.clear();
+        assert!(!g.release_left());
+    }
 
     /// #437: 칸 안 자리 → 쪽. 칸 너비 10이면 경계는 6(60%): 0~5는 왼쪽, 6~9는 오른쪽(Ghostty `SelectionGesture.zig` 테스트의 cell_width 10과 같다)
     #[test]
