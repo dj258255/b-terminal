@@ -4,7 +4,7 @@ b-terminal은 Ghostty 같은 터미널 에뮬레이터입니다. 키 입력이 P
 
 ## 개발 환경
 
-- Rust 1.85 이상(stable). 저장소는 1.96에서 개발했습니다.
+- Rust 1.87 이상(stable, 작업 공간 `Cargo.toml`의 `rust-version`). 저장소는 1.96에서 개발했습니다.
 - macOS 14 이상이 1순위 대상입니다. Linux는 CI에서 전체 작업 공간을 빌드·테스트합니다.
 - Node.js 22(PR 본문 검사 스크립트만 씁니다).
 
@@ -23,7 +23,7 @@ cargo run -p bt-app            # 창 띄우기
 1. **착수 명세 이슈**: 새 기능·개선은 "착수 명세" 양식으로 이슈를 엽니다. 문제·선택지·완료 조건·산출물·예상 시간(범위)·주요 불확실성이 필수입니다. 여러 이슈를 묶는 일은 `tracking` 라벨 이슈로 추적합니다.
 2. **마일스톤**: 이슈를 마일스톤에 넣습니다. 마일스톤 기한은 이슈 예상의 합에 불확실성을 더해 정합니다.
 3. **브랜치**: `main`에서 `feature/<짧은-이름>`, `fix/...`, `docs/...`로 땁니다. `main`에 직접 커밋하지 않습니다.
-4. **커밋**: [Conventional Commits](https://www.conventionalcommits.org/) 형식 `type(scope): 설명`을 씁니다. scope는 크레이트 이름에서 `bt-`를 뺀 것입니다(`core`·`term`·`render`·`app`·`ctl`·`studio`). 예: `feat(term): capture OSC 9/777 notifications from the PTY stream`. 본문에 `Refs #이슈`를 적습니다.
+4. **커밋**: [Conventional Commits](https://www.conventionalcommits.org/) 형식 `type(scope): 설명`을 씁니다. scope는 크레이트 이름에서 `bt-`를 뺀 것입니다(`core`·`term`·`render`·`gpu`·`app`·`ctl`). 예: `feat(term): capture OSC 9/777 notifications from the PTY stream`. 본문에 `Refs #이슈`를 적습니다.
 5. **PR**: [PR 템플릿](.github/pull_request_template.md)의 모든 절을 채웁니다. 특히 "돌리지 않은 검증과 이유"와 "예상과 실제"를 채웁니다. PR 하나는 개념 하나를 담습니다.
 6. **병합**: squash 병합합니다. PR 제목이 `main`의 커밋 제목이 되므로 무엇이 바뀌는지 알 수 있게 씁니다.
 7. **병합 뒤**: [CHANGELOG.md](CHANGELOG.md)의 "아직 릴리스하지 않음"에 한 줄을 더하고, [ROADMAP.md](ROADMAP.md)의 상태와 실제 시간을 갱신합니다.
@@ -70,9 +70,9 @@ cargo run -p bt-app            # 창 띄우기
 
 ## 변경 원칙
 
-- 설정·제어 프로토콜·테마는 `bt-core`, PTY와 VT 해석은 `bt-term`, 글꼴과 그리기는 `bt-render`, 창·입력·탭은 `bt-app`, 제어 소켓 손님은 `bt-ctl`에 둡니다.
+- 설정·제어 프로토콜·테마는 `bt-core`, PTY와 VT 해석은 `bt-term`, 글꼴과 CPU 그리기는 `bt-render`, wgpu(GPU) 그리기와 셰이더는 `bt-gpu`, 창·입력·탭은 `bt-app`, 제어 소켓 손님은 `bt-ctl`에 둡니다.
 - 기능을 넣기 전에 "Ghostty에도 있을 기능인가"로 거릅니다. 에이전트·AI·사용량·b-studio 연결은 넣지 않습니다(ADR-005).
-- `bt-core`·`bt-term`·`bt-render`는 창 없이 테스트할 수 있게 둡니다. 창 라이브러리(winit)는 `bt-app`만 씁니다.
+- `bt-core`·`bt-term`·`bt-render`·`bt-gpu`는 창 없이 테스트할 수 있게 둡니다. 창 라이브러리(winit)는 `bt-app`만 씁니다.
 - 외부 입력(제어 소켓 요청, OSC 문자열, 설정 파일)은 크기를 먼저 보고 모양을 검증합니다. 모르는 값은 버리고 기록합니다.
 - 시크릿 값, 인증 토큰, 개인정보를 로그·오류·fixture에 넣지 않습니다.
 - 공개 동작이나 설정을 바꾸면 README 또는 `docs/`를 함께 고칩니다.
@@ -84,6 +84,7 @@ cargo run -p bt-app            # 창 띄우기
 | `bt-core` | 단위 테스트 |
 | `bt-term` | 단위 테스트. PTY를 띄우는 테스트는 `/bin/sh`만 씁니다 |
 | `bt-render` | 단위 테스트(버퍼에 그려서 픽셀 확인). 글꼴이 없는 CI에서는 건너뛰는 테스트를 표시합니다 |
+| `bt-gpu` | 단위 테스트와 창 없는 그리기 시험(GPU 어댑터가 없는 CI에서는 건너뜁니다) |
 | `bt-app` | 빌드와 clippy. 화면·입력을 바꾸면 실제 창을 띄워 확인하고 PR에 적습니다 |
 | `bt-ctl` | 단위 테스트, 제어 소켓 왕복 테스트 |
 | 문서만 | 링크, 명령, 파일 경로가 현재 저장소와 맞는지 확인 |

@@ -37,4 +37,5 @@ scripts/bundle-macos.sh --sign "Developer ID Application: 이름 (TEAMID)" --not
 ## 확인한 것과 하지 않은 것
 
 - 확인함(2026-11-06, macOS 26.3.1): 하드닝 런타임 임시 서명(`flags=0x10002(adhoc,runtime)`), `codesign --verify --strict` 통과, `open`으로 앱이 뜨고 로그인 셸(zsh)이 돌며 `btctl run`이 됨, DMG `hdiutil verify` 통과.
+- 이 확인은 CPU 길이 기본이던 때(위 날짜)의 것입니다. macOS 기본이 GPU 길(wgpu, Metal)이 된 0.32 이후의 앱을 하드닝 런타임으로 서명해 띄워 본 기록은 이 저장소에 없습니다(재지 않았습니다).
 - 하지 않음: Developer ID 서명, 공증 제출, 스테이플, 다른 Mac에서 열기. 계정이 없어서입니다.
