@@ -820,6 +820,8 @@ struct Win {
     hover: Option<(u64, bt_term::links::LinkHit)>,
     /// Cmd-클릭으로 링크를 열었다: 뒤따르는 놓기를 프로그램에 보내지 않는다
     link_click: bool,
+    /// 고르지 않은 칸을 누른 왼쪽 누름을 삼켰다: 짝 떼기도 삼킨다(#500)
+    focus_click: mouse::FocusClickGuard,
     /// 열린 찾기 막대(칸 하나에 붙는다)
     search: Option<SearchBar>,
     /// 열린 명령 팔레트(#77): 친 글, 고른 줄
@@ -903,6 +905,7 @@ impl Win {
             toast: None,
             hover: None,
             link_click: false,
+            focus_click: mouse::FocusClickGuard::default(),
             search: None,
             palette: None,
             pointer_icon: CursorIcon::Default,
@@ -6441,6 +6444,9 @@ impl ApplicationHandler<UserEvent> for App {
             WindowEvent::Focused(focused) => {
                 let was_focused = self.w.focused;
                 self.w.focused = focused;
+                if !focused {
+                    self.w.focus_click.clear();
+                }
                 // 보안 입력: 앱이 앞이면 켜고(창 어느 하나라도 초점이면), 아니면 끈다. 앞으로 오면 바로 칸을 살핀다(#258)
                 self.update_secure_active();
                 if focused {
@@ -6729,13 +6735,28 @@ impl ApplicationHandler<UserEvent> for App {
                 if state == ElementState::Pressed && button == MouseButton::Left && self.scrollbar_press_start() {
                     return;
                 }
-                // 다른 칸을 누르면 그 칸을 고른다. 누름은 고른 칸이 그대로 받는다
+                // 삼킨 누름의 짝 떼기는 프로그램(마우스 보고)·고르기·click-to-move 어디에도 보내지 않는다(#500)
+                if button == MouseButton::Left && state == ElementState::Released && self.w.focus_click.release_left() {
+                    return;
+                }
+                // 다른 칸을 누르면 그 칸을 고른다. 왼쪽 단추 누름은 칸을 고르는 데만 쓰고 삼킨다(#500, Ghostty).
+                // 삼킨 누름은 누름 횟수에도 세지 않으니 옛 기록도 지운다. 오른쪽·가운데 단추는 고른 칸이 평소처럼 받는다.
+                // 창이 뒤에 있다가 이 누름으로 앞에 오는 경우는 가르지 못한다: winit(macOS)가 windowDidBecomeKey의
+                // Focused(true)를 이 누름보다 먼저 올리므로 둘이 같아 보인다(GTK처럼 고른 칸이 아니면 삼킨다)
                 if state == ElementState::Pressed {
-                    if let Some(id) = self
-                        .pane_at(self.w.cursor_pos)
-                        .filter(|id| Some(*id) != self.focused_id())
-                    {
+                    let under = self.pane_at(self.w.cursor_pos);
+                    let focused = self.focused_id();
+                    let left = button == MouseButton::Left;
+                    let swallow = mouse::swallow_focus_click(left, under, focused);
+                    if left {
+                        self.w.focus_click.press_left(swallow);
+                    }
+                    if let Some(id) = under.filter(|id| Some(*id) != focused) {
                         self.focus_pane(id);
+                    }
+                    if swallow {
+                        self.w.last_click = None;
+                        return;
                     }
                 }
                 let Some(idx) = self.active_index() else { return };
