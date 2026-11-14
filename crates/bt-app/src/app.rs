@@ -6130,6 +6130,7 @@ fn clears_selection_after_copy(clear_on_copy: bool) -> bool {
 /// 창이나 칸이 포커스를 잃을 때 조합 글자를 확정 글로 보낼 입력 소스인가(#502, Ghostty #15137).
 /// 한국어 입력기는 포커스를 잃으면 `insertText`도 `unmarkText`도 부르지 않고 조합을 버린다.
 /// 일본어 등은 포커스가 돌아오면 조합을 이어 가므로 확정하면 `にほn`처럼 변환 전 글이 들어간다. 건드리지 않는다
+#[cfg(any(target_os = "macos", test))]
 fn ime_commits_on_focus_loss(source: Option<&str>) -> bool {
     source.is_some_and(|s| s.starts_with("com.apple.inputmethod.Korean"))
 }
