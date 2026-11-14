@@ -28,6 +28,8 @@ pub struct Trigger {
 pub enum Action {
     Copy,
     Paste,
+    /// 앱 안 선택 클립보드 붙여넣기(`paste_from_selection`)
+    PasteSelection,
     NewTab,
     /// 새 창(#36)
     NewWindow,
@@ -293,7 +295,8 @@ pub fn parse_action(s: &str) -> Result<Option<Action>, String> {
     Ok(Some(match name {
         "unbind" => return Ok(None),
         "copy_to_clipboard" => Action::Copy,
-        "paste_from_clipboard" | "paste_from_selection" => Action::Paste,
+        "paste_from_clipboard" => Action::Paste,
+        "paste_from_selection" => Action::PasteSelection,
         "new_tab" => Action::NewTab,
         "new_window" => Action::NewWindow,
         "close_surface" => Action::CloseSurface,
@@ -597,7 +600,12 @@ pub(crate) fn defaults() -> Vec<(&'static str, &'static str)> {
             ("super+z", "undo"),
             ("super+shift+t", "undo"),
             ("super+shift+z", "redo"),
+            // 선택 클립보드 붙여넣기(Ghostty macOS 기본)
+            ("super+shift+v", "paste_from_selection"),
         ]);
+    } else {
+        // Ghostty Linux 기본. super를 ctrl+shift로 바꾸는 키가 아니다
+        v.push(("shift+insert", "paste_from_selection"));
     }
     for (t, a) in [
         ("super+1", "goto_tab:1"),
@@ -1139,6 +1147,48 @@ mod tests {
 
     fn trig(s: &str) -> Trigger {
         parse_trigger(s).unwrap()
+    }
+
+    #[test]
+    fn paste_from_selection_is_its_own_action() {
+        assert_eq!(
+            parse_action("paste_from_selection").unwrap(),
+            Some(Action::PasteSelection)
+        );
+        assert_eq!(parse_action("paste_from_clipboard").unwrap(), Some(Action::Paste));
+        assert_ne!(Action::PasteSelection, Action::Paste);
+    }
+
+    #[test]
+    fn default_binds_for_paste_from_selection() {
+        let d = defaults();
+        let has = |t: &str, a: &str| d.iter().any(|&(dt, da)| dt == t && da == a);
+        if cfg!(target_os = "macos") {
+            assert!(has("super+shift+v", "paste_from_selection"));
+        } else {
+            assert!(has("shift+insert", "paste_from_selection"));
+            // ctrl+shift+v는 시스템 클립보드 붙여넣기로 남는다(super+v를 바꾼 키)
+            assert!(!has("super+shift+v", "paste_from_selection"));
+        }
+        // 같은 키에 두 동작이 겹치지 않는다
+        let mut seen = std::collections::HashSet::new();
+        for (t, _) in &d {
+            assert!(seen.insert(*t), "기본 묶음에 {t}가 두 번");
+        }
+        let (km, w) = Keymap::build(&[]);
+        assert!(w.is_empty());
+        let paste = if cfg!(target_os = "macos") {
+            "super+shift+v"
+        } else {
+            "shift+insert"
+        };
+        assert_eq!(km.lookup(&trig(paste)), Some(&Action::PasteSelection));
+        let clip = if cfg!(target_os = "macos") {
+            "super+v"
+        } else {
+            "ctrl+shift+v"
+        };
+        assert_eq!(km.lookup(&trig(clip)), Some(&Action::Paste));
     }
 
     #[test]

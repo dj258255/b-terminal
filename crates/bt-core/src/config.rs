@@ -91,18 +91,25 @@ impl LinkPreviews {
     }
 }
 
-/// `copy-on-select`(Ghostty). macOS에는 선택 클립보드가 없어 `true`와 `clipboard`는 둘 다 시스템 클립보드로 복사한다
+/// `copy-on-select`(Ghostty 1.4.0 이후). `Primary`는 선택 클립보드만, `Clipboard`는 시스템 클립보드만, `Both`는 둘 다.
+/// macOS의 선택 클립보드는 b-terminal 앱 안 저장소다(`paste_from_selection`이 읽는다)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CopyOnSelect {
-    False,
-    True,
+    None,
+    Primary,
     Clipboard,
+    Both,
 }
 
 impl CopyOnSelect {
-    /// 고르기를 마칠 때 시스템 클립보드로 복사하는가
-    pub fn copies(self) -> bool {
-        self != CopyOnSelect::False
+    /// 고르기를 마칠 때 어디로 보내는가: (선택 클립보드, 시스템 클립보드)
+    pub fn targets(self) -> (bool, bool) {
+        match self {
+            CopyOnSelect::None => (false, false),
+            CopyOnSelect::Primary => (true, false),
+            CopyOnSelect::Clipboard => (false, true),
+            CopyOnSelect::Both => (true, true),
+        }
     }
 }
 
@@ -1601,7 +1608,11 @@ impl Default for Config {
             link_url: true,
             link_osc8: true,
             link_previews: LinkPreviews::True,
-            copy_on_select: CopyOnSelect::True,
+            copy_on_select: if cfg!(any(target_os = "macos", target_os = "linux")) {
+                CopyOnSelect::Primary
+            } else {
+                CopyOnSelect::None
+            },
             clipboard_trim_trailing_spaces: true,
             selection_clear_on_typing: true,
             selection_clear_on_copy: false,
@@ -3026,13 +3037,15 @@ impl Config {
                 Some(b) => self.background_opacity_cells = b,
                 None => bad(warnings),
             },
-            // Ghostty 1.4의 값 이름(none·primary·both)도 받는다. primary(선택 클립보드만)는 macOS에서 하는 일이 없다
+            // `true`는 macOS·Linux·FreeBSD에서 primary, 그 밖에서 clipboard. `false`는 none의 별칭(Ghostty)
             "copy-on-select" => match v {
-                "true" => self.copy_on_select = CopyOnSelect::True,
-                "clipboard" | "both" => self.copy_on_select = CopyOnSelect::Clipboard,
-                "false" | "none" => self.copy_on_select = CopyOnSelect::False,
-                "primary" if cfg!(target_os = "macos") => self.copy_on_select = CopyOnSelect::False,
-                "primary" => self.copy_on_select = CopyOnSelect::True,
+                "true" if cfg!(any(target_os = "macos", target_os = "linux", target_os = "freebsd")) => {
+                    self.copy_on_select = CopyOnSelect::Primary
+                }
+                "true" | "clipboard" => self.copy_on_select = CopyOnSelect::Clipboard,
+                "false" | "none" => self.copy_on_select = CopyOnSelect::None,
+                "primary" => self.copy_on_select = CopyOnSelect::Primary,
+                "both" => self.copy_on_select = CopyOnSelect::Both,
                 _ => bad(warnings),
             },
             "selection-clear-on-typing" => match parse_bool(v) {
@@ -3694,9 +3707,10 @@ impl Config {
         push(
             "copy-on-select",
             match self.copy_on_select {
-                CopyOnSelect::False => "false",
-                CopyOnSelect::True => "true",
+                CopyOnSelect::None => "none",
+                CopyOnSelect::Primary => "primary",
                 CopyOnSelect::Clipboard => "clipboard",
+                CopyOnSelect::Both => "both",
             }
             .into(),
         );
@@ -4423,10 +4437,64 @@ mod tests {
     }
 
     #[test]
+    fn copy_on_select_values_and_dump() {
+        let parse = |v: &str| {
+            let c = Config::from_text(&format!("copy-on-select = {v}\n"), true);
+            assert!(c.warnings.is_empty(), "{v}: {:?}", c.warnings);
+            c.copy_on_select
+        };
+        assert_eq!(parse("none"), CopyOnSelect::None);
+        assert_eq!(parse("false"), CopyOnSelect::None);
+        assert_eq!(parse("primary"), CopyOnSelect::Primary);
+        assert_eq!(parse("clipboard"), CopyOnSelect::Clipboard);
+        assert_eq!(parse("both"), CopyOnSelect::Both);
+        // true는 macOS·Linux·FreeBSD에서 primary, 그 밖에서 clipboard
+        let want = if cfg!(any(target_os = "macos", target_os = "linux", target_os = "freebsd")) {
+            CopyOnSelect::Primary
+        } else {
+            CopyOnSelect::Clipboard
+        };
+        assert_eq!(parse("true"), want);
+        assert_eq!(Config::from_text("copy-on-select = maybe\n", true).warnings.len(), 1);
+        for (v, name) in [
+            (CopyOnSelect::None, "none"),
+            (CopyOnSelect::Primary, "primary"),
+            (CopyOnSelect::Clipboard, "clipboard"),
+            (CopyOnSelect::Both, "both"),
+        ] {
+            let c = Config {
+                copy_on_select: v,
+                ..Config::default()
+            };
+            let dump = c.render();
+            assert!(
+                dump.lines().any(|l| l == format!("copy-on-select = {name}")),
+                "{name}: {dump}"
+            );
+        }
+    }
+
+    #[test]
+    fn copy_on_select_targets() {
+        // (선택 클립보드, 시스템 클립보드)
+        assert_eq!(CopyOnSelect::None.targets(), (false, false));
+        assert_eq!(CopyOnSelect::Primary.targets(), (true, false));
+        assert_eq!(CopyOnSelect::Clipboard.targets(), (false, true));
+        assert_eq!(CopyOnSelect::Both.targets(), (true, true));
+    }
+
+    #[test]
     fn clipboard_keys() {
         let d = Config::default();
         assert!(d.clipboard_trim_trailing_spaces);
-        assert_eq!(d.copy_on_select, CopyOnSelect::True);
+        assert_eq!(
+            d.copy_on_select,
+            if cfg!(any(target_os = "macos", target_os = "linux")) {
+                CopyOnSelect::Primary
+            } else {
+                CopyOnSelect::None
+            }
+        );
         assert_eq!(d.right_click_action, RightClickAction::ContextMenu);
         let c = Config::from_text(
             "clipboard-trim-trailing-spaces = false\ncopy-on-select = clipboard\nright-click-action = copy-or-paste\n",
@@ -4434,13 +4502,14 @@ mod tests {
         );
         assert!(!c.clipboard_trim_trailing_spaces);
         assert_eq!(c.copy_on_select, CopyOnSelect::Clipboard);
-        assert!(c.copy_on_select.copies());
+        assert_eq!(c.copy_on_select.targets(), (false, true));
         assert_eq!(c.right_click_action, RightClickAction::CopyOrPaste);
         assert!(c.warnings.is_empty(), "{:?}", c.warnings);
-        assert!(
-            !Config::from_text("copy-on-select = false\n", true)
+        assert_eq!(
+            Config::from_text("copy-on-select = false\n", true)
                 .copy_on_select
-                .copies()
+                .targets(),
+            (false, false)
         );
         for (v, want) in [
             ("context-menu", RightClickAction::ContextMenu),
@@ -4456,11 +4525,11 @@ mod tests {
         // Ghostty 1.4의 값 이름
         assert_eq!(
             Config::from_text("copy-on-select = none\n", true).copy_on_select,
-            CopyOnSelect::False
+            CopyOnSelect::None
         );
         assert_eq!(
             Config::from_text("copy-on-select = both\n", true).copy_on_select,
-            CopyOnSelect::Clipboard
+            CopyOnSelect::Both
         );
         assert!(
             Config::from_text("copy-on-select = primary\n", true)

@@ -4,6 +4,8 @@
 
 ## [아직 릴리스하지 않음]
 
+- **기본 동작이 바뀜**: `copy-on-select`가 Ghostty main처럼 `none` `primary` `clipboard` `both` 넷이 되고 macOS·Linux 기본이 `primary`입니다. 글을 골라도 더는 시스템 클립보드(⌘V)를 덮지 않고, 고른 글은 앱 안 선택 클립보드에 담겨 ⌘⇧V(`paste_from_selection`, 붙여넣기 보호를 거침. Linux 기본은 `shift+insert`)로 붙여넣습니다. `true`는 `primary`, `false`는 `none`의 별칭입니다. 전처럼 고르면 시스템 클립보드로 가게 하려면 `copy-on-select = clipboard`. 다른 b-terminal 프로세스와는 나누지 않습니다. 설명에서 Ghostty 1.4를 "아직 나오지 않은 판"으로 적던 곳도 바로잡았습니다. #491
+
 ## [0.54.0] - 2026-11-14
 
 kitty 그림 다시 보내기. 같은 번호로 그림을 다시 보낼 때 kitty 명세대로 옛 그림과 자리를 지웁니다. 마일스톤 0.54.
