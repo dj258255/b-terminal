@@ -971,6 +971,62 @@ fn color_scheme_query_is_answered_each_time() {
     );
 }
 
+// ---- DEC 장치 상태 질의의 고정 답(#513): CSI ? Ps n ----
+
+#[test]
+fn dec_dsr_fixed_replies_go_to_the_pty_exactly_once() {
+    // 한 번 읽는 `dd bs=256`에 답이 모두 들어오므로 두 번 나가면 바이트가 겹쳐 보인다
+    let cases: [(&str, &str); 10] = [
+        ("\\033[?15n", "\x1b[?13n"),
+        ("\\033[?25n", "\x1b[?21n"),
+        ("\\033[?26n", "\x1b[?27;0n"),
+        ("\\033[?55n", "\x1b[?50n"),
+        ("\\033[?56n", "\x1b[?57;0n"),
+        ("\\033[?62n", "\x1b[0*{"),
+        ("\\033[?63;123n", "\x1bP123!~0000\x1b\\"),
+        ("\\033[?75n", "\x1b[?70n"),
+        ("\\033[?85n", "\x1b[?83n"),
+        ("\\033[?63n", "\x1bP0!~0000\x1b\\"),
+    ];
+    for (query, reply) in cases {
+        assert_eq!(reply_to(query, |_| {}), hex_of(reply), "질의 {query}");
+    }
+}
+
+#[test]
+fn dec_dsr_pid_is_rewritten_from_the_parsed_number() {
+    // Ghostty 파서는 u16에서 포화한다: 70000은 65535. 빈 끝 매개변수는 없는 것으로 친다
+    assert_eq!(reply_to("\\033[?63;70000n", |_| {}), hex_of("\x1bP65535!~0000\x1b\\"));
+    assert_eq!(reply_to("\\033[?63;n", |_| {}), hex_of("\x1bP0!~0000\x1b\\"));
+    assert_eq!(reply_to("\\033[?63;007n", |_| {}), hex_of("\x1bP7!~0000\x1b\\"));
+}
+
+#[test]
+fn dec_dsr_with_wrong_parameters_gets_no_reply() {
+    assert_eq!(
+        reply_to(
+            "\\033[?15;1n\\033[?63;1;2n\\033[?n\\033[?99n\\033[?;n\\033[?26;0n\\033[?15;;n",
+            |_| {}
+        ),
+        ""
+    );
+}
+
+#[test]
+fn dec_dsr_is_answered_in_a_readonly_pane() {
+    // 터미널의 답은 사람의 입력이 아니다(ADR-018 결정 4). 읽기 전용으로 한 뒤 질의한다
+    let (s, _rx) = sh(
+        "stty raw -echo; read go; printf '\\033[?15n'; dd bs=6 count=1 2>/dev/null | od -An -c; sleep 5",
+        GridSize::new(60, 10),
+    );
+    // 읽기 전용이면 write가 막히므로 go는 먼저 보내고 잠근다
+    s.write("go\r".as_bytes());
+    std::thread::sleep(Duration::from_millis(100));
+    s.set_readonly(true);
+    wait_until(&s, |t| t.contains("033") && t.contains("?   1   3   n"));
+    assert!(s.readonly());
+}
+
 /// 셸이 `setup`을 찍고 READY를 보인 뒤 읽은 바이트를 16진수로 돌려준다. `act`는 READY 뒤에 칸에 대고 한다
 /// 답이 여러 번 따로 쓰일 수 있어(모드 2031 알림 둘) 한 번만 읽지 않고, 한 바이트씩 읽다가
 /// 1.5초(`time 15`) 동안 오는 것이 없으면 끝낸다. 한 번만 읽으면 둘째 답을 놓쳐 병렬 실행에서 흔들렸다

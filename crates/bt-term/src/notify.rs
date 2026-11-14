@@ -52,6 +52,8 @@ pub enum Signal {
     },
     /// 색 구성표 질문(`CSI ? 996 n`). 세션이 지금 밝음·어두움을 답한다(#232)
     ColorSchemeQuery,
+    /// DEC 장치 상태 질의(`CSI ? Ps n`) 가운데 고정 답을 하는 것(#513). 엔진은 답하지 않아 세션이 답한다
+    DecDsr(crate::csi_query::DecStatus),
     /// 색 구성표 변경 알림 모드(DEC 모드 2031)를 켜거나(`CSI ? 2031 h`) 껐다(`CSI ? 2031 l`)(#232)
     ColorSchemeUpdates(bool),
     /// 마우스 포인터 모양(OSC 22). `Some`은 그 모양을 정하고, `None`은 이름이 비어 있어 되돌린다(#239)

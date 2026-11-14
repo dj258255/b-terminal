@@ -67,6 +67,83 @@ pub fn visibility_report(visible: bool) -> &'static str {
     if visible { "\x1b[?999;1n" } else { "\x1b[?999;2n" }
 }
 
+/// DEC 장치 상태 질의(DECDSR, `CSI ? Ps n`) 가운데 "그 장치·기능이 없다"고 고정으로 답하는 것(#513, Ghostty `device_status.zig` `fixedReport`)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DecStatus {
+    /// `? 15 n`: 프린터 없음
+    Printer,
+    /// `? 25 n`: 사용자 정의 키(DECUDK) 잠김
+    Udk,
+    /// `? 26 n`: 키보드 상태(언어 모름)
+    Keyboard,
+    /// `? 55 n`: 로케이터 없음
+    Locator,
+    /// `? 56 n`: 로케이터 종류 모름
+    LocatorType,
+    /// `? 62 n`: 매크로 공간 없음(DECMSR)
+    MacroSpace,
+    /// `? 63 ; Pid n`: 매크로 메모리 체크섬(DECCKSR). 읽은 숫자 Pid를 되돌려 쓴다
+    MemoryChecksum(u16),
+    /// `? 75 n`: 통신 오류 없음
+    DataIntegrity,
+    /// `? 85 n`: 여러 세션 설정 없음
+    MultipleSessions,
+}
+
+/// DECDSR 답. 고정 바이트와 읽은 숫자(Pid)뿐이고 요청의 바이트는 넣지 않는다(ADR-022).
+/// 키보드 답은 DA1이 레벨 2(`62`)라서 매개변수가 하나다. Ghostty는 레벨에 따라 늘린다
+pub fn dec_status_report(r: DecStatus) -> String {
+    match r {
+        DecStatus::Printer => "\x1b[?13n".into(),
+        DecStatus::Udk => "\x1b[?21n".into(),
+        DecStatus::Keyboard => "\x1b[?27;0n".into(),
+        DecStatus::Locator => "\x1b[?50n".into(),
+        DecStatus::LocatorType => "\x1b[?57;0n".into(),
+        DecStatus::MacroSpace => "\x1b[0*{".into(),
+        DecStatus::MemoryChecksum(id) => format!("\x1bP{id}!~0000\x1b\\"),
+        DecStatus::DataIntegrity => "\x1b[?70n".into(),
+        DecStatus::MultipleSessions => "\x1b[?83n".into(),
+    }
+}
+
+/// `CSI ? 매개변수 n`의 매개변수(맨 앞 `?` 뒤)에서 DECDSR 질의를 읽는다. 규칙은 Ghostty `stream.zig`와 같다:
+/// 매개변수가 0개거나 2개를 넘으면 답하지 않고, 둘째는 63(DECCKSR)일 때만 받는다.
+/// 마지막의 빈 매개변수는 없는 것으로 치고(`? 63 ; n`은 Pid 0), 값은 u16에서 포화한다(`? 63 ; 70000 n`은 Pid 65535)
+fn dec_dsr(text: &str) -> Option<Signal> {
+    if text.contains('?') {
+        return None;
+    }
+    let mut parts: Vec<&str> = text.split(';').collect();
+    if parts.last() == Some(&"") {
+        parts.pop();
+    }
+    let num = |p: &str| {
+        p.bytes()
+            .fold(0u32, |n, d| n.saturating_mul(10).saturating_add(u32::from(d - b'0')))
+            .min(u32::from(u16::MAX)) as u16
+    };
+    if parts.is_empty() || parts.len() > 2 {
+        return None;
+    }
+    let req = match num(parts[0]) {
+        15 => DecStatus::Printer,
+        25 => DecStatus::Udk,
+        26 => DecStatus::Keyboard,
+        55 => DecStatus::Locator,
+        56 => DecStatus::LocatorType,
+        62 => DecStatus::MacroSpace,
+        63 => DecStatus::MemoryChecksum(parts.get(1).map_or(0, |p| num(p))),
+        75 => DecStatus::DataIntegrity,
+        85 => DecStatus::MultipleSessions,
+        _ => return None,
+    };
+    // 둘째 매개변수는 DECCKSR만 받는다
+    if parts.len() == 2 && !matches!(req, DecStatus::MemoryChecksum(_)) {
+        return None;
+    }
+    Some(Signal::DecDsr(req))
+}
+
 fn size_param(params: &[u8]) -> Option<&str> {
     std::str::from_utf8(params).ok()
 }
@@ -85,6 +162,7 @@ pub fn plain(fin: u8, params: &[u8]) -> Option<Signal> {
                     .any(|p| p == "2048")
                     .then_some(Signal::InBandSizeReports(fin == b'h'))
             }
+            b'n' => dec_dsr(size_param(params.strip_prefix(b"?")?)?),
             _ => None,
         };
     }
@@ -203,6 +281,65 @@ pub fn inter(inter: u8, fin: u8, params: &[u8]) -> Option<Signal> {
 mod tests {
     use super::*;
     use crate::notify::Scanner;
+
+    fn dsr(input: &str) -> Vec<Signal> {
+        Scanner::default().feed(input.as_bytes())
+    }
+
+    #[test]
+    fn dec_dsr_reads_each_fixed_query() {
+        let cases = [
+            ("\x1b[?15n", DecStatus::Printer, "\x1b[?13n"),
+            ("\x1b[?25n", DecStatus::Udk, "\x1b[?21n"),
+            ("\x1b[?26n", DecStatus::Keyboard, "\x1b[?27;0n"),
+            ("\x1b[?55n", DecStatus::Locator, "\x1b[?50n"),
+            ("\x1b[?56n", DecStatus::LocatorType, "\x1b[?57;0n"),
+            ("\x1b[?62n", DecStatus::MacroSpace, "\x1b[0*{"),
+            ("\x1b[?63;123n", DecStatus::MemoryChecksum(123), "\x1bP123!~0000\x1b\\"),
+            ("\x1b[?63n", DecStatus::MemoryChecksum(0), "\x1bP0!~0000\x1b\\"),
+            ("\x1b[?75n", DecStatus::DataIntegrity, "\x1b[?70n"),
+            ("\x1b[?85n", DecStatus::MultipleSessions, "\x1b[?83n"),
+        ];
+        for (input, req, reply) in cases {
+            assert_eq!(dsr(input), vec![Signal::DecDsr(req)], "{input:?}");
+            assert_eq!(dec_status_report(req), reply, "{input:?}");
+        }
+    }
+
+    #[test]
+    fn dec_dsr_follows_ghostty_parameter_rules() {
+        // 매개변수 0개·3개 이상·63이 아닌 질의의 둘째 매개변수·모르는 값·`?` 없는 꼴은 답이 없다
+        for bad in [
+            "\x1b[?n",
+            "\x1b[?15;1n",
+            "\x1b[?63;1;2n",
+            "\x1b[?99n",
+            "\x1b[?;n",
+            "\x1b[?15;;n",
+            "\x1b[15n",
+            "\x1b[?15?n",
+            "\x1b[?15$n",
+            "\x1b[>15n",
+            "\x1b[?26;0n",
+        ] {
+            assert_eq!(dsr(bad), vec![], "{bad:?}");
+        }
+        // 빈 끝 매개변수는 없는 것으로 친다. 값은 u16에서 포화한다(Ghostty Parser.zig)
+        assert_eq!(dsr("\x1b[?15;n"), vec![Signal::DecDsr(DecStatus::Printer)]);
+        assert_eq!(dsr("\x1b[?63;n"), vec![Signal::DecDsr(DecStatus::MemoryChecksum(0))]);
+        assert_eq!(dsr("\x1b[?63;;n"), vec![Signal::DecDsr(DecStatus::MemoryChecksum(0))]);
+        assert_eq!(
+            dsr("\x1b[?63;70000n"),
+            vec![Signal::DecDsr(DecStatus::MemoryChecksum(65535))]
+        );
+        assert_eq!(dsr("\x1b[?63;99999999999999999999n").len(), 1);
+    }
+
+    #[test]
+    fn dec_dsr_keyboard_reply_matches_da1_level_two() {
+        assert!(DA1_PLAIN.starts_with("\x1b[?62;") && DA1_CLIPBOARD.starts_with("\x1b[?62;"));
+        assert_eq!(dec_status_report(DecStatus::Keyboard), "\x1b[?27;0n");
+    }
 
     /// Ghostty `size_report.zig`의 testSize
     fn test_size() -> SizeInfo {

@@ -948,6 +948,10 @@ impl Session {
                                         };
                                         write_reply(&thread_writer, reply.as_bytes());
                                     }
+                                    // DECDSR 고정 답(#513). 터미널의 답이라 읽기 전용 칸에서도 쓴다. 엔진은 `? Ps n`(6 빼고)에 답하지 않아 한 번만 나간다
+                                    Signal::DecDsr(r) => {
+                                        write_reply(&thread_writer, crate::csi_query::dec_status_report(r).as_bytes())
+                                    }
                                     Signal::Da2 => write_reply(&thread_writer, crate::csi_query::DA2.as_bytes()),
                                     Signal::XtVersion => {
                                         write_reply(&thread_writer, crate::csi_query::xtversion().as_bytes())
@@ -1500,6 +1504,7 @@ fn signal_event(sig: Signal) -> SessionEvent {
         | Signal::Enquiry
         | Signal::Kam(_)
         | Signal::ColorSchemeQuery
+        | Signal::DecDsr(_)
         | Signal::ColorSchemeUpdates(_)
         | Signal::MouseShape(_)
         | Signal::XtChecksumReport(_)
