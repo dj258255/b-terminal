@@ -1745,6 +1745,12 @@ impl<T: EventListener> Handler for Term<T> {
         if width == 1 {
             base = self.grid.cursor.point;
             self.write_at_cursor(c);
+        } else if right_limit.saturating_sub(self.margin_left) <= 1 {
+            // b-terminal(#523): 넓은 글자가 들어갈 자리가 없다(1열 격자, 한 칸 폭의 여백). 뒤 칸을 쓰면 격자 밖이라 죽는다.
+            // 글자를 찍지 않고 커서 칸만 빈칸으로 둔다(Ghostty `print`의 `(right_limit - left) > 1` 아닌 갈래).
+            // 아래의 공통 끝에서 커서가 줄 끝이라 줄바꿈 대기가 된다
+            base = self.grid.cursor.point;
+            self.write_at_cursor(' ');
         } else {
             if self.grid.cursor.point.column + 1 >= right_limit {
                 if self.mode.contains(TermMode::LINE_WRAP) {
