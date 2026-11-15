@@ -497,7 +497,6 @@ fn legacy_f1() {
 
 // 2633줄
 #[test]
-#[ignore = "차이 F"]
 fn legacy_f13_through_f25() {
     for (code, n) in [
         (KeyCode::F13, 25),

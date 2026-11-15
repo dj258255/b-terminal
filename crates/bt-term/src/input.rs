@@ -17,7 +17,7 @@ pub enum NamedKey {
     PageDown,
     Insert,
     Delete,
-    /// F1~F12
+    /// F1~F25
     F(u8),
 }
 
@@ -141,6 +141,20 @@ pub fn encode_named_with(key: NamedKey, mods: Mods, app_cursor: bool, km: KeyMod
             10 => tilde(21),
             11 => tilde(23),
             12 => tilde(24),
+            // F13~F25(Ghostty `function_keys.zig`). 번호가 건너뛰는 것은 xterm 표 그대로다(27·30·35~41은 쓰지 않는다)
+            13 => tilde(25),
+            14 => tilde(26),
+            15 => tilde(28),
+            16 => tilde(29),
+            17 => tilde(31),
+            18 => tilde(32),
+            19 => tilde(33),
+            20 => tilde(34),
+            21 => tilde(42),
+            22 => tilde(43),
+            23 => tilde(44),
+            24 => tilde(45),
+            25 => tilde(46),
             _ => Vec::new(),
         },
     }
