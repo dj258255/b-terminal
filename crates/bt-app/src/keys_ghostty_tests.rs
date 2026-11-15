@@ -402,7 +402,6 @@ fn legacy_alt_plus_digit_with_modify_other_state_2_and_macos_option_as_alt_false
 
 // 2411줄
 #[test]
-#[ignore = "차이 C"]
 fn legacy_fixterm_awkward_letters() {
     let e = ev(KeyCode::KeyI).mods(CTRL).utf8("i");
     assert_eq!(run(&e, default()), b"\x1b[105;5u");
@@ -416,7 +415,6 @@ fn legacy_fixterm_awkward_letters() {
 
 // 2454줄
 #[test]
-#[ignore = "차이 C"]
 fn legacy_ctrl_plus_shift_plus_letter_ascii() {
     let e = ev(KeyCode::KeyM).mods(CTRL | SHIFT).utf8("M").unshifted('m');
     assert_eq!(run(&e, default()), b"\x1b[109;6u");
@@ -555,7 +553,6 @@ fn legacy_left_shift_plus_tab_and_right_shift_plus_tab() {
 
 // 2744줄
 #[test]
-#[ignore = "차이 C"]
 fn legacy_hu_layout_ctrl_plus_o_double_acute_sends_proper_codepoint() {
     let e = ev(KeyCode::BracketLeft).mods(CTRL).utf8("ő").unshifted('ő');
     let out = run(&e, default());

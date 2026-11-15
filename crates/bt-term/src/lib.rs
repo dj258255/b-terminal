@@ -28,9 +28,9 @@ pub mod xt_checksum;
 
 pub use copy_format::{CopyFormat, Emit as CopyEmit};
 pub use input::{
-    KeyModes, KeypadKey, KittyFlags, Mods, NamedKey, ctrl_seq, encode_keypad, encode_modify_other_char, encode_named,
-    encode_named_modify_other, encode_named_with, encode_paste, encode_text, encode_text_with, keypad_application,
-    paste_is_safe, trim_trailing_spaces,
+    KeyModes, KeypadKey, KittyFlags, Mods, NamedKey, TextKey, ctrl_seq, encode_keypad, encode_modify_other_char,
+    encode_named, encode_named_modify_other, encode_named_with, encode_paste, encode_text, encode_text_key,
+    encode_text_with, keypad_application, paste_is_safe, trim_trailing_spaces,
 };
 pub use kitty_key::{KeyAction, KittyKey, KittyKeyEvent, ModifierKey, encode_kitty_key};
 pub use mouse_shape::MouseShape;

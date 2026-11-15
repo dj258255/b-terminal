@@ -1,9 +1,9 @@
 //! winit 키 이벤트를 PTY 바이트로 바꾼다. 앱 단축키(Cmd-…)는 여기서 거른다
 
 use bt_term::{
-    KeyAction, KeyModes, KeypadKey, KittyKey, KittyKeyEvent, ModifierKey, Mods as TermMods, NamedKey, encode_keypad,
-    encode_kitty_key, encode_modify_other_char, encode_named_modify_other, encode_named_with, encode_text,
-    encode_text_with, keypad_application,
+    KeyAction, KeyModes, KeypadKey, KittyKey, KittyKeyEvent, ModifierKey, Mods as TermMods, NamedKey, TextKey,
+    encode_keypad, encode_kitty_key, encode_modify_other_char, encode_named_modify_other, encode_named_with,
+    encode_text_key, keypad_application,
 };
 
 use crate::keymap::{Mods, Trigger, normalize_key};
@@ -505,7 +505,12 @@ pub(crate) fn encode_legacy(k: &LegacyKey, modes: bt_term::Modes, option_as_alt:
                         return bytes;
                     }
                 }
-                return encode_text_with(" ", m, km);
+                let tk = TextKey {
+                    utf8: " ",
+                    unshifted: ' ' as u32,
+                    physical: Some(' ' as u32),
+                };
+                return encode_text_key(&tk, ms, km);
             }
             _ => None,
         };
@@ -527,26 +532,24 @@ pub(crate) fn encode_legacy(k: &LegacyKey, modes: bt_term::Modes, option_as_alt:
             }
         }
     }
-    // Ctrl·Alt 조합은 수식 키를 뺀 글자로 만든다(Option이 만드는 ∫ 같은 글자 대신 b)
-    if m.ctrl || m.alt {
-        if let Key::Character(s) = k.logical {
-            return encode_text_with(s, m, km);
-        }
-    }
-    if ctrl_text_replaced(raw, mods) {
-        if let Key::Character(s) = k.logical {
-            return encode_text(s, TermMods::default());
-        }
-    }
-    match &k.text {
-        Some(t) if !t.is_empty() => encode_text(t, TermMods::default()),
-        _ => Vec::new(),
-    }
+    // 글자 키: Ctrl 제어 바이트 → fixterms CSI u → Alt ESC 앞붙이기 → 글 그대로(`encode_text_key`).
+    // Ctrl·Alt 조합은 수식 키를 뺀 글자로 만든다(Option이 만드는 ∫ 같은 글자 대신 b). Ctrl이 바뀐 상태에 없으면 OS가 만든 제어 문자(\x03) 대신 글자 키를 쓴다
+    let utf8 = match k.logical {
+        Key::Character(s) if m.ctrl || m.alt || ctrl_text_replaced(raw, mods) => s.as_str(),
+        _ => k.text.unwrap_or(""),
+    };
+    let tk = TextKey {
+        utf8,
+        unshifted: k.unshifted,
+        physical: k.physical.and_then(base_layout_codepoint),
+    };
+    encode_text_key(&tk, ms, km)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bt_term::{encode_text, encode_text_with};
 
     #[test]
     fn sided_from_uses_reported_sides_and_falls_back_to_left() {

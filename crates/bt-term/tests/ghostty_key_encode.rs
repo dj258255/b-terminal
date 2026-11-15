@@ -59,7 +59,6 @@ fn ctrlseq_caps_ascii_letter() {
 
 // 2834줄
 #[test]
-#[ignore = "차이 C"]
 fn ctrlseq_shift_does_not_generate_ctrl_seq() {
     assert_eq!(ctrl_seq(None, "C", 'c' as u32, SHIFT), None);
     assert_eq!(ctrl_seq(None, "C", 'c' as u32, Mods { shift: true, ..CTRL }), None);
@@ -67,7 +66,6 @@ fn ctrlseq_shift_does_not_generate_ctrl_seq() {
 
 // 2839줄
 #[test]
-#[ignore = "차이 C"]
 fn ctrlseq_russian_ctrl_c() {
     assert_eq!(ctrl_seq(c('c'), "с", 0x0441, CTRL), Some(0x03));
 }
@@ -80,14 +78,12 @@ fn ctrlseq_russian_shifted_ctrl_c() {
 
 // 2849줄
 #[test]
-#[ignore = "차이 C"]
 fn ctrlseq_russian_alt_ctrl_c() {
     assert_eq!(ctrl_seq(c('c'), "с", 0x0441, Mods { alt: true, ..CTRL }), Some(0x03));
 }
 
 // 2854줄
 #[test]
-#[ignore = "차이 C"]
 fn ctrlseq_right_ctrl_c() {
     assert_eq!(ctrl_seq(c('c'), "с", 'c' as u32, CTRL), Some(0x03));
 }
