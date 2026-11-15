@@ -861,6 +861,8 @@ impl Session {
                                             thread_visibility_reports
                                                 .store(false, std::sync::atomic::Ordering::Release);
                                             thread_mouse_shape.store(0, std::sync::atomic::Ordering::Release);
+                                            // 진행 막대도 지운다(Ghostty `fullReset` 처리, stream_terminal.zig 751줄)(#548)
+                                            events.push(SessionEvent::Progress { state: 0, percent: 0 });
                                         }
                                     }
                                     // 마우스 포인터 모양(OSC 22): 칸이 들고 있고, 보여 주는 일은 앱이 한다. 빈 이름은 되돌린다(#239)

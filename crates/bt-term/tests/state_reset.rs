@@ -438,3 +438,39 @@ fn session_reader_thread_soft_reset_resets_the_modes() {
     let want = hex("\x1b[?25;1$y\x1b[?6;2$y\x1b[?7;1$y\x1b[?1;2$y");
     assert_eq!(line, format!("ans={want}"));
 }
+
+// ---- #548: 전체 초기화(RIS)가 진행 막대를 지운다 ----
+
+#[test]
+fn full_reset_clears_the_progress_bar() {
+    // Ghostty `fullReset` 처리(stream_terminal.zig 751줄): 진행 막대를 지운다(상태 0을 보낸 것과 같다)
+    let (_s, rx) = sh("printf '\\033]9;4;1;50\\007\\033cdone'", GridSize::new(40, 5));
+    let mut progress = Vec::new();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        assert!(Instant::now() < deadline, "10초 안에 끝나지 않았다");
+        match rx.recv_timeout(Duration::from_millis(100)) {
+            Ok(SessionEvent::Exited(_)) => break,
+            Ok(SessionEvent::Progress { state, percent }) => progress.push((state, percent)),
+            _ => {}
+        }
+    }
+    assert_eq!(progress, vec![(1, 50), (0, 0)]);
+}
+
+#[test]
+fn soft_reset_leaves_the_progress_bar() {
+    // DECSTR은 진행 막대를 건드리지 않는다(Ghostty는 fullReset에서만 지운다)
+    let (_s, rx) = sh("printf '\\033]9;4;1;50\\007\\033[!pdone'", GridSize::new(40, 5));
+    let mut progress = Vec::new();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        assert!(Instant::now() < deadline, "10초 안에 끝나지 않았다");
+        match rx.recv_timeout(Duration::from_millis(100)) {
+            Ok(SessionEvent::Exited(_)) => break,
+            Ok(SessionEvent::Progress { state, percent }) => progress.push((state, percent)),
+            _ => {}
+        }
+    }
+    assert_eq!(progress, vec![(1, 50)]);
+}
