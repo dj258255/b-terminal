@@ -383,15 +383,14 @@ pub fn ctrl_seq(physical: Option<u32>, utf8: &str, unshifted: u32, mods: Mods) -
     let mut ch: u32 = if let [b] = utf8.as_bytes() {
         // 글이 정확히 한 바이트면 그것이 바꿀 글자다
         u32::from(*b)
-    } else if let Some(cp) = physical.filter(|&cp| cp <= 0xff) {
+    } else {
         // 러시아어·몽골어 배열의 `c` 키는 U+0441이지만 어느 터미널이나 Ctrl+C다. 물리 키의 글자를 쓴다.
         // Shift는 어떻게 바뀌는지 배열 없이는 모르므로(CSI u로 보낸다) Ctrl 혼자일 때만 쓴다
+        let cp = physical.filter(|&cp| cp <= 0xff)?;
         if shift || mods.sup {
             return None;
         }
         cp
-    } else {
-        return None;
     };
     // `Ctrl+Shift+-`(밑줄)처럼 A~Z 밖의 글자는 Shift가 글자를 만든 것이다. fixterms가 정한 `@`만 Shift를 남긴다
     if shift && !(u32::from(b'A')..=u32::from(b'Z')).contains(&ch) && ch != u32::from(b'@') {
