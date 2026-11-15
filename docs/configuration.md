@@ -130,7 +130,7 @@ config-file = ?~/.config/b-terminal/local   # ?가 붙으면 없어도 된다
 | `window-subtitle` | `false` `working-directory` | `false` | 받기만 합니다. Ghostty에서도 GTK 전용 키이고, macOS의 창 부제목은 winit이 노출하지 않아 safe로 정할 수 없습니다 |
 | `window-titlebar-background` `window-titlebar-foreground` | 색 | (없음) | 받기만 합니다. Ghostty에서도 GTK 앱 런타임 전용이고, macOS 제목 막대 색은 winit·objc2의 safe 함수로 정할 수 없습니다 |
 | `window-position-x` / `window-position-y` | 정수(점) | 없음 | 첫 창의 자리. 주 화면의 보이는 영역(macOS는 메뉴 막대 아래) 왼쪽 위에서 잰 값이고, 둘 다 있어야 쓰며 하나만 있으면 무시합니다(Ghostty와 같음). 창 상태 복원으로 되살린 창은 복원한 자리가 이깁니다 |
-| `macos-option-as-alt` | `true` `false` `left` `right` | `false` | Ghostty 기본과 같게 끔. Option을 Alt로 볼지만 정합니다. Alt 글자 앞에 ESC를 붙일지는 프로그램이 DEC 모드 1036(기본 켬, `ESC[?1036l`로 끔)으로 정하고, kitty 키보드 프로토콜이 켜져 있으면 1036을 무시합니다 |
+| `macos-option-as-alt` | `true` `false` `left` `right` | `false` | Ghostty 기본과 같게 끔. Option이 만든 글자(`å`)를 Alt 글자(ESC 앞붙이기)로 바꿀지 정합니다. 방향 키·Enter·Backspace·F 키 같은 이름 키와 Ctrl 조합에서는 이 설정과 상관없이 Option도 Alt 수식 키로 보냅니다(Option+Left는 `ESC[1;3D`, Ctrl+Option+c는 `ESC 0x03`). Alt 글자 앞에 ESC를 붙일지는 프로그램이 DEC 모드 1036(기본 켬, `ESC[?1036l`로 끔)으로 정하고, kitty 키보드 프로토콜이 켜져 있으면 1036을 무시합니다 |
 | `key-remap` | `from=to` (예 `ctrl=super`, `left_alt=right_ctrl`), 여러 번 쓸 수 있음 | 없음 | 앱 안에서만 수정 키를 바꿉니다. 이름은 `shift` `ctrl`/`control` `alt`/`option` `super`/`cmd`/`command`, 앞에 `left_`·`right_`를 붙이면 그쪽만입니다(좌우 없는 이름은 양쪽). 키 묶음 판단과 PTY로 보내는 인코딩이 모두 바뀐 키를 씁니다. 한 방향이고 이어서 바뀌지 않습니다(`ctrl=super`, `alt=ctrl`이면 Alt는 Ctrl이 될 뿐 Super가 아닙니다). 키보드 배치와 OS가 만드는 글자는 그대로라 `option+a`가 `å`를 만드는 것은 달라지지 않습니다. 메뉴 막대의 Cmd 단축키는 macOS가 먼저 처리해 바뀌지 않습니다. 좌우는 macOS의 winit이 장치별 비트로 알려 주는 것을 씁니다(그 밖의 OS는 좌우를 모르면 왼쪽으로 봅니다). 빈 값은 지금까지 쌓은 것을 지웁니다. `option-as-alt`는 진짜 Option 키에만 걸리고, 바꾸기로 생긴 Alt는 늘 Alt입니다 |
 | `macos-icon` | `official` `custom` `custom-style`, 내장 이름(`blueprint` `chalkboard` `microchip` `glass` `holographic` `paper` `retro` `xray`) | `official` | `custom`일 때만 `macos-custom-icon`의 그림으로 바꿉니다. 내장 이름과 `custom-style`은 b-terminal에 그 그림이 없어 받기만 합니다. `NSApplication.setApplicationIconImage`가 objc2에서 `unsafe`라 쓰지 못해 Dock 아이콘(`NSDockTile`)에만 올립니다. Cmd-Tab과 Finder의 아이콘은 그대로입니다. 실제 Dock에서는 아직 확인하지 않았습니다 |
 | `macos-custom-icon` | 그림 파일 경로(png·jpeg·icns) | 없음 | `macos-icon = custom`일 때 쓸 그림. `~/`는 홈, 상대 경로는 설정 파일이 있는 폴더 기준입니다(Ghostty의 `~/.config/ghostty/Ghostty.icns` 기본값은 없습니다). 읽지 못하면 로그에 경고하고 아이콘을 그대로 둡니다. 빈 값은 지움 |
@@ -282,6 +282,7 @@ keybind = nav/escape=deactivate_key_table
   - `performable:`을 붙인 테이블 동작은 할 수 있을 때만 키를 먹습니다(없는 테이블, 이미 맨 위인 테이블, 켜진 테이블이 없을 때의 내리기, 진행 중인 순서가 없을 때의 `end_key_sequence`는 할 수 없음).
   - 지금 켜진 테이블을 화면에 보이지 않습니다. 설정을 다시 읽어 없어진 테이블은 켜져 있어도 건너뜁니다.
 - macOS가 아니면 기본 묶음의 `super`는 `ctrl+shift`로 바뀝니다.
+- macOS 기본 묶음에는 Ghostty의 "자연스러운 글 편집"이 있습니다: `super+arrow_right`=`text:\x05`(줄 끝), `super+arrow_left`=`text:\x01`(줄 처음), `super+backspace`=`text:\x15`(줄 지우기), `alt+arrow_left`=`esc:b`, `alt+arrow_right`=`esc:f`(단어 이동). `macos-option-as-alt`와 상관없이 Option+←·→가 이 묶음을 탑니다. `keybind = alt+arrow_left=unbind`로 지우면 키는 xterm 바이트(`ESC[1;3D`)로 갑니다.
 - `global:` 접두사를 붙이면 시스템 전역 단축키가 됩니다(Ghostty와 같은 문법). 다른 앱이 앞에 있어도 듣습니다. 기본 전역 묶음은 없습니다. 다른 앱이 이미 잡은 조합이면 경고를 남기고 건너뜁니다.
 
 

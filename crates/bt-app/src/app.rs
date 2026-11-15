@@ -997,6 +997,8 @@ pub struct App {
     bell_sound: Option<crate::bell_sound::BellSound>,
     /// 마지막으로 벨 소리 파일을 울린 때
     last_bell_audio: Option<Instant>,
+    /// 같은 이벤트 고리 차례에 온 `DroppedFile`을 모은다. `about_to_wait`에서 한 번에 붙여넣는다(#566)
+    drop_batch: crate::file_drop::DropBatch<WindowId>,
     /// btctl wait가 기다리는 글(#66)
     text_waiters: Vec<TextWaiter>,
     /// 메뉴 막대(살려 두어야 메뉴가 남는다)
@@ -1089,6 +1091,7 @@ impl App {
             last_beep: None,
             bell_sound: None,
             last_bell_audio: None,
+            drop_batch: Default::default(),
             written_files: Vec::new(),
             bg_image: None,
             shaders: Vec::new(),
@@ -2334,6 +2337,19 @@ impl App {
         }
         let message = paste_prompt(&text, password);
         self.ask(Pending::Paste { pane: id, text }, message, "붙여넣기");
+    }
+
+    /// 창에 끌어다 놓은 파일 경로를 놓은 창의 지금 칸에 붙여넣는다(#566). 글은 `paste`를 거쳐
+    /// 위험 바이트 바꾸기·줄바꿈 확인·읽기 전용 칸 거름을 그대로 받는다
+    fn paste_dropped(&mut self, window: WindowId, text: String) {
+        if !self.switch_to(window) {
+            return;
+        }
+        if self.w.confirm.is_some() {
+            self.toast("확인할 일이 있어 끌어놓은 파일을 넣지 않았습니다".into());
+            return;
+        }
+        self.paste(text);
     }
 
     /// 그 칸의 지금 모드로 붙여넣기 바이트를 만들어 쓴다
@@ -6682,6 +6698,13 @@ impl ApplicationHandler<UserEvent> for App {
                 self.resize_all();
             }
             WindowEvent::RedrawRequested => self.redraw(),
+            // 파일마다 사건이 따로 온다. 같은 차례 것을 모아 `about_to_wait`에서 한 번에 넣는다(#566)
+            WindowEvent::DroppedFile(path) => {
+                if let Some((w, text)) = self.drop_batch.push(id, path) {
+                    self.paste_dropped(w, text);
+                    self.switch_to(id);
+                }
+            }
             WindowEvent::Occluded(occluded) => {
                 self.w.occluded = occluded;
                 self.sync_visibility();
@@ -7203,6 +7226,14 @@ impl ApplicationHandler<UserEvent> for App {
         if self.quit_deadline.is_some_and(|d| Instant::now() >= d) {
             event_loop.exit();
             return;
+        }
+        if let Some((window, text)) = self.drop_batch.take() {
+            // 놓은 창으로 바꿔 넣고, 아래 일들이 보던 지금 창으로 되돌린다(DroppedFile 갈래와 같게)
+            let back = self.w.id();
+            self.paste_dropped(window, text);
+            if let Some(back) = back {
+                self.switch_to(back);
+            }
         }
         // 1초마다 전경 프로세스를 본다(사이드바 이름, 에이전트 알아보기)
         let now = Instant::now();
