@@ -50,6 +50,10 @@ pub struct Cursor<T> {
     /// the number of columns, which would lead to index out of bounds when interacting with arrays
     /// without sanitization.
     pub input_needs_wrap: bool,
+
+    /// b-terminal(#531): 저장한 커서(`saved_cursor`)에서만 쓴다. DECSC가 저장할 때의 원점 모드(DECOM).
+    /// Ghostty `saveCursor`의 `origin`. 활성 커서(`Grid::cursor`)에서는 쓰지 않는다
+    pub origin: bool,
 }
 
 #[derive(Debug, Default, Copy, Clone, PartialEq, Eq)]

@@ -228,7 +228,8 @@ pub fn reset_palette<L: EventListener>(term: &mut Term<L>) {
     }
 }
 
-/// 소프트 리셋(DECSTR, `CSI ! p`): 팔레트를 되돌리고 커서 모양·깜박임을 설정 값으로 되돌리고 보호(DECSCA)를 끈다.
+/// 소프트 리셋(DECSTR, `CSI ! p`): Ghostty `softReset`(Terminal.zig 5918줄)처럼 모드·스크롤 영역과 여백·펜·보호·문자 집합·저장한 커서를 되돌리고,
+/// 팔레트를 되돌리고 커서 모양·깜박임을 설정 값으로 되돌린다.
 /// 모양은 DECSCUSR 0과 같은 길(`set_cursor_style(None)`)이다. Ghostty `Terminal.zig`의 `softReset`도 `setCursorStyle(.default)`를 부른다
 pub fn soft_reset<L: EventListener>(term: &mut Term<L>) {
     reset_palette(term);
@@ -237,6 +238,9 @@ pub fn soft_reset<L: EventListener>(term: &mut Term<L>) {
     term.reset_protected();
     // 역방향 줄바꿈(?45·?1045)과 KAM도 기본값(끔)으로(Ghostty `softReset`의 reset_modes)(#302)
     term.reset_screen_modes_soft();
+    // 나머지는 Ghostty `softReset`과 같게(#530): 커서 보임·삽입·원점·자동 줄바꿈·커서키·키패드 모드, 스크롤 영역,
+    // 펜(SGR)과 문자 집합, 저장한 커서
+    term.reset_state_soft();
 }
 
 /// 요청을 차례로 적용하고, 질의가 있으면 답 바이트를 돌려준다.

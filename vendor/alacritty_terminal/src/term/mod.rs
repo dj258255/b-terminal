@@ -1461,6 +1461,34 @@ impl<T> Term<T> {
         self.reset_margins();
     }
 
+    /// b-terminal(#530): 소프트 리셋(DECSTR)이 되돌리는 나머지 상태. Ghostty `softReset`(Terminal.zig 5918줄)과 같게
+    /// 커서 보임·삽입·원점·자동 줄바꿈·커서키·키패드 모드를 기본값으로, 스크롤 영역을 전체로, 펜(SGR 템플릿)과 보호를
+    /// 기본으로, 문자 집합 전체를 처음으로 되돌리고 저장한 커서를 지운다(다음 DECRC는 기본값으로 처음 자리).
+    /// 활성 화면의 것만 건드린다(Ghostty는 `screens.active`). 마우스·괄호 붙여넣기 같은 다른 모드는 그대로 둔다.
+    /// 역방향 줄바꿈·KAM·69·여백·보호 방식은 `reset_screen_modes_soft`와 `reset_protected`가 맡는다
+    pub fn reset_state_soft(&mut self) {
+        let defaults = TermMode::default();
+        let reset = TermMode::SHOW_CURSOR
+            | TermMode::INSERT
+            | TermMode::ORIGIN
+            | TermMode::LINE_WRAP
+            | TermMode::APP_CURSOR
+            | TermMode::APP_KEYPAD;
+        self.mode.remove(reset);
+        self.mode.insert(defaults & reset);
+
+        self.scroll_region = Line(0)..Line(self.screen_lines() as i32);
+
+        // 펜: 기본 칸 모양(굵기 같은 SGR 속성과 색, 보호). 활성 커서의 문자 집합 지정도 처음으로
+        self.grid.cursor.template = Default::default();
+        self.grid.cursor.charsets = Default::default();
+        self.active_charset = Default::default();
+        self.single_shift = None;
+
+        self.grid.saved_cursor = Default::default();
+        self.mark_fully_damaged();
+    }
+
     /// b-terminal(#302): 왼쪽으로 가는 길(Backspace·CUB)이 윗줄로 넘어가야 하는가. Ghostty `cursorLeft`의 `wrap_mode`:
     /// 자동 줄바꿈(?7)이 꺼져 있으면 넘지 않고, 켜져 있으면 ?1045나 ?45 중 하나라도 켜졌을 때 넘는다
     fn reverse_wrap_active(&self) -> bool {
@@ -2352,6 +2380,13 @@ impl<T: EventListener> Handler for Term<T> {
         self.tabs[self.grid.cursor.point.column] = true;
     }
 
+    // b-terminal(#532): DECST8C(`CSI ? 5 W`). 탭 정지를 `interval`칸 간격 기본으로 되돌린다(Ghostty `tabReset`, Terminal.zig 3001줄)
+    #[inline]
+    fn set_tabs(&mut self, interval: u16) {
+        trace!("Resetting tabstops to every {interval} columns");
+        self.tabs = TabStops::with_interval(self.columns(), usize::from(interval).max(1));
+    }
+
     #[inline]
     fn scroll_up(&mut self, lines: usize) {
         let origin = self.scroll_region.start;
@@ -2547,6 +2582,8 @@ impl<T: EventListener> Handler for Term<T> {
         trace!("Saving cursor position");
 
         self.grid.saved_cursor = self.grid.cursor.clone();
+        // b-terminal(#531): 원점 모드도 함께 저장한다(Ghostty `saveCursor`의 `origin`, Terminal.zig 2703줄)
+        self.grid.saved_cursor.origin = self.mode.contains(TermMode::ORIGIN);
     }
 
     #[inline]
@@ -2555,6 +2592,10 @@ impl<T: EventListener> Handler for Term<T> {
 
         self.damage_cursor();
         self.grid.cursor = self.grid.saved_cursor.clone();
+        // b-terminal(#531): 원점 모드를 저장할 때의 값으로 되돌린다. 저장한 것이 없으면 기본 커서의 값(끔)이고
+        // 처음 자리다(Ghostty `restoreCursor`의 기본값, Terminal.zig 2719줄)
+        self.mode.set(TermMode::ORIGIN, self.grid.saved_cursor.origin);
+        self.grid.cursor.origin = false;
         self.damage_cursor();
     }
 
@@ -3588,6 +3629,11 @@ impl TabStops {
     #[inline]
     fn new(columns: usize) -> TabStops {
         TabStops { tabs: (0..columns).map(|i| i % INITIAL_TABSTOPS == 0).collect() }
+    }
+
+    /// b-terminal(#532): `interval`칸마다 탭 정지(0열 포함)
+    fn with_interval(columns: usize, interval: usize) -> TabStops {
+        TabStops { tabs: (0..columns).map(|i| i % interval == 0).collect() }
     }
 
     /// Remove all tabstops.
