@@ -672,9 +672,38 @@ fn frame_rgba_is_the_root_without_animation_and_after_clamping() {
     // 범위 밖 지금 프레임 번호가 어떻게든 들어와도 panic하지 않는다
     let mut g2 = Graphics::default();
     red(&mut g2);
-    g2.images.get_mut(&1).unwrap().anim = Some(Box::new(Animation {
-        current_index: 5,
-        ..Default::default()
-    }));
+    let mut bad = Animation::default();
+    bad.current_index = 5;
+    g2.images.get_mut(&1).unwrap().anim = Some(Box::new(bad));
     assert_eq!(*g2.image(1).unwrap().frame_rgba(), RED);
+}
+
+/// 작은 그림에 프레임을 아주 많이 보내도 프레임 하나를 받는 일이 프레임 수에 비례하지 않는다(주 세션 검토).
+/// 프레임마다 저장량을 처음부터 다시 세면 전체가 프레임 수의 제곱이 되어, 출력 한 번으로 칸(과 그 칸을 그리는 앱)이 멈춘다.
+/// 저장량은 넣고 뺄 때 고쳐 두고, 그 값이 다시 센 값과 같은지도 본다
+#[test]
+fn many_frames_on_a_tiny_image_stay_linear() {
+    let mut g = Graphics::default();
+    red(&mut g);
+    let cmd = format!("a=f,i=1,f=32,s=1,v=1,q=2;{}", b64(&BLUE));
+    let n = 60_000u32;
+    let start = std::time::Instant::now();
+    for _ in 0..n {
+        g.handle(cmd.as_bytes(), CUR);
+    }
+    let took = start.elapsed();
+    let a = g.image(1).unwrap().animation().unwrap();
+    assert_eq!(a.frame_count(), n + 1);
+    let recount: usize = a.frames.iter().map(|f| f.data.len() + FRAME_OVERHEAD).sum();
+    assert_eq!(a.frame_bytes(), recount, "고쳐 둔 저장량이 다시 센 값과 같다");
+    // 고치기 전(프레임마다 다시 셈)은 debug에서 약 18초, 고친 뒤는 1초 안쪽이었다(이 기기에서 한 번 잰 값)
+    assert!(took < std::time::Duration::from_secs(5), "프레임 {n}개에 {took:?}");
+    // 지우기(뿌리·가운데·끝)도 저장량을 맞춘다
+    for d in ["a=d,d=f,i=1,r=1", "a=d,d=f,i=1,r=500", "a=d,d=f,i=1,r=99999999"] {
+        g.handle(d.as_bytes(), CUR);
+    }
+    let a = g.image(1).unwrap().animation().unwrap();
+    let recount: usize = a.frames.iter().map(|f| f.data.len() + FRAME_OVERHEAD).sum();
+    assert_eq!(a.frame_bytes(), recount);
+    assert_eq!(a.frame_count(), n + 1 - 3);
 }

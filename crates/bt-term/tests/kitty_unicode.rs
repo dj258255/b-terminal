@@ -230,7 +230,11 @@ fn placeholder_and_relative_images_follow_the_animation_clock() {
     let s = e.snapshot_at(t);
     assert_eq!(s.images.len(), 2, "상대 배치와 자리표시 조각: {:?}", s.images.len());
     assert!(s.images.iter().all(|i| *i.rgba == red));
-    assert_eq!(e.kitty_next_frame(), Some(t + ms(100)), "조각만 보여도 다음 프레임 시각이 있다");
+    assert_eq!(
+        e.kitty_next_frame(),
+        Some(t + ms(100)),
+        "조각만 보여도 다음 프레임 시각이 있다"
+    );
     let s = e.snapshot_at(t + ms(100));
     assert!(
         s.images.iter().all(|i| *i.rgba == blue),

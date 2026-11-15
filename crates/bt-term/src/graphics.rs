@@ -1250,7 +1250,7 @@ impl Graphics {
                 overwrite,
             );
             let anim = img.anim.get_or_insert_with(Default::default);
-            anim.frames.push(kitty_anim::Frame {
+            anim.push_frame(kitty_anim::Frame {
                 data: Arc::new(canvas),
                 gap_ms: kitty_anim::new_frame_gap(z),
             });

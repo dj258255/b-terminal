@@ -53,6 +53,9 @@ pub struct Animation {
     pub current_loop: u32,
     /// 지금 프레임을 보인 때(시계의 ms). 없으면 다음 `tick`이 지금으로 찍는다
     pub frame_shown_at_ms: Option<u64>,
+    /// `frames`가 든 바이트(고정 몫 포함). 프레임을 넣고 뺄 때 고친다: 받을 때마다 처음부터 세면
+    /// 작은 그림에 프레임을 많이 보낸 출력 하나가 프레임 수의 제곱만큼 일을 시킨다
+    bytes: usize,
 }
 
 impl Animation {
@@ -87,9 +90,20 @@ impl Animation {
 
     /// 프레임(뿌리 제외)이 든 바이트(고정 몫 포함). 저장량에 센다
     pub fn frame_bytes(&self) -> usize {
-        self.frames
-            .iter()
-            .fold(0usize, |t, f| t.saturating_add(f.data.len() + FRAME_OVERHEAD))
+        self.bytes
+    }
+
+    /// 프레임을 끝에 더한다. `frames`에 바로 넣지 말고 이것을 쓴다(저장량을 함께 고친다)
+    pub fn push_frame(&mut self, f: Frame) {
+        self.bytes = self.bytes.saturating_add(f.data.len() + FRAME_OVERHEAD);
+        self.frames.push(f);
+    }
+
+    /// `frames[i]`를 뺀다(저장량을 함께 고친다)
+    fn remove_frame(&mut self, i: usize) -> Frame {
+        let f = self.frames.remove(i);
+        self.bytes = self.bytes.saturating_sub(f.data.len() + FRAME_OVERHEAD);
+        f
     }
 
     /// 지금 시각 `now_ms`에 보일 프레임으로 옮기고, 다음 프레임이 바뀔 때까지 남은 ms를 돌려준다(Ghostty `animationTick`의 한 그림 몫).
@@ -186,11 +200,11 @@ pub fn delete_frame(root: &mut Arc<Vec<u8>>, anim: &mut Animation, number: u32) 
     let count = anim.frame_count();
     let number = number.min(count).max(1);
     if number == 1 {
-        let promoted = anim.frames.remove(0);
+        let promoted = anim.remove_frame(0);
         *root = promoted.data;
         anim.root_gap_ms = promoted.gap_ms;
     } else {
-        anim.frames.remove(number as usize - 2);
+        anim.remove_frame(number as usize - 2);
     }
     let removed_idx = if number == 1 { 0 } else { number - 2 };
     let remaining = anim.frames.len() as u32;
@@ -375,18 +389,18 @@ mod tests {
 
     fn anim(gaps: &[u32]) -> Animation {
         // gaps[0]은 뿌리의 간격
-        Animation {
-            frames: gaps[1..]
-                .iter()
-                .map(|&g| Frame {
-                    data: Arc::new(vec![0; 4]),
-                    gap_ms: g,
-                })
-                .collect(),
+        let mut a = Animation {
             root_gap_ms: gaps[0],
             state: State::Running,
             ..Default::default()
+        };
+        for &g in &gaps[1..] {
+            a.push_frame(Frame {
+                data: Arc::new(vec![0; 4]),
+                gap_ms: g,
+            });
         }
+        a
     }
 
     #[test]
@@ -491,7 +505,7 @@ mod tests {
         assert_eq!(a.current_index, 1);
         assert_eq!(a.current_loop, 0, "도는 것을 거절했으니 반복도 세지 않는다");
         // 새 프레임이 오면(프레임 수가 늘면) 이어서 나아간다
-        a.frames.push(Frame {
+        a.push_frame(Frame {
             data: Arc::new(vec![0; 4]),
             gap_ms: 25,
         });
