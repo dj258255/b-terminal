@@ -603,3 +603,15 @@ fn legacy_backspace_with_del_utf8_decbkm_set() {
     };
     assert_eq!(run(&e, o), b"\x08");
 }
+
+// Ghostty 시험이 아니라 #567 고침 B 뒤의 길을 적어 둔다. macOS 기본 키 묶음(`alt+arrow_left=esc:b` 등)을 사용자가 지우면 키는 이 길로 온다
+#[test]
+fn option_arrows_reach_the_encoder_as_xterm_alt_when_unbound() {
+    for opt in [false, true] {
+        let left = ev(KeyCode::ArrowLeft).mods(ALT);
+        assert_eq!(run(&left, alt_esc(opt)), b"\x1b[1;3D", "option-as-alt={opt}");
+    }
+    // Cmd 수식 키는 이름 키 바이트에 들어가지 않는다(Ghostty `ESC[1;9D`와 다르다. 따로 두었다)
+    assert_eq!(run(&ev(KeyCode::ArrowLeft).mods(SUPER), default()), b"\x1b[D");
+    assert_eq!(run(&ev(KeyCode::Backspace).mods(SUPER), default()), b"\x7f");
+}

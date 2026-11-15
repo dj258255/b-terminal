@@ -282,6 +282,7 @@ keybind = nav/escape=deactivate_key_table
   - `performable:`을 붙인 테이블 동작은 할 수 있을 때만 키를 먹습니다(없는 테이블, 이미 맨 위인 테이블, 켜진 테이블이 없을 때의 내리기, 진행 중인 순서가 없을 때의 `end_key_sequence`는 할 수 없음).
   - 지금 켜진 테이블을 화면에 보이지 않습니다. 설정을 다시 읽어 없어진 테이블은 켜져 있어도 건너뜁니다.
 - macOS가 아니면 기본 묶음의 `super`는 `ctrl+shift`로 바뀝니다.
+- macOS 기본 묶음에는 Ghostty의 "자연스러운 글 편집"이 있습니다: `super+arrow_right`=`text:\x05`(줄 끝), `super+arrow_left`=`text:\x01`(줄 처음), `super+backspace`=`text:\x15`(줄 지우기), `alt+arrow_left`=`esc:b`, `alt+arrow_right`=`esc:f`(단어 이동). `macos-option-as-alt`와 상관없이 Option+←·→가 이 묶음을 탑니다. `keybind = alt+arrow_left=unbind`로 지우면 키는 xterm 바이트(`ESC[1;3D`)로 갑니다.
 - `global:` 접두사를 붙이면 시스템 전역 단축키가 됩니다(Ghostty와 같은 문법). 다른 앱이 앞에 있어도 듣습니다. 기본 전역 묶음은 없습니다. 다른 앱이 이미 잡은 조합이면 경고를 남기고 건너뜁니다.
 
 
