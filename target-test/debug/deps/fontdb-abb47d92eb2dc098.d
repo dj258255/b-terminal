@@ -1,0 +1,10 @@
+/Users/beomsu/Desktop/b-terminal/.claude/worktrees/wt66/target-test/debug/deps/fontdb-abb47d92eb2dc098.d: /Users/beomsu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/fontdb-0.24.0/src/lib.rs /Users/beomsu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/fontdb-0.24.0/src/ttf_parser/mod.rs /Users/beomsu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/fontdb-0.24.0/src/ttf_parser/language.rs /Users/beomsu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/fontdb-0.24.0/src/ttf_parser/name.rs /Users/beomsu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/fontdb-0.24.0/src/ttf_parser/os2.rs /Users/beomsu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/fontdb-0.24.0/src/ttf_parser/parser.rs
+
+/Users/beomsu/Desktop/b-terminal/.claude/worktrees/wt66/target-test/debug/deps/libfontdb-abb47d92eb2dc098.rmeta: /Users/beomsu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/fontdb-0.24.0/src/lib.rs /Users/beomsu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/fontdb-0.24.0/src/ttf_parser/mod.rs /Users/beomsu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/fontdb-0.24.0/src/ttf_parser/language.rs /Users/beomsu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/fontdb-0.24.0/src/ttf_parser/name.rs /Users/beomsu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/fontdb-0.24.0/src/ttf_parser/os2.rs /Users/beomsu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/fontdb-0.24.0/src/ttf_parser/parser.rs
+
+/Users/beomsu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/fontdb-0.24.0/src/lib.rs:
+/Users/beomsu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/fontdb-0.24.0/src/ttf_parser/mod.rs:
+/Users/beomsu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/fontdb-0.24.0/src/ttf_parser/language.rs:
+/Users/beomsu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/fontdb-0.24.0/src/ttf_parser/name.rs:
+/Users/beomsu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/fontdb-0.24.0/src/ttf_parser/os2.rs:
+/Users/beomsu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/fontdb-0.24.0/src/ttf_parser/parser.rs:

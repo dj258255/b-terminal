@@ -1,0 +1,14 @@
+/Users/beomsu/Desktop/b-terminal/.claude/worktrees/wt66/target-test/debug/deps/thiserror-cdfc2bfff94d4034.d: /Users/beomsu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.21/src/lib.rs /Users/beomsu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.21/src/aserror.rs /Users/beomsu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.21/src/display.rs /Users/beomsu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.21/src/var.rs /Users/beomsu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.21/src/private.rs /Users/beomsu/Desktop/b-terminal/.claude/worktrees/wt66/target-test/debug/build/thiserror-f0266e9d397b4266/out/private.rs
+
+/Users/beomsu/Desktop/b-terminal/.claude/worktrees/wt66/target-test/debug/deps/libthiserror-cdfc2bfff94d4034.rlib: /Users/beomsu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.21/src/lib.rs /Users/beomsu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.21/src/aserror.rs /Users/beomsu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.21/src/display.rs /Users/beomsu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.21/src/var.rs /Users/beomsu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.21/src/private.rs /Users/beomsu/Desktop/b-terminal/.claude/worktrees/wt66/target-test/debug/build/thiserror-f0266e9d397b4266/out/private.rs
+
+/Users/beomsu/Desktop/b-terminal/.claude/worktrees/wt66/target-test/debug/deps/libthiserror-cdfc2bfff94d4034.rmeta: /Users/beomsu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.21/src/lib.rs /Users/beomsu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.21/src/aserror.rs /Users/beomsu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.21/src/display.rs /Users/beomsu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.21/src/var.rs /Users/beomsu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.21/src/private.rs /Users/beomsu/Desktop/b-terminal/.claude/worktrees/wt66/target-test/debug/build/thiserror-f0266e9d397b4266/out/private.rs
+
+/Users/beomsu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.21/src/lib.rs:
+/Users/beomsu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.21/src/aserror.rs:
+/Users/beomsu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.21/src/display.rs:
+/Users/beomsu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.21/src/var.rs:
+/Users/beomsu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.21/src/private.rs:
+/Users/beomsu/Desktop/b-terminal/.claude/worktrees/wt66/target-test/debug/build/thiserror-f0266e9d397b4266/out/private.rs:
+
+# env-dep:OUT_DIR=/Users/beomsu/Desktop/b-terminal/.claude/worktrees/wt66/target-test/debug/build/thiserror-f0266e9d397b4266/out
