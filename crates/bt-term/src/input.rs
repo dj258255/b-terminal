@@ -321,6 +321,10 @@ pub fn encode_text_key(k: &TextKey, mods: Mods, km: KeyModes) -> Vec<u8> {
     if let Some(bytes) = legacy_alt_prefix(k, mods, km) {
         return bytes;
     }
+    // macOS에서 Cmd+글자는 글을 보내지 않는다(Terminal.app·iTerm2·텍스트 입력과 같다). 다른 OS는 Super+b도 `b`를 보낸다
+    if cfg!(target_os = "macos") && mods.sup {
+        return Vec::new();
+    }
     k.utf8.as_bytes().to_vec()
 }
 

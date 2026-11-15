@@ -551,17 +551,17 @@ fn legacy_hu_layout_ctrl_plus_o_double_acute_sends_proper_codepoint() {
     assert_eq!(out[0], 0x1b);
 }
 
-// 2757줄
+// 2757줄(Ghostty도 macOS에서만 돈다)
 #[test]
-#[ignore = "차이 H"]
+#[cfg(target_os = "macos")]
 fn legacy_super_only_on_macos_with_text() {
     let e = ev(KeyCode::KeyB).mods(SUPER).utf8("b");
     assert_eq!(run(&e, default()), b"");
 }
 
-// 2770줄
+// 2770줄(Ghostty도 macOS에서만 돈다)
 #[test]
-#[ignore = "차이 H"]
+#[cfg(target_os = "macos")]
 fn legacy_super_and_other_mods_on_macos_with_text() {
     let e = ev(KeyCode::KeyB).mods(SUPER | SHIFT).utf8("B");
     assert_eq!(run(&e, default()), b"");
