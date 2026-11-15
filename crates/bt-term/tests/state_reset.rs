@@ -300,6 +300,38 @@ fn soft_reset_same_function_for_both_paths() {
     assert!(s.cursor.visible, "커서가 다시 보인다");
 }
 
+// ---- #532: DECST8C ----
+
+#[test]
+fn decst8c_puts_tabs_back_every_eight_columns() {
+    // 이슈: `CSI 3 g`로 모두 지운 뒤 `CSI ? 5 W`, HT가 8칸씩
+    let mut t = T::new(30, 3);
+    t.feed("\x1b[3g\r\tX");
+    assert_eq!(t.cursor(), (29, 0), "탭을 다 지우면 줄 끝까지 간다(전제)");
+    t.feed("\x1b[2J\x1b[H\x1b[?5W\r\tA\tB\tC");
+    assert_eq!(
+        t.plain(),
+        format!("{}A{}B{}C", " ".repeat(8), " ".repeat(7), " ".repeat(7))
+    );
+}
+
+#[test]
+fn decst8c_removes_custom_tab_stops() {
+    let mut t = T::new(30, 3);
+    t.feed("\x1b[3g\x1b[1;4H\x1bH\x1b[1;1H\tA");
+    assert_eq!(t.cursor(), (4, 0), "직접 둔 탭 정지(열 3)로 간다");
+    t.feed("\x1b[?5W\x1b[1;1H\tB");
+    assert_eq!(t.cursor(), (9, 0), "되돌린 뒤엔 8칸 간격(열 8)");
+}
+
+#[test]
+fn decst8c_leaves_the_cursor_and_screen_alone() {
+    let mut t = T::new(30, 3);
+    t.feed("abc\x1b[2;5H\x1b[?5W");
+    assert_eq!(t.cursor(), (4, 1));
+    assert_eq!(t.plain(), "abc");
+}
+
 // ---- 앱의 세션 읽기 스레드 길(PTY: /bin/sh와 printf만) ----
 
 fn sh(script: &str, size: GridSize) -> (Session, Receiver<SessionEvent>) {

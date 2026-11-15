@@ -2380,6 +2380,13 @@ impl<T: EventListener> Handler for Term<T> {
         self.tabs[self.grid.cursor.point.column] = true;
     }
 
+    // b-terminal(#532): DECST8C(`CSI ? 5 W`). 탭 정지를 `interval`칸 간격 기본으로 되돌린다(Ghostty `tabReset`, Terminal.zig 3001줄)
+    #[inline]
+    fn set_tabs(&mut self, interval: u16) {
+        trace!("Resetting tabstops to every {interval} columns");
+        self.tabs = TabStops::with_interval(self.columns(), usize::from(interval).max(1));
+    }
+
     #[inline]
     fn scroll_up(&mut self, lines: usize) {
         let origin = self.scroll_region.start;
@@ -3622,6 +3629,11 @@ impl TabStops {
     #[inline]
     fn new(columns: usize) -> TabStops {
         TabStops { tabs: (0..columns).map(|i| i % INITIAL_TABSTOPS == 0).collect() }
+    }
+
+    /// b-terminal(#532): `interval`칸마다 탭 정지(0열 포함)
+    fn with_interval(columns: usize, interval: usize) -> TabStops {
+        TabStops { tabs: (0..columns).map(|i| i % interval == 0).collect() }
     }
 
     /// Remove all tabstops.
