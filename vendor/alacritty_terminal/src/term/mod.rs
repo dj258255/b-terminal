@@ -1904,6 +1904,13 @@ impl<T: EventListener> Handler for Term<T> {
             }
         }
 
+        // b-terminal(#526): 위아래·좌우 여백을 처음으로 돌리고 원점 모드를 끄고 커서를 왼쪽 위로 보낸다(Ghostty `decaln` 4586줄).
+        // 69(좌우 여백 모드) 자체는 그대로 둔다
+        self.scroll_region = Line(0)..Line(self.screen_lines() as i32);
+        self.reset_margins();
+        self.mode.remove(TermMode::ORIGIN);
+        self.goto(0, 0);
+
         self.mark_fully_damaged();
     }
 
@@ -2000,7 +2007,11 @@ impl<T: EventListener> Handler for Term<T> {
     fn move_up(&mut self, lines: usize) {
         trace!("Moving up: {lines}");
 
-        let line = self.grid.cursor.point.line - lines;
+        // b-terminal(#526): 커서가 위 여백 줄이나 그 아래면 위 여백에서 멈추고, 위 여백보다 위에 있으면 화면 위 끝까지 간다(Ghostty `cursorUp` 2543줄)
+        let current = self.grid.cursor.point.line;
+        let top = self.scroll_region.start;
+        let limit = if current >= top { top } else { Line(0) };
+        let line = cmp::max(current - lines, limit);
         let column = self.grid.cursor.point.column;
         self.move_to_screen(line.0, column.0)
     }
@@ -2009,7 +2020,11 @@ impl<T: EventListener> Handler for Term<T> {
     fn move_down(&mut self, lines: usize) {
         trace!("Moving down: {lines}");
 
-        let line = self.grid.cursor.point.line + lines;
+        // b-terminal(#526): 커서가 아래 여백 줄이나 그 위면 아래 여백에서 멈추고, 아래 여백보다 아래에 있으면 화면 아래 끝까지 간다(Ghostty `cursorDown` 2561줄)
+        let current = self.grid.cursor.point.line;
+        let bottom = self.scroll_region.end - 1;
+        let limit = if current <= bottom { bottom } else { self.bottommost_line() };
+        let line = cmp::min(current + lines, limit);
         let column = self.grid.cursor.point.column;
         self.move_to_screen(line.0, column.0)
     }
@@ -2702,7 +2717,8 @@ impl<T: EventListener> Handler for Term<T> {
                 let cursor = self.grid.cursor.point;
 
                 // If clearing more than one line.
-                if cursor.line > 1 {
+                // b-terminal(#526): 커서가 둘째 줄이어도 첫 줄을 지운다(업스트림은 `> 1`이라 남겼다). Ghostty `eraseDisplay` above는 `cursor.y > 0`
+                if cursor.line > 0 {
                     // Fully clear all lines before the current line.
                     self.grid.reset_region(..cursor.line);
                 }

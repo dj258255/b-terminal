@@ -481,3 +481,110 @@ fn neighbor_erase_line_resets_wrap() {
     t.feed("ABCDE123\x1b[1;1H\x1b[0KX");
     assert_eq!(t.plain(), "X\n123");
 }
+
+// ---- #526: ED 1, CUU·CUD 여백, DECALN 여백, LNM ----
+
+// Ghostty "Terminal: eraseDisplay simple erase above" (Terminal.zig 17431줄)
+#[test]
+fn erase_display_simple_erase_above() {
+    let mut t = T::new(5, 5);
+    abc_def_ghi(&mut t);
+    t.feed("\x1b[2;2H\x1b[1J");
+    assert_eq!(t.plain(), "\n  F\nGHI");
+}
+
+// Ghostty "Terminal: eraseDisplay above split multi-cell" (17500줄)
+#[test]
+fn erase_display_above_split_multi_cell() {
+    let mut t = T::new(5, 5);
+    t.feed("AB橋C\r\nDE橋F\r\nGH橋I");
+    t.feed("\x1b[2;3H\x1b[1J");
+    assert_eq!(t.plain(), "\n    F\nGH橋I");
+    t.assert_no_orphan_wide_cells();
+}
+
+// Ghostty "Terminal: cursorUp below top scroll margin" (12239줄)
+#[test]
+fn cursor_up_below_top_scroll_margin() {
+    let mut t = T::new(5, 5);
+    t.feed("\x1b[2;4r\x1b[3;1HA\x1b[5AX");
+    assert_eq!(t.plain(), "\n X\nA");
+}
+
+// Ghostty "Terminal: cursorDown above bottom scroll margin" (12668줄)
+#[test]
+fn cursor_down_above_bottom_scroll_margin() {
+    let mut t = T::new(5, 5);
+    t.feed("\x1b[1;3rA\x1b[10BX");
+    assert_eq!(t.plain(), "A\n\n X");
+}
+
+// Ghostty "Terminal: decaln reset margins" (13701줄)
+#[test]
+fn decaln_reset_margins() {
+    let mut t = T::new(3, 3);
+    t.feed("\x1b[?6h\x1b[2;3r\x1b#8\x1b[1T");
+    assert_eq!(t.plain(), "\nEEE\nEEE");
+}
+
+// 이웃: DECALN은 좌우 여백과 커서도 처음으로 돌린다(Terminal.zig `decaln` 4586줄: 여백 넷을 모두 초기화하고 setCursorPos(1, 1))
+#[test]
+fn decaln_resets_left_right_margins_and_homes_cursor() {
+    let mut t = T::new(4, 3);
+    t.feed("\x1b[?69h\x1b[2;3s\x1b[2;2H\x1b#8");
+    assert_eq!((t.term.left_margin(), t.term.right_margin()), (0, 3));
+    assert_eq!(t.cursor(), (0, 0));
+    assert!(!t.wrap_pending());
+    assert_eq!(t.plain(), "EEEE\nEEEE\nEEEE");
+}
+
+// Ghostty "Terminal: linefeed mode automatic carriage return" (8942줄)
+#[test]
+fn linefeed_mode_automatic_carriage_return() {
+    let mut t = T::new(10, 10);
+    t.feed("\x1b[20h123456\nX");
+    assert_eq!(t.plain(), "123456\nX");
+}
+
+// Ghostty `linefeed`(2530줄)는 LF·VT·FF가 부른다. LNM이 켜졌을 때 셋 모두 CR을 한다
+#[test]
+fn linefeed_mode_applies_to_lf_vt_and_ff_but_not_ind() {
+    for byte in ["\n", "\x0b", "\x0c"] {
+        let mut t = T::new(10, 10);
+        t.feed("\x1b[20hab");
+        t.feed(byte);
+        assert_eq!(t.cursor(), (0, 1), "{byte:?}");
+    }
+    // IND(ESC D)는 Ghostty `index`라 LNM과 상관없이 CR을 하지 않는다
+    let mut t = T::new(10, 10);
+    t.feed("\x1b[20hab\x1bD");
+    assert_eq!(t.cursor(), (2, 1));
+    // LNM이 꺼져 있으면 LF는 CR을 하지 않는다
+    let mut t = T::new(10, 10);
+    t.feed("ab\n");
+    assert_eq!(t.cursor(), (2, 1));
+}
+
+// 이웃: Ghostty "Terminal: cursorUp basic" (12221줄)
+#[test]
+fn neighbor_cursor_up_basic() {
+    let mut t = T::new(5, 5);
+    t.feed("\x1b[3;1HA\x1b[10AX");
+    assert_eq!(t.plain(), " X\n\nA");
+}
+
+// 이웃: Ghostty "Terminal: cursorUp above top scroll margin" (12258줄)
+#[test]
+fn neighbor_cursor_up_above_top_scroll_margin() {
+    let mut t = T::new(5, 5);
+    t.feed("\x1b[3;5r\x1b[3;1HA\x1b[2;1H\x1b[10AX");
+    assert_eq!(t.plain(), "X\n\nA");
+}
+
+// 이웃: Ghostty "Terminal: cursorDown below bottom scroll margin" (12686줄)
+#[test]
+fn neighbor_cursor_down_below_bottom_scroll_margin() {
+    let mut t = T::new(5, 5);
+    t.feed("\x1b[1;3rA\x1b[4;1H\x1b[10BX");
+    assert_eq!(t.plain(), "A\n\n\n\nX");
+}
