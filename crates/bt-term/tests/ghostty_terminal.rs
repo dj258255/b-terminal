@@ -357,3 +357,127 @@ fn neighbor_erase_display_simple_erase_below() {
     t.feed("\x1b[2;2H\x1b[0J");
     assert_eq!(t.plain(), "ABC\nD");
 }
+
+// ---- #525: LF·ECH·DCH·EL 뒤의 줄바꿈 대기 ----
+
+// Ghostty "Terminal: linefeed unsets pending wrap" (Terminal.zig 8928줄)
+#[test]
+fn linefeed_unsets_pending_wrap() {
+    let mut t = T::new(5, 80);
+    t.feed("hello");
+    assert!(t.wrap_pending());
+    t.feed("\n");
+    assert!(!t.wrap_pending());
+}
+
+// Ghostty "Terminal: eraseChars resets pending wrap" (11050줄)
+#[test]
+fn erase_chars_resets_pending_wrap() {
+    let mut t = T::new(5, 5);
+    t.feed("ABCDE");
+    assert!(t.wrap_pending());
+    t.feed("\x1b[1X");
+    assert!(!t.wrap_pending());
+    t.feed("X");
+    assert_eq!(t.plain(), "ABCDX");
+}
+
+// Ghostty "Terminal: deleteChars resets pending wrap" (14493줄)
+#[test]
+fn delete_chars_resets_pending_wrap() {
+    let mut t = T::new(5, 5);
+    t.feed("ABCDE");
+    assert!(t.wrap_pending());
+    t.feed("\x1b[1P");
+    assert!(!t.wrap_pending());
+    t.feed("X");
+    assert_eq!(t.plain(), "ABCDX");
+}
+
+// Ghostty "Terminal: eraseLine resets pending wrap" (15353줄)
+#[test]
+fn erase_line_resets_pending_wrap() {
+    let mut t = T::new(5, 5);
+    t.feed("ABCDE");
+    assert!(t.wrap_pending());
+    t.feed("\x1b[0K");
+    assert!(!t.wrap_pending());
+    t.feed("B");
+    assert_eq!(t.plain(), "ABCDB");
+}
+
+// Ghostty "Terminal: eraseLine left resets wrap" (15558줄)
+#[test]
+fn erase_line_left_resets_wrap() {
+    let mut t = T::new(5, 5);
+    t.feed("ABCDE");
+    assert!(t.wrap_pending());
+    t.feed("\x1b[1K");
+    assert!(!t.wrap_pending());
+    t.feed("B");
+    assert_eq!(t.plain(), "    B");
+}
+
+// Ghostty `eraseLine`(4327줄)은 줄바꿈 대기 중에도 커서 칸(마지막 칸)부터 지운다. 대기가 있으면 EL 0을 건너뛰던 것을 고쳤다
+#[test]
+fn erase_line_right_while_pending_wrap_clears_the_last_cell() {
+    let mut t = T::new(5, 5);
+    t.feed("ABCDE");
+    assert!(t.wrap_pending());
+    t.feed("\x1b[K");
+    assert_eq!(t.plain(), "ABCD");
+    assert_eq!(t.cursor(), (4, 0));
+    assert!(!t.wrap_pending());
+}
+
+// Ghostty `index`(3017줄)가 줄바꿈 대기를 푼다. IND(`ESC D`)도 같다. 아래 여백 줄에서 스크롤하며 멈추는 경우도 푼다
+#[test]
+fn index_unsets_pending_wrap() {
+    let mut t = T::new(5, 2);
+    t.feed("hello\x1bD");
+    assert!(!t.wrap_pending());
+    assert_eq!(t.cursor(), (4, 1));
+    t.feed("x");
+    assert!(t.wrap_pending());
+    t.feed("\n");
+    assert!(!t.wrap_pending());
+    assert_eq!(t.plain(), "    x");
+}
+
+// Ghostty `eraseDisplay`(4441줄)는 below·above·complete에서 줄바꿈 대기를 푼다(같은 이름의 Ghostty 시험은 없다)
+#[test]
+fn erase_display_unsets_pending_wrap() {
+    for mode in ["0", "1", "2"] {
+        let mut t = T::new(5, 5);
+        t.feed("ABCDE");
+        assert!(t.wrap_pending());
+        t.feed(&format!("\x1b[{mode}J"));
+        assert!(!t.wrap_pending(), "ED {mode}");
+    }
+}
+
+// 이웃: Ghostty "Terminal: carriage return unsets pending wrap" (8958줄)
+#[test]
+fn neighbor_carriage_return_unsets_pending_wrap() {
+    let mut t = T::new(5, 80);
+    t.feed("hello");
+    assert!(t.wrap_pending());
+    t.feed("\r");
+    assert!(!t.wrap_pending());
+}
+
+// 이웃: Ghostty "Terminal: eraseChars resets wrap" (11069줄). 줄바꿈 대기가 아니라 이어진 줄 표시를 푸는 시험
+#[test]
+fn neighbor_erase_chars_resets_wrap() {
+    let mut t = T::new(5, 5);
+    t.feed("ABCDE123\x1b[1;1H\x1b[1XX");
+    assert_eq!(t.plain(), "XBCDE\n123");
+}
+
+// 이웃: Ghostty "Terminal: eraseLine resets wrap" (15372줄)
+#[test]
+fn neighbor_erase_line_resets_wrap() {
+    let mut t = T::new(5, 5);
+    t.feed("ABCDE123\x1b[1;1H\x1b[0KX");
+    assert_eq!(t.plain(), "X\n123");
+}

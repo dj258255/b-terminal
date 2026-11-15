@@ -1547,6 +1547,7 @@ impl<T> Term<T> {
 
     /// b-terminal(#294): ED·DECSED 중 보호 칸을 남기는 쪽. 화면을 히스토리로 밀지 않고 제자리에서 지운다(Ghostty `clearRows`)
     fn erase_display_keeping_protected(&mut self, mode: ansi::ClearMode) {
+        self.grid.cursor.input_needs_wrap = false; // b-terminal(#525): 보호 칸을 남기는 ED도 줄바꿈 대기를 푼다(Ghostty `eraseDisplay`)
         let cursor = self.grid.cursor.point;
         let columns = self.columns();
         let screen_lines = self.screen_lines() as i32;
@@ -1596,7 +1597,7 @@ impl<T> Term<T> {
         let point = cursor.point;
 
         let (left, right) = match mode {
-            ansi::LineClearMode::Right if cursor.input_needs_wrap => return,
+            // b-terminal(#525): 줄바꿈 대기 중이어도 커서 칸(마지막 칸)부터 지운다(Ghostty `eraseLine`). 업스트림은 건너뛰었다
             // b-terminal(#524): 넓은 글자를 반쪽만 지우지 않는다. 오른쪽·전체는 이어진 줄 표시도 푼다(Ghostty `eraseLine`)
             ansi::LineClearMode::Right => {
                 let left = self.erase_start_column();
@@ -1609,6 +1610,8 @@ impl<T> Term<T> {
                 (Column(0), Column(self.columns()))
             },
         };
+        // b-terminal(#525): EL은 어느 방식이든 줄바꿈 대기를 푼다(Ghostty `eraseLine`)
+        self.grid.cursor.input_needs_wrap = false;
 
         self.damage.damage_line(point.line.0 as usize, left.0, right.0 - 1);
 
@@ -2268,6 +2271,8 @@ impl<T: EventListener> Handler for Term<T> {
     #[inline]
     fn linefeed(&mut self) {
         trace!("Linefeed");
+        // b-terminal(#525): LF·IND는 줄바꿈 대기를 푼다(Ghostty `index` 3021줄). 아래 여백 줄에서 스크롤하지 못하고 멈춰도 푼다
+        self.grid.cursor.input_needs_wrap = false;
         let next = self.grid.cursor.point.line + 1;
         if next == self.scroll_region.end {
             // b-terminal(#311): 아래 여백 줄에서는 커서가 좌우 여백 안일 때만 스크롤한다(밖이면 움직이지도 않는다).
@@ -2409,6 +2414,7 @@ impl<T: EventListener> Handler for Term<T> {
         self.split_cell_boundary(line, start.0);
         self.split_cell_boundary(line, start.0 + len);
         self.reset_row_wrap(line);
+        self.grid.cursor.input_needs_wrap = false; // b-terminal(#525): ECH는 줄바꿈 대기를 푼다(Ghostty `eraseChars`의 `cursorResetWrap`)
         let end = start + len;
 
         // Cleared cells have current background color set.
@@ -2451,6 +2457,7 @@ impl<T: EventListener> Handler for Term<T> {
         self.split_cell_boundary(line, start + count);
         self.split_cell_boundary(line, right + 1);
         self.reset_row_wrap(line);
+        self.grid.cursor.input_needs_wrap = false; // b-terminal(#525): DCH는 줄바꿈 대기를 푼다(Ghostty `deleteChars`의 `cursorResetWrap`). 여백 밖이면 위에서 이미 돌아갔다
         let row = &mut self.grid[line][..];
 
         for offset in 0..(right + 1 - start - count) {
@@ -2684,6 +2691,11 @@ impl<T: EventListener> Handler for Term<T> {
         let bg = self.grid.cursor.template.bg;
 
         let screen_lines = self.screen_lines();
+
+        // b-terminal(#525): ED 0·1·2는 줄바꿈 대기를 푼다(Ghostty `eraseDisplay`). 히스토리만 지우는 ED 3은 그대로다
+        if !matches!(mode, ansi::ClearMode::Saved) {
+            self.grid.cursor.input_needs_wrap = false;
+        }
 
         match mode {
             ansi::ClearMode::Above => {
