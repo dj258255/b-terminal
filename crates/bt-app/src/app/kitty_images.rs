@@ -2,6 +2,8 @@
 //! 칸 바탕 아래(`z < i32::MIN / 2`) → 칸 바탕 → 글자 아래(`z < 0`) → 글자 → 글자 위(`z >= 0`)(Ghostty `ImageLayer`).
 //! 그림의 자리와 크기는 `bt_core::kitty_geom`이 이 칸의 칸 크기로 정한다
 
+use std::time::{Duration, Instant};
+
 use bt_core::kitty_geom::Layer;
 use bt_render::kitty::{ImagePaint, has_layer, paint_layer};
 use bt_render::{Canvas, GridView, Under};
@@ -78,5 +80,72 @@ impl<'a> PaneImages<'a> {
             default_bg: Some(default_bg),
         };
         bt_render::draw_grid_under(canvas, fonts, self.origin.0, self.origin.1, view, &under);
+    }
+}
+
+/// kitty 애니메이션(#554)의 다음 프레임 때에 창을 깨울 시각. `next`는 보이는 그림 가운데 가장 이른 다음 프레임 시각(없으면 깨우지 않는다).
+/// Ghostty처럼 그리기 간격(`DRAW_INTERVAL_MS`, 8ms)보다 빨리 깨우지 않는다(`generic.zig`의 `animationWake`가 `@max(next -| now, draw_interval_ms)`).
+/// 아주 짧은 간격(1ms)을 보낸 프로그램이 있어도 다시 그리기는 8ms에 한 번을 넘지 않는다
+pub(super) fn frame_wake(next: Option<Instant>, now: Instant) -> Option<Instant> {
+    next.map(|t| t.max(now + Duration::from_millis(super::shader_inputs::DRAW_INTERVAL_MS)))
+}
+
+/// `about_to_wait`에서 창 하나의 애니메이션 깨우기를 본다. 돌려주는 값: (지금 다시 그리기를 요청할지, 남길 깨울 때).
+/// 가려진 창은 깨우지 않고 남기지도 않는다(다시 보이면 `Occluded(false)`가 바로 그린다). 깨울 때가 되면 요청하고 지운다:
+/// 그린 프레임이 다음 때를 새로 정한다
+pub(super) fn wake_step(wake: Option<Instant>, now: Instant, occluded: bool) -> (bool, Option<Instant>) {
+    if occluded {
+        return (false, None);
+    }
+    match wake {
+        Some(t) if t <= now => (true, None),
+        other => (false, other),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn ms(n: u64) -> Duration {
+        Duration::from_millis(n)
+    }
+
+    #[test]
+    fn no_animation_means_no_wake() {
+        let t0 = Instant::now();
+        assert_eq!(frame_wake(None, t0), None);
+    }
+
+    #[test]
+    fn wake_follows_the_next_frame_time() {
+        let t0 = Instant::now();
+        assert_eq!(frame_wake(Some(t0 + ms(100)), t0), Some(t0 + ms(100)));
+    }
+
+    #[test]
+    fn very_short_gaps_never_redraw_faster_than_the_draw_interval() {
+        let t0 = Instant::now();
+        // 1ms 간격을 보낸 프로그램: 8ms 아래로 내려가지 않는다
+        assert_eq!(frame_wake(Some(t0 + ms(1)), t0), Some(t0 + ms(8)));
+        // 이미 지난 때(늦었다)도 바로 그리지 않고 8ms 뒤로 잡는다(Ghostty: 늦은 프레임은 다음 깨어남에서 집는다)
+        assert_eq!(frame_wake(Some(t0), t0 + ms(50)), Some(t0 + ms(58)));
+        assert_eq!(frame_wake(Some(t0 + ms(8)), t0), Some(t0 + ms(8)));
+    }
+
+    #[test]
+    fn wake_step_fires_when_due_and_clears() {
+        let t0 = Instant::now();
+        assert_eq!(wake_step(None, t0, false), (false, None));
+        assert_eq!(wake_step(Some(t0 + ms(10)), t0, false), (false, Some(t0 + ms(10))));
+        assert_eq!(wake_step(Some(t0 + ms(10)), t0 + ms(10), false), (true, None));
+        assert_eq!(wake_step(Some(t0 + ms(10)), t0 + ms(99), false), (true, None));
+    }
+
+    #[test]
+    fn an_occluded_window_is_never_woken() {
+        let t0 = Instant::now();
+        assert_eq!(wake_step(Some(t0), t0 + ms(5), true), (false, None));
+        assert_eq!(wake_step(Some(t0 + ms(500)), t0, true), (false, None));
     }
 }

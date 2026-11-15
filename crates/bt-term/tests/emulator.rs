@@ -474,3 +474,80 @@ fn kitty_graphics_placement_options_reach_the_screen() {
     e.feed(b"\x1b_Ga=d,d=z,z=2\x1b\\");
     assert!(e.snapshot().images.is_empty());
 }
+
+/// #554: 프레임 둘을 보내고 `a=a,s=3`으로 돌리면 화면을 뜬 시각에 따라 보이는 픽셀이 바뀌고, 다음 프레임 시각이 나온다.
+/// 스크롤로 밖에 나간 그림은 시계를 돌리지 않는다
+#[test]
+fn kitty_animation_snapshot_picks_the_frame_for_the_time() {
+    use std::time::Duration;
+    let mut e = graphics_emulator();
+    let ms = Duration::from_millis;
+    // 1×1 RGBA 빨강을 놓고(커서 고정), 파랑 프레임(100ms)을 더하고, 뿌리에도 100ms를 주고 돌린다
+    e.feed(b"\x1b_Ga=T,f=32,s=1,v=1,i=1,C=1,q=2;/wAA/w==\x1b\\");
+    e.feed(b"\x1b_Ga=f,i=1,f=32,s=1,v=1,z=100,q=2;AAD//w==\x1b\\");
+    let red = vec![255u8, 0, 0, 255];
+    let blue = vec![0u8, 0, 255, 255];
+    // 멈춘 그림은 시계가 없다: 프레임을 받았어도 뿌리만 보이고 다음 시각도 없다
+    let t0 = e.kitty_clock_start();
+    let s = e.snapshot_at(t0 + ms(500));
+    assert_eq!(*s.images[0].rgba, red);
+    assert_eq!(e.kitty_next_frame(), None);
+    e.feed(b"\x1b_Ga=a,i=1,r=1,z=100,s=3,q=2\x1b\\");
+    // 처음 뜬 시각이 첫 프레임을 보인 때다
+    let t = t0 + ms(1000);
+    assert_eq!(*e.snapshot_at(t).images[0].rgba, red);
+    assert_eq!(e.kitty_next_frame(), Some(t + ms(100)));
+    assert_eq!(*e.snapshot_at(t + ms(99)).images[0].rgba, red, "간격 전에는 그대로");
+    assert_eq!(
+        *e.snapshot_at(t + ms(100)).images[0].rgba,
+        blue,
+        "간격이 지나면 다음 프레임"
+    );
+    assert_eq!(e.kitty_next_frame(), Some(t + ms(200)));
+    assert_eq!(*e.snapshot_at(t + ms(200)).images[0].rgba, red, "한 바퀴 돌아 뿌리");
+    // 멈추면 지금 프레임에서 서고 다음 시각이 없다
+    e.feed(b"\x1b_Ga=a,i=1,s=1,q=2\x1b\\");
+    assert_eq!(*e.snapshot_at(t + ms(900)).images[0].rgba, red);
+    assert_eq!(e.kitty_next_frame(), None);
+}
+
+/// #554: 지금 프레임은 클라이언트가 `a=a,c=N`으로도 고른다(멈춘 채로)
+#[test]
+fn kitty_animation_client_driven_frame() {
+    let mut e = graphics_emulator();
+    e.feed(b"\x1b_Ga=T,f=32,s=1,v=1,i=1,C=1,q=2;/wAA/w==\x1b\\");
+    e.feed(b"\x1b_Ga=f,i=1,f=32,s=1,v=1,q=2;AAD//w==\x1b\\");
+    e.feed(b"\x1b_Ga=a,i=1,c=2,q=2\x1b\\");
+    let s = e.snapshot();
+    assert_eq!(*s.images[0].rgba, vec![0u8, 0, 255, 255]);
+    assert_eq!(e.kitty_next_frame(), None);
+}
+
+/// #554: 스크롤로 화면 밖에 나간 그림 때문에 다시 그리지 않는다. 다시 보이면 시계가 이어진다
+#[test]
+fn kitty_animation_off_screen_does_not_run_the_clock() {
+    use std::time::Duration;
+    let mut e = graphics_emulator();
+    let ms = Duration::from_millis;
+    e.feed(b"\x1b_Ga=T,f=32,s=1,v=1,i=1,C=1,q=2;/wAA/w==\x1b\\");
+    e.feed(b"\x1b_Ga=f,i=1,f=32,s=1,v=1,z=50,q=2;AAD//w==\x1b\\");
+    e.feed(b"\x1b_Ga=a,i=1,r=1,z=50,s=3,q=2\x1b\\");
+    let t0 = e.kitty_clock_start();
+    assert!(e.snapshot_at(t0).images.len() == 1);
+    assert_eq!(e.kitty_next_frame(), Some(t0 + ms(50)));
+    // 줄을 충분히 내려 그림(맨 윗줄)이 스크롤백으로 올라가게 한다
+    e.feed(b"\r\n\r\n\r\n\r\n\r\n\r\n\r\n\r\n");
+    let s = e.snapshot_at(t0 + ms(60));
+    assert!(s.images.is_empty());
+    assert_eq!(
+        e.kitty_next_frame(),
+        None,
+        "보이지 않는 그림은 다시 그릴 때를 정하지 않는다"
+    );
+    // 다시 위로 올려 보면 이어서 돈다: 간격이 지났으니 한 프레임 나아간다
+    e.scroll(100);
+    let s = e.snapshot_at(t0 + ms(70));
+    assert_eq!(s.images.len(), 1);
+    assert_eq!(*s.images[0].rgba, vec![0u8, 0, 255, 255]);
+    assert_eq!(e.kitty_next_frame(), Some(t0 + ms(120)));
+}

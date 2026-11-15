@@ -6,8 +6,11 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Instant;
 
 use bt_core::kitty_geom::Geom;
+
+use crate::kitty_anim::{self, Animation};
 
 /// 한 명령(조각을 다 모은 것)의 base64 글 상한
 const MAX_PAYLOAD: usize = 48 * 1024 * 1024;
@@ -36,6 +39,55 @@ pub struct Image {
     seq: u64,
     /// 그림 번호(`I=`, 0이면 없음)
     pub number: u32,
+    /// 저장할 때마다 새로 매기는 번호. 조각으로 오는 프레임이 시작한 뒤 그림이 다시 오면 달라져 그 프레임을 버린다(Ghostty `image_generation`)
+    generation: u64,
+    /// 애니메이션(#554): 프레임이나 재생 제어를 받으면 생긴다. `rgba`가 프레임 1(뿌리)이다
+    anim: Option<Box<Animation>>,
+}
+
+impl Image {
+    /// 뿌리를 포함한 프레임 수
+    pub fn frame_count(&self) -> u32 {
+        self.anim.as_ref().map_or(1, |a| a.frame_count())
+    }
+
+    /// 애니메이션 상태(프레임이나 재생 제어를 받은 적이 없으면 없다)
+    pub fn animation(&self) -> Option<&Animation> {
+        self.anim.as_deref()
+    }
+
+    /// 지금 보여 줄 프레임의 RGBA. 애니메이션이 없거나 뿌리가 지금 프레임이면 그림 자신의 자료다
+    pub fn frame_rgba(&self) -> Arc<Vec<u8>> {
+        match &self.anim {
+            Some(a) if a.current_index > 0 => a
+                .frames
+                .get(a.current_index as usize - 1)
+                .map_or_else(|| self.rgba.clone(), |f| f.data.clone()),
+            _ => self.rgba.clone(),
+        }
+    }
+
+    /// 1부터 센 프레임 번호의 자료(없으면 없다)
+    pub fn frame_data(&self, number: u32) -> Option<&Arc<Vec<u8>>> {
+        match number {
+            0 => None,
+            1 => Some(&self.rgba),
+            n => self.anim.as_ref()?.frames.get(n as usize - 2).map(|f| &f.data),
+        }
+    }
+
+    fn frame_data_mut(&mut self, number: u32) -> Option<&mut Vec<u8>> {
+        match number {
+            0 => None,
+            1 => Some(Arc::make_mut(&mut self.rgba)),
+            n => self
+                .anim
+                .as_mut()?
+                .frames
+                .get_mut(n as usize - 2)
+                .map(|f| Arc::make_mut(&mut f.data)),
+        }
+    }
 }
 
 /// 화면에 놓인 그림
@@ -148,6 +200,8 @@ pub struct Cursor {
 struct Pending {
     control: HashMap<u8, String>,
     payload: Vec<u8>,
+    /// 조각으로 오는 프레임(`a=f`)이 시작할 때의 그림 번호표(`Image.generation`). 끝났을 때 달라졌으면 그 그림은 바뀐 것이다
+    frame_gen: Option<u64>,
 }
 
 pub struct Graphics {
@@ -163,6 +217,12 @@ pub struct Graphics {
     next_implicit: u32,
     /// 자리 번호 없이 놓은 자리에 줄 다음 내부 번호(1부터)
     next_internal: u32,
+    /// 다음에 매길 그림 번호표(`Image.generation`)
+    next_gen: u64,
+    /// 애니메이션 시계의 0점. `tick_image`의 ms는 이 시각부터 센다
+    clock: Instant,
+    /// 마지막 `tick_pass`가 본 가장 이른 다음 프레임 시각. 보이는 애니메이션이 없으면 없다
+    next_frame: Option<Instant>,
 }
 
 impl Default for Graphics {
@@ -183,12 +243,15 @@ impl Graphics {
             limit,
             next_implicit: 2_147_483_647,
             next_internal: 1,
+            next_gen: 0,
+            clock: Instant::now(),
+            next_frame: None,
         }
     }
 }
 
 fn cost(img: &Image) -> usize {
-    img.rgba.len() + IMAGE_OVERHEAD
+    img.rgba.len() + IMAGE_OVERHEAD + img.anim.as_ref().map_or(0, |a| a.frame_bytes())
 }
 
 fn parse_control(s: &[u8]) -> HashMap<u8, String> {
@@ -274,6 +337,42 @@ impl Graphics {
         self.images.get(&id)
     }
 
+    /// 애니메이션 시계의 0점. `tick_image`에 주는 ms는 이 시각부터 센다
+    pub fn clock_start(&self) -> Instant {
+        self.clock
+    }
+
+    /// 한 그림을 `now_ms`에 보일 프레임으로 옮기고 다음 프레임까지 남은 ms를 돌려준다(`Animation::tick`)
+    pub fn tick_image(&mut self, id: u32, now_ms: u64) -> Option<u64> {
+        self.images.get_mut(&id)?.anim.as_mut()?.tick(now_ms)
+    }
+
+    /// 지금 화면에 보이는 그림들(`ids`, 겹쳐도 한 번씩)을 `now`의 프레임으로 옮기고, 그 가운데 가장 이른 다음 프레임 시각을 남긴다.
+    /// 보이지 않는 그림은 넣지 않으므로 시계가 돌지 않는다(스크롤로 밖, 다른 탭, 가려진 창)
+    pub fn tick_visible(&mut self, ids: &[u32], now: Instant) {
+        let now_ms = u64::try_from(now.saturating_duration_since(self.clock).as_millis()).unwrap_or(u64::MAX);
+        let mut seen = std::collections::HashSet::new();
+        let mut next: Option<Instant> = None;
+        for &id in ids {
+            if !seen.insert(id) {
+                continue;
+            }
+            let at = self
+                .tick_image(id, now_ms)
+                .and_then(|d| now.checked_add(std::time::Duration::from_millis(d)));
+            next = match (next, at) {
+                (Some(a), Some(b)) => Some(a.min(b)),
+                (a, b) => a.or(b),
+            };
+        }
+        self.next_frame = next;
+    }
+
+    /// 마지막 `tick_visible`이 본 가장 이른 다음 프레임 시각
+    pub fn next_frame(&self) -> Option<Instant> {
+        self.next_frame
+    }
+
     /// `ESC _ G` 뒤부터 `ESC \` 앞까지(제어;자료)를 처리한다
     pub fn handle(&mut self, raw: &[u8], cur: Cursor) -> Outcome {
         // 상한 0은 그림 프로토콜을 쓰지 않는다는 뜻이다(Ghostty): 질의에도 답하지 않아 지원하지 않는 터미널처럼 보인다
@@ -295,18 +394,18 @@ impl Graphics {
         // 조각 전송 중에 온 명령 나누기(Ghostty graphics_exec.zig, #15184)
         if self.pending.is_some() {
             match act {
-                // 질의·놓기는 받던 전송을 건드리지 않고 따로 실행한다. m 값은 보지 않고 한 번에 실행한다
-                "q" | "p" => return self.execute(&control, payload.to_vec(), cur),
-                // 직접 전송의 다음 조각: 아래에서 잇는다
-                "t" | "T" if Self::medium(&control) == "d" => {}
+                // 질의·놓기와 애니메이션 재생 제어·합성(a, c)은 받던 전송을 건드리지 않고 따로 실행한다. m 값은 보지 않고 한 번에 실행한다
+                "q" | "p" | "a" | "c" => return self.execute(&control, payload.to_vec(), cur),
+                // 직접 전송의 다음 조각: 아래에서 잇는다. 받던 것이 그림이든 프레임이든, 이 명령이 a=f가 아니어도 이어 간다
+                "t" | "T" | "f" if Self::medium(&control) == "d" => {}
                 // 지우기와 직접 전송이 아닌 전송: 받던 전송을 버리고 새 명령으로 처리한다
-                "d" | "t" | "T" => self.abort_pending(),
+                "d" | "t" | "T" | "f" => self.abort_pending(),
                 // 모르는 동작은 받던 전송을 건드리지 않고 지금처럼 답한다
                 _ => return self.error(&control, "EINVAL", "모르는 동작입니다"),
             }
         }
         // 조각 모으기: 첫 조각의 제어를 쓰고 자료를 잇는다
-        let (control, payload) = match self.pending.take() {
+        let (control, payload, frame_gen) = match self.pending.take() {
             Some(mut p) => {
                 if p.payload.len() + payload.len() > MAX_PAYLOAD {
                     // 상한을 넘으면 이 전송은 버린다. 바꾸려던 옛 그림은 지운다(Ghostty)
@@ -318,23 +417,33 @@ impl Graphics {
                     self.pending = Some(p);
                     return Outcome::default();
                 }
-                (p.control, p.payload)
+                (p.control, p.payload, p.frame_gen)
             }
             None => {
                 if payload.len() > MAX_PAYLOAD {
                     return self.error(&control, "EFBIG", "그림 자료가 상한을 넘습니다");
                 }
+                // 프레임 전송은 시작할 때 바탕 그림이 있는지 보고, 끝났을 때 그 그림이 그대로인지 보려고 번호표를 적어 둔다
+                let frame_gen = if act == "f" {
+                    match self.frame_start(&control) {
+                        Ok(g) => Some(g),
+                        Err(out) => return out,
+                    }
+                } else {
+                    None
+                };
                 if more {
                     self.pending = Some(Pending {
                         control,
                         payload: payload.to_vec(),
+                        frame_gen,
                     });
                     return Outcome::default();
                 }
-                (control, payload.to_vec())
+                (control, payload.to_vec(), frame_gen)
             }
         };
-        self.execute(&control, payload, cur)
+        self.execute_with(&control, payload, cur, frame_gen)
     }
 
     fn action(c: &HashMap<u8, String>) -> &str {
@@ -352,8 +461,12 @@ impl Graphics {
         }
     }
 
-    /// 번호(`i=`, 0이 아님)가 있으면 그 옛 그림과 놓인 자리를 지운다. `I=`만 있으면 지우지 않는다
+    /// 번호(`i=`, 0이 아님)가 있으면 그 옛 그림과 놓인 자리를 지운다. `I=`만 있으면 지우지 않는다.
+    /// 프레임 전송(`a=f`)은 바탕 그림을 바꾸려던 것이 아니므로 버려도 그림을 지우지 않는다
     fn remove_replaced(&mut self, control: &HashMap<u8, String>) {
+        if Self::action(control) == "f" {
+            return;
+        }
         let id = num(control, b'i');
         if id != 0 {
             self.replace_image(id);
@@ -362,6 +475,17 @@ impl Graphics {
 
     /// 다 모은 명령 하나를 실행한다
     fn execute(&mut self, control: &HashMap<u8, String>, payload: Vec<u8>, cur: Cursor) -> Outcome {
+        self.execute_with(control, payload, cur, None)
+    }
+
+    /// `frame_gen`은 조각으로 온 프레임이 시작할 때 적어 둔 바탕 그림의 번호표다
+    fn execute_with(
+        &mut self,
+        control: &HashMap<u8, String>,
+        payload: Vec<u8>,
+        cur: Cursor,
+        frame_gen: Option<u64>,
+    ) -> Outcome {
         let action = Self::action(control);
         let control = control.clone();
         // 그림 번호(i)와 이미지 번호(I)는 동작과 상관없이 함께 쓸 수 없다(명세, Ghostty graphics_exec.zig). 동작보다 먼저 거른다
@@ -447,6 +571,10 @@ impl Graphics {
                 self.reap_orphans(upper);
                 Outcome::default()
             }
+            // 애니메이션(#554): 프레임 전송·재생 제어·프레임 합성
+            "f" => self.transmit_frame(&control, &payload, frame_gen),
+            "a" => self.control_animation(&control),
+            "c" => self.compose_animation(&control),
             _ => self.error(&control, "EINVAL", "모르는 동작입니다"),
         }
     }
@@ -549,14 +677,18 @@ impl Graphics {
             }
         }
         if action == b'd' {
-            // 지우기 종류: 애니메이션 프레임(f·F)만 빼고 모두
-            let known = "aAiIpPcCxXyYzZrRnNqQ";
+            // 지우기 종류: 모두(애니메이션 프레임 f·F 포함)
+            let known = "aAiIpPcCxXyYzZrRnNqQfF";
             if let Some(d) = val(b'd').filter(|d| d.len() == 1 && known.contains(*d)) {
                 put(b'd', d.to_string());
             }
         }
-        // 지원하지 않는 동작(애니메이션 f·a·c 등)은 e= 없이 보통 OK
-        let known = transmit || place || action == b'd';
+        // 애니메이션(#554): f는 프레임 전송 키, a는 재생 제어 키, c는 합성 키
+        if matches!(action, b'f' | b'a' | b'c') {
+            self.anim_query_keys(action, c, &mut keys);
+        }
+        // 지원하지 않는 동작은 e= 없이 보통 OK
+        let known = transmit || place || action == b'd' || matches!(action, b'f' | b'a' | b'c');
         let mut reply = format!("\x1b_Gi={id}");
         if known {
             reply.push_str(&format!(",e={}", action as char));
@@ -569,6 +701,67 @@ impl Graphics {
         Outcome {
             reply: Some(reply.into_bytes()),
             advance: None,
+        }
+    }
+
+    /// 애니메이션 동작(`e=f`·`a`·`c`)의 기능 질의 키를 검사한 값으로 더한다. `f`는 전송 키(f o s v t)와 프레임 키(x y c r z X Y),
+    /// `a`는 재생 제어 키(s r c v z), `c`는 합성 키(r c x y w h X Y C)
+    fn anim_query_keys(&self, action: u8, c: &HashMap<u8, String>, keys: &mut Vec<(u8, String)>) {
+        let nonzero = |k: u8| Some(num(c, k)).filter(|&n| n != 0);
+        let mut put = |k: u8, v: String| keys.push((k, v));
+        match action {
+            b'f' => {
+                if let Some(f) = Some(num(c, b'f')).filter(|f| matches!(f, 24 | 32 | 100)) {
+                    put(b'f', f.to_string());
+                }
+                if c.get(&b'o').map(String::as_str) == Some("z") {
+                    put(b'o', "z".into());
+                }
+                for k in *b"sv" {
+                    if let Some(n) = nonzero(k).filter(|&n| n <= MAX_SIDE) {
+                        put(k, n.to_string());
+                    }
+                }
+                if c.get(&b't').map(String::as_str) == Some("d") {
+                    put(b't', "d".into());
+                }
+                for k in *b"xycrY" {
+                    if let Some(n) = nonzero(k) {
+                        put(k, n.to_string());
+                    }
+                }
+                if signed(c, b'z') != 0 {
+                    put(b'z', signed(c, b'z').to_string());
+                }
+                // X는 1일 때만 덮어쓰기다(다른 값은 섞기)
+                if num(c, b'X') == 1 {
+                    put(b'X', "1".into());
+                }
+            }
+            b'a' => {
+                if let Some(s) = Some(num(c, b's')).filter(|s| (1..=3).contains(s)) {
+                    put(b's', s.to_string());
+                }
+                for k in *b"rcv" {
+                    if let Some(n) = nonzero(k) {
+                        put(k, n.to_string());
+                    }
+                }
+                if signed(c, b'z') != 0 {
+                    put(b'z', signed(c, b'z').to_string());
+                }
+            }
+            _ => {
+                for k in *b"rcxywhXY" {
+                    if let Some(n) = nonzero(k) {
+                        put(k, n.to_string());
+                    }
+                }
+                // C는 0이 아니면 덮어쓰기다
+                if num(c, b'C') != 0 {
+                    put(b'C', "1".into());
+                }
+            }
         }
     }
 
@@ -627,12 +820,16 @@ impl Graphics {
             rgba: Arc::new(rgba),
             seq: 0,
             number: 0,
+            generation: 0,
+            anim: None,
         })
     }
 
     fn store(&mut self, id: u32, mut image: Image) {
         self.seq += 1;
         image.seq = self.seq;
+        self.next_gen += 1;
+        image.generation = self.next_gen;
         self.stored += cost(&image);
         if let Some(old) = self.images.insert(id, image) {
             self.stored -= cost(&old);
@@ -822,7 +1019,7 @@ impl Graphics {
 
     /// 지우기 `d=`(Ghostty `graphics_storage.zig`의 `delete`). 소문자는 놓인 자리만, 대문자는 쓰지 않게 된 그림 자료까지 지운다.
     /// 지우는 대상은 지금 화면(주 화면 또는 대체 화면)의 자리다. 좌표(`x`·`y`)는 활성 화면 맨 위 왼쪽을 (1, 1)로 센다.
-    /// 애니메이션 프레임 지우기(`f`·`F`)는 프레임이 없으니 소문자는 아무것도 하지 않고 대문자는 그림을 지운다(Ghostty가 프레임 없는 그림에 하는 일)
+    /// 애니메이션 프레임 지우기(`f`·`F`)는 프레임 기준이다(`delete_frames`)
     fn delete(&mut self, c: &HashMap<u8, String>, cur: Cursor) {
         let what = c.get(&b'd').map(String::as_bytes).unwrap_or(b"a");
         let &[kind] = what else { return };
@@ -933,20 +1130,285 @@ impl Graphics {
                     self.free_unused(ids);
                 }
             }
-            b'f' => {
-                let (id_in, number) = (num(c, b'i'), num(c, b'I'));
-                let id = if id_in != 0 {
-                    Some(id_in)
-                } else {
-                    self.id_by_number(number)
-                };
-                if let Some(id) = id.filter(|id| upper && self.images.contains_key(id)) {
-                    self.remove_image(id);
-                }
-            }
+            b'f' => self.delete_frames(num(c, b'i'), num(c, b'I'), num(c, b'r'), upper),
             // 모르는 값은 무시한다
             _ => {}
         }
+    }
+
+    // ───── 애니메이션(#554, Ghostty `graphics_exec.zig`의 transmitAnimationFrame·controlAnimation·composeAnimation) ─────
+    // 상태 기계와 픽셀 연산은 `kitty_anim.rs`가 한다. 여기서는 그림을 찾고, 저장량을 세고, 답을 정한다
+
+    /// `i=`나 `I=`가 가리키는 저장된 그림 번호. `i=`가 있으면 그 번호, 아니면 `I=`로 가장 나중에 보낸 그림
+    fn target_image(&self, id_in: u32, number: u32) -> Option<u32> {
+        if id_in != 0 {
+            self.images.contains_key(&id_in).then_some(id_in)
+        } else {
+            self.id_by_number(number)
+        }
+    }
+
+    /// 조각으로 오는 프레임이 시작할 때: 바탕 그림이 있어야 한다. 있으면 그 그림의 번호표를 돌려주고, 없으면 오류 답을 돌려준다
+    fn frame_start(&self, c: &HashMap<u8, String>) -> Result<u64, Outcome> {
+        let (id_in, number, edit) = (num(c, b'i'), num(c, b'I'), num(c, b'r'));
+        if id_in == 0 && number == 0 {
+            return Err(Self::answer_frame(c, 0, edit, "EINVAL", false));
+        }
+        match self.target_image(id_in, number) {
+            Some(id) => Ok(self.images[&id].generation),
+            None => Err(Self::answer_frame(c, id_in, edit, "ENOENT", false)),
+        }
+    }
+
+    /// 프레임을 받을 자리 `bytes`(고정 몫 포함)를 마련하고 저장량에 더한다. 모자라면 `keep` 말고 가장 오래된 그림부터 버린다.
+    /// 그림 하나와 이 프레임이 상한에 안 들어가면 아무것도 버리지 않고 거절한다(Ghostty `reserveAnimationBytes`는 버리다가 실패한다)
+    fn reserve_frame_bytes(&mut self, keep: u32, bytes: usize) -> Result<(), &'static str> {
+        let own = self.images.get(&keep).map_or(0, cost);
+        if own.saturating_add(bytes) > self.limit {
+            return Err("ENOSPC");
+        }
+        while self.stored.saturating_add(bytes) > self.limit {
+            let Some(old) = self
+                .images
+                .iter()
+                .filter(|(k, _)| **k != keep)
+                .min_by_key(|(_, i)| i.seq)
+                .map(|(k, _)| *k)
+            else {
+                return Err("ENOSPC");
+            };
+            self.remove_image(old);
+        }
+        self.stored += bytes;
+        Ok(())
+    }
+
+    /// `a=f`: 프레임을 받아 그림 크기의 RGBA로 합성해 둔다. `r`이 있는 프레임이면 그것을 고치고, 아니면 끝에 새로 만든다
+    fn transmit_frame(&mut self, c: &HashMap<u8, String>, payload: &[u8], frame_gen: Option<u64>) -> Outcome {
+        let (id_in, number, edit) = (num(c, b'i'), num(c, b'I'), num(c, b'r'));
+        let fail = |id: u32, code: &str| Self::answer_frame(c, id, edit, code, false);
+        if id_in == 0 && number == 0 {
+            return fail(0, "EINVAL");
+        }
+        let Some(id) = self.target_image(id_in, number) else {
+            return fail(id_in, "ENOENT");
+        };
+        // 조각으로 오는 사이 그림이 다시 오거나 쫓겨났으면 이 프레임은 옛 그림 몫이다
+        if frame_gen.is_some_and(|g| self.images[&id].generation != g) {
+            return fail(id, "ENOENT");
+        }
+        // 자료를 푸는 길(PNG·zlib·길이 검사)은 그림과 같다. 프레임은 모자라면 오류이고 남으면 자른다
+        let frame = match self.decode(c, payload) {
+            Ok(f) => f,
+            Err((code, _)) => return fail(id, code),
+        };
+        let (img_w, img_h, count) = {
+            let img = &self.images[&id];
+            (img.width, img.height, img.frame_count())
+        };
+        // 사각형이 그림보다 클 수는 없다. x·y 자리는 검사하지 않고 합성에서 자른다(kitty와 같다)
+        if frame.width > img_w || frame.height > img_h {
+            return fail(id, "EINVAL");
+        }
+        let (x, y) = (num(c, b'x'), num(c, b'y'));
+        let overwrite = num(c, b'X') == 1;
+        let number = kitty_anim::resolve_frame_number(edit, count);
+        let z = signed(c, b'z');
+        if number == count.saturating_add(1) {
+            // 새 프레임. 바탕 프레임(c)이 있으면 그 픽셀로, 없으면 Y 색으로 채운 판에서 시작한다
+            let base = num(c, b'c');
+            if base > 0 && self.images[&id].frame_data(base).is_none() {
+                return fail(id, "EINVAL");
+            }
+            let frame_len = img_w as usize * img_h as usize * 4;
+            if let Err(code) = self.reserve_frame_bytes(id, frame_len + kitty_anim::FRAME_OVERHEAD) {
+                return fail(id, code);
+            }
+            // 자리를 마련하며 다른 그림을 버렸을 수 있지만 이 그림은 남는다
+            let Some(img) = self.images.get_mut(&id) else {
+                return fail(id, "ENOENT");
+            };
+            let mut canvas = match base {
+                0 => {
+                    let mut b = vec![0u8; frame_len];
+                    kitty_anim::fill_background(&mut b, kitty_anim::background_bytes(num(c, b'Y')));
+                    b
+                }
+                n => img
+                    .frame_data(n)
+                    .map_or_else(|| vec![0u8; frame_len], |d| d.as_ref().clone()),
+            };
+            kitty_anim::compose_rect(
+                &mut canvas,
+                img_w,
+                img_h,
+                &frame.rgba,
+                frame.width,
+                frame.height,
+                x,
+                y,
+                overwrite,
+            );
+            let anim = img.anim.get_or_insert_with(Default::default);
+            anim.frames.push(kitty_anim::Frame {
+                data: Arc::new(canvas),
+                gap_ms: kitty_anim::new_frame_gap(z),
+            });
+        } else {
+            // 있는 프레임을 고친다. 프레임은 늘 그림 크기라 제자리에 합성하고 저장량은 그대로다.
+            // z가 0이 아니면 간격도 고친다(기본 40ms는 새 프레임에만)
+            let Some(img) = self.images.get_mut(&id) else {
+                return fail(id, "ENOENT");
+            };
+            let anim = img.anim.get_or_insert_with(Default::default);
+            if let Some(gap) = kitty_anim::edit_frame_gap(z) {
+                anim.set_gap_at(number - 1, gap);
+            }
+            // 지금 보이는 프레임을 고치면 그 프레임의 간격을 처음부터 센다(kitty가 다시 올릴 때와 같다)
+            if number - 1 == anim.current_index {
+                anim.frame_shown_at_ms = None;
+            }
+            if let Some(dst) = img.frame_data_mut(number) {
+                kitty_anim::compose_rect(
+                    dst,
+                    img_w,
+                    img_h,
+                    &frame.rgba,
+                    frame.width,
+                    frame.height,
+                    x,
+                    y,
+                    overwrite,
+                );
+            }
+        }
+        Self::answer_frame(c, id, number, "OK", true)
+    }
+
+    /// `a=a`: 간격(r, z), 지금 프레임(c), 상태(s), 반복(v)을 정한다. 키는 서로 따로 이 차례로 적용하고, 알 수 없는 값은 조용히 무시한다.
+    /// 성공하면 답하지 않는다
+    fn control_animation(&mut self, c: &HashMap<u8, String>) -> Outcome {
+        let (id_in, number) = (num(c, b'i'), num(c, b'I'));
+        if id_in == 0 && number == 0 {
+            return self.error(c, "EINVAL", "그림 번호(i)나 이미지 번호(I)가 필요합니다");
+        }
+        let Some(id) = self.target_image(id_in, number) else {
+            return self.error(c, "ENOENT", "그런 그림이 없습니다");
+        };
+        let Some(img) = self.images.get_mut(&id) else {
+            return self.error(c, "ENOENT", "그런 그림이 없습니다");
+        };
+        let anim = img.anim.get_or_insert_with(Default::default);
+        let count = anim.frame_count();
+        let (frame, current, gap) = (num(c, b'r'), num(c, b'c'), signed(c, b'z'));
+        // 프레임의 간격(r과 z). 뿌리 프레임에 간격을 줄 수 있는 유일한 길이다
+        if frame != 0 && frame <= count {
+            if let Some(g) = kitty_anim::edit_frame_gap(gap) {
+                anim.set_gap_at(frame - 1, g);
+            }
+        }
+        // 지금 프레임(c): 클라이언트가 움직이는 길
+        if current != 0 && current <= count && current - 1 != anim.current_index {
+            anim.current_index = current - 1;
+            anim.frame_shown_at_ms = None;
+        }
+        // 상태(s). 바뀌면 반복 수를 0으로 하고, 멈춤에서 나오면 간격을 처음부터 센다
+        let state = match num(c, b's') {
+            1 => Some(kitty_anim::State::Stopped),
+            2 => Some(kitty_anim::State::Loading),
+            3 => Some(kitty_anim::State::Running),
+            _ => None,
+        };
+        if let Some(new) = state {
+            if anim.state == kitty_anim::State::Stopped && new != kitty_anim::State::Stopped {
+                anim.frame_shown_at_ms = None;
+            }
+            anim.state = new;
+            anim.current_loop = 0;
+        }
+        // 반복 횟수(v)는 1을 빼서 둔다: v=1은 끝없이, v=n은 n-1바퀴
+        let loops = num(c, b'v');
+        if loops != 0 {
+            anim.max_loops = loops - 1;
+        }
+        Outcome::default()
+    }
+
+    /// `a=c`: 한 프레임의 사각형을 다른 프레임(또는 같은 프레임의 겹치지 않는 자리)에 복사하거나 섞는다.
+    /// `r`이 원본, `c`가 대상, `x y`가 대상 자리, `X Y`가 원본 자리, `w h`가 크기(0이면 그림 전체), `C`가 0이 아니면 덮어쓴다.
+    /// 프레임이 하나뿐인 그림에서도 되므로(둘 다 프레임 1) 애니메이션 상태를 만들지 않는다
+    fn compose_animation(&mut self, c: &HashMap<u8, String>) -> Outcome {
+        let (id_in, number) = (num(c, b'i'), num(c, b'I'));
+        if id_in == 0 && number == 0 {
+            return self.error(c, "EINVAL", "그림 번호(i)나 이미지 번호(I)가 필요합니다");
+        }
+        let Some(id) = self.target_image(id_in, number) else {
+            return self.error(c, "ENOENT", "그런 그림이 없습니다");
+        };
+        let (src_frame, dst_frame) = (num(c, b'r'), num(c, b'c'));
+        let Some(img) = self.images.get_mut(&id) else {
+            return self.error(c, "ENOENT", "그런 그림이 없습니다");
+        };
+        // 두 프레임이 다 있어야 한다. r이 원본이고 c가 대상이다(kitty 명세의 표는 거꾸로 적혀 있다)
+        let Some(src) = img.frame_data(src_frame).cloned() else {
+            return Self::answer(c, id, "ENOENT", false);
+        };
+        if img.frame_data(dst_frame).is_none() {
+            return Self::answer(c, id, "ENOENT", false);
+        }
+        // a=f는 자르지만 a=c는 범위를 벗어나면 오류다
+        let rect = kitty_anim::check_compose_rect(
+            (img.width, img.height),
+            (num(c, b'x'), num(c, b'y')),
+            (num(c, b'X'), num(c, b'Y')),
+            (num(c, b'w'), num(c, b'h')),
+            src_frame == dst_frame,
+        );
+        let Ok((w, h)) = rect else {
+            return Self::answer(c, id, "EINVAL", false);
+        };
+        let (from, to) = ((num(c, b'X'), num(c, b'Y')), (num(c, b'x'), num(c, b'y')));
+        let overwrite = num(c, b'C') != 0;
+        let canvas_w = img.width;
+        let shown_changes = img.animation().map_or(0, |a| a.current_index) == dst_frame - 1;
+        if let Some(dst) = img.frame_data_mut(dst_frame) {
+            if src_frame == dst_frame {
+                kitty_anim::compose_within(dst, canvas_w, w, h, from, to, overwrite);
+            } else {
+                kitty_anim::compose_canvas_rect(dst, &src, canvas_w, w, h, from, to, overwrite);
+            }
+        }
+        // 지금 보이는 프레임을 고쳤으면 그 간격을 처음부터 센다. 자료는 Arc째라 다음 화면에 바로 나타난다
+        if shown_changes {
+            if let Some(a) = img.anim.as_mut() {
+                a.frame_shown_at_ms = None;
+            }
+        }
+        self.ok_id(c, id)
+    }
+
+    /// `d=f`·`d=F`: 프레임 하나를 지운다(Ghostty `deleteAnimationFrame`). 지우기는 답하지 않는다.
+    /// 프레임이 없는 그림에서는 소문자는 아무것도 하지 않고, 대문자는 자리가 있어도 그림 전체를 지운다
+    fn delete_frames(&mut self, id_in: u32, number: u32, frame: u32, upper: bool) {
+        if id_in == 0 && number == 0 {
+            return;
+        }
+        let Some(id) = self.target_image(id_in, number) else {
+            return;
+        };
+        let Some(img) = self.images.get_mut(&id) else {
+            return;
+        };
+        let before = cost(img);
+        let Some(anim) = img.anim.as_mut().filter(|a| !a.frames.is_empty()) else {
+            if upper {
+                self.remove_image(id);
+            }
+            return;
+        };
+        kitty_anim::delete_frame(&mut img.rgba, anim, frame);
+        let after = cost(img);
+        self.stored = self.stored - before + after;
     }
 
     /// 화면 지우기와 초기화에 맞춰 놓인 그림을 지운다.
@@ -988,13 +1450,18 @@ impl Graphics {
     /// 번호도 이미지 번호도 0이면 답할 곳이 없어 답하지 않는다. `q=1`은 OK 답을, `q=2`는 오류 답도 하지 않는다.
     /// 답에는 ASCII만(설명은 앱 로그로). 터미널에 되돌아가는 글이라 제어 문자를 넣지 않는다
     fn answer(c: &HashMap<u8, String>, id: u32, message: &str, ok: bool) -> Outcome {
+        Self::answer_frame(c, id, 0, message, ok)
+    }
+
+    /// `answer`에 프레임 번호(`r=`, 0이면 쓰지 않는다)를 더한 것: `a=f`가 새로 정한 프레임 번호를 알려 주고 오류에는 고치려던 번호를 되돌린다
+    fn answer_frame(c: &HashMap<u8, String>, id: u32, frame: u32, message: &str, ok: bool) -> Outcome {
         let number = num(c, b'I');
         let quiet = Self::quiet(c);
         if (id == 0 && number == 0) || (ok && quiet >= 1) || (!ok && quiet >= 2) {
             return Outcome::default();
         }
         let mut keys = Vec::new();
-        for (k, v) in [('i', id), ('I', number), ('p', num(c, b'p'))] {
+        for (k, v) in [('i', id), ('I', number), ('p', num(c, b'p')), ('r', frame)] {
             if v != 0 {
                 keys.push(format!("{k}={v}"));
             }
@@ -1451,8 +1918,8 @@ mod tests {
         assert_eq!(query(&mut g, "a=q,i=2,e=d,d=z").unwrap(), "\x1b_Gi=2,e=d,d=z;OK\x1b\\");
         assert_eq!(
             query(&mut g, "a=q,i=2,e=d,d=f").unwrap(),
-            "\x1b_Gi=2,e=d;OK\x1b\\",
-            "애니메이션 지우기는 답에서 뺀다"
+            "\x1b_Gi=2,e=d,d=f;OK\x1b\\",
+            "애니메이션 프레임 지우기(#554)도 따른다"
         );
         assert_eq!(query(&mut g, "a=q,i=2,e=d").unwrap(), "\x1b_Gi=2,e=d;OK\x1b\\");
     }
@@ -1460,7 +1927,8 @@ mod tests {
     #[test]
     fn feature_query_unknown_action_answers_plain_ok() {
         let mut g = Graphics::default();
-        for e in ["f", "a", "c", "x", "Z"] {
+        // 애니메이션(f·a·c)은 이제 아는 동작이다(#554, 키는 kitty_anim_tests)
+        for e in ["x", "Z", "m"] {
             assert_eq!(
                 query(&mut g, &format!("a=q,i=7,e={e},f=24")).unwrap(),
                 "\x1b_Gi=7;OK\x1b\\",
@@ -1939,6 +2407,7 @@ mod tests {
 
     #[test]
     fn animation_frame_delete_without_frames_only_drops_the_image_for_capital_f() {
+        // 프레임이 있을 때의 지우기는 kitty_anim_tests
         let mut g = scene();
         del(&mut g, "d=f,i=1");
         assert!(
@@ -1979,8 +2448,16 @@ mod tests {
                 "{d}"
             );
         }
-        // 애니메이션 지우기(f·F)와 모르는 값은 답에서 뺀다
-        for d in ["f", "F", "w", "!"] {
+        // 애니메이션 프레임 지우기(f·F, #554)는 따른다
+        for d in ["f", "F"] {
+            assert_eq!(
+                query(&mut g, &format!("a=q,i=2,e=d,d={d}")).unwrap(),
+                format!("\x1b_Gi=2,e=d,d={d};OK\x1b\\"),
+                "{d}"
+            );
+        }
+        // 모르는 값은 답에서 뺀다
+        for d in ["w", "!"] {
             assert_eq!(
                 query(&mut g, &format!("a=q,i=2,e=d,d={d}")).unwrap(),
                 "\x1b_Gi=2,e=d;OK\x1b\\",
@@ -2292,3 +2769,7 @@ mod tests {
         assert!(g.placements.is_empty());
     }
 }
+
+#[cfg(test)]
+#[path = "kitty_anim_tests.rs"]
+mod anim_tests;

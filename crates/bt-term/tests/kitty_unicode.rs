@@ -208,3 +208,32 @@ fn relative_placement_follows_a_pinned_parent_and_dies_with_it() {
     e.feed(b"\x1b_Ga=d,d=i,i=1,p=1\x1b\\");
     assert_eq!(e.snapshot().images.len(), 0);
 }
+
+/// #553·#554가 만나는 자리: 자리표시 조각과 상대 배치로 보이는 움직이는 그림도 시계가 돌고, 돌린 뒤의 프레임을 그린다.
+/// (합치기 전에는 커서에 놓인 그림만 시계를 돌려 조각은 첫 프레임에 멈췄다)
+#[test]
+fn placeholder_and_relative_images_follow_the_animation_clock() {
+    use std::time::Duration;
+    let ms = Duration::from_millis;
+    let mut e = emu(10, 5, 10, 10);
+    // 1×1 RGBA 빨강(뿌리 100ms) → 파랑 프레임(100ms), 돌림
+    e.feed(b"\x1b_Ga=t,f=32,s=1,v=1,i=1,q=2;/wAA/w==\x1b\\");
+    e.feed(b"\x1b_Ga=f,i=1,f=32,s=1,v=1,z=100,q=2;AAD//w==\x1b\\");
+    e.feed(b"\x1b_Ga=a,i=1,r=1,z=100,s=3,q=2\x1b\\");
+    // 가상 배치 1×1칸과 그 자리표시 한 칸(팔레트 글자색 1 = 그림 1), 그리고 그 가상 배치 기준 상대 배치
+    e.feed(b"\x1b_Ga=p,i=1,p=1,U=1,c=1,r=1,q=2\x1b\\");
+    e.feed("\x1b[38;5;1m\u{10EEEE}\u{0305}\u{0305}\x1b[39m".as_bytes());
+    e.feed(b"\x1b_Ga=p,i=1,p=2,P=1,Q=1,H=2,V=1,c=1,r=1,q=2\x1b\\");
+    let red = vec![255u8, 0, 0, 255];
+    let blue = vec![0u8, 0, 255, 255];
+    let t = e.kitty_clock_start() + ms(1000);
+    let s = e.snapshot_at(t);
+    assert_eq!(s.images.len(), 2, "상대 배치와 자리표시 조각: {:?}", s.images.len());
+    assert!(s.images.iter().all(|i| *i.rgba == red));
+    assert_eq!(e.kitty_next_frame(), Some(t + ms(100)), "조각만 보여도 다음 프레임 시각이 있다");
+    let s = e.snapshot_at(t + ms(100));
+    assert!(
+        s.images.iter().all(|i| *i.rgba == blue),
+        "간격이 지나면 조각과 상대 배치 모두 다음 프레임"
+    );
+}

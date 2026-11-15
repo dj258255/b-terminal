@@ -359,6 +359,43 @@ fn resolve_chain<'a>(
 
 // ---- 보이는 화면에서 그릴 조각 뽑기 ----
 
+/// 한 화면의 가상 배치를 (그림, 자리 번호)와 그림별 정해진 것으로 한 번에 묶은 것. 자리표시 묶음마다
+/// 배치 목록 전체를 훑지 않으려고(보안 검토: 묶음 수 × 배치 수) 화면을 훑기 전에 한 번 만든다.
+/// 찾는 결과는 `placeholder_target`과 같다
+struct VirtualIndex<'a> {
+    by_pid: HashMap<(u32, u32), &'a Placement>,
+    best: HashMap<u32, &'a Placement>,
+}
+
+impl<'a> VirtualIndex<'a> {
+    fn new(ps: &'a [Placement], alt: bool) -> Self {
+        let mut by_pid = HashMap::new();
+        let mut best: HashMap<u32, &'a Placement> = HashMap::new();
+        for p in ps.iter().filter(|p| p.alt == alt && matches!(p.loc, Loc::Virtual)) {
+            if p.pid > 0 {
+                // `find`처럼 앞의 것이 이긴다
+                by_pid.entry((p.image, p.pid)).or_insert(p);
+            }
+            best.entry(p.image)
+                .and_modify(|b| {
+                    if p.key().preferred_over(&b.key()) {
+                        *b = p;
+                    }
+                })
+                .or_insert(p);
+        }
+        Self { by_pid, best }
+    }
+
+    fn target(&self, image: u32, pid: u32) -> Option<&'a Placement> {
+        if pid > 0 {
+            self.by_pid.get(&(image, pid)).copied()
+        } else {
+            self.best.get(&image).copied()
+        }
+    }
+}
+
 /// 보이는 화면의 자리표시 묶음 하나(줄은 보이는 화면 맨 위가 0)와 그것이 가리키는 가상 배치
 struct Seen {
     row: i64,
@@ -371,6 +408,7 @@ fn scan_screen<T>(term: &Term<T>, ps: &[Placement], alt: bool) -> Vec<Seen> {
     let rows = term.screen_lines() as i32;
     let cols = term.columns();
     let offset = term.grid().display_offset() as i32;
+    let index = VirtualIndex::new(ps, alt);
     let mut out = Vec::new();
     for r in 0..rows {
         let row = &term.grid()[Line(r - offset)];
@@ -386,7 +424,7 @@ fn scan_screen<T>(term: &Term<T>, ps: &[Placement], alt: bool) -> Vec<Seen> {
             })
         });
         for run in scan_row(cells) {
-            let target = placeholder_target(ps, run.image_id, run.placement_id, alt).map(Placement::key);
+            let target = index.target(run.image_id, run.placement_id).map(Placement::key);
             out.push(Seen {
                 row: i64::from(r),
                 run,
@@ -416,7 +454,13 @@ impl Budget {
 
 /// 커서에 놓인 자리 말고 보이는 화면에 그릴 그림들: 가상 배치를 보여 주는 자리표시 칸 조각(줄마다 하나, z=-1)과
 /// 상대 배치(부모 자리에서 오프셋만큼). 그리는 양은 `budget`에서 쓴다. `top`은 보이는 화면 맨 위의 절대 줄이다
-pub fn extra_images<T>(term: &Term<T>, g: &Graphics, alt: bool, top: i64, budget: &mut Budget) -> Vec<ImageView> {
+pub fn extra_images<T>(
+    term: &Term<T>,
+    g: &Graphics,
+    alt: bool,
+    top: i64,
+    budget: &mut Budget,
+) -> Vec<(u32, ImageView)> {
     let ps = &g.placements;
     let has_virtual = ps.iter().any(|p| p.alt == alt && matches!(p.loc, Loc::Virtual));
     let has_relative = ps.iter().any(|p| p.alt == alt && matches!(p.loc, Loc::Relative(_)));
@@ -434,8 +478,9 @@ pub fn extra_images<T>(term: &Term<T>, g: &Graphics, alt: bool, top: i64, budget
 
     // 상대 배치: 뿌리가 커서에 놓인 자리면 그 칸, 가상 배치면 그 자리표시 칸들의 왼쪽 위(가장 작은 칸·줄)에서 잰다.
     // 새 것부터 그릴 양을 쓰고 놓인 차례로 돌려놓는다
+    // 자리 열쇠로 배치를 찾는 색인(상대 배치의 부모 사슬과 자리표시 조각의 가상 배치가 함께 쓴다)
+    let index: HashMap<PlacementKey, &Placement> = ps.iter().map(|p| (p.key(), p)).collect();
     if has_relative {
-        let index: HashMap<PlacementKey, &Placement> = ps.iter().map(|p| (p.key(), p)).collect();
         let mut origin: HashMap<PlacementKey, (i64, i64)> = HashMap::new();
         for s in &seen {
             if let Some(t) = s.target {
@@ -473,17 +518,20 @@ pub fn extra_images<T>(term: &Term<T>, g: &Graphics, alt: bool, top: i64, budget
             if !budget.take(visible_rows.max(0) * visible_cols.max(0)) {
                 break;
             }
-            kids.push(ImageView {
-                rgba: img.rgba.clone(),
-                width: img.width,
-                height: img.height,
-                row,
-                col,
-                cols: p.cols,
-                rows: p.rows,
-                geom: p.geom,
-                z: p.z,
-            });
+            kids.push((
+                p.image,
+                ImageView {
+                    rgba: img.frame_rgba(),
+                    width: img.width,
+                    height: img.height,
+                    row,
+                    col,
+                    cols: p.cols,
+                    rows: p.rows,
+                    geom: p.geom,
+                    z: p.z,
+                },
+            ));
         }
         kids.reverse();
         out.extend(kids);
@@ -492,35 +540,38 @@ pub fn extra_images<T>(term: &Term<T>, g: &Graphics, alt: bool, top: i64, budget
     // 자리표시 조각: 글자 아래 층(z=-1)
     for s in &seen {
         let Some(target) = s.target else { continue };
-        let Some(vp) = ps.iter().find(|p| p.key() == target) else {
+        let Some(&vp) = index.get(&target) else {
             continue;
         };
         let Some(img) = g.image(s.run.image_id) else { continue };
         if !budget.take(i64::from(s.run.width)) {
             break;
         }
-        out.push(ImageView {
-            rgba: img.rgba.clone(),
-            width: img.width,
-            height: img.height,
-            row: s.row as i32,
-            col: s.run.x as i32,
-            cols: s.run.width,
-            rows: 1,
-            geom: Geom {
-                img_w: img.width,
-                img_h: img.height,
-                piece: Some(Piece {
-                    grid_cols: vp.geom.want_cols,
-                    grid_rows: vp.geom.want_rows,
-                    col: s.run.col,
-                    row: s.run.row,
-                    width: s.run.width,
-                }),
-                ..Geom::default()
+        out.push((
+            s.run.image_id,
+            ImageView {
+                rgba: img.frame_rgba(),
+                width: img.width,
+                height: img.height,
+                row: s.row as i32,
+                col: s.run.x as i32,
+                cols: s.run.width,
+                rows: 1,
+                geom: Geom {
+                    img_w: img.width,
+                    img_h: img.height,
+                    piece: Some(Piece {
+                        grid_cols: vp.geom.want_cols,
+                        grid_rows: vp.geom.want_rows,
+                        col: s.run.col,
+                        row: s.run.row,
+                        width: s.run.width,
+                    }),
+                    ..Geom::default()
+                },
+                z: -1,
             },
-            z: -1,
-        });
+        ));
     }
     out
 }
@@ -805,6 +856,38 @@ mod tests {
         assert!(placeholder_target(ps, 2, 0, false).is_none());
     }
 
+    /// 화면을 훑기 전에 한 번 만드는 색인이 묶음마다 배치를 훑던 `placeholder_target`과 같은 배치를 찾는다
+    #[test]
+    fn virtual_index_finds_the_same_placement_as_placeholder_target() {
+        let mut g = gfx_with_image(1, 10, 10);
+        g.handle(b"a=t,i=2,f=24,s=1,v=1;AAAA", CUR);
+        for cmd in [
+            "a=p,i=1,U=1",
+            "a=p,i=1,p=9,U=1",
+            "a=p,i=1,p=4,U=1",
+            "a=p,i=1,p=2,C=1",
+            "a=p,i=2,U=1",
+            "a=p,i=2,U=1",
+            "a=p,i=2,p=7,U=1",
+        ] {
+            g.handle(cmd.as_bytes(), CUR);
+        }
+        let ps = &g.placements;
+        assert_eq!(ps.iter().filter(|p| p.image == 2).count(), 3, "그림 2의 가상 배치 셋");
+        for alt in [false, true] {
+            let index = VirtualIndex::new(ps, alt);
+            for image in 0..4 {
+                for pid in 0..11 {
+                    assert_eq!(
+                        index.target(image, pid).map(Placement::key),
+                        placeholder_target(ps, image, pid, alt).map(Placement::key),
+                        "그림 {image}, 자리 {pid}, 대체 화면 {alt}"
+                    );
+                }
+            }
+        }
+    }
+
     #[test]
     fn parent_error_codes() {
         assert_eq!(ParentError::ImageNotFound.code(), "ENOPARENT");
@@ -838,6 +921,9 @@ mod tests {
 
     fn images_of(g: &Graphics, t: &Term<L>, budget: i64) -> Vec<ImageView> {
         extra_images(t, g, false, 0, &mut Budget { used: 0, budget })
+            .into_iter()
+            .map(|(_, v)| v)
+            .collect()
     }
 
     /// Ghostty image.zig 1117줄 "positions relative placements from virtual parent placeholders"를 우리 자료 꼴로: 칸 10x10, 5x5칸
@@ -907,7 +993,7 @@ mod tests {
         let at = |top: i64| -> Vec<(i32, i32)> {
             extra_images(&t, &g, false, top, &mut Budget { used: 0, budget: 100 })
                 .iter()
-                .map(|i| (i.col, i.row))
+                .map(|(_, i)| (i.col, i.row))
                 .collect()
         };
         // 맨 위가 줄 11이면 뿌리는 줄 -1: 둘째 (5, 0), 셋째 (4, 3)

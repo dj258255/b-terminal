@@ -884,6 +884,8 @@ struct Win {
     proxy_icon: Option<std::path::PathBuf>,
     /// 창이 다른 창에 가려졌거나 최소화됐다(`WindowEvent::Occluded`, #303). 알리기 전에는 보인다고 본다
     occluded: bool,
+    /// kitty 애니메이션(#554): 보이는 그림의 다음 프레임을 그릴 때. 그릴 때마다 새로 정한다
+    kitty_wake: Option<Instant>,
     /// GPU 길(ADR-038): 그림판 얻기가 막힐 것 같아 미룬 프레임을 다시 그릴 때
     pace_wake: Option<Instant>,
     /// 사용자 셰이더(#376): 시간·커서·초점과 애니메이션 깨우기. 셰이더를 다시 걸면 새로 만든다
@@ -949,6 +951,7 @@ impl Win {
             opaque: false,
             proxy_icon: None,
             occluded: false,
+            kitty_wake: None,
             pace_wake: None,
             shader: Default::default(),
             layer_key: None,
@@ -5299,6 +5302,19 @@ impl App {
         }
     }
 
+    /// kitty 애니메이션(#554)의 다음 프레임 때가 된 창을 다시 그리게 한다. 그린 프레임이 다음 때를 새로 정한다
+    fn fire_kitty_wakes(&mut self, now: Instant) {
+        for w in std::iter::once(&mut self.w).chain(self.others.iter_mut()) {
+            let (fire, next) = kitty_images::wake_step(w.kitty_wake, now, w.occluded);
+            w.kitty_wake = next;
+            if fire {
+                if let Some(g) = &w.gfx {
+                    g.window.request_redraw();
+                }
+            }
+        }
+    }
+
     /// 모든 창을 다시 그리게 한다
     fn request_redraw_all(&self) {
         for w in std::iter::once(&self.w).chain(&self.others) {
@@ -5379,6 +5395,18 @@ impl App {
                 })
             })
             .collect();
+        // kitty 애니메이션(#554): 화면에 보이는 그림 가운데 가장 이른 다음 프레임 때에 이 창을 다시 그린다.
+        // 보이지 않는 그림(스크롤로 밖, 다른 탭)은 화면이 보지 않으므로 여기에 없다
+        self.w.kitty_wake = kitty_images::frame_wake(
+            views
+                .iter()
+                .filter_map(|v| {
+                    self.pane_index(v.id)
+                        .and_then(|i| self.panes[i].session.kitty_next_frame())
+                })
+                .min(),
+            Instant::now(),
+        );
         let latency = self.latency_begin(&views, latency_at);
         // 스크롤 막대: 스크롤 위치가 바뀌면 잠깐 보인다. 마우스가 오른쪽 끝 위에 있어도 보인다
         let now_bar = Instant::now();
@@ -7097,6 +7125,8 @@ impl ApplicationHandler<UserEvent> for App {
                 }
             }
         }
+        // kitty 애니메이션(#554): 다음 프레임 때가 된 창을 다시 그린다. 가려진 창은 깨우지 않는다
+        self.fire_kitty_wakes(now);
         // 미뤄 둔 GPU 프레임을 다시 그릴 때가 됐다(ADR-038)
         self.fire_pace_wakes(now);
         // 기한이 지난 닫은 칸·탭은 이때 떨어뜨린다(셸이 SIGHUP을 받는다, #164)
@@ -7169,6 +7199,11 @@ impl ApplicationHandler<UserEvent> for App {
             .filter(|w| w.blink_wanted)
             .map(|w| w.blink_next)
             .min();
+        let kitty_next = std::iter::once(&self.w)
+            .chain(&self.others)
+            .filter(|w| !w.occluded)
+            .filter_map(|w| w.kitty_wake)
+            .min();
         // 동기화 출력(DEC 2026)이 끝나지 않은 탭이 있으면 기한에 깨어 반영한다
         let deadline = self
             .panes
@@ -7176,6 +7211,7 @@ impl ApplicationHandler<UserEvent> for App {
             .filter_map(|t| t.session.sync_deadline())
             .chain([self.next_poll])
             .chain(blink_next)
+            .chain(kitty_next)
             .chain(anim_next)
             .chain(shader_next)
             .chain(overlay_next)
@@ -7194,6 +7230,7 @@ impl ApplicationHandler<UserEvent> for App {
             Some(d) if d <= Instant::now() => {
                 // 깨울 때가 방금 지났을 수 있다: 아래에서 Wait으로 잠들면 미룬 프레임이 영영 안 올라간다
                 self.fire_pace_wakes(Instant::now());
+                self.fire_kitty_wakes(Instant::now());
                 if self.panes.iter().any(|t| t.session.flush_expired_sync()) {
                     self.request_redraw_all();
                 }
