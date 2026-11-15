@@ -173,3 +173,180 @@ fn save_cursor_is_per_screen() {
     assert!(t.on(true, 6));
 }
 
+// ---- #530: 소프트 리셋 ----
+
+#[test]
+fn soft_reset_modes() {
+    // Ghostty "Terminal: softReset modes"(Terminal.zig 18506줄): 삽입·원점·자동 줄바꿈·역방향 줄바꿈·커서 보임·커서키·키패드를
+    // 기본값으로 되돌리고, 괄호 붙여넣기처럼 DECSTR이 다루지 않는 모드는 그대로 둔다
+    let mut t = T::new(10, 10);
+    t.feed("\x1b[4h\x1b[?6h\x1b[?7l\x1b[?45h\x1b[?25l\x1b[?1h\x1b[?66h\x1b[?2004h");
+    assert!(t.on(false, 4) && t.on(true, 6) && !t.on(true, 7) && t.on(true, 45));
+    assert!(!t.on(true, 25) && t.on(true, 1) && t.on(true, 66));
+    t.feed("\x1b[!p");
+    assert!(!t.on(false, 4), "insert");
+    assert!(!t.on(true, 6), "origin");
+    assert!(t.on(true, 7), "wraparound");
+    assert!(!t.on(true, 45), "reverse_wrap");
+    assert!(t.on(true, 25), "cursor_visible");
+    assert!(!t.on(true, 1), "cursor_keys");
+    assert!(!t.on(true, 66), "keypad_keys");
+    // DECSTR이 다루지 않는 모드는 그대로
+    assert!(t.on(true, 2004), "bracketed_paste");
+}
+
+#[test]
+fn soft_reset_leaves_mouse_and_other_modes_alone() {
+    let mut t = T::new(10, 10);
+    t.feed("\x1b[?1000h\x1b[?1006h\x1b[?1004h\x1b[?2004h\x1b[!p");
+    for n in [1000, 1006, 1004, 2004] {
+        assert!(t.on(true, n), "?{n}은 그대로여야 한다");
+    }
+}
+
+#[test]
+fn soft_reset_issue_530_repro_bytes() {
+    // 이슈 재현 바이트
+    let mut t = T::new(10, 10);
+    t.feed("\x1b[4h\x1b[?6h\x1b[?7l\x1b[?25l\x1b[?1h\x1b=\x1b[1m\x1b(0\x1b7\x1b[!p");
+    assert!(!t.on(false, 4));
+    assert!(!t.on(true, 6));
+    assert!(t.on(true, 7));
+    assert!(t.on(true, 25));
+    assert!(!t.on(true, 1));
+    assert!(!t.on(true, 66), "ESC =(응용 키패드)도 되돌린다");
+    // 굵기와 선 그리기 문자 집합이 없어졌다: 글자가 그대로 찍힌다
+    t.feed("\x1b[1;1Hq");
+    assert_eq!(t.plain(), "q");
+    assert!(!t.template().flags.contains(Flags::BOLD));
+    assert_eq!(t.term.grid().cursor.charsets[CharsetIndex::G0], StandardCharset::Ascii);
+    // 저장한 커서도 지웠다: DECRC는 처음 자리로
+    t.feed("\x1b[5;5H\x1b8");
+    assert_eq!(t.cursor(), (0, 0));
+}
+
+#[test]
+fn soft_reset_margins() {
+    // Ghostty "Terminal: softReset margins"(18540줄 부근): 69와 위아래·좌우 여백을 처음으로
+    let mut t = T::new(10, 10);
+    t.feed("\x1b[3;4r\x1b[?69h\x1b[5;6s");
+    assert!(t.on(true, 69));
+    t.feed("\x1b[!p");
+    assert!(!t.on(true, 69));
+    assert_eq!((t.term.left_margin(), t.term.right_margin()), (0, 9));
+    assert_eq!(*t.term.scroll_region(), Line(0)..Line(10));
+    // 위아래 여백이 풀렸는지 글로도 본다: 맨 아랫줄에서 줄바꿈하면 화면이 스크롤된다
+    t.feed("\x1b[1;1HA\x1b[10;1H\nB");
+    assert_eq!(t.plain().lines().next(), Some(""), "첫 줄 A가 스크롤로 올라갔다");
+}
+
+#[test]
+fn soft_reset_keeps_the_cursor_and_screen() {
+    // Ghostty "Terminal: softReset keeps the cursor and screen"(18550줄)
+    let mut t = T::new(10, 10);
+    t.feed("hello\x1b[6;5H\x1b[!p");
+    assert_eq!(t.cursor(), (4, 5));
+    assert_eq!(t.plain(), "hello");
+}
+
+#[test]
+fn soft_reset_saved_cursor() {
+    // Ghostty "Terminal: softReset saved cursor"(18566줄): 저장한 커서는 처음 자리와 기본 스타일로
+    let mut t = T::new(10, 10);
+    t.feed("\x1b[6;5H\x1b[1m\x1b7\x1b[!p\x1b8");
+    assert_eq!(t.cursor(), (0, 0));
+    assert!(!t.template().flags.contains(Flags::BOLD));
+}
+
+#[test]
+fn soft_reset_pen_protection_and_charsets() {
+    // Ghostty "Terminal: softReset pen, protection, and charsets"(18581줄)
+    let mut t = T::new(10, 10);
+    t.feed("\x1b[1;31m\x1b[1\"q\x1b(0");
+    assert!(t.template().flags.contains(Flags::BOLD));
+    assert!(t.template().flags.contains(Flags::PROTECTED));
+    t.feed("\x1b[!p");
+    assert!(!t.template().flags.contains(Flags::BOLD));
+    assert!(!t.template().flags.contains(Flags::PROTECTED));
+    assert_eq!(t.template().fg, Color::Named(NamedColor::Foreground));
+    assert_eq!(t.term.grid().cursor.charsets[CharsetIndex::G0], StandardCharset::Ascii);
+}
+
+#[test]
+fn soft_reset_also_puts_back_a_shifted_charset() {
+    // 문자 집합 전체(Ghostty `screen.charset = .{}`): G1을 선 그리기로 두고 SO로 쓰는 중이어도 처음으로
+    let mut t = T::new(10, 10);
+    t.feed("\x1b)0\x0e\x1b[!p");
+    t.feed("q");
+    assert_eq!(t.plain(), "q");
+}
+
+#[test]
+fn soft_reset_on_the_alternate_screen_resets_that_screen() {
+    // Ghostty는 활성 화면(`screens.active`)의 펜·저장 커서를 되돌린다. 대체 화면에서 부르면 대체 화면의 것
+    let mut t = T::new(10, 10);
+    t.feed("\x1b[?1049h\x1b[1m\x1b[4;4H\x1b7\x1b[!p");
+    assert!(!t.template().flags.contains(Flags::BOLD));
+    t.feed("\x1b8");
+    assert_eq!(t.cursor(), (0, 0));
+}
+
+#[test]
+fn soft_reset_same_function_for_both_paths() {
+    // 앱의 두 길(세션 읽기 스레드, Emulator)은 모두 `kitty_color::soft_reset`을 부른다. Emulator 쪽을 DECSTR 바이트로 확인
+    let mut e = bt_term::Emulator::new(GridSize::new(10, 5), Theme::default());
+    e.feed(b"\x1b[?25l\x1b[1;31m\x1b[!pX");
+    let s = e.snapshot();
+    assert!(s.cursor.visible, "커서가 다시 보인다");
+}
+
+// ---- 앱의 세션 읽기 스레드 길(PTY: /bin/sh와 printf만) ----
+
+fn sh(script: &str, size: GridSize) -> (Session, Receiver<SessionEvent>) {
+    let (tx, rx) = channel();
+    let tx = Mutex::new(tx);
+    let sink = Arc::new(move |e: SessionEvent| {
+        let _ = tx.lock().unwrap().send(e);
+    });
+    let opts = SpawnOptions {
+        program: Some("/bin/sh".into()),
+        args: vec!["-c".into(), script.into()],
+        cwd: Some(std::env::temp_dir()),
+        ..Default::default()
+    };
+    (
+        Session::spawn(opts, size, Theme::default(), sink).unwrap_or_else(|e| panic!("spawn: {e:#}")),
+        rx,
+    )
+}
+
+fn wait_exit(rx: &Receiver<SessionEvent>) {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while Instant::now() < deadline {
+        if let Ok(SessionEvent::Exited(_)) = rx.recv_timeout(Duration::from_millis(100)) {
+            return;
+        }
+    }
+    panic!("10초 안에 끝나지 않았다");
+}
+
+#[test]
+fn session_reader_thread_soft_reset_resets_the_modes() {
+    // 세션 읽기 스레드(session.rs의 SoftReset 처리)가 같은 함수로 되돌리는지: 모드를 켜고 DECSTR, DECRQM으로 묻는다
+    // 답: ?25;1$y(9바이트), ?6;2$y(8), ?7;1$y(8), ?1;2$y(8)
+    let hex = |s: &str| s.bytes().map(|b| format!("{b:02x}")).collect::<String>();
+    let q = "\\033[?25$p\\033[?6$p\\033[?7$p\\033[?1$p";
+    let script = format!(
+        "stty raw -echo; printf '\\033[?6h\\033[?7l\\033[?25l\\033[?1h\\033[!p{q}'; \
+         a=$(dd bs=1 count=33 2>/dev/null | od -An -tx1 | tr -d ' \\n'); stty sane; printf 'ans=%s\\n' \"$a\""
+    );
+    let (s, rx) = sh(&script, GridSize::new(80, 5));
+    wait_exit(&rx);
+    let text = s.snapshot().text();
+    let line = text
+        .lines()
+        .find(|l| l.starts_with("ans="))
+        .unwrap_or_else(|| panic!("답이 없다: {text:?}"));
+    let want = hex("\x1b[?25;1$y\x1b[?6;2$y\x1b[?7;1$y\x1b[?1;2$y");
+    assert_eq!(line, format!("ans={want}"));
+}
