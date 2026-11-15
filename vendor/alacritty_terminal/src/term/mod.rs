@@ -51,6 +51,89 @@ fn is_regional_indicator(c: char) -> bool {
     matches!(c as u32, 0x1F1E6..=0x1F1FF)
 }
 
+/// b-terminal 패치(#536): 피부색 수식자(U+1F3FB..=U+1F3FF)인가.
+fn is_emoji_modifier(c: char) -> bool {
+    matches!(c as u32, 0x1F3FB..=0x1F3FF)
+}
+
+/// b-terminal 패치(#536): 피부색 수식자를 받는 바탕 글자(Emoji_Modifier_Base)인가. Unicode 18.0 `emoji-data.txt`의 136글자와 대조했다.
+/// Ghostty는 수식자가 앞 글자 속성을 따로 보므로(바탕이 아니면 새 글자) 같은 표를 쓴다
+fn is_emoji_modifier_base(c: char) -> bool {
+    matches!(
+        c as u32,
+        0x261D
+            | 0x26F9
+            | 0x270A..=0x270D
+            | 0x1F385
+            | 0x1F3C2..=0x1F3C4
+            | 0x1F3C7
+            | 0x1F3CA..=0x1F3CC
+            | 0x1F442..=0x1F443
+            | 0x1F446..=0x1F450
+            | 0x1F466..=0x1F478
+            | 0x1F47C
+            | 0x1F481..=0x1F483
+            | 0x1F485..=0x1F487
+            | 0x1F48F
+            | 0x1F491
+            | 0x1F4AA
+            | 0x1F574..=0x1F575
+            | 0x1F57A
+            | 0x1F590
+            | 0x1F595..=0x1F596
+            | 0x1F645..=0x1F647
+            | 0x1F64B..=0x1F64F
+            | 0x1F6A3
+            | 0x1F6B4..=0x1F6B6
+            | 0x1F6C0
+            | 0x1F6CC
+            | 0x1F90C
+            | 0x1F90F
+            | 0x1F918..=0x1F91F
+            | 0x1F926
+            | 0x1F930..=0x1F939
+            | 0x1F93C..=0x1F93E
+            | 0x1F977
+            | 0x1F9B5..=0x1F9B6
+            | 0x1F9B8..=0x1F9B9
+            | 0x1F9BB
+            | 0x1F9CD..=0x1F9CF
+            | 0x1F9D1..=0x1F9DD
+            | 0x1FAC3..=0x1FAC5
+            | 0x1FAF0..=0x1FAFA
+    )
+}
+
+/// b-terminal 패치(#536): Extended_Pictographic인가. 표를 따로 두지 않고 `unicode-segmentation`의 GB11
+/// (ExtPict Extend* ZWJ × ExtPict)로 묻는다. 이모지 표시 선택자를 받을 글자를 가릴 때만 부른다
+fn is_extended_pictographic(c: char) -> bool {
+    let mut buf = String::with_capacity(12);
+    buf.push(c);
+    buf.push('\u{200D}');
+    buf.push('\u{1F600}');
+    buf.graphemes(true).nth(1).is_none()
+}
+
+/// b-terminal 패치(#536): `last` 뒤의 이모지 표시 선택자(U+FE0E·U+FE0F)가 유효한 순서인가.
+/// 표를 따로 두지 않고 `unicode-width`의 문자열 폭으로 묻는다. 좁은 글자는 U+FE0F로 두 칸이 되면,
+/// 넓은 글자는 U+FE0E로 한 칸이 되면 유효하다(`emoji-variation-sequences.txt`의 글자와 같다).
+/// 유효하지 않으면 Ghostty처럼 그 선택자를 버린다(`x` VS16)
+fn is_valid_variation(last: char) -> bool {
+    let mut buf = String::with_capacity(8);
+    buf.push(last);
+    match last.width() {
+        Some(1) => {
+            buf.push('\u{FE0F}');
+            buf.width() == 2
+        }
+        Some(2) => {
+            buf.push('\u{FE0E}');
+            buf.width() == 1
+        }
+        _ => false,
+    }
+}
+
 /// b-terminal 패치(#180): 글자 묶음 폭 모드 번호(DECSET 2027).
 const GRAPHEME_CLUSTER_MODE: u16 = 2027;
 /// b-terminal(#311): DECLRMM(좌우 여백 모드)
@@ -825,8 +908,11 @@ impl<T> Term<T> {
         self.vi_mode_cursor.point.line += delta;
 
         let is_alt = self.mode.contains(TermMode::ALT_SCREEN);
-        self.grid.resize(!is_alt, num_lines, num_cols);
-        self.inactive_grid.resize(is_alt, num_lines, num_cols);
+        // b-terminal(#537): 다시 흘리기는 주 화면만, 자동 줄바꿈(DECAWM)이 켜져 있을 때만 한다
+        // (Ghostty `Terminal.zig` `resize`의 `.reflow = modes.get(.wraparound)`, 대체 화면은 흘리지 않음)
+        let reflow = self.mode.contains(TermMode::LINE_WRAP);
+        self.grid.resize(!is_alt && reflow, num_lines, num_cols);
+        self.inactive_grid.resize(is_alt && reflow, num_lines, num_cols);
 
         // Invalidate selection and tabs only when necessary.
         if old_cols != num_cols {
@@ -1711,7 +1797,10 @@ impl<T> Term<T> {
     /// b-terminal 패치(#180): `c`가 방금 찍은 글자와 한 글자 묶음(extended grapheme cluster)이면
     /// 그 칸에 이어 붙이고 `true`. 커서가 방금 찍은 자리 그대로일 때만 본다(CR·커서 이동·지우기·스크롤 뒤에는
     /// 앞 칸과 이어지지 않는다). 이어 붙인 결과가 U+FE0F로 두 칸이 되는 글자(❤️)면 뒤 칸을 채운다.
-    fn join_grapheme(&mut self, c: char) -> bool {
+    fn join_grapheme(&mut self, c: char) -> bool
+    where
+        T: EventListener,
+    {
         // 라틴 글자·ASCII는 묶음을 이루지 않는다(빠른 길)
         if (c as u32) < 0x300 {
             return false;
@@ -1742,28 +1831,115 @@ impl<T> Term<T> {
             return false;
         }
 
-        let widen = !cell.flags.contains(Flags::WIDE_CHAR)
-            && !self.grid.cursor.input_needs_wrap
-            && text.width() == 2;
-        self.grid[anchor.base].push_zerowidth(c);
-        if widen {
-            // 좁은 글자가 이모지 표시(U+FE0F)로 두 칸이 된다. 다음 칸이 뒤 칸이 된다
-            self.grid[anchor.base].flags.insert(Flags::WIDE_CHAR);
-            self.grid.cursor.template.flags.insert(Flags::WIDE_CHAR_SPACER);
-            self.write_at_cursor(' ');
-            self.grid.cursor.template.flags.remove(Flags::WIDE_CHAR_SPACER);
-            if self.grid.cursor.point.column + 1 < self.columns() {
-                self.grid.cursor.point.column += 1;
-            } else {
-                self.grid.cursor.input_needs_wrap = true;
-            }
-            self.grapheme_anchor = Some(GraphemeAnchor {
-                base: anchor.base,
-                cursor: self.grid.cursor.point,
-                wrap: self.grid.cursor.input_needs_wrap,
-            });
+        let was_wide = cell.flags.contains(Flags::WIDE_CHAR);
+        let last = cell.zerowidth().and_then(|z| z.last().copied()).unwrap_or(cell.c);
+        // b-terminal(#536): 피부색 수식자는 앞 글자가 수식자를 받는 바탕일 때만 붙는다. 아니면 새 글자다(Ghostty 6851줄)
+        if is_emoji_modifier(c) && !is_emoji_modifier_base(last) {
+            return false;
         }
+
+        // b-terminal(#536): 붙은 글자가 폭에 미치는 영향(Ghostty `graphemeWidthEffect`)
+        enum Effect {
+            Ignore,
+            Wide,
+            Narrow,
+            NoChange,
+        }
+        let effect = if c == '\u{FE0F}' || c == '\u{FE0E}' {
+            if !is_valid_variation(last) {
+                Effect::Ignore
+            } else if c == '\u{FE0F}' && !was_wide {
+                Effect::Wide
+            } else if c == '\u{FE0E}' && was_wide {
+                Effect::Narrow
+            } else {
+                Effect::NoChange
+            }
+        } else if !was_wide && text.width() == 2 {
+            Effect::Wide
+        } else {
+            Effect::NoChange
+        };
+
+        let base = anchor.base;
+        let columns = self.columns();
+        let margin_limit = self.margin_right.min(columns - 1) + 1;
+        let mut right_limit =
+            if self.grid.cursor.point.column.0 > self.margin_right { columns } else { margin_limit };
+        let mut new_base = base;
+        match effect {
+            Effect::Ignore => return true,
+            Effect::NoChange => (),
+            Effect::Narrow => {
+                // 넓은 글자가 좁아진다. 뒤 칸은 빈 좁은 칸이 되고 커서는 좁아진 글자 다음 칸으로 온다(Ghostty `.narrow`)
+                self.grid[base].flags.remove(Flags::WIDE_CHAR);
+                if base.column.0 + 1 < columns {
+                    self.grid[base.line][base.column + 1].flags.remove(Flags::WIDE_CHAR_SPACER);
+                }
+                self.grid.cursor.input_needs_wrap = false;
+                self.grid.cursor.point.column = Column((base.column.0 + 1).min(right_limit - 1));
+            },
+            Effect::Wide if base.column.0 + 1 >= right_limit => {
+                // 자리가 없다. 자동 줄바꿈이 꺼져 있으면 아무것도 하지 않고 붙이지도 않는다(Ghostty 2019줄)
+                if !self.mode.contains(TermMode::LINE_WRAP) {
+                    return true;
+                }
+                let base_char = cell.c;
+                let mut moved: Vec<char> = cell.zerowidth().map(|z| z.to_vec()).unwrap_or_default();
+                moved.push(c);
+                // 옛 칸은 앞 칸 자리 표시(화면 끝) 또는 빈 칸(여백)이 되고 글자는 다음 줄 왼쪽 여백으로 옮겨 넓어진다.
+                // 문자 집합은 다시 거치지 않는다(Ghostty 8156줄)
+                self.grid.cursor.point = base;
+                if right_limit == columns {
+                    self.grid.cursor.template.flags.insert(Flags::LEADING_WIDE_CHAR_SPACER);
+                }
+                self.write_at_cursor(' ');
+                self.grid.cursor.template.flags.remove(Flags::LEADING_WIDE_CHAR_SPACER);
+                self.wrapline();
+                right_limit = margin_limit;
+                new_base = self.grid.cursor.point;
+                self.grid.cursor.template.flags.insert(Flags::WIDE_CHAR);
+                self.write_at_cursor(' ');
+                self.grid.cursor.template.flags.remove(Flags::WIDE_CHAR);
+                let moved_cell = &mut self.grid[new_base];
+                moved_cell.c = base_char;
+                for ch in moved {
+                    moved_cell.push_zerowidth(ch);
+                }
+                self.finish_widen(new_base, right_limit);
+                self.set_grapheme_anchor(new_base);
+                return true;
+            },
+            Effect::Wide => {
+                self.grid[base].flags.insert(Flags::WIDE_CHAR);
+                self.finish_widen(base, right_limit);
+            },
+        }
+        self.grid[new_base].push_zerowidth(c);
+        self.set_grapheme_anchor(new_base);
         true
+    }
+
+    /// b-terminal(#536): 넓어진 글자(`base`)의 뒤 칸을 쓰고 커서를 그 다음으로 옮긴다. 줄 끝이면 줄바꿈 대기다
+    fn finish_widen(&mut self, base: Point, right_limit: usize) {
+        self.grid.cursor.point = Point::new(base.line, base.column + 1);
+        self.grid.cursor.input_needs_wrap = false;
+        self.grid.cursor.template.flags.insert(Flags::WIDE_CHAR_SPACER);
+        self.write_at_cursor(' ');
+        self.grid.cursor.template.flags.remove(Flags::WIDE_CHAR_SPACER);
+        if self.grid.cursor.point.column + 1 < right_limit {
+            self.grid.cursor.point.column += 1;
+        } else {
+            self.grid.cursor.input_needs_wrap = true;
+        }
+    }
+
+    fn set_grapheme_anchor(&mut self, base: Point) {
+        self.grapheme_anchor = Some(GraphemeAnchor {
+            base,
+            cursor: self.grid.cursor.point,
+            wrap: self.grid.cursor.input_needs_wrap,
+        });
     }
 
     #[inline]
@@ -1835,6 +2011,13 @@ impl<T: EventListener> Handler for Term<T> {
             let line = self.grid.cursor.point.line;
             if self.grid[line][column].flags.contains(Flags::WIDE_CHAR_SPACER) {
                 column.0 = column.saturating_sub(1);
+            }
+
+            // b-terminal(#536): 이모지 표시 선택자는 앞 글자가 Extended_Pictographic일 때만 붙인다(Ghostty 2176줄)
+            if (c == '\u{FE0F}' || c == '\u{FE0E}')
+                && !is_extended_pictographic(self.grid[line][column].c)
+            {
+                return;
             }
 
             self.grid[line][column].push_zerowidth(c);
