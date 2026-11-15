@@ -7228,7 +7228,12 @@ impl ApplicationHandler<UserEvent> for App {
             return;
         }
         if let Some((window, text)) = self.drop_batch.take() {
+            // 놓은 창으로 바꿔 넣고, 아래 일들이 보던 지금 창으로 되돌린다(DroppedFile 갈래와 같게)
+            let back = self.w.id();
             self.paste_dropped(window, text);
+            if let Some(back) = back {
+                self.switch_to(back);
+            }
         }
         // 1초마다 전경 프로세스를 본다(사이드바 이름, 에이전트 알아보기)
         let now = Instant::now();
