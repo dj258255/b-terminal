@@ -287,21 +287,40 @@ pub fn encode_text_key(k: &TextKey, mods: Mods, km: KeyModes) -> Vec<u8> {
     if let Some(b) = ctrl_seq(k.physical, k.utf8, k.unshifted, mods) {
         return if mods.alt { vec![0x1b, b] } else { vec![b] };
     }
+    // 글이 없으면 Alt 앞붙이기만 남는다(수식 키 없는 글자로)
     if k.utf8.is_empty() {
-        return Vec::new();
+        return legacy_alt_prefix(k, mods, km).unwrap_or_default();
     }
     if mods.ctrl {
         if let Some(bytes) = ctrl_csi_u(k.utf8, k.unshifted, mods) {
             return bytes;
         }
     }
-    // 글자 길은 1036이 켜져 있을 때만 ESC를 붙인다(Ghostty `legacyAltPrefix`)
-    let mut out = Vec::new();
-    if mods.alt && k.alt_text_prefix && km.alt_esc_prefix {
-        out.push(0x1b);
+    if let Some(bytes) = legacy_alt_prefix(k, mods, km) {
+        return bytes;
     }
-    out.extend_from_slice(k.utf8.as_bytes());
-    out
+    k.utf8.as_bytes().to_vec()
+}
+
+/// Alt를 누른 글자 앞에 ESC를 붙인다(Ghostty `legacyAltPrefix` 552~620줄). 1036이 꺼져 있거나 Option을 Alt로 쓰지 않으면 없다.
+/// 글이 한 바이트면 그 글 그대로(Shift로 만든 `>` 같은 문장 부호를 지키려고)이고, 아니면 수식 키 없는 글자(`unshifted`)를 쓴다.
+/// macOS에서 Option이 `≈`처럼 바꾼 글 대신 눌린 키의 글자를 보내기 위해서다. `unshifted`가 없으면 글 전체다
+fn legacy_alt_prefix(k: &TextKey, mods: Mods, km: KeyModes) -> Option<Vec<u8>> {
+    if !mods.alt || !k.alt_text_prefix || !km.alt_esc_prefix {
+        return None;
+    }
+    let mut out = vec![0x1b];
+    if let [b] = k.utf8.as_bytes() {
+        out.push(*b);
+    } else if k.unshifted > 0 {
+        let mut buf = [0u8; 4];
+        out.extend_from_slice(char::from_u32(k.unshifted)?.encode_utf8(&mut buf).as_bytes());
+    } else if !k.utf8.is_empty() {
+        out.extend_from_slice(k.utf8.as_bytes());
+    } else {
+        return None;
+    }
+    Some(out)
 }
 
 /// Ctrl이 눌렸는데 제어 바이트가 없는 글자를 fixterms `CSI 코드 ; 수식 u`로(Ghostty `legacy()`의 `csiu` 블록).

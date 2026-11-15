@@ -225,7 +225,6 @@ fn legacy_alt_plus_c() {
 
 // 2118줄
 #[test]
-#[ignore = "차이 A"]
 fn legacy_alt_plus_e_only_unshifted() {
     let e = ev(KeyCode::KeyE).mods(ALT).unshifted('e');
     assert_eq!(run(&e, alt_esc(true)), b"\x1be");
@@ -247,7 +246,6 @@ fn legacy_alt_plus_unicode() {
 
 // 2161줄
 #[test]
-#[ignore = "차이 A"]
 fn legacy_alt_plus_unicode_only_unshifted() {
     let e = unidentified().mods(ALT).unshifted('界');
     assert_eq!(run(&e, alt_esc(true)), "\u{1b}界".as_bytes());
@@ -262,7 +260,6 @@ fn legacy_alt_plus_unicode_without_unshifted() {
 
 // 2189줄(Ghostty는 macOS에서만 돈다. 이 인코더는 macOS 앱의 것이라 어디서든 같은 규칙을 쓴다)
 #[test]
-#[ignore = "차이 A"]
 fn legacy_alt_plus_x_macos() {
     let e = ev(KeyCode::KeyC).mods(ALT).utf8("≈").unshifted('c');
     assert_eq!(run(&e, alt_esc(true)), b"\x1bc");
