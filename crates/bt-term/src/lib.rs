@@ -10,6 +10,7 @@ pub mod kitty_anim;
 pub mod kitty_clip;
 pub mod kitty_color;
 pub mod kitty_key;
+pub mod kitty_notify;
 pub mod kitty_unicode;
 pub mod latency;
 pub mod links;

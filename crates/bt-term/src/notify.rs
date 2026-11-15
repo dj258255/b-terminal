@@ -102,6 +102,8 @@ pub enum Signal {
     KittyPasteEvents(bool),
     /// 모드 5522의 DECRQM(`CSI ? 5522 $ p`)(#325)
     KittyPasteQuery,
+    /// kitty 알림(OSC 99)의 지원 질의(`p=?`)에 돌려줄 답 바이트(끝맺음까지). 세션이 PTY에 쓴다(#561)
+    KittyNotifyReply(Vec<u8>),
     /// OSC 133의 명령 하나를 옵션까지 읽은 것(#329). 같은 OSC에서 `Prompt`보다 먼저 나온다. 세션이 엔진 줄 표시·fresh-line에 적용한다
     Semantic(crate::osc133::SemanticPrompt),
 }
@@ -135,8 +137,8 @@ pub enum PromptMark {
 
 /// OSC 하나의 상한. 넘으면 버린다(상한은 모으기 전에 본다)
 const MAX_OSC: usize = 8 * 1024;
-const MAX_TITLE: usize = 120;
-const MAX_BODY: usize = 500;
+pub(crate) const MAX_TITLE: usize = 120;
+pub(crate) const MAX_BODY: usize = 500;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 enum St {
@@ -197,6 +199,8 @@ pub struct Scanner {
     dcs_kind: Option<DcsKind>,
     /// 본문이 상한을 넘어 버리는 중(DECRQSS는 두 바이트, XTGETTCAP은 `MAX_XTGETTCAP`)
     dcs_over: bool,
+    /// kitty 알림(OSC 99)의 쌓인 조각. 스캐너는 세션마다 하나라 쌓임도 세션마다 하나다(#561)
+    pub(crate) kitty_notify: crate::kitty_notify::Assembler,
 }
 
 /// CSI 매개변수를 모으는 상한. 이만큼 차면 잘린 것으로 보고 믿지 않는다
@@ -470,6 +474,18 @@ impl Scanner {
 
     fn finish(&mut self, out: &mut Vec<(usize, Signal)>, at: usize, bel: bool) {
         let raw = std::mem::take(&mut self.buf);
+        // kitty 알림(OSC 99, #561): 조각을 쌓는 상태가 필요해 여기서 다룬다. 명세는 UTF-8을 요구하므로(Ghostty 파서도 버린다)
+        // 깨진 바이트는 글자로 바꾸지 않고 조각째 버린다
+        if let Some(rest) = raw.strip_prefix(b"99;") {
+            if let Ok(rest) = std::str::from_utf8(rest) {
+                match self.kitty_notify.packet(rest, bel) {
+                    crate::kitty_notify::Outcome::Nothing => {}
+                    crate::kitty_notify::Outcome::Notify(n) => out.push((at, Signal::Notify(n))),
+                    crate::kitty_notify::Outcome::Reply(r) => out.push((at, Signal::KittyNotifyReply(r))),
+                }
+            }
+            return;
+        }
         let text = String::from_utf8_lossy(&raw);
         // OSC 133(#329): 옵션까지 읽은 신호를 먼저 낸다. 엔진이 fresh-line으로 커서를 옮긴 뒤에 `Prompt`가 그 줄을 적는다
         if let Some(sp) = text.strip_prefix("133;").and_then(crate::osc133::parse) {
@@ -599,30 +615,6 @@ fn parse_osc(s: &str) -> Option<Signal> {
             let (title, body) = (clean(title, MAX_TITLE), clean(body, MAX_BODY));
             (!title.is_empty() || !body.is_empty()).then_some(Signal::Notify(Notification { title, body }))
         }
-        "99" => {
-            // kitty: 99;메타데이터;내용. p=body면 본문, 아니면 제목. 여러 조각(d=0)은 합치지 않고 각각 알린다
-            let (meta, payload) = rest.split_once(';').unwrap_or(("", rest));
-            if meta.split(':').any(|kv| kv == "e=1") {
-                // base64 내용은 풀지 않는다
-                return None;
-            }
-            let is_body = meta.split(':').any(|kv| kv == "p=body");
-            let text = clean(payload, MAX_BODY);
-            if text.is_empty() {
-                return None;
-            }
-            Some(Signal::Notify(if is_body {
-                Notification {
-                    title: String::new(),
-                    body: text,
-                }
-            } else {
-                Notification {
-                    title: truncate(&text, MAX_TITLE),
-                    body: String::new(),
-                }
-            }))
-        }
         "133" | "633" => {
             let mut parts = rest.split(';');
             let kind = parts.next()?;
@@ -686,7 +678,7 @@ fn parse_osc(s: &str) -> Option<Signal> {
 }
 
 /// 제어 문자를 지우고 앞뒤 공백을 자른 뒤 길이(글자 수)를 자른다
-fn clean(s: &str, max: usize) -> String {
+pub(crate) fn clean(s: &str, max: usize) -> String {
     let filtered: String = s.chars().map(|c| if c.is_control() { ' ' } else { c }).collect();
     truncate(filtered.trim(), max)
 }
@@ -1002,7 +994,10 @@ mod tests {
             notes("\x1b]777;notify;make;빌드가 끝났습니다\x1b\\".as_bytes()),
             vec![n("make", "빌드가 끝났습니다")]
         );
-        assert_eq!(notes(b"\x1b]99;i=1:d=0;Build done\x1b\\"), vec![n("Build done", "")]);
+        // d=0은 아직 끝이 아니다(kitty 명세 52~63줄): 쌓아 두고 알리지 않는다. d를 생략하거나 d=1이면 알린다(#561)
+        assert!(notes(b"\x1b]99;i=1:d=0;Build done\x1b\\").is_empty());
+        assert_eq!(notes(b"\x1b]99;i=1;Build done\x1b\\"), vec![n("Build done", "")]);
+        assert_eq!(notes(b"\x1b]99;;Build done\x1b\\"), vec![n("Build done", "")]);
         assert_eq!(notes(b"\x1b]99;i=1:p=body;all green\x07"), vec![n("", "all green")]);
     }
 
@@ -1202,3 +1197,7 @@ mod tests {
 #[cfg(test)]
 #[path = "notify_dcs_tests.rs"]
 mod dcs_tests;
+
+#[cfg(test)]
+#[path = "kitty_notify_tests.rs"]
+mod kitty_notify_tests;

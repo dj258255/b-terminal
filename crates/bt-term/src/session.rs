@@ -1058,6 +1058,8 @@ impl Session {
                                             let _ = w.flush();
                                         }
                                     }
+                                    // kitty 알림(OSC 99)의 지원 질의 답(#561)
+                                    Signal::KittyNotifyReply(reply) => write_reply(&thread_writer, &reply),
                                     other => events.push(signal_event(other)),
                                 }
                             }
@@ -1581,6 +1583,7 @@ fn signal_event(sig: Signal) -> SessionEvent {
         | Signal::ModeRestore(_)
         | Signal::DcsQuery(_)
         | Signal::KittyColor { .. }
+        | Signal::KittyNotifyReply(_)
         | Signal::WindowResize { .. } => SessionEvent::Output,
     }
 }
@@ -2164,6 +2167,7 @@ impl Emulator {
                     }
                 }
                 Signal::Semantic(sp) => sp.apply(&mut self.term), // #329
+                Signal::KittyNotifyReply(r) => self.replies.extend(r), // #561
                 _ => {}
             }
             notes.push(sig);
