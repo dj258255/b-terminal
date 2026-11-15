@@ -41,7 +41,7 @@ use winit::event_loop::EventLoop;
 const USAGE: &str =
     "사용: b-terminal [--config-file <파일>] [--config-default-files=false] [--show-config] [--list-themes] [--cwd <폴더>] [-e <프로그램> [인자...]]
 
-설정: ~/.config/b-terminal/config (Ghostty와 같은 문법). 테마 905개를 넣어 두었습니다(--list-themes).
+설정: ~/.config/b-terminal/config (Ghostty와 같은 문법). 테마 907개를 넣어 두었습니다(--list-themes).
 --config-default-files=false: 위 기본 설정 파일을 읽지 않습니다(--config-file로 준 파일은 읽습니다).";
 
 /// 명령줄에서 읽은 것

@@ -34,7 +34,7 @@ AI 에이전트를 다루는 화면(에이전트 목록·상태·훅·구독 사
 
 ### 다른 점
 
-- **Ghostty 없이 섭니다.** 테마 905개와 글꼴(JetBrains Mono, Nerd Font 기호)을 앱에 넣어 두어 Ghostty가 없어도 같은 설정이 같은 화면을 냅니다([ADR-006](decisions.md#adr-006-ghostty는-본보기일-뿐-기대지-않는다-ai-cli가-가장-잘-도는-우리-터미널)).
+- **Ghostty 없이 섭니다.** 테마 907개와 글꼴(JetBrains Mono, Nerd Font 기호)을 앱에 넣어 두어 Ghostty가 없어도 같은 설정이 같은 화면을 냅니다([ADR-006](decisions.md#adr-006-ghostty는-본보기일-뿐-기대지-않는다-ai-cli가-가장-잘-도는-우리-터미널)).
 - **VT 엔진이 다릅니다.** Ghostty의 엔진 대신 `alacritty_terminal`을 씁니다. 그래서 해석이 다른 곳이 있을 수 있습니다([ADR-001](decisions.md#adr-001-vt-엔진은-alacritty_terminal로-시작하고-bt-term-밖으로-엔진-타입을-내보내지-않는다)).
 - **`TERM` 기본이 `xterm-256color`입니다.** Ghostty의 `xterm-ghostty` terminfo는 많은 시스템에 없어서 `vim`·`less`가 깨질 수 있기 때문입니다([ADR-016](decisions.md#adr-016-설정이-칸의-환경과-시작-입력을-정한다-term은-xterm-256color를-지키고-input에는-상한을-둔다)).
 - **원격 조종 `btctl`이 있습니다.** kitty·WezTerm의 원격 조종과 같은 성격입니다. 탭 목록·새 탭·글 넣기·화면 읽기·알림, 셸 통합이 켜진 탭에서 명령 돌리고 결과 받기(`btctl run`)를 합니다. 제어 소켓은 같은 사용자만 닿습니다.
