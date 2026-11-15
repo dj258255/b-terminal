@@ -85,11 +85,11 @@
 
 ## 13. 한글·이모지를 지우면 반쪽 글자가 남는다
 
-- 언제: 2026-11-15, #524. Ghostty `Terminal.zig`의 단위 시험 154개를 같은 escape 바이트로 엔진에 넣어 견줘 찾았다. 실제 창과 셸·vim에서는 재 보지 않았다
+- 언제: 2026-11-15, #524. Ghostty `Terminal.zig`의 단위 시험 154개를 같은 escape 바이트로 엔진에 넣어 견줘 찾았다. 격리한 실제 창(`zsh -f`)에서는 `printf`로 고친 뒤를 확인했고(아래), 셸 줄 편집이나 vim에서 지워 보지는 않았다
 - 현상: `😀a😀b😀`(8열)에서 두 번째 칸부터 ECH 3(`ESC[1;2H ESC[3X`)를 하면 Ghostty는 `     b😀`인데 우리는 `😀    b😀`처럼 첫 이모지의 앞 칸이 남았다. DCH 3은 `😀b😀`(Ghostty `  b😀`), `AB橋DE`에서 4열부터 EL 0은 `AB橋`(Ghostty `AB`), ED 0도 같다. 줄을 넘어 이어진 넓은 글자도 줄 끝의 앞 칸 자리 표시가 남았다. 셸 줄 편집(`ESC[P`·`ESC[K`)이나 vim에서 한글을 지울 때 반쪽 글자가 보일 수 있다
 - 원인: `erase_chars`·`delete_chars`·`erase_line`·`clear_screen`(ED 0)이 지우는 구간의 경계가 넓은 글자(앞 칸 `WIDE_CHAR`, 뒤 칸 `WIDE_CHAR_SPACER`)를 가르는지 보지 않았다. 앞 칸만 지우면 뒤 칸이, 뒤 칸만 지우면 앞 칸이 짝 없이 남는다
 - 확인하는 법: 엔진 단위 시험 `crates/bt-term/tests/ghostty_terminal.rs`의 `erase_chars_wide_char_boundary_conditions` 같은 시험. 격자에서 뒤 칸 없는 앞 칸이나 앞 칸 없는 뒤 칸을 직접 찾는다(`plain`은 짝 잃은 뒤 칸을 빈칸으로 그려 가린다)
-- b-terminal: Ghostty `Screen.splitCellBoundary`와 같게 구간 양 끝의 경계를 먼저 가른다. 경계의 왼쪽 칸이 넓은 글자의 앞 칸이면 두 칸을 함께 지운다. ECH는 구간 끝이 앞 칸이면 뒤 칸까지 늘리고, EL 0·ED 0은 커서가 뒤 칸이면 앞 칸부터, EL 1·ED 1은 커서가 앞 칸이면 뒤 칸까지 지운다. 줄 끝 앞 칸 자리 표시와 이어진 줄 표시도 푼다. 단위 시험으로만 확인했다
+- b-terminal: Ghostty `Screen.splitCellBoundary`와 같게 구간 양 끝의 경계를 먼저 가른다. 경계의 왼쪽 칸이 넓은 글자의 앞 칸이면 두 칸을 함께 지운다. ECH는 구간 끝이 앞 칸이면 뒤 칸까지 늘리고, EL 0·ED 0은 커서가 뒤 칸이면 앞 칸부터, EL 1·ED 1은 커서가 앞 칸이면 뒤 칸까지 지운다. 줄 끝 앞 칸 자리 표시와 이어진 줄 표시도 푼다. 격리한 실제 창에서 `printf 'AB가CD\033[4G\033[K\n'`이 고치기 전 `AB가`, 고친 뒤 `AB`로 나왔다
 
 ## 14. 칸이 1열까지 줄어든 채 한글·이모지가 찍히면 칸이 멈춘다
 
