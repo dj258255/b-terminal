@@ -9,7 +9,7 @@ repository.workspace = true
 [dependencies]
 alacritty_terminal = "0.26"
 anyhow.workspace = true
-bt-core = { version = "0.66.0", path = "../bt-core" }
+bt-core = { version = "0.67.0", path = "../bt-core" }
 log.workspace = true
 miniz_oxide = "0.8"
 parking_lot.workspace = true
