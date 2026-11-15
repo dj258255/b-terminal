@@ -185,6 +185,8 @@ struct Writer<'a, T> {
     term: &'a Term<T>,
     theme: &'a Theme,
     emit: Emit,
+    /// HTML 앵커가 열려 있다(막은 링크는 열지 않으므로 닫지도 않는다)
+    anchor_open: bool,
 }
 
 impl<T> Writer<'_, T> {
@@ -315,23 +317,39 @@ impl<T> Writer<'_, T> {
                     self.out.push_str(&format!("\x1b]8;id={id};{}\x1b\\", link.uri()));
                 }
             }
-            // 주소의 바이트마다 글자처럼 이스케이프한다(Ghostty `formatHyperlinkOpen`: `for (uri) |byte| writeCodepoint`)
+            // 안전한 scheme(http·https·mailto)일 때만 앵커를 만든다. 아니면 링크 글만 낸다.
+            // 주소는 글자마다 이스케이프한다(Ghostty는 바이트마다 해서 비ASCII가 깨지고 scheme도 거르지 않는다)
             Emit::Html => {
-                self.out.push_str("<a href=\"");
-                for b in link.uri().bytes() {
-                    self.codepoint(b as char);
+                if is_safe_scheme(link.uri()) {
+                    self.out.push_str("<a href=\"");
+                    for c in link.uri().chars() {
+                        self.codepoint(c);
+                    }
+                    self.out.push_str("\">");
+                    self.anchor_open = true;
                 }
-                self.out.push_str("\">");
             }
         }
     }
 
     fn link_close(&mut self) {
-        self.out.push_str(match self.emit {
-            Emit::Vt => "\x1b]8;;\x1b\\",
-            Emit::Html => "</a>",
-        });
+        match self.emit {
+            Emit::Vt => self.out.push_str("\x1b]8;;\x1b\\"),
+            Emit::Html => {
+                if self.anchor_open {
+                    self.out.push_str("</a>");
+                    self.anchor_open = false;
+                }
+            }
+        }
     }
+}
+
+/// HTML 앵커로 만들어도 되는 주소인가: scheme이 http·https·mailto(대소문자 무시)일 때만.
+/// `javascript:`·`data:`·`vbscript:` 같은 주소는 붙여넣은 편집기에서 실행될 수 있다
+fn is_safe_scheme(uri: &str) -> bool {
+    let lower = uri.to_ascii_lowercase();
+    ["http:", "https:", "mailto:"].iter().any(|p| lower.starts_with(p))
 }
 
 /// 엔진이 id 없는 OSC 8에 붙이는 번호 id(`<숫자>_alacritty`)
@@ -380,6 +398,7 @@ pub(crate) fn format_range<T: EventListener>(
         term,
         theme,
         emit: opts.emit,
+        anchor_open: false,
     };
 
     // 앞머리: 바탕·글자 기본색
@@ -796,6 +815,52 @@ mod tests {
             format!(
                 "{WRAP}<div style=\"display: inline;font-weight: bold;\"><a href=\"https://example.com\">bold</div> plain</a></div>"
             )
+        );
+    }
+
+    // 보안: 프로그램이 심은 주소가 붙여넣은 편집기에서 실행되지 않게 http·https·mailto만 앵커로 만든다(Ghostty는 거르지 않는다)
+    #[test]
+    fn html_anchor_only_for_safe_schemes() {
+        for uri in [
+            "http://a.example/x",
+            "https://a.example/x",
+            "mailto:a@b.example",
+            "HTTPS://A.EXAMPLE",
+            "MailTo:a@b",
+        ] {
+            let out = html(&format!("\x1b]8;;{uri}\x1b\\link\x1b]8;;\x1b\\"));
+            assert_eq!(out, format!("{WRAP}<a href=\"{uri}\">link</a></div>"), "{uri}");
+        }
+        for uri in [
+            "javascript:alert(1)",
+            "JaVaScRiPt:alert(1)",
+            "data:text/html,<b>x</b>",
+            "vbscript:x",
+            "file:///etc/passwd",
+            "//evil.example/x",
+            "/relative",
+            " javascript:alert(1)",
+        ] {
+            let out = html(&format!("\x1b]8;;{uri}\x1b\\link\x1b]8;;\x1b\\ ok"));
+            assert_eq!(out, format!("{WRAP}link ok</div>"), "앵커 없이 글만: {uri}");
+        }
+        // 막힌 링크가 스타일과 섞여도 짝이 맞는다
+        assert_eq!(
+            html("\x1b]8;;javascript:x\x1b\\\x1b[1mb\x1b[0m\x1b]8;;\x1b\\"),
+            format!("{WRAP}<div style=\"display: inline;font-weight: bold;\">b</div></div>")
+        );
+    }
+
+    // 주소가 비ASCII여도 글자가 깨지지 않고, 속성값 안의 특수 문자는 이스케이프된다
+    #[test]
+    fn html_anchor_uri_keeps_unicode_and_escapes_attribute_characters() {
+        assert_eq!(
+            html("\x1b]8;;https://a.example/한글\x1b\\x\x1b]8;;\x1b\\"),
+            format!("{WRAP}<a href=\"https://a.example/&#54620;&#44544;\">x</a></div>")
+        );
+        assert_eq!(
+            html("\x1b]8;;https://a.example/?q=\"><script>'&\x1b\\x\x1b]8;;\x1b\\"),
+            format!("{WRAP}<a href=\"https://a.example/?q=&quot;&gt;&lt;script&gt;&#39;&amp;\">x</a></div>")
         );
     }
 
