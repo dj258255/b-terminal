@@ -908,8 +908,11 @@ impl<T> Term<T> {
         self.vi_mode_cursor.point.line += delta;
 
         let is_alt = self.mode.contains(TermMode::ALT_SCREEN);
-        self.grid.resize(!is_alt, num_lines, num_cols);
-        self.inactive_grid.resize(is_alt, num_lines, num_cols);
+        // b-terminal(#537): 다시 흘리기는 주 화면만, 자동 줄바꿈(DECAWM)이 켜져 있을 때만 한다
+        // (Ghostty `Terminal.zig` `resize`의 `.reflow = modes.get(.wraparound)`, 대체 화면은 흘리지 않음)
+        let reflow = self.mode.contains(TermMode::LINE_WRAP);
+        self.grid.resize(!is_alt && reflow, num_lines, num_cols);
+        self.inactive_grid.resize(is_alt && reflow, num_lines, num_cols);
 
         // Invalidate selection and tabs only when necessary.
         if old_cols != num_cols {

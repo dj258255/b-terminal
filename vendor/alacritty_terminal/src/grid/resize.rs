@@ -3,11 +3,22 @@
 use std::cmp::{Ordering, max, min};
 use std::mem;
 
-use crate::index::{Boundary, Column, Line};
+use crate::index::{Boundary, Column, Line, Point};
 use crate::term::cell::{Flags, ResetDiscriminant};
 
 use crate::grid::row::Row;
 use crate::grid::{Dimensions, Grid, GridCell};
+
+/// 저장 커서가 있는 한 줄(이어진 줄들)의 자리
+#[derive(Clone, Copy)]
+struct SavedSpot {
+    /// 그 아래에 있는 한 줄의 수
+    below: usize,
+    /// 그 위에 있는 한 줄의 수(스크롤백 포함)
+    above: usize,
+    /// 한 줄 안의 칸 위치
+    offset: usize,
+}
 
 impl<T: GridCell + Default + PartialEq> Grid<T> {
     /// Resize the grid's width and/or height.
@@ -25,10 +36,32 @@ impl<T: GridCell + Default + PartialEq> Grid<T> {
             Ordering::Equal => (),
         }
 
+        // b-terminal(#537): 저장 커서도 다시 흘릴 때 따라간다(Ghostty `Screen.resize`의 `saved_cursor_pin`).
+        // 줄 수를 바꾼 뒤의 구조에서 자리를 적어 둔다
+        let growing = self.columns < columns;
+        let saved_spot = if self.columns != columns && reflow { self.saved_cursor_spot() } else { None };
+
+        let mut trimmed = 0;
         match self.columns.cmp(&columns) {
             Ordering::Less => self.grow_columns(reflow, columns),
-            Ordering::Greater => self.shrink_columns(reflow, columns),
+            Ordering::Greater => trimmed = self.shrink_columns(reflow, columns, saved_spot.map(|s| s.below)),
             Ordering::Equal => (),
+        }
+
+        if let Some(spot) = saved_spot {
+            self.restore_saved_cursor_spot(spot, trimmed, growing);
+        }
+
+        // b-terminal(#537): 줄바꿈 대기인 커서가 크기를 바꾼 뒤 줄 끝이 아니면 대기를 풀고 한 칸 오른쪽으로 간다.
+        // 저장 커서도 같다(Ghostty `Screen.zig` 2240·2282줄)
+        let last = Column(columns - 1);
+        if self.cursor.input_needs_wrap && self.cursor.point.column != last {
+            self.cursor.input_needs_wrap = false;
+            self.cursor.point.column = min(self.cursor.point.column + 1, last);
+        }
+        if self.saved_cursor.input_needs_wrap && self.saved_cursor.point.column != last {
+            self.saved_cursor.input_needs_wrap = false;
+            self.saved_cursor.point.column = min(self.saved_cursor.point.column + 1, last);
         }
 
         // Restore template cell.
@@ -242,7 +275,17 @@ impl<T: GridCell + Default + PartialEq> Grid<T> {
     }
 
     /// Shrink number of columns in each row, reflowing if necessary.
-    fn shrink_columns(&mut self, reflow: bool, columns: usize) {
+    ///
+    /// b-terminal(#537): 줄이 늘어난 만큼, 커서(와 저장 커서) 아래의 빈 줄을 먼저 없앤다(Ghostty 시험
+    /// `Screen: resize less cols with reflow but row space`, Screen.zig 8652줄: 아래에 빈 줄이 있으면 위 줄을 스크롤백으로 밀지 않는다).
+    /// 없앤 줄 수를 돌려준다. `protect_below`는 저장 커서의 줄 아래에 있는 한 줄(논리 줄)의 수로, 그보다 많이는 없애지 않는다
+    fn shrink_columns(
+        &mut self,
+        reflow: bool,
+        columns: usize,
+        protect_below: Option<usize>,
+    ) -> usize {
+        let old_len = self.raw.len();
         self.columns = columns;
 
         // Remove the linewrap special case, by moving the cursor outside of the grid.
@@ -365,6 +408,31 @@ impl<T: GridCell + Default + PartialEq> Grid<T> {
 
         // Reverse iterator and use it as the new grid storage.
         let mut reversed: Vec<Row<T>> = new_raw.drain(..).rev().collect();
+
+        // 줄이 늘어난 만큼 커서 아래의 빈 줄을 없앤다(저장소는 0번이 맨 아래 줄)
+        let mut trimmed = 0;
+        if reflow && reversed.len() > old_len {
+            let below_cursor = (self.lines as i32 - 1 - self.cursor.point.line.0).max(0) as usize;
+            let limit = min(
+                min(reversed.len() - old_len, below_cursor),
+                protect_below.unwrap_or(usize::MAX),
+            );
+            let wrapped = |row: &Row<T>| {
+                row.len() > 0 && row[Column(row.len() - 1)].flags().contains(Flags::WRAPLINE)
+            };
+            while trimmed < limit
+                && reversed[trimmed].is_clear()
+                && !wrapped(&reversed[trimmed])
+                && reversed.get(trimmed + 1).is_none_or(|above| !wrapped(above))
+            {
+                trimmed += 1;
+            }
+            if trimmed > 0 {
+                reversed.drain(..trimmed);
+                self.cursor.point.line += trimmed;
+            }
+        }
+
         reversed.truncate(self.max_scroll_limit + self.lines);
         self.raw.replace_inner(reversed);
 
@@ -385,5 +453,88 @@ impl<T: GridCell + Default + PartialEq> Grid<T> {
 
         // Clamp the saved cursor to the grid.
         self.saved_cursor.point.column = min(self.saved_cursor.point.column, Column(columns - 1));
+
+        trimmed
+    }
+
+    /// 줄 `line`의 마지막 칸이 이어짐 표시(WRAPLINE)를 가졌는가
+    fn row_wrapped(&self, line: i32) -> bool {
+        let row = &self[Line(line)];
+        row.len() > 0 && row[Column(row.len() - 1)].flags().contains(Flags::WRAPLINE)
+    }
+
+    /// 줄의 글자 칸 수(끝의 넓은 글자 자리 채움 칸은 뺀다)
+    fn row_content_len(&self, line: i32) -> usize {
+        let row = &self[Line(line)];
+        let n = row.len();
+        if n > 0 && row[Column(n - 1)].flags().contains(Flags::LEADING_WIDE_CHAR_SPACER) {
+            n - 1
+        } else {
+            n
+        }
+    }
+
+    /// b-terminal(#537): 저장 커서가 있는 한 줄(이어진 줄들)을 (그 아래에 있는 한 줄의 수, 한 줄 안의 칸 위치)로 적는다.
+    /// 줄을 줄일 때는 아래에서부터 센다(스크롤백이 잘려도 흔들리지 않게). 넓힐 때는 위에서부터 센다
+    /// (합쳐진 줄 때문에 맨 아래에 채워 넣는 빈 줄이 아래에서부터 센 값을 어긋나게 한다)
+    fn saved_cursor_spot(&self) -> Option<SavedSpot> {
+        let point = self.saved_cursor.point;
+        let top = -(self.history_size() as i32);
+        let bottom = self.lines as i32 - 1;
+        if point.line.0 < top || point.line.0 > bottom {
+            return None;
+        }
+
+        let mut start = point.line.0;
+        while start > top && self.row_wrapped(start - 1) {
+            start -= 1;
+        }
+        let mut offset = point.column.0;
+        for l in start..point.line.0 {
+            offset += self.row_content_len(l);
+        }
+        let below = ((start + 1)..=bottom).filter(|&l| !self.row_wrapped(l - 1)).count();
+        let above = (top..start).filter(|&l| l == top || !self.row_wrapped(l - 1)).count();
+        Some(SavedSpot { below, above, offset })
+    }
+
+    /// `saved_cursor_spot`로 적어 둔 자리를 다시 흘린 격자에서 찾아 저장 커서에 쓴다.
+    /// 활성 영역 밖이면 (0, 0)에 대기 없음(Ghostty `Screen.zig` 2284줄)
+    fn restore_saved_cursor_spot(&mut self, spot: SavedSpot, trimmed: usize, growing: bool) {
+        let mut offset = spot.offset;
+        let below = spot.below.saturating_sub(trimmed);
+        let top = -(self.history_size() as i32);
+        let bottom = self.lines as i32 - 1;
+
+        let starts: Vec<i32> =
+            (top..=bottom).filter(|&l| l == top || !self.row_wrapped(l - 1)).collect();
+        let found = if growing {
+            starts.get(spot.above).copied()
+        } else {
+            starts.len().checked_sub(below + 1).map(|i| starts[i])
+        };
+
+        let Some(mut line) = found else {
+            self.saved_cursor.point = Point::new(Line(0), Column(0));
+            self.saved_cursor.input_needs_wrap = false;
+            return;
+        };
+
+        let last_col = self.columns - 1;
+        let column = loop {
+            let len = self.row_content_len(line);
+            if offset < len || line == bottom || !self.row_wrapped(line) {
+                break min(offset, last_col);
+            }
+            offset -= len;
+            line += 1;
+        };
+
+        if line < 0 {
+            self.saved_cursor.point = Point::new(Line(0), Column(0));
+            self.saved_cursor.input_needs_wrap = false;
+        } else {
+            self.saved_cursor.point = Point::new(Line(line), Column(column));
+        }
     }
 }
