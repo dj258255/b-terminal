@@ -1496,7 +1496,13 @@ impl Session {
         let Inner {
             term, search, graphics, ..
         } = &mut *g;
-        snapshot_of(term, &theme, search.as_mut(), Some(graphics))
+        snapshot_of(term, &theme, search.as_mut(), Some(graphics), std::time::Instant::now())
+    }
+
+    /// 마지막 `snapshot`이 본 보이는 kitty 애니메이션 가운데 가장 이른 다음 프레임 시각(#554). 보이는 애니메이션이 없으면 없다.
+    /// 앱은 그 시각에 이 칸의 창을 다시 그린다. 스크롤로 밖에 나간 그림·다른 탭은 `snapshot`이 보지 않으므로 시계를 돌리지 않는다
+    pub fn kitty_next_frame(&self) -> Option<std::time::Instant> {
+        self.inner.lock().graphics.next_frame()
     }
 
     /// 색 테마를 바꾼다(설정 다시 읽기). 다음 화면부터 새 색으로 푼다
@@ -1783,6 +1789,7 @@ fn snapshot_of<T: EventListener>(
     theme: &Theme,
     search: Option<&mut crate::search::Search>,
     graphics: Option<&mut crate::graphics::Graphics>,
+    now: std::time::Instant,
 ) -> Screen {
     let cols = term.columns();
     let rows = term.screen_lines();
@@ -1871,6 +1878,9 @@ fn snapshot_of<T: EventListener>(
         if f.contains(Flags::HIDDEN) {
             flags.insert(CellFlags::HIDDEN);
         }
+        if src.c == crate::kitty_unicode::PLACEHOLDER {
+            flags.insert(CellFlags::PLACEHOLDER);
+        }
         if selection.is_some_and(|s| s.contains(indexed.point)) {
             flags.insert(CellFlags::SELECTED);
         }
@@ -1946,7 +1956,7 @@ fn snapshot_of<T: EventListener>(
         background,
         chrome_background,
         links,
-        images: graphics.map(|g| visible_images(term, g)).unwrap_or_default(),
+        images: graphics.map(|g| visible_images(term, g, now)).unwrap_or_default(),
     }
 }
 
@@ -1981,7 +1991,11 @@ fn graphics_command<T: EventListener>(
 }
 
 /// 지금 보이는 줄에 걸친 kitty 그림들. 대체 화면을 나왔으면 그 화면의 그림을 지운다
-fn visible_images<T>(term: &Term<T>, g: &mut crate::graphics::Graphics) -> Vec<crate::screen::ImageView> {
+fn visible_images<T>(
+    term: &Term<T>,
+    g: &mut crate::graphics::Graphics,
+    now: std::time::Instant,
+) -> Vec<crate::screen::ImageView> {
     let alt = term.mode().contains(TermMode::ALT_SCREEN);
     if !alt {
         g.left_alt_screen();
@@ -1993,8 +2007,9 @@ fn visible_images<T>(term: &Term<T>, g: &mut crate::graphics::Graphics) -> Vec<c
     let budget = 4 * rows * cols;
     let mut used = 0i64;
     let mut seen = std::collections::HashSet::new();
-    let mut picked: Vec<&crate::graphics::Placement> = Vec::new();
-    for p in g.placements.iter().rev().filter(|p| p.alt == alt) {
+    let mut picked: Vec<crate::graphics::Placement> = Vec::new();
+    // 가상 배치와 상대 배치는 자기 칸이 없다. 아래 `extra_images`가 자리표시 칸과 부모 자리에서 정한다(#553)
+    for p in g.placements.iter().rev().filter(|p| p.alt == alt && p.is_pin()) {
         let row = p.line - top;
         // 같은 그림을 같은 자리·모양으로 두 번 그리지 않는다(자리 번호만 다른 겹침). 잘라내기·오프셋·z가 다르면 다른 그림이다
         if row + p.rows as i64 <= 0
@@ -2010,10 +2025,21 @@ fn visible_images<T>(term: &Term<T>, g: &mut crate::graphics::Graphics) -> Vec<c
             break;
         }
         used += area;
-        picked.push(p);
+        picked.push(p.clone());
     }
     picked.reverse();
-    picked
+    // 자리표시 글자가 보여 주는 가상 배치 조각과 상대 배치(#553). 그릴 양의 상한을 같이 쓴다
+    let mut share = crate::kitty_unicode::Budget { used, budget };
+    let extra = crate::kitty_unicode::extra_images(term, g, alt, top, &mut share);
+    // 보이는 그림만 지금 시각의 프레임으로 옮긴다(보이지 않는 그림은 시계를 돌리지 않는다, #554).
+    // 자리표시 조각·상대 배치로 보이는 그림도 같이 돌리고, 돌린 뒤의 프레임을 담는다
+    let shown: Vec<u32> = picked
+        .iter()
+        .map(|p| p.image)
+        .chain(extra.iter().map(|(id, _)| *id))
+        .collect();
+    g.tick_visible(&shown, now);
+    let mut images: Vec<crate::screen::ImageView> = picked
         .into_iter()
         .filter_map(|p| {
             let row = p.line - top;
@@ -2022,18 +2048,25 @@ fn visible_images<T>(term: &Term<T>, g: &mut crate::graphics::Graphics) -> Vec<c
             }
             let img = g.image(p.image)?;
             Some(crate::screen::ImageView {
-                rgba: img.rgba.clone(),
+                rgba: img.frame_rgba(),
                 width: img.width,
                 height: img.height,
                 row: row as i32,
-                col: p.col,
+                col: i32::try_from(p.col).unwrap_or(i32::MAX),
                 cols: p.cols,
                 rows: p.rows,
                 geom: p.geom,
                 z: p.z,
             })
         })
-        .collect()
+        .collect();
+    images.extend(extra.into_iter().map(|(id, mut view)| {
+        if let Some(img) = g.image(id) {
+            view.rgba = img.frame_rgba();
+        }
+        view
+    }));
+    images
 }
 
 /// PTY 없이 바이트를 VT로 해석해 화면을 얻는다. 렌더러 테스트와 b-studio 세션 터미널(바이트가 HTTP로 오는 칸)에 쓴다
@@ -2131,7 +2164,34 @@ impl Emulator {
     }
 
     pub fn snapshot(&mut self) -> Screen {
-        snapshot_of(&self.term, &self.theme, self.search.as_mut(), Some(&mut self.graphics))
+        snapshot_of(
+            &self.term,
+            &self.theme,
+            self.search.as_mut(),
+            Some(&mut self.graphics),
+            std::time::Instant::now(),
+        )
+    }
+
+    /// 시각을 정해 화면을 만든다(애니메이션 프레임 고르기 시험용, #554). 시각은 `kitty_clock_start`부터의 간격으로 준다
+    pub fn snapshot_at(&mut self, now: std::time::Instant) -> Screen {
+        snapshot_of(
+            &self.term,
+            &self.theme,
+            self.search.as_mut(),
+            Some(&mut self.graphics),
+            now,
+        )
+    }
+
+    /// kitty 애니메이션 시계의 0점(`snapshot_at`에 줄 시각의 기준)
+    pub fn kitty_clock_start(&self) -> std::time::Instant {
+        self.graphics.clock_start()
+    }
+
+    /// 마지막 화면이 본 가장 이른 다음 프레임 시각(`Session::kitty_next_frame`과 같다)
+    pub fn kitty_next_frame(&self) -> Option<std::time::Instant> {
+        self.graphics.next_frame()
     }
 
     /// 찾기를 시작한다(맨 아래에서 위로 첫 맞은 곳). 빈 글이면 찾기를 끄고 없다

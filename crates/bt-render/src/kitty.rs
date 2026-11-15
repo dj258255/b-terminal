@@ -12,9 +12,9 @@ pub struct ImagePaint<'a> {
     /// 곱하지 않은 알파 RGBA(`geom.img_w × geom.img_h`)
     pub rgba: &'a [u8],
     pub geom: Geom,
-    /// 왼쪽 위 칸(칸 격자 기준. 위로 일부 가려졌으면 행이 음수)
+    /// 왼쪽 위 칸(칸 격자 기준. 위나 왼쪽으로 일부 가려졌으면 음수)
     pub row: i32,
-    pub col: usize,
+    pub col: i32,
     pub z: i32,
 }
 
@@ -40,7 +40,7 @@ pub fn paint_layer(
         if r.dest_w == 0 || r.dest_h == 0 {
             continue;
         }
-        let x = origin.0 as i64 + (p.col as i64 * cell.0 as i64) + r.off_x as i64;
+        let x = origin.0 as i64 + (i64::from(p.col) * cell.0 as i64) + r.off_x as i64;
         let y = origin.1 as i64 + (p.row as i64 * cell.1 as i64) + r.off_y as i64;
         let (Ok(x), Ok(y)) = (i32::try_from(x), i32::try_from(y)) else {
             continue;
