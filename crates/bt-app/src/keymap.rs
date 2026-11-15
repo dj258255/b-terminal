@@ -1190,6 +1190,24 @@ mod tests {
         assert!(km.lookup(&trig("alt+arrow_right")).is_some());
     }
 
+    /// Ctrl+[·Ctrl+i는 Ghostty처럼 `CSI u`로 간다(#567). 옛 바이트(ESC·탭)가 필요한 사람이 CHANGELOG에 적은
+    /// 키 묶음으로 되돌릴 수 있다. 키 사건의 `[`는 `normalize_key`가 `bracket_left`로 바꾼다
+    #[test]
+    fn ctrl_bracket_and_ctrl_i_can_be_bound_back_to_legacy_bytes() {
+        let (km, warnings) = Keymap::build(&["ctrl+bracket_left=text:\\e".into(), "ctrl+i=text:\\t".into()]);
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert_eq!(
+            km.lookup(&trig("ctrl+bracket_left")),
+            Some(&Action::Text("\x1b".into()))
+        );
+        assert_eq!(km.lookup(&trig("ctrl+[")), Some(&Action::Text("\x1b".into())));
+        assert_eq!(km.lookup(&trig("ctrl+i")), Some(&Action::Text("\t".into())));
+        // 기본에는 묶음이 없어 인코더(`CSI u`)로 간다
+        let (km, _) = Keymap::build(&[]);
+        assert_eq!(km.lookup(&trig("ctrl+bracket_left")), None);
+        assert_eq!(km.lookup(&trig("ctrl+i")), None);
+    }
+
     #[test]
     fn default_binds_for_paste_from_selection() {
         let d = defaults();
