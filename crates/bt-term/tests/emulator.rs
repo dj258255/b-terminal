@@ -91,6 +91,34 @@ fn kitty_keyboard_mode_is_pushed_popped_and_reported() {
     assert!(!e.modes().kitty.active(), "CSI < u로 되돌린다");
 }
 
+/// #546: 플래그 2(키 뗌·반복)·4(대체 키)·16(연결 글자)도 `Modes`에 보인다. 8과 합쳐 켜기·하나만 켜기·질의 답도 같다
+#[test]
+fn kitty_keyboard_flags_2_4_16_reach_modes() {
+    let flags = |e: &bt_term::Emulator| {
+        let k = e.modes().kitty;
+        (
+            k.disambiguate,
+            k.report_events,
+            k.report_alternates,
+            k.all_as_escapes,
+            k.report_associated,
+        )
+    };
+    let mut e = emu(10, 2);
+    e.feed(b"\x1b[>2u");
+    assert_eq!(flags(&e), (false, true, false, false, false), "2만");
+    assert!(e.modes().kitty.active(), "2만 켜도 kitty 길이다");
+    e.feed(b"\x1b[<u\x1b[>4u");
+    assert_eq!(flags(&e), (false, false, true, false, false), "4만");
+    e.feed(b"\x1b[<u\x1b[>16u");
+    assert_eq!(flags(&e), (false, false, false, false, true), "16만");
+    e.feed(b"\x1b[<u\x1b[>31u");
+    assert_eq!(flags(&e), (true, true, true, true, true), "31은 다섯 모두");
+    e.feed(b"\x1b[<u");
+    assert!(!e.modes().kitty.active());
+    assert_eq!(flags(&e), (false, false, false, false, false));
+}
+
 /// #40: 프로그램이 DECSCUSR로 깜빡이는 커서를 고르면 화면 값에 보인다(1 깜빡이는 네모, 2 멈춘 네모, 5 깜빡이는 막대)
 #[test]
 fn decscusr_blinking_reaches_the_screen() {

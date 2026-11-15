@@ -833,6 +833,9 @@ struct Win {
     link_click: bool,
     /// 고르지 않은 칸을 누른 왼쪽 누름을 삼켰다: 짝 떼기도 삼킨다(#500)
     focus_click: mouse::FocusClickGuard,
+    /// 누름을 프로그램(PTY)에 보낸 물리 키. 프로그램이 kitty 키보드 프로토콜 2(키 뗌 보고)를 켰을 때, 짝 뗌만 보낸다.
+    /// IME가 삼킨 누름이나 앱 단축키가 먹은 누름의 뗌을 홀로 보내지 않기 위해서다(#546)
+    kitty_down: std::collections::HashSet<winit::keyboard::PhysicalKey>,
     /// 열린 찾기 막대(칸 하나에 붙는다)
     search: Option<SearchBar>,
     /// 열린 명령 팔레트(#77): 친 글, 고른 줄
@@ -917,6 +920,7 @@ impl Win {
             hover: None,
             link_click: false,
             focus_click: mouse::FocusClickGuard::default(),
+            kitty_down: std::collections::HashSet::new(),
             search: None,
             palette: None,
             pointer_icon: CursorIcon::Default,
@@ -3074,6 +3078,25 @@ impl App {
     fn request_redraw(&self) {
         if let Some(g) = &self.w.gfx {
             g.window.request_redraw();
+        }
+    }
+
+    /// 키를 뗐다. 프로그램이 kitty 키보드 프로토콜 2(키 뗌 보고)를 켰고, 그 키의 누름을 프로그램에 보냈을 때만 뗌을 보낸다.
+    /// 켜지 않았으면 뗌은 버린다(옛 바이트 그대로). 뗌은 글을 치는 것이 아니라 고른 영역을 지우거나 맨 아래로 돌리지 않는다
+    fn kitty_key_release(&mut self, event: &winit::event::KeyEvent) {
+        if !self.w.kitty_down.remove(&event.physical_key) {
+            return;
+        }
+        let Some(modes) = self.active_pane().map(|t| t.session.modes()) else {
+            return;
+        };
+        if !modes.kitty.report_events {
+            return;
+        }
+        let meta = self.config.option_as_alt != bt_core::config::OptionAsAlt::None;
+        let bytes = keys::encode(event, self.mods, keys::to_state(self.raw_mods), modes, meta);
+        if let Some(t) = self.active_pane() {
+            t.session.write_input(&bytes, false);
         }
     }
 
@@ -6525,6 +6548,7 @@ impl ApplicationHandler<UserEvent> for App {
                 self.w.focused = focused;
                 if !focused {
                     self.w.focus_click.clear();
+                    self.w.kitty_down.clear();
                 }
                 // 보안 입력: 앱이 앞이면 켜고(창 어느 하나라도 초점이면), 아니면 끈다. 앞으로 오면 바로 칸을 살핀다(#258)
                 self.update_secure_active();
@@ -6594,6 +6618,7 @@ impl ApplicationHandler<UserEvent> for App {
             },
             WindowEvent::KeyboardInput { event, .. } => {
                 if event.state != ElementState::Pressed {
+                    self.kitty_key_release(&event);
                     return;
                 }
                 // 칸을 끌던 중 Esc는 끌기를 취소한다(키는 어디에도 가지 않는다)
@@ -6635,6 +6660,7 @@ impl ApplicationHandler<UserEvent> for App {
                     modes.modify_other_keys = false;
                 }
                 let meta = self.config.option_as_alt != bt_core::config::OptionAsAlt::None;
+                let report_release = modes.kitty.report_events;
                 let bytes = keys::encode(&event, self.mods, keys::to_state(self.raw_mods), modes, meta);
                 // performable: 묶음은 동작을 지금 할 수 있을 때만 키를 먹는다
                 let mut seq = std::mem::take(&mut self.w.keyseq);
@@ -6650,6 +6676,9 @@ impl ApplicationHandler<UserEvent> for App {
                 }
                 if !out.send.is_empty() {
                     self.write_active(&out.send);
+                    if report_release {
+                        self.w.kitty_down.insert(event.physical_key);
+                    }
                 }
                 if let Some(action) = out.action {
                     match action {

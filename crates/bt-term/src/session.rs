@@ -1682,7 +1682,10 @@ fn modes_of(m: TermMode) -> Modes {
         alternate_scroll: m.contains(TermMode::ALTERNATE_SCROLL),
         kitty: crate::input::KittyFlags {
             disambiguate: m.contains(TermMode::DISAMBIGUATE_ESC_CODES),
+            report_events: m.contains(TermMode::REPORT_EVENT_TYPES),
+            report_alternates: m.contains(TermMode::REPORT_ALTERNATE_KEYS),
             all_as_escapes: m.contains(TermMode::REPORT_ALL_KEYS_AS_ESC),
+            report_associated: m.contains(TermMode::REPORT_ASSOCIATED_TEXT),
         },
         key: crate::input::KeyModes {
             backarrow_key: m.contains(TermMode::BACKARROW_KEY),
