@@ -4,9 +4,20 @@
 
 ## [아직 릴리스하지 않음]
 
+## [0.69.0] - 2026-11-16
+
+입력 경로를 Ghostty와 견줌: 붙여넣기 위험 바이트, 파일 끌어다 놓기, 레거시 키 인코딩. 마일스톤 0.69.
+
 - 붙여넣는 글 안의 위험한 제어 바이트를 공백으로 바꿉니다. 전에는 괄호 붙여넣기 모드에서 ESC와 끝 표시 `ESC[201~`만 지우고, 모드가 꺼져 있으면 줄바꿈만 CR로 바꿔서, 글에 숨은 Ctrl-C·Ctrl-Z·Ctrl-U·Ctrl-W·Ctrl-V 같은 바이트가 셸의 줄 편집기에 그대로 가 신호를 보내거나 줄을 지웠습니다. 이제 Ghostty(`paste.zig`)와 xterm처럼 NUL·BS·ENQ·EOT·ESC·DEL과 Ctrl-C·\·U·Z·Q·S·W·V·R·O 16종을 두 모드 모두에서 공백으로 바꿉니다(UTF-8 글자는 그대로). 끝 표시는 ESC가 공백이 되어 깨집니다(전에는 지움). 괄호 모드가 아니면 LF를 CR로 바꾸며 CRLF는 CR 둘이 됩니다(전에는 CR 하나). 확인 막대는 괄호 모드에서 글에 `ESC[201~`가 있으면 `clipboard-paste-bracketed-safe`와 상관없이 묻습니다. 단위 시험(Ghostty 시험 옮김과 16종 각각, 한글·이모지)으로 확인했고 실제 창에서 붙여넣어 본 확인은 하지 않았습니다 (#565)
 - Finder에서 파일을 창에 끌어다 놓으면 경로를 셸 이스케이프해 놓은 창의 지금 칸에 넣습니다(Ghostty macOS와 같음). `` \ ()[]{}<>"'`!#$&;|*? ``와 탭 앞에 `\`를 붙이고 여러 파일은 공백 하나로 이어 한 번에 넣습니다(끝 공백 없음). UTF-8이 아닌 경로는 건너뜁니다. 글은 붙여넣기 길을 거치므로 위험 바이트 바꾸기, 줄바꿈이 든 이름의 확인 막대(괄호 붙여넣기가 아닐 때), 읽기 전용 칸 거름을 그대로 받습니다. winit이 놓은 위치를 주지 않아 놓은 칸 대신 그 창의 지금 칸에 넣고, 글 끌어다 놓기는 받지 않습니다. 파일마다 따로 오는 사건은 같은 이벤트 고리 차례 안에서 모아 한 번에 붙여넣습니다. 다른 확인 막대가 떠 있으면 넣지 않고 알립니다. 단위 시험으로 확인했고 실제 창에서 끌어다 놓아 본 확인은 하지 않았습니다 (#566)
 - 키를 kitty 키보드를 켜지 않은 프로그램(셸·vim·tmux 대부분)에 보내는 바이트(레거시 인코딩)를 Ghostty `key_encode.zig`의 `legacy:` 시험 44개와 `ctrlseq:` 시험 11개(IME 길이라 옮길 수 없는 3개는 뺌)로 견줘 다른 것을 원인 여덟 가지로 고쳤습니다. 눈에 띄는 변화: Ctrl+Shift+글자는 제어 문자가 아니라 `CSI 코드;수식 u`(Ctrl+Shift+m은 0x0d에서 `ESC[109;6u`), Ctrl+i·m·[ 와 Ctrl+-는 0x09·0x0d·0x1b·0x1f에서 `ESC[105;5u`·`ESC[109;5u`·`ESC[91;5u`·`ESC[45;5u`(Ctrl+Tab·Enter·Esc 키 자체는 그대로), Ctrl+/는 글자 그대로에서 0x1f, 러시아어·헝가리어 배열의 Ctrl+с는 0x03·Ctrl+ő는 `ESC[337;5u`, `macos-option-as-alt = false`에서도 Option+방향 키·Backspace·Enter 같은 이름 키는 Alt 수식 키로(키 묶음에서 풀리지 않을 때 Option+Left는 `ESC[D`에서 `ESC[1;3D`, Option+Backspace는 0x7f에서 `ESC 0x7f`), Ctrl+Option+i는 `ESC[105;7u`(Ctrl+Option+c는 `macos-option-as-alt = false`에서 그대로 0x03, 켜면 `ESC 0x03`), macOS 기본 키 묶음에 Ghostty의 "자연스러운 글 편집"을 더해 Option+←·→는 `ESC b`·`ESC f`(전에는 `ESC[D`·`ESC[C`), Cmd+←·→·Backspace는 `^A`·`^E`·`^U`(전에는 `ESC[D`·`ESC[C`·0x7f), Ctrl+F3·Shift+F3는 `ESC[1;수식R`에서 `ESC[13;수식~`, F13~F25와 Help·메뉴 키는 보내지 않던 것을 `ESC[25~`~`ESC[46~`·`ESC[28~`·`ESC[29~`로, 단축키에 묶이지 않은 Cmd+글자는 글자를 보내던 것을 보내지 않습니다. Alt 글자 앞 ESC는 글이 두 바이트 이상이고 수식 키 없는 글자가 있으면 그 글자를 씁니다. 단위 시험(앱 입구 `encode_legacy`와 `ctrl_seq`)으로 확인했고 실제 창에서 키를 쳐 보는 확인은 하지 않았습니다. 왼쪽·오른쪽 Option만 Alt로 쓰는 `left`·`right`는 글 앞 ESC에 아직 반영하지 못합니다. Ctrl+[를 Esc로, Ctrl+i를 Tab으로 쓰는 셸(zsh 5.9 기본 키 묶음에는 이 바이트가 없음, bash는 확인하지 않음)에서 옛 바이트가 필요하면 `keybind = ctrl+bracket_left=text:\e`, `keybind = ctrl+i=text:\t`로 되돌립니다(Ghostty도 같은 바이트를 보냄) (#567)
+
+### 알려진 한계
+
+- 붙여넣기·끌어다 놓기·키 입력은 실제 창에서 해 보지 않았습니다(시스템 클립보드를 바꾸지 않고, 마우스·키 입력을 흉내 내지 않음). 단위 시험으로만 확인했고, 실제 창에서는 평소 화면과 시작 로그가 0.68.0과 같은 것만 봤습니다.
+- Ctrl+[·Ctrl+i가 Ghostty처럼 `CSI u`가 되어, 이것을 모르는 프로그램(zsh 5.9 기본 키 묶음에는 없음)에서는 Esc·Tab으로 듣지 않습니다. `keybind = ctrl+bracket_left=text:\e`, `keybind = ctrl+i=text:\t`로 되돌립니다.
+- `macos-option-as-alt = left`·`right`는 글자 앞 ESC에서 반대쪽 Option을 가르지 못합니다. 수식 키가 붙은 Enter·Tab·Escape와 Cmd+이름 키는 아직 Ghostty와 바이트가 다릅니다.
+- 끌어다 놓은 파일은 놓은 칸이 아니라 그 창의 지금 칸에 들어갑니다(winit이 위치를 주지 않음).
 
 ## [0.68.0] - 2026-11-16
 
