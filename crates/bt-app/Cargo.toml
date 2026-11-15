@@ -11,6 +11,9 @@ name = "b-terminal"
 path = "src/main.rs"
 
 [dependencies]
+accesskit = "0.25"
+# Linux의 accesskit_unix(AT-SPI)는 의존성이 커서 끈다(#560). 끄면 Linux에서는 아무 일도 하지 않는 어댑터가 된다.
+accesskit_winit = { version = "0.34", default-features = false, features = ["rwh_06"] }
 anyhow.workspace = true
 arboard = "3"
 bt-core = { version = "0.67.0", path = "../bt-core" }
@@ -26,6 +29,10 @@ serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 softbuffer = "0.4"
 winit = "0.30"
+
+[dev-dependencies]
+# 만든 트리를 화면 읽기 프로그램 쪽(어댑터가 쓰는 소비자)이 그대로 받아 글·선택을 읽는지 시험한다(#560)
+accesskit_consumer = "0.39"
 
 [lints]
 workspace = true

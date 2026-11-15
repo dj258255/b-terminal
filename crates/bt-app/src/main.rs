@@ -1,5 +1,6 @@
 //! b-terminal 창 앱
 
+mod a11y;
 mod app;
 mod appearance;
 mod bell_sound;
