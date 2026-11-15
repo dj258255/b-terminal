@@ -509,8 +509,13 @@ pub(crate) fn encode_legacy(k: &LegacyKey, modes: bt_term::Modes, option_as_alt:
                     utf8: " ",
                     unshifted: ' ' as u32,
                     physical: Some(' ' as u32),
+                    alt_text_prefix: option_gate(option_as_alt, raw),
                 };
-                return encode_text_key(&tk, ms, km);
+                let mt = TermMods {
+                    alt: mods.alt_key(),
+                    ..ms
+                };
+                return encode_text_key(&tk, mt, km);
             }
             _ => None,
         };
@@ -542,8 +547,14 @@ pub(crate) fn encode_legacy(k: &LegacyKey, modes: bt_term::Modes, option_as_alt:
         utf8,
         unshifted: k.unshifted,
         physical: k.physical.and_then(base_layout_codepoint),
+        alt_text_prefix: option_gate(option_as_alt, raw),
     };
-    encode_text_key(&tk, ms, km)
+    // Ctrl 길은 Option도 Alt로 센다. 글자 앞 ESC는 `alt_text_prefix`가 막는다
+    let mt = TermMods {
+        alt: mods.alt_key(),
+        ..ms
+    };
+    encode_text_key(&tk, mt, km)
 }
 
 #[cfg(test)]

@@ -211,7 +211,6 @@ fn legacy_ctrl_plus_shift_plus_minus_underscore_on_us() {
 
 // 2093줄
 #[test]
-#[ignore = "차이 D"]
 fn legacy_ctrl_plus_alt_plus_c() {
     let e = ev(KeyCode::KeyC).mods(CTRL | ALT).utf8("c");
     assert_eq!(run(&e, default()), b"\x1b\x03");

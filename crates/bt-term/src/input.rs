@@ -248,7 +248,7 @@ fn kitty_mods(m: Mods) -> u8 {
 }
 
 /// 글자 키가 만든 글과, 그 글을 어떻게 읽을지 정하는 키 정보(Ghostty `key.KeyEvent`의 `utf8`·`unshifted_codepoint`와 물리 키)
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TextKey<'a> {
     /// 키가 만든 글. 없으면 빈 글
     pub utf8: &'a str,
@@ -256,6 +256,9 @@ pub struct TextKey<'a> {
     pub unshifted: u32,
     /// 물리 키의 US 배열 글자(자판이 러시아어여도 C 키는 `c`). 모르면 없다
     pub physical: Option<u32>,
+    /// Alt를 글자 앞 ESC로 보내도 되는가. macOS에서 Option을 Alt로 쓰지 않으면(`macos-option-as-alt`) 거짓이라
+    /// OS가 만든 글자가 그대로 나간다. Ctrl 길(제어 바이트·CSI u)은 이것과 상관없이 Alt를 수식 키로 센다
+    pub alt_text_prefix: bool,
 }
 
 /// 글자 키를 바이트로 바꾼다. Ctrl은 제어 문자로, Alt는 ESC를 앞에 붙인다(macOS Option을 Alt로 쓸 때)
@@ -268,7 +271,9 @@ pub fn encode_text_with(text: &str, mods: Mods, km: KeyModes) -> Vec<u8> {
     encode_text_key(
         &TextKey {
             utf8: text,
-            ..TextKey::default()
+            unshifted: 0,
+            physical: None,
+            alt_text_prefix: true,
         },
         mods,
         km,
@@ -276,7 +281,7 @@ pub fn encode_text_with(text: &str, mods: Mods, km: KeyModes) -> Vec<u8> {
 }
 
 /// 글자 키 하나를 바이트로(Ghostty `key_encode.zig`의 `legacy()`에서 이름 키·modifyOtherKeys를 지난 뒤의 길).
-/// 차례: Ctrl 제어 바이트(`ctrl_seq`) → Ctrl이 남았으면 fixterms `CSI 코드 ; 수식 u` → Alt ESC 앞붙이기 → 글 그대로
+/// `mods.alt`는 Option이어도 눌렸으면 참이다(Ghostty `legacy()`의 `all_mods`). 차례: Ctrl 제어 바이트(`ctrl_seq`) → Ctrl이 남았으면 fixterms `CSI 코드 ; 수식 u` → Alt ESC 앞붙이기 → 글 그대로
 pub fn encode_text_key(k: &TextKey, mods: Mods, km: KeyModes) -> Vec<u8> {
     // C0 길은 1036과 상관없이 Alt가 ESC를 앞에 붙인다
     if let Some(b) = ctrl_seq(k.physical, k.utf8, k.unshifted, mods) {
@@ -292,7 +297,7 @@ pub fn encode_text_key(k: &TextKey, mods: Mods, km: KeyModes) -> Vec<u8> {
     }
     // 글자 길은 1036이 켜져 있을 때만 ESC를 붙인다(Ghostty `legacyAltPrefix`)
     let mut out = Vec::new();
-    if mods.alt && km.alt_esc_prefix {
+    if mods.alt && k.alt_text_prefix && km.alt_esc_prefix {
         out.push(0x1b);
     }
     out.extend_from_slice(k.utf8.as_bytes());
