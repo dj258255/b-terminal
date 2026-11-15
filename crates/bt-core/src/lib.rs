@@ -2,6 +2,7 @@
 
 pub mod clipboard;
 pub mod config;
+pub mod kitty_geom;
 pub mod proto;
 pub mod theme;
 

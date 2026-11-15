@@ -72,22 +72,20 @@ struct Segment {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Which {
     Lower,
+    /// 칸 바탕과 글자 사이: kitty "글자 아래" 그림(#547). 칸 바탕을 그린 뒤 글자·밑줄·커서보다 먼저 얹는다
+    Mid,
     Upper,
     /// 셰이더 뒤에 얹는 층(#441)
     Top,
 }
 
 /// 층 셋 가운데 `which`의 자리(다른 필드는 빌리지 않도록 세 자리를 따로 받는다)
-fn slot_of<'a>(
-    lower: &'a mut Option<LayerTex>,
-    upper: &'a mut Option<LayerTex>,
-    top: &'a mut Option<LayerTex>,
-    which: Which,
-) -> &'a mut Option<LayerTex> {
+fn slot_of(ls: &mut Layers, which: Which) -> &mut Option<LayerTex> {
     match which {
-        Which::Lower => lower,
-        Which::Upper => upper,
-        Which::Top => top,
+        Which::Lower => &mut ls.lower,
+        Which::Mid => &mut ls.mid,
+        Which::Upper => &mut ls.upper,
+        Which::Top => &mut ls.top,
     }
 }
 
@@ -99,6 +97,8 @@ pub(super) struct Layers {
     /// 위층: 곱한 알파로 얹는다
     upper_pipeline: wgpu::RenderPipeline,
     lower: Option<LayerTex>,
+    /// 칸 바탕과 글자 사이에 얹는 층(#547): kitty "글자 아래" 그림. 곱한 알파로 얹는다
+    mid: Option<LayerTex>,
     upper: Option<LayerTex>,
     /// 셰이더 뒤에 얹는 층(#441): 칸 안 화면(격자·kitty 그림)이 아닌 덧그림. 셰이더가 있을 때만 쓴다
     top: Option<LayerTex>,
@@ -180,6 +180,7 @@ impl Layers {
             lower_pipeline,
             upper_pipeline,
             lower: None,
+            mid: None,
             upper: None,
             top: None,
             size: (0, 0),
@@ -202,7 +203,7 @@ impl Layers {
     ) -> usize {
         if which != Which::Lower && px.is_empty() {
             // 위층이 비었다: 텍스처와 사본을 놓는다. 다시 그리면 새로 만든다(#387)
-            *slot_of(&mut self.lower, &mut self.upper, &mut self.top, which) = None;
+            *slot_of(self, which) = None;
             return 0;
         }
         if w == 0 || h == 0 || px.len() < w as usize * h as usize {
@@ -210,11 +211,18 @@ impl Layers {
             return 0;
         }
         let px = &px[..w as usize * h as usize];
-        let slot = slot_of(&mut self.lower, &mut self.upper, &mut self.top, which);
+        let layout = &self.layout;
+        let slot = match which {
+            Which::Lower => &mut self.lower,
+            Which::Mid => &mut self.mid,
+            Which::Upper => &mut self.upper,
+            Which::Top => &mut self.top,
+        };
         if slot.as_ref().is_none_or(|t| (t.width, t.height) != (w, h)) {
             let texture = device.create_texture(&wgpu::TextureDescriptor {
                 label: Some(match which {
                     Which::Lower => "bt-gpu lower layer",
+                    Which::Mid => "bt-gpu mid layer",
                     Which::Upper => "bt-gpu upper layer",
                     Which::Top => "bt-gpu top layer",
                 }),
@@ -233,7 +241,7 @@ impl Layers {
             let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
             let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("bt-gpu layer bind group"),
-                layout: &self.layout,
+                layout,
                 entries: &[wgpu::BindGroupEntry {
                     binding: 0,
                     resource: wgpu::BindingResource::TextureView(&view),
@@ -299,7 +307,7 @@ impl Layers {
             scratch_bytes: self.scratch.capacity(),
             ..LayerMemory::default()
         };
-        for t in [&self.lower, &self.upper, &self.top].into_iter().flatten() {
+        for t in [&self.lower, &self.mid, &self.upper, &self.top].into_iter().flatten() {
             m.texture_bytes += t.width as usize * t.height as usize * 4;
             m.shadow_bytes += t.tiles.bytes();
         }
@@ -310,6 +318,7 @@ impl Layers {
     fn visible(&self, which: Which) -> Option<&LayerTex> {
         let t = match which {
             Which::Lower => &self.lower,
+            Which::Mid => &self.mid,
             Which::Upper => &self.upper,
             Which::Top => &self.top,
         };
@@ -357,22 +366,24 @@ impl GpuRenderer {
         layers: LayerUpdate,
         panes: &[PaneDraw],
     ) -> Vec<u32> {
-        self.compose_layers(fonts, size, layers, None, panes)
+        self.compose_layers(fonts, size, layers, None, None, panes)
     }
 
     /// `compose_with`. 셰이더 뒤에 얹는 층(`top`, #441)도 받는다: 칸 안 화면이 아닌 덧그림(탭 막대 위 알림, 팔레트 등).
-    /// 셰이더가 없으면 위층 바로 뒤에 같은 방식으로 얹힌다. `None`이면 앞서 올린 것을 그대로 쓰고, 빈 조각이면 놓는다
+    /// 셰이더가 없으면 위층 바로 뒤에 같은 방식으로 얹힌다. 칸 바탕과 글자 사이에 얹는 층(`mid`, #547)도 받는다: kitty "글자 아래" 그림.
+    /// 둘 다 `None`이면 앞서 올린 것을 그대로 쓰고, 빈 조각이면 놓는다
     pub fn compose_layers(
         &mut self,
         fonts: &mut [&mut Fonts],
         size: (u32, u32),
         layers: LayerUpdate,
         top: Option<&[u32]>,
+        mid: Option<&[u32]>,
         panes: &[PaneDraw],
     ) -> Vec<u32> {
         let (w, h) = (size.0.max(1), size.1.max(1));
         self.ensure_target(w, h);
-        self.prepare_compose(fonts, (w, h), layers, top, panes);
+        self.prepare_compose(fonts, (w, h), layers, top, mid, panes);
         let t = Instant::now();
         let Some(target) = self.target.as_ref() else {
             return Vec::new();
@@ -392,6 +403,7 @@ impl GpuRenderer {
         size: (u32, u32),
         layers: LayerUpdate,
         top: Option<&[u32]>,
+        mid: Option<&[u32]>,
         panes: &[PaneDraw],
     ) {
         let t0 = Instant::now();
@@ -399,6 +411,9 @@ impl GpuRenderer {
         let mut upload_bytes = 0;
         if let Some(px) = layers.lower {
             upload_bytes += self.layers.upload(&self.device, &self.queue, Which::Lower, px, size);
+        }
+        if let Some(px) = mid {
+            upload_bytes += self.layers.upload(&self.device, &self.queue, Which::Mid, px, size);
         }
         if let Some(px) = layers.upper {
             upload_bytes += self.layers.upload(&self.device, &self.queue, Which::Upper, px, size);
@@ -527,8 +542,19 @@ impl GpuRenderer {
                     pass.draw(0..6, range.start as u32..range.end as u32);
                 }
             };
+            // 칸 바탕은 모든 칸 것을 먼저 그리고, 글자 아래 그림(가운데 층)을 얹은 뒤 글자를 그린다(Ghostty 차례: 칸 바탕 → 글자 아래 그림 → 글자).
+            // 칸마다 칸 바탕과 글자를 번갈아 그리던 때와 달라지는 것은 칸의 글자가 이웃 칸의 바탕까지 넘칠 때뿐이다
             for s in &ls.segments {
                 draw_rects_with(&mut passes, &self.rect_replace_pipeline, &s.rects_bg);
+            }
+            if let Some(t) = ls.visible(Which::Mid) {
+                let pass = passes.pass(false);
+                pass.set_pipeline(&ls.upper_pipeline);
+                pass.set_bind_group(0, &t.bind_group, &[]);
+                pass.draw(0..3, 0..1);
+                pass.set_bind_group(0, &self.bind_group, &[]);
+            }
+            for s in &ls.segments {
                 draw_rects(&mut passes, &s.rects_pre);
                 draw_glyphs(&mut passes, &s.glyphs_pre);
                 draw_rects(&mut passes, &s.rects_post);

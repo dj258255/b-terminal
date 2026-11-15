@@ -264,6 +264,14 @@ impl App {
                         None,
                     );
                 }
+                // kitty 그림 가운데 칸 바탕 아래 층(z < i32::MIN / 2): 격자 칸 바탕 아래라 이 층에 깐다. 기본 바탕 칸은 GPU가 그리지 않아 그림이 비친다(#547)
+                let images = super::kitty_images::PaneImages::new(
+                    &screen.images,
+                    (v.inner.x, v.inner.y),
+                    (vm.width, vm.height),
+                    (screen.cols, screen.rows),
+                );
+                images.paint(&mut lower, bt_core::kitty_geom::Layer::BelowBackground);
             }
 
             // 위층: 투명 바탕(0)에 그린다. 캔버스의 섞기가 곱한 알파로 쌓아 준다.
@@ -292,6 +300,32 @@ impl App {
             } else {
                 self.w.top = Vec::new();
             }
+            // 가운데 층: 칸 바탕과 글자 사이(kitty z가 -2^30 이상 0 미만인 그림, #547). 없으면 비워 두어 GPU가 층을 놓게 한다
+            let uses_mid = views.iter().any(|v| {
+                v.screen
+                    .images
+                    .iter()
+                    .any(|im| bt_core::kitty_geom::layer_of_z(im.z) == bt_core::kitty_geom::Layer::BelowText)
+            });
+            if uses_mid {
+                if self.w.mid.len() == n {
+                    self.w.mid.fill(0);
+                } else {
+                    self.w.mid = vec![0; n];
+                }
+                let mut mid = Canvas::new(&mut self.w.mid, sw, sh);
+                for v in views {
+                    super::kitty_images::PaneImages::new(
+                        &v.screen.images,
+                        (v.inner.x, v.inner.y),
+                        (v.metrics.width, v.metrics.height),
+                        (v.screen.cols, v.screen.rows),
+                    )
+                    .paint(&mut mid, bt_core::kitty_geom::Layer::BelowText);
+                }
+            } else {
+                self.w.mid = Vec::new();
+            }
             if plan.draw {
                 let mut upper = Canvas::new(&mut self.w.upper, sw, sh);
                 let mut top_canvas = split_layers.then(|| Canvas::new(&mut self.w.top, sw, sh));
@@ -307,33 +341,14 @@ impl App {
                 for ((v, (_, _, _)), bar) in views.iter().zip(&drawn).zip(bars) {
                     let screen = &v.screen;
                     let vm = v.metrics;
-                    // kitty 그림: 놓인 칸에, 칸 수에 맞춰 늘리거나 원래 크기로. 격자 밖은 자른다
-                    let grid_clip = (
-                        v.inner.x,
-                        v.inner.y,
-                        v.inner.x + (screen.cols as u32 * vm.width) as i32,
-                        v.inner.y + (screen.rows as u32 * vm.height) as i32,
-                    );
-                    for im in &screen.images {
-                        let (cw, chh) = (im.cols * vm.width, im.rows * vm.height);
-                        let (w, h) = if im.scaled { (cw, chh) } else { (im.width, im.height) };
-                        let clip = (
-                            grid_clip.0,
-                            grid_clip.1,
-                            grid_clip.2.min(v.inner.x + (im.col as u32 * vm.width + cw) as i32),
-                            grid_clip.3,
-                        );
-                        upper.draw_rgba(
-                            v.inner.x + (im.col as u32 * vm.width) as i32,
-                            v.inner.y + im.row * vm.height as i32,
-                            w,
-                            h,
-                            &im.rgba,
-                            im.width,
-                            im.height,
-                            clip,
-                        );
-                    }
+                    // kitty 그림 가운데 글자 위 층(z >= 0). 칸 바탕 아래·글자 아래 층은 아래층·가운데 층에 있다(#547)
+                    super::kitty_images::PaneImages::new(
+                        &screen.images,
+                        (v.inner.x, v.inner.y),
+                        (vm.width, vm.height),
+                        (screen.cols, screen.rows),
+                    )
+                    .paint(&mut upper, bt_core::kitty_geom::Layer::AboveText);
                     if split && !v.focused && dim_alpha > 0 {
                         ui!().blend_rect(v.outer.x, v.outer.y, v.outer.w, v.outer.h, dim_fill, dim_alpha);
                     }
@@ -506,6 +521,8 @@ impl App {
             };
             // 셰이더 뒤에 얹는 층(#441): 셰이더가 돌 때만 쓴다. 쓰지 않는데 통째 프레임이면 빈 조각으로 놓는다
             let top = full.then_some(&self.w.top[..]);
+            // 칸 바탕과 글자 사이 층(#547): 그림이 없으면 빈 조각으로 놓는다
+            let mid = full.then_some(&self.w.mid[..]);
             if shaders {
                 // 칸마다 그 칸의 영역·시간·커서·초점으로 셰이더를 돌린다(#441)
                 let alive: Vec<u64> = self.panes.iter().map(|p| p.id).collect();
@@ -523,7 +540,7 @@ impl App {
                 );
                 gpu.set_shader_regions(&regions);
             }
-            outcome = Some(gpu.present_layers(&mut fonts.all(), (sw, sh), layers, top, &panes));
+            outcome = Some(gpu.present_layers(&mut fonts.all(), (sw, sh), layers, top, mid, &panes));
         }
         let end = Instant::now();
         self.w.last_frame = Some(FrameMemo {

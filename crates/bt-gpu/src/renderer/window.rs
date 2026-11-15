@@ -379,17 +379,19 @@ impl GpuRenderer {
         layers: LayerUpdate,
         panes: &[PaneDraw],
     ) -> PresentOutcome {
-        self.present_layers(fonts, size, layers, None, panes)
+        self.present_layers(fonts, size, layers, None, None, panes)
     }
 
     /// `present_with`. 셰이더 뒤에 얹는 층(`top`, #441)도 받는다. 셰이더가 있으면 셰이더가 돈 뒤에 얹고(칸 밖과 칸 위 덧그림은
-    /// 셰이더가 덮지 않는다), 없으면 위층 바로 뒤에 얹는다. `None`이면 앞서 올린 것을 그대로 쓴다
+    /// 셰이더가 덮지 않는다), 없으면 위층 바로 뒤에 얹는다. 칸 바탕과 글자 사이에 얹는 층(`mid`, #547: kitty "글자 아래" 그림)도 받는다.
+    /// 둘 다 `None`이면 앞서 올린 것을 그대로 쓴다
     pub fn present_layers(
         &mut self,
         fonts: &mut [&mut Fonts],
         size: (u32, u32),
         layers: LayerUpdate,
         top: Option<&[u32]>,
+        mid: Option<&[u32]>,
         panes: &[PaneDraw],
     ) -> PresentOutcome {
         if size.0 == 0 || size.1 == 0 {
@@ -413,7 +415,7 @@ impl GpuRenderer {
                 Err(reason) => return self.skipped(reason),
             }
         }
-        self.prepare_compose(fonts, size, layers, top, panes);
+        self.prepare_compose(fonts, size, layers, top, mid, panes);
         let t = Instant::now();
         // 보이는 창에서는 그림판 얻기를 준비(층 올리기·인스턴스) 뒤로 미룬다
         let frame = match early {

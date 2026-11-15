@@ -1964,6 +1964,9 @@ fn graphics_command<T: EventListener>(
         cell_w: cell.0,
         cell_h: cell.1,
         alt: term.mode().contains(TermMode::ALT_SCREEN),
+        top: term.grid().history_size() as i64,
+        rows: term.screen_lines() as u32,
+        cols: term.columns() as u32,
     };
     let out = graphics.handle(raw, cur);
     if let Some((down, right)) = out.advance {
@@ -1993,7 +1996,11 @@ fn visible_images<T>(term: &Term<T>, g: &mut crate::graphics::Graphics) -> Vec<c
     let mut picked: Vec<&crate::graphics::Placement> = Vec::new();
     for p in g.placements.iter().rev().filter(|p| p.alt == alt) {
         let row = p.line - top;
-        if row + p.rows as i64 <= 0 || row >= rows || !seen.insert((p.image, p.line, p.col, p.cols, p.rows)) {
+        // 같은 그림을 같은 자리·모양으로 두 번 그리지 않는다(자리 번호만 다른 겹침). 잘라내기·오프셋·z가 다르면 다른 그림이다
+        if row + p.rows as i64 <= 0
+            || row >= rows
+            || !seen.insert((p.image, p.line, p.col, p.cols, p.rows, p.geom, p.z))
+        {
             continue;
         }
         let visible_rows = (row + p.rows as i64).min(rows) - row.max(0);
@@ -2022,7 +2029,8 @@ fn visible_images<T>(term: &Term<T>, g: &mut crate::graphics::Graphics) -> Vec<c
                 col: p.col,
                 cols: p.cols,
                 rows: p.rows,
-                scaled: p.scaled,
+                geom: p.geom,
+                z: p.z,
             })
         })
         .collect()

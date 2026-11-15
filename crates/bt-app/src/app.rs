@@ -5,7 +5,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
-use bt_render::{Canvas, DrawCell, DrawCursor, FontConfig, Fonts, GridView, draw_grid, draw_grid_rows};
+use bt_render::{Canvas, DrawCell, DrawCursor, FontConfig, Fonts, GridView, draw_grid_rows};
 use bt_term::{CellFlags, CellSide, CursorShape, GridSize, Screen, SelectKind, Session, SessionEvent, SpawnOptions};
 use winit::application::ApplicationHandler;
 use winit::dpi::{LogicalSize, PhysicalPosition, PhysicalSize};
@@ -18,6 +18,7 @@ mod backdrop;
 mod gpu_frame;
 mod gpu_pace;
 mod input_latency;
+mod kitty_images;
 mod shader_inputs;
 
 use crate::icon;
@@ -868,6 +869,8 @@ struct Win {
     frame: Vec<u32>,
     /// GPU 길의 위층(격자 위에 겹치는 것, 곱한 알파). 아래층은 `frame`이 든다. 그린 것이 없으면 비워 둔다(#387)
     upper: Vec<u32>,
+    /// 칸 바탕과 글자 사이 층(kitty 글자 아래 그림, #547)
+    mid: Vec<u32>,
     /// GPU 길: 셰이더 뒤에 얹는 층의 픽셀(셰이더가 돌 때만 쓴다, #441)
     top: Vec<u32>,
     last_frame: Option<FrameMemo>,
@@ -937,6 +940,7 @@ impl Win {
             force_present: false,
             frame: Vec::new(),
             upper: Vec::new(),
+            mid: Vec::new(),
             top: Vec::new(),
             last_frame: None,
             blink_on: true,
@@ -5747,7 +5751,14 @@ impl App {
                 };
                 if full {
                     canvas.fill_rect(v.outer.x, v.outer.y, v.outer.w, v.outer.h, screen.background);
-                    draw_grid(&mut canvas, fonts.for_size(v.font_size), v.inner.x, v.inner.y, &view);
+                    // kitty 그림: 칸 바탕 아래·글자 아래는 격자를 그리면서 끼우고, 글자 위는 뒤에 그린다. 격자 밖은 자른다(#547)
+                    let images = kitty_images::PaneImages::new(
+                        &screen.images,
+                        (v.inner.x, v.inner.y),
+                        (vm.width, vm.height),
+                        (screen.cols, screen.rows),
+                    );
+                    images.draw_grid(&mut canvas, fonts.for_size(v.font_size), &view, screen.background);
                     if let Some(p) = pad {
                         crate::padding::paint(
                             &mut canvas,
@@ -5760,33 +5771,7 @@ impl App {
                             None,
                         );
                     }
-                    // kitty 그림: 놓인 칸에, 칸 수에 맞춰 늘리거나 원래 크기로. 격자 밖은 자른다
-                    let grid_clip = (
-                        v.inner.x,
-                        v.inner.y,
-                        v.inner.x + (screen.cols as u32 * vm.width) as i32,
-                        v.inner.y + (screen.rows as u32 * vm.height) as i32,
-                    );
-                    for im in &screen.images {
-                        let (cw, chh) = (im.cols * vm.width, im.rows * vm.height);
-                        let (w, h) = if im.scaled { (cw, chh) } else { (im.width, im.height) };
-                        let clip = (
-                            grid_clip.0,
-                            grid_clip.1,
-                            grid_clip.2.min(v.inner.x + (im.col as u32 * vm.width + cw) as i32),
-                            grid_clip.3,
-                        );
-                        canvas.draw_rgba(
-                            v.inner.x + (im.col as u32 * vm.width) as i32,
-                            v.inner.y + im.row * vm.height as i32,
-                            w,
-                            h,
-                            &im.rgba,
-                            im.width,
-                            im.height,
-                            clip,
-                        );
-                    }
+                    images.paint(&mut canvas, bt_core::kitty_geom::Layer::AboveText);
                     if split && !v.focused && dim_alpha > 0 {
                         canvas.blend_rect(v.outer.x, v.outer.y, v.outer.w, v.outer.h, dim_fill, dim_alpha);
                     }

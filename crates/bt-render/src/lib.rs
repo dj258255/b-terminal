@@ -6,6 +6,7 @@ pub mod canvas;
 pub mod cluster;
 pub mod font;
 pub mod grid;
+pub mod kitty;
 pub mod proportional;
 pub mod scrollbar;
 mod sfnt;
@@ -19,7 +20,8 @@ pub use font::{
     MetricAdjust, SyntheticStyle, TITLE_FONT_SIZE, Variations, forget_system_fonts, list_system_faces,
 };
 pub use grid::{
-    CursorStyle, DrawCell, DrawCursor, GridView, draw_grid, draw_grid_rows, ligatures, lock_rects, text_color,
+    CursorStyle, DrawCell, DrawCursor, GridView, Under, draw_grid, draw_grid_rows, draw_grid_under, ligatures,
+    lock_rects, text_color,
 };
 pub use text::{char_cells, draw_text, text_cells, truncate};
 pub use underline::Underline;

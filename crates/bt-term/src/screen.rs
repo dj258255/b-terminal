@@ -149,10 +149,13 @@ pub struct ImageView {
     /// 왼쪽 위 칸(보이는 화면 기준. 위로 일부 가려졌으면 음수)
     pub row: i32,
     pub col: usize,
+    /// 놓을 때 정한 칸 수. 칸 크기가 같으면 `geom.resolve`의 값과 같다
     pub cols: u32,
     pub rows: u32,
-    /// 칸 수에 맞춰 늘린다. 아니면 그림 원래 픽셀 크기(칸 밖은 자른다)
-    pub scaled: bool,
+    /// 잘라내기·칸 수 요청·칸 안 오프셋. 그리는 쪽이 자기 칸 크기로 `resolve`해 크기와 자리를 정한다
+    pub geom: bt_core::kitty_geom::Geom,
+    /// z 순서. 층은 `bt_core::kitty_geom::layer_of_z`
+    pub z: i32,
 }
 
 /// 한 순간의 화면. 줄 우선으로 `rows * cols`칸

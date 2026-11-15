@@ -7,6 +7,8 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use bt_core::kitty_geom::Geom;
+
 /// 한 명령(조각을 다 모은 것)의 base64 글 상한
 const MAX_PAYLOAD: usize = 48 * 1024 * 1024;
 /// 그림 한 장을 푼 RGBA 바이트 상한(예: 4096×4096)
@@ -32,6 +34,8 @@ pub struct Image {
     pub rgba: Arc<Vec<u8>>,
     /// 저장한 차례(오래된 것부터 버리려고)
     seq: u64,
+    /// 그림 번호(`I=`, 0이면 없음)
+    pub number: u32,
 }
 
 /// 화면에 놓인 그림
@@ -41,13 +45,18 @@ pub struct Placement {
     /// 왼쪽 위 칸: 스크롤백 맨 위를 0으로 센 줄, 칸
     pub line: i64,
     pub col: usize,
-    /// 차지하는 칸 수
+    /// 놓을 때 정한 차지하는 칸 수(잘라낸 크기와 오프셋을 계산에 넣었다). 칸 크기가 바뀌면 그리는 쪽이 `geom`으로 다시 푼다
     pub cols: u32,
     pub rows: u32,
-    /// 칸 크기에 맞춰 늘리는가(c·r을 줬을 때). 아니면 그림 원래 픽셀 크기
-    pub scaled: bool,
     /// 대체 화면(vim 등)에 놓였다. 대체 화면을 나오면 지운다
     pub alt: bool,
+    /// 자리 번호(`p=`). 0이면 내부 번호: 같은 그림에 몇 개든 놓고 서로 바꾸지 않는다.
+    /// 0이 아니면 (그림, 자리 번호) 쌍마다 하나이고 같은 쌍으로 다시 놓으면 옛 자리를 바꾼다
+    pub pid: u32,
+    /// 잘라내기(`x y w h`)·칸 수 요청(`c r`)·칸 안 오프셋(`X Y`)
+    pub geom: Geom,
+    /// z 순서(`z=`). 음수면 글자 아래, `i32::MIN / 2`보다 작으면 칸 바탕 아래까지(`bt_core::kitty_geom::layer_of_z`)
+    pub z: i32,
 }
 
 /// 명령을 처리한 결과
@@ -68,6 +77,10 @@ pub struct Cursor {
     pub cell_w: u32,
     pub cell_h: u32,
     pub alt: bool,
+    /// 활성 화면 맨 위 줄(스크롤백 맨 위를 0으로 센 줄)과 활성 화면의 줄·칸 수(지우기 `d=`가 쓴다)
+    pub top: i64,
+    pub rows: u32,
+    pub cols: u32,
 }
 
 /// 조각(m=1)으로 오는 중인 명령
@@ -85,6 +98,8 @@ pub struct Graphics {
     stored: usize,
     /// 저장 상한(바이트, 설정 image-storage-limit). 0이면 그림 프로토콜을 쓰지 않는다
     limit: usize,
+    /// 번호 없이 보낸 그림에 줄 다음 내부 번호(Ghostty처럼 u32 가운데에서 시작해 프로그램이 고르는 낮은 번호와 겹치지 않게)
+    next_implicit: u32,
 }
 
 impl Default for Graphics {
@@ -103,6 +118,7 @@ impl Graphics {
             seq: 0,
             stored: 0,
             limit,
+            next_implicit: 2_147_483_647,
         }
     }
 }
@@ -122,6 +138,11 @@ fn parse_control(s: &[u8]) -> HashMap<u8, String> {
 }
 
 fn num(c: &HashMap<u8, String>, k: u8) -> u32 {
+    c.get(&k).and_then(|v| v.parse().ok()).unwrap_or(0)
+}
+
+/// 부호 있는 값(`z`). 읽지 못하면 0
+fn signed(c: &HashMap<u8, String>, k: u8) -> i32 {
     c.get(&k).and_then(|v| v.parse().ok()).unwrap_or(0)
 }
 
@@ -279,6 +300,14 @@ impl Graphics {
     fn execute(&mut self, control: &HashMap<u8, String>, payload: Vec<u8>, cur: Cursor) -> Outcome {
         let action = Self::action(control);
         let control = control.clone();
+        // 그림 번호(i)와 이미지 번호(I)는 동작과 상관없이 함께 쓸 수 없다(명세, Ghostty graphics_exec.zig). 동작보다 먼저 거른다
+        if num(&control, b'i') > 0 && num(&control, b'I') > 0 {
+            return self.error(
+                &control,
+                "EINVAL",
+                "그림 번호(i)와 이미지 번호(I)는 함께 쓸 수 없습니다",
+            );
+        }
         match action {
             "q" => match self.decode(&control, &payload) {
                 // 질의: 그림을 저장하지 않고 받을 수 있는지만 답한다
@@ -286,41 +315,97 @@ impl Graphics {
                 Err((code, why)) => self.error(&control, code, why),
             },
             "t" | "T" => {
-                let id = num(&control, b'i');
+                let id_in = num(&control, b'i');
+                let number = num(&control, b'I');
                 // 명세: 같은 번호로 다시 보내면 옛 그림과 자리를 지운다. 성공이든 실패든 지우고(Ghostty #15184),
                 // 지우는 때는 조각(m=1)을 다 모은 뒤다(kitty는 첫 조각에서 지우지만 Ghostty와 같은 때)
-                let image = match self.transmitted(&control, &payload) {
+                let mut image = match self.transmitted(&control, &payload) {
                     Ok(img) => img,
                     Err((code, why)) => {
                         // 실패 길
-                        if id != 0 {
-                            self.remove_image(id);
+                        if id_in != 0 {
+                            self.remove_image(id_in);
                         }
                         return self.error(&control, code, why);
                     }
                 };
+                // 번호가 없으면 정한다: 이미지 번호(I)만 있으면 쓰지 않은 가장 낮은 번호, 둘 다 없으면 내부 번호(답하지 않는다)
+                let implicit = id_in == 0 && number == 0;
+                let id = if id_in != 0 {
+                    id_in
+                } else {
+                    self.next_image_id(implicit)
+                };
                 // 성공 길
                 self.remove_image(id);
+                image.number = number;
                 self.store(id, image);
-                if action == "T" {
+                let out = if action == "T" {
                     self.place(id, &control, cur)
                 } else {
-                    self.ok(&control)
+                    self.ok_id(&control, id)
+                };
+                if implicit {
+                    Outcome {
+                        reply: None,
+                        advance: out.advance,
+                    }
+                } else {
+                    out
                 }
             }
             "p" => {
-                let id = num(&control, b'i');
-                if !self.images.contains_key(&id) {
-                    return self.error(&control, "ENOENT", "그런 그림이 없습니다");
+                let (id_in, number) = (num(&control, b'i'), num(&control, b'I'));
+                if id_in == 0 && number == 0 {
+                    return self.error(&control, "EINVAL", "그림 번호(i)나 이미지 번호(I)가 필요합니다");
                 }
-                self.place(id, &control, cur)
+                // 이미지 번호면 그 번호로 가장 나중에 보낸 그림
+                let id = if id_in != 0 {
+                    Some(id_in).filter(|id| self.images.contains_key(id))
+                } else {
+                    self.id_by_number(number)
+                };
+                match id {
+                    Some(id) => self.place(id, &control, cur),
+                    None => self.error(&control, "ENOENT", "그런 그림이 없습니다"),
+                }
             }
             "d" => {
-                self.delete(&control);
+                self.delete(&control, cur);
                 Outcome::default()
             }
             _ => self.error(&control, "EINVAL", "모르는 동작입니다"),
         }
+    }
+
+    /// 이미지 번호(`I=`)로 가장 나중에 보낸 그림의 번호
+    fn id_by_number(&self, number: u32) -> Option<u32> {
+        if number == 0 {
+            return None;
+        }
+        self.images
+            .iter()
+            .filter(|(_, i)| i.number == number)
+            .max_by_key(|(_, i)| i.seq)
+            .map(|(id, _)| *id)
+    }
+
+    /// 번호를 안 준 그림에 줄 번호(Ghostty `nextImageId`): 0이 아니고 쓰는 중이 아닌 가장 낮은 번호(`implicit`이면 내부 번호 구간부터)
+    fn next_image_id(&mut self, implicit: bool) -> u32 {
+        let mut id = if implicit { self.next_implicit } else { 1 };
+        for _ in 0..self.images.len() + 2 {
+            if id != 0 && !self.images.contains_key(&id) {
+                break;
+            }
+            id = id.wrapping_add(1);
+        }
+        if id == 0 {
+            id = 1;
+        }
+        if implicit {
+            self.next_implicit = id.wrapping_add(1);
+        }
+        id
     }
 
     /// 기능 질의(`a=q`에 `e=`, kitty 규약 "querying support for protocol features")에 답한다.
@@ -363,17 +448,23 @@ impl Graphics {
             }
         }
         if place {
-            for k in *b"cr" {
+            // 칸 수(c r), 잘라내기(x y w h), 칸 안 오프셋(X Y), 자리 번호(p), 커서 고정 C=1, z 순서
+            for k in *b"crxywhXYp" {
                 if let Some(n) = nonzero(k) {
                     put(k, n.to_string());
                 }
+            }
+            if signed(c, b'z') != 0 {
+                put(b'z', signed(c, b'z').to_string());
             }
             if num(c, b'C') == 1 {
                 put(b'C', "1".into());
             }
         }
         if action == b'd' {
-            if let Some(d) = val(b'd').filter(|d| matches!(*d, "a" | "A" | "i" | "I")) {
+            // 지우기 종류: 애니메이션 프레임(f·F)만 빼고 모두
+            let known = "aAiIpPcCxXyYzZrRnNqQ";
+            if let Some(d) = val(b'd').filter(|d| d.len() == 1 && known.contains(*d)) {
                 put(b'd', d.to_string());
             }
         }
@@ -397,9 +488,6 @@ impl Graphics {
     /// `t`/`T`로 받은 자료를 저장해도 되는 그림으로 만든다(번호·크기 상한 검사 포함)
     fn transmitted(&self, c: &HashMap<u8, String>, payload: &[u8]) -> Result<Image, (&'static str, &'static str)> {
         let image = self.decode(c, payload)?;
-        if num(c, b'i') == 0 {
-            return Err(("EINVAL", "그림 번호(i)가 필요합니다"));
-        }
         // 한 장이 저장 상한보다 크면 받지 않는다: 지금 넣은 것은 남기므로 상한을 넘겨 두게 된다
         if cost(&image) > self.limit {
             return Err(("ENOSPC", "그림이 저장 상한(image-storage-limit)을 넘습니다"));
@@ -451,6 +539,7 @@ impl Graphics {
             height: h,
             rgba: Arc::new(rgba),
             seq: 0,
+            number: 0,
         })
     }
 
@@ -477,24 +566,28 @@ impl Graphics {
         self.placements.retain(|p| p.image != id);
     }
 
-    /// 커서 자리에 그림을 놓는다. c·r이 없으면 그림 픽셀 크기만큼의 칸
+    /// 커서 자리에 그림을 놓는다. 칸 수·크기는 `Geom::resolve`가 Ghostty와 같은 규칙으로 정한다(잘라낸 크기와 오프셋이 들어간다).
+    /// 자리 번호(`p=`)가 있으면 같은 (그림, 자리 번호)의 옛 자리를 바꾼다
     fn place(&mut self, id: u32, c: &HashMap<u8, String>, cur: Cursor) -> Outcome {
         let Some(img) = self.images.get(&id) else {
             return self.error(c, "ENOENT", "그런 그림이 없습니다");
         };
-        let (want_c, want_r) = (num(c, b'c'), num(c, b'r'));
-        let cols = if want_c > 0 {
-            want_c
-        } else {
-            img.width.div_ceil(cur.cell_w.max(1))
+        // 칸 수는 상한(1000)으로 자른다(보안 검토: 그릴 양)
+        let geom = Geom {
+            img_w: img.width,
+            img_h: img.height,
+            src: [num(c, b'x'), num(c, b'y'), num(c, b'w'), num(c, b'h')],
+            want_cols: num(c, b'c').min(1000),
+            want_rows: num(c, b'r').min(1000),
+            off: [num(c, b'X'), num(c, b'Y')],
+        };
+        let r = geom.resolve(cur.cell_w, cur.cell_h);
+        let (cols, rows) = (r.cols.min(1000), r.rows.min(1000));
+        let pid = num(c, b'p');
+        if pid != 0 {
+            self.placements
+                .retain(|p| !(p.image == id && p.pid == pid && p.alt == cur.alt));
         }
-        .clamp(1, 1000);
-        let rows = if want_r > 0 {
-            want_r
-        } else {
-            img.height.div_ceil(cur.cell_h.max(1))
-        }
-        .clamp(1, 1000);
         if self.placements.len() >= MAX_PLACEMENTS {
             self.placements.remove(0);
         }
@@ -504,30 +597,185 @@ impl Graphics {
             col: cur.col,
             cols,
             rows,
-            scaled: want_c > 0 || want_r > 0,
             alt: cur.alt,
+            pid,
+            geom: Geom {
+                off: [r.off_x, r.off_y],
+                ..geom
+            },
+            z: signed(c, b'z'),
         });
-        let mut out = self.ok(c);
+        let mut out = self.ok_id(c, id);
         // C=1이면 커서를 옮기지 않는다. 아니면 그림의 마지막 줄, 그림 오른쪽 칸으로(kitty와 같다)
         if num(c, b'C') != 1 {
-            out.advance = Some((rows - 1, cols));
+            out.advance = Some((rows.saturating_sub(1), cols));
         }
         out
     }
 
-    fn delete(&mut self, c: &HashMap<u8, String>) {
-        let what = c.get(&b'd').map(String::as_str).unwrap_or("a");
-        let id = num(c, b'i');
-        match what {
-            "a" => self.placements.clear(),
-            "A" => {
-                self.placements.clear();
-                self.images.clear();
-                self.stored = 0;
+    /// 쓰지 않게 된 그림(어느 화면에도 자리가 없는 그림)의 자료를 지운다(Ghostty `deleteIfUnused`)
+    fn delete_if_unused(&mut self, id: u32) {
+        if self.images.contains_key(&id) && !self.placements.iter().any(|p| p.image == id) {
+            self.remove_image(id);
+        }
+    }
+
+    /// 조건에 맞는 자리를 지우고 그 자리들의 그림 번호를 돌려준다
+    fn drop_where(&mut self, f: impl Fn(&Placement) -> bool) -> Vec<u32> {
+        let mut hit = Vec::new();
+        self.placements.retain(|p| {
+            if f(p) {
+                hit.push(p.image);
+                false
+            } else {
+                true
             }
-            "i" => self.placements.retain(|p| p.image != id),
-            "I" => self.remove_image(id),
-            // 다른 대상(자리·z 등)은 아직 받지 않는다: 아무것도 지우지 않는다
+        });
+        hit
+    }
+
+    /// 지운 자리의 그림 가운데 쓰지 않게 된 것을 지운다(대문자 지우기)
+    fn free_unused(&mut self, mut ids: Vec<u32>) {
+        ids.sort_unstable();
+        ids.dedup();
+        for id in ids {
+            self.delete_if_unused(id);
+        }
+    }
+
+    /// `d=i`·`d=n`: 그림의 자리를 지운다. 자리 번호가 있으면 그 자리만, 없으면 이 화면의 그 그림 자리 모두.
+    /// 자리 번호를 줬는데 맞는 자리가 없으면 그림 자료도 건드리지 않는다(명세)
+    fn delete_by_id(&mut self, id: u32, pid: u32, upper: bool, alt: bool) {
+        let matched = if pid == 0 {
+            self.drop_where(|p| p.image == id && p.alt == alt);
+            true
+        } else {
+            !self
+                .drop_where(|p| p.image == id && p.pid == pid && p.alt == alt)
+                .is_empty()
+        };
+        if upper && matched {
+            self.delete_if_unused(id);
+        }
+    }
+
+    /// 지우기 `d=`(Ghostty `graphics_storage.zig`의 `delete`). 소문자는 놓인 자리만, 대문자는 쓰지 않게 된 그림 자료까지 지운다.
+    /// 지우는 대상은 지금 화면(주 화면 또는 대체 화면)의 자리다. 좌표(`x`·`y`)는 활성 화면 맨 위 왼쪽을 (1, 1)로 센다.
+    /// 애니메이션 프레임 지우기(`f`·`F`)는 프레임이 없으니 소문자는 아무것도 하지 않고 대문자는 그림을 지운다(Ghostty가 프레임 없는 그림에 하는 일)
+    fn delete(&mut self, c: &HashMap<u8, String>, cur: Cursor) {
+        let what = c.get(&b'd').map(String::as_bytes).unwrap_or(b"a");
+        let &[kind] = what else { return };
+        let upper = kind.is_ascii_uppercase();
+        let alt = cur.alt;
+        let (x, y) = (num(c, b'x'), num(c, b'y'));
+        let (cell_w, cell_h) = (cur.cell_w, cur.cell_h);
+        // 자리가 덮는 칸 직사각형: (왼쪽 칸, 오른쪽 칸, 위 줄, 아래 줄). 칸 수를 모르면 없다
+        let rect = move |p: &Placement| -> Option<(usize, usize, i64, i64)> {
+            let r = p.geom.resolve(cell_w, cell_h);
+            if r.cols == 0 || r.rows == 0 {
+                return None;
+            }
+            let last_col = (cur.cols.max(1) - 1) as usize;
+            let right = p.col.saturating_add(r.cols as usize - 1).min(last_col);
+            Some((p.col, right, p.line, p.line + i64::from(r.rows) - 1))
+        };
+        // 활성 화면의 (x, y)(1부터) 칸. 0이거나 화면 밖이면 없다
+        let cell = |x: u32, y: u32| -> Option<(usize, i64)> {
+            (x > 0 && y > 0 && x <= cur.cols && y <= cur.rows).then(|| ((x - 1) as usize, cur.top + i64::from(y - 1)))
+        };
+        let covering = move |p: &Placement, col: usize, line: i64| {
+            p.alt == alt && rect(p).is_some_and(|(l, r, t, b)| l <= col && col <= r && t <= line && line <= b)
+        };
+        match kind.to_ascii_lowercase() {
+            // 활성 화면에 보이는 자리만(스크롤백으로 올라간 자리는 남는다)
+            b'a' => {
+                let hit = self.drop_where(|p| {
+                    p.alt == alt && { p.line >= cur.top || rect(p).is_some_and(|(_, _, _, bottom)| bottom >= cur.top) }
+                });
+                if upper {
+                    self.free_unused(hit);
+                }
+            }
+            b'i' => self.delete_by_id(num(c, b'i'), num(c, b'p'), upper, alt),
+            b'n' => {
+                if let Some(id) = self.id_by_number(num(c, b'I')) {
+                    self.delete_by_id(id, num(c, b'p'), upper, alt);
+                }
+            }
+            b'c' => {
+                let (col, line) = (cur.col, cur.line);
+                let hit = self.drop_where(|p| covering(p, col, line));
+                if upper {
+                    self.free_unused(hit);
+                }
+            }
+            b'p' => {
+                if let Some((col, line)) = cell(x, y) {
+                    let hit = self.drop_where(|p| covering(p, col, line));
+                    if upper {
+                        self.free_unused(hit);
+                    }
+                }
+            }
+            b'q' => {
+                if let Some((col, line)) = cell(x, y) {
+                    let z = signed(c, b'z');
+                    let hit = self.drop_where(|p| p.z == z && covering(p, col, line));
+                    if upper {
+                        self.free_unused(hit);
+                    }
+                }
+            }
+            // 줄과 상관없이 그 칸을 덮는 자리(스크롤백의 것도)
+            b'x' => {
+                if x > 0 {
+                    let col = (x - 1) as usize;
+                    let hit =
+                        self.drop_where(|p| p.alt == alt && rect(p).is_some_and(|(l, r, _, _)| l <= col && col <= r));
+                    if upper {
+                        self.free_unused(hit);
+                    }
+                }
+            }
+            b'y' => {
+                if let Some((_, line)) = cell(1, y) {
+                    let hit =
+                        self.drop_where(|p| p.alt == alt && rect(p).is_some_and(|(_, _, t, b)| t <= line && line <= b));
+                    if upper {
+                        self.free_unused(hit);
+                    }
+                }
+            }
+            b'z' => {
+                let z = signed(c, b'z');
+                let hit = self.drop_where(|p| p.alt == alt && p.z == z);
+                if upper {
+                    self.free_unused(hit);
+                }
+            }
+            // 그림 번호 범위 [x, y]. 위쪽 값이 0이거나 거꾸로면 아무것도 고르지 않는다
+            b'r' => {
+                if y == 0 || x > y {
+                    return;
+                }
+                self.drop_where(|p| p.alt == alt && (x..=y).contains(&p.image));
+                if upper {
+                    let ids: Vec<u32> = self.images.keys().copied().filter(|id| (x..=y).contains(id)).collect();
+                    self.free_unused(ids);
+                }
+            }
+            b'f' => {
+                let (id_in, number) = (num(c, b'i'), num(c, b'I'));
+                let id = if id_in != 0 {
+                    Some(id_in)
+                } else {
+                    self.id_by_number(number)
+                };
+                if let Some(id) = id.filter(|id| upper && self.images.contains_key(id)) {
+                    self.remove_image(id);
+                }
+            }
+            // 모르는 값은 무시한다
             _ => {}
         }
     }
@@ -560,28 +808,39 @@ impl Graphics {
         num(c, b'q')
     }
 
-    fn ok(&self, c: &HashMap<u8, String>) -> Outcome {
-        let id = num(c, b'i');
-        if id == 0 || Self::quiet(c) >= 1 {
+    /// 답을 만든다(Ghostty `Response.encode`): `i=`(번호), `I=`(이미지 번호), `p=`(자리 번호) 가운데 0이 아닌 것만 이 차례로 쓴다.
+    /// 번호도 이미지 번호도 0이면 답할 곳이 없어 답하지 않는다. `q=1`은 OK 답을, `q=2`는 오류 답도 하지 않는다.
+    /// 답에는 ASCII만(설명은 앱 로그로). 터미널에 되돌아가는 글이라 제어 문자를 넣지 않는다
+    fn answer(c: &HashMap<u8, String>, id: u32, message: &str, ok: bool) -> Outcome {
+        let number = num(c, b'I');
+        let quiet = Self::quiet(c);
+        if (id == 0 && number == 0) || (ok && quiet >= 1) || (!ok && quiet >= 2) {
             return Outcome::default();
         }
+        let mut keys = Vec::new();
+        for (k, v) in [('i', id), ('I', number), ('p', num(c, b'p'))] {
+            if v != 0 {
+                keys.push(format!("{k}={v}"));
+            }
+        }
         Outcome {
-            reply: Some(format!("\x1b_Gi={id};OK\x1b\\").into_bytes()),
+            reply: Some(format!("\x1b_G{};{message}\x1b\\", keys.join(",")).into_bytes()),
             advance: None,
         }
     }
 
+    fn ok(&self, c: &HashMap<u8, String>) -> Outcome {
+        Self::answer(c, num(c, b'i'), "OK", true)
+    }
+
+    /// 정해진 번호(`id`)로 OK를 답한다(이미지 번호로 번호를 받았을 때)
+    fn ok_id(&self, c: &HashMap<u8, String>, id: u32) -> Outcome {
+        Self::answer(c, id, "OK", true)
+    }
+
     fn error(&self, c: &HashMap<u8, String>, code: &str, why: &str) -> Outcome {
-        let id = num(c, b'i');
-        if id == 0 || Self::quiet(c) >= 2 {
-            return Outcome::default();
-        }
-        // 답에는 ASCII만(설명은 앱 로그로). 터미널에 되돌아가는 글이라 제어 문자를 넣지 않는다
         let _ = why;
-        Outcome {
-            reply: Some(format!("\x1b_Gi={id};{code}\x1b\\").into_bytes()),
-            advance: None,
-        }
+        Self::answer(c, num(c, b'i'), code, false)
     }
 }
 
@@ -595,6 +854,9 @@ mod tests {
         cell_w: 10,
         cell_h: 20,
         alt: false,
+        top: 90,
+        rows: 24,
+        cols: 80,
     };
 
     fn b64(data: &[u8]) -> String {
@@ -639,7 +901,12 @@ mod tests {
         assert_eq!(out.reply.unwrap(), b"\x1b_Gi=7;OK\x1b\\");
         assert_eq!(out.advance, Some((1, 3)));
         let p = &g.placements[0];
-        assert_eq!((p.line, p.col, p.cols, p.rows, p.scaled), (100, 4, 3, 2, false));
+        assert_eq!((p.line, p.col, p.cols, p.rows), (100, 4, 3, 2));
+        assert_eq!(
+            (p.geom.want_cols, p.geom.want_rows),
+            (0, 0),
+            "c·r이 없으면 그림 원래 크기"
+        );
         let img = g.image(7).unwrap();
         assert_eq!((img.width, img.height, img.rgba.len()), (25, 30, 25 * 30 * 4));
         assert_eq!(&img.rgba[..4], &[200, 200, 200, 255]);
@@ -668,7 +935,7 @@ mod tests {
         let img = g.image(9).unwrap();
         assert_eq!((img.width, img.height), (2, 1));
         assert_eq!(&img.rgba[4..8], &[0, 0, 255, 128]);
-        assert!(g.placements[0].scaled);
+        assert_eq!((g.placements[0].geom.want_cols, g.placements[0].geom.want_rows), (4, 1));
     }
 
     #[test]
@@ -989,7 +1256,7 @@ mod tests {
         // T는 놓기 키(c r C)도 답한다
         assert_eq!(
             query(&mut g, "a=q,i=2,e=T,c=4,r=0,C=1,f=32,X=1").unwrap(),
-            "\x1b_Gi=2,e=T,c=4,f=32,C=1;OK\x1b\\"
+            "\x1b_Gi=2,e=T,c=4,f=32,C=1,X=1;OK\x1b\\"
         );
         assert_eq!(query(&mut g, "a=q,i=2,e=T,C=2").unwrap(), "\x1b_Gi=2,e=T;OK\x1b\\");
         // p는 놓기 키만
@@ -1002,7 +1269,12 @@ mod tests {
             query(&mut g, "a=q,i=2,e=d,d=I,x=1").unwrap(),
             "\x1b_Gi=2,e=d,d=I;OK\x1b\\"
         );
-        assert_eq!(query(&mut g, "a=q,i=2,e=d,d=z").unwrap(), "\x1b_Gi=2,e=d;OK\x1b\\");
+        assert_eq!(query(&mut g, "a=q,i=2,e=d,d=z").unwrap(), "\x1b_Gi=2,e=d,d=z;OK\x1b\\");
+        assert_eq!(
+            query(&mut g, "a=q,i=2,e=d,d=f").unwrap(),
+            "\x1b_Gi=2,e=d;OK\x1b\\",
+            "애니메이션 지우기는 답에서 뺀다"
+        );
         assert_eq!(query(&mut g, "a=q,i=2,e=d").unwrap(), "\x1b_Gi=2,e=d;OK\x1b\\");
     }
 
@@ -1062,5 +1334,479 @@ mod tests {
         // 글자 값은 허용 목록의 글자만, 숫자는 파싱한 값을 다시 쓴다
         let r = query(&mut g, "a=q,i=+07,e=t,t=d\x1b,o=z\x07,f=0100,s=00010,v=\x1b[1m").unwrap();
         assert_eq!(r, "\x1b_Gi=7,e=t,f=100,s=10;OK\x1b\\");
+    }
+
+    // ---- 자리 번호·잘라내기·오프셋·z·그림 번호(#547, Ghostty graphics_exec.zig·graphics_storage.zig) ----
+
+    /// 1×1 RGB 그림을 저장만 한다(놓지 않는다)
+    fn store1(g: &mut Graphics, ctl: &str) -> Option<String> {
+        let out = g.handle(format!("a=t,f=24,s=1,v=1,{ctl};{}", b64(&[1, 2, 3])).as_bytes(), CUR);
+        out.reply.map(|r| String::from_utf8(r).unwrap())
+    }
+
+    fn put(g: &mut Graphics, ctl: &str, cur: Cursor) -> Option<String> {
+        let out = g.handle(format!("a=p,{ctl}").as_bytes(), cur);
+        out.reply.map(|r| String::from_utf8(r).unwrap())
+    }
+
+    /// 남은 자리 (그림, 자리 번호)를 정렬해서
+    fn left(g: &Graphics) -> Vec<(u32, u32)> {
+        let mut v: Vec<_> = g.placements.iter().map(|p| (p.image, p.pid)).collect();
+        v.sort();
+        v
+    }
+
+    fn at(line: i64, col: usize) -> Cursor {
+        Cursor { line, col, ..CUR }
+    }
+
+    #[test]
+    fn same_image_and_placement_id_replaces_the_old_placement() {
+        let mut g = Graphics::default();
+        store1(&mut g, "i=1");
+        assert_eq!(put(&mut g, "i=1,p=5", at(100, 4)).unwrap(), "\x1b_Gi=1,p=5;OK\x1b\\");
+        assert_eq!(
+            put(&mut g, "i=1,p=5,c=3", at(110, 8)).unwrap(),
+            "\x1b_Gi=1,p=5;OK\x1b\\"
+        );
+        assert_eq!(left(&g), vec![(1, 5)], "같은 (그림, 자리) 쌍은 하나만");
+        assert_eq!((g.placements[0].line, g.placements[0].col), (110, 8));
+        put(&mut g, "i=1,p=6", at(100, 4));
+        assert_eq!(left(&g), vec![(1, 5), (1, 6)], "다른 자리 번호는 따로");
+    }
+
+    #[test]
+    fn same_placement_id_on_another_image_is_a_different_placement() {
+        let mut g = Graphics::default();
+        store1(&mut g, "i=1");
+        store1(&mut g, "i=2");
+        put(&mut g, "i=1,p=5", CUR);
+        put(&mut g, "i=2,p=5", CUR);
+        assert_eq!(left(&g), vec![(1, 5), (2, 5)]);
+    }
+
+    #[test]
+    fn placements_without_a_placement_id_never_replace_each_other() {
+        let mut g = Graphics::default();
+        store1(&mut g, "i=1");
+        for line in [100, 101, 102] {
+            put(&mut g, "i=1", at(line, 0));
+        }
+        assert_eq!(g.placements.len(), 3);
+        // 자리 번호 0은 응답에도 p를 붙이지 않는다
+        assert_eq!(put(&mut g, "i=1", CUR).unwrap(), "\x1b_Gi=1;OK\x1b\\");
+        // 자리 번호가 있는 것은 그것만 바꾼다
+        put(&mut g, "i=1,p=9", at(100, 0));
+        put(&mut g, "i=1,p=9", at(100, 1));
+        assert_eq!(g.placements.len(), 5);
+    }
+
+    #[test]
+    fn place_keeps_source_rect_offset_and_z() {
+        let mut g = Graphics::default();
+        let px = vec![0u8; 25 * 30 * 3];
+        let out = g.handle(
+            format!("a=T,f=24,s=25,v=30,i=7,x=5,y=6,w=10,h=12,X=3,Y=4,z=-3;{}", b64(&px)).as_bytes(),
+            CUR,
+        );
+        let p = &g.placements[0];
+        assert_eq!(p.geom.src, [5, 6, 10, 12]);
+        assert_eq!(p.geom.off, [3, 4]);
+        assert_eq!(p.z, -3);
+        assert_eq!((p.geom.img_w, p.geom.img_h), (25, 30));
+        // 잘라낸 10×12 + 오프셋 (3, 4): 13px -> 2칸, 16px -> 1줄
+        assert_eq!((p.cols, p.rows), (2, 1));
+        assert_eq!(out.advance, Some((0, 2)));
+    }
+
+    #[test]
+    fn offset_is_clamped_below_the_cell_size_and_z_may_be_positive() {
+        let mut g = Graphics::default();
+        store1(&mut g, "i=1");
+        put(&mut g, "i=1,X=99,Y=99,z=2147483647", CUR);
+        put(&mut g, "i=1,z=-2147483648", CUR);
+        assert_eq!(g.placements[0].geom.off, [9, 19], "칸 10×20이면 9, 19까지");
+        assert_eq!(g.placements[0].z, i32::MAX);
+        assert_eq!(g.placements[1].z, i32::MIN);
+    }
+
+    #[test]
+    fn columns_and_rows_follow_the_cropped_source_and_aspect_ratio() {
+        let mut g = Graphics::default();
+        let px = vec![0u8; 100 * 50 * 3];
+        // 40×20만 잘라 c=8만 주면: 너비 80px, 높이 40px -> 8칸 2줄
+        g.handle(
+            format!("a=T,f=24,s=100,v=50,i=1,w=40,h=20,c=8;{}", b64(&px)).as_bytes(),
+            CUR,
+        );
+        let p = &g.placements[0];
+        assert_eq!((p.cols, p.rows), (8, 2));
+        assert_eq!((p.geom.want_cols, p.geom.want_rows), (8, 0));
+    }
+
+    #[test]
+    fn transmit_with_an_image_number_assigns_the_lowest_free_id() {
+        let mut g = Graphics::default();
+        assert_eq!(store1(&mut g, "I=13").unwrap(), "\x1b_Gi=1,I=13;OK\x1b\\");
+        assert_eq!(store1(&mut g, "I=13").unwrap(), "\x1b_Gi=2,I=13;OK\x1b\\");
+        assert_eq!(store1(&mut g, "i=3").unwrap(), "\x1b_Gi=3;OK\x1b\\");
+        assert_eq!(store1(&mut g, "I=14,p=4").unwrap(), "\x1b_Gi=4,I=14,p=4;OK\x1b\\");
+        assert_eq!(g.image(1).unwrap().number, 13);
+        assert_eq!(
+            g.image(2).unwrap().number,
+            13,
+            "같은 번호를 다시 보내도 옛 그림은 남는다"
+        );
+        assert_eq!(g.image(3).unwrap().number, 0);
+    }
+
+    #[test]
+    fn transmit_without_id_or_number_gets_an_implicit_id_and_no_reply() {
+        let mut g = Graphics::default();
+        assert_eq!(store1(&mut g, "q=0"), None);
+        assert_eq!(store1(&mut g, "q=0"), None);
+        let mut ids: Vec<u32> = g.images.keys().copied().collect();
+        ids.sort();
+        assert_eq!(
+            ids,
+            vec![2_147_483_647, 2_147_483_648],
+            "낮은 번호와 겹치지 않는 내부 번호"
+        );
+        // 놓기(T)에도 답하지 않지만 그림은 놓인다
+        let out = g.handle(rgb1("T", 0, [1, 2, 3]).as_bytes(), CUR);
+        assert_eq!(out.reply, None);
+        assert_eq!(g.placements.len(), 1);
+    }
+
+    #[test]
+    fn display_by_image_number_uses_the_newest_image_with_that_number() {
+        let mut g = Graphics::default();
+        store1(&mut g, "I=13");
+        store1(&mut g, "I=13");
+        assert_eq!(put(&mut g, "I=13,p=2", CUR).unwrap(), "\x1b_Gi=2,I=13,p=2;OK\x1b\\");
+        assert_eq!(left(&g), vec![(2, 2)], "가장 나중에 보낸 그림");
+        let out = g.handle(format!("a=T,f=24,s=1,v=1,I=20;{}", b64(&[1, 2, 3])).as_bytes(), CUR);
+        assert_eq!(out.reply.unwrap(), b"\x1b_Gi=3,I=20;OK\x1b\\");
+        assert_eq!(g.placements.len(), 2);
+        assert_eq!(put(&mut g, "I=99", CUR).unwrap(), "\x1b_GI=99;ENOENT\x1b\\");
+    }
+
+    #[test]
+    fn image_id_and_number_together_are_refused_for_every_action() {
+        let mut g = Graphics::default();
+        store1(&mut g, "i=1");
+        for ctl in ["a=p,i=1,I=2,p=3", "a=t,f=24,s=1,v=1,i=1,I=2,p=3", "a=d,d=i,i=1,I=2,p=3"] {
+            let out = g.handle(format!("{ctl};{}", b64(&[1, 2, 3])).as_bytes(), CUR);
+            assert_eq!(out.reply.unwrap(), b"\x1b_Gi=1,I=2,p=3;EINVAL\x1b\\", "{ctl}");
+        }
+        assert!(
+            g.image(1).is_some() && g.placements.is_empty(),
+            "아무것도 바뀌지 않는다"
+        );
+        // q=2면 오류 답도 없다
+        assert_eq!(put(&mut g, "i=1,I=2,q=2", CUR), None);
+    }
+
+    #[test]
+    fn display_needs_an_id_or_number_and_an_existing_image() {
+        let mut g = Graphics::default();
+        assert_eq!(put(&mut g, "p=3", CUR), None, "번호가 없으면 답할 곳이 없다");
+        assert_eq!(put(&mut g, "i=8,p=3", CUR).unwrap(), "\x1b_Gi=8,p=3;ENOENT\x1b\\");
+        assert!(g.placements.is_empty());
+    }
+
+    /// 지우기 시험용 장면. 활성 화면은 줄 90~113(맨 위 90), 칸 80
+    ///  A: 그림 1, 자리 1, 줄 100~101 칸 4~6
+    ///  B: 그림 1, 자리 2, 줄 105 칸 20~21, z=-5
+    ///  C: 그림 2(번호 7), 자리 없음, 줄 50~51 칸 0~1 (스크롤백)
+    ///  D: 그림 3, 줄 100 칸 5, z=7 (A와 한 칸이 겹친다)
+    ///  그림 4는 놓지 않았다. 대체 화면에도 그림 1을 놓았다(E)
+    fn scene() -> Graphics {
+        let mut g = Graphics::default();
+        for ctl in ["i=1", "I=7", "i=3", "i=4"] {
+            store1(&mut g, ctl);
+        }
+        put(&mut g, "i=1,p=1,c=3,r=2", at(100, 4));
+        put(&mut g, "i=1,p=2,c=2,r=1,z=-5", at(105, 20));
+        put(&mut g, "i=2,c=2,r=2", at(50, 0));
+        put(&mut g, "i=3,c=1,r=1,z=7", at(100, 5));
+        put(
+            &mut g,
+            "i=1,p=3,c=1,r=1",
+            Cursor {
+                alt: true,
+                ..at(100, 40)
+            },
+        );
+        assert_eq!(left(&g), vec![(1, 1), (1, 2), (1, 3), (2, 0), (3, 0)]);
+        g
+    }
+
+    fn del(g: &mut Graphics, ctl: &str) -> Outcome {
+        let out = g.handle(format!("a=d,{ctl}").as_bytes(), CUR);
+        assert_eq!(out, Outcome::default(), "지우기는 답하지 않는다: {ctl}");
+        out
+    }
+
+    #[test]
+    fn delete_a_removes_only_visible_placements_of_the_active_screen() {
+        let mut g = scene();
+        del(&mut g, "d=a");
+        assert_eq!(left(&g), vec![(1, 3), (2, 0)], "스크롤백의 C와 대체 화면의 E는 남는다");
+        assert!(
+            g.image(1).is_some() && g.image(3).is_some(),
+            "소문자는 그림 자료를 남긴다"
+        );
+    }
+
+    #[test]
+    fn delete_capital_a_frees_only_images_that_lost_their_placements() {
+        let mut g = scene();
+        del(&mut g, "d=A");
+        assert_eq!(left(&g), vec![(1, 3), (2, 0)]);
+        assert!(g.image(3).is_none(), "D만 쓰던 그림 3은 지운다");
+        assert!(g.image(1).is_some(), "대체 화면 자리가 남은 그림 1은 남는다");
+        assert!(g.image(4).is_some(), "놓지 않은 그림은 건드리지 않는다");
+        assert!(g.image(2).is_some());
+    }
+
+    #[test]
+    fn delete_by_id_and_placement_id() {
+        let mut g = scene();
+        del(&mut g, "d=i,i=1,p=2");
+        assert_eq!(
+            left(&g),
+            vec![(1, 1), (1, 3), (2, 0), (3, 0)],
+            "자리 번호를 주면 그 자리만"
+        );
+        del(&mut g, "d=i,i=1");
+        assert_eq!(
+            left(&g),
+            vec![(1, 3), (2, 0), (3, 0)],
+            "화면의 자리는 모두. 대체 화면 자리는 남는다"
+        );
+        assert!(g.image(1).is_some());
+    }
+
+    #[test]
+    fn delete_capital_i_frees_the_image_only_when_it_matched_and_is_unused() {
+        let mut g = scene();
+        del(&mut g, "d=I,i=1,p=99");
+        assert!(
+            g.image(1).is_some() && g.placements.len() == 5,
+            "맞는 자리가 없으면 아무것도 지우지 않는다"
+        );
+        del(&mut g, "d=I,i=3");
+        assert!(g.image(3).is_none());
+        del(&mut g, "d=I,i=4");
+        assert!(g.image(4).is_none(), "자리가 없던 그림도 지운다");
+        del(&mut g, "d=I,i=1,p=1");
+        assert!(g.image(1).is_some(), "다른 자리(B)가 남아 있으면 그림도 남는다");
+        del(&mut g, "d=I,i=1");
+        assert!(g.image(1).is_some(), "대체 화면 자리 E가 남아 있다");
+    }
+
+    #[test]
+    fn delete_by_image_number_picks_the_newest() {
+        let mut g = scene();
+        // 번호 7을 한 번 더: 쓰지 않은 가장 낮은 번호 5가 된다
+        assert_eq!(store1(&mut g, "I=7").unwrap(), "\x1b_Gi=5,I=7;OK\x1b\\");
+        put(&mut g, "i=5,p=4,c=1,r=1", at(110, 0));
+        del(&mut g, "d=n,I=7");
+        assert!(
+            g.placements.iter().all(|p| p.image != 5),
+            "번호 7의 가장 나중 그림(5)의 자리를 지운다"
+        );
+        assert!(g.placements.iter().any(|p| p.image == 2));
+        assert!(g.image(5).is_some());
+        del(&mut g, "d=N,I=7");
+        assert!(g.image(5).is_none(), "N은 그림도 지운다");
+        assert!(g.image(2).is_some());
+        del(&mut g, "d=n,I=555");
+    }
+
+    #[test]
+    fn delete_at_cursor_removes_everything_covering_the_cursor_cell() {
+        let mut g = scene();
+        // 커서는 줄 100, 칸 4: A만 덮는다(D는 칸 5)
+        del(&mut g, "d=c");
+        assert_eq!(left(&g), vec![(1, 2), (1, 3), (2, 0), (3, 0)]);
+        assert!(g.image(1).is_some());
+        let mut g = scene();
+        del(&mut g, "d=C");
+        assert_eq!(left(&g), vec![(1, 2), (1, 3), (2, 0), (3, 0)]);
+        assert!(g.image(1).is_some(), "B와 E가 남았다");
+        let mut g = scene();
+        g.handle(b"a=d,d=C", Cursor { col: 5, ..CUR });
+        assert_eq!(left(&g), vec![(1, 2), (1, 3), (2, 0)], "칸 5는 A와 D를 덮는다");
+        assert!(g.image(3).is_none(), "D만 쓰던 그림 3은 대문자라 지운다");
+    }
+
+    #[test]
+    fn delete_at_cell_uses_one_based_active_coordinates() {
+        let mut g = scene();
+        // 활성 화면 맨 위가 줄 90이니 줄 100은 y=11, 칸 5는 x=6
+        del(&mut g, "d=p,x=6,y=11");
+        assert_eq!(left(&g), vec![(1, 2), (1, 3), (2, 0)], "A와 D");
+        assert!(g.image(3).is_some());
+        let mut g = scene();
+        del(&mut g, "d=P,x=6,y=11");
+        assert!(g.image(3).is_none() && g.image(1).is_some());
+        // 0이거나 화면 밖이면 아무것도 지우지 않는다
+        for ctl in [
+            "d=p,x=0,y=11",
+            "d=p,x=6,y=0",
+            "d=p,x=6",
+            "d=p,x=81,y=11",
+            "d=p,x=6,y=25",
+        ] {
+            let mut g = scene();
+            del(&mut g, ctl);
+            assert_eq!(g.placements.len(), 5, "{ctl}");
+        }
+    }
+
+    #[test]
+    fn delete_at_cell_with_z_only_removes_matching_z() {
+        let mut g = scene();
+        del(&mut g, "d=q,x=6,y=11,z=7");
+        assert_eq!(left(&g), vec![(1, 1), (1, 2), (1, 3), (2, 0)], "D만");
+        let mut g = scene();
+        del(&mut g, "d=Q,x=6,y=11,z=0");
+        assert_eq!(left(&g), vec![(1, 2), (1, 3), (2, 0), (3, 0)], "z가 0인 A만");
+        assert!(g.image(1).is_some());
+        let mut g = scene();
+        del(&mut g, "d=q,x=6,y=11,z=-5");
+        assert_eq!(g.placements.len(), 5);
+    }
+
+    #[test]
+    fn delete_by_column_matches_any_row_including_scrollback() {
+        let mut g = scene();
+        // 칸 5(x=6): A, D. 칸 0(x=1): C(스크롤백)
+        del(&mut g, "d=x,x=6");
+        assert_eq!(left(&g), vec![(1, 2), (1, 3), (2, 0)]);
+        let mut g = scene();
+        del(&mut g, "d=X,x=1");
+        assert_eq!(left(&g), vec![(1, 1), (1, 2), (1, 3), (3, 0)]);
+        assert!(g.image(2).is_none(), "C의 그림 2는 대문자라 지운다");
+        let mut g = scene();
+        del(&mut g, "d=x,x=0");
+        del(&mut g, "d=x");
+        assert_eq!(g.placements.len(), 5);
+    }
+
+    #[test]
+    fn delete_by_row_uses_one_based_active_rows() {
+        let mut g = scene();
+        // 줄 100은 y=11: A(100~101)와 D. 줄 105는 y=16: B
+        del(&mut g, "d=y,y=11");
+        assert_eq!(left(&g), vec![(1, 2), (1, 3), (2, 0)]);
+        let mut g = scene();
+        del(&mut g, "d=Y,y=16");
+        assert_eq!(left(&g), vec![(1, 1), (1, 3), (2, 0), (3, 0)]);
+        assert!(g.image(1).is_some());
+        let mut g = scene();
+        del(&mut g, "d=y,y=12");
+        assert_eq!(left(&g), vec![(1, 2), (1, 3), (2, 0), (3, 0)], "A는 줄 101에도 걸친다");
+        let mut g = scene();
+        del(&mut g, "d=y,y=0");
+        del(&mut g, "d=y,y=99");
+        assert_eq!(g.placements.len(), 5);
+    }
+
+    #[test]
+    fn delete_by_z_matches_every_placement_of_the_screen() {
+        let mut g = scene();
+        del(&mut g, "d=z,z=-5");
+        assert_eq!(left(&g), vec![(1, 1), (1, 3), (2, 0), (3, 0)]);
+        assert!(g.image(1).is_some());
+        del(&mut g, "d=Z,z=7");
+        assert_eq!(left(&g), vec![(1, 1), (1, 3), (2, 0)]);
+        assert!(g.image(3).is_none());
+        // z 기본값 0: 스크롤백의 C와 A
+        del(&mut g, "d=z");
+        assert_eq!(left(&g), vec![(1, 3)]);
+    }
+
+    #[test]
+    fn delete_by_id_range() {
+        let mut g = scene();
+        del(&mut g, "d=r,x=2,y=3");
+        assert_eq!(left(&g), vec![(1, 1), (1, 2), (1, 3)]);
+        assert!(g.image(2).is_some() && g.image(3).is_some(), "소문자는 그림을 남긴다");
+        let mut g = scene();
+        del(&mut g, "d=R,x=2,y=4");
+        assert!(
+            g.image(2).is_none() && g.image(3).is_none() && g.image(4).is_none(),
+            "놓지 않은 그림 4도 지운다"
+        );
+        assert!(g.image(1).is_some());
+        // 거꾸로 된 범위, 상한 0, 값 없음은 아무것도 고르지 않는다
+        for ctl in ["d=R,x=4,y=2", "d=R,x=1", "d=R", "d=R,x=0,y=0"] {
+            let mut g = scene();
+            del(&mut g, ctl);
+            assert_eq!(g.placements.len(), 5, "{ctl}");
+            assert_eq!(g.images.len(), 4, "{ctl}");
+        }
+    }
+
+    #[test]
+    fn delete_never_touches_the_other_screen() {
+        let mut g = scene();
+        g.handle(b"a=d,d=a", Cursor { alt: true, ..CUR });
+        assert_eq!(left(&g), vec![(1, 1), (1, 2), (2, 0), (3, 0)], "대체 화면의 E만 지웠다");
+    }
+
+    #[test]
+    fn animation_frame_delete_without_frames_only_drops_the_image_for_capital_f() {
+        let mut g = scene();
+        del(&mut g, "d=f,i=1");
+        assert!(
+            g.image(1).is_some() && g.placements.len() == 5,
+            "프레임이 없으면 소문자는 아무것도 안 한다"
+        );
+        del(&mut g, "d=F,i=3");
+        assert!(g.image(3).is_none() && g.placements.iter().all(|p| p.image != 3));
+        del(&mut g, "d=F,I=7");
+        assert!(g.image(2).is_none());
+        del(&mut g, "d=F");
+    }
+
+    #[test]
+    fn placement_cap_still_evicts_the_oldest() {
+        let mut g = Graphics::default();
+        store1(&mut g, "i=1");
+        for p in 1..=(MAX_PLACEMENTS as u32 + 5) {
+            put(&mut g, &format!("i=1,p={p},q=1"), CUR);
+        }
+        assert_eq!(g.placements.len(), MAX_PLACEMENTS);
+        assert_eq!(g.placements[0].pid, 6, "가장 오래된 것부터 버린다");
+    }
+
+    #[test]
+    fn feature_query_answers_the_new_placement_and_delete_keys() {
+        let mut g = Graphics::default();
+        assert_eq!(
+            query(&mut g, "a=q,i=2,e=p,x=1,y=2,w=3,h=4,X=5,Y=6,z=-7,p=8,c=4").unwrap(),
+            "\x1b_Gi=2,e=p,c=4,h=4,p=8,w=3,x=1,y=2,z=-7,X=5,Y=6;OK\x1b\\"
+        );
+        for d in [
+            "a", "A", "i", "I", "p", "P", "c", "C", "x", "X", "y", "Y", "z", "Z", "r", "R", "n", "N", "q", "Q",
+        ] {
+            assert_eq!(
+                query(&mut g, &format!("a=q,i=2,e=d,d={d}")).unwrap(),
+                format!("\x1b_Gi=2,e=d,d={d};OK\x1b\\"),
+                "{d}"
+            );
+        }
+        // 애니메이션 지우기(f·F)와 모르는 값은 답에서 뺀다
+        for d in ["f", "F", "w", "!"] {
+            assert_eq!(
+                query(&mut g, &format!("a=q,i=2,e=d,d={d}")).unwrap(),
+                "\x1b_Gi=2,e=d;OK\x1b\\",
+                "{d}"
+            );
+        }
     }
 }

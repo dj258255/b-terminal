@@ -428,3 +428,49 @@ fn mode_1048_saves_and_restores_the_cursor_only() {
     assert_eq!(s.row_text(0), "abQ");
     assert_eq!(s.row_text(2), "     xyz");
 }
+
+/// #547: 자리 번호·잘라내기·오프셋·z·지우기가 VT 엔진을 거쳐 화면 그림에 닿는다
+#[test]
+fn kitty_graphics_placement_options_reach_the_screen() {
+    let mut e = graphics_emulator();
+    // 10x10 RGBA 그림(칸 10x20): 번호 없이 보내고 자리를 둘 놓는다
+    let px = vec![200u8; 10 * 10 * 4];
+    let mut b64 = String::new();
+    for ch in px.chunks(3) {
+        const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+        let n = (ch[0] as u32) << 16 | (*ch.get(1).unwrap_or(&0) as u32) << 8 | *ch.get(2).unwrap_or(&0) as u32;
+        for i in 0..4 {
+            b64.push(if i <= ch.len() {
+                T[(n >> (18 - 6 * i) & 63) as usize] as char
+            } else {
+                '='
+            });
+        }
+    }
+    e.feed(format!("\x1b_Ga=t,f=32,s=10,v=10,i=3;{b64}\x1b\\").as_bytes());
+    assert_eq!(e.take_replies(), b"\x1b_Gi=3;OK\x1b\\");
+    e.feed(b"\x1b_Ga=p,i=3,p=1,x=2,y=3,w=4,h=5,X=6,Y=7,z=-4,C=1\x1b\\");
+    assert_eq!(e.take_replies(), b"\x1b_Gi=3,p=1;OK\x1b\\");
+    e.feed(b"\x1b[3;5H\x1b_Ga=p,i=3,p=2,z=2,C=1\x1b\\");
+    e.take_replies();
+    let s = e.snapshot();
+    assert_eq!(s.images.len(), 2);
+    let a = s.images.iter().find(|i| i.z == -4).expect("z=-4 자리");
+    assert_eq!(a.geom.src, [2, 3, 4, 5]);
+    assert_eq!(a.geom.off, [6, 7]);
+    assert_eq!((a.row, a.col), (0, 0));
+    // 같은 (그림, 자리 번호)로 다시 놓으면 바꾼다
+    e.feed(b"\x1b[2;2H\x1b_Ga=p,i=3,p=1,z=9,C=1\x1b\\");
+    let s = e.snapshot();
+    assert_eq!(s.images.len(), 2, "자리가 늘지 않는다");
+    let moved = s.images.iter().find(|i| i.z == 9).expect("바뀐 자리");
+    assert_eq!((moved.row, moved.col), (1, 1));
+    assert!(s.images.iter().all(|i| i.z != -4));
+    // d=p: 활성 화면 (1, 1)부터 센 칸에 걸친 자리를 지운다(이제 (2, 2)와 (3, 5)에 하나씩)
+    e.feed(b"\x1b_Ga=d,d=p,x=2,y=2\x1b\\");
+    let s = e.snapshot();
+    assert_eq!(s.images.len(), 1);
+    assert_eq!(s.images[0].z, 2);
+    e.feed(b"\x1b_Ga=d,d=z,z=2\x1b\\");
+    assert!(e.snapshot().images.is_empty());
+}
