@@ -464,11 +464,18 @@ pub(crate) fn encode_legacy(k: &LegacyKey, modes: bt_term::Modes, option_as_alt:
         sup: mods.super_key(),
         ..m
     };
+    // 이름 키(방향·Enter·F 키·키패드)는 Option을 눌렀으면 option-as-alt와 상관없이 Alt다. OS가 글자를 만들지 않는 키라
+    // 글자를 지킬 까닭이 없다(Ghostty `pcStyleFunctionKey`는 `all_mods`를 본다)
+    let mn = TermMods {
+        alt: mods.alt_key(),
+        ..m
+    };
+    let mns = TermMods { sup: ms.sup, ..mn };
     let keypad_app = keypad_application(modes.app_keypad, modes.key);
     let modify_other = modes.modify_other_keys;
     if keypad_app || modify_other {
         if let Some(kp) = keypad_key(k.logical, k.location) {
-            return encode_keypad(kp, ms, keypad_app);
+            return encode_keypad(kp, mns, keypad_app);
         }
     }
     if let Key::Named(named) = k.logical {
@@ -520,11 +527,13 @@ pub(crate) fn encode_legacy(k: &LegacyKey, modes: bt_term::Modes, option_as_alt:
             _ => None,
         };
         if modify_other {
-            if let Some(bytes) = key.and_then(|k| encode_named_modify_other(k, ms)) {
+            if let Some(bytes) = key.and_then(|k| encode_named_modify_other(k, mns)) {
                 return bytes;
             }
         }
-        return key.map(|k| encode_named_with(k, m, app_cursor, km)).unwrap_or_default();
+        return key
+            .map(|k| encode_named_with(k, mn, app_cursor, km))
+            .unwrap_or_default();
     }
     // modifyOtherKeys 상태 2: 수식 키가 붙은 글자 하나를 `CSI 27 ; 수식 ; 코드 ~`로(Ghostty는 Ctrl→C0 바이트보다 먼저 본다)
     if modify_other {

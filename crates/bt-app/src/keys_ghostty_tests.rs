@@ -195,7 +195,6 @@ fn mok2() -> Opts {
 
 // 2060줄
 #[test]
-#[ignore = "차이 B"]
 fn legacy_alt_plus_escape_with_modify_other_state_2() {
     let e = ev(KeyCode::Escape).mods(ALT);
     assert_eq!(run(&e, default()), b"\x1b\x1b");
@@ -302,7 +301,6 @@ fn legacy_ctrl_plus_shift_plus_backspace() {
 
 // 2269줄
 #[test]
-#[ignore = "차이 B"]
 fn legacy_ctrl_plus_alt_plus_shift_plus_backspace() {
     let e = ev(KeyCode::Backspace).mods(CTRL | ALT | SHIFT);
     assert_eq!(run(&e, default()), b"\x1b\x08");
