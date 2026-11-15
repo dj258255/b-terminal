@@ -17,6 +17,8 @@ use winit::keyboard::{NativeKey, SmolStr};
 const SHIFT: ModifiersState = ModifiersState::SHIFT;
 const CTRL: ModifiersState = ModifiersState::CONTROL;
 const ALT: ModifiersState = ModifiersState::ALT;
+// Linux에서는 SUPER를 쓰는 시험(macOS 전용)이 빠진다
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 const SUPER: ModifiersState = ModifiersState::SUPER;
 const NONE: ModifiersState = ModifiersState::empty();
 
@@ -162,14 +164,16 @@ fn run(e: &Ev, o: Opts) -> Vec<u8> {
         mods: e.mods,
         raw: e.mods,
     };
-    let mut modes = bt_term::Modes::default();
-    modes.app_keypad = o.keypad_key_application;
-    modes.modify_other_keys = o.modify_other_keys_state_2;
-    modes.key = KeyModes {
-        backarrow_key: o.backarrow_key_mode,
-        ignore_keypad_with_numlock: o.ignore_keypad_with_numlock,
-        alt_esc_prefix: o.alt_esc_prefix,
-        alt_sends_escape: false,
+    let modes = bt_term::Modes {
+        app_keypad: o.keypad_key_application,
+        modify_other_keys: o.modify_other_keys_state_2,
+        key: KeyModes {
+            backarrow_key: o.backarrow_key_mode,
+            ignore_keypad_with_numlock: o.ignore_keypad_with_numlock,
+            alt_esc_prefix: o.alt_esc_prefix,
+            alt_sends_escape: false,
+        },
+        ..bt_term::Modes::default()
     };
     encode_legacy(&k, modes, o.option_as_alt)
 }
