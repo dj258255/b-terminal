@@ -123,6 +123,8 @@ pub fn encode_named_with(key: NamedKey, mods: Mods, app_cursor: bool, km: KeyMod
         NamedKey::PageUp => tilde(5),
         NamedKey::PageDown => tilde(6),
         NamedKey::F(n) => match n {
+            // F3는 `ESC [ 1 ; 수식 R`이 커서 위치 보고(CPR)와 같아서 xterm은 수식 키가 있으면 `ESC [ 13 ; 수식 ~`로 보낸다(Ghostty `function_keys.zig` f3)
+            3 if mods.any() => tilde(13),
             1..=4 => {
                 let c = (b'P' + n - 1) as char;
                 if mods.any() {

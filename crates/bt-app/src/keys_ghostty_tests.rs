@@ -483,7 +483,6 @@ fn legacy_keypad_1_with_application_keypad_and_numlock_ignore() {
 
 // 2574줄
 #[test]
-#[ignore = "차이 E"]
 fn legacy_f1() {
     for (code, expected) in [
         (KeyCode::F1, &b"\x1b[1;5P"[..]),
