@@ -1,6 +1,7 @@
 //! PTY와 VT 해석, 알림 스캐너, 키 → 바이트(ADR-001). 엔진 타입을 밖으로 내보내지 않는다
 
 mod color;
+pub mod copy_format;
 pub mod csi_query;
 pub mod dcs;
 pub mod graphics;
@@ -22,6 +23,7 @@ pub mod search;
 mod session;
 pub mod xt_checksum;
 
+pub use copy_format::{CopyFormat, Emit as CopyEmit};
 pub use input::{
     KeyModes, KeypadKey, KittyFlags, Mods, NamedKey, encode_keypad, encode_modify_other_char, encode_named,
     encode_named_modify_other, encode_named_with, encode_paste, encode_text, encode_text_with, keypad_application,

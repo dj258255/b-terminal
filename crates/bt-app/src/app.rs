@@ -2190,18 +2190,29 @@ impl App {
         ))
     }
 
-    /// 고른 글을 시스템 클립보드에 넣는다. 고른 글이 없으면 하지 않는다. 했으면 true
-    fn copy_selection(&mut self) -> bool {
+    /// 고른 글을 시스템 클립보드에 `format` 꼴로 넣는다(Ghostty `copySelectionToClipboards`). 고른 글이 없으면 하지 않는다. 했으면 true.
+    /// `plain`·`vt`는 text/plain, `html`은 text/html, `mixed`는 글 + HTML. 앱 안 선택 클립보드(`selection_clipboard`)는 늘 글만이다
+    fn copy_selection(&mut self, format: bt_term::CopyFormat) -> bool {
         let Some(text) = self.selection_for_copy() else {
             return false;
         };
-        match self.clipboard.as_mut() {
-            Some(cb) => cb.set_text(text).is_ok(),
-            None => false,
+        let trim = self.config.clipboard_trim_trailing_spaces;
+        let pane = self.active_pane();
+        let payload = crate::copy::payload(format, &text, |emit, colors| {
+            pane.as_ref()
+                .and_then(|t| t.session.selection_styled(emit, trim, colors))
+        });
+        let Some(cb) = self.clipboard.as_mut() else {
+            return false;
+        };
+        match payload {
+            crate::copy::ClipboardPayload::Text(t) => cb.set_text(t).is_ok(),
+            crate::copy::ClipboardPayload::Html { html, alt } => cb.set().html(html, alt).is_ok(),
         }
     }
 
-    /// `copy-on-select`: 고르기를 마칠 때 값에 따라 선택 클립보드·시스템 클립보드로 보낸다
+    /// `copy-on-select`: 고르기를 마칠 때 값에 따라 선택 클립보드·시스템 클립보드로 보낸다.
+    /// 시스템 클립보드는 Ghostty처럼 mixed(글 + HTML)다
     fn copy_on_select_now(&mut self) {
         let (selection, system) = self.config.copy_on_select.targets();
         if selection {
@@ -2210,14 +2221,14 @@ impl App {
             }
         }
         if system {
-            self.copy_selection();
+            self.copy_selection(bt_term::CopyFormat::Mixed);
         }
     }
 
     /// 복사 명령(단축키·메뉴·오른쪽 클릭)으로 복사한다. `selection-clear-on-copy`가 켜져 있으면 복사한 뒤 고른 영역을 지운다.
     /// `copy-on-select`의 자동 복사는 지우지 않는다(Ghostty)
-    fn copy_selection_command(&mut self) -> bool {
-        let copied = self.copy_selection();
+    fn copy_selection_command(&mut self, format: bt_term::CopyFormat) -> bool {
+        let copied = self.copy_selection(format);
         if copied && clears_selection_after_copy(self.config.selection_clear_on_copy) {
             if let Some(t) = self.active_pane() {
                 t.session.select_clear();
@@ -2278,10 +2289,10 @@ impl App {
             bt_core::config::RightClickAction::Ignore => {}
             bt_core::config::RightClickAction::Paste => paste(self),
             bt_core::config::RightClickAction::Copy => {
-                self.copy_selection_command();
+                self.copy_selection_command(bt_term::CopyFormat::Mixed);
             }
             bt_core::config::RightClickAction::CopyOrPaste => {
-                if !self.copy_selection_command() {
+                if !self.copy_selection_command(bt_term::CopyFormat::Mixed) {
                     paste(self);
                 }
             }
@@ -3663,7 +3674,7 @@ impl App {
     fn can_perform(&mut self, action: &Action) -> bool {
         let has_selection = |s: &Self| s.active_pane().and_then(|t| t.session.selection_text()).is_some();
         match action {
-            Action::Copy
+            Action::Copy(_)
             | Action::AdjustSelection(_)
             | Action::ScrollToSelection
             | Action::SearchSelection
@@ -3700,8 +3711,8 @@ impl App {
             }
         }
         match action {
-            Action::Copy => {
-                self.copy_selection_command();
+            Action::Copy(format) => {
+                self.copy_selection_command(format);
             }
             // 찾기 막대가 열려 있으면 첫 줄을 찾을 글에 붙인다
             Action::Paste if self.w.search.is_some() => {

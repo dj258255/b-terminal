@@ -8,6 +8,7 @@ mod cliact;
 mod cliinfo;
 mod context_menu;
 mod control;
+mod copy;
 mod desktop;
 mod dock_open;
 mod dump;

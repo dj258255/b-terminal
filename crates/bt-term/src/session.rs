@@ -1463,6 +1463,32 @@ impl Session {
         g.term.selection_to_string().filter(|s| !s.is_empty())
     }
 
+    /// 고른 곳을 색·꾸밈이 든 글(VT 이스케이프 또는 HTML)로 만든다(`copy_to_clipboard:vt|html|mixed`, #550).
+    /// 같은 범위의 글은 `selection_text`다. `screen_colors`가 참이면 바탕·글자 기본색도 넣는다(Ghostty는 `vt`·`html`에서만,
+    /// `mixed`의 HTML에서는 뺀다). 고른 것이 없으면 None
+    pub fn selection_styled(&self, emit: crate::copy_format::Emit, trim: bool, screen_colors: bool) -> Option<String> {
+        let theme = self.theme.lock().clone();
+        let g = self.inner.lock();
+        let range = g.term.selection.as_ref().and_then(|s| s.to_range(&g.term))?;
+        let colors = g.term.colors();
+        let opts = crate::copy_format::Options {
+            emit,
+            trim,
+            background: screen_colors
+                .then(|| color::named(&theme, colors, alacritty_terminal::vte::ansi::NamedColor::Background)),
+            foreground: screen_colors
+                .then(|| color::named(&theme, colors, alacritty_terminal::vte::ansi::NamedColor::Foreground)),
+        };
+        Some(crate::copy_format::format_range(
+            &g.term,
+            &theme,
+            range.start,
+            range.end,
+            range.is_block,
+            opts,
+        ))
+    }
+
     /// 지금 화면을 꺼낸다
     pub fn snapshot(&self) -> Screen {
         let theme = self.theme.lock().clone();

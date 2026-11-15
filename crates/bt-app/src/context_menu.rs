@@ -238,7 +238,7 @@ mod tests {
     #[test]
     fn every_item_maps_to_an_existing_action() {
         let want = |id: &str| match id {
-            "copy" => Action::Copy,
+            "copy" => Action::Copy(bt_term::CopyFormat::Mixed),
             "paste" => Action::Paste,
             "split_right" => Action::NewSplit(Some(Direction::Right)),
             "split_left" => Action::NewSplit(Some(Direction::Left)),
