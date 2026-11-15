@@ -1151,6 +1151,20 @@ esctest2를 격리 창에서 돌리려 했지만 자동 권한 검사가 막아�
 - 창을 건드리지 않고 크기 바꾸기를 실제 창에서 일으키려면 모드 40을 씁니다. `ESC[?40h ESC[?3h`로 132열을 만든 뒤 `ESC[?40l`로 창 크기로 되돌리면 화면을 지우지 않고 다시 흘립니다.
 - 고치기 전 실제 창 측정을 에이전트가 일하는 중에 넘기면, 조사로 남길 뻔한 항목이 고침으로 바뀝니다.
 
+## 0.65.0 (2026-11-15)
+
+넣어 둔 테마를 Ghostty와 같은 판으로. 추적 이슈 [#542](https://github.com/dj258255/b-terminal/issues/542).
+
+0.64 뒤 Ghostty의 새 병합분을 보다가 #15239(iTerm2-Color-Schemes를 `release-20261109-150625-5fad1bd`로 올림)를 찾았습니다. 주 세션이 직접 했습니다(고칠 곳이 몇 군데뿐).
+
+- 시각(KST): 이슈를 14:42에 열고, #543을 14:46에 올려 14:50에 병합했습니다.
+
+| 이슈 | 내용 | 예상 | 실제 | PR | 주 세션이 한 것 |
+|---|---|---|---|---|---|
+| [#541](https://github.com/dj258255/b-terminal/issues/541) | 테마 묶음 5fad1bd, OpenCode Dark·Light | 주 세션 20분 | 약 8분(이슈 14:42부터 병합 14:50까지) | [#543](https://github.com/dj258255/b-terminal/pull/543) | GitHub 트리의 blob sha 907개와 우리 파일의 `git hash-object`를 견줘, 바뀐 것이 새 파일 둘뿐임을 확인했습니다 |
+
+같은 날 살핀 것: ICH(`CSI @`)의 넓은 글자 경계는 Ghostty 시험 넷(13951·14115·14213·14248줄)을 탐침해 같음을 확인했습니다(0.62에서 남긴 의심 항목을 닫음). Ghostty의 다른 새 병합분(#15237·#15238·#15230)은 페이지 내부·빌드 일이라 해당 없습니다.
+
 ## 다음
 
 - 범수 님이 직접 해야 할 것: 키보드·마우스 확인(한글 2벌식 "안녕 하세요⏎", Claude Code의 Shift+Enter, Cmd-D·Cmd-F·Cmd-클릭·Cmd-N·Cmd-Shift-P, 메뉴, 창 닫기 단추, vim·htop, kitty icat·yazi, 투명 창), Developer ID 계정으로 `scripts/bundle-macos.sh --sign … --notarize … --dmg`

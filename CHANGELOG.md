@@ -4,7 +4,15 @@
 
 ## [아직 릴리스하지 않음]
 
+## [0.65.0] - 2026-11-15
+
+넣어 둔 테마를 Ghostty와 같은 판으로. Ghostty가 올린 iTerm2-Color-Schemes 판을 따라 테마 두 개가 더해졌습니다. 마일스톤 0.65.
+
 - 넣어 둔 테마를 Ghostty가 고정한 판(iTerm2-Color-Schemes `release-20261109-150625-5fad1bd`, Ghostty #15239)과 같게 올렸습니다. 새 테마 `OpenCode Dark`·`OpenCode Light`가 더해져 907개입니다. 나머지 905개는 그 판과 내용이 같음을 GitHub 트리의 blob sha로 대조했습니다 (#541)
+
+### 알려진 한계
+
+- 두 새 테마의 색을 실제 창에서 보지는 않았습니다.
 
 ## [0.64.0] - 2026-11-15
 
