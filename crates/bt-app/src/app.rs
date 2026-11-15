@@ -833,9 +833,9 @@ struct Win {
     link_click: bool,
     /// 고르지 않은 칸을 누른 왼쪽 누름을 삼켰다: 짝 떼기도 삼킨다(#500)
     focus_click: mouse::FocusClickGuard,
-    /// 누름을 프로그램(PTY)에 보낸 물리 키. 프로그램이 kitty 키보드 프로토콜 2(키 뗌 보고)를 켰을 때, 짝 뗌만 보낸다.
-    /// IME가 삼킨 누름이나 앱 단축키가 먹은 누름의 뗌을 홀로 보내지 않기 위해서다(#546)
-    kitty_down: std::collections::HashSet<winit::keyboard::PhysicalKey>,
+    /// 누름을 프로그램(PTY)에 보낸 물리 키와 그 칸. 프로그램이 kitty 키보드 프로토콜 2(키 뗌 보고)를 켰을 때, 같은 칸에 짝 뗌만 보낸다.
+    /// IME가 삼킨 누름, 앱 단축키가 먹은 누름, 누른 뒤 다른 칸을 고른 경우의 뗌을 홀로 보내지 않기 위해서다(#546)
+    kitty_down: std::collections::HashMap<winit::keyboard::PhysicalKey, u64>,
     /// 열린 찾기 막대(칸 하나에 붙는다)
     search: Option<SearchBar>,
     /// 열린 명령 팔레트(#77): 친 글, 고른 줄
@@ -920,7 +920,7 @@ impl Win {
             hover: None,
             link_click: false,
             focus_click: mouse::FocusClickGuard::default(),
-            kitty_down: std::collections::HashSet::new(),
+            kitty_down: std::collections::HashMap::new(),
             search: None,
             palette: None,
             pointer_icon: CursorIcon::Default,
@@ -3084,10 +3084,10 @@ impl App {
     /// 키를 뗐다. 프로그램이 kitty 키보드 프로토콜 2(키 뗌 보고)를 켰고, 그 키의 누름을 프로그램에 보냈을 때만 뗌을 보낸다.
     /// 켜지 않았으면 뗌은 버린다(옛 바이트 그대로). 뗌은 글을 치는 것이 아니라 고른 영역을 지우거나 맨 아래로 돌리지 않는다
     fn kitty_key_release(&mut self, event: &winit::event::KeyEvent) {
-        if !self.w.kitty_down.remove(&event.physical_key) {
+        let Some(pane) = self.w.kitty_down.remove(&event.physical_key) else {
             return;
-        }
-        let Some(modes) = self.active_pane().map(|t| t.session.modes()) else {
+        };
+        let Some(modes) = self.active_pane().filter(|t| t.id == pane).map(|t| t.session.modes()) else {
             return;
         };
         if !modes.kitty.report_events {
@@ -6676,8 +6676,8 @@ impl ApplicationHandler<UserEvent> for App {
                 }
                 if !out.send.is_empty() {
                     self.write_active(&out.send);
-                    if report_release {
-                        self.w.kitty_down.insert(event.physical_key);
+                    if let (true, Some(id)) = (report_release, self.active_pane().map(|t| t.id)) {
+                        self.w.kitty_down.insert(event.physical_key, id);
                     }
                 }
                 if let Some(action) = out.action {
