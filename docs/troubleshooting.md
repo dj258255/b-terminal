@@ -97,3 +97,10 @@
 - 원인: 넓은 글자는 앞 칸과 뒤 칸 두 칸을 쓰는데, 1열 격자는 뒤 칸이 없어 `index out of bounds: the len is 1 but the index is 1`(`vendor/alacritty_terminal/src/grid/mod.rs`의 `cursor_cell`)로 엔진 스레드가 죽었다. 좌우 여백이 한 칸 폭일 때도 같은 자리다
 - 확인하는 법: 엔진 단위 시험 `print_wide_char_in_single_width_terminal`(`crates/bt-term/tests/ghostty_terminal.rs`)
 - b-terminal: 넓은 글자가 들어갈 자리가 없으면(오른쪽 한계 − 왼쪽 여백이 1 이하) 글자를 찍지 않고 커서 칸만 빈칸으로 두며 줄바꿈 대기가 된다(Ghostty `Terminal.zig` `print`와 같다). 단위 시험으로만 확인했다
+
+## 15. kitty 그림을 쓰는 프로그램이 돌면 다른 탭·창까지 멈춘다
+
+- 언제: 2026-11-16, #557. 0.67 병합 뒤 보안 검토에서 짚었다. 실제 창에서 겪은 사례가 아니라, 릴리스 빌드에서 그림 처리 시간을 재고(2048×2048 반투명 합성 한 번 24ms, 한 번 잰 값) 세션 시험으로 재현했다
+- 원인: PTY 읽기 스레드가 한 번 읽은 덩어리(최대 64KB)를 다 처리할 때까지 세션 잠금을 쥐었다. 앱은 모든 탭을 한 스레드에서 그리고 그때마다 같은 잠금으로 화면을 읽으므로, 무거운 그림 명령 몇 개가 앱 전체를 세웠다
+- 확인하는 법: 세션 시험 `heavy_graphics_commands_do_not_block_snapshots`(`crates/bt-term/tests/graphics_lock.rs`)
+- b-terminal: 그림 명령에 쓴 시간이 4ms 쌓일 때마다 기다리는 화면 그리기에 잠금을 넘긴다. 명령 하나가 긴 경우는 그 명령만큼 기다린다

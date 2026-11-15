@@ -6,7 +6,7 @@
 use std::io::{Read, Write};
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use alacritty_terminal::event::{Event as VtEvent, EventListener, WindowSize};
 use alacritty_terminal::grid::{Dimensions, Scroll};
@@ -140,6 +140,20 @@ pub fn window_resize_target(req: (u16, u16), cur: (u16, u16), max: (u16, u16)) -
 /// 새 출력이 왔을 때 맨 아래로 스크롤해야 하는가(켜져 있고 위로 올라가 있을 때만)
 fn scroll_wanted(on: bool, display_offset: usize) -> bool {
     on && display_offset != 0
+}
+
+/// 읽기 스레드가 세션 잠금을 쥔 채 그림 명령에 쓴 시간이 이만큼 쌓이면 기다리는 쪽(화면 그리기)에 잠금을 넘긴다(#557).
+/// 한 번 읽은 덩어리를 다 처리할 때까지 쥐고 있으면, 무거운 그림 명령 몇 개(반투명 합성, 큰 그림 풀기)로 앱 전체가 멈춘다
+const GRAPHICS_YIELD_AFTER: Duration = Duration::from_millis(4);
+
+/// 그림 명령 하나에 든 시간을 더하고, 잠금을 넘길 때가 되었으면 센 시간을 비우고 참을 돌려준다
+fn graphics_yield_due(spent: &mut Duration, took: Duration) -> bool {
+    *spent += took;
+    if *spent < GRAPHICS_YIELD_AFTER {
+        return false;
+    }
+    *spent = Duration::ZERO;
+    true
 }
 
 /// 세션이 앱에 알리는 일. 읽기 스레드에서 불린다
@@ -779,6 +793,7 @@ impl Session {
                         {
                             let mut g = thread_inner.lock();
                             let mut pos = 0;
+                            let mut graphics_spent = Duration::ZERO;
                             // 신호가 끝난 자리까지 나눠 먹인다: 프롬프트 줄을 정확히 적고, 출력을 C와 D 사이에서 자른다
                             for (end, sig) in signals {
                                 let seg = &bytes[pos..end.min(bytes.len())];
@@ -839,10 +854,16 @@ impl Session {
                                     Signal::Prompt(PromptMark::CommandStart) => {}
                                     Signal::CommandLine(c) => pending_cmd = Some(c),
                                     Signal::Graphics(raw) => {
-                                        if let Some(reply) = g.graphics_command(&raw) {
+                                        let started = Instant::now();
+                                        let reply = g.graphics_command(&raw);
+                                        if let Some(reply) = reply {
                                             let mut w = thread_writer.lock();
                                             let _ = w.write_all(&reply);
                                             let _ = w.flush();
+                                        }
+                                        // 무거운 명령이 이어지면 화면 그리기가 끼어들 틈을 준다. 기다리는 쪽이 없으면 곧바로 다시 쥔다(#557)
+                                        if graphics_yield_due(&mut graphics_spent, started.elapsed()) {
+                                            parking_lot::MutexGuard::unlocked_fair(&mut g, || {});
                                         }
                                     }
                                     Signal::Erase { visible, scrollback } => {
@@ -2233,6 +2254,20 @@ impl Session {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn graphics_yield_waits_until_enough_time_piles_up() {
+        let mut spent = Duration::ZERO;
+        assert!(!graphics_yield_due(&mut spent, Duration::from_millis(1)));
+        assert!(!graphics_yield_due(&mut spent, Duration::from_millis(2)));
+        assert!(graphics_yield_due(&mut spent, Duration::from_millis(1)));
+        assert_eq!(spent, Duration::ZERO, "넘긴 뒤에는 처음부터 센다");
+        assert!(
+            graphics_yield_due(&mut spent, Duration::from_millis(30)),
+            "한 명령이 길면 바로 넘긴다"
+        );
+        assert!(!graphics_yield_due(&mut spent, Duration::ZERO));
+    }
 
     /// 쓴 바이트를 모으고, 첫 덩어리를 받으면 칸을 읽기 전용으로 하는 가짜 PTY
     struct LockAfterFirst {
