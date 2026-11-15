@@ -2547,6 +2547,8 @@ impl<T: EventListener> Handler for Term<T> {
         trace!("Saving cursor position");
 
         self.grid.saved_cursor = self.grid.cursor.clone();
+        // b-terminal(#531): 원점 모드도 함께 저장한다(Ghostty `saveCursor`의 `origin`, Terminal.zig 2703줄)
+        self.grid.saved_cursor.origin = self.mode.contains(TermMode::ORIGIN);
     }
 
     #[inline]
@@ -2555,6 +2557,10 @@ impl<T: EventListener> Handler for Term<T> {
 
         self.damage_cursor();
         self.grid.cursor = self.grid.saved_cursor.clone();
+        // b-terminal(#531): 원점 모드를 저장할 때의 값으로 되돌린다. 저장한 것이 없으면 기본 커서의 값(끔)이고
+        // 처음 자리다(Ghostty `restoreCursor`의 기본값, Terminal.zig 2719줄)
+        self.mode.set(TermMode::ORIGIN, self.grid.saved_cursor.origin);
+        self.grid.cursor.origin = false;
         self.damage_cursor();
     }
 
