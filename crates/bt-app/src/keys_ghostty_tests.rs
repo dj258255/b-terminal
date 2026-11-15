@@ -524,7 +524,6 @@ fn legacy_f13_through_f25() {
 
 // 2681줄
 #[test]
-#[ignore = "차이 G"]
 fn legacy_help_and_context_menu() {
     for (code, n) in [(KeyCode::Help, 28), (KeyCode::ContextMenu, 29)] {
         assert_eq!(run(&ev(code), default()), format!("\x1b[{n}~").as_bytes(), "{code:?}");

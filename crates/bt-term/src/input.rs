@@ -19,6 +19,10 @@ pub enum NamedKey {
     Delete,
     /// F1~F25
     F(u8),
+    /// Help(Ghostty `help`). kitty 키보드 프로토콜 표에는 없다
+    Help,
+    /// 메뉴 키(Ghostty `context_menu`). kitty 키보드 프로토콜 표에는 없다
+    ContextMenu,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -122,6 +126,8 @@ pub fn encode_named_with(key: NamedKey, mods: Mods, app_cursor: bool, km: KeyMod
         NamedKey::Delete => tilde(3),
         NamedKey::PageUp => tilde(5),
         NamedKey::PageDown => tilde(6),
+        NamedKey::Help => tilde(28),
+        NamedKey::ContextMenu => tilde(29),
         NamedKey::F(n) => match n {
             // F3는 `ESC [ 1 ; 수식 R`이 커서 위치 보고(CPR)와 같아서 xterm은 수식 키가 있으면 `ESC [ 13 ; 수식 ~`로 보낸다(Ghostty `function_keys.zig` f3)
             3 if mods.any() => tilde(13),

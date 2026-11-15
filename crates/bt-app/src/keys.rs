@@ -519,6 +519,8 @@ pub(crate) fn encode_legacy(k: &LegacyKey, modes: bt_term::Modes, option_as_alt:
             WKey::F23 => Some(NamedKey::F(23)),
             WKey::F24 => Some(NamedKey::F(24)),
             WKey::F25 => Some(NamedKey::F(25)),
+            WKey::Help => Some(NamedKey::Help),
+            WKey::ContextMenu => Some(NamedKey::ContextMenu),
             WKey::Space => {
                 if modify_other {
                     if let Some(bytes) = encode_modify_other_char(' ', ms) {
