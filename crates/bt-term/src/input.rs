@@ -276,6 +276,18 @@ pub fn encode_text_with(text: &str, mods: Mods, km: KeyModes) -> Vec<u8> {
     out
 }
 
+/// Ctrl+글자의 제어 바이트(Ghostty `ctrlSeq`). `physical`은 물리 키의 US 배열 글자, `utf8`은 키가 만든 글, `unshifted`는 수식 키 없이 눌렀을 때의 글자
+pub fn ctrl_seq(_physical: Option<u32>, utf8: &str, _unshifted: u32, mods: Mods) -> Option<u8> {
+    if !mods.ctrl {
+        return None;
+    }
+    let mut chars = utf8.chars();
+    match (chars.next(), chars.next()) {
+        (Some(c), None) => ctrl_byte(c),
+        _ => None,
+    }
+}
+
 fn ctrl_byte(c: char) -> Option<u8> {
     match c {
         'a'..='z' => Some(c as u8 - b'a' + 1),
