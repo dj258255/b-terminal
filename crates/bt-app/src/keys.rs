@@ -413,6 +413,49 @@ pub fn encode(
     if event.state == ElementState::Released {
         return Vec::new();
     }
+    use winit::platform::modifier_supplement::KeyEventExtModifierSupplement;
+    let unshifted = match event.key_without_modifiers() {
+        Key::Character(s) => s.chars().next().map_or(0, |c| c as u32),
+        Key::Named(WKey::Space) => ' ' as u32,
+        _ => 0,
+    };
+    let physical = match event.physical_key {
+        PhysicalKey::Code(c) => Some(c),
+        PhysicalKey::Unidentified(_) => None,
+    };
+    let key = LegacyKey {
+        logical: &event.logical_key,
+        location: event.location,
+        physical,
+        text: event.text.as_deref(),
+        unshifted,
+        mods,
+        raw,
+    };
+    encode_legacy(&key, modes, option_as_alt)
+}
+
+/// 옛 길(kitty 키보드 프로토콜이 꺼진 프로그램)이 키 이벤트에서 읽는 것. winit 이벤트는 만들 수 없어 시험하지 못하므로 읽는 값만 따로 둔다
+/// (Ghostty `key.KeyEvent`의 key·utf8·unshifted_codepoint·mods에 해당한다)
+pub(crate) struct LegacyKey<'a> {
+    /// 글자를 반영한 논리 키(이름 키 또는 글자)
+    pub logical: &'a Key,
+    pub location: KeyLocation,
+    /// 물리 키(자판 배열과 상관없음). 모르면 없다
+    pub physical: Option<KeyCode>,
+    /// 키가 만든 글(`KeyEvent::text`)
+    pub text: Option<&'a str>,
+    /// 수식 키 없이 눌렀을 때의 글자 코드(배열 기준). 모르면 0
+    pub unshifted: u32,
+    /// `key-remap`을 적용한 수식 키
+    pub mods: ModifiersState,
+    /// 바꾸기 전 수식 키
+    pub raw: ModifiersState,
+}
+
+/// 옛 길의 바이트(Ghostty `key_encode.zig`의 `legacy()`). 누름·반복만 온다
+pub(crate) fn encode_legacy(k: &LegacyKey, modes: bt_term::Modes, option_as_alt: bool) -> Vec<u8> {
+    let (mods, raw) = (k.mods, k.raw);
     let app_cursor = modes.app_cursor;
     let km = effective_key_modes(&modes);
     let m = term_mods(mods, option_gate(option_as_alt, raw));
@@ -424,11 +467,11 @@ pub fn encode(
     let keypad_app = keypad_application(modes.app_keypad, modes.key);
     let modify_other = modes.modify_other_keys;
     if keypad_app || modify_other {
-        if let Some(k) = keypad_key(&event.logical_key, event.location) {
-            return encode_keypad(k, ms, keypad_app);
+        if let Some(kp) = keypad_key(k.logical, k.location) {
+            return encode_keypad(kp, ms, keypad_app);
         }
     }
-    if let Key::Named(named) = &event.logical_key {
+    if let Key::Named(named) = k.logical {
         let key = match named {
             WKey::Enter => Some(NamedKey::Enter),
             WKey::Backspace => Some(NamedKey::Backspace),
@@ -475,7 +518,7 @@ pub fn encode(
     }
     // modifyOtherKeys 상태 2: 수식 키가 붙은 글자 하나를 `CSI 27 ; 수식 ; 코드 ~`로(Ghostty는 Ctrl→C0 바이트보다 먼저 본다)
     if modify_other {
-        if let Key::Character(s) = &event.logical_key {
+        if let Key::Character(s) = k.logical {
             let mut chars = s.chars();
             if let (Some(c), None) = (chars.next(), chars.next()) {
                 if let Some(bytes) = encode_modify_other_char(c, ms) {
@@ -486,16 +529,16 @@ pub fn encode(
     }
     // Ctrl·Alt 조합은 수식 키를 뺀 글자로 만든다(Option이 만드는 ∫ 같은 글자 대신 b)
     if m.ctrl || m.alt {
-        if let Key::Character(s) = &event.logical_key {
+        if let Key::Character(s) = k.logical {
             return encode_text_with(s, m, km);
         }
     }
     if ctrl_text_replaced(raw, mods) {
-        if let Key::Character(s) = &event.logical_key {
+        if let Key::Character(s) = k.logical {
             return encode_text(s, TermMods::default());
         }
     }
-    match &event.text {
+    match &k.text {
         Some(t) if !t.is_empty() => encode_text(t, TermMods::default()),
         _ => Vec::new(),
     }
@@ -726,3 +769,7 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "keys_ghostty_tests.rs"]
+mod keys_ghostty_tests;
