@@ -1415,7 +1415,8 @@ where
             C0::HT => self.handler.put_tab(1),
             C0::BS => self.handler.backspace(),
             C0::CR => self.handler.carriage_return(),
-            C0::LF | C0::VT | C0::FF => self.handler.linefeed(),
+            // b-terminal(#526): LF·VT·FF는 `newline`(LNM이 켜졌으면 CR도 함). IND(`ESC D`)는 `linefeed` 그대로(Ghostty `linefeed`·`index`)
+            C0::LF | C0::VT | C0::FF => self.handler.newline(),
             C0::BEL => self.handler.bell(),
             C0::SUB => self.handler.substitute(),
             C0::SI => self.handler.set_active_charset(CharsetIndex::G0),

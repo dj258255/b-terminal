@@ -82,3 +82,18 @@
 - 현상: 한국어 입력기로 `가나`를 치는 중(`나`가 조합 중)에 창이 포커스를 잃었다가 돌아와 Enter를 누르면 `가`만 들어가고 `나`가 사라질 것으로 본다. 마우스로 다른 분할 칸이나 탭을 고르면 조합 중인 `나`가 새 칸으로 따라간다
 - 원인: 칸이 포커스를 잃을 때 한국어 입력기는 `insertText`도 `unmarkText`도 부르지 않고 조합을 버린다. 돌아와 Enter를 누르면 `insertText ""` 다음에 `unmarkText`가 오고, 벤더 winit의 `unmark_text`가 보내는 `Ime::Preedit("")`를 앱이 받아 `나`를 지운다. b-terminal은 분할 칸과 탭이 NSView 하나를 함께 써서 칸을 옮겨도 입력기는 모르므로 조합 글자가 새 칸으로 따라간다
 - b-terminal: 창이 포커스를 잃을 때(칸에 `ESC[O`를 쓰기 전), 고른 칸이 바뀌기 전(`focus_pane_keeping`), 탭이 바뀌기 전(`activate`), 새 탭·새 분할로 고른 칸이 바뀌기 전에 `settle_preedit`을 부른다. 조합 글자가 있고 입력 소스가 `com.apple.inputmethod.Korean`으로 시작하면 조합 글자를 옛 칸에 확정 글과 같은 길(`commit_text`)로 보내고, 벤더 winit의 `discard_marked_text`로 입력기가 조합을 버리게 한다. 일본어 등은 포커스가 돌아오면 조합을 이어 가므로 건드리지 않는다(확정하면 `にほn`처럼 변환 전 글이 들어간다). 시험으로 확인한 것은 입력 소스 판별 표(한국어 2벌식·3벌식은 참, 일본어·창힐·간체 병음·ABC·없음은 거짓)뿐이다. 호출 자리와 벤더 함수는 시험으로 잡지 못하고 실제 한글 입력으로 확인하지 않았다
+
+## 13. 한글·이모지를 지우면 반쪽 글자가 남는다
+
+- 언제: 2026-11-15, #524. Ghostty `Terminal.zig`의 단위 시험 154개를 같은 escape 바이트로 엔진에 넣어 견줘 찾았다. 격리한 실제 창(`zsh -f`)에서는 `printf`로 고친 뒤를 확인했고(아래), 셸 줄 편집이나 vim에서 지워 보지는 않았다
+- 현상: `😀a😀b😀`(8열)에서 두 번째 칸부터 ECH 3(`ESC[1;2H ESC[3X`)를 하면 Ghostty는 `     b😀`인데 우리는 `😀    b😀`처럼 첫 이모지의 앞 칸이 남았다. DCH 3은 `😀b😀`(Ghostty `  b😀`), `AB橋DE`에서 4열부터 EL 0은 `AB橋`(Ghostty `AB`), ED 0도 같다. 줄을 넘어 이어진 넓은 글자도 줄 끝의 앞 칸 자리 표시가 남았다. 셸 줄 편집(`ESC[P`·`ESC[K`)이나 vim에서 한글을 지울 때 반쪽 글자가 보일 수 있다
+- 원인: `erase_chars`·`delete_chars`·`erase_line`·`clear_screen`(ED 0)이 지우는 구간의 경계가 넓은 글자(앞 칸 `WIDE_CHAR`, 뒤 칸 `WIDE_CHAR_SPACER`)를 가르는지 보지 않았다. 앞 칸만 지우면 뒤 칸이, 뒤 칸만 지우면 앞 칸이 짝 없이 남는다
+- 확인하는 법: 엔진 단위 시험 `crates/bt-term/tests/ghostty_terminal.rs`의 `erase_chars_wide_char_boundary_conditions` 같은 시험. 격자에서 뒤 칸 없는 앞 칸이나 앞 칸 없는 뒤 칸을 직접 찾는다(`plain`은 짝 잃은 뒤 칸을 빈칸으로 그려 가린다)
+- b-terminal: Ghostty `Screen.splitCellBoundary`와 같게 구간 양 끝의 경계를 먼저 가른다. 경계의 왼쪽 칸이 넓은 글자의 앞 칸이면 두 칸을 함께 지운다. ECH는 구간 끝이 앞 칸이면 뒤 칸까지 늘리고, EL 0·ED 0은 커서가 뒤 칸이면 앞 칸부터, EL 1·ED 1은 커서가 앞 칸이면 뒤 칸까지 지운다. 줄 끝 앞 칸 자리 표시와 이어진 줄 표시도 푼다. 격리한 실제 창에서 `printf 'AB가CD\033[4G\033[K\n'`이 고치기 전 `AB가`, 고친 뒤 `AB`로 나왔다
+
+## 14. 칸이 1열까지 줄어든 채 한글·이모지가 찍히면 칸이 멈춘다
+
+- 언제: 2026-11-15, #523. 코드로 만든 1열 × 80줄 격자에 `😀`(U+1F600)를 넣어 엔진 단위 시험에서 났다. 실제 창을 1열까지 줄여 보지 않았고, 앱에서 칸이 1열까지 줄어드는지도 확인하지 않았다
+- 원인: 넓은 글자는 앞 칸과 뒤 칸 두 칸을 쓰는데, 1열 격자는 뒤 칸이 없어 `index out of bounds: the len is 1 but the index is 1`(`vendor/alacritty_terminal/src/grid/mod.rs`의 `cursor_cell`)로 엔진 스레드가 죽었다. 좌우 여백이 한 칸 폭일 때도 같은 자리다
+- 확인하는 법: 엔진 단위 시험 `print_wide_char_in_single_width_terminal`(`crates/bt-term/tests/ghostty_terminal.rs`)
+- b-terminal: 넓은 글자가 들어갈 자리가 없으면(오른쪽 한계 − 왼쪽 여백이 1 이하) 글자를 찍지 않고 커서 칸만 빈칸으로 두며 줄바꿈 대기가 된다(Ghostty `Terminal.zig` `print`와 같다). 단위 시험으로만 확인했다

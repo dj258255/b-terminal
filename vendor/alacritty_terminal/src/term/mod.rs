@@ -939,6 +939,85 @@ impl<T> Term<T> {
         column >= self.margin_left && column <= self.margin_right
     }
 
+    /// b-terminal(#524): 칸 하나를 현재 배경색의 빈 칸으로 만든다. 줄 끝의 이어진 줄 표시(WRAPLINE)는 남긴다
+    fn blank_cell_keep_wrap(&mut self, line: Line, column: usize) {
+        let bg = self.grid.cursor.template.bg;
+        let cell = &mut self.grid[line][Column(column)];
+        let wrap = cell.flags.contains(Flags::WRAPLINE);
+        *cell = bg.into();
+        cell.flags.set(Flags::WRAPLINE, wrap);
+    }
+
+    /// b-terminal(#524): `x - 1`칸과 `x`칸 사이의 경계가 넓은 글자를 가르면 그 글자의 두 칸을 함께 지운다.
+    /// 칸을 지우거나 옮기는 구간 `[a, b]`의 양 끝은 `a`와 `b + 1`로 부른다. `x`는 칸 수까지 허용한다.
+    /// Ghostty `Screen.splitCellBoundary`(1967줄)와 같은 세 경우다:
+    /// - `x - 1`이 넓은 글자의 앞 칸이면 `x - 1`과 `x`를 지운다
+    /// - `x`가 0이나 1이고 이 줄이 윗줄에서 이어진 줄이며 0번 칸이 넓은 글자면, 윗줄 끝의 앞 칸 자리 표시를 지운다
+    /// - `x`가 칸 수이고 줄 끝이 앞 칸 자리 표시면 지운다
+    /// 줄의 이어진 줄 표시는 건드리지 않는다(`reset_row_wrap`이 한다)
+    fn split_cell_boundary(&mut self, line: Line, x: usize) {
+        let columns = self.columns();
+        if x >= columns {
+            if self.grid[line][Column(columns - 1)].flags.contains(Flags::LEADING_WIDE_CHAR_SPACER)
+            {
+                self.blank_cell_keep_wrap(line, columns - 1);
+            }
+            return;
+        }
+
+        if x <= 1
+            && line > self.topmost_line()
+            && self.grid[line][Column(0)].flags.contains(Flags::WIDE_CHAR)
+        {
+            let above = line - 1i32;
+            let last = self.grid[above][Column(columns - 1)].flags;
+            if last.contains(Flags::WRAPLINE) && last.contains(Flags::LEADING_WIDE_CHAR_SPACER) {
+                self.blank_cell_keep_wrap(above, columns - 1);
+                self.damage.damage_line(above.0 as usize, columns - 1, columns - 1);
+            }
+        }
+
+        if x > 0 && self.grid[line][Column(x - 1)].flags.contains(Flags::WIDE_CHAR) {
+            self.blank_cell_keep_wrap(line, x - 1);
+            self.blank_cell_keep_wrap(line, x);
+        }
+    }
+
+    /// b-terminal(#524): 줄이 다음 줄로 이어진다는 표시(줄 끝 칸의 WRAPLINE)를 지운다.
+    /// 줄 끝이 앞 칸 자리 표시였으면 그 칸도 빈 칸으로 만든다(Ghostty `cursorResetWrap`)
+    fn reset_row_wrap(&mut self, line: Line) {
+        let last = Column(self.columns() - 1);
+        let bg = self.grid.cursor.template.bg;
+        let cell = &mut self.grid[line][last];
+        if !cell.flags.contains(Flags::WRAPLINE) {
+            return;
+        }
+        if cell.flags.contains(Flags::LEADING_WIDE_CHAR_SPACER) {
+            *cell = bg.into();
+        } else {
+            cell.flags.remove(Flags::WRAPLINE);
+        }
+    }
+
+    /// b-terminal(#524): EL 0·ED 0이 지우기 시작하는 칸. 커서가 넓은 글자의 뒤 칸이면 앞 칸부터다(Ghostty `eraseLine` right)
+    fn erase_start_column(&self) -> usize {
+        let point = self.grid.cursor.point;
+        let column = point.column.0;
+        if column > 0 && self.grid[point.line][point.column].flags.contains(Flags::WIDE_CHAR_SPACER)
+        {
+            column - 1
+        } else {
+            column
+        }
+    }
+
+    /// b-terminal(#524): EL 1·ED 1이 지우는 끝 칸의 다음 칸. 커서가 넓은 글자의 앞 칸이면 뒤 칸까지다(Ghostty `eraseLine` left)
+    fn erase_end_column(&self) -> usize {
+        let point = self.grid.cursor.point;
+        let wide = self.grid[point.line][point.column].flags.contains(Flags::WIDE_CHAR);
+        cmp::min(point.column.0 + 1 + usize::from(wide), self.columns())
+    }
+
     /// b-terminal(#311): `from..=to` 칸 사이에서 짝을 잃은 넓은 글자 반쪽(뒤 칸 없는 앞 칸, 앞 칸 없는 뒤 칸)을 빈 칸으로 만든다.
     /// 여백 경계에서 칸을 밀거나 지운 뒤에 쓴다(Ghostty `rowWillBeShifted`·`insertBlanks`가 경계의 넓은 글자를 지우는 것과 같은 결과)
     fn repair_wide_cells(&mut self, line: Line, from: usize, to: usize) {
@@ -1468,6 +1547,7 @@ impl<T> Term<T> {
 
     /// b-terminal(#294): ED·DECSED 중 보호 칸을 남기는 쪽. 화면을 히스토리로 밀지 않고 제자리에서 지운다(Ghostty `clearRows`)
     fn erase_display_keeping_protected(&mut self, mode: ansi::ClearMode) {
+        self.grid.cursor.input_needs_wrap = false; // b-terminal(#525): 보호 칸을 남기는 ED도 줄바꿈 대기를 푼다(Ghostty `eraseDisplay`)
         let cursor = self.grid.cursor.point;
         let columns = self.columns();
         let screen_lines = self.screen_lines() as i32;
@@ -1476,14 +1556,16 @@ impl<T> Term<T> {
                 for line in 0..cursor.line.0 {
                     self.clear_unprotected(Line(line), Column(0)..Column(columns));
                 }
-                let end = cmp::min(cursor.column + 1, Column(columns));
+                let end = Column(self.erase_end_column()); // b-terminal(#524)
                 self.clear_unprotected(cursor.line, Column(0)..end);
 
                 let range = Line(0)..=cursor.line;
                 self.selection = self.selection.take().filter(|s| !s.intersects_range(range));
             },
             ansi::ClearMode::Below => {
-                self.clear_unprotected(cursor.line, cursor.column..Column(columns));
+                let start = Column(self.erase_start_column()); // b-terminal(#524)
+                self.reset_row_wrap(cursor.line);
+                self.clear_unprotected(cursor.line, start..Column(columns));
                 for line in (cursor.line.0 + 1)..screen_lines {
                     self.clear_unprotected(Line(line), Column(0)..Column(columns));
                 }
@@ -1515,11 +1597,21 @@ impl<T> Term<T> {
         let point = cursor.point;
 
         let (left, right) = match mode {
-            ansi::LineClearMode::Right if cursor.input_needs_wrap => return,
-            ansi::LineClearMode::Right => (point.column, Column(self.columns())),
-            ansi::LineClearMode::Left => (Column(0), point.column + 1),
-            ansi::LineClearMode::All => (Column(0), Column(self.columns())),
+            // b-terminal(#525): 줄바꿈 대기 중이어도 커서 칸(마지막 칸)부터 지운다(Ghostty `eraseLine`). 업스트림은 건너뛰었다
+            // b-terminal(#524): 넓은 글자를 반쪽만 지우지 않는다. 오른쪽·전체는 이어진 줄 표시도 푼다(Ghostty `eraseLine`)
+            ansi::LineClearMode::Right => {
+                let left = self.erase_start_column();
+                self.reset_row_wrap(point.line);
+                (Column(left), Column(self.columns()))
+            },
+            ansi::LineClearMode::Left => (Column(0), Column(self.erase_end_column())),
+            ansi::LineClearMode::All => {
+                self.reset_row_wrap(point.line);
+                (Column(0), Column(self.columns()))
+            },
         };
+        // b-terminal(#525): EL은 어느 방식이든 줄바꿈 대기를 푼다(Ghostty `eraseLine`)
+        self.grid.cursor.input_needs_wrap = false;
 
         self.damage.damage_line(point.line.0 as usize, left.0, right.0 - 1);
 
@@ -1745,6 +1837,12 @@ impl<T: EventListener> Handler for Term<T> {
         if width == 1 {
             base = self.grid.cursor.point;
             self.write_at_cursor(c);
+        } else if right_limit.saturating_sub(self.margin_left) <= 1 {
+            // b-terminal(#523): 넓은 글자가 들어갈 자리가 없다(1열 격자, 한 칸 폭의 여백). 뒤 칸을 쓰면 격자 밖이라 죽는다.
+            // 글자를 찍지 않고 커서 칸만 빈칸으로 둔다(Ghostty `print`의 `(right_limit - left) > 1` 아닌 갈래).
+            // 아래의 공통 끝에서 커서가 줄 끝이라 줄바꿈 대기가 된다
+            base = self.grid.cursor.point;
+            self.write_at_cursor(' ');
         } else {
             if self.grid.cursor.point.column + 1 >= right_limit {
                 if self.mode.contains(TermMode::LINE_WRAP) {
@@ -1805,6 +1903,13 @@ impl<T: EventListener> Handler for Term<T> {
                 cell.flags.insert(Flags::WRITTEN); // b-terminal(#314)
             }
         }
+
+        // b-terminal(#526): 위아래·좌우 여백을 처음으로 돌리고 원점 모드를 끄고 커서를 왼쪽 위로 보낸다(Ghostty `decaln` 4586줄).
+        // 69(좌우 여백 모드) 자체는 그대로 둔다
+        self.scroll_region = Line(0)..Line(self.screen_lines() as i32);
+        self.reset_margins();
+        self.mode.remove(TermMode::ORIGIN);
+        self.goto(0, 0);
 
         self.mark_fully_damaged();
     }
@@ -1902,7 +2007,11 @@ impl<T: EventListener> Handler for Term<T> {
     fn move_up(&mut self, lines: usize) {
         trace!("Moving up: {lines}");
 
-        let line = self.grid.cursor.point.line - lines;
+        // b-terminal(#526): 커서가 위 여백 줄이나 그 아래면 위 여백에서 멈추고, 위 여백보다 위에 있으면 화면 위 끝까지 간다(Ghostty `cursorUp` 2543줄)
+        let current = self.grid.cursor.point.line;
+        let top = self.scroll_region.start;
+        let limit = if current >= top { top } else { Line(0) };
+        let line = cmp::max(current - lines, limit);
         let column = self.grid.cursor.point.column;
         self.move_to_screen(line.0, column.0)
     }
@@ -1911,7 +2020,11 @@ impl<T: EventListener> Handler for Term<T> {
     fn move_down(&mut self, lines: usize) {
         trace!("Moving down: {lines}");
 
-        let line = self.grid.cursor.point.line + lines;
+        // b-terminal(#526): 커서가 아래 여백 줄이나 그 위면 아래 여백에서 멈추고, 아래 여백보다 아래에 있으면 화면 아래 끝까지 간다(Ghostty `cursorDown` 2561줄)
+        let current = self.grid.cursor.point.line;
+        let bottom = self.scroll_region.end - 1;
+        let limit = if current <= bottom { bottom } else { self.bottommost_line() };
+        let line = cmp::min(current + lines, limit);
         let column = self.grid.cursor.point.column;
         self.move_to_screen(line.0, column.0)
     }
@@ -2173,6 +2286,8 @@ impl<T: EventListener> Handler for Term<T> {
     #[inline]
     fn linefeed(&mut self) {
         trace!("Linefeed");
+        // b-terminal(#525): LF·IND는 줄바꿈 대기를 푼다(Ghostty `index` 3021줄). 아래 여백 줄에서 스크롤하지 못하고 멈춰도 푼다
+        self.grid.cursor.input_needs_wrap = false;
         let next = self.grid.cursor.point.line + 1;
         if next == self.scroll_region.end {
             // b-terminal(#311): 아래 여백 줄에서는 커서가 좌우 여백 안일 때만 스크롤한다(밖이면 움직이지도 않는다).
@@ -2302,11 +2417,23 @@ impl<T: EventListener> Handler for Term<T> {
         trace!("Erasing chars: count={}, col={}", count, cursor.point.column);
 
         let start = cursor.point.column;
-        let end = cmp::min(start + count, Column(self.columns()));
+        let line = cursor.point.line;
+        let columns = self.columns();
+        // b-terminal(#524): 지우는 구간의 끝이 넓은 글자의 앞 칸이면 뒤 칸까지 지운다. 구간 양 끝의 경계가 넓은 글자를 가르면
+        // 그 글자 두 칸을 함께 지운다(Ghostty `eraseChars` 4275줄)
+        let remaining = columns - start.0;
+        let mut len = cmp::min(remaining, cmp::max(count, 1));
+        if len != remaining && self.grid[line][start + (len - 1)].flags.contains(Flags::WIDE_CHAR) {
+            len += 1;
+        }
+        self.split_cell_boundary(line, start.0);
+        self.split_cell_boundary(line, start.0 + len);
+        self.reset_row_wrap(line);
+        self.grid.cursor.input_needs_wrap = false; // b-terminal(#525): ECH는 줄바꿈 대기를 푼다(Ghostty `eraseChars`의 `cursorResetWrap`)
+        let end = start + len;
 
         // Cleared cells have current background color set.
         let bg = self.grid.cursor.template.bg;
-        let line = cursor.point.line;
         self.damage.damage_line(line.0 as usize, start.0, end.0);
         if self.protected_iso {
             // b-terminal(#294): ISO 보호 칸은 건너뛴다
@@ -2338,6 +2465,14 @@ impl<T: EventListener> Handler for Term<T> {
 
         let line = cursor.point.line;
         self.damage.damage_line(line.0 as usize, 0, self.columns() - 1);
+
+        // b-terminal(#524): 지울 구간(`start..start + count`)과 오른쪽 여백 바깥의 경계가 넓은 글자를 가르면 그 글자 두 칸을 함께 지운다.
+        // 옮기기 전에 하고, 이어진 줄 표시도 푼다(Ghostty `deleteChars` 4133줄)
+        self.split_cell_boundary(line, start);
+        self.split_cell_boundary(line, start + count);
+        self.split_cell_boundary(line, right + 1);
+        self.reset_row_wrap(line);
+        self.grid.cursor.input_needs_wrap = false; // b-terminal(#525): DCH는 줄바꿈 대기를 푼다(Ghostty `deleteChars`의 `cursorResetWrap`). 여백 밖이면 위에서 이미 돌아갔다
         let row = &mut self.grid[line][..];
 
         for offset in 0..(right + 1 - start - count) {
@@ -2572,18 +2707,25 @@ impl<T: EventListener> Handler for Term<T> {
 
         let screen_lines = self.screen_lines();
 
+        // b-terminal(#525): ED 0·1·2는 줄바꿈 대기를 푼다(Ghostty `eraseDisplay`). 히스토리만 지우는 ED 3은 그대로다
+        if !matches!(mode, ansi::ClearMode::Saved) {
+            self.grid.cursor.input_needs_wrap = false;
+        }
+
         match mode {
             ansi::ClearMode::Above => {
                 let cursor = self.grid.cursor.point;
 
                 // If clearing more than one line.
-                if cursor.line > 1 {
+                // b-terminal(#526): 커서가 둘째 줄이어도 첫 줄을 지운다(업스트림은 `> 1`이라 남겼다). Ghostty `eraseDisplay` above는 `cursor.y > 0`
+                if cursor.line > 0 {
                     // Fully clear all lines before the current line.
                     self.grid.reset_region(..cursor.line);
                 }
 
                 // Clear up to the current column in the current line.
-                let end = cmp::min(cursor.column + 1, Column(self.columns()));
+                // b-terminal(#524): 커서가 넓은 글자의 앞 칸이면 뒤 칸까지 지운다(Ghostty `eraseLine` left)
+                let end = Column(self.erase_end_column());
                 for cell in &mut self.grid[cursor.line][..end] {
                     *cell = bg.into();
                 }
@@ -2593,7 +2735,10 @@ impl<T: EventListener> Handler for Term<T> {
             },
             ansi::ClearMode::Below => {
                 let cursor = self.grid.cursor.point;
-                for cell in &mut self.grid[cursor.line][cursor.column..] {
+                // b-terminal(#524): 커서가 넓은 글자의 뒤 칸이면 앞 칸부터 지운다. 이어진 줄 표시도 푼다(Ghostty `eraseDisplay` below는 `eraseLine` right)
+                let start = self.erase_start_column();
+                self.reset_row_wrap(cursor.line);
+                for cell in &mut self.grid[cursor.line][Column(start)..] {
                     *cell = bg.into();
                 }
 
