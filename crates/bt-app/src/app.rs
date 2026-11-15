@@ -5446,7 +5446,8 @@ impl App {
                 }
             }
             Request::Focus(pane) => {
-                if self.w.holds(pane) {
+                // 트리에 내놓은 칸(지금 탭에 보이는 칸)만 받는다. 다른 탭의 칸 번호로 탭을 바꾸지 못하게
+                if self.group_layout(self.w.active).iter().any(|(id, _)| *id == pane) {
                     self.focus_pane(pane);
                 }
             }
