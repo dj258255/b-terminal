@@ -112,6 +112,8 @@ fn table_entry(key: KittyKey) -> Option<Entry> {
                 13..=25 => entry(57376 + (n as u32 - 13), b'u', false),
                 _ => return None,
             },
+            // 표에 없는 키(Ghostty `kitty.zig`에도 없다)
+            NamedKey::Help | NamedKey::ContextMenu => return None,
         },
         KittyKey::CapsLock => entry(57358, b'u', true),
         KittyKey::ScrollLock => entry(57359, b'u', false),

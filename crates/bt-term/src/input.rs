@@ -17,8 +17,12 @@ pub enum NamedKey {
     PageDown,
     Insert,
     Delete,
-    /// F1~F12
+    /// F1~F25
     F(u8),
+    /// Help(Ghostty `help`). kitty 키보드 프로토콜 표에는 없다
+    Help,
+    /// 메뉴 키(Ghostty `context_menu`). kitty 키보드 프로토콜 표에는 없다
+    ContextMenu,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -122,7 +126,11 @@ pub fn encode_named_with(key: NamedKey, mods: Mods, app_cursor: bool, km: KeyMod
         NamedKey::Delete => tilde(3),
         NamedKey::PageUp => tilde(5),
         NamedKey::PageDown => tilde(6),
+        NamedKey::Help => tilde(28),
+        NamedKey::ContextMenu => tilde(29),
         NamedKey::F(n) => match n {
+            // F3는 `ESC [ 1 ; 수식 R`이 커서 위치 보고(CPR)와 같아서 xterm은 수식 키가 있으면 `ESC [ 13 ; 수식 ~`로 보낸다(Ghostty `function_keys.zig` f3)
+            3 if mods.any() => tilde(13),
             1..=4 => {
                 let c = (b'P' + n - 1) as char;
                 if mods.any() {
@@ -139,6 +147,20 @@ pub fn encode_named_with(key: NamedKey, mods: Mods, app_cursor: bool, km: KeyMod
             10 => tilde(21),
             11 => tilde(23),
             12 => tilde(24),
+            // F13~F25(Ghostty `function_keys.zig`). 번호가 건너뛰는 것은 xterm 표 그대로다(27·30·35~41은 쓰지 않는다)
+            13 => tilde(25),
+            14 => tilde(26),
+            15 => tilde(28),
+            16 => tilde(29),
+            17 => tilde(31),
+            18 => tilde(32),
+            19 => tilde(33),
+            20 => tilde(34),
+            21 => tilde(42),
+            22 => tilde(43),
+            23 => tilde(44),
+            24 => tilde(45),
+            25 => tilde(46),
             _ => Vec::new(),
         },
     }
@@ -247,6 +269,20 @@ fn kitty_mods(m: Mods) -> u8 {
     1 + m.shift as u8 + 2 * m.alt as u8 + 4 * m.ctrl as u8 + 8 * m.sup as u8
 }
 
+/// 글자 키가 만든 글과, 그 글을 어떻게 읽을지 정하는 키 정보(Ghostty `key.KeyEvent`의 `utf8`·`unshifted_codepoint`와 물리 키)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TextKey<'a> {
+    /// 키가 만든 글. 없으면 빈 글
+    pub utf8: &'a str,
+    /// 수식 키 없이 눌렀을 때의 글자 코드(배열 기준). 모르면 0
+    pub unshifted: u32,
+    /// 물리 키의 US 배열 글자(자판이 러시아어여도 C 키는 `c`). 모르면 없다
+    pub physical: Option<u32>,
+    /// Alt를 글자 앞 ESC로 보내도 되는가. macOS에서 Option을 Alt로 쓰지 않으면(`macos-option-as-alt`) 거짓이라
+    /// OS가 만든 글자가 그대로 나간다. fixterms CSI u는 이것과 상관없이 Alt를 수식 키로 센다(Ghostty는 원래 수식 키 `event.mods`를 쓴다)
+    pub alt_text_prefix: bool,
+}
+
 /// 글자 키를 바이트로 바꾼다. Ctrl은 제어 문자로, Alt는 ESC를 앞에 붙인다(macOS Option을 Alt로 쓸 때)
 pub fn encode_text(text: &str, mods: Mods) -> Vec<u8> {
     encode_text_with(text, mods, KeyModes::default())
@@ -254,41 +290,135 @@ pub fn encode_text(text: &str, mods: Mods) -> Vec<u8> {
 
 /// `encode_text`에 키 입력 모드(1036)를 더한 것
 pub fn encode_text_with(text: &str, mods: Mods, km: KeyModes) -> Vec<u8> {
-    let mut out = Vec::new();
-    if mods.ctrl {
-        let mut chars = text.chars();
-        if let (Some(c), None) = (chars.next(), chars.clone().next()) {
-            if let Some(b) = ctrl_byte(c) {
-                // 제어 문자 길은 1036과 상관없이 Alt가 ESC를 앞에 붙인다(Ghostty `legacy`의 ctrlSeq 길)
-                if mods.alt {
-                    out.push(0x1b);
-                }
-                out.push(b);
-                return out;
-            }
-        }
-    }
-    // 글자 길은 1036이 켜져 있을 때만 ESC를 붙인다(Ghostty `legacyAltPrefix`)
-    if mods.alt && km.alt_esc_prefix {
-        out.push(0x1b);
-    }
-    out.extend_from_slice(text.as_bytes());
-    out
+    encode_text_key(
+        &TextKey {
+            utf8: text,
+            unshifted: 0,
+            physical: None,
+            alt_text_prefix: true,
+        },
+        mods,
+        km,
+    )
 }
 
-fn ctrl_byte(c: char) -> Option<u8> {
-    match c {
-        'a'..='z' => Some(c as u8 - b'a' + 1),
-        'A'..='Z' => Some(c as u8 - b'A' + 1),
-        '@' | ' ' | '2' => Some(0),
-        '[' | '3' => Some(0x1b),
-        '\\' | '4' => Some(0x1c),
-        ']' | '5' => Some(0x1d),
-        '^' | '6' => Some(0x1e),
-        '_' | '-' | '7' => Some(0x1f),
-        '8' | '?' => Some(0x7f),
-        _ => None,
+/// 글자 키 하나를 바이트로(Ghostty `key_encode.zig`의 `legacy()`에서 이름 키·modifyOtherKeys를 지난 뒤의 길).
+/// `mods.alt`는 Option이어도 눌렸으면 참이다(Ghostty `legacy()`의 `all_mods`). 차례: Ctrl 제어 바이트(`ctrl_seq`) → Ctrl이 남았으면 fixterms `CSI 코드 ; 수식 u` → Alt ESC 앞붙이기 → 글 그대로
+pub fn encode_text_key(k: &TextKey, mods: Mods, km: KeyModes) -> Vec<u8> {
+    // C0 길은 1036과 상관없이 Alt가 ESC를 앞에 붙인다. 다만 Option을 Alt로 쓰지 않으면(`alt_text_prefix` 거짓) Option은
+    // 글자를 만드는 데 쓰인 수식 키(consumed)라 빠진다(Ghostty `binding_mods.alt`, macOS 앱의 consumed_mods = 번역 수식 키 − Ctrl·Cmd)
+    if let Some(b) = ctrl_seq(k.physical, k.utf8, k.unshifted, mods) {
+        return if mods.alt && k.alt_text_prefix {
+            vec![0x1b, b]
+        } else {
+            vec![b]
+        };
     }
+    // 글이 없으면 Alt 앞붙이기만 남는다(수식 키 없는 글자로)
+    if k.utf8.is_empty() {
+        return legacy_alt_prefix(k, mods, km).unwrap_or_default();
+    }
+    if mods.ctrl {
+        if let Some(bytes) = ctrl_csi_u(k.utf8, k.unshifted, mods) {
+            return bytes;
+        }
+    }
+    if let Some(bytes) = legacy_alt_prefix(k, mods, km) {
+        return bytes;
+    }
+    // macOS에서 Cmd+글자는 글을 보내지 않는다(Terminal.app·iTerm2·텍스트 입력과 같다). 다른 OS는 Super+b도 `b`를 보낸다
+    if cfg!(target_os = "macos") && mods.sup {
+        return Vec::new();
+    }
+    k.utf8.as_bytes().to_vec()
+}
+
+/// Alt를 누른 글자 앞에 ESC를 붙인다(Ghostty `legacyAltPrefix` 552~620줄). 1036이 꺼져 있거나 Option을 Alt로 쓰지 않으면 없다.
+/// 글이 한 바이트면 그 글 그대로(Shift로 만든 `>` 같은 문장 부호를 지키려고)이고, 아니면 수식 키 없는 글자(`unshifted`)를 쓴다.
+/// macOS에서 Option이 `≈`처럼 바꾼 글 대신 눌린 키의 글자를 보내기 위해서다. `unshifted`가 없으면 글 전체다
+fn legacy_alt_prefix(k: &TextKey, mods: Mods, km: KeyModes) -> Option<Vec<u8>> {
+    if !mods.alt || !k.alt_text_prefix || !km.alt_esc_prefix {
+        return None;
+    }
+    let mut out = vec![0x1b];
+    if let [b] = k.utf8.as_bytes() {
+        out.push(*b);
+    } else if k.unshifted > 0 {
+        let mut buf = [0u8; 4];
+        out.extend_from_slice(char::from_u32(k.unshifted)?.encode_utf8(&mut buf).as_bytes());
+    } else if !k.utf8.is_empty() {
+        out.extend_from_slice(k.utf8.as_bytes());
+    } else {
+        return None;
+    }
+    Some(out)
+}
+
+/// Ctrl이 눌렸는데 제어 바이트가 없는 글자를 fixterms `CSI 코드 ; 수식 u`로(Ghostty `legacy()`의 `csiu` 블록).
+/// 글이 한 글자가 아니면 없다. 수식 키 번호는 1 + Shift + 2·Alt + 4·Ctrl이고 Super는 넣지 않는다.
+/// Shift는 글자가 Shift 없이 낼 수 있는 글자와 같을 때만 넣는다(`Shift+;`의 `:`는 Shift로 만든 글자라 넣지 않는다).
+/// A~Z에 Shift가 있으면 소문자 코드로 보낸다(kitty와 같다. fixterms 명세와는 다르다)
+fn ctrl_csi_u(utf8: &str, unshifted: u32, mods: Mods) -> Option<Vec<u8>> {
+    let mut chars = utf8.chars();
+    let (Some(c), None) = (chars.next(), chars.next()) else {
+        return None;
+    };
+    let mut code = c as u32;
+    if c.is_ascii_uppercase() && mods.shift {
+        code = c.to_ascii_lowercase() as u32;
+    }
+    let shift = mods.shift && unshifted == code;
+    let param = 1 + shift as u8 + 2 * mods.alt as u8 + 4 * mods.ctrl as u8;
+    Some(format!("\x1b[{code};{param}u").into_bytes())
+}
+
+/// Ctrl+글자의 제어 바이트(Ghostty `ctrlSeq`). `physical`은 물리 키의 US 배열 글자, `utf8`은 키가 만든 글,
+/// `unshifted`는 수식 키 없이 눌렀을 때의 글자 코드다. Alt는 보지 않는다(ESC 앞붙이기는 부르는 쪽이 한다).
+/// Ctrl 혼자일 때만 있고(`Ctrl+Shift+-`처럼 Shift가 글자를 만든 것은 Shift를 뺀다), `i`·`m`·`[`는 fixterms 명세대로 두지 않는다
+pub fn ctrl_seq(physical: Option<u32>, utf8: &str, unshifted: u32, mods: Mods) -> Option<u8> {
+    if !mods.ctrl {
+        return None;
+    }
+    let mut shift = mods.shift;
+    let mut ch: u32 = if let [b] = utf8.as_bytes() {
+        // 글이 정확히 한 바이트면 그것이 바꿀 글자다
+        u32::from(*b)
+    } else if let Some(cp) = physical.filter(|&cp| cp <= 0xff) {
+        // 러시아어·몽골어 배열의 `c` 키는 U+0441이지만 어느 터미널이나 Ctrl+C다. 물리 키의 글자를 쓴다.
+        // Shift는 어떻게 바뀌는지 배열 없이는 모르므로(CSI u로 보낸다) Ctrl 혼자일 때만 쓴다
+        if shift || mods.sup {
+            return None;
+        }
+        cp
+    } else {
+        return None;
+    };
+    // `Ctrl+Shift+-`(밑줄)처럼 A~Z 밖의 글자는 Shift가 글자를 만든 것이다. fixterms가 정한 `@`만 Shift를 남긴다
+    if shift && !(u32::from(b'A')..=u32::from(b'Z')).contains(&ch) && ch != u32::from(b'@') {
+        shift = false;
+    }
+    // Caps Lock으로 대문자가 온 것은 unshifted로 되돌린다
+    if (u32::from(b'A')..=u32::from(b'Z')).contains(&ch) && unshifted > 0 && unshifted <= 0xff {
+        ch = unshifted;
+    }
+    // 남은 수식 키가 Ctrl 하나뿐이어야 한다. Ctrl+Shift+m은 CSI u로 보내 Ctrl+m과 구분한다
+    if shift || mods.sup {
+        return None;
+    }
+    Some(match u8::try_from(ch).ok()? {
+        b' ' | b'2' | b'@' => 0,
+        b'/' | b'7' | b'_' => 31,
+        b'0' => 48,
+        b'1' => 49,
+        b'3' => 27,
+        b'4' | b'\\' => 28,
+        b'5' | b']' => 29,
+        b'6' | b'^' | b'~' => 30,
+        b'8' | b'?' => 127,
+        b'9' => 57,
+        c @ (b'a'..=b'z') if !matches!(c, b'i' | b'm') => c - b'a' + 1,
+        _ => return None,
+    })
 }
 
 const PASTE_START: &[u8] = b"\x1b[200~";
@@ -428,7 +558,9 @@ mod tests {
     fn ctrl_letters_become_control_bytes() {
         let ctrl = Mods { ctrl: true, ..NONE };
         assert_eq!(encode_text("c", ctrl), vec![3]);
-        assert_eq!(encode_text("[", ctrl), vec![0x1b]);
+        // `[`는 fixterms 명세대로 제어 문자(ESC)로 바꾸지 않고 CSI u로 보낸다(Ghostty `ctrlSeq`, 시험 `legacy: fixterm awkward letters`)
+        assert_eq!(encode_text("[", ctrl), b"\x1b[91;5u");
+        assert_eq!(encode_text("\\", ctrl), vec![0x1c]);
         let alt = Mods { alt: true, ..NONE };
         assert_eq!(encode_text("b", alt), b"\x1bb");
     }

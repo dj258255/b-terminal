@@ -606,6 +606,12 @@ pub(crate) fn defaults() -> Vec<(&'static str, &'static str)> {
             ("super+shift+z", "redo"),
             // 선택 클립보드 붙여넣기(Ghostty macOS 기본)
             ("super+shift+v", "paste_from_selection"),
+            // 자연스러운 글 편집(Ghostty macOS 기본, Config.zig 7408~7437줄): Cmd+←·→·Backspace는 줄 처음·끝·줄 지우기, Option+←·→는 단어 이동
+            ("super+arrow_right", "text:\\x05"),
+            ("super+arrow_left", "text:\\x01"),
+            ("super+backspace", "text:\\x15"),
+            ("alt+arrow_left", "esc:b"),
+            ("alt+arrow_right", "esc:f"),
         ]);
     } else {
         // Ghostty Linux 기본. super를 ctrl+shift로 바꾸는 키가 아니다
@@ -1161,6 +1167,27 @@ mod tests {
         );
         assert_eq!(parse_action("paste_from_clipboard").unwrap(), Some(Action::Paste));
         assert_ne!(Action::PasteSelection, Action::Paste);
+    }
+
+    /// Ghostty macOS 기본 묶음 "자연스러운 글 편집"(Config.zig 7408~7437줄). 물리 키 기준이라 option-as-alt 설정과 상관없다:
+    /// 키 묶음 판단은 `keys::trigger`가 winit 수식 키(Option은 늘 alt)와 수식 키 없는 키 이름으로 만든다
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn default_text_editing_binds_on_macos() {
+        let (km, _) = Keymap::build(&[]);
+        for (t, bytes) in [
+            ("super+arrow_right", "\x05"),
+            ("super+arrow_left", "\x01"),
+            ("super+backspace", "\x15"),
+            ("alt+arrow_left", "\x1bb"),
+            ("alt+arrow_right", "\x1bf"),
+        ] {
+            assert_eq!(km.lookup(&trig(t)), Some(&Action::Text(bytes.into())), "{t}");
+        }
+        // 사용자가 지우면 묶음이 없어져 키가 인코더로 간다
+        let (km, _) = Keymap::build(&["alt+arrow_left=unbind".into()]);
+        assert_eq!(km.lookup(&trig("alt+arrow_left")), None);
+        assert!(km.lookup(&trig("alt+arrow_right")).is_some());
     }
 
     #[test]
