@@ -212,11 +212,26 @@ fn legacy_ctrl_plus_shift_plus_minus_underscore_on_us() {
     assert_eq!(run(&e, default()), b"\x1f");
 }
 
-// 2093줄
+// 2093줄. Ghostty 시험은 consumed_mods가 비어 있다. macOS 앱은 consumed_mods를 "번역 수식 키 − Ctrl·Cmd"로 채우고
+// option-as-alt가 꺼져 있으면 Option이 번역에 남아 소비되므로, consumed가 비는 쪽은 option-as-alt=true(Option이 번역하지 않음)다
 #[test]
 fn legacy_ctrl_plus_alt_plus_c() {
     let e = ev(KeyCode::KeyC).mods(CTRL | ALT).utf8("c");
-    assert_eq!(run(&e, default()), b"\x1b\x03");
+    assert_eq!(run(&e, alt_esc(true)), b"\x1b\x03");
+}
+
+// 2093줄을 option-as-alt=false(기본)로 옮긴 것: Option이 소비돼 binding_mods에서 빠지므로 ESC가 없다(key_encode.zig 455줄)
+#[test]
+fn legacy_ctrl_plus_alt_plus_c_with_option_as_alt_false() {
+    let e = ev(KeyCode::KeyC).mods(CTRL | ALT).utf8("c");
+    assert_eq!(run(&e, alt_esc(false)), b"\x03");
+}
+
+// 482줄 주석: CSI u는 원래 수식 키(event.mods)를 쓰므로 Option이 소비돼도 Alt가 들어간다
+#[test]
+fn legacy_ctrl_plus_alt_plus_i_with_option_as_alt_false_keeps_alt_in_csi_u() {
+    let e = ev(KeyCode::KeyI).mods(CTRL | ALT).utf8("i");
+    assert_eq!(run(&e, alt_esc(false)), b"\x1b[105;7u");
 }
 
 // 2104줄

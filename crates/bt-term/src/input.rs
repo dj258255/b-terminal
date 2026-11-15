@@ -279,7 +279,7 @@ pub struct TextKey<'a> {
     /// 물리 키의 US 배열 글자(자판이 러시아어여도 C 키는 `c`). 모르면 없다
     pub physical: Option<u32>,
     /// Alt를 글자 앞 ESC로 보내도 되는가. macOS에서 Option을 Alt로 쓰지 않으면(`macos-option-as-alt`) 거짓이라
-    /// OS가 만든 글자가 그대로 나간다. Ctrl 길(제어 바이트·CSI u)은 이것과 상관없이 Alt를 수식 키로 센다
+    /// OS가 만든 글자가 그대로 나간다. fixterms CSI u는 이것과 상관없이 Alt를 수식 키로 센다(Ghostty는 원래 수식 키 `event.mods`를 쓴다)
     pub alt_text_prefix: bool,
 }
 
@@ -305,9 +305,14 @@ pub fn encode_text_with(text: &str, mods: Mods, km: KeyModes) -> Vec<u8> {
 /// 글자 키 하나를 바이트로(Ghostty `key_encode.zig`의 `legacy()`에서 이름 키·modifyOtherKeys를 지난 뒤의 길).
 /// `mods.alt`는 Option이어도 눌렸으면 참이다(Ghostty `legacy()`의 `all_mods`). 차례: Ctrl 제어 바이트(`ctrl_seq`) → Ctrl이 남았으면 fixterms `CSI 코드 ; 수식 u` → Alt ESC 앞붙이기 → 글 그대로
 pub fn encode_text_key(k: &TextKey, mods: Mods, km: KeyModes) -> Vec<u8> {
-    // C0 길은 1036과 상관없이 Alt가 ESC를 앞에 붙인다
+    // C0 길은 1036과 상관없이 Alt가 ESC를 앞에 붙인다. 다만 Option을 Alt로 쓰지 않으면(`alt_text_prefix` 거짓) Option은
+    // 글자를 만드는 데 쓰인 수식 키(consumed)라 빠진다(Ghostty `binding_mods.alt`, macOS 앱의 consumed_mods = 번역 수식 키 − Ctrl·Cmd)
     if let Some(b) = ctrl_seq(k.physical, k.utf8, k.unshifted, mods) {
-        return if mods.alt { vec![0x1b, b] } else { vec![b] };
+        return if mods.alt && k.alt_text_prefix {
+            vec![0x1b, b]
+        } else {
+            vec![b]
+        };
     }
     // 글이 없으면 Alt 앞붙이기만 남는다(수식 키 없는 글자로)
     if k.utf8.is_empty() {
