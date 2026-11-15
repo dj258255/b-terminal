@@ -86,6 +86,8 @@ pub enum UserEvent {
     OpenFile(std::path::PathBuf),
     /// 사용자 셰이더 컴파일이 끝났다(컴파일 스레드가 보낸다, ADR-042)
     ShaderCompiled,
+    /// 접근성 클라이언트(VoiceOver)의 요청(창, 요청, #560)
+    Access(WindowId, crate::a11y::Request),
 }
 
 /// 앱 설정: 설정 파일(bt_core::Config, Ghostty 문법)을 그대로 쓴다(#13)
@@ -714,6 +716,8 @@ struct Gfx {
     gpu: Option<Box<bt_gpu::GpuRenderer>>,
     /// 창의 첫 프레임을 올리면 한 번 로그에 남긴다(실험 E10)
     first: FirstFrame,
+    /// 접근성 트리(VoiceOver, #560)
+    a11y: crate::a11y::WindowA11y,
 }
 
 /// `from`에서 `to`까지의 ms. `to`가 앞이면 음수(첫 프레임 로그, 실험 E12)
@@ -4357,6 +4361,9 @@ impl App {
             attrs
                 .with_window_level(winit::window::WindowLevel::AlwaysOnTop)
                 .with_visible(false)
+        } else if crate::a11y::SUPPORTED {
+            // 접근성 어댑터는 창이 처음 보이기 전에 붙여야 한다(accesskit_winit의 요구, #560). 아래에서 어댑터를 붙인 바로 뒤에 보인다
+            attrs.with_visible(false)
         } else {
             attrs
         };
@@ -4388,6 +4395,10 @@ impl App {
                 return None;
             }
         };
+        let a11y = crate::a11y::WindowA11y::new(event_loop, &window, self.proxy.clone());
+        if crate::a11y::SUPPORTED && !quick {
+            window.set_visible(true);
+        }
         window.set_ime_allowed(true);
         // 창 뒤 흐림(#238). 퀵 터미널 창도 이 길로 만들어진다
         crate::blur::apply(&window, self.config.background_blur, self.config.background_opacity);
@@ -4445,6 +4456,7 @@ impl App {
                 _context: None,
                 gpu,
                 first: FirstFrame::new(made),
+                a11y,
             };
             self.note_shader_errors(apply_shaders(&mut g, &self.shaders, &self.shader_waker()));
             return Some(g);
@@ -4459,6 +4471,7 @@ impl App {
             _context: Some(context),
             gpu: None,
             first: FirstFrame::new(made),
+            a11y,
         };
         self.note_shader_errors(apply_shaders(&mut g, &self.shaders, &self.shader_waker()));
         Some(g)
@@ -5324,6 +5337,124 @@ impl App {
         }
     }
 
+    /// 접근성(#560): 지금 창의 보이는 칸들을 접근성 트리에 알린다. 화면 읽기 프로그램이 붙지 않았으면 아무것도 하지 않는다.
+    /// 칸 글은 칸마다 500ms에 한 번 이하로만 다시 만들고(`a11y::Gate`), 포커스·창 제목·칸 수 변화는 바로 알린다
+    fn a11y_observe(&mut self, views: &[PaneView], title: &str, focus: Option<u64>) {
+        if !self.w.gfx.as_ref().is_some_and(|g| g.a11y.is_active()) {
+            return;
+        }
+        let frames: Vec<crate::a11y::Frame<'_>> = views
+            .iter()
+            .map(|v| crate::a11y::Frame {
+                id: v.id,
+                name: self
+                    .pane_index(v.id)
+                    .map(|i| self.panes[i].display_title())
+                    .unwrap_or_default(),
+                screen: &v.screen,
+                geom: Some(crate::a11y::Geom {
+                    x: v.inner.x as f64,
+                    y: v.inner.y as f64,
+                    cell_w: v.metrics.width as f64,
+                    cell_h: v.metrics.height as f64,
+                }),
+            })
+            .collect();
+        if let Some(g) = self.w.gfx.as_mut() {
+            g.a11y.observe(Instant::now(), title, &frames, focus);
+        }
+    }
+
+    /// 접근성(#560): 그리기를 기다리지 않고 지금 창의 화면을 떠서 접근성 트리를 맞춘다(첫 트리 요청, 미뤄 둔 갱신의 때)
+    fn a11y_pull(&mut self) {
+        let Some(g) = self.w.gfx.as_ref().filter(|g| g.a11y.is_active()) else {
+            return;
+        };
+        let title = g.window.title();
+        let shots: Vec<(u64, String, Screen, crate::a11y::Geom)> = self
+            .group_layout(self.w.active)
+            .into_iter()
+            .filter_map(|(id, outer)| {
+                let p = &self.panes[self.pane_index(id)?];
+                let m = self.metrics_at(p.font_size)?;
+                let inner = self.inner_rect(outer, p.font_size);
+                let mut screen = p.session.snapshot();
+                screen.crop_columns(p.session.size().cols as usize);
+                let geom = crate::a11y::Geom {
+                    x: inner.x as f64,
+                    y: inner.y as f64,
+                    cell_w: m.width as f64,
+                    cell_h: m.height as f64,
+                };
+                Some((id, p.display_title(), screen, geom))
+            })
+            .collect();
+        let frames: Vec<crate::a11y::Frame<'_>> = shots
+            .iter()
+            .map(|(id, name, screen, geom)| crate::a11y::Frame {
+                id: *id,
+                name: name.clone(),
+                screen,
+                geom: Some(*geom),
+            })
+            .collect();
+        let focus = self.focused_id();
+        if let Some(g) = self.w.gfx.as_mut() {
+            g.a11y.observe(Instant::now(), &title, &frames, focus);
+        }
+    }
+
+    /// 접근성(#560): 미뤄 둔 화면 글 갱신 때가 된 창마다 화면을 떠서 알린다
+    fn a11y_tick(&mut self, now: Instant) {
+        let due = |w: &Win| w.gfx.as_ref().and_then(|g| g.a11y.wake_at()).is_some_and(|t| t <= now);
+        if due(&self.w) {
+            self.a11y_pull();
+        }
+        for i in 0..self.others.len() {
+            if due(&self.others[i]) {
+                std::mem::swap(&mut self.w, &mut self.others[i]);
+                self.a11y_pull();
+                std::mem::swap(&mut self.w, &mut self.others[i]);
+            }
+        }
+    }
+
+    /// 미뤄 둔 접근성 갱신을 해야 할 가장 이른 때(이때 이벤트 고리를 깨운다)
+    fn a11y_next_wake(&self) -> Option<Instant> {
+        std::iter::once(&self.w)
+            .chain(&self.others)
+            .filter_map(|w| w.gfx.as_ref().and_then(|g| g.a11y.wake_at()))
+            .min()
+    }
+
+    /// 접근성 클라이언트(VoiceOver)의 요청. 포커스(칸 고르기)만 처리하고 나머지 동작은 하지 않는다
+    fn on_access(&mut self, id: WindowId, req: crate::a11y::Request) {
+        use crate::a11y::Request;
+        if !self.switch_to(id) {
+            return;
+        }
+        match req {
+            Request::InitialTree => {
+                if let Some(g) = self.w.gfx.as_mut() {
+                    g.a11y.activate();
+                }
+                self.a11y_pull();
+            }
+            Request::Deactivated => {
+                if let Some(g) = self.w.gfx.as_mut() {
+                    g.a11y.deactivate();
+                }
+            }
+            Request::Focus(pane) => {
+                // 트리에 내놓은 칸(지금 탭에 보이는 칸)만 받는다. 다른 탭의 칸 번호로 탭을 바꾸지 못하게
+                if self.group_layout(self.w.active).iter().any(|(id, _)| *id == pane) {
+                    self.focus_pane(pane);
+                }
+            }
+            Request::Ignored => {}
+        }
+    }
+
     /// 창마다 차례로 지금 창으로 바꿔 끼워 `f`를 부른다(글꼴·설정이 바뀌어 모든 창을 맞출 때)
     fn for_each_window(&mut self, f: impl Fn(&mut Self)) {
         f(self);
@@ -5504,6 +5635,8 @@ impl App {
             .map(|t| t.display_title_in(self.w.tabs.get(self.w.active).and_then(|g| g.title.as_deref())))
             .unwrap_or_else(|| "b-terminal".into());
         let title = window_title_of(self.config.title.as_deref(), self.w.window_title.as_deref(), &tab_title);
+        // 접근성(#560): 이미 뜬 화면으로 접근성 트리를 맞춘다(클라이언트가 없으면 아무것도 하지 않는다)
+        self.a11y_observe(&views, &title, focus);
         // 제목 막대 폴더 아이콘(#279): 초점 칸의 작업 폴더(OSC 7). 모르면 없앤다
         let proxy = crate::dock_open::proxy_icon_path(
             self.config.macos_titlebar_proxy_icon,
@@ -6518,6 +6651,7 @@ impl ApplicationHandler<UserEvent> for App {
             }
             // 사용자 셰이더 컴파일이 끝났다(ADR-042): 끝난 창의 결과를 받아 끼우고 다시 그린다
             UserEvent::ShaderCompiled => self.poll_shaders(),
+            UserEvent::Access(id, req) => self.on_access(id, req),
         }
     }
 
@@ -6525,6 +6659,10 @@ impl ApplicationHandler<UserEvent> for App {
         // 사건을 받은 창을 지금 창으로(창마다 상태를 바꿔 끼운다, #36)
         if !self.switch_to(id) {
             return;
+        }
+        // 접근성 어댑터에 창 사건을 먼저 알린다(accesskit_winit의 요구, #560)
+        if let Some(g) = self.w.gfx.as_mut() {
+            g.a11y.process_event(&g.window, &event);
         }
         match event {
             WindowEvent::CloseRequested => self.request(Pending::CloseWindow, event_loop),
@@ -7105,6 +7243,8 @@ impl ApplicationHandler<UserEvent> for App {
             }
             self.next_poll = now + Duration::from_secs(1);
         }
+        // 접근성(#560): 미뤄 둔 화면 글 갱신 때가 된 창을 갱신한다
+        self.a11y_tick(now);
         // 탭을 옮기거나 창으로 옮긴 칸이 보이는 상태가 달라졌으면 알린다(#303). 같은 상태는 세션이 걸러 낸다
         self.sync_visibility();
         // 암호 입력 살피기(#258): 앱이 앞이고 창에 초점이 있을 때만 200ms마다 깨운다
@@ -7224,6 +7364,7 @@ impl ApplicationHandler<UserEvent> for App {
                     .min(),
             )
             .chain(self.quit_deadline)
+            .chain(self.a11y_next_wake())
             .chain(self.any_window_focused().then_some(self.next_secure_poll))
             .min();
         match deadline {
