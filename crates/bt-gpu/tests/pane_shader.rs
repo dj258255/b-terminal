@@ -118,6 +118,7 @@ impl Scene {
                 upper,
             },
             top,
+            None,
             &panes,
         )
     }

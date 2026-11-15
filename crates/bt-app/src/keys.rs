@@ -1,15 +1,15 @@
 //! winit 키 이벤트를 PTY 바이트로 바꾼다. 앱 단축키(Cmd-…)는 여기서 거른다
 
 use bt_term::{
-    KeyModes, KeypadKey, Mods as TermMods, NamedKey, encode_char_kitty, encode_keypad, encode_modify_other_char,
-    encode_named_kitty, encode_named_modify_other, encode_named_with, encode_text, encode_text_with,
-    keypad_application,
+    KeyAction, KeyModes, KeypadKey, KittyKey, KittyKeyEvent, ModifierKey, Mods as TermMods, NamedKey, encode_keypad,
+    encode_kitty_key, encode_modify_other_char, encode_named_modify_other, encode_named_with, encode_text,
+    encode_text_with, keypad_application,
 };
 
 use crate::keymap::{Mods, Trigger, normalize_key};
 use bt_core::config::{KeyRemap, ModKind, ModSide, SidedMods, apply_key_remap};
-use winit::event::{KeyEvent, Modifiers};
-use winit::keyboard::{Key, KeyLocation, ModifiersKeyState, ModifiersState, NamedKey as WKey};
+use winit::event::{ElementState, KeyEvent, Modifiers};
+use winit::keyboard::{Key, KeyCode, KeyLocation, ModifiersKeyState, ModifiersState, NamedKey as WKey, PhysicalKey};
 
 /// winit의 수정 키 상태를 좌우 따로 적은 것으로. 좌우를 알려 주지 않으면(`Unknown`) 왼쪽으로 본다.
 /// macOS의 winit은 장치별 비트(NX_DEVICE*KEYMASK)로 좌우를 알려 준다(좌우가 둘 다 `Unknown`이면 안 눌린 것이거나 모르는 것)
@@ -180,6 +180,222 @@ fn keypad_key(key: &Key, location: KeyLocation) -> Option<KeypadKey> {
     }
 }
 
+/// 물리 키를 kitty 프로토콜의 키로(Ghostty `key.Key`와 `kitty.zig` 표의 키). 표에 없는 키는 `Text`
+fn kitty_key_of(code: KeyCode) -> KittyKey {
+    use KeyCode as C;
+    use NamedKey as N;
+    match code {
+        C::Escape => KittyKey::Named(N::Escape),
+        C::Enter => KittyKey::Named(N::Enter),
+        C::Tab => KittyKey::Named(N::Tab),
+        C::Backspace => KittyKey::Named(N::Backspace),
+        C::Insert => KittyKey::Named(N::Insert),
+        C::Delete => KittyKey::Named(N::Delete),
+        C::ArrowLeft => KittyKey::Named(N::Left),
+        C::ArrowRight => KittyKey::Named(N::Right),
+        C::ArrowUp => KittyKey::Named(N::Up),
+        C::ArrowDown => KittyKey::Named(N::Down),
+        C::PageUp => KittyKey::Named(N::PageUp),
+        C::PageDown => KittyKey::Named(N::PageDown),
+        C::Home => KittyKey::Named(N::Home),
+        C::End => KittyKey::Named(N::End),
+        C::F1 => KittyKey::Named(N::F(1)),
+        C::F2 => KittyKey::Named(N::F(2)),
+        C::F3 => KittyKey::Named(N::F(3)),
+        C::F4 => KittyKey::Named(N::F(4)),
+        C::F5 => KittyKey::Named(N::F(5)),
+        C::F6 => KittyKey::Named(N::F(6)),
+        C::F7 => KittyKey::Named(N::F(7)),
+        C::F8 => KittyKey::Named(N::F(8)),
+        C::F9 => KittyKey::Named(N::F(9)),
+        C::F10 => KittyKey::Named(N::F(10)),
+        C::F11 => KittyKey::Named(N::F(11)),
+        C::F12 => KittyKey::Named(N::F(12)),
+        C::F13 => KittyKey::Named(N::F(13)),
+        C::F14 => KittyKey::Named(N::F(14)),
+        C::F15 => KittyKey::Named(N::F(15)),
+        C::F16 => KittyKey::Named(N::F(16)),
+        C::F17 => KittyKey::Named(N::F(17)),
+        C::F18 => KittyKey::Named(N::F(18)),
+        C::F19 => KittyKey::Named(N::F(19)),
+        C::F20 => KittyKey::Named(N::F(20)),
+        C::F21 => KittyKey::Named(N::F(21)),
+        C::F22 => KittyKey::Named(N::F(22)),
+        C::F23 => KittyKey::Named(N::F(23)),
+        C::F24 => KittyKey::Named(N::F(24)),
+        C::F25 => KittyKey::Named(N::F(25)),
+        C::CapsLock => KittyKey::CapsLock,
+        C::ScrollLock => KittyKey::ScrollLock,
+        C::NumLock => KittyKey::NumLock,
+        C::PrintScreen => KittyKey::PrintScreen,
+        C::Pause => KittyKey::Pause,
+        C::Numpad0 => KittyKey::Keypad(KeypadKey::Digit(0)),
+        C::Numpad1 => KittyKey::Keypad(KeypadKey::Digit(1)),
+        C::Numpad2 => KittyKey::Keypad(KeypadKey::Digit(2)),
+        C::Numpad3 => KittyKey::Keypad(KeypadKey::Digit(3)),
+        C::Numpad4 => KittyKey::Keypad(KeypadKey::Digit(4)),
+        C::Numpad5 => KittyKey::Keypad(KeypadKey::Digit(5)),
+        C::Numpad6 => KittyKey::Keypad(KeypadKey::Digit(6)),
+        C::Numpad7 => KittyKey::Keypad(KeypadKey::Digit(7)),
+        C::Numpad8 => KittyKey::Keypad(KeypadKey::Digit(8)),
+        C::Numpad9 => KittyKey::Keypad(KeypadKey::Digit(9)),
+        C::NumpadDecimal => KittyKey::Keypad(KeypadKey::Decimal),
+        C::NumpadDivide => KittyKey::Keypad(KeypadKey::Divide),
+        C::NumpadMultiply => KittyKey::Keypad(KeypadKey::Multiply),
+        C::NumpadSubtract => KittyKey::Keypad(KeypadKey::Subtract),
+        C::NumpadAdd => KittyKey::Keypad(KeypadKey::Add),
+        C::NumpadEnter => KittyKey::Keypad(KeypadKey::Enter),
+        C::NumpadEqual => KittyKey::NumpadEqual,
+        C::NumpadComma => KittyKey::NumpadSeparator,
+        C::ShiftLeft => KittyKey::Modifier(ModifierKey::Shift { right: false }),
+        C::ShiftRight => KittyKey::Modifier(ModifierKey::Shift { right: true }),
+        C::ControlLeft => KittyKey::Modifier(ModifierKey::Ctrl { right: false }),
+        C::ControlRight => KittyKey::Modifier(ModifierKey::Ctrl { right: true }),
+        C::AltLeft => KittyKey::Modifier(ModifierKey::Alt { right: false }),
+        C::AltRight => KittyKey::Modifier(ModifierKey::Alt { right: true }),
+        C::SuperLeft => KittyKey::Modifier(ModifierKey::Super { right: false }),
+        C::SuperRight => KittyKey::Modifier(ModifierKey::Super { right: true }),
+        _ => KittyKey::Text,
+    }
+}
+
+/// 물리 키의 US 배열 글자(kitty의 기본 배열 키). Ghostty `key.zig`의 `codepoint_map`과 같은 표다.
+/// 글자가 없는 키(Enter, 방향 키 …)는 없다
+fn base_layout_codepoint(code: KeyCode) -> Option<u32> {
+    use KeyCode as C;
+    let c = match code {
+        C::KeyA => 'a',
+        C::KeyB => 'b',
+        C::KeyC => 'c',
+        C::KeyD => 'd',
+        C::KeyE => 'e',
+        C::KeyF => 'f',
+        C::KeyG => 'g',
+        C::KeyH => 'h',
+        C::KeyI => 'i',
+        C::KeyJ => 'j',
+        C::KeyK => 'k',
+        C::KeyL => 'l',
+        C::KeyM => 'm',
+        C::KeyN => 'n',
+        C::KeyO => 'o',
+        C::KeyP => 'p',
+        C::KeyQ => 'q',
+        C::KeyR => 'r',
+        C::KeyS => 's',
+        C::KeyT => 't',
+        C::KeyU => 'u',
+        C::KeyV => 'v',
+        C::KeyW => 'w',
+        C::KeyX => 'x',
+        C::KeyY => 'y',
+        C::KeyZ => 'z',
+        C::Digit0 | C::Numpad0 => '0',
+        C::Digit1 | C::Numpad1 => '1',
+        C::Digit2 | C::Numpad2 => '2',
+        C::Digit3 | C::Numpad3 => '3',
+        C::Digit4 | C::Numpad4 => '4',
+        C::Digit5 | C::Numpad5 => '5',
+        C::Digit6 | C::Numpad6 => '6',
+        C::Digit7 | C::Numpad7 => '7',
+        C::Digit8 | C::Numpad8 => '8',
+        C::Digit9 | C::Numpad9 => '9',
+        C::Semicolon => ';',
+        C::Space => ' ',
+        C::Quote => '\'',
+        C::Comma => ',',
+        C::Backquote => '`',
+        C::Period | C::NumpadDecimal => '.',
+        C::Slash | C::NumpadDivide => '/',
+        C::Minus | C::NumpadSubtract => '-',
+        C::Equal | C::NumpadEqual => '=',
+        C::BracketLeft => '[',
+        C::BracketRight => ']',
+        C::Backslash => '\\',
+        C::Tab => '\t',
+        C::NumpadMultiply => '*',
+        C::NumpadAdd => '+',
+        _ => return None,
+    };
+    Some(c as u32)
+}
+
+/// 수식 키 단독 이벤트가 바꾸는 수식 키 하나. 누르면 켜고 떼면 끈다
+fn modifier_key_set(key: KittyKey, mods: &mut TermMods, down: bool) {
+    if let KittyKey::Modifier(m) = key {
+        match m {
+            ModifierKey::Shift { .. } => mods.shift = down,
+            ModifierKey::Ctrl { .. } => mods.ctrl = down,
+            ModifierKey::Alt { .. } => mods.alt = down,
+            ModifierKey::Super { .. } => mods.sup = down,
+        }
+    }
+}
+
+/// kitty 키보드 프로토콜이 켜져 있을 때 키 이벤트를 바이트로(Ghostty `key_encode.zig`의 `kitty()`).
+/// 누름·반복·뗌을 모두 여기로 보낸다. 뗌과 반복은 인코더가 플래그 2가 있을 때만 쓴다.
+/// IME가 쓴 키는 winit이 이 이벤트로 올려 주지 않으므로(조합 중 누름·뗌은 버리고 확정만 `Ime::Commit`으로 온다) 조합 중 글자는 여기 오지 않는다
+fn encode_kitty(
+    event: &KeyEvent,
+    mods: ModifiersState,
+    raw: ModifiersState,
+    kitty: bt_term::KittyFlags,
+    option_as_alt: bool,
+) -> Vec<u8> {
+    use winit::platform::modifier_supplement::KeyEventExtModifierSupplement;
+    let action = match (event.state, event.repeat) {
+        (ElementState::Released, _) => KeyAction::Release,
+        (ElementState::Pressed, true) => KeyAction::Repeat,
+        (ElementState::Pressed, false) => KeyAction::Press,
+    };
+    let code = match event.physical_key {
+        PhysicalKey::Code(c) => Some(c),
+        PhysicalKey::Unidentified(_) => None,
+    };
+    let key = code.map(kitty_key_of).unwrap_or(KittyKey::Text);
+    // Alt는 Option이어도 수식 키로 알리고, 글을 막는지는 option-as-alt가 정한다(Ghostty `macos_option_as_alt`)
+    let alt_prevents_text = option_gate(option_as_alt, raw);
+    let mut m = TermMods {
+        shift: mods.shift_key(),
+        ctrl: mods.control_key(),
+        alt: mods.alt_key(),
+        sup: mods.super_key(),
+    };
+    modifier_key_set(key, &mut m, action != KeyAction::Release);
+    // 누를 때의 글은 winit이 주고, 뗄 때는 주지 않아 같은 키의 논리 글자로 같은 대체 키를 만든다
+    let utf8 = match action {
+        KeyAction::Release => event.logical_key.to_text().unwrap_or(""),
+        _ => event.text.as_deref().unwrap_or(""),
+    };
+    // 글을 만드는 데 Shift가 쓰인다. Option도 Alt로 쓰지 않으면 글자를 바꾸는 데 쓰인다
+    let consumed = TermMods {
+        shift: true,
+        alt: !alt_prevents_text,
+        ..TermMods::default()
+    };
+    // 수식 키 없는 글자(배열 기준). 이름 키(Space)는 글자로 센다
+    let unshifted = match event.key_without_modifiers() {
+        Key::Character(s) => s.chars().next().map_or(0, |c| c as u32),
+        Key::Named(WKey::Space) => ' ' as u32,
+        _ => 0,
+    };
+    let ev = KittyKeyEvent {
+        action,
+        key,
+        mods: m,
+        // winit은 Caps Lock·Num Lock 상태를 알려 주지 않는다
+        caps_lock: false,
+        num_lock: false,
+        consumed,
+        composing: false,
+        utf8,
+        unshifted,
+        base: code.and_then(base_layout_codepoint),
+        alt_prevents_text,
+    };
+    encode_kitty_key(&ev, kitty)
+}
+
 /// 키 이벤트를 PTY 바이트로. 보낼 것이 없으면 빈 벡터. `mods`는 `key-remap`을 적용한 상태, `raw`는 바꾸기 전 상태
 pub fn encode(
     event: &KeyEvent,
@@ -188,18 +404,26 @@ pub fn encode(
     modes: bt_term::Modes,
     option_as_alt: bool,
 ) -> Vec<u8> {
-    let app_cursor = modes.app_cursor;
     let kitty = modes.kitty;
+    // 프로그램이 kitty 키보드 프로토콜을 켰으면 모든 키(누름·반복·뗌)를 그 길로(#41, #546)
+    if kitty.active() {
+        return encode_kitty(event, mods, raw, kitty, option_as_alt);
+    }
+    // 켜지 않았으면 뗌은 보내지 않고 누름·반복은 옛 길 그대로다
+    if event.state == ElementState::Released {
+        return Vec::new();
+    }
+    let app_cursor = modes.app_cursor;
     let km = effective_key_modes(&modes);
     let m = term_mods(mods, option_gate(option_as_alt, raw));
-    // 키패드 응용 모드와 modifyOtherKeys는 Cmd(Super)도 수식 키로 센다(Ghostty `mods.binding()`). kitty가 켜져 있으면 쓰지 않는다
+    // 키패드 응용 모드와 modifyOtherKeys는 Cmd(Super)도 수식 키로 센다(Ghostty `mods.binding()`). kitty가 켜져 있으면 위에서 이미 갈렸다
     let ms = TermMods {
         sup: mods.super_key(),
         ..m
     };
     let keypad_app = keypad_application(modes.app_keypad, modes.key);
-    let modify_other = modes.modify_other_keys && !kitty.active();
-    if (keypad_app || modify_other) && !kitty.active() {
+    let modify_other = modes.modify_other_keys;
+    if keypad_app || modify_other {
         if let Some(k) = keypad_key(&event.logical_key, event.location) {
             return encode_keypad(k, ms, keypad_app);
         }
@@ -242,29 +466,12 @@ pub fn encode(
             }
             _ => None,
         };
-        // 프로그램이 kitty 키보드 프로토콜을 켰으면 Shift+Enter 같은 키를 CSI u로(#41)
-        if let Some(k) = key {
-            if let Some(bytes) = encode_named_kitty(k, m, kitty) {
-                return bytes;
-            }
-        }
         if modify_other {
             if let Some(bytes) = key.and_then(|k| encode_named_modify_other(k, ms)) {
                 return bytes;
             }
         }
         return key.map(|k| encode_named_with(k, m, app_cursor, km)).unwrap_or_default();
-    }
-    if kitty.active() {
-        use winit::platform::modifier_supplement::KeyEventExtModifierSupplement;
-        if let Key::Character(base) = event.key_without_modifiers() {
-            let mut chars = base.chars();
-            if let (Some(c), None) = (chars.next(), chars.next()) {
-                if let Some(bytes) = encode_char_kitty(c, m, kitty) {
-                    return bytes;
-                }
-            }
-        }
     }
     // modifyOtherKeys 상태 2: 수식 키가 붙은 글자 하나를 `CSI 27 ; 수식 ; 코드 ~`로(Ghostty는 Ctrl→C0 바이트보다 먼저 본다)
     if modify_other {
@@ -452,5 +659,70 @@ mod tests {
         assert!(ctrl_text_replaced(ctrl, ModifiersState::SUPER));
         assert!(!ctrl_text_replaced(ctrl, ctrl));
         assert!(!ctrl_text_replaced(none, ModifiersState::SUPER));
+    }
+
+    #[test]
+    fn kitty_physical_keys_follow_ghostty_tables() {
+        use KeyCode as C;
+        assert_eq!(kitty_key_of(C::Enter), KittyKey::Named(NamedKey::Enter));
+        assert_eq!(kitty_key_of(C::ArrowUp), KittyKey::Named(NamedKey::Up));
+        assert_eq!(kitty_key_of(C::F13), KittyKey::Named(NamedKey::F(13)));
+        assert_eq!(kitty_key_of(C::F25), KittyKey::Named(NamedKey::F(25)));
+        assert_eq!(kitty_key_of(C::Numpad7), KittyKey::Keypad(KeypadKey::Digit(7)));
+        assert_eq!(kitty_key_of(C::NumpadEnter), KittyKey::Keypad(KeypadKey::Enter));
+        assert_eq!(
+            kitty_key_of(C::ShiftRight),
+            KittyKey::Modifier(ModifierKey::Shift { right: true })
+        );
+        assert_eq!(
+            kitty_key_of(C::SuperLeft),
+            KittyKey::Modifier(ModifierKey::Super { right: false })
+        );
+        assert_eq!(kitty_key_of(C::KeyA), KittyKey::Text, "글자 키는 표에 없다");
+        // 기본 배열 키: US 배열 글자(자판이 러시아어여도 KeyA는 a)
+        assert_eq!(base_layout_codepoint(C::KeyA), Some('a' as u32));
+        assert_eq!(base_layout_codepoint(C::Semicolon), Some(';' as u32));
+        assert_eq!(base_layout_codepoint(C::BracketLeft), Some('[' as u32));
+        assert_eq!(base_layout_codepoint(C::Numpad1), Some('1' as u32));
+        assert_eq!(base_layout_codepoint(C::Tab), Some(9));
+        assert_eq!(base_layout_codepoint(C::Enter), None);
+        assert_eq!(base_layout_codepoint(C::ArrowUp), None);
+        assert_eq!(base_layout_codepoint(C::IntlBackslash), None);
+    }
+
+    #[test]
+    fn modifier_key_events_carry_their_own_state() {
+        let mut m = TermMods::default();
+        modifier_key_set(KittyKey::Modifier(ModifierKey::Ctrl { right: false }), &mut m, true);
+        assert!(m.ctrl && !m.shift);
+        modifier_key_set(KittyKey::Modifier(ModifierKey::Ctrl { right: false }), &mut m, false);
+        assert!(!m.ctrl, "뗄 때는 자기 수식 키를 뺀다");
+        modifier_key_set(KittyKey::Text, &mut m, true);
+        assert_eq!(m, TermMods::default(), "수식 키가 아니면 건드리지 않는다");
+    }
+
+    #[test]
+    fn kitty_flags_off_by_default_so_old_bytes_are_untouched() {
+        // 플래그를 하나도 켜지 않으면 `encode`는 kitty 길로 가지 않는다(`kitty.active()`가 거짓). 그래서 옛 바이트 그대로다
+        let m = bt_term::Modes::default();
+        assert!(!m.kitty.active());
+        assert_eq!(m.kitty, bt_term::KittyFlags::default());
+        // 플래그 2·4·16 하나만 켜도 켜진 것이다(Ghostty `kitty_flags.int() != 0`)
+        for f in [
+            bt_term::KittyFlags {
+                report_events: true,
+                ..Default::default()
+            },
+            bt_term::KittyFlags {
+                report_alternates: true,
+                ..Default::default()
+            },
+            bt_term::KittyFlags {
+                report_associated: true,
+                ..Default::default()
+            },
+        ] {
+            assert!(f.active());
+        }
     }
 }

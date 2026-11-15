@@ -861,6 +861,8 @@ impl Session {
                                             thread_visibility_reports
                                                 .store(false, std::sync::atomic::Ordering::Release);
                                             thread_mouse_shape.store(0, std::sync::atomic::Ordering::Release);
+                                            // 진행 막대도 지운다(Ghostty `fullReset` 처리, stream_terminal.zig 751줄)(#548)
+                                            events.push(SessionEvent::Progress { state: 0, percent: 0 });
                                         }
                                     }
                                     // 마우스 포인터 모양(OSC 22): 칸이 들고 있고, 보여 주는 일은 앱이 한다. 빈 이름은 되돌린다(#239)
@@ -1461,6 +1463,32 @@ impl Session {
         g.term.selection_to_string().filter(|s| !s.is_empty())
     }
 
+    /// 고른 곳을 색·꾸밈이 든 글(VT 이스케이프 또는 HTML)로 만든다(`copy_to_clipboard:vt|html|mixed`, #550).
+    /// 같은 범위의 글은 `selection_text`다. `screen_colors`가 참이면 바탕·글자 기본색도 넣는다(Ghostty는 `vt`·`html`에서만,
+    /// `mixed`의 HTML에서는 뺀다). 고른 것이 없으면 None
+    pub fn selection_styled(&self, emit: crate::copy_format::Emit, trim: bool, screen_colors: bool) -> Option<String> {
+        let theme = self.theme.lock().clone();
+        let g = self.inner.lock();
+        let range = g.term.selection.as_ref().and_then(|s| s.to_range(&g.term))?;
+        let colors = g.term.colors();
+        let opts = crate::copy_format::Options {
+            emit,
+            trim,
+            background: screen_colors
+                .then(|| color::named(&theme, colors, alacritty_terminal::vte::ansi::NamedColor::Background)),
+            foreground: screen_colors
+                .then(|| color::named(&theme, colors, alacritty_terminal::vte::ansi::NamedColor::Foreground)),
+        };
+        Some(crate::copy_format::format_range(
+            &g.term,
+            &theme,
+            range.start,
+            range.end,
+            range.is_block,
+            opts,
+        ))
+    }
+
     /// 지금 화면을 꺼낸다
     pub fn snapshot(&self) -> Screen {
         let theme = self.theme.lock().clone();
@@ -1680,7 +1708,10 @@ fn modes_of(m: TermMode) -> Modes {
         alternate_scroll: m.contains(TermMode::ALTERNATE_SCROLL),
         kitty: crate::input::KittyFlags {
             disambiguate: m.contains(TermMode::DISAMBIGUATE_ESC_CODES),
+            report_events: m.contains(TermMode::REPORT_EVENT_TYPES),
+            report_alternates: m.contains(TermMode::REPORT_ALTERNATE_KEYS),
             all_as_escapes: m.contains(TermMode::REPORT_ALL_KEYS_AS_ESC),
+            report_associated: m.contains(TermMode::REPORT_ASSOCIATED_TEXT),
         },
         key: crate::input::KeyModes {
             backarrow_key: m.contains(TermMode::BACKARROW_KEY),
@@ -1933,6 +1964,9 @@ fn graphics_command<T: EventListener>(
         cell_w: cell.0,
         cell_h: cell.1,
         alt: term.mode().contains(TermMode::ALT_SCREEN),
+        top: term.grid().history_size() as i64,
+        rows: term.screen_lines() as u32,
+        cols: term.columns() as u32,
     };
     let out = graphics.handle(raw, cur);
     if let Some((down, right)) = out.advance {
@@ -1962,7 +1996,11 @@ fn visible_images<T>(term: &Term<T>, g: &mut crate::graphics::Graphics) -> Vec<c
     let mut picked: Vec<&crate::graphics::Placement> = Vec::new();
     for p in g.placements.iter().rev().filter(|p| p.alt == alt) {
         let row = p.line - top;
-        if row + p.rows as i64 <= 0 || row >= rows || !seen.insert((p.image, p.line, p.col, p.cols, p.rows)) {
+        // 같은 그림을 같은 자리·모양으로 두 번 그리지 않는다(자리 번호만 다른 겹침). 잘라내기·오프셋·z가 다르면 다른 그림이다
+        if row + p.rows as i64 <= 0
+            || row >= rows
+            || !seen.insert((p.image, p.line, p.col, p.cols, p.rows, p.geom, p.z))
+        {
             continue;
         }
         let visible_rows = (row + p.rows as i64).min(rows) - row.max(0);
@@ -1991,7 +2029,8 @@ fn visible_images<T>(term: &Term<T>, g: &mut crate::graphics::Graphics) -> Vec<c
                 col: p.col,
                 cols: p.cols,
                 rows: p.rows,
-                scaled: p.scaled,
+                geom: p.geom,
+                z: p.z,
             })
         })
         .collect()

@@ -5,7 +5,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
-use bt_render::{Canvas, DrawCell, DrawCursor, FontConfig, Fonts, GridView, draw_grid, draw_grid_rows};
+use bt_render::{Canvas, DrawCell, DrawCursor, FontConfig, Fonts, GridView, draw_grid_rows};
 use bt_term::{CellFlags, CellSide, CursorShape, GridSize, Screen, SelectKind, Session, SessionEvent, SpawnOptions};
 use winit::application::ApplicationHandler;
 use winit::dpi::{LogicalSize, PhysicalPosition, PhysicalSize};
@@ -18,6 +18,7 @@ mod backdrop;
 mod gpu_frame;
 mod gpu_pace;
 mod input_latency;
+mod kitty_images;
 mod shader_inputs;
 
 use crate::icon;
@@ -833,6 +834,9 @@ struct Win {
     link_click: bool,
     /// 고르지 않은 칸을 누른 왼쪽 누름을 삼켰다: 짝 떼기도 삼킨다(#500)
     focus_click: mouse::FocusClickGuard,
+    /// 누름을 프로그램(PTY)에 보낸 물리 키와 그 칸. 프로그램이 kitty 키보드 프로토콜 2(키 뗌 보고)를 켰을 때, 같은 칸에 짝 뗌만 보낸다.
+    /// IME가 삼킨 누름, 앱 단축키가 먹은 누름, 누른 뒤 다른 칸을 고른 경우의 뗌을 홀로 보내지 않기 위해서다(#546)
+    kitty_down: std::collections::HashMap<winit::keyboard::PhysicalKey, u64>,
     /// 열린 찾기 막대(칸 하나에 붙는다)
     search: Option<SearchBar>,
     /// 열린 명령 팔레트(#77): 친 글, 고른 줄
@@ -865,6 +869,8 @@ struct Win {
     frame: Vec<u32>,
     /// GPU 길의 위층(격자 위에 겹치는 것, 곱한 알파). 아래층은 `frame`이 든다. 그린 것이 없으면 비워 둔다(#387)
     upper: Vec<u32>,
+    /// 칸 바탕과 글자 사이 층(kitty 글자 아래 그림, #547)
+    mid: Vec<u32>,
     /// GPU 길: 셰이더 뒤에 얹는 층의 픽셀(셰이더가 돌 때만 쓴다, #441)
     top: Vec<u32>,
     last_frame: Option<FrameMemo>,
@@ -917,6 +923,7 @@ impl Win {
             hover: None,
             link_click: false,
             focus_click: mouse::FocusClickGuard::default(),
+            kitty_down: std::collections::HashMap::new(),
             search: None,
             palette: None,
             pointer_icon: CursorIcon::Default,
@@ -933,6 +940,7 @@ impl Win {
             force_present: false,
             frame: Vec::new(),
             upper: Vec::new(),
+            mid: Vec::new(),
             top: Vec::new(),
             last_frame: None,
             blink_on: true,
@@ -2186,18 +2194,29 @@ impl App {
         ))
     }
 
-    /// 고른 글을 시스템 클립보드에 넣는다. 고른 글이 없으면 하지 않는다. 했으면 true
-    fn copy_selection(&mut self) -> bool {
+    /// 고른 글을 시스템 클립보드에 `format` 꼴로 넣는다(Ghostty `copySelectionToClipboards`). 고른 글이 없으면 하지 않는다. 했으면 true.
+    /// `plain`·`vt`는 text/plain, `html`은 text/html, `mixed`는 글 + HTML. 앱 안 선택 클립보드(`selection_clipboard`)는 늘 글만이다
+    fn copy_selection(&mut self, format: bt_term::CopyFormat) -> bool {
         let Some(text) = self.selection_for_copy() else {
             return false;
         };
-        match self.clipboard.as_mut() {
-            Some(cb) => cb.set_text(text).is_ok(),
-            None => false,
+        let trim = self.config.clipboard_trim_trailing_spaces;
+        let pane = self.active_pane();
+        let payload = crate::copy::payload(format, &text, |emit, colors| {
+            pane.as_ref()
+                .and_then(|t| t.session.selection_styled(emit, trim, colors))
+        });
+        let Some(cb) = self.clipboard.as_mut() else {
+            return false;
+        };
+        match payload {
+            crate::copy::ClipboardPayload::Text(t) => cb.set_text(t).is_ok(),
+            crate::copy::ClipboardPayload::Html { html, alt } => cb.set().html(html, alt).is_ok(),
         }
     }
 
-    /// `copy-on-select`: 고르기를 마칠 때 값에 따라 선택 클립보드·시스템 클립보드로 보낸다
+    /// `copy-on-select`: 고르기를 마칠 때 값에 따라 선택 클립보드·시스템 클립보드로 보낸다.
+    /// 시스템 클립보드는 Ghostty처럼 mixed(글 + HTML)다
     fn copy_on_select_now(&mut self) {
         let (selection, system) = self.config.copy_on_select.targets();
         if selection {
@@ -2206,14 +2225,14 @@ impl App {
             }
         }
         if system {
-            self.copy_selection();
+            self.copy_selection(bt_term::CopyFormat::Mixed);
         }
     }
 
     /// 복사 명령(단축키·메뉴·오른쪽 클릭)으로 복사한다. `selection-clear-on-copy`가 켜져 있으면 복사한 뒤 고른 영역을 지운다.
     /// `copy-on-select`의 자동 복사는 지우지 않는다(Ghostty)
-    fn copy_selection_command(&mut self) -> bool {
-        let copied = self.copy_selection();
+    fn copy_selection_command(&mut self, format: bt_term::CopyFormat) -> bool {
+        let copied = self.copy_selection(format);
         if copied && clears_selection_after_copy(self.config.selection_clear_on_copy) {
             if let Some(t) = self.active_pane() {
                 t.session.select_clear();
@@ -2274,10 +2293,10 @@ impl App {
             bt_core::config::RightClickAction::Ignore => {}
             bt_core::config::RightClickAction::Paste => paste(self),
             bt_core::config::RightClickAction::Copy => {
-                self.copy_selection_command();
+                self.copy_selection_command(bt_term::CopyFormat::Mixed);
             }
             bt_core::config::RightClickAction::CopyOrPaste => {
-                if !self.copy_selection_command() {
+                if !self.copy_selection_command(bt_term::CopyFormat::Mixed) {
                     paste(self);
                 }
             }
@@ -3077,6 +3096,25 @@ impl App {
         }
     }
 
+    /// 키를 뗐다. 프로그램이 kitty 키보드 프로토콜 2(키 뗌 보고)를 켰고, 그 키의 누름을 프로그램에 보냈을 때만 뗌을 보낸다.
+    /// 켜지 않았으면 뗌은 버린다(옛 바이트 그대로). 뗌은 글을 치는 것이 아니라 고른 영역을 지우거나 맨 아래로 돌리지 않는다
+    fn kitty_key_release(&mut self, event: &winit::event::KeyEvent) {
+        let Some(pane) = self.w.kitty_down.remove(&event.physical_key) else {
+            return;
+        };
+        let Some(modes) = self.active_pane().filter(|t| t.id == pane).map(|t| t.session.modes()) else {
+            return;
+        };
+        if !modes.kitty.report_events {
+            return;
+        }
+        let meta = self.config.option_as_alt != bt_core::config::OptionAsAlt::None;
+        let bytes = keys::encode(event, self.mods, keys::to_state(self.raw_mods), modes, meta);
+        if let Some(t) = self.active_pane() {
+            t.session.write_input(&bytes, false);
+        }
+    }
+
     fn write_active(&mut self, bytes: &[u8]) {
         let scroll = self.config.scroll_to_bottom.keystroke;
         let clear = clears_selection_on_write(self.config.selection_clear_on_typing, bytes);
@@ -3640,7 +3678,7 @@ impl App {
     fn can_perform(&mut self, action: &Action) -> bool {
         let has_selection = |s: &Self| s.active_pane().and_then(|t| t.session.selection_text()).is_some();
         match action {
-            Action::Copy
+            Action::Copy(_)
             | Action::AdjustSelection(_)
             | Action::ScrollToSelection
             | Action::SearchSelection
@@ -3677,8 +3715,8 @@ impl App {
             }
         }
         match action {
-            Action::Copy => {
-                self.copy_selection_command();
+            Action::Copy(format) => {
+                self.copy_selection_command(format);
             }
             // 찾기 막대가 열려 있으면 첫 줄을 찾을 글에 붙인다
             Action::Paste if self.w.search.is_some() => {
@@ -5713,7 +5751,14 @@ impl App {
                 };
                 if full {
                     canvas.fill_rect(v.outer.x, v.outer.y, v.outer.w, v.outer.h, screen.background);
-                    draw_grid(&mut canvas, fonts.for_size(v.font_size), v.inner.x, v.inner.y, &view);
+                    // kitty 그림: 칸 바탕 아래·글자 아래는 격자를 그리면서 끼우고, 글자 위는 뒤에 그린다. 격자 밖은 자른다(#547)
+                    let images = kitty_images::PaneImages::new(
+                        &screen.images,
+                        (v.inner.x, v.inner.y),
+                        (vm.width, vm.height),
+                        (screen.cols, screen.rows),
+                    );
+                    images.draw_grid(&mut canvas, fonts.for_size(v.font_size), &view, screen.background);
                     if let Some(p) = pad {
                         crate::padding::paint(
                             &mut canvas,
@@ -5726,33 +5771,7 @@ impl App {
                             None,
                         );
                     }
-                    // kitty 그림: 놓인 칸에, 칸 수에 맞춰 늘리거나 원래 크기로. 격자 밖은 자른다
-                    let grid_clip = (
-                        v.inner.x,
-                        v.inner.y,
-                        v.inner.x + (screen.cols as u32 * vm.width) as i32,
-                        v.inner.y + (screen.rows as u32 * vm.height) as i32,
-                    );
-                    for im in &screen.images {
-                        let (cw, chh) = (im.cols * vm.width, im.rows * vm.height);
-                        let (w, h) = if im.scaled { (cw, chh) } else { (im.width, im.height) };
-                        let clip = (
-                            grid_clip.0,
-                            grid_clip.1,
-                            grid_clip.2.min(v.inner.x + (im.col as u32 * vm.width + cw) as i32),
-                            grid_clip.3,
-                        );
-                        canvas.draw_rgba(
-                            v.inner.x + (im.col as u32 * vm.width) as i32,
-                            v.inner.y + im.row * vm.height as i32,
-                            w,
-                            h,
-                            &im.rgba,
-                            im.width,
-                            im.height,
-                            clip,
-                        );
-                    }
+                    images.paint(&mut canvas, bt_core::kitty_geom::Layer::AboveText);
                     if split && !v.focused && dim_alpha > 0 {
                         canvas.blend_rect(v.outer.x, v.outer.y, v.outer.w, v.outer.h, dim_fill, dim_alpha);
                     }
@@ -6525,6 +6544,7 @@ impl ApplicationHandler<UserEvent> for App {
                 self.w.focused = focused;
                 if !focused {
                     self.w.focus_click.clear();
+                    self.w.kitty_down.clear();
                 }
                 // 보안 입력: 앱이 앞이면 켜고(창 어느 하나라도 초점이면), 아니면 끈다. 앞으로 오면 바로 칸을 살핀다(#258)
                 self.update_secure_active();
@@ -6594,6 +6614,7 @@ impl ApplicationHandler<UserEvent> for App {
             },
             WindowEvent::KeyboardInput { event, .. } => {
                 if event.state != ElementState::Pressed {
+                    self.kitty_key_release(&event);
                     return;
                 }
                 // 칸을 끌던 중 Esc는 끌기를 취소한다(키는 어디에도 가지 않는다)
@@ -6635,6 +6656,7 @@ impl ApplicationHandler<UserEvent> for App {
                     modes.modify_other_keys = false;
                 }
                 let meta = self.config.option_as_alt != bt_core::config::OptionAsAlt::None;
+                let report_release = modes.kitty.report_events;
                 let bytes = keys::encode(&event, self.mods, keys::to_state(self.raw_mods), modes, meta);
                 // performable: 묶음은 동작을 지금 할 수 있을 때만 키를 먹는다
                 let mut seq = std::mem::take(&mut self.w.keyseq);
@@ -6650,6 +6672,9 @@ impl ApplicationHandler<UserEvent> for App {
                 }
                 if !out.send.is_empty() {
                     self.write_active(&out.send);
+                    if let (true, Some(id)) = (report_release, self.active_pane().map(|t| t.id)) {
+                        self.w.kitty_down.insert(event.physical_key, id);
+                    }
                 }
                 if let Some(action) = out.action {
                     match action {

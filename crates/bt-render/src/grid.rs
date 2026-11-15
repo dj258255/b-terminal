@@ -67,10 +67,27 @@ pub struct GridView<'a> {
     pub min_contrast: f32,
 }
 
+/// 격자 아래에 끼워 그릴 것: kitty 그림의 "칸 바탕 아래"와 "글자 아래" 층(#547, Ghostty `ImageLayer`).
+/// 그리는 차례는 칸 바탕 아래 그림 → 칸 바탕 → 글자 아래 그림 → 글자(→ 글자 위 그림은 부른 쪽이 격자 뒤에 그린다)
+#[derive(Default)]
+pub struct Under<'a> {
+    /// 칸 바탕을 칠하기 전에 그린다. 있으면 `default_bg` 바탕의 칸은 칠하지 않는다(Ghostty는 기본 바탕 칸을 그리지 않는다): 그림이 비친다
+    pub below_bg: Option<&'a dyn Fn(&mut Canvas)>,
+    /// 칸 바탕을 칠한 뒤 글자보다 먼저 그린다
+    pub below_text: Option<&'a dyn Fn(&mut Canvas)>,
+    /// 화면의 기본 바탕색(`below_bg`가 있을 때 이 바탕 칸은 칠하지 않는다)
+    pub default_bg: Option<Rgb>,
+}
+
 /// 격자를 (x, y)에 통째로 그린다
 pub fn draw_grid(canvas: &mut Canvas, fonts: &mut Fonts, x: i32, y: i32, view: &GridView) {
+    draw_grid_under(canvas, fonts, x, y, view, &Under::default());
+}
+
+/// `draw_grid`에 칸 바탕 아래·글자 아래 그림을 끼운다
+pub fn draw_grid_under(canvas: &mut Canvas, fonts: &mut Fonts, x: i32, y: i32, view: &GridView, under: &Under) {
     let all = vec![true; view.rows];
-    draw_grid_rows(canvas, fonts, x, y, view, &all);
+    draw_rows_dirty(canvas, fonts, x, y, view, &all, under);
 }
 
 /// `dirty`가 참인 줄만 다시 그린다(#40). 다시 칠한 세로 범위들 `[위, 아래)`를 돌려준다.
@@ -84,6 +101,18 @@ pub fn draw_grid_rows(
     y: i32,
     view: &GridView,
     dirty: &[bool],
+) -> Vec<(i32, i32)> {
+    draw_rows_dirty(canvas, fonts, x, y, view, dirty, &Under::default())
+}
+
+fn draw_rows_dirty(
+    canvas: &mut Canvas,
+    fonts: &mut Fonts,
+    x: i32,
+    y: i32,
+    view: &GridView,
+    dirty: &[bool],
+    under: &Under,
 ) -> Vec<(i32, i32)> {
     let m = fonts.metrics();
     let ch = m.height as i32;
@@ -108,7 +137,7 @@ pub fn draw_grid_rows(
         }
         let (top, bottom) = (y + a as i32 * ch, y + r as i32 * ch);
         canvas.set_clip_y(top, bottom);
-        draw_rows(canvas, fonts, m, x, y, view, a, r);
+        draw_rows(canvas, fonts, m, x, y, view, (a, r), under);
         canvas.reset_clip();
         spans.push((top, bottom));
     }
@@ -124,11 +153,15 @@ fn draw_rows(
     x: i32,
     y: i32,
     view: &GridView,
-    a: usize,
-    b: usize,
+    (a, b): (usize, usize),
+    under: &Under,
 ) {
     let cw = m.width as i32;
     let ch = m.height as i32;
+    // 0) 칸 바탕 아래 그림(kitty z < i32::MIN / 2, #547)
+    if let Some(f) = under.below_bg {
+        f(canvas);
+    }
     // 1) 바탕을 먼저 칠한다. 글자가 셀 위아래로 조금 넘쳐도 다음 줄 바탕에 잘리지 않게
     for row in a..b {
         let py = y + row as i32 * ch;
@@ -137,11 +170,17 @@ fn draw_rows(
             let (cx, w, h) = (x + col as i32 * cw, m.width, m.height);
             if cell.selected {
                 canvas.fill_rect(cx, py, w, h, view.selection_bg);
+            } else if under.below_bg.is_some() && under.default_bg == Some(cell.bg) {
+                // 기본 바탕 칸은 그리지 않아 칸 바탕 아래 그림이 비친다
             } else {
                 // background-opacity-cells(#177)를 켰으면 색 바탕 칸도 비친다
                 canvas.fill_rect_cell(cx, py, w, h, cell.bg);
             }
         }
+    }
+    // 1.5) 글자 아래 그림(kitty -2^30 <= z < 0): 칸 바탕 위, 글자 아래
+    if let Some(f) = under.below_text {
+        f(canvas);
     }
     // 2) 글자와 밑줄. 이웃 줄에서 넘쳐 들어온 글자도 그린다
     let text_rows = a.saturating_sub(1)..(b + 1).min(view.rows);

@@ -54,6 +54,11 @@ pub struct Cursor<T> {
     /// b-terminal(#531): 저장한 커서(`saved_cursor`)에서만 쓴다. DECSC가 저장할 때의 원점 모드(DECOM).
     /// Ghostty `saveCursor`의 `origin`. 활성 커서(`Grid::cursor`)에서는 쓰지 않는다
     pub origin: bool,
+
+    /// b-terminal(#545): 저장한 커서에서만 쓴다. DECSC가 저장할 때 SO·SI로 고른 집합(GL)과 대기 중인 SS2·SS3.
+    /// Ghostty `saveCursor`의 `charset`(`gl`·`single_shift`). 활성 상태는 `Term`의 `active_charset`·`single_shift`에 있다
+    pub active_charset: CharsetIndex,
+    pub single_shift: Option<CharsetIndex>,
 }
 
 #[derive(Debug, Default, Copy, Clone, PartialEq, Eq)]

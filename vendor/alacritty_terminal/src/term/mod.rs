@@ -1217,13 +1217,30 @@ impl<T> Term<T> {
             self.inactive_grid.cursor = self.grid.cursor.clone();
 
             // Drop information about the primary screens saved cursor.
-            self.grid.saved_cursor = self.grid.cursor.clone();
+            // b-terminal(#545): DECSC와 같은 저장(원점 모드, SO·SI로 고른 집합, SS2·SS3까지. Ghostty 1049의 `saveCursor`)
+            self.save_cursor_state();
 
             // Reset alternate screen contents.
             self.inactive_grid.reset_region(..);
+            self.swap_alt_grids();
+        } else {
+            self.swap_alt_grids();
+            // b-terminal(#545): 주 화면의 커서 자리·펜은 그 화면에 남아 있다. 저장할 때의 원점 모드와 문자 집합 상태를
+            // 되살린다(Ghostty 1049를 끌 때의 `restoreCursor`)
+            self.mode.set(TermMode::ORIGIN, self.grid.saved_cursor.origin);
+            self.active_charset = self.grid.saved_cursor.active_charset;
+            self.single_shift = self.grid.saved_cursor.single_shift;
         }
+    }
 
-        self.swap_alt_grids();
+    /// DECSC(`save_cursor_position`)와 1049가 저장하는 것. Ghostty `saveCursor`(Terminal.zig 2703줄)
+    fn save_cursor_state(&mut self) {
+        self.grid.saved_cursor = self.grid.cursor.clone();
+        // b-terminal(#531): 원점 모드도 함께 저장한다(Ghostty `saveCursor`의 `origin`)
+        self.grid.saved_cursor.origin = self.mode.contains(TermMode::ORIGIN);
+        // b-terminal(#545): SO·SI로 고른 집합과 대기 중인 한 글자 바꾸기도(Ghostty `saveCursor`의 `charset`)
+        self.grid.saved_cursor.active_charset = self.active_charset;
+        self.grid.saved_cursor.single_shift = self.single_shift;
     }
 
     /// b-terminal(#296): 대체 화면을 지우지 않고 바꾼다. 모드 47·1047의 화면 전환(Ghostty `switchScreenMode`).
@@ -2764,9 +2781,7 @@ impl<T: EventListener> Handler for Term<T> {
     fn save_cursor_position(&mut self) {
         trace!("Saving cursor position");
 
-        self.grid.saved_cursor = self.grid.cursor.clone();
-        // b-terminal(#531): 원점 모드도 함께 저장한다(Ghostty `saveCursor`의 `origin`, Terminal.zig 2703줄)
-        self.grid.saved_cursor.origin = self.mode.contains(TermMode::ORIGIN);
+        self.save_cursor_state();
     }
 
     #[inline]
@@ -2779,6 +2794,11 @@ impl<T: EventListener> Handler for Term<T> {
         // 처음 자리다(Ghostty `restoreCursor`의 기본값, Terminal.zig 2719줄)
         self.mode.set(TermMode::ORIGIN, self.grid.saved_cursor.origin);
         self.grid.cursor.origin = false;
+        // b-terminal(#545): 저장한 것이 없으면 기본 커서의 값(G0, 대기 없음)이다(Ghostty `.charset = .{}`)
+        self.active_charset = self.grid.saved_cursor.active_charset;
+        self.single_shift = self.grid.saved_cursor.single_shift;
+        self.grid.cursor.active_charset = Default::default();
+        self.grid.cursor.single_shift = None;
         self.damage_cursor();
     }
 

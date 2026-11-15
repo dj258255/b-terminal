@@ -26,7 +26,8 @@ pub struct Trigger {
 /// 동작
 #[derive(Debug, Clone, PartialEq)]
 pub enum Action {
-    Copy,
+    /// 고른 글을 시스템 클립보드로. 형식은 `copy_to_clipboard:<plain|vt|html|mixed>`(기본 mixed, #550)
+    Copy(bt_term::CopyFormat),
     Paste,
     /// 앱 안 선택 클립보드 붙여넣기(`paste_from_selection`)
     PasteSelection,
@@ -294,7 +295,10 @@ pub fn parse_action(s: &str) -> Result<Option<Action>, String> {
     let num = |d: f32| arg.and_then(|a| a.trim().parse::<f32>().ok()).unwrap_or(d);
     Ok(Some(match name {
         "unbind" => return Ok(None),
-        "copy_to_clipboard" => Action::Copy,
+        "copy_to_clipboard" => Action::Copy(match arg.map(str::trim) {
+            None => bt_term::CopyFormat::default(),
+            Some(a) => bt_term::CopyFormat::parse(a).ok_or("copy_to_clipboard:plain·vt·html·mixed")?,
+        }),
         "paste_from_clipboard" => Action::Paste,
         "paste_from_selection" => Action::PasteSelection,
         "new_tab" => Action::NewTab,
@@ -1384,6 +1388,37 @@ mod tests {
         assert!(parse_action("adjust_selection").is_err());
         assert!(parse_action("adjust_selection:sideways").is_err());
         assert_eq!(parse_action("copy_url_to_clipboard").unwrap(), Some(Action::CopyUrl));
+        // copy_to_clipboard의 형식 인자(Ghostty Binding.zig 4597·4608줄). 기본은 mixed(#550)
+        use bt_term::CopyFormat;
+        assert_eq!(
+            parse_action("copy_to_clipboard").unwrap(),
+            Some(Action::Copy(CopyFormat::Mixed))
+        );
+        for (arg, f) in [
+            ("plain", CopyFormat::Plain),
+            ("vt", CopyFormat::Vt),
+            ("html", CopyFormat::Html),
+            ("mixed", CopyFormat::Mixed),
+        ] {
+            assert_eq!(
+                parse_action(&format!("copy_to_clipboard:{arg}")).unwrap(),
+                Some(Action::Copy(f)),
+                "{arg}"
+            );
+        }
+        assert!(parse_action("copy_to_clipboard:rtf").is_err());
+        assert!(parse_action("copy_to_clipboard:").is_err());
+        // 키 묶음 문법과 함께
+        let (km, _) = Keymap::build(&["ctrl+alt+h=copy_to_clipboard:html".into()]);
+        let hit = km.lookup(&Trigger {
+            mods: Mods {
+                ctrl: true,
+                alt: true,
+                ..Mods::default()
+            },
+            key: "h".into(),
+        });
+        assert_eq!(hit, Some(&Action::Copy(CopyFormat::Html)));
         assert_eq!(
             parse_action("set_surface_title:빌드 서버").unwrap(),
             Some(Action::SetSurfaceTitle("빌드 서버".into()))
@@ -1424,7 +1459,11 @@ mod tests {
         };
         if cfg!(target_os = "macos") {
             assert_eq!(km.lookup(&sup("t")), None, "unbind로 기본 묶음을 지운다");
-            assert_eq!(km.lookup(&sup("c")), Some(&Action::Copy), "건드리지 않은 기본은 남는다");
+            assert_eq!(
+                km.lookup(&sup("c")),
+                Some(&Action::Copy(bt_term::CopyFormat::Mixed)),
+                "건드리지 않은 기본은 남는다"
+            );
             assert_eq!(km.lookup(&trig("super+shift+n")), Some(&Action::NewTab));
             assert_eq!(
                 km.lookup(&sup("q")),
@@ -1738,7 +1777,7 @@ mod tests {
         assert_eq!(
             feed_all(&mut sq, &km, "ctrl+alt+c", b"\x03", true),
             KeyOutcome {
-                action: Some(Action::Copy),
+                action: Some(Action::Copy(bt_term::CopyFormat::Mixed)),
                 ..Default::default()
             },
             "할 수 있으면 먹고 동작"
@@ -1754,7 +1793,10 @@ mod tests {
         // unconsumed와 겹치면: 할 수 있을 때 동작도 하고 키도 보낸다
         let (km, _) = Keymap::build(&["unconsumed:performable:ctrl+alt+c=copy_to_clipboard".into()]);
         let out = feed_all(&mut sq, &km, "ctrl+alt+c", b"\x03", true);
-        assert_eq!((out.send, out.action), (b"\x03".to_vec(), Some(Action::Copy)));
+        assert_eq!(
+            (out.send, out.action),
+            (b"\x03".to_vec(), Some(Action::Copy(bt_term::CopyFormat::Mixed)))
+        );
         let out = feed_all(&mut sq, &km, "ctrl+alt+c", b"\x03", false);
         assert_eq!((out.send, out.action), (b"\x03".to_vec(), None));
     }
@@ -1841,7 +1883,11 @@ mod tests {
             "all:unconsumed:performable:ctrl+u=copy_to_clipboard".into(),
         ]);
         let out = Sequencer::default().feed_with(&km, key("ctrl+u"), vec![21], &mut |_| false);
-        assert_eq!(out.action, Some(Action::Copy), "all:이면 performable을 보지 않는다");
+        assert_eq!(
+            out.action,
+            Some(Action::Copy(bt_term::CopyFormat::Mixed)),
+            "all:이면 performable을 보지 않는다"
+        );
         assert!(out.send.is_empty(), "all:이면 unconsumed여도 키를 먹는다");
         // 순서 중 묶이지 않은 키가 catch_all=ignore에 맞으면 순서 전체를 버린다
         let (km, _) = Keymap::build(&["clear".into(), "catch_all=ignore".into(), "ctrl+a>n=new_window".into()]);

@@ -23,7 +23,7 @@ pub fn action_for(id: &str) -> Option<MenuCommand> {
         "surface_title" => MenuCommand::Action(Action::PromptSurfaceTitle),
         "tab_title" => MenuCommand::Action(Action::PromptTabTitle),
         "window_title" => MenuCommand::Action(Action::PromptWindowTitle),
-        "copy" => MenuCommand::Action(Action::Copy),
+        "copy" => MenuCommand::Action(Action::Copy(bt_term::CopyFormat::Mixed)),
         "paste" => MenuCommand::Action(Action::Paste),
         "paste_selection" => MenuCommand::Action(Action::PasteSelection),
         "select_all" => MenuCommand::Action(Action::SelectAll),

@@ -284,9 +284,19 @@ keybind = nav/escape=deactivate_key_table
 - macOS가 아니면 기본 묶음의 `super`는 `ctrl+shift`로 바뀝니다.
 - `global:` 접두사를 붙이면 시스템 전역 단축키가 됩니다(Ghostty와 같은 문법). 다른 앱이 앞에 있어도 듣습니다. 기본 전역 묶음은 없습니다. 다른 앱이 이미 잡은 조합이면 경고를 남기고 건너뜁니다.
 
+
+`copy_to_clipboard`의 형식(Ghostty와 같습니다):
+
+- `plain`: 글만. 지금까지의 복사와 바이트가 같습니다.
+- `vt`: 색·굵기·밑줄이 이스케이프 시퀀스로 남은 글(text/plain). 바탕·글자 기본색은 OSC 10·11로 앞에 붙습니다.
+- `html`: HTML만(text/html). 바탕·글자 기본색도 감싸는 태그에 넣습니다.
+- `mixed`(기본): 글(text/plain)과 HTML(text/html)을 함께 담습니다. 이 HTML에는 바탕·글자 기본색을 넣지 않습니다(붙이는 쪽 편집기 바탕과 어울리게). 받는 앱이 알맞은 쪽을 골라 붙입니다. 오른쪽 클릭 복사(`right-click-action = copy`·`copy-or-paste`, 메뉴의 복사)와 `copy-on-select`가 시스템 클립보드로 보내는 복사도 `mixed`입니다.
+
+HTML은 `<div style="font-family: monospace; white-space: pre;">` 안에 칸의 꾸밈마다 `<div style="display: inline;…">`를 겹치고, 색은 지금 팔레트(테마와 OSC 4 등으로 바꾼 값)의 `rgb(r, g, b)`로 씁니다. 하이퍼링크(OSC 8)는 주소가 `http`·`https`·`mailto`일 때만 `<a href>`로 쓰고(Ghostty는 거르지 않지만, 프로그램이 심은 `javascript:` 같은 주소가 붙여넣은 편집기에서 실행되지 않게 더 엄격하게 했습니다) 그 밖의 주소는 링크 글만 남깁니다. 주소와 글은 `<`·`>`·`&`·따옴표는 이스케이프하고 ASCII 밖 글자는 숫자 참조(`&#9584;`)로 씁니다. `clipboard-codepoint-map`은 글(`plain`·`mixed`의 text/plain)에만 적용하고 `vt`·`html`에는 적용하지 않습니다(Ghostty와 같음). `clipboard-trim-trailing-spaces`는 글에는 줄 끝 공백을 지우고, 꾸밈 있는 `vt`·`html`에서는 Ghostty처럼 글자 없는 칸만 빼고 직접 친 공백은 남기며 `vt`에서는 끝의 빈 줄을 남길지만 정합니다. 앱 안 선택 클립보드(`copy-on-select`의 `primary`·`both`, ⌘⇧V)는 Ghostty와 달리 글만 담습니다. 붙여넣을 때 HTML을 읽지 않습니다. 확인한 것은 단위 시험까지이고, 실제 창에서 `osascript -e 'clipboard info'`로 형식을 본 확인은 아직 하지 않았습니다.
+
 | 동작 | 하는 일 | macOS 기본 |
 |---|---|---|
-| `copy_to_clipboard` / `paste_from_clipboard` | 복사 / 붙여넣기 | `super+c` / `super+v` |
+| `copy_to_clipboard` / `paste_from_clipboard` | 복사 / 붙여넣기. `copy_to_clipboard:<형식>`으로 복사 형식을 정합니다(아래). 형식을 안 주면 `mixed` | `super+c` / `super+v` |
 | `paste_from_selection` | 선택 클립보드 붙여넣기(`copy-on-select`의 `primary`·`both`로 담은 글, 붙여넣기 보호를 거침, 비었으면 아무것도 하지 않음. 시스템 클립보드와 다름) | `super+shift+v`(macOS) / `shift+insert`(그 밖) |
 | `new_window` | 새 창(창이 하나도 없을 때도 열림. 마지막 창을 닫았을 때 앱이 끝나는지는 `quit-after-last-window-closed`) | `super+n` |
 | `new_tab` / `close_surface` / `close_tab` | 새 탭 / 칸 닫기(칸이 하나면 탭) / 탭을 칸째 닫기 | `super+t` / `super+w` / `super+alt+w` |
