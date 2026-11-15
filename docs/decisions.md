@@ -84,6 +84,7 @@
 | [ADR-026](#adr-026-dock에-놓은-파일은-확인-막대에서-y를-눌러야-실행하고-경로-글자는-허용-목록으로-좁히고-목록-밖이면-거부하며-통과한-경로만-작은따옴표로-감싼다) | Dock에 놓은 파일은 확인 막대에서 y를 눌러야 실행하고, 경로 글자는 허용 목록으로 좁히고 목록 밖이면 거부하며, 통과한 경로만 작은따옴표로 감싼다 | 유효 |
 | [ADR-053](#adr-053-kitty-알림osc-99은-kitty-명세대로-조각을-합치고-질의-답에-되돌리는-식별자는-검사한다) | kitty 알림(OSC 99)은 kitty 명세대로 조각을 합치고, 질의 답에 되돌리는 식별자는 검사한다 | 유효 |
 | [ADR-054](#adr-054-붙여넣는-글의-위험-제어-바이트는-모드와-상관없이-공백으로-바꾸고-창에-끌어다-놓은-파일-경로는-셸-이스케이프해-같은-붙여넣기-길로-넣는다) | 붙여넣는 글의 위험 제어 바이트는 모드와 상관없이 공백으로 바꾸고, 창에 끌어다 놓은 파일 경로는 셸 이스케이프해 같은 붙여넣기 길로 넣는다 | 유효 |
+| [ADR-055](#adr-055-레거시-키-인코딩은-ghostty-앱이-보내는-바이트에-맞추고-option은-글자-길에서만-설정을-따르며-macos-기본-키-묶음에-글-편집-다섯-개를-더한다) | 레거시 키 인코딩은 Ghostty 앱이 보내는 바이트에 맞추고, Option은 글자 길에서만 설정을 따르며, macOS 기본 키 묶음에 글 편집 다섯 개를 더한다 | 유효 |
 
 ### 설정 기본값
 
@@ -1718,3 +1719,31 @@ E8의 실제 창 로그에서 10ms 넘는 GPU 프레임은 세 가지였다. (1)
 - 결정 1은 웹 페이지나 남이 보낸 글에 숨은 제어 바이트가 사람이 보지 못한 사이에 셸을 움직이는 길을 막는다. 괄호 붙여넣기를 쓰는 프로그램도 같은 바이트를 받지 않는다.
 - 끌어다 놓은 경로의 이스케이프는 셸 문법(공백·따옴표·`$` 등)만 막고 제어 문자는 막지 못한다(따옴표 앞의 Ctrl-U가 여는 따옴표를 지우는 식). 그래서 제어 문자는 결정 1이, 줄바꿈이 든 파일 이름은 확인 막대(괄호 붙여넣기가 아닐 때)가 맡는다. 붙여넣기 길을 거치므로 읽기 전용 칸에는 들어가지 않는다.
 - Dock에 놓은 파일(ADR-026)은 확인 뒤 **실행**하므로 허용 목록으로 좁히고 작은따옴표로 감싼다. 창에 놓은 파일은 줄 편집기에 글로만 넣고 Enter는 사람이 누르므로 Ghostty와 같은 이스케이프로 둔다.
+
+## ADR-055 레거시 키 인코딩은 Ghostty 앱이 보내는 바이트에 맞추고, Option은 글자 길에서만 설정을 따르며, macOS 기본 키 묶음에 글 편집 다섯 개를 더한다
+
+상태: 채택
+관련: [#567](https://github.com/dj258255/b-terminal/issues/567), ADR-029(키패드·modifyOtherKeys), ADR-050(kitty 키보드)
+
+### 맥락
+- kitty 키보드를 켜지 않은 프로그램(셸·vim·tmux 대부분)에 가는 바이트(레거시 인코딩)는 Ghostty와 한 번도 견준 적이 없었다. Ghostty `key_encode.zig`(main 7fa26e8b675f)의 `legacy:` 시험 44개와 `ctrlseq:` 시험 11개를 옮겨 돌리니, 옮길 수 있는 55개 중 18개가 달랐다. 옮기지 못한 3개는 조합 중(dead key) 시험이다. winit은 조합 중 키를 올리지 않고 확정 글자만 `Ime::Commit`으로 보낸다.
+- 인코더 시험은 `consumed_mods`를 비워 두지만, Ghostty macOS 앱은 "번역에 쓴 수식 키 − Ctrl·Cmd"를 소비된 수식 키로 넘긴다(`NSEvent+Extension.swift` 31~33줄). `macos-option-as-alt`가 꺼져 있으면 Option은 번역에 쓰여 소비된 것이 된다(`SurfaceView_AppKit.swift` 1132~1149줄). 그래서 시험만 옮기면 앱의 기본 설정과 다른 바이트가 나온다.
+- Ghostty macOS는 기본 키 묶음으로 Option+←·→를 `ESC b`·`ESC f`로, Cmd+←·→·Backspace를 `^A`·`^E`·`^U`로 보낸다(`Config.zig` 7408~7437줄, "natural text editing"). 인코더만 옮기면 Option+←는 `ESC[1;3D`가 되어 셸에서 단어 이동이 되지 않는다.
+
+### 결정
+1. Ctrl+글자는 Ghostty `ctrlSeq`(708~855줄)를 따른다. 글이 한 바이트가 아니면 물리 키의 US 글자를 쓰고(러시아어 배열의 Ctrl+с는 0x03), `i`·`m`·`[`는 제어 바이트로 바꾸지 않는다. 제어 바이트가 되지 않은 Ctrl+글자는 fixterms `CSI 코드 ; 수식 u`로 보낸다(Ctrl+i는 `ESC[105;5u`, Ctrl+Shift+m은 `ESC[109;6u`). Tab·Enter·Esc 키 자체의 바이트는 그대로다.
+2. Option은 `macos-option-as-alt`가 꺼져 있으면 글자 앞 ESC와 제어 바이트 앞 ESC에서 Alt로 세지 않는다(Ghostty 앱의 `consumed_mods`). 이름 키(방향 키·Backspace·Enter 등)와 fixterms `CSI u`의 수식 키 번호에는 설정과 상관없이 Alt로 센다(Ghostty `pcStyleFunctionKey(…, all_mods, …)`와 `CsiUMods.fromInput(event.mods)`).
+3. macOS 기본 키 묶음에 Ghostty의 글 편집 다섯 개(`alt+arrow_left=esc:b`, `alt+arrow_right=esc:f`, `super+arrow_left=text:\x01`, `super+arrow_right=text:\x05`, `super+backspace=text:\x15`)를 더한다. `unbind`로 지우면 인코더 바이트로 간다.
+4. Ctrl·Shift가 붙은 F3은 `ESC[13;수식~`, F13~F25와 Help·메뉴 키는 Ghostty `function_keys.zig`의 값으로 보낸다.
+5. macOS에서 키 묶음에 걸리지 않은 Cmd+글자는 아무것도 보내지 않는다(Ghostty `legacy()` 끝, Terminal.app·iTerm2와 같다).
+6. 시험은 앱 입구(`keys::encode_legacy`)와 `bt_term::ctrl_seq` 두 수준에서 Ghostty 시험 이름을 따라 둔다. kitty 길(ADR-050)의 바이트는 바꾸지 않는다.
+
+### 감수한 트레이드오프
+- Ctrl+[를 Esc로, Ctrl+i를 Tab으로 쓰던 사람은 `CSI u`를 모르는 프로그램에서 그 키가 듣지 않는다(zsh 5.9의 기본 키 묶음에는 이 바이트가 없다. bash는 확인하지 않았다). Ghostty와 같은 바이트다. `keybind = ctrl+bracket_left=text:\e`, `keybind = ctrl+i=text:\t`로 되돌릴 수 있다.
+- `macos-option-as-alt = left`·`right`는 글자 앞 ESC에서 반대쪽 Option을 가르지 못한다(인코더가 참·거짓만 받는다). 글자 자체는 winit의 `option_as_alt`가 맞춘다.
+- 시험 밖의 차이는 그대로다: 기본 모드에서 수식 키가 붙은 Enter·Tab·Escape(Ghostty는 `ESC[27;수식;코드~`, ADR-029 한계), Cmd가 붙은 이름 키(Ghostty는 수식 9).
+- `macos-option-as-alt`의 기본은 `false`로 둔다. Ghostty는 정하지 않으면 US·US International 배열에서 켠다(`Config.zig` 3503~3533줄). 우리는 키보드 배열을 읽지 않는다.
+- 실제 창에서 키를 쳐 보지 않았다(키 입력을 흉내 내지 않는다). 바이트는 단위 시험으로만 확인했다.
+
+### 보안
+- 바이트는 사람이 누른 키와 고정 표로만 만들고, 터미널에 찍힌 글은 들어가지 않는다. 새 기본 키 묶음도 고정 바이트만 보낸다. 새로 생기는 보안 경계는 없다.
