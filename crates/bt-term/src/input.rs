@@ -294,28 +294,66 @@ fn ctrl_byte(c: char) -> Option<u8> {
 const PASTE_START: &[u8] = b"\x1b[200~";
 const PASTE_END: &[u8] = b"\x1b[201~";
 
-/// 붙여넣기 글을 바이트로 바꾼다.
-/// 괄호 붙여넣기 모드면 시작·끝 표시로 감싸고, 글 안의 끝 표시와 ESC는 지운다(붙여넣기 구간을 빠져나와 명령을 실행시키는 길이다).
-/// 모드가 꺼져 있으면 줄바꿈을 CR로 바꾼다(셸이 한 줄씩 받는 꼴)
+/// 두 모드 모두에서 공백으로 바꾸는 바이트(Ghostty `paste.zig` `encode`의 `strip`, xterm의 목록).
+/// 줄 편집기·tty 드라이버가 신호나 편집 동작으로 받는 바이트다. 셸의 줄 편집기에 그대로 가면 줄을 지우거나(Ctrl-U·W),
+/// 신호를 보내거나(Ctrl-C·Z·\), 다음 바이트를 글자로 받게(Ctrl-V) 한다.
+/// VINTR부터 VDISCARD까지 열 개는 프로그램이 tcsetattr로 바꿀 수 있으나 Ghostty처럼 기본 값으로 못 박는다
+const PASTE_STRIPPED: [u8; 16] = [
+    0x00, // NUL
+    0x08, // BS
+    0x05, // ENQ
+    0x04, // EOT
+    0x1B, // ESC
+    0x7F, // DEL
+    0x03, // VINTR (Ctrl+C)
+    0x1C, // VQUIT (Ctrl+\)
+    0x15, // VKILL (Ctrl+U)
+    0x1A, // VSUSP (Ctrl+Z)
+    0x11, // VSTART (Ctrl+Q)
+    0x13, // VSTOP (Ctrl+S)
+    0x17, // VWERASE (Ctrl+W)
+    0x16, // VLNEXT (Ctrl+V)
+    0x12, // VREPRINT (Ctrl+R)
+    0x0F, // VDISCARD (Ctrl+O)
+];
+
+/// 붙여넣기 글을 바이트로 바꾼다(Ghostty `paste.zig` `encode`, #565).
+/// 괄호 붙여넣기 모드와 상관없이 위험한 제어 바이트 16종(`PASTE_STRIPPED`)을 공백으로 바꾼다. 글 안의 끝 표시 `ESC[201~`도
+/// ESC가 공백이 되어 깨지므로 붙여넣기 구간을 빠져나와 명령을 실행시키는 길이 막힌다.
+/// 괄호 모드면 시작·끝 표시로 감싼다. 꺼져 있으면 LF를 CR로 바꾼다(셸이 한 줄씩 받는 꼴). CRLF는 xterm처럼 CR 둘이 된다.
+/// 바이트 단위로 바꾸므로 UTF-8 글자(0x80 이상 바이트)는 건드리지 않는다
 pub fn encode_paste(text: &str, bracketed: bool) -> Vec<u8> {
+    let mut out = Vec::with_capacity(text.len() + PASTE_START.len() + PASTE_END.len());
     if bracketed {
-        let cleaned: String = text.replace("\x1b[201~", "").chars().filter(|&c| c != '\x1b').collect();
-        let mut out = Vec::with_capacity(cleaned.len() + 12);
         out.extend_from_slice(PASTE_START);
-        out.extend_from_slice(cleaned.as_bytes());
-        out.extend_from_slice(PASTE_END);
-        out
-    } else {
-        text.replace("\r\n", "\r").replace('\n', "\r").into_bytes()
     }
+    out.extend(text.bytes().map(|b| match b {
+        b if PASTE_STRIPPED.contains(&b) => b' ',
+        b'\n' if !bracketed => b'\r',
+        b => b,
+    }));
+    if bracketed {
+        out.extend_from_slice(PASTE_END);
+    }
+    out
 }
 
-/// 묻지 않고 붙여넣어도 되는 글인가(Ghostty `clipboard-paste-protection`, #109).
-/// 괄호 붙여넣기가 꺼져 있으면 줄바꿈(LF·CR)이 셸에서 곧바로 Enter가 되어 보지 못한 명령이 돈다.
-/// 괄호 붙여넣기가 켜져 있으면 프로그램이 붙여넣기로 받으므로 `bracketed_safe`일 때 안전으로 본다
-/// (끝 표시를 끼워 빠져나오는 길은 `encode_paste`가 지운다)
+/// 묻지 않고 붙여넣어도 되는 글인가(Ghostty `clipboard-paste-protection`, `Surface.zig` `completeClipboardPaste` 6281~6301줄, #109·#565).
+/// 괄호 붙여넣기가 켜져 있으면: 글에 끝 표시 `ESC[201~`가 있으면 `bracketed_safe`와 상관없이 안전하지 않다(구간을 빠져나가
+/// 명령을 끼우려는 글이다). 없고 `bracketed_safe`면 안전하다.
+/// 그 밖에는(꺼져 있거나 `bracketed_safe`가 아니면) 줄바꿈(LF·CR)이나 끝 표시가 없을 때만 안전하다.
+/// 줄바꿈은 괄호 붙여넣기가 꺼져 있으면 셸에서 곧바로 Enter가 되어 보지 못한 명령이 돈다
 pub fn paste_is_safe(text: &str, bracketed: bool, bracketed_safe: bool) -> bool {
-    (bracketed && bracketed_safe) || !text.contains(['\n', '\r'])
+    let has_end = text.contains("\x1b[201~");
+    if bracketed {
+        if has_end {
+            return false;
+        }
+        if bracketed_safe {
+            return true;
+        }
+    }
+    !has_end && !text.contains(['\n', '\r'])
 }
 
 /// 복사하는 글의 줄 끝 공백·탭을 지운다(Ghostty `clipboard-trim-trailing-spaces`).
@@ -532,6 +570,14 @@ mod tests {
 
     #[test]
     fn plain_paste_turns_newlines_into_cr() {
-        assert_eq!(encode_paste("a\nb\r\nc", false), b"a\rb\rc");
+        assert_eq!(
+            encode_paste("a\nb\r\nc", false),
+            b"a\rb\r\rc",
+            "CRLF는 Ghostty·xterm처럼 CR 둘(#565)"
+        );
     }
 }
+
+#[cfg(test)]
+#[path = "paste_tests.rs"]
+mod paste_tests;
