@@ -13,6 +13,7 @@ mod copy;
 mod desktop;
 mod dock_open;
 mod dump;
+mod file_drop;
 mod icon;
 mod keymap;
 mod keys;
