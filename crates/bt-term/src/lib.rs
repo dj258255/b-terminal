@@ -9,6 +9,7 @@ pub mod input;
 pub mod kitty_clip;
 pub mod kitty_color;
 pub mod kitty_key;
+pub mod kitty_unicode;
 pub mod latency;
 pub mod links;
 pub mod mouse_shape;

@@ -325,3 +325,242 @@ fn gpu_layers_match_the_cpu_path_and_stack_in_ghostty_order() {
     });
     assert!(row2_text, "글자 아래 그림 위에 글자가 보여야 한다");
 }
+
+// ---- 유니코드 자리표시(#553) ----
+
+fn b64(data: &[u8]) -> String {
+    const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut s = String::new();
+    for ch in data.chunks(3) {
+        let n = (ch[0] as u32) << 16 | (*ch.get(1).unwrap_or(&0) as u32) << 8 | *ch.get(2).unwrap_or(&0) as u32;
+        for i in 0..4 {
+            s.push(if i <= ch.len() {
+                T[(n >> (18 - 6 * i) & 63) as usize] as char
+            } else {
+                '='
+            });
+        }
+    }
+    s
+}
+
+/// 화면 값에서 렌더러 셀로. `raw`면 자리표시 글자와 결합 문자를 그대로(그리지 않으면 안 되는 쪽의 대조), 아니면 앱(`to_draw_cells`)처럼 빈칸으로
+fn placeholder_cells(s: &Screen, raw: bool) -> Vec<DrawCell> {
+    let ch = |c: &bt_term::Cell| if raw { c.ch } else { c.draw_ch() };
+    let mut cells: Vec<DrawCell> = s
+        .cells
+        .iter()
+        .map(|c| DrawCell {
+            ch: ch(c),
+            fg: c.fg,
+            bg: c.bg,
+            bold: false,
+            italic: false,
+            underline: Underline::None,
+            strike: false,
+            wide: c.flags.contains(CellFlags::WIDE),
+            spacer: c.flags.contains(CellFlags::SPACER),
+            selected: false,
+            emoji: false,
+            cluster: None,
+            cluster_cells: 0,
+            overline: false,
+            underline_color: None,
+        })
+        .collect();
+    cluster::mark(&mut cells, s.cols, |i| {
+        let c = &s.cells[i];
+        let comb: &[char] = if raw { &c.combining } else { c.draw_combining() };
+        cluster::ClusterCell {
+            ch: ch(c),
+            combining: comb,
+            spacer: c.flags.contains(CellFlags::SPACER),
+        }
+    });
+    cells
+}
+
+#[test]
+fn unicode_placeholders_draw_the_image_on_both_paths_and_never_the_glyph() {
+    let Some(mut g) = GpuRenderer::new_headless() else {
+        eprintln!("건너뜀: GPU 어댑터가 없다");
+        return;
+    };
+    let mut f = fonts();
+    let m = f.metrics();
+    let (cw, ch) = (m.width as i32, m.height as i32);
+    let theme = Theme::default();
+    let mut e = Emulator::new(
+        GridSize {
+            cols: COLS,
+            rows: ROWS,
+            cell_width: m.width as u16,
+            cell_height: m.height as u16,
+        },
+        theme.clone(),
+    );
+    // 왼쪽 반 빨강, 오른쪽 반 파랑인 8x4 RGBA 그림을 4칸 x 2줄 가상 배치로: 줄마다 자리표시 4칸(둘째 줄은 줄·칸 결합 문자)
+    let img = halves();
+    e.feed(format!("\x1b_Ga=t,f=32,s=8,v=4,i=1,q=2;{}\x1b\\", b64(&img)).as_bytes());
+    e.feed(b"\x1b_Ga=p,i=1,U=1,q=2,c=4,r=2\x1b\\");
+    let dia = ['\u{0305}', '\u{030D}', '\u{030E}', '\u{0310}'];
+    let mut text = String::from("\x1b[38;5;1m");
+    for r in 0..2 {
+        text += &format!("\x1b[{};3H", r + 2);
+        for c in 0..4 {
+            text += &format!("\u{10EEEE}{}{}", dia[r], dia[c]);
+        }
+    }
+    e.feed(text.as_bytes());
+    let screen = e.snapshot();
+    assert_eq!(screen.images.len(), 2, "줄마다 한 조각");
+    for im in &screen.images {
+        eprintln!(
+            "조각 row={} col={} cols={} geom={:?} resolve={:?}",
+            im.row,
+            im.col,
+            im.cols,
+            im.geom,
+            im.geom.resolve(m.width, m.height)
+        );
+    }
+    assert!(screen.cell(2, 1).flags.contains(CellFlags::PLACEHOLDER));
+    let paints: Vec<ImagePaint> = screen
+        .images
+        .iter()
+        .map(|im| ImagePaint {
+            rgba: &im.rgba,
+            geom: im.geom,
+            row: im.row,
+            col: im.col,
+            z: im.z,
+        })
+        .collect();
+
+    let origin = (13, 41);
+    let win = (
+        origin.0 as u32 + COLS as u32 * m.width + 17,
+        origin.1 as u32 + ROWS as u32 * m.height + 23,
+    );
+    let (w, h) = win;
+    let n = (w * h) as usize;
+    let clip = (
+        origin.0,
+        origin.1,
+        origin.0 + COLS as i32 * cw,
+        origin.1 + ROWS as i32 * ch,
+    );
+    let paint = |c: &mut Canvas, layer| paint_layer(c, &paints, layer, origin, (m.width, m.height), clip);
+    let lower_base = |c: &mut Canvas| {
+        c.clear(WIN_BG);
+        c.fill_rect(
+            origin.0 - 6,
+            origin.1 - 6,
+            COLS as u32 * m.width + 12,
+            ROWS as u32 * m.height + 12,
+            screen.background,
+        );
+    };
+
+    // CPU 길(앱 `to_draw_cells`와 같은 빈칸)
+    let dc = placeholder_cells(&screen, false);
+    fn gv<'a>(screen: &Screen, theme: &Theme, dc: &'a [DrawCell]) -> GridView<'a> {
+        GridView {
+            cols: screen.cols,
+            rows: screen.rows,
+            cells: dc,
+            cursor: None,
+            selection_bg: theme.selection_background,
+            selection_fg: theme.selection_foreground,
+            preedit: None,
+            min_contrast: 1.0,
+        }
+    }
+    let render_cpu = |f: &mut Fonts, dc: &[DrawCell], with_images: bool| -> Vec<u32> {
+        let mut buf = vec![0u32; n];
+        let mut c = Canvas::new(&mut buf, w, h);
+        lower_base(&mut c);
+        let view = gv(&screen, &theme, dc);
+        let below_text = |c: &mut Canvas| paint(c, Layer::BelowText);
+        let under = Under {
+            below_bg: None,
+            below_text: (with_images && has_layer(&paints, Layer::BelowText))
+                .then_some(&below_text as &dyn Fn(&mut Canvas)),
+            default_bg: Some(screen.background),
+        };
+        draw_grid_under(&mut c, f, origin.0, origin.1, &view, &under);
+        buf
+    };
+    let want = render_cpu(&mut f, &dc, true);
+
+    // GPU 길: 글자 아래 층(가운데)에 조각들
+    let (mut lower, mut mid, upper) = (vec![0u32; n], vec![0u32; n], vec![0u32; n]);
+    lower_base(&mut Canvas::new(&mut lower, w, h));
+    paint(&mut Canvas::new(&mut mid, w, h), Layer::BelowText);
+    let view = gv(&screen, &theme, &dc);
+    let panes = [PaneDraw {
+        font: 0,
+        x: origin.0,
+        y: origin.1,
+        view: &view,
+        clear: screen.background,
+    }];
+    let got = g.compose_layers(
+        &mut [&mut f],
+        (w, h),
+        LayerUpdate {
+            lower: Some(&lower),
+            upper: Some(&upper),
+        },
+        None,
+        Some(&mid),
+        &panes,
+    );
+    let (nd, max, over) = diff(&want, &got);
+    eprintln!("자리표시: 다른 픽셀 {nd}/{n}, 차이가 1을 넘는 픽셀 {over}, 최대 차이 {max}");
+    assert!(max <= 3, "CPU 길과 GPU 길이 다르다: 최대 차이 {max}");
+    assert!(over * 1000 < n * 5, "차이가 1을 넘는 픽셀 {over}/{n}");
+
+    // 그림이 그 칸들에 그려졌다: 8x4 그림(2:1)을 4x2칸 격자에 맞추면 왼쪽 반은 빨강 오른쪽 반은 파랑
+    let red = Rgb::new(255, 0, 0);
+    let blue = Rgb::new(0, 0, 255);
+    // 그림은 격자 가운데에 비율을 지켜 앉는다: 위 줄 조각은 칸 아래쪽 16px, 아래 줄 조각은 칸 위쪽 16px에 있다
+    let at = |col: i32, dy: i32, row: i32, buf: &[u32]| {
+        pixel(buf, w, origin.0 + col * cw + cw / 2, origin.1 + row * ch + dy)
+    };
+    for (name, buf) in [("CPU", &want), ("GPU", &got)] {
+        let top: Vec<Rgb> = (2..6).map(|c| at(c, ch - 4, 1, buf)).collect();
+        let bottom: Vec<Rgb> = (2..6).map(|c| at(c, 4, 2, buf)).collect();
+        assert_eq!(top, [red, red, blue, blue], "{name}: 위 줄 조각");
+        assert_eq!(bottom, [red, red, blue, blue], "{name}: 아래 줄 조각");
+        // 그림 밖(맞추고 남은 위아래 여백)은 칸 바탕이다
+        assert_eq!(at(3, 2, 1, buf), screen.background, "{name}: 위 줄 조각 위 여백");
+    }
+
+    // 자리표시 칸 영역에서 그림·바탕이 아닌 픽셀(= 글자 모양)이 없다. 같은 장면을 글자 그대로 그리면 있다(대조: 이 검사가 글자를 알아본다)
+    let bg = screen.background;
+    let odd = |buf: &[u32]| -> usize {
+        let mut count = 0;
+        for row in 1..3 {
+            for dx in 0..4 * cw {
+                for dy in 0..ch {
+                    let p = pixel(buf, w, origin.0 + 2 * cw + dx, origin.1 + row * ch + dy);
+                    // 그림 가장자리의 보간으로 섞인 색은 빨강·파랑·바탕 사이의 색이다: 초록 성분이 바탕과 다르게 튀면 글자다
+                    if p != red && p != blue && p != bg && p.g > bg.g.max(8) + 24 {
+                        count += 1;
+                    }
+                }
+            }
+        }
+        count
+    };
+    assert_eq!(odd(&want), 0, "CPU: 자리표시 글자를 그리면 안 된다");
+    assert_eq!(odd(&got), 0, "GPU: 자리표시 글자를 그리면 안 된다");
+    let raw_dc = placeholder_cells(&screen, true);
+    let raw_cpu = render_cpu(&mut f, &raw_dc, true);
+    eprintln!("글자 그대로 그린 대조: 글자 픽셀 {}", odd(&raw_cpu));
+    assert_ne!(
+        raw_cpu, want,
+        "대조: 글자를 그대로 그리면 프레임이 달라야 한다(빈 네모가 찍힌다)"
+    );
+}

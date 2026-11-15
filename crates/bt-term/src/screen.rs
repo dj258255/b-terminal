@@ -4,7 +4,7 @@ use bt_core::Rgb;
 
 /// 셀 한 칸의 꾸밈
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub struct CellFlags(u16);
+pub struct CellFlags(u32);
 
 impl CellFlags {
     pub const BOLD: Self = Self(1);
@@ -31,6 +31,9 @@ impl CellFlags {
     pub const DOUBLE_UNDERLINE: Self = Self(1 << 13);
     pub const DOTTED_UNDERLINE: Self = Self(1 << 14);
     pub const DASHED_UNDERLINE: Self = Self(1 << 15);
+    /// kitty 그래픽 자리표시 글자(U+10EEEE, #553). 글꼴에 없는 글자이고 그림이 그 칸에 그려지므로 글자로 그리지 않는다.
+    /// `ch`와 결합 문자는 그대로 둔다(복사·화면 읽기는 Ghostty처럼 글자를 그대로 낸다)
+    pub const PLACEHOLDER: Self = Self(1 << 16);
 
     pub const fn empty() -> Self {
         Self(0)
@@ -68,6 +71,24 @@ pub struct Cell {
 }
 
 impl Cell {
+    /// 그릴 글자: 자리표시 칸은 빈 칸이다(Ghostty 글자 묶음 만들기가 자리표시를 공백으로 바꾼다)
+    pub fn draw_ch(&self) -> char {
+        if self.flags.contains(CellFlags::PLACEHOLDER) {
+            ' '
+        } else {
+            self.ch
+        }
+    }
+
+    /// 그릴 결합 문자: 자리표시 칸에 붙은 줄·칸 결합 문자(U+0305 등)는 그리지 않는다
+    pub fn draw_combining(&self) -> &[char] {
+        if self.flags.contains(CellFlags::PLACEHOLDER) {
+            &[]
+        } else {
+            &self.combining
+        }
+    }
+
     pub fn blank(fg: Rgb, bg: Rgb) -> Self {
         Self {
             ch: ' ',
@@ -146,9 +167,9 @@ pub struct ImageView {
     pub rgba: std::sync::Arc<Vec<u8>>,
     pub width: u32,
     pub height: u32,
-    /// 왼쪽 위 칸(보이는 화면 기준. 위로 일부 가려졌으면 음수)
+    /// 왼쪽 위 칸(보이는 화면 기준. 위나 왼쪽으로 일부 가려졌으면 음수: 위로 스크롤된 그림과 왼쪽으로 오프셋한 상대 배치)
     pub row: i32,
-    pub col: usize,
+    pub col: i32,
     /// 놓을 때 정한 칸 수. 칸 크기가 같으면 `geom.resolve`의 값과 같다
     pub cols: u32,
     pub rows: u32,

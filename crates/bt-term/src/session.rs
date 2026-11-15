@@ -1871,6 +1871,9 @@ fn snapshot_of<T: EventListener>(
         if f.contains(Flags::HIDDEN) {
             flags.insert(CellFlags::HIDDEN);
         }
+        if src.c == crate::kitty_unicode::PLACEHOLDER {
+            flags.insert(CellFlags::PLACEHOLDER);
+        }
         if selection.is_some_and(|s| s.contains(indexed.point)) {
             flags.insert(CellFlags::SELECTED);
         }
@@ -1994,7 +1997,8 @@ fn visible_images<T>(term: &Term<T>, g: &mut crate::graphics::Graphics) -> Vec<c
     let mut used = 0i64;
     let mut seen = std::collections::HashSet::new();
     let mut picked: Vec<&crate::graphics::Placement> = Vec::new();
-    for p in g.placements.iter().rev().filter(|p| p.alt == alt) {
+    // 가상 배치와 상대 배치는 자기 칸이 없다. 아래 `extra_images`가 자리표시 칸과 부모 자리에서 정한다(#553)
+    for p in g.placements.iter().rev().filter(|p| p.alt == alt && p.is_pin()) {
         let row = p.line - top;
         // 같은 그림을 같은 자리·모양으로 두 번 그리지 않는다(자리 번호만 다른 겹침). 잘라내기·오프셋·z가 다르면 다른 그림이다
         if row + p.rows as i64 <= 0
@@ -2013,7 +2017,7 @@ fn visible_images<T>(term: &Term<T>, g: &mut crate::graphics::Graphics) -> Vec<c
         picked.push(p);
     }
     picked.reverse();
-    picked
+    let mut images: Vec<crate::screen::ImageView> = picked
         .into_iter()
         .filter_map(|p| {
             let row = p.line - top;
@@ -2026,14 +2030,18 @@ fn visible_images<T>(term: &Term<T>, g: &mut crate::graphics::Graphics) -> Vec<c
                 width: img.width,
                 height: img.height,
                 row: row as i32,
-                col: p.col,
+                col: i32::try_from(p.col).unwrap_or(i32::MAX),
                 cols: p.cols,
                 rows: p.rows,
                 geom: p.geom,
                 z: p.z,
             })
         })
-        .collect()
+        .collect();
+    // 자리표시 글자가 보여 주는 가상 배치 조각과 상대 배치(#553). 그릴 양의 상한을 같이 쓴다
+    let mut share = crate::kitty_unicode::Budget { used, budget };
+    images.extend(crate::kitty_unicode::extra_images(term, g, alt, top, &mut share));
+    images
 }
 
 /// PTY 없이 바이트를 VT로 해석해 화면을 얻는다. 렌더러 테스트와 b-studio 세션 터미널(바이트가 HTTP로 오는 칸)에 쓴다

@@ -6218,7 +6218,8 @@ pub fn to_draw_cells(s: &Screen, theme: &bt_core::Theme) -> Vec<DrawCell> {
                 (c.fg, c.bg)
             };
             DrawCell {
-                ch: c.ch,
+                // kitty 자리표시 글자(U+10EEEE)와 그 결합 문자는 그리지 않는다: 그림이 그 칸에 그려진다(#553)
+                ch: c.draw_ch(),
                 fg,
                 bg,
                 bold: c.flags.contains(CellFlags::BOLD),
@@ -6228,7 +6229,7 @@ pub fn to_draw_cells(s: &Screen, theme: &bt_core::Theme) -> Vec<DrawCell> {
                 wide: c.flags.contains(CellFlags::WIDE),
                 spacer: c.flags.contains(CellFlags::SPACER),
                 selected: c.flags.contains(CellFlags::SELECTED),
-                emoji: c.combining.contains(&'\u{fe0f}'),
+                emoji: c.draw_combining().contains(&'\u{fe0f}'),
                 cluster: None,
                 cluster_cells: 0,
                 overline: c.flags.contains(CellFlags::OVERLINE),
@@ -6241,8 +6242,8 @@ pub fn to_draw_cells(s: &Screen, theme: &bt_core::Theme) -> Vec<DrawCell> {
     bt_render::cluster::mark(&mut cells, s.cols, |i| {
         let c = &s.cells[i];
         bt_render::cluster::ClusterCell {
-            ch: c.ch,
-            combining: &c.combining,
+            ch: c.draw_ch(),
+            combining: c.draw_combining(),
             spacer: c.flags.contains(CellFlags::SPACER),
         }
     });
@@ -7446,6 +7447,28 @@ mod tests {
         let cells = to_draw_cells(&s, &theme);
         assert_eq!((cells[1].fg, cells[1].bg), (theme.background, red));
         assert_eq!((cells[2].fg, cells[2].bg), (Rgb::new(9, 9, 9), Rgb::new(1, 2, 3)));
+    }
+
+    /// kitty 그래픽 자리표시 글자(U+10EEEE, #553)와 붙은 결합 문자는 글자로 그리지 않는다(빈 네모가 찍히지 않게). 화면 값에는 그대로 남는다
+    #[test]
+    fn placeholder_cells_are_drawn_blank() {
+        use bt_term::{Emulator, GridSize};
+        let theme = bt_core::Theme::default();
+        let mut e = Emulator::new(GridSize::new(8, 1), theme.clone());
+        e.feed("a\u{10EEEE}\u{0305}\u{030D}\u{10EEEE}b".as_bytes());
+        let s = e.snapshot();
+        let cells = to_draw_cells(&s, &theme);
+        assert_eq!(cells[0].ch, 'a');
+        assert_eq!((cells[1].ch, cells[2].ch, cells[3].ch), (' ', ' ', 'b'));
+        assert!(
+            cells.iter().all(|c| c.cluster.is_none()),
+            "결합 문자를 묶음으로 그리지 않는다"
+        );
+        assert_eq!(
+            s.row_text(0),
+            "a\u{10EEEE}\u{0305}\u{030D}\u{10EEEE}b",
+            "화면 읽기에는 글자가 그대로"
+        );
     }
 
     /// Dock에 놓은 파일을 실행하는 확인(#279)은 Enter로 허용하지 않고, 어느 칸에도 매이지 않는다
