@@ -56,7 +56,7 @@ fn is_emoji_modifier(c: char) -> bool {
     matches!(c as u32, 0x1F3FB..=0x1F3FF)
 }
 
-/// b-terminal 패치(#536): 피부색 수식자를 받는 바탕 글자(Emoji_Modifier_Base, Unicode 16)인가.
+/// b-terminal 패치(#536): 피부색 수식자를 받는 바탕 글자(Emoji_Modifier_Base)인가. Unicode 18.0 `emoji-data.txt`의 136글자와 대조했다.
 /// Ghostty는 수식자가 앞 글자 속성을 따로 보므로(바탕이 아니면 새 글자) 같은 표를 쓴다
 fn is_emoji_modifier_base(c: char) -> bool {
     matches!(
@@ -100,7 +100,7 @@ fn is_emoji_modifier_base(c: char) -> bool {
             | 0x1F9CD..=0x1F9CF
             | 0x1F9D1..=0x1F9DD
             | 0x1FAC3..=0x1FAC5
-            | 0x1FAF0..=0x1FAF8
+            | 0x1FAF0..=0x1FAFA
     )
 }
 
