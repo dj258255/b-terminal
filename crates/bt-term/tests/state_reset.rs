@@ -173,6 +173,62 @@ fn save_cursor_is_per_screen() {
     assert!(t.on(true, 6));
 }
 
+// ---- #545: DECSC가 SO·SI로 고른 집합(GL)과 SS2·SS3도 저장 ----
+
+#[test]
+fn save_cursor_keeps_the_shifted_charset() {
+    // Ghostty `saveCursor`의 `charset`(GL): G1을 선 그리기로 두고 SO로 쓰는 중에 저장, SI로 돌린 뒤 복원하면 다시 G1
+    let mut t = T::new(10, 3);
+    t.feed("\x1b)0\x0e\x1b7\x0f\x1b8q");
+    assert_eq!(t.plain(), "─");
+}
+
+#[test]
+fn restore_cursor_undoes_a_shift_made_after_the_save() {
+    let mut t = T::new(10, 3);
+    t.feed("\x1b)0\x1b7\x0e\x1b8q");
+    assert_eq!(t.plain(), "q");
+}
+
+#[test]
+fn restore_cursor_puts_back_the_single_shift_state() {
+    // 저장할 때 대기 중인 SS2가 없었으면 복원이 저장 뒤의 SS2를 지운다(Ghostty `charset.single_shift`)
+    let mut t = T::new(10, 3);
+    t.feed("\x1b*0\x1b7\x1bN\x1b8qq");
+    assert_eq!(t.plain(), "qq");
+    // 저장할 때 대기 중이었으면 복원 뒤 다음 한 글자에 쓴다
+    let mut t = T::new(10, 3);
+    t.feed("\x1b*0\x1bN\x1b7\x1b8qq");
+    assert_eq!(t.plain(), "─q");
+}
+
+#[test]
+fn restore_cursor_without_a_save_resets_the_shift() {
+    // 저장한 것이 없으면 처음 상태(`.charset = .{}`): GL은 G0. 복원 뒤 G1을 다시 선 그리기로 지정해도 G0로 찍는다
+    let mut t = T::new(10, 3);
+    t.feed("\x1b)0\x0e\x1b8\x1b)0q");
+    assert_eq!(t.plain(), "q");
+}
+
+#[test]
+fn alternate_screen_1049_restores_the_shift_on_exit() {
+    // 1049는 들어갈 때 저장하고 나올 때 복원한다: 대체 화면에서 SO로 바꾼 채 나와도 주 화면은 저장할 때의 GL
+    let mut t = T::new(10, 3);
+    t.feed("\x1b)0\x1b[?1049h\x0e\x1b[?1049lq");
+    assert_eq!(t.plain(), "q");
+}
+
+#[test]
+fn alternate_screen_1049_restores_origin_mode_on_exit() {
+    // Ghostty 1049: 켤 때 `saveCursor`, 끌 때 `restoreCursor`라 대체 화면에서 바꾼 원점 모드도 저장할 때의 값으로
+    let mut t = T::new(10, 6);
+    t.feed("\x1b[?6h\x1b[?1049h\x1b[?6l\x1b[?1049l");
+    assert!(t.on(true, 6));
+    let mut t = T::new(10, 6);
+    t.feed("\x1b[?1049h\x1b[?6h\x1b[?1049l");
+    assert!(!t.on(true, 6));
+}
+
 // ---- #530: 소프트 리셋 ----
 
 #[test]
