@@ -7,7 +7,7 @@ use bt_term::{
 };
 
 use crate::keymap::{Mods, Trigger, normalize_key};
-use bt_core::config::{KeyRemap, ModKind, ModSide, SidedMods, apply_key_remap};
+use bt_core::config::{KeyRemap, ModKind, ModSide, OptionAsAlt, SidedMods, apply_key_remap};
 use winit::event::{ElementState, KeyEvent, Modifiers};
 use winit::keyboard::{Key, KeyCode, KeyLocation, ModifiersKeyState, ModifiersState, NamedKey as WKey, PhysicalKey};
 
@@ -126,6 +126,20 @@ fn named_key_name(n: WKey) -> Option<&'static str> {
         WKey::F12 => "f12",
         _ => return None,
     })
+}
+
+/// 지금 누른 Option이 Alt로 쓰이는가(`macos-option-as-alt`). `left`·`right`는 그쪽 Option일 때만 그렇다
+/// (Ghostty `key_encode.zig` 299~307줄 kitty 연결 글자, 403~407줄 modifyOtherKeys 2, 566~569줄 글자 앞 ESC).
+/// 어느 쪽인지는 Ghostty macOS 앱처럼 센다: 오른쪽 Option이 눌렸으면 오른쪽이고, 아니면 왼쪽이다(양쪽이면 오른쪽, `Ghostty.Input.swift` 90줄).
+/// 우리 `sided_from`은 눌렸는데 좌우를 모르면 왼쪽으로 본다
+pub fn option_counts_as_alt(setting: OptionAsAlt, raw: SidedMods) -> bool {
+    let right = raw.has_side(ModKind::Alt, ModSide::Right);
+    match setting {
+        OptionAsAlt::None => false,
+        OptionAsAlt::Both => true,
+        OptionAsAlt::Left => !right,
+        OptionAsAlt::Right => right,
+    }
 }
 
 /// 바뀐 상태의 Alt를 PTY에 Alt로 보낼지. `option-as-alt`는 진짜 Option 키에만 걸린다(`raw`: 바꾸기 전 상태).
@@ -819,3 +833,7 @@ mod keys_pc_table_data;
 #[cfg(test)]
 #[path = "keys_pc_table_tests.rs"]
 mod keys_pc_table_tests;
+
+#[cfg(test)]
+#[path = "keys_option_sides_tests.rs"]
+mod keys_option_sides_tests;

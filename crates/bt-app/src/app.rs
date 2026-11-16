@@ -3131,7 +3131,7 @@ impl App {
         if !modes.kitty.report_events {
             return;
         }
-        let meta = self.config.option_as_alt != bt_core::config::OptionAsAlt::None;
+        let meta = keys::option_counts_as_alt(self.config.option_as_alt, self.raw_mods);
         let bytes = keys::encode(event, self.mods, keys::to_state(self.raw_mods), modes, meta);
         if let Some(t) = self.active_pane() {
             t.session.write_input(&bytes, false);
@@ -6848,7 +6848,7 @@ impl ApplicationHandler<UserEvent> for App {
                 if !self.w.preedit.is_empty() {
                     modes.modify_other_keys = false;
                 }
-                let meta = self.config.option_as_alt != bt_core::config::OptionAsAlt::None;
+                let meta = keys::option_counts_as_alt(self.config.option_as_alt, self.raw_mods);
                 let report_release = modes.kitty.report_events;
                 let bytes = keys::encode(&event, self.mods, keys::to_state(self.raw_mods), modes, meta);
                 // performable: 묶음은 동작을 지금 할 수 있을 때만 키를 먹는다
