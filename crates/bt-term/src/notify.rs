@@ -164,6 +164,9 @@ enum St {
     DcsBody,
     /// DCS 안에서 ESC를 봤다(다음이 `\`면 끝)
     DcsEsc,
+    /// 엔진이 무시하는 DCS 머리(중간 바이트 뒤의 매개변수, 첫 자리가 아닌 `< = > ?`): ESC·CAN·SUB까지 버린다.
+    /// 0x9C로는 끝나지 않는다(vte `DcsIgnore`는 `anywhere`만 본다)
+    DcsIgnore,
 }
 
 /// 우리가 답하는 DCS의 종류
@@ -203,6 +206,8 @@ pub struct Scanner {
     dcs_over: bool,
     /// 이 DCS 안에서 ESC가 겹쳐 왔다(tmux 패스스루가 안의 ESC를 두 번 쓴다). 그 뒤 `\`가 아닌 바이트가 오면 이 DCS는 우리 것이 아니라 버린다
     dcs_double: bool,
+    /// 이 DCS 머리에 중간 바이트(0x20~0x2f)가 나왔다. 머리 상한과 상관없이 센다
+    dcs_inter: bool,
     /// kitty 알림(OSC 99)의 쌓인 조각. 스캐너는 세션마다 하나라 쌓임도 세션마다 하나다(#561)
     pub(crate) kitty_notify: crate::kitty_notify::Assembler,
 }
@@ -284,15 +289,29 @@ impl Scanner {
                     self.dcs_kind = None;
                     self.dcs_over = false;
                     self.dcs_double = false;
+                    self.dcs_inter = false;
                     St::DcsHdr
                 }
                 (St::DcsHdr, 0x1b) => St::DcsEsc,
-                (St::DcsHdr | St::DcsBody, 0x18 | 0x1a) => {
+                (St::DcsHdr | St::DcsBody | St::DcsIgnore, 0x18 | 0x1a) => {
                     self.dcs = Vec::new();
                     self.dcs_kind = None;
                     St::Ground
                 }
+                // vte: 중간 바이트 뒤의 0x30~0x3F(`advance_dcs_intermediate` 291줄)와
+                // 첫 자리가 아닌 0x3C~0x3F(`advance_dcs_param` 309줄)는 무시 상태로 간다
+                (St::DcsHdr, 0x20..=0x3f)
+                    if (self.dcs_inter && b >= 0x30)
+                        || ((0x3c..=0x3f).contains(&b) && (self.dcs_over || !self.dcs.is_empty())) =>
+                {
+                    self.dcs = Vec::new();
+                    self.dcs_kind = None;
+                    St::DcsIgnore
+                }
                 (St::DcsHdr, 0x20..=0x3f) => {
+                    if b <= 0x2f {
+                        self.dcs_inter = true;
+                    }
                     if self.dcs.len() >= MAX_DCS_HEADER {
                         self.dcs_over = true;
                     } else {
@@ -301,8 +320,15 @@ impl Scanner {
                     St::DcsHdr
                 }
                 (St::DcsHdr, 0x40..=0x7e) => {
-                    // 중간 바이트가 `$` 하나나 `+` 하나이고 끝 바이트가 `q`일 때만 우리 것이다. 매개변수는 Ghostty처럼 보지 않는다
-                    let inter: Vec<u8> = self.dcs.iter().copied().filter(|c| (0x20..=0x2f).contains(c)).collect();
+                    // 중간 바이트가 `$` 하나나 `+` 하나이고 끝 바이트가 `q`일 때만 우리 것이다. 숫자 매개변수는 Ghostty처럼 보지 않는다.
+                    // 맨 앞의 `< = > ?`는 엔진과 Ghostty가 중간 바이트로 모으므로 함께 센다
+                    let inter: Vec<u8> = self
+                        .dcs
+                        .iter()
+                        .enumerate()
+                        .filter(|&(k, c)| (0x20..=0x2f).contains(c) || (k == 0 && (0x3c..=0x3f).contains(c)))
+                        .map(|(_, &c)| c)
+                        .collect();
                     self.dcs_kind = match (self.dcs_over, inter.as_slice(), b) {
                         (false, b"$", b'q') => Some(DcsKind::Decrqss),
                         (false, b"+", b'q') => Some(DcsKind::XtGetTcap),
@@ -313,6 +339,8 @@ impl Scanner {
                     St::DcsBody
                 }
                 (St::DcsHdr, _) => St::DcsHdr,
+                (St::DcsIgnore, 0x1b) => St::DcsEsc,
+                (St::DcsIgnore, _) => St::DcsIgnore,
                 // 8비트 ST(0x9C)도 DCS를 끝낸다: vte는 통과 상태에서 unhook하고 Ground로 간다(`advance_dcs_passthrough` 332줄).
                 // 끝을 ST로 보니 `ESC \`와 같이 다룬다. 머리(끝 바이트 전)의 0x9C는 vte도 무시한다(#598)
                 (St::DcsBody, 0x9c) => {

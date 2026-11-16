@@ -309,3 +309,97 @@ fn tmux_double_esc_inner_query_is_not_ours() {
     assert!(feed_all(b"\x1bPtmux;\x1b\x1bP$qm\x1b\x1b\\\x1b\\").is_empty());
     assert!(feed_all(b"\x1bPtmux;\x1b\x1b[c\x1b\\").is_empty());
 }
+
+// ---- 7. DCS 머리가 엔진에서 무시(DcsIgnore)로 가는 길 ----
+// vte `advance_dcs_intermediate`(291줄): 중간 바이트 뒤의 0x30~0x3F, `advance_dcs_param`(309줄): 첫 자리가 아닌 0x3C~0x3F.
+// 무시 상태는 `anywhere`(175줄)만 보므로 0x9C로 끝나지 않고 ESC·CAN·SUB로만 끝난다
+
+/// 엔진이 hook한 DCS의 중간 바이트(맨 앞 사설 표시 포함)
+fn hook_intermediates(bytes: &[u8]) -> Option<Vec<u8>> {
+    #[derive(Default)]
+    struct H(Option<Vec<u8>>);
+    impl Perform for H {
+        fn hook(&mut self, _: &Params, i: &[u8], _: bool, _: char) {
+            self.0 = Some(i.to_vec());
+        }
+    }
+    let mut h = H::default();
+    Parser::new().advance(&mut h, bytes);
+    h.0
+}
+
+#[test]
+fn dcs_param_after_intermediate_is_ignored_like_the_engine() {
+    for bytes in [
+        b"\x1bP$0qm\x1b\\".as_slice(),
+        b"\x1bP$;qm\x1b\\",
+        b"\x1bP+1q544e\x1b\\",
+        b"\x1bP$?qm\x1b\\",
+    ] {
+        let o = oracle(bytes);
+        assert!(!o.iter().any(|s| s.starts_with("hook")), "{bytes:?}: {o:?}");
+        assert!(feed_all(bytes).is_empty(), "{bytes:?}: {:?}", feed_all(bytes));
+    }
+}
+
+#[test]
+fn ignored_dcs_does_not_end_at_8bit_st() {
+    // 엔진은 무시 상태에서 0x9C도 ENQ도 버린다. 스캐너가 0x9C에서 끝내면 엔진이 버린 ENQ에 답한다
+    let bytes = b"\x1bP$0qm\x9c\x05";
+    let o = oracle(bytes);
+    assert!(o.is_empty(), "{o:?}");
+    assert_eq!(feed_all(bytes), vec![]);
+    // ESC·CAN·SUB로는 끝나고 뒤의 ENQ를 읽는다
+    for end in [b"\x1b\\".as_slice(), b"\x18", b"\x1a"] {
+        let b = [b"\x1bP$0qm\x9c".as_slice(), end, b"\x05"].concat();
+        assert_eq!(oracle(&b).last().unwrap(), "exec 0x05", "{end:?}");
+        assert_eq!(feed_all(&b), vec![Signal::Enquiry], "{end:?}");
+    }
+    // 끝 바이트 전에 무시로 가도 같다
+    assert_eq!(feed_all(b"\x1bP$0\x9c\x05"), vec![]);
+    assert!(oracle(b"\x1bP$0\x9c\x05").is_empty());
+}
+
+#[test]
+fn private_marker_after_params_is_ignored_like_the_engine() {
+    let bytes = b"\x1bP1?$qm\x9c\x05";
+    assert!(oracle(bytes).is_empty(), "{:?}", oracle(bytes));
+    assert_eq!(feed_all(bytes), vec![]);
+}
+
+#[test]
+fn leading_private_marker_makes_two_intermediates() {
+    // 엔진은 맨 앞 `?`를 중간 바이트로 모은다. Ghostty `dcs.zig`의 DECRQSS·XTGETTCAP은 중간 바이트가 하나일 때만이라 답하지 않는다
+    assert_eq!(hook_intermediates(b"\x1bP?$qm\x1b\\"), Some(b"?$".to_vec()));
+    assert!(feed_all(b"\x1bP?$qm\x1b\\").is_empty());
+    assert!(feed_all(b"\x1bP>+q544e\x1b\\").is_empty());
+}
+
+#[test]
+fn numeric_params_before_intermediate_still_answer() {
+    // 숫자 매개변수는 Ghostty처럼 보지 않는다
+    assert_eq!(hook_intermediates(b"\x1bP1;2$qm\x1b\\"), Some(b"$".to_vec()));
+    assert_eq!(feed_all(b"\x1bP1;2$qm\x1b\\").len(), 1);
+    assert_eq!(feed_all(b"\x1bP0+q544e\x9c").len(), 1);
+}
+
+#[test]
+fn ignore_is_seen_past_the_header_cap() {
+    // 머리 상한(16바이트)을 넘겨 모으지 않아도 중간 바이트 뒤의 매개변수는 무시로 간다
+    let mut b = b"\x1bP".to_vec();
+    b.extend(vec![b'1'; 40]);
+    b.extend(b"$0qm\x9c\x05");
+    assert!(oracle(&b).is_empty(), "{:?}", oracle(&b));
+    assert_eq!(feed_all(&b), vec![]);
+}
+
+#[test]
+fn ignored_dcs_scanner_and_emulator_agree() {
+    let mut e = emu();
+    let sigs = e.feed(b"\x1bP$0qm\x9c\x05hidden");
+    assert!(sigs.is_empty(), "{sigs:?}");
+    assert_eq!(screen_text(&mut e), "");
+    let sigs = e.feed(b"\x1b\\shown\x1bP$qm\x9c");
+    assert_eq!(sigs.len(), 1, "{sigs:?}");
+    assert_eq!(screen_text(&mut e), "shown");
+}
