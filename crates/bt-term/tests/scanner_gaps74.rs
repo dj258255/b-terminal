@@ -109,3 +109,67 @@ fn bel_can_sub_esc_in_osc_keep_the_073_rule() {
         );
     }
 }
+
+// ---- 2. ESC 바로 뒤의 C0: 엔진은 C0를 실행하고 Escape에 머문다 ----
+
+#[test]
+fn c0_after_esc_stays_in_escape_like_the_engine() {
+    // `ESC LF [ c`: 엔진은 LF를 실행하고 `[ c`를 CSI로 읽어 DA1이다
+    let bytes = b"\x1b\n[c";
+    assert_eq!(oracle(bytes), vec!["exec 0x0a".to_string(), "csi c".to_string()]);
+    assert_eq!(feed_all(bytes), vec![Signal::Da1]);
+    for c in (0x00u8..=0x17).chain([0x19]).chain(0x1c..=0x1f) {
+        let b = [b"\x1b".as_slice(), &[c], b"[c"].concat();
+        let want = vec![Signal::Da1];
+        let got: Vec<Signal> = feed_all(&b).into_iter().filter(|s| *s != Signal::Enquiry).collect();
+        assert_eq!(got, want, "C0 {c:#04x}");
+    }
+}
+
+#[test]
+fn c0_after_esc_then_notification_osc_is_seen() {
+    let got = feed_all(b"\x1b\n]9;hi\x07");
+    assert!(
+        matches!(got.first(), Some(Signal::Notify(n)) if n.body == "hi"),
+        "{got:?}"
+    );
+}
+
+#[test]
+fn enq_after_esc_still_answers_and_stays() {
+    let got = feed_all(b"\x1b\x05[c");
+    assert_eq!(got, vec![Signal::Enquiry, Signal::Da1]);
+    assert_eq!(
+        oracle(b"\x1b\x05[c"),
+        vec!["exec 0x05".to_string(), "csi c".to_string()]
+    );
+}
+
+#[test]
+fn can_sub_after_esc_go_to_ground() {
+    // 엔진: CAN을 실행하고 Ground. 뒤의 `[c`는 글자다
+    for c in [0x18u8, 0x1a] {
+        let b = [b"\x1b".as_slice(), &[c], b"[c"].concat();
+        assert_eq!(
+            oracle(&b),
+            vec![format!("exec {c:#04x}"), "print [".into(), "print c".into()]
+        );
+        assert!(feed_all(&b).is_empty(), "{c:#04x}");
+    }
+}
+
+#[test]
+fn esc_lf_c_resets_both_engine_and_scanner() {
+    // `ESC LF c`: 엔진은 RIS로 화면을 지우고, 스캐너는 같은 자리에서 Erase를 낸다
+    let mut e = emu();
+    e.feed(b"hello");
+    let sigs = e.feed(b"\x1b\nc");
+    assert_eq!(
+        sigs,
+        vec![Signal::Erase {
+            visible: true,
+            scrollback: true
+        }]
+    );
+    assert_eq!(screen_text(&mut e), "");
+}

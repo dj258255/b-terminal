@@ -361,6 +361,10 @@ impl Scanner {
                     St::Ground
                 }
                 (St::Esc, 0x1b) => St::Esc,
+                // CAN·SUB는 Ground로 간다(vte `advance_esc` 372줄)
+                (St::Esc, 0x18 | 0x1a) => St::Ground,
+                // 그 밖의 C0는 엔진이 실행하고 Escape에 머문다(vte `advance_esc` 342줄, Ghostty의 escape 상태). `ESC LF [ c`의 DA1을 읽어야 한다(#598)
+                (St::Esc, 0x00..=0x17 | 0x19 | 0x1c..=0x1f) => St::Esc,
                 (St::Esc, _) => St::Ground,
                 (St::Apc, 0x1b) => St::ApcEsc,
                 // CAN·SUB는 문자열을 끝내고 Ground로 돌린다. 끝난 APC는 내보낸다(Ghostty `Parser.zig` 281줄 `apc_end`)(#595)
