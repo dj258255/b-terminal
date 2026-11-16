@@ -3713,7 +3713,10 @@ impl App {
                 .and_then(|cb| cb.get_text().ok())
                 .is_some_and(|t| !t.is_empty()),
             Action::CopyUrl => self.link_under(self.w.cursor_pos).is_some(),
-            Action::EndSearch => self.w.search.is_some(),
+            // Ghostty Surface.zig: 찾는 중이 아니면 다음·앞 찾기를 하지 않고 키를 프로그램에 넘긴다
+            Action::EndSearch | Action::NavigateSearch(_) => self.w.search.is_some(),
+            // Ghostty Surface.zig: 대체 화면(vim·less 등)에서는 화면 지우기를 하지 않고 키를 프로그램에 넘긴다
+            Action::ClearScreen => self.active_pane().is_some_and(|t| !t.session.modes().alt_screen),
             Action::Undo => self.undo.has_alive(Instant::now()),
             Action::Redo => self.redo.has_alive(Instant::now()),
             _ => true,
