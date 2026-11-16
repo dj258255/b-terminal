@@ -276,3 +276,22 @@ fn scanner_never_answers_more_than_the_engine_large() {
         fuzz(0x0075_0000 + seed, 1_000_000);
     }
 }
+
+// ---- 지금의 한계를 고정: 조용히 따라가는 것은 겹친 ESC 바로 뒤의 첫 안쪽 시퀀스 하나다 ----
+
+#[test]
+fn only_the_first_inner_sequence_after_double_esc_is_quiet() {
+    // 첫 안쪽 시퀀스(`[ c`)는 엔진이 DA1로 읽어도 스캐너는 읽지 않는다(tmux 결정)
+    let one = b"\x1bPtmux;\x1b\x1b[c\x1b\\";
+    assert_eq!(oracle(one).da1, 1);
+    assert_eq!(da1(&feed_all(one)), 0);
+    // 그 시퀀스가 끝나면 Ground로 돌아가므로 둘째 안쪽 `ESC ESC [ c`는 보통처럼 읽어 답한다(0.73부터 같았다).
+    // 엔진도 같은 DA1을 처리하므로 스캐너가 엔진보다 더 내는 것은 아니다
+    for two in [
+        b"\x1bPtmux;\x1b\x1b]7;file://h/t\x07\x1b\x1b[c\x1b\\".as_slice(),
+        b"\x1bPtmux;\x1b\x1bc\x1b\x1b[c\x1b\\",
+    ] {
+        assert_eq!(oracle(two).da1, 1, "{two:?}");
+        assert_eq!(da1(&feed_all(two)), 1, "{two:?}");
+    }
+}

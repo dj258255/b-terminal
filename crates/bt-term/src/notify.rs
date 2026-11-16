@@ -168,7 +168,8 @@ enum St {
     /// 0x9C로는 끝나지 않는다(vte `DcsIgnore`는 `anywhere`만 본다)
     DcsIgnore,
     /// tmux 패스스루 안쪽의 Escape(겹친 ESC 뒤, #603): 엔진처럼 C0를 실행하고(ENQ에는 답한다) 0x7F·0x80 이상·ESC에 머문다.
-    /// `X ^ _ ] P`는 신호 없는 문자열로 들어가고 CAN·SUB는 Ground이며, 그 밖의 바이트(`[ c` 등)는 안쪽 글이라 읽지 않고 Ground로 돌린다
+    /// `X ^ _ ] P`는 신호 없는 문자열로 들어가고 CAN·SUB는 Ground이며, 그 밖의 바이트(`[ c` 등)는 안쪽 글이라 읽지 않고 Ground로 돌린다.
+    /// 조용한 것은 겹친 ESC 바로 뒤의 첫 시퀀스 하나다: 끝나면 Ground라 패스스루 안의 둘째 시퀀스부터는 보통처럼 읽는다(엔진도 처리한다)
     EscQuiet,
     /// 안쪽 SOS·PM·APC: 엔진처럼 ESC(→ `EscQuiet`)·CAN·SUB까지 신호 없이 버린다
     StrQuiet,
