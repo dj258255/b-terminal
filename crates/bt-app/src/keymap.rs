@@ -597,6 +597,17 @@ pub(crate) fn defaults() -> Vec<(&'static str, &'static str)> {
         ("shift+page_down", "scroll_page_down"),
         ("shift+home", "scroll_to_top"),
         ("shift+end", "scroll_to_bottom"),
+        // 모든 플랫폼에 같은 Ghostty 기본(Config.zig 6790~6808·6840·6845·7035줄). 수식 키가 super가 아니라 Linux에서도 같은 키다.
+        // Ctrl+Tab·Ctrl+Shift+Tab은 탭을 넘기는 키라 프로그램에 가지 않는다
+        ("ctrl+tab", "next_tab"),
+        ("ctrl+shift+tab", "previous_tab"),
+        ("escape", "end_search"),
+        // 고른 글 끝점 옮기기(performable): 고른 글이 없으면 키는 프로그램으로 간다.
+        // Shift+Home·End·PageUp·PageDown은 Ghostty macOS에서도 adjust_selection이지만 우리는 위 스크롤 묶음을 지키고 표에 적는다(#573)
+        ("shift+arrow_left", "adjust_selection:left"),
+        ("shift+arrow_right", "adjust_selection:right"),
+        ("shift+arrow_up", "adjust_selection:up"),
+        ("shift+arrow_down", "adjust_selection:down"),
     ];
     // 되살리기(Ghostty macOS 기본, performable): 다른 OS의 기본에는 없다. 되살릴 것이 없으면 키는 프로그램으로 간다
     if cfg!(target_os = "macos") {
@@ -612,6 +623,20 @@ pub(crate) fn defaults() -> Vec<(&'static str, &'static str)> {
             ("super+backspace", "text:\\x15"),
             ("alt+arrow_left", "esc:b"),
             ("alt+arrow_right", "esc:f"),
+            // Ghostty macOS 기본 가운데 앞서 없던 것(#573, Config.zig 줄 번호). super를 ctrl+shift로 바꾸면 Linux에서 다른 동작이거나
+            // 기존 묶음을 덮는 키라 macOS에만 둔다
+            ("super+comma", "open_config"),                   // 6687
+            ("super+enter", "toggle_fullscreen"),             // 7133
+            ("super+ctrl+shift+j", "write_screen_file:copy"), // 6771
+            ("super+shift+j", "write_screen_file:paste"),     // 6777
+            ("super+shift+alt+j", "write_screen_file:open"),  // 6783
+            ("super+j", "scroll_to_selection"),               // 7213
+            ("super+shift+arrow_up", "jump_to_prompt:-1"),    // 7221
+            ("super+shift+arrow_down", "jump_to_prompt:1"),   // 7226
+            ("super+shift+w", "close_window"),                // 7248
+            ("super+shift+alt+w", "close_all_windows"),       // 7253
+            ("super+e", "search_selection"),                  // 7358
+            ("super+shift+f", "end_search"),                  // 7364
         ]);
     } else {
         // Ghostty Linux 기본. super를 ctrl+shift로 바꾸는 키가 아니다
@@ -633,6 +658,27 @@ pub(crate) fn defaults() -> Vec<(&'static str, &'static str)> {
     v
 }
 
+/// 기본 묶음 중 performable로 거는 동작
+/// Ghostty 기본 묶음(Config.zig)이 `putFlags`로 performable을 켠 동작: 복사·붙여넣기(6731·6737줄), 되살리기(7173~7185줄),
+/// 화면 지우기(7160줄), 고른 곳으로 스크롤(7213줄), 찾기 동작(7352~7382줄), 고른 글 끝점 옮기기(6790~6832줄).
+/// 같은 동작이 performable이 아닌 기본 키에도 걸리는 경우는 없다(`paste_from_selection`·`goto_tab`은 이 목록에 없다)
+pub(crate) fn default_performable(a: &Action) -> bool {
+    matches!(
+        a,
+        Action::Copy(_)
+            | Action::Paste
+            | Action::Undo
+            | Action::Redo
+            | Action::ClearScreen
+            | Action::ScrollToSelection
+            | Action::StartSearch
+            | Action::SearchSelection
+            | Action::EndSearch
+            | Action::NavigateSearch(_)
+            | Action::AdjustSelection(_)
+    )
+}
+
 impl Keymap {
     /// 기본 묶음 위에 설정의 keybind를 얹는다. 읽지 못한 줄은 경고로 돌려준다
     pub fn build(user: &[String]) -> (Self, Vec<String>) {
@@ -646,7 +692,7 @@ impl Keymap {
                     trig.mods.ctrl = true;
                     trig.mods.shift = true;
                 }
-                let performable = matches!(act, Action::Undo | Action::Redo);
+                let performable = default_performable(&act);
                 km.map.insert(
                     trig,
                     Bound {
@@ -1188,6 +1234,201 @@ mod tests {
         let (km, _) = Keymap::build(&["alt+arrow_left=unbind".into()]);
         assert_eq!(km.lookup(&trig("alt+arrow_left")), None);
         assert!(km.lookup(&trig("alt+arrow_right")).is_some());
+    }
+
+    /// Ghostty macOS 기본 묶음 전체 대조(#573, Config.zig 6680~7440줄). 묶음 하나와 performable 여부를 줄 번호와 함께 견준다.
+    /// 앞쪽 줄은 b-terminal에 이미 있던 것, 뒤쪽 줄이 이번에 더한 것이다
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn default_binds_match_ghostty_macos_table() {
+        let (km, w) = Keymap::build(&[]);
+        assert!(w.is_empty(), "{w:?}");
+        // (Config.zig 줄, 트리거, 동작, performable)
+        let table: &[(u32, &str, &str, bool)] = &[
+            (6682, "super+shift+comma", "reload_config", false),
+            (6687, "super+comma", "open_config", false),
+            (6731, "super+c", "copy_to_clipboard", true),
+            (6737, "super+v", "paste_from_clipboard", true),
+            (6749, "super+equal", "increase_font_size:1", false),
+            (6760, "super+minus", "decrease_font_size:1", false),
+            (6765, "super+0", "reset_font_size", false),
+            (6771, "super+ctrl+shift+j", "write_screen_file:copy", false),
+            (6777, "super+shift+j", "write_screen_file:paste", false),
+            (6783, "super+shift+alt+j", "write_screen_file:open", false),
+            (6790, "shift+arrow_left", "adjust_selection:left", true),
+            (6796, "shift+arrow_right", "adjust_selection:right", true),
+            (6802, "shift+arrow_up", "adjust_selection:up", true),
+            (6808, "shift+arrow_down", "adjust_selection:down", true),
+            (6840, "ctrl+shift+tab", "previous_tab", false),
+            (6845, "ctrl+tab", "next_tab", false),
+            (7133, "super+enter", "toggle_fullscreen", false),
+            (7140, "super+shift+enter", "toggle_split_zoom", false),
+            (7147, "super+shift+p", "toggle_command_palette", false),
+            (7155, "super+q", "quit", false),
+            (7160, "super+k", "clear_screen", true),
+            (7166, "super+a", "select_all", false),
+            (7173, "super+shift+t", "undo", true),
+            (7179, "super+z", "undo", true),
+            (7185, "super+shift+z", "redo", true),
+            (7193, "super+home", "scroll_to_top", false),
+            (7198, "super+end", "scroll_to_bottom", false),
+            (7203, "super+page_up", "scroll_page_up", false),
+            (7208, "super+page_down", "scroll_page_down", false),
+            (7213, "super+j", "scroll_to_selection", true),
+            (7221, "super+shift+arrow_up", "jump_to_prompt:-1", false),
+            (7226, "super+shift+arrow_down", "jump_to_prompt:1", false),
+            (7233, "super+n", "new_window", false),
+            (7238, "super+w", "close_surface", false),
+            (7243, "super+alt+w", "close_tab", false),
+            (7248, "super+shift+w", "close_window", false),
+            (7253, "super+shift+alt+w", "close_all_windows", false),
+            (7258, "super+t", "new_tab", false),
+            (7263, "super+shift+bracket_left", "previous_tab", false),
+            (7268, "super+shift+bracket_right", "next_tab", false),
+            (7273, "super+d", "new_split:right", false),
+            (7278, "super+shift+d", "new_split:down", false),
+            (7283, "super+bracket_left", "goto_split:previous", false),
+            (7288, "super+bracket_right", "goto_split:next", false),
+            (7293, "super+alt+arrow_up", "goto_split:up", false),
+            (7313, "super+ctrl+arrow_up", "resize_split:up,10", false),
+            (7333, "super+ctrl+equal", "equalize_splits", false),
+            (7340, "super+arrow_up", "jump_to_prompt:-1", false),
+            (7345, "super+arrow_down", "jump_to_prompt:1", false),
+            (7352, "super+f", "start_search", true),
+            (7358, "super+e", "search_selection", true),
+            (7364, "super+shift+f", "end_search", true),
+            (7370, "escape", "end_search", true),
+            (7376, "super+g", "navigate_search:next", true),
+            (7382, "super+shift+g", "navigate_search:previous", true),
+            (7397, "super+ctrl+f", "toggle_fullscreen", false),
+            (7404, "super+shift+v", "paste_from_selection", false),
+            // goto_tab은 macOS에서 performable이 아니다(Config.zig 7089~7096줄)
+            (7096, "super+1", "goto_tab:1", false),
+            (7096, "super+8", "goto_tab:8", false),
+            (7125, "super+9", "last_tab", false),
+        ];
+        for &(line, t, a, perform) in table {
+            let want = parse_action(a).unwrap().unwrap();
+            assert_eq!(km.lookup(&trig(t)), Some(&want), "Config.zig {line}줄 {t}={a}");
+            assert_eq!(
+                km.flags(&[trig(t)]).map(|f| f.performable),
+                Some(perform),
+                "Config.zig {line}줄 {t}={a}의 performable"
+            );
+        }
+    }
+
+    /// 플랫폼과 상관없는 Ghostty 기본(Config.zig 6790~6808·6840·6845·7035줄): 수식 키가 super가 아니라 Linux에서도 같은 키다
+    #[test]
+    fn default_binds_common_to_all_platforms() {
+        let (km, _) = Keymap::build(&[]);
+        for (t, a) in [
+            ("ctrl+tab", Action::NextTab),
+            ("ctrl+shift+tab", Action::PrevTab),
+            ("escape", Action::EndSearch),
+            (
+                "shift+arrow_left",
+                Action::AdjustSelection(bt_term::SelectionAdjust::Left),
+            ),
+            (
+                "shift+arrow_right",
+                Action::AdjustSelection(bt_term::SelectionAdjust::Right),
+            ),
+            ("shift+arrow_up", Action::AdjustSelection(bt_term::SelectionAdjust::Up)),
+            (
+                "shift+arrow_down",
+                Action::AdjustSelection(bt_term::SelectionAdjust::Down),
+            ),
+        ] {
+            assert_eq!(km.lookup(&trig(t)), Some(&a), "{t}");
+        }
+        // 사용자가 지우면 키는 인코더(프로그램)로 간다. Ghostty 설정의 `unbind`와 같다
+        let (km, _) = Keymap::build(&["ctrl+tab=unbind".into(), "escape=unbind".into()]);
+        assert_eq!(km.lookup(&trig("ctrl+tab")), None);
+        assert_eq!(km.lookup(&trig("escape")), None);
+        assert!(km.lookup(&trig("ctrl+shift+tab")).is_some());
+    }
+
+    /// 복사·붙여넣기는 Ghostty처럼 performable이다(Config.zig 6731·6737줄): 고른 글이 없으면 ⌘C는 묶이지 않은 키처럼 프로그램에 간다.
+    /// goto_tab은 macOS에서 performable이 아니고 다른 OS에서는 performable이다(7096줄). 우리는 다른 OS의 goto_tab을 따로 두지 않는다
+    #[test]
+    fn copy_and_paste_defaults_are_performable() {
+        let (km, _) = Keymap::build(&[]);
+        let (copy, paste) = if cfg!(target_os = "macos") {
+            ("super+c", "super+v")
+        } else {
+            ("ctrl+shift+c", "ctrl+shift+v")
+        };
+        for t in [copy, paste] {
+            assert_eq!(
+                km.flags(&[trig(t)]).map(|f| f.performable),
+                Some(true),
+                "{t}: 할 수 없으면 키는 프로그램으로"
+            );
+        }
+        let mut sq = Sequencer::default();
+        let out = feed_all(&mut sq, &km, copy, b"c", false);
+        assert_eq!((out.action, out.send), (None, b"c".to_vec()), "고른 글이 없을 때");
+        let out = feed_all(&mut sq, &km, copy, b"c", true);
+        assert_eq!(out.action, Some(Action::Copy(bt_term::CopyFormat::Mixed)));
+        // 사용자가 performable 없이 다시 묶으면 늘 먹는다
+        let (km, _) = Keymap::build(&[format!("{copy}=copy_to_clipboard")]);
+        let out = feed_all(&mut sq, &km, copy, b"c", false);
+        assert!(out.action.is_some() && out.send.is_empty());
+    }
+
+    /// 이번에 더한 super 묶음은 macOS 기본에만 둔다. Linux는 super를 ctrl+shift로 바꾸는데, 이 키들은 Ghostty Linux에서
+    /// 다른 동작이거나(ctrl+shift+w는 close_surface, ctrl+shift+f는 start_search, ctrl+shift+,는 reload_config) 같은 키가 겹쳐
+    /// 기존 묶음을 덮는다. (기존 Linux 묶음의 겹침 `super+d`·`super+shift+d` 등은 이 일의 범위 밖이다)
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn new_super_defaults_are_macos_only() {
+        let d = defaults();
+        for t in [
+            "super+comma",
+            "super+enter",
+            "super+j",
+            "super+e",
+            "super+shift+f",
+            "super+shift+w",
+            "super+shift+alt+w",
+            "super+shift+j",
+            "super+ctrl+shift+j",
+            "super+shift+alt+j",
+            "super+shift+arrow_up",
+            "super+shift+arrow_down",
+        ] {
+            assert!(!d.iter().any(|&(dt, _)| dt == t), "{t}는 Linux 기본에 두지 않는다");
+        }
+    }
+
+    /// `+list-keybinds`와 키 판단이 같은 performable 기준을 쓴다
+    #[test]
+    fn default_performable_follows_the_action() {
+        for a in [
+            "copy_to_clipboard",
+            "paste_from_clipboard",
+            "clear_screen",
+            "undo",
+            "redo",
+            "scroll_to_selection",
+            "start_search",
+            "search_selection",
+            "end_search",
+            "navigate_search:next",
+            "adjust_selection:left",
+        ] {
+            assert!(default_performable(&parse_action(a).unwrap().unwrap()), "{a}");
+        }
+        for a in [
+            "new_tab",
+            "paste_from_selection",
+            "goto_tab:1",
+            "toggle_fullscreen",
+            "text:\\x05",
+        ] {
+            assert!(!default_performable(&parse_action(a).unwrap().unwrap()), "{a}");
+        }
     }
 
     /// Ctrl+[·Ctrl+i는 Ghostty처럼 `CSI u`로 간다(#567). 옛 바이트(ESC·탭)가 필요한 사람이 CHANGELOG에 적은
