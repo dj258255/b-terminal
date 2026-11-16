@@ -154,6 +154,9 @@ pub struct Cell {
     pub extra: Option<Arc<CellExtra>>,
 }
 
+/// b-terminal(#579): 한 칸에 덧붙는 글자 수 상한(Ghostty `grapheme_max_len`).
+pub const MAX_ZEROWIDTH: usize = 64;
+
 impl Default for Cell {
     #[inline]
     fn default() -> Cell {
@@ -175,8 +178,15 @@ impl Cell {
     }
 
     /// Write a new zerowidth character to this cell.
+    ///
+    /// b-terminal(#579): 한 칸에 덧붙는 글자는 `MAX_ZEROWIDTH`개까지만 둔다. 찬 뒤에 오는 글자는 버린다
+    /// (Ghostty `page.zig` 92줄 `grapheme_max_len`, 1712줄). 믿지 않는 출력이 한 칸에 끝없이 쌓지 못하게
+    /// 이 함수 한 곳에서 지킨다. 덧붙이는 모든 길이 여기를 거친다.
     #[inline]
     pub fn push_zerowidth(&mut self, character: char) {
+        if self.zerowidth().is_some_and(|z| z.len() >= MAX_ZEROWIDTH) {
+            return;
+        }
         let extra = self.extra.get_or_insert(Default::default());
         Arc::make_mut(extra).zerowidth.push(character);
     }
