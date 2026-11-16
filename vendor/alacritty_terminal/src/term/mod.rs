@@ -1816,7 +1816,11 @@ impl<T> Term<T> {
         cursor_cell.fg = fg;
         cursor_cell.bg = bg;
         // b-terminal(#314): 쓴 칸 표시. b-terminal(#329): 0번 칸에 둔 줄의 프롬프트 표시는 덮어써도 남긴다
-        cursor_cell.flags = flags | Flags::WRITTEN | (cursor_cell.flags & (Flags::ROW_PROMPT | Flags::ROW_PROMPT_CONTINUATION));
+        // b-terminal(#582): 줄 이음 표지(`WRAPLINE`)는 줄의 것이라 칸을 덮어써도 남긴다(Ghostty는 칸을 쓸 때 `row.wrap`을
+        // 건드리지 않는다. 지우는 것은 EL 0·2, ECH, DL 등 줄 단위 동작뿐이다)
+        cursor_cell.flags = flags
+            | Flags::WRITTEN
+            | (cursor_cell.flags & (Flags::ROW_PROMPT | Flags::ROW_PROMPT_CONTINUATION | Flags::WRAPLINE));
         // b-terminal(#338): 커서의 글 종류가 입력이면 입력 칸으로 쓴다(Ghostty `printCell`의 `semantic_content`)
         if input_content {
             cursor_cell.flags.insert(Flags::SEMANTIC_INPUT);

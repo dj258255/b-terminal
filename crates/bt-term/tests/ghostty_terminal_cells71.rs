@@ -366,3 +366,29 @@ fn erase_line_left_wrap_with_protected_last_cell() {
     assert!(wrapped(&t, 0));
     assert_eq!(t.cell(0, 4).c, ' ');
 }
+
+// Terminal.zig 17168줄: 이어진 줄의 마지막 칸을 새로 써도 줄 이음 표지는 남는다(`print`는 `row.wrap`을 건드리지 않는다).
+// EL 0·2와 ECH는 지운다(`cursorResetWrap`, 4298줄).
+#[test]
+fn overwriting_last_cell_keeps_row_wrap() {
+    for (seq, keeps) in [
+        ("\x1b[1K", true),
+        ("\x1b[0K", false),
+        ("\x1b[2K", false),
+        ("\x1b[X", false),
+    ] {
+        let mut t = T::new(5, 3);
+        t.feed("abcdefghijkl\x1b[2;5HX");
+        assert!(wrapped(&t, 1), "X를 쓴 뒤");
+        t.feed(seq);
+        assert_eq!(wrapped(&t, 1), keeps, "{seq:?}");
+    }
+}
+
+#[test]
+fn autowrap_marks_row_wrap() {
+    let mut t = T::new(5, 3);
+    t.feed("abcdef");
+    assert!(wrapped(&t, 0));
+    assert!(!wrapped(&t, 1));
+}
