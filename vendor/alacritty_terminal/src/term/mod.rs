@@ -1067,7 +1067,10 @@ impl<T> Term<T> {
             let last = self.grid[above][Column(columns - 1)].flags;
             if last.contains(Flags::WRAPLINE) && last.contains(Flags::LEADING_WIDE_CHAR_SPACER) {
                 self.blank_cell_keep_wrap(above, columns - 1);
-                self.damage.damage_line(above.0 as usize, columns - 1, columns - 1);
+                // b-terminal(#587): 위 줄이 스크롤백이면(음수 줄) 화면 손상에 적을 줄이 없다. `as usize`로 바꾸면 범위 밖이 된다
+                if above.0 >= 0 {
+                    self.damage.damage_line(above.0 as usize, columns - 1, columns - 1);
+                }
             }
         }
 
@@ -3613,8 +3616,11 @@ impl<T: EventListener> Handler for Term<T> {
 
     #[inline]
     fn set_scrolling_region(&mut self, top: usize, bottom: Option<usize>) {
-        // Fallback to the last line as default.
-        let bottom = bottom.unwrap_or_else(|| self.screen_lines());
+        // b-terminal(#587): Ghostty `setTopAndBottomMargin`(Terminal.zig 3335~3343줄)의 순서. 아래 경계를 줄 수로
+        // 먼저 자르고 나서 `top >= bottom`을 본다. 전에는 자르기 전에 봐서 한 줄 화면의 `2;4r`이 화면 밖 영역이 됐다.
+        let lines = self.screen_lines();
+        let top = cmp::max(1, top);
+        let bottom = cmp::min(lines, bottom.unwrap_or(lines));
 
         if top >= bottom {
             debug!("Invalid scrolling region: ({top};{bottom})");
