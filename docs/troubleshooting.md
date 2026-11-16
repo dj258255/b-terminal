@@ -121,3 +121,12 @@
 - 원인: `Grid::scroll_up`이 스크롤백이 생기지 않는 영역 스크롤(위 여백 ≠ 0)에서도 올려 본 자리를 줄 수만큼 늘렸다. 올려 본 자리의 상한도 스크롤백 크기가 아니라 최대 스크롤백 한도였다. Ghostty는 올려 본 자리를 페이지 목록의 핀으로 가져(`PageList.zig` viewport) 영역 스크롤에 움직이지 않고 스크롤백 밖을 가리킬 수 없다
 - 확인하는 법: `crates/bt-term/tests/engine_panics72.rs`의 `region_scroll_*`와 시드 고정 퍼징 `fuzz_fixed_seed_has_no_panic_and_keeps_offset_in_history`
 - b-terminal: 올려 본 자리는 스크롤백이 실제로 생기는 길에서만 늘고 스크롤백 크기로 자른다. 그리기 쪽에서 자르는 방어선은 두지 않았다
+
+## 18. CAN이나 ESC로 끊긴 문자열 뒤의 질의에 답이 가지 않는다
+
+- 언제: 2026-11-16, #595. 엔진 밖 파서 퍼징 조사(#593)에서 찾았다. 실제 창에서 겪은 사례가 아니고, 프로그램이 이런 바이트를 실제로 내는 빈도는 재지 않았다
+- 만드는 바이트 순서(최소 재현): `ESC ] 9 ; hi CAN`, `ESC ] 9 ; hi`, `ESC _ G a=q,i=1 CAN`, `ESC P 1 $ r` 가운데 하나 뒤에 DA1(`ESC [ c`). `/bin/sh`의 `printf`로 PTY에 보내고 읽으면 기준(앞에 아무것도 없음)은 `ESC[?62;22c`가 오는데 넷 모두 빈 답이었다
+- 원인: 스캐너(`notify.rs`)가 엔진(vte)·Ghostty와 문자열이 끝나는 자리를 달리 봤다. OSC·APC 안의 CAN·SUB를 글자로 모았고, 문자열 안의 ESC 다음이 `\`가 아니면 그 바이트를 새 이스케이프로 읽지 않고 버렸다(`[`가 사라져 CSI가 글자가 됨). CSI 안의 CAN은 CSI를 끊지 않아 `ESC[2 CAN J`의 J를 ED로 읽었다. Ghostty `Parser.zig`는 OSC·DCS·APC 상태를 나갈 때(BEL·CAN·SUB·ESC 모두) 늘 dispatch·unhook·apc_end를 부른다(276·280·281줄)
+- 확인하는 법: `crates/bt-term/tests/parser_fuzz73.rs`의 `can_*`·`esc_*`·`session_answers_da1_after_interrupted_strings`
+- b-terminal: 문자열 안의 CAN·SUB·ESC는 그 문자열을 끝낸다. OSC·APC는 끝난 것으로 내보내고, ESC 뒤 바이트는 새 이스케이프로 다시 읽는다. 일부러 다르게 둔 것: DCS 질의는 끊기면 내보내지 않고(답을 PTY에 쓰는 길이라, 기존 시험이 정한 규칙), 겹친 ESC 뒤(tmux 패스스루)는 다시 읽지 않는다
+
