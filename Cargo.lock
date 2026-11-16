@@ -396,7 +396,7 @@ dependencies = [
 
 [[package]]
 name = "bt-app"
-version = "0.70.0"
+version = "0.71.0"
 dependencies = [
  "accesskit",
  "accesskit_consumer",
@@ -424,7 +424,7 @@ dependencies = [
 
 [[package]]
 name = "bt-core"
-version = "0.70.0"
+version = "0.71.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -432,7 +432,7 @@ dependencies = [
 
 [[package]]
 name = "bt-ctl"
-version = "0.70.0"
+version = "0.71.0"
 dependencies = [
  "bt-core",
  "rustix 1.1.6",
@@ -441,7 +441,7 @@ dependencies = [
 
 [[package]]
 name = "bt-gpu"
-version = "0.70.0"
+version = "0.71.0"
 dependencies = [
  "bt-core",
  "bt-render",
@@ -453,7 +453,7 @@ dependencies = [
 
 [[package]]
 name = "bt-render"
-version = "0.70.0"
+version = "0.71.0"
 dependencies = [
  "bt-core",
  "bt-term",
@@ -469,7 +469,7 @@ dependencies = [
 
 [[package]]
 name = "bt-term"
-version = "0.70.0"
+version = "0.71.0"
 dependencies = [
  "alacritty_terminal",
  "anyhow",
