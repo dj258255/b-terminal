@@ -167,6 +167,13 @@ enum St {
     /// 엔진이 무시하는 DCS 머리(중간 바이트 뒤의 매개변수, 첫 자리가 아닌 `< = > ?`): ESC·CAN·SUB까지 버린다.
     /// 0x9C로는 끝나지 않는다(vte `DcsIgnore`는 `anywhere`만 본다)
     DcsIgnore,
+    /// tmux 패스스루 안쪽의 Escape(겹친 ESC 뒤, #603): 엔진처럼 C0를 실행하고(ENQ에는 답한다) 0x7F·0x80 이상·ESC에 머문다.
+    /// `X ^ _ ] P`는 신호 없는 문자열로 들어가고 CAN·SUB는 Ground이며, 그 밖의 바이트(`[ c` 등)는 안쪽 글이라 읽지 않고 Ground로 돌린다
+    EscQuiet,
+    /// 안쪽 SOS·PM·APC: 엔진처럼 ESC(→ `EscQuiet`)·CAN·SUB까지 신호 없이 버린다
+    StrQuiet,
+    /// 안쪽 OSC: 엔진처럼 BEL·CAN·SUB·ESC(→ `EscQuiet`)까지 신호 없이 버린다
+    OscQuiet,
 }
 
 /// 우리가 답하는 DCS의 종류
@@ -204,8 +211,10 @@ pub struct Scanner {
     dcs_kind: Option<DcsKind>,
     /// 본문이 상한을 넘어 버리는 중(DECRQSS는 두 바이트, XTGETTCAP은 `MAX_XTGETTCAP`)
     dcs_over: bool,
-    /// 이 DCS 안에서 ESC가 겹쳐 왔다(tmux 패스스루가 안의 ESC를 두 번 쓴다). 그 뒤 `\`가 아닌 바이트가 오면 이 DCS는 우리 것이 아니라 버린다
+    /// 이 DCS 안에서 ESC가 겹쳐 왔다(tmux 패스스루가 안의 ESC를 두 번 쓴다). 그 뒤 `\`가 아닌 바이트는 안쪽 글이라 `EscQuiet`로 따라가며 신호를 내지 않는다(#603)
     dcs_double: bool,
+    /// 이 DCS는 tmux 패스스루 안쪽에서 열렸다(`EscQuiet`의 `P`). 질의에 답하지 않고 끝까지 버린다(#603)
+    dcs_silent: bool,
     /// 이 DCS 머리에 중간 바이트(0x20~0x2f)가 나왔다. 머리 상한과 상관없이 센다
     dcs_inter: bool,
     /// kitty 알림(OSC 99)의 쌓인 조각. 스캐너는 세션마다 하나라 쌓임도 세션마다 하나다(#561)
@@ -243,8 +252,13 @@ impl Scanner {
                 St::DcsEsc if b != b'\\' && b != 0x1b => {
                     self.dcs = Vec::new();
                     self.dcs_kind = None;
-                    // 겹친 ESC(tmux 패스스루) 뒤의 바이트는 안쪽 글이라 다시 읽지 않는다
-                    self.st = if self.dcs_double { St::Ground } else { St::Esc };
+                    // 겹친 ESC(tmux 패스스루) 뒤의 바이트는 안쪽 글이라 신호를 내지 않는다. 다만 엔진처럼 Escape에 있는 것으로 따라가
+                    // ENQ와 문자열 경계(`X ^ _ ] P`)는 엔진과 같게 읽는다(#603). 안쪽 DCS(`dcs_silent`) 안의 ESC도 같다
+                    self.st = if self.dcs_double || self.dcs_silent {
+                        St::EscQuiet
+                    } else {
+                        St::Esc
+                    };
                 }
                 St::SkipEsc if b != b'\\' => self.st = St::Esc,
                 _ => {}
@@ -289,6 +303,16 @@ impl Scanner {
                     self.dcs_kind = None;
                     self.dcs_over = false;
                     self.dcs_double = false;
+                    self.dcs_silent = false;
+                    self.dcs_inter = false;
+                    St::DcsHdr
+                }
+                (St::EscQuiet, b'P') => {
+                    self.dcs.clear();
+                    self.dcs_kind = None;
+                    self.dcs_over = false;
+                    self.dcs_double = false;
+                    self.dcs_silent = true;
                     self.dcs_inter = false;
                     St::DcsHdr
                 }
@@ -329,9 +353,9 @@ impl Scanner {
                         .filter(|&(k, c)| (0x20..=0x2f).contains(c) || (k == 0 && (0x3c..=0x3f).contains(c)))
                         .map(|(_, &c)| c)
                         .collect();
-                    self.dcs_kind = match (self.dcs_over, inter.as_slice(), b) {
-                        (false, b"$", b'q') => Some(DcsKind::Decrqss),
-                        (false, b"+", b'q') => Some(DcsKind::XtGetTcap),
+                    self.dcs_kind = match (self.dcs_silent, self.dcs_over, inter.as_slice(), b) {
+                        (false, false, b"$", b'q') => Some(DcsKind::Decrqss),
+                        (false, false, b"+", b'q') => Some(DcsKind::XtGetTcap),
                         _ => None,
                     };
                     self.dcs.clear();
@@ -371,13 +395,29 @@ impl Scanner {
                 // tmux 패스스루 안의 ESC는 두 번 쓴다: 겹친 ESC는 아직 DCS 안이다.
                 // 일부러 엔진과 다르다: 엔진은 `ESC ESC`의 둘째 ESC를 새 이스케이프로 읽어 그 뒤 `[ c`를 DA1로 처리하지만,
                 // 우리는 겹친 ESC 뒤의 바이트를 tmux가 감싼 안쪽 글로 보고(위 `dcs_double`) 읽지 않는다. 질의 답과 알림은 빠지는 쪽이다.
-                // 다만 겹친 ESC 뒤가 `X ^ _ ] P`이면 엔진은 문자열로 들어가 뒤의 ENQ를 버리는데 우리는 Ground로 읽어 ENQ에 답한다.
-                // ENQ 답은 사용자가 정한 고정 글이고 Ground에서 바로 보내도 같아 새 능력은 아니다(#598)
+                // 다만 ENQ와 문자열 경계는 엔진과 같게 읽는다(#603): 겹친 ESC 뒤는 `EscQuiet`가 되어 C0를 실행하고(ENQ는 Enquiry),
+                // `X ^ _ ] P`이면 엔진처럼 그 문자열이 끝날 때까지 신호 없이 버린다. 그 밖의 바이트(`[` 등)만 Ground로 돌려 읽지 않는다
                 (St::DcsEsc, 0x1b) => {
                     self.dcs_double = true;
                     St::DcsEsc
                 }
                 (St::DcsEsc, _) => St::Ground,
+                // 안쪽 Escape(#603). 엔진 `advance_esc`와 같게 C0는 실행하고(ENQ만 신호), 0x7F·0x80 이상은 무시하고 머문다
+                (St::EscQuiet, 0x05) => {
+                    out.push((i + 1, Signal::Enquiry));
+                    St::EscQuiet
+                }
+                (St::EscQuiet, 0x18 | 0x1a) => St::Ground,
+                (St::EscQuiet, 0x00..=0x17 | 0x19 | 0x1b..=0x1f | 0x7f..=0xff) => St::EscQuiet,
+                (St::EscQuiet, b'X' | b'^' | b'_') => St::StrQuiet,
+                (St::EscQuiet, b']') => St::OscQuiet,
+                (St::EscQuiet, _) => St::Ground,
+                (St::StrQuiet, 0x1b) => St::EscQuiet,
+                (St::StrQuiet, 0x18 | 0x1a) => St::Ground,
+                (St::StrQuiet, _) => St::StrQuiet,
+                (St::OscQuiet, 0x1b) => St::EscQuiet,
+                (St::OscQuiet, 0x07 | 0x18 | 0x1a) => St::Ground,
+                (St::OscQuiet, _) => St::OscQuiet,
                 // ENQ는 VT 엔진도 ESC 사이에서 실행한다
                 (St::Esc, 0x05) => {
                     out.push((i + 1, Signal::Enquiry));
@@ -398,6 +438,8 @@ impl Scanner {
                 (St::Esc, 0x18 | 0x1a) => St::Ground,
                 // 그 밖의 C0는 엔진이 실행하고 Escape에 머문다(vte `advance_esc` 342줄, Ghostty의 escape 상태). `ESC LF [ c`의 DA1을 읽어야 한다(#598)
                 (St::Esc, 0x00..=0x17 | 0x19 | 0x1c..=0x1f) => St::Esc,
+                // 0x7F와 0x80 이상은 엔진이 무시하고 Escape에 머문다(vte `advance_esc`의 `_ => ()`). Ground로 보내면 뒤의 ENQ에 더 답한다(#603)
+                (St::Esc, 0x7f..=0xff) => St::Esc,
                 (St::Esc, _) => St::Ground,
                 (St::Apc, 0x1b) => St::ApcEsc,
                 // CAN·SUB는 문자열을 끝내고 Ground로 돌린다. 끝난 APC는 내보낸다(Ghostty `Parser.zig` 281줄 `apc_end`)(#595)
