@@ -53,7 +53,10 @@ fn margin_ignored_after_clamp_leaves_cursor() {
     let before = e.snapshot();
     e.feed(b"\x1b[2;4r");
     let after = e.snapshot();
-    assert_eq!((after.cursor.col, after.cursor.row), (before.cursor.col, before.cursor.row));
+    assert_eq!(
+        (after.cursor.col, after.cursor.row),
+        (before.cursor.col, before.cursor.row)
+    );
     assert_eq!(after.cursor.col, 3);
 }
 
@@ -100,7 +103,12 @@ fn region_scroll_does_not_push_display_offset_past_history() {
     let before = e.snapshot();
     e.feed(b"\x1b[2;4r\x1b[3B\x1bD");
     let s = e.snapshot();
-    assert!(s.display_offset <= s.history, "offset {} history {}", s.display_offset, s.history);
+    assert!(
+        s.display_offset <= s.history,
+        "offset {} history {}",
+        s.display_offset,
+        s.history
+    );
     assert_eq!(s.history, before.history, "영역 스크롤은 스크롤백을 만들지 않는다");
     assert_eq!(s.display_offset, before.display_offset, "올려 본 자리는 그대로다");
 }
@@ -150,12 +158,55 @@ impl R {
 }
 
 const FRAGS: &[&str] = &[
-    "a", "한", "❤", "\u{200d}", "👍", "\u{301}", "\u{fe0f}", "\n", "\r", "\x1b[M", "\x1b[3M", "\x1b[L", "\x1b[2J",
-    "\x1b[3J", "\x1b[1K", "\x1b[K", "\x1b[?7l", "\x1b[?7h", "\x1b[?2027h", "\x1b[?2026h", "\x1b[?2026l",
-    "\x1b[?1049h", "\x1b[?1049l", "\x1b[H", "\x1b[999;999H", "\x1b]133;A;redraw=last\x07", "\x1b]133;B\x07",
-    "\x1b]133;A\x07", "\x1b[?69h", "\x1b[3;5s", "\x1b[?6h", "\x1b[2;4r", "\x1b[r", "\x1bM", "\x1bD", "\x1b[3S",
-    "\x1b[3T", "\x1b[5@", "\x1b[2P", "\x1b[2X", "\x1b[1;1H", "\x1b[10A", "\x1b[3B", "\x1b[?25l", "\x1b7", "\x1b8",
-    "\x1b[0m", "\x1b[1;41m", "hello world long text",
+    "a",
+    "한",
+    "❤",
+    "\u{200d}",
+    "👍",
+    "\u{301}",
+    "\u{fe0f}",
+    "\n",
+    "\r",
+    "\x1b[M",
+    "\x1b[3M",
+    "\x1b[L",
+    "\x1b[2J",
+    "\x1b[3J",
+    "\x1b[1K",
+    "\x1b[K",
+    "\x1b[?7l",
+    "\x1b[?7h",
+    "\x1b[?2027h",
+    "\x1b[?2026h",
+    "\x1b[?2026l",
+    "\x1b[?1049h",
+    "\x1b[?1049l",
+    "\x1b[H",
+    "\x1b[999;999H",
+    "\x1b]133;A;redraw=last\x07",
+    "\x1b]133;B\x07",
+    "\x1b]133;A\x07",
+    "\x1b[?69h",
+    "\x1b[3;5s",
+    "\x1b[?6h",
+    "\x1b[2;4r",
+    "\x1b[r",
+    "\x1bM",
+    "\x1bD",
+    "\x1b[3S",
+    "\x1b[3T",
+    "\x1b[5@",
+    "\x1b[2P",
+    "\x1b[2X",
+    "\x1b[1;1H",
+    "\x1b[10A",
+    "\x1b[3B",
+    "\x1b[?25l",
+    "\x1b7",
+    "\x1b8",
+    "\x1b[0m",
+    "\x1b[1;41m",
+    "hello world long text",
 ];
 
 /// 시드를 고정한 퍼징. 패닉이 없고 매 단계 `display_offset <= history`여야 한다.
@@ -187,7 +238,12 @@ fn fuzz(iters: usize, steps: usize) {
                 _ => {}
             }
             let s = e.snapshot();
-            assert!(s.display_offset <= s.history, "display_offset {} > history {} (iter {iter})\n{log}", s.display_offset, s.history);
+            assert!(
+                s.display_offset <= s.history,
+                "display_offset {} > history {} (iter {iter})\n{log}",
+                s.display_offset,
+                s.history
+            );
         }
     }
 }
