@@ -898,7 +898,7 @@ impl<T> Term<T> {
         debug!("New num_cols is {num_cols} and num_lines is {num_lines}");
 
         // b-terminal(#482): 줄 나누기 전에 프롬프트 줄들을 줄 수가 바뀌지 않는 빈 줄로 만든다
-        self.semantic_blank_prompt_for_resize(num_cols);
+        let lost_wraps = self.semantic_blank_prompt_for_resize(num_cols);
 
         // Move vi mode cursor with the content.
         let history_size = self.history_size();
@@ -911,8 +911,8 @@ impl<T> Term<T> {
         // b-terminal(#537): 다시 흘리기는 주 화면만, 자동 줄바꿈(DECAWM)이 켜져 있을 때만 한다
         // (Ghostty `Terminal.zig` `resize`의 `.reflow = modes.get(.wraparound)`, 대체 화면은 흘리지 않음)
         let reflow = self.mode.contains(TermMode::LINE_WRAP);
-        self.grid.resize(!is_alt && reflow, num_lines, num_cols);
-        self.inactive_grid.resize(is_alt && reflow, num_lines, num_cols);
+        self.grid.resize_with_lost_wraps(!is_alt && reflow, num_lines, num_cols, if is_alt { 0 } else { lost_wraps });
+        self.inactive_grid.resize_with_lost_wraps(is_alt && reflow, num_lines, num_cols, if is_alt { lost_wraps } else { 0 });
 
         // Invalidate selection and tabs only when necessary.
         if old_cols != num_cols {
