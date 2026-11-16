@@ -1776,10 +1776,13 @@ impl<T> Term<T> {
             // Remove wide char and spacer.
             let wide = cursor_cell.flags.contains(Flags::WIDE_CHAR);
             let point = self.grid.cursor.point;
+            // b-terminal(#580): 짝이 되는 칸은 지금 펜(배경색 포함)의 빈 칸이 된다(Ghostty `writeCell`의
+            // `clearCells(.., blankCell())`, Terminal.zig 2310~2349줄). 옛 굵게·배경색을 남기지 않는다.
+            let bg = self.grid.cursor.template.bg;
             if wide && point.column < self.last_column() {
-                self.grid[point.line][point.column + 1].flags.remove(Flags::WIDE_CHAR_SPACER);
+                self.blank_wide_partner(point.line, point.column + 1, bg);
             } else if point.column > 0 {
-                self.grid[point.line][point.column - 1].clear_wide();
+                self.blank_wide_partner(point.line, point.column - 1, bg);
             }
 
             // Remove leading spacers.
@@ -1809,6 +1812,14 @@ impl<T> Term<T> {
         let point =
             Point::new(self.grid.cursor.point.line.0 as usize, self.grid.cursor.point.column);
         self.damage.damage_point(point);
+    }
+
+    /// b-terminal(#580): 넓은 글자의 짝 칸을 배경색 `bg`의 빈 칸으로 만든다. 0번 칸의 프롬프트 표시는 남긴다.
+    fn blank_wide_partner(&mut self, line: Line, column: Column, bg: Color) {
+        let cell = &mut self.grid[line][column];
+        let keep = cell.flags & (Flags::ROW_PROMPT | Flags::ROW_PROMPT_CONTINUATION);
+        *cell = bg.into();
+        cell.flags = keep;
     }
 
     /// b-terminal 패치(#180): `c`가 방금 찍은 글자와 한 글자 묶음(extended grapheme cluster)이면

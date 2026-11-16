@@ -94,3 +94,52 @@ fn zero_width_cap_at_pending_wrap() {
     assert_eq!(t.cell(0, 2).zerowidth().map(|z| z.len()), Some(64));
     assert_eq!(t.cursor(), (0, 2));
 }
+
+// Terminal.zig 6434·6460줄 `print over wide char with bold`·`with bg color`, 2310~2349줄 `writeCell`
+// 넓은 글자의 머리나 꼬리를 덮으면 짝이 되는 칸은 `clearCells`로 지금 펜(배경색 포함)의 빈 칸이 된다.
+// 옛 속성(굵게·옛 배경)은 남지 않는다.
+use alacritty_terminal::vte::ansi::{Color, NamedColor};
+
+fn is_blank_with_bg(c: &alacritty_terminal::term::cell::Cell, bg: Color) -> bool {
+    c.c == ' '
+        && c.bg == bg
+        && c.flags.is_empty()
+        && c.zerowidth().is_none()
+}
+
+#[test]
+fn overwrite_wide_head_clears_spacer_with_pen() {
+    let mut t = T::new(10, 2);
+    // 굵게·빨간 배경으로 넓은 글자를 쓰고, 기본 펜으로 머리를 덮는다
+    t.feed("\x1b[1;41m😀\x1b[0m\x1b[1;1HA");
+    assert_eq!(t.cell(0, 0).c, 'A');
+    assert!(is_blank_with_bg(t.cell(0, 1), Color::Named(NamedColor::Background)), "{:?}", t.cell(0, 1));
+}
+
+#[test]
+fn overwrite_wide_head_clears_spacer_with_pen_bg() {
+    let mut t = T::new(10, 2);
+    // 지금 펜이 파란 배경이면 짝 칸은 파란 배경의 빈 칸(Ghostty `blankCell`)
+    t.feed("\x1b[1;41m😀\x1b[0;44m\x1b[1;1HA");
+    assert_eq!(t.cell(0, 0).c, 'A');
+    assert!(is_blank_with_bg(t.cell(0, 1), Color::Named(NamedColor::Blue)), "{:?}", t.cell(0, 1));
+}
+
+#[test]
+fn overwrite_wide_tail_clears_head_with_pen() {
+    let mut t = T::new(10, 2);
+    t.feed("\x1b[1;41m😀\x1b[0m\x1b[1;2HB");
+    assert_eq!(t.cell(0, 1).c, 'B');
+    assert!(is_blank_with_bg(t.cell(0, 0), Color::Named(NamedColor::Background)), "{:?}", t.cell(0, 0));
+    t.feed("\x1b[1;1H\x1b[1;41m😀\x1b[0;44m\x1b[1;2HC");
+    assert!(is_blank_with_bg(t.cell(0, 0), Color::Named(NamedColor::Blue)), "{:?}", t.cell(0, 0));
+}
+
+// 덮은 뒤 넓은 글자 표시가 남지 않는다
+#[test]
+fn overwrite_wide_leaves_no_wide_flags() {
+    let mut t = T::new(10, 2);
+    t.feed("😀\x1b[1;1HA");
+    assert!(!t.cell(0, 0).flags.contains(Flags::WIDE_CHAR));
+    assert!(!t.cell(0, 1).flags.contains(Flags::WIDE_CHAR_SPACER));
+}
