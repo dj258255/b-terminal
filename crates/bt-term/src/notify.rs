@@ -370,7 +370,9 @@ impl Scanner {
                 }
                 // tmux 패스스루 안의 ESC는 두 번 쓴다: 겹친 ESC는 아직 DCS 안이다.
                 // 일부러 엔진과 다르다: 엔진은 `ESC ESC`의 둘째 ESC를 새 이스케이프로 읽어 그 뒤 `[ c`를 DA1로 처리하지만,
-                // 우리는 겹친 ESC 뒤의 바이트를 tmux가 감싼 안쪽 글로 보고(위 `dcs_double`) 읽지 않는다. 답이 안 가는 쪽이라 안전하다(#598)
+                // 우리는 겹친 ESC 뒤의 바이트를 tmux가 감싼 안쪽 글로 보고(위 `dcs_double`) 읽지 않는다. 질의 답과 알림은 빠지는 쪽이다.
+                // 다만 겹친 ESC 뒤가 `X ^ _ ] P`이면 엔진은 문자열로 들어가 뒤의 ENQ를 버리는데 우리는 Ground로 읽어 ENQ에 답한다.
+                // ENQ 답은 사용자가 정한 고정 글이고 Ground에서 바로 보내도 같아 새 능력은 아니다(#598)
                 (St::DcsEsc, 0x1b) => {
                     self.dcs_double = true;
                     St::DcsEsc

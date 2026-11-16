@@ -132,7 +132,7 @@
 
 ## 19. 신호 스캐너와 엔진이 C0·8비트 ST·SOS/PM·DCS 머리를 다르게 읽어 질의 답이 빠진다
 
-- 언제: 2026-11-16, #598. 0.73 보안 검토(코드 읽기)에서 찾았다. 실제 창에서 겪은 사례가 아니고, 프로그램이 이런 바이트를 내는 빈도는 재지 않았다. 모두 스캐너가 덜 보는 쪽이라 답이나 알림이 빠질 뿐 주입은 되지 않는다(4·5번은 답이 더 나가는 쪽이지만 Ground에서 같은 질의·ENQ를 직접 보내도 같아 새 능력은 아니다). 5번(DCS 머리)은 0.74 PR 전체 보안 검토에서 찾았다
+- 언제: 2026-11-16, #598. 0.73 보안 검토(코드 읽기)에서 찾았다. 실제 창에서 겪은 사례가 아니고, 프로그램이 이런 바이트를 내는 빈도는 재지 않았다. 1~3번은 스캐너가 덜 보는 쪽이라 답이나 알림이 빠질 뿐이고, 4·5번은 답이 더 나가는 쪽이다. 더 나가는 답은 Ground에서 같은 질의·ENQ를 직접 보내도 같아 새 능력이 아니고, 프로그램이 보낸 글이 답에 들어가는 길은 없다. 5번(DCS 머리)은 0.74 PR 전체 보안 검토에서 찾았다
 - 만드는 바이트 순서(최소 재현)와 엔진의 동작(기준은 vendor/vte `src/lib.rs`):
   - OSC 안의 C0: `ESC ] 133 ; 0x01 A BEL`. 엔진은 0x01을 버려 `133;A`로 읽는데(407~413줄) 스캐너는 본문에 쌓아 프롬프트 표시를 놓쳤다
   - ESC 바로 뒤의 C0: `ESC LF [ c`·`ESC LF c`. 엔진은 LF를 실행하고 Escape에 머물러 DA1·RIS를 읽는데(340~347줄) 스캐너는 Ground로 가서 신호가 빠졌다
@@ -140,7 +140,7 @@
   - SOS·PM: `ESC X … ENQ … ESC \`·`ESC ^ …`. 엔진은 문자열 상태로 들어가 안의 바이트를 무시하는데(359·377줄) 스캐너는 Ground로 읽어 안의 ENQ에 답했다
   - 엔진이 무시하는 DCS 머리: `ESC P $ 0 q m 0x9C ENQ`·`ESC P 1 ? $ q m 0x9C ENQ`. 엔진은 중간 바이트 뒤의 0x30~0x3F(291줄)와 첫 자리가 아닌 0x3C~0x3F(309줄)에서 무시 상태로 가고, 무시 상태는 ESC·CAN·SUB로만 끝난다(175줄). 스캐너는 매개변수를 건너뛰고 DECRQSS로 받아 0x9C에서 답했고 뒤의 ENQ에도 답했다. 맨 앞의 `?`(`ESC P ? $ q`)는 엔진·Ghostty가 중간 바이트로 모아 중간 바이트가 둘이 되는데, 스캐너는 `$`만 보고 답했다
 - 확인하는 법: `crates/bt-term/tests/scanner_gaps74.rs`(vte 파서에 같은 바이트를 먹여 엔진의 동작을 확인하고, `Emulator::feed`에 같이 넣어 신호와 화면을 견준다)
-- b-terminal: 네 틈 모두 엔진과 같게 맞췄다.
+- b-terminal: 다섯 틈 모두 엔진과 같게 맞췄다.
   - OSC 안의 C0(BEL·CAN·SUB·ESC 말고)는 버린다
   - ESC 뒤의 C0는 Escape에 머문다(ENQ는 Enquiry를 내고, CAN·SUB는 Ground)
   - DCS 본문의 0x9C는 `ESC \`와 같이 DCS를 끝내고 질의에 답한다(Ghostty `Parser.zig` 280줄도 dcs_passthrough를 나갈 때 늘 unhook한다). 머리의 0x9C는 vte가 무시하므로 그대로 둔다
@@ -148,5 +148,5 @@
   - SOS·PM은 ST(`ESC \`)·CAN·SUB·ESC까지 무시한다. SOS·PM 안의 0x9C는 vte가 끝으로 보지 않아(`SosPmApcString`은 `anywhere`만 읽는다) 같게 무시한다. Ghostty는 0x9C로 끝내므로(`Parser.zig` 시험 437~438줄) 이 한 가지는 vte와 Ghostty가 다르고, 엔진(vte)을 따랐다
 - 일부러 엔진과 다르게 둔 것:
   - 상한(8KiB)을 넘겨 버리는 중인 OSC(Skip)는 BEL·CAN·SUB·ESC로 끝나도 내보내지 않는다. 엔진은 잘린 OSC를 내보낼 수 있다. 문자열 앞부분만 믿고 알림·폴더·클립보드로 쓰지 않으려는 보안 결정이다
-  - tmux 패스스루 안의 겹친 ESC(`ESC P tmux; ESC ESC [ c`) 뒤는 읽지 않는다. 엔진은 둘째 ESC를 새 이스케이프로 읽어 DA1에 답하지만 안쪽 글에 답하지 않는 쪽이 안전하다
-- 남은 틈(고치지 않았다): ESC 뒤 0x7F·0x80 이상, ESC 중간 바이트(`ESC SP` 등) 뒤의 C0도 엔진은 다르게 읽는다(vte `advance_esc`·`advance_esc_intermediate`). Ghostty 상태표(`parse_table.zig`)는 이 저장소에 없어 대조하지 않았다
+  - tmux 패스스루 안의 겹친 ESC(`ESC P tmux; ESC ESC [ c`) 뒤는 읽지 않는다. 엔진은 둘째 ESC를 새 이스케이프로 읽어 DA1에 답하지만 안쪽 글에 답하지 않는 쪽이 안전하다. 다만 겹친 ESC 뒤가 `X ^ _ ] P`이면(`ESC P $ 0 q ESC ESC X ENQ`) 엔진은 문자열로 들어가 뒤의 ENQ를 버리는데 스캐너는 Ground로 읽어 ENQ에 답한다. 0.74 PR 보안 재검토의 퍼저(300만 개 중 8건)가 찾았다. ENQ 답은 사용자가 정한 고정 글이고 Ground에서 바로 보내도 같아 새 능력은 아니어서 이번에는 고치지 않았다
+- 남은 틈(고치지 않았다): ESC 뒤 0x7F·0x80 이상, ESC 중간 바이트(`ESC SP` 등) 뒤의 C0도 엔진은 다르게 읽는다(vte `advance_esc`·`advance_esc_intermediate`). Ghostty 상태표(`parse_table.zig`)는 이 저장소에 없어 대조하지 않았다. ESC 뒤 0x7F·0x80 이상은 엔진이 Escape에 머무는데 스캐너는 Ground로 가서, `ESC 0x9C ENQ X ENQ`의 둘째 ENQ처럼 엔진이 버린 ENQ에 답할 수 있다(0.74 PR 보안 재검토)
