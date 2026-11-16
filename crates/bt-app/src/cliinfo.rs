@@ -157,7 +157,7 @@ pub fn keybind_lines(user: &[String], defaults_only: bool) -> Vec<String> {
             trig.mods.ctrl = true;
             trig.mods.shift = true;
         }
-        let performable = matches!(act, keymap::Action::Undo | keymap::Action::Redo);
+        let performable = keymap::default_performable(&act);
         let text = trigger_text(&trig);
         let line = format!("keybind = {}{text}={a}", if performable { "performable:" } else { "" });
         put(&mut entries, (String::new(), false, text), Some(line));
@@ -642,7 +642,7 @@ mod tests {
         assert!(!lines.iter().any(|l| l.contains("unbind")), "{lines:?}");
         // 건드리지 않은 기본은 남는다
         assert!(
-            lines.contains(&format!("keybind = {sup}c=copy_to_clipboard")),
+            lines.contains(&format!("keybind = performable:{sup}c=copy_to_clipboard")),
             "{lines:?}"
         );
     }

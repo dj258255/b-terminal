@@ -30,18 +30,19 @@ pub struct Mods {
     pub shift: bool,
     pub ctrl: bool,
     pub alt: bool,
-    /// Cmd(macOS)·Super. kitty 키보드 프로토콜에서만 보낸다
+    /// Cmd(macOS)·Super. kitty 키보드 프로토콜과, PC식 함수 키 표(수식 번호 9~16, Ghostty `mods.binding()`)에서 수식 키로 센다.
+    /// 글자 키(Alt·Ctrl 길)는 Super를 수식 키로 세지 않는다
     pub sup: bool,
 }
 
 impl Mods {
-    /// xterm의 수식 키 번호(1 + shift + 2·alt + 4·ctrl). 수식 키가 없으면 1
+    /// PC식 함수 키 표의 수식 키 번호(1 + shift + 2·alt + 4·ctrl + 8·super, Ghostty `function_keys.zig`의 `modifiers`). 수식 키가 없으면 1
     fn xterm_param(self) -> u8 {
-        1 + self.shift as u8 + 2 * self.alt as u8 + 4 * self.ctrl as u8
+        kitty_mods(self)
     }
 
     fn any(self) -> bool {
-        self.shift || self.ctrl || self.alt
+        self.shift || self.ctrl || self.alt || self.sup
     }
 }
 
@@ -99,23 +100,54 @@ pub fn encode_named_with(key: NamedKey, mods: Mods, app_cursor: bool, km: KeyMod
         bytes
     };
     match key {
-        NamedKey::Enter => alt_prefix(vec![b'\r']),
+        // Enter·Tab·Escape: 수식 키 없음과 Alt 혼자(와 Shift+Tab) 말고는 모두 `CSI 27 ; 수식 ; 코드 ~`(Ghostty `function_keys.zig`의 "Everything else").
+        // Shift+Enter·Shift+Esc도 modifyOtherKeys와 상관없이 이 꼴이다
+        NamedKey::Enter => match mods {
+            m if !m.any() => vec![b'\r'],
+            Mods {
+                alt: true,
+                shift: false,
+                ctrl: false,
+                sup: false,
+            } => b"\x1b\r".to_vec(),
+            _ => csi27(mods, 13),
+        },
+        NamedKey::Tab => match mods {
+            m if !m.any() => vec![b'\t'],
+            Mods {
+                alt: true,
+                shift: false,
+                ctrl: false,
+                sup: false,
+            } => b"\x1b\t".to_vec(),
+            Mods {
+                shift: true,
+                alt: false,
+                ctrl: false,
+                sup: false,
+            } => b"\x1b[Z".to_vec(),
+            _ => csi27(mods, 9),
+        },
+        NamedKey::Escape => match mods {
+            m if !m.any() => vec![0x1b],
+            Mods {
+                alt: true,
+                shift: false,
+                ctrl: false,
+                sup: false,
+            } => b"\x1b\x1b".to_vec(),
+            _ => csi27(mods, 27),
+        },
         NamedKey::Backspace => {
-            // DECBKM(67)를 켜면 둘이 서로 바뀐다(Ghostty `pcStyleFunctionKey`의 `sequence_decbkm`)
-            if mods.ctrl != km.backarrow_key {
+            // Ctrl이 있으면 BS(0x08), 아니면 DEL(0x7f). Alt는 ESC를 앞에 붙인다. DECBKM(67)을 켜면 수식 키가 없거나 Ctrl 혼자일 때만
+            // 서로 바뀐다(Ghostty `sequence_decbkm`은 표의 마지막 두 칸에만 있다. Shift·Alt·Super가 붙은 칸은 그대로다)
+            let swap = km.backarrow_key && !mods.shift && !mods.alt && !mods.sup;
+            if mods.ctrl != swap {
                 alt_prefix(vec![0x08])
             } else {
                 alt_prefix(vec![0x7f])
             }
         }
-        NamedKey::Tab => {
-            if mods.shift {
-                b"\x1b[Z".to_vec()
-            } else {
-                alt_prefix(vec![b'\t'])
-            }
-        }
-        NamedKey::Escape => alt_prefix(vec![0x1b]),
         NamedKey::Up => csi_mod('A'),
         NamedKey::Down => csi_mod('B'),
         NamedKey::Right => csi_mod('C'),
@@ -164,6 +196,11 @@ pub fn encode_named_with(key: NamedKey, mods: Mods, app_cursor: bool, km: KeyMod
             _ => Vec::new(),
         },
     }
+}
+
+/// `ESC [ 27 ; 수식 ; 코드 ~`(xterm modifyOtherKeys 꼴). Enter·Tab·Escape에 수식 키가 붙었을 때의 PC식 함수 키 표 칸
+fn csi27(mods: Mods, code: u8) -> Vec<u8> {
+    format!("\x1b[27;{};{code}~", mods.xterm_param()).into_bytes()
 }
 
 /// 숫자 키패드 키(#312). winit에서는 `KeyLocation::Numpad`로 가린다
@@ -598,7 +635,9 @@ mod tests {
             ..NONE
         };
         assert_eq!(encode_named_with(NamedKey::Backspace, all, false, reset), b"\x1b\x08");
-        assert_eq!(encode_named_with(NamedKey::Backspace, all, false, set), b"\x1b\x7f");
+        // DECBKM은 수식 키 없음·Ctrl 혼자 칸에만 있다(function_keys.zig 마지막 두 칸). 수식 키가 더 붙은 칸은 켜도 그대로다(#571)
+        assert_eq!(encode_named_with(NamedKey::Backspace, all, false, set), b"\x1b\x08");
+        assert_eq!(encode_named_with(NamedKey::Backspace, cs, false, set), b"\x08");
         // 기본값은 지금까지와 같다
         assert_eq!(encode_named(NamedKey::Backspace, NONE, false), b"\x7f");
         assert_eq!(KeyModes::default(), km(|_| {}));

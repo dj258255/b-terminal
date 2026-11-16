@@ -3131,7 +3131,7 @@ impl App {
         if !modes.kitty.report_events {
             return;
         }
-        let meta = self.config.option_as_alt != bt_core::config::OptionAsAlt::None;
+        let meta = keys::option_counts_as_alt(self.config.option_as_alt, self.raw_mods);
         let bytes = keys::encode(event, self.mods, keys::to_state(self.raw_mods), modes, meta);
         if let Some(t) = self.active_pane() {
             t.session.write_input(&bytes, false);
@@ -3713,7 +3713,10 @@ impl App {
                 .and_then(|cb| cb.get_text().ok())
                 .is_some_and(|t| !t.is_empty()),
             Action::CopyUrl => self.link_under(self.w.cursor_pos).is_some(),
-            Action::EndSearch => self.w.search.is_some(),
+            // Ghostty Surface.zig: 찾는 중이 아니면 다음·앞 찾기를 하지 않고 키를 프로그램에 넘긴다
+            Action::EndSearch | Action::NavigateSearch(_) => self.w.search.is_some(),
+            // Ghostty Surface.zig: 대체 화면(vim·less 등)에서는 화면 지우기를 하지 않고 키를 프로그램에 넘긴다
+            Action::ClearScreen => self.active_pane().is_some_and(|t| !t.session.modes().alt_screen),
             Action::Undo => self.undo.has_alive(Instant::now()),
             Action::Redo => self.redo.has_alive(Instant::now()),
             _ => true,
@@ -6845,7 +6848,7 @@ impl ApplicationHandler<UserEvent> for App {
                 if !self.w.preedit.is_empty() {
                     modes.modify_other_keys = false;
                 }
-                let meta = self.config.option_as_alt != bt_core::config::OptionAsAlt::None;
+                let meta = keys::option_counts_as_alt(self.config.option_as_alt, self.raw_mods);
                 let report_release = modes.kitty.report_events;
                 let bytes = keys::encode(&event, self.mods, keys::to_state(self.raw_mods), modes, meta);
                 // performable: 묶음은 동작을 지금 할 수 있을 때만 키를 먹는다

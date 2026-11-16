@@ -130,7 +130,7 @@ config-file = ?~/.config/b-terminal/local   # ?가 붙으면 없어도 된다
 | `window-subtitle` | `false` `working-directory` | `false` | 받기만 합니다. Ghostty에서도 GTK 전용 키이고, macOS의 창 부제목은 winit이 노출하지 않아 safe로 정할 수 없습니다 |
 | `window-titlebar-background` `window-titlebar-foreground` | 색 | (없음) | 받기만 합니다. Ghostty에서도 GTK 앱 런타임 전용이고, macOS 제목 막대 색은 winit·objc2의 safe 함수로 정할 수 없습니다 |
 | `window-position-x` / `window-position-y` | 정수(점) | 없음 | 첫 창의 자리. 주 화면의 보이는 영역(macOS는 메뉴 막대 아래) 왼쪽 위에서 잰 값이고, 둘 다 있어야 쓰며 하나만 있으면 무시합니다(Ghostty와 같음). 창 상태 복원으로 되살린 창은 복원한 자리가 이깁니다 |
-| `macos-option-as-alt` | `true` `false` `left` `right` | `false` | Ghostty 기본과 같게 끔. Option이 만든 글자(`å`)를 Alt 글자(ESC 앞붙이기)로 바꿀지 정합니다. 방향 키·Enter·Backspace·F 키 같은 이름 키와 Ctrl 조합에서는 이 설정과 상관없이 Option도 Alt 수식 키로 보냅니다(Option+Left는 `ESC[1;3D`, Ctrl+Option+c는 `ESC 0x03`). Alt 글자 앞에 ESC를 붙일지는 프로그램이 DEC 모드 1036(기본 켬, `ESC[?1036l`로 끔)으로 정하고, kitty 키보드 프로토콜이 켜져 있으면 1036을 무시합니다 |
+| `macos-option-as-alt` | `true` `false` `left` `right` | `false` | Ghostty 기본과 같게 끔. Option이 만든 글자(`å`)를 Alt 글자(ESC 앞붙이기)로 바꿀지 정합니다. 방향 키·Enter·Backspace·F 키 같은 이름 키와 Ctrl 조합에서는 이 설정과 상관없이 Option도 Alt 수식 키로 보냅니다(Option+Left는 `ESC[1;3D`, Ctrl+Option+c는 `ESC 0x03`). `left`·`right`는 그쪽 Option일 때만 Alt로 셉니다(글자 앞 ESC, modifyOtherKeys 2의 Alt 수식, kitty 연결 글자 모두. 양쪽 Option을 함께 누르면 오른쪽으로 봅니다). Alt 글자 앞에 ESC를 붙일지는 프로그램이 DEC 모드 1036(기본 켬, `ESC[?1036l`로 끔)으로 정하고, kitty 키보드 프로토콜이 켜져 있으면 1036을 무시합니다 |
 | `key-remap` | `from=to` (예 `ctrl=super`, `left_alt=right_ctrl`), 여러 번 쓸 수 있음 | 없음 | 앱 안에서만 수정 키를 바꿉니다. 이름은 `shift` `ctrl`/`control` `alt`/`option` `super`/`cmd`/`command`, 앞에 `left_`·`right_`를 붙이면 그쪽만입니다(좌우 없는 이름은 양쪽). 키 묶음 판단과 PTY로 보내는 인코딩이 모두 바뀐 키를 씁니다. 한 방향이고 이어서 바뀌지 않습니다(`ctrl=super`, `alt=ctrl`이면 Alt는 Ctrl이 될 뿐 Super가 아닙니다). 키보드 배치와 OS가 만드는 글자는 그대로라 `option+a`가 `å`를 만드는 것은 달라지지 않습니다. 메뉴 막대의 Cmd 단축키는 macOS가 먼저 처리해 바뀌지 않습니다. 좌우는 macOS의 winit이 장치별 비트로 알려 주는 것을 씁니다(그 밖의 OS는 좌우를 모르면 왼쪽으로 봅니다). 빈 값은 지금까지 쌓은 것을 지웁니다. `option-as-alt`는 진짜 Option 키에만 걸리고, 바꾸기로 생긴 Alt는 늘 Alt입니다 |
 | `macos-icon` | `official` `custom` `custom-style`, 내장 이름(`blueprint` `chalkboard` `microchip` `glass` `holographic` `paper` `retro` `xray`) | `official` | `custom`일 때만 `macos-custom-icon`의 그림으로 바꿉니다. 내장 이름과 `custom-style`은 b-terminal에 그 그림이 없어 받기만 합니다. `NSApplication.setApplicationIconImage`가 objc2에서 `unsafe`라 쓰지 못해 Dock 아이콘(`NSDockTile`)에만 올립니다. Cmd-Tab과 Finder의 아이콘은 그대로입니다. 실제 Dock에서는 아직 확인하지 않았습니다 |
 | `macos-custom-icon` | 그림 파일 경로(png·jpeg·icns) | 없음 | `macos-icon = custom`일 때 쓸 그림. `~/`는 홈, 상대 경로는 설정 파일이 있는 폴더 기준입니다(Ghostty의 `~/.config/ghostty/Ghostty.icns` 기본값은 없습니다). 읽지 못하면 로그에 경고하고 아이콘을 그대로 둡니다. 빈 값은 지움 |
@@ -281,7 +281,8 @@ keybind = nav/escape=deactivate_key_table
   - `end_key_sequence`: 진행 중인 키 순서를 끝내고, 이 키를 뺀 앞 키들만 프로그램에 보냅니다(`ctrl+w>escape=end_key_sequence`는 `^W`를 보내고 끝). 순서 밖에서는 키만 먹습니다.
   - `performable:`을 붙인 테이블 동작은 할 수 있을 때만 키를 먹습니다(없는 테이블, 이미 맨 위인 테이블, 켜진 테이블이 없을 때의 내리기, 진행 중인 순서가 없을 때의 `end_key_sequence`는 할 수 없음).
   - 지금 켜진 테이블을 화면에 보이지 않습니다. 설정을 다시 읽어 없어진 테이블은 켜져 있어도 건너뜁니다.
-- macOS가 아니면 기본 묶음의 `super`는 `ctrl+shift`로 바뀝니다.
+- macOS가 아니면 기본 묶음의 `super`는 `ctrl+shift`로 바뀝니다(위 표에서 `(macOS)`라고 적은 묶음은 macOS에만 있습니다).
+- 기본 묶음에 걸린 키는 프로그램에 가지 않습니다. 예전처럼 프로그램이 받게 하려면 `keybind = ctrl+tab=unbind`처럼 `unbind`로 지웁니다(`ctrl+shift+tab`·`super+enter`·`escape`·`shift+arrow_left`도 같음). 어떤 키가 기본으로 묶였는지는 `b-terminal +list-keybinds --default`로 봅니다.
 - macOS 기본 묶음에는 Ghostty의 "자연스러운 글 편집"이 있습니다: `super+arrow_right`=`text:\x05`(줄 끝), `super+arrow_left`=`text:\x01`(줄 처음), `super+backspace`=`text:\x15`(줄 지우기), `alt+arrow_left`=`esc:b`, `alt+arrow_right`=`esc:f`(단어 이동). `macos-option-as-alt`와 상관없이 Option+←·→가 이 묶음을 탑니다. `keybind = alt+arrow_left=unbind`로 지우면 키는 xterm 바이트(`ESC[1;3D`)로 갑니다.
 - `global:` 접두사를 붙이면 시스템 전역 단축키가 됩니다(Ghostty와 같은 문법). 다른 앱이 앞에 있어도 듣습니다. 기본 전역 묶음은 없습니다. 다른 앱이 이미 잡은 조합이면 경고를 남기고 건너뜁니다.
 
@@ -297,12 +298,12 @@ HTML은 `<div style="font-family: monospace; white-space: pre;">` 안에 칸의 
 
 | 동작 | 하는 일 | macOS 기본 |
 |---|---|---|
-| `copy_to_clipboard` / `paste_from_clipboard` | 복사 / 붙여넣기. `copy_to_clipboard:<형식>`으로 복사 형식을 정합니다(아래). 형식을 안 주면 `mixed` | `super+c` / `super+v` |
+| `copy_to_clipboard` / `paste_from_clipboard` | 복사 / 붙여넣기. `copy_to_clipboard:<형식>`으로 복사 형식을 정합니다(아래). 형식을 안 주면 `mixed`. 기본 묶음은 `performable`이라 고른 글(복사)이나 클립보드 글(붙여넣기)이 없으면 키는 프로그램으로 갑니다(Ghostty와 같다) | `super+c` / `super+v` |
 | `paste_from_selection` | 선택 클립보드 붙여넣기(`copy-on-select`의 `primary`·`both`로 담은 글, 붙여넣기 보호를 거침, 비었으면 아무것도 하지 않음. 시스템 클립보드와 다름) | `super+shift+v`(macOS) / `shift+insert`(그 밖) |
 | `new_window` | 새 창(창이 하나도 없을 때도 열림. 마지막 창을 닫았을 때 앱이 끝나는지는 `quit-after-last-window-closed`) | `super+n` |
 | `new_tab` / `close_surface` / `close_tab` | 새 탭 / 칸 닫기(칸이 하나면 탭) / 탭을 칸째 닫기 | `super+t` / `super+w` / `super+alt+w` |
 | `goto_tab:N` / `last_tab` | N번째 / 마지막 탭 | `super+1`~`8` / `super+9` |
-| `next_tab` / `previous_tab` | 다음 / 앞 탭 | `super+shift+]` / `super+shift+[` |
+| `next_tab` / `previous_tab` | 다음 / 앞 탭 | `super+shift+]` `ctrl+tab` / `super+shift+[` `ctrl+shift+tab` |
 | `new_split:right` `down` `left` `up` `auto` | 고른 칸을 나눠 그쪽에 새 칸(`auto`는 긴 쪽) | `super+d`(right) / `super+shift+d`(down) |
 | `goto_split:previous` `next` `left` `right` `up` `down` | 앞·다음 칸, 그쪽에 붙은 칸으로(`top`·`bottom`도 받음) | `super+[` / `super+]` / `super+alt+방향키` |
 | `resize_split:방향,포인트` | 고른 칸을 감싼 경계를 그쪽으로 민다 | `super+ctrl+방향키`(10) |
@@ -311,23 +312,23 @@ HTML은 `<div style="font-family: monospace; white-space: pre;">` 안에 칸의 
 | `undo` / `redo` | 닫은 칸·탭을 원래 자리에 되살리기(`undo-timeout` 안에서) / 되살린 것을 다시 닫기. 되살릴 것이 없으면 키는 프로그램으로 갑니다(Ghostty의 `performable`과 같다) | `super+z` `super+shift+t` / `super+shift+z`(macOS만) |
 | `increase_font_size:N` / `decrease_font_size:N` / `reset_font_size` | 고른 칸의 글자 크기(같은 창의 다른 칸과 다른 창은 그대로). `reset_font_size`는 `font-size`로 | `super+=` / `super+-` / `super+0` |
 | `scroll_page_up` / `scroll_page_down` | 스크롤백 한 쪽 | `shift+page_up` `super+page_up` / 아래도 같음 |
-| `jump_to_prompt:-1` / `jump_to_prompt:1` | 앞·뒤 프롬프트로(셸 통합) | `super+arrow_up` / `super+arrow_down` |
+| `jump_to_prompt:-1` / `jump_to_prompt:1` | 앞·뒤 프롬프트로(셸 통합) | `super+arrow_up` `super+shift+arrow_up` / `super+arrow_down` `super+shift+arrow_down` |
 | `scroll_to_top` / `scroll_to_bottom` | 맨 위 / 맨 아래 | `shift+home` `super+home` / `shift+end` `super+end` |
 | `scroll_page_lines:N` / `scroll_page_fractional:F` | N줄 / 화면의 F배만큼 스크롤(양수면 아래로, 음수면 위로) | (없음) |
-| `toggle_fullscreen` | 전체 화면 켜고 끄기 | `super+ctrl+f` |
+| `toggle_fullscreen` | 전체 화면 켜고 끄기 | `super+ctrl+f` `super+enter`(macOS) |
 | `toggle_maximize` | 지금 창 최대화 켜고 끄기(Ghostty와 같이 기본 키 없음) | (없음) |
 | `toggle_window_float_on_top` | 지금 창을 다른 창 위에 항상 띄우기 켜고 끄기(Ghostty는 macOS만 구현) | (없음) |
-| `close_window` / `close_all_windows` | 지금 창 / 모든 창 닫기. 프로그램이 도는 칸이 있으면 `confirm-close-surface`에 따라 확인 막대로 묻습니다(`close_all_windows`는 Ghostty 문서가 "효과 없음, `all:close_window`를 쓰라"고 한 동작인데 b-terminal은 닫습니다) | (없음, 창 닫기 단추) |
+| `close_window` / `close_all_windows` | 지금 창 / 모든 창 닫기. 프로그램이 도는 칸이 있으면 `confirm-close-surface`에 따라 확인 막대로 묻습니다(`close_all_windows`는 Ghostty 문서가 "효과 없음, `all:close_window`를 쓰라"고 한 동작인데 b-terminal은 닫습니다) | `super+shift+w` / `super+shift+alt+w`(macOS) |
 | `goto_window:previous` / `goto_window:next` | 창을 만든 차례대로 앞·뒤 창에 포커스(끝에서 돌아감, 퀵 터미널은 건너뜀) | (없음) |
 | `move_tab:N` | 지금 탭을 N칸 옮김(양수는 오른쪽, 음수는 왼쪽, 끝을 넘으면 돌아감) | (없음) |
 | `move_tab_to_new_window` | 지금 탭을 새 창으로 떼어 냄. 탭이 하나뿐이면 아무것도 하지 않습니다 | (없음) |
 | `reset_window_size` | 창을 새 창이 만들어질 크기(`window-width`·`window-height`, 없으면 기본)로 되돌림. 전체 화면에서는 하지 않고, 최대화는 풀고 되돌립니다 | (없음) |
 | `toggle_window_decorations` | 지금 창의 제목 막대·테두리 켜고 끄기(Ghostty는 Linux만 구현). 설정을 다시 읽으면 `window-decoration`으로 돌아갑니다 | (없음) |
 | `toggle_visibility` | 모든 창 숨기기 / 다시 보이기(macOS만). 보고 있는 칸이 전체 화면이면 아무것도 하지 않습니다 | (없음, 전역 단축키 `global:`와 함께 쓰는 동작) |
-| `start_search` / `end_search` | 찾기 막대 열기 / 닫기. 막대에서 글을 치면 바로 찾고, Enter는 위로·Shift-Enter는 아래로, Esc로 닫습니다 | `super+f` / (Esc) |
+| `start_search` / `end_search` | 찾기 막대 열기 / 닫기. 막대에서 글을 치면 바로 찾고, Enter는 위로·Shift-Enter는 아래로, Esc로 닫습니다. 기본 묶음은 `performable`이라 막대가 닫혀 있으면 Esc는 프로그램으로 갑니다 | `super+f` / `escape` `super+shift+f`(macOS) |
 | `navigate_search:next` / `navigate_search:previous` | 위(오래된 쪽) / 아래 맞은 곳으로 | `super+g` / `super+shift+g` |
 | `toggle_command_palette` | 명령 팔레트 열기·닫기 | `super+shift+p` |
-| `clear_screen` | 화면 지우기(셸에 Ctrl-L) | `super+k` |
+| `clear_screen` | 화면 지우기(셸에 Ctrl-L). 기본 묶음에 `performable`이 붙어 있지만 b-terminal은 이 동작을 늘 할 수 있는 것으로 봅니다(Ghostty는 대체 화면에서는 키를 프로그램에 보냄, 아직 같지 않음) | `super+k` |
 | `select_all` | 보이는 화면 모두 고르기 | `super+a` |
 | `reload_config` | 설정 다시 읽기 | `super+shift+comma` |
 | `quit` | 앱 끝내기(프로그램이 도는 칸이 있으면 묻습니다) | `super+q` |
@@ -335,8 +336,8 @@ HTML은 `<div style="font-family: monospace; white-space: pre;">` 안에 칸의 
 | `prompt_tab_title` / `set_tab_title:글` | 지금 탭의 제목을 입력 막대로 묻기 / 정하기. 탭 제목은 그 탭 칸들의 제목보다 먼저 보이고, 빈 글이면 지워져 칸 제목으로 돌아갑니다. 닫았다 `undo`하면 따라 돌아옵니다 | (없음, 메뉴 "셸 › 탭 제목 바꾸기…"와 팔레트) |
 | `prompt_window_title` / `set_window_title:글` | 지금 창의 제목을 입력 막대로 묻기 / 정하기. 설정 `title`이 있으면 그것이 먼저이고, 아니면 이 제목, 없으면 지금 탭 제목입니다. 빈 글이면 지웁니다. 탭 줄에는 영향이 없습니다 | (없음, 메뉴 "셸 › 창 제목 바꾸기…"와 팔레트) |
 | `copy_title_to_clipboard` | 지금 칸의 터미널 제목(사람이 붙인 것, 없으면 프로그램이 정한 것)을 클립보드로 복사합니다. 제목이 없거나 비면 하지 않습니다 | (없음, 팔레트) |
-| `write_scrollback_file:할일` / `write_screen_file:할일` / `write_selection_file:할일` | 스크롤백 전체 / 화면 / 고른 글을 파일로 쓰고, 할일이 `copy`면 경로를 클립보드에, `paste`면 칸에 붙여넣고, `open`이면 기본 앱으로 엽니다. 파일은 이 사용자 전용 임시 폴더에 두고 앱이 끝날 때 지웁니다. 고른 글이 없으면 아무것도 하지 않습니다 | (없음, 팔레트에 열기·복사) |
-| `adjust_selection:방향` | 고른 것의 끝점을 옮깁니다. 방향은 `left` `right`(줄 끝에서 앞·뒤 줄로) `up` `down` `page_up` `page_down` `home` `end` `beginning_of_line` `end_of_line`. 고른 것이 없으면 아무것도 하지 않습니다 | (없음) |
+| `write_scrollback_file:할일` / `write_screen_file:할일` / `write_selection_file:할일` | 스크롤백 전체 / 화면 / 고른 글을 파일로 쓰고, 할일이 `copy`면 경로를 클립보드에, `paste`면 칸에 붙여넣고, `open`이면 기본 앱으로 엽니다. 파일은 이 사용자 전용 임시 폴더에 두고 앱이 끝날 때 지웁니다. 고른 글이 없으면 아무것도 하지 않습니다 | `write_screen_file`: `super+shift+j`(paste) `super+shift+alt+j`(open) `super+ctrl+shift+j`(copy)(macOS). 나머지는 (없음, 팔레트에 열기·복사) |
+| `adjust_selection:방향` | 고른 것의 끝점을 옮깁니다. 방향은 `left` `right`(줄 끝에서 앞·뒤 줄로) `up` `down` `page_up` `page_down` `home` `end` `beginning_of_line` `end_of_line`. 고른 것이 없으면 아무것도 하지 않습니다 | `shift+arrow_left` `right` `up` `down`(`performable`이라 고른 것이 없으면 키는 프로그램으로 갑니다). Ghostty는 `shift+home` `end` `page_up` `page_down`도 이 동작이지만 b-terminal은 그 키를 스크롤에 둡니다 |
 | `copy_url_to_clipboard` | 마우스 아래 링크(화면의 URL·OSC 8) 주소를 클립보드에 | (없음) |
 | `toggle_quick_terminal` | 퀵 터미널(화면 가장자리에서 미끄러져 나오는 창) 보이기·숨기기. 자리·크기·화면·움직임은 `quick-terminal-*` 설정. 창 상태 복원에서 빠집니다 | (없음, `global:`로 묶으세요) |
 | `toggle_background_opacity` | 지금 창의 바탕 투명도를 `background-opacity`와 불투명 사이에서 바꿉니다. `background-opacity`가 1 이상이면 아무것도 하지 않습니다(창이 처음부터 불투명하게 만들어집니다). 창마다 따로이고 설정을 다시 읽어도 남습니다. 창 자체를 불투명으로 바꾸는 것이 아니라 바탕을 칠하는 알파만 바꿉니다 | (없음) |
@@ -344,13 +345,13 @@ HTML은 `<div style="font-family: monospace; white-space: pre;">` 안에 칸의 
 | `toggle_secure_input` | 초점 칸의 칸 단위 보안 입력을 켜고 끕니다(그 칸이 초점일 때만 보안 입력이 켜짐). `macos-auto-secure-input = false`면 아무 일도 없습니다. 앱 전체를 켜고 끄는 메뉴 `보안 키보드 입력`과 다릅니다 | (없음) |
 | `toggle_readonly` | 지금 칸을 읽기 전용으로 하거나 풉니다. 읽기 전용 칸에는 키·IME 확정 글자·붙여넣기·마우스 보고·초점 보고·`text:`/`csi:`/`esc:`(`all:` 포함)·`btctl send`·`btctl run`이 모두 가지 않습니다(ADR-018). 고르기·복사·스크롤·키 묶음 동작은 그대로 되고, 칸을 닫거나 끝낼 때는 프로그램이 돌지 않아도 늘 묻습니다. 탭 제목 앞에 🔒가 붙습니다. 프로그램이 물은 것에 터미널이 답하는 바이트(커서 위치·색 질의 등)는 막지 않습니다 | (없음) |
 | `set_window_theme:config` `system` `light` `dark` | 이번 실행 동안의 창 테마. 설정 파일은 바꾸지 않고, 설정을 다시 읽어도 남으며, `config`면 설정의 `window-theme`으로 돌아갑니다. 모든 창에 적용됩니다. `window-theme = auto`처럼 바탕색을 따르는 일은 `config`일 때만 합니다 | (없음) |
-| `open_config` | 설정 파일(`~/.config/b-terminal/config`)을 기본 텍스트 편집기로 엽니다(macOS `open -t`, 셸을 거치지 않고 인자 배열로). 파일이 없으면 주석만 든 견본을 만들어 엽니다. `open_config:os_open`이 기본이고 `new_window`(Ghostty에서는 GTK 전용)는 받아서 같은 일을 합니다. 팔레트·메뉴의 "설정 파일 열기"와 같습니다 | (없음) |
+| `open_config` | 설정 파일(`~/.config/b-terminal/config`)을 기본 텍스트 편집기로 엽니다(macOS `open -t`, 셸을 거치지 않고 인자 배열로). 파일이 없으면 주석만 든 견본을 만들어 엽니다. `open_config:os_open`이 기본이고 `new_window`(Ghostty에서는 GTK 전용)는 받아서 같은 일을 합니다. 팔레트·메뉴의 "설정 파일 열기"와 같습니다 | `super+comma`(macOS) |
 | `text:글` / `csi:…` / `esc:…` | 글·이스케이프 보내기 | |
 | `cursor_key` | Ghostty처럼 설정에 쓸 수 없습니다(Ghostty 안에서만 쓰는 동작). 쓰면 경고하고 묶지 않습니다 |
 | `reset` | 터미널 초기화(VT의 RIS와 같다): 화면·스크롤백·모드·고른 것을 비웁니다. 칸의 프로그램에는 아무것도 보내지 않으므로 셸은 Enter를 눌러야 새 프롬프트를 그립니다 | (없음) |
 | `scroll_to_row:N` | 스크롤백 맨 위를 0으로 센 N번째 줄이 화면 맨 위에 오게 스크롤. 범위를 넘으면 맨 아래 | (없음) |
-| `scroll_to_selection` | 고른 곳이 보이게 스크롤(시작 줄이 이미 보이면 그대로, 아니면 그 줄이 맨 위로). 고른 것이 없으면 아무것도 하지 않습니다 | (없음) |
-| `search:글` / `search_selection` | 그 글로 / 고른 글로 찾기를 시작하고 찾기 막대에 보입니다. 이미 찾는 중이면 글을 바꿉니다. `search:`처럼 글이 비면 찾기만 취소하고 막대는 닫지 않습니다. 글은 이스케이프를 풀지 않고, 첫 줄·256자까지 씁니다. `search_selection`은 고른 것이 없으면 아무것도 하지 않습니다 | (없음) |
+| `scroll_to_selection` | 고른 곳이 보이게 스크롤(시작 줄이 이미 보이면 그대로, 아니면 그 줄이 맨 위로). 고른 것이 없으면 아무것도 하지 않습니다 | `super+j`(macOS, `performable`) |
+| `search:글` / `search_selection` | 그 글로 / 고른 글로 찾기를 시작하고 찾기 막대에 보입니다. 이미 찾는 중이면 글을 바꿉니다. `search:`처럼 글이 비면 찾기만 취소하고 막대는 닫지 않습니다. 글은 이스케이프를 풀지 않고, 첫 줄·256자까지 씁니다. `search_selection`은 고른 것이 없으면 아무것도 하지 않습니다 | `search_selection`: `super+e`(macOS, `performable`) |
 | `set_font_size:N` | 고른 칸의 글자 크기를 N pt로(`increase_font_size`와 같이 6~72로 제한) | (없음) |
 | `unbind` | 그 트리거 지우기 | |
 
