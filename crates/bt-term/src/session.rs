@@ -37,6 +37,17 @@ pub struct GridSize {
 }
 
 impl GridSize {
+    /// 엔진에 넘길 수 있는 최소 크기(2열·1줄, 셀 픽셀 1)로 올린다. 필드가 공개라 0이 들어올 수 있다(Ghostty는 0을 거절한다, Terminal.zig 5274·5302줄.
+    /// `Emulator::new`는 오류를 돌려줄 수 없고 `Session::resize`는 전부터 올렸으므로 하나로 맞춰 올린다)
+    fn clamped(self) -> Self {
+        Self {
+            cols: self.cols.max(2),
+            rows: self.rows.max(1),
+            cell_width: self.cell_width.max(1),
+            cell_height: self.cell_height.max(1),
+        }
+    }
+
     pub fn new(cols: u16, rows: u16) -> Self {
         Self {
             cols: cols.max(2),
@@ -1241,12 +1252,7 @@ impl Session {
     pub fn resize(&self, size: GridSize) {
         // 셀 픽셀 크기는 그대로 둔다: PTY 창 크기(TIOCGWINSZ의 픽셀)와 그림 칸 맞춤이 쓴다.
         // 전에는 GridSize::new로 다시 만들어 8×16으로 바뀌었다(#76에서 고침)
-        let size = GridSize {
-            cols: size.cols.max(2),
-            rows: size.rows.max(1),
-            cell_width: size.cell_width.max(1),
-            cell_height: size.cell_height.max(1),
-        };
+        let size = size.clamped();
         {
             let mut cur = self.size.lock();
             if *cur == size {
@@ -1256,6 +1262,10 @@ impl Session {
         }
         {
             let mut g = self.inner.lock();
+            // 동기 출력(?2026)을 푼다(Ghostty `Terminal.resize`, Terminal.zig 5263줄). 모아 둔 글은 크기를 바꾸기 전에 먹인다
+            // (Ghostty는 글을 모으지 않아 이미 옛 크기 화면에 있다)
+            let Inner { term, parser, .. } = &mut *g;
+            release_sync(term, parser);
             g.term.resize(Dims(size));
             g.cell = (size.cell_width as u32, size.cell_height as u32);
         }
@@ -2093,6 +2103,13 @@ fn visible_images<T>(
     images
 }
 
+/// 동기 출력(DEC 2026)을 모으는 중이면 모아 둔 글을 반영하고 푼다(`Processor::stop_sync`). 아니면 아무것도 하지 않는다
+fn release_sync<H: alacritty_terminal::vte::ansi::Handler>(term: &mut H, parser: &mut Processor) {
+    if parser.sync_timeout().sync_timeout().is_some() {
+        parser.stop_sync(term);
+    }
+}
+
 /// PTY 없이 바이트를 VT로 해석해 화면을 얻는다. 렌더러 테스트와 b-studio 세션 터미널(바이트가 HTTP로 오는 칸)에 쓴다
 pub struct Emulator {
     term: Term<NullListener>,
@@ -2112,6 +2129,7 @@ impl EventListener for NullListener {}
 
 impl Emulator {
     pub fn new(size: GridSize, theme: Theme) -> Self {
+        let size = size.clamped();
         let config = Config {
             osc52: Osc52::Disabled,
             kitty_keyboard: true,
@@ -2124,7 +2142,7 @@ impl Emulator {
             scanner: Scanner::default(),
             search: None,
             graphics: Default::default(),
-            cell: (size.cell_width.max(1) as u32, size.cell_height.max(1) as u32),
+            cell: (size.cell_width as u32, size.cell_height as u32),
             replies: Vec::new(),
         }
     }
@@ -2177,6 +2195,8 @@ impl Emulator {
     }
 
     pub fn resize(&mut self, size: GridSize) {
+        let size = size.clamped();
+        release_sync(&mut self.term, &mut self.parser);
         self.term.resize(Dims(size));
     }
 

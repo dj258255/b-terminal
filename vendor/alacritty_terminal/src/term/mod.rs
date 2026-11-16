@@ -619,8 +619,10 @@ impl<T> Term<T> {
     }
 
     pub fn new<D: Dimensions>(config: Config, dimensions: &D, event_proxy: T) -> Term<T> {
-        let num_cols = dimensions.columns();
-        let num_lines = dimensions.screen_lines();
+        // b-terminal(#584): 크기 0은 1로 올린다(Ghostty `Terminal.init`은 0을 `InvalidValue`로 거절하지만 `new`는 오류를 돌려줄 수 없다.
+        // 0열은 이 아래에서 panic이 났다. 앱은 `GridSize::new`의 최소 크기(2열·1줄)로 먼저 막는다)
+        let num_cols = dimensions.columns().max(1);
+        let num_lines = dimensions.screen_lines().max(1);
 
         let history_size = config.scrolling_history;
         let grid = Grid::new(num_lines, num_cols, history_size);
@@ -877,6 +879,12 @@ impl<T> Term<T> {
 
     /// Resize terminal to new dimensions.
     pub fn resize<S: Dimensions>(&mut self, size: S) {
+        // b-terminal(#584): 크기 0은 아무것도 바꾸기 전에 거절한다(Ghostty `Terminal.resize`, Terminal.zig 5274줄 `resize rejects zero
+        // dimensions before mutation`). 0열은 격자 다시 흘리기에서 panic이 났다
+        if size.columns() == 0 || size.screen_lines() == 0 {
+            debug!("Term::resize rejected zero dimensions");
+            return;
+        }
         // b-terminal(#324): 창 크기를 적어 둔다. 격자가 DECCOLM으로 132·80열이어도 창이 바뀌면 창 크기로 돌아간다
         self.window_size = (size.columns(), size.screen_lines());
         self.resize_grid(size);

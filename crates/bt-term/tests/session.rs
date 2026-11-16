@@ -2224,3 +2224,17 @@ fn adjust_selection_keeps_the_end_cell_when_moving_backwards() {
     assert!(s.adjust_selection(Left));
     assert_eq!(s.selection_text().as_deref(), Some("bcd"));
 }
+
+#[test]
+fn resize_releases_synchronized_output() {
+    // ?2026h 뒤의 글은 모아 두고 150ms 시한까지 화면에 안 나온다. 크기를 바꾸면 Ghostty처럼 바로 풀린다(#584)
+    let (s, _rx) = sh("printf '\\033[?2026hSYNCED'; sleep 5", GridSize::new(40, 10));
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while s.sync_deadline().is_none() {
+        assert!(Instant::now() < deadline, "동기 출력이 시작되지 않았다");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    s.resize(GridSize::new(30, 8));
+    assert!(s.sync_deadline().is_none(), "크기를 바꿨는데 동기 출력이 남았다");
+    wait_until(&s, |t| t.contains("SYNCED"));
+}

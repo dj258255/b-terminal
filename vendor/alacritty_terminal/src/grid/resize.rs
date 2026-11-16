@@ -95,8 +95,12 @@ impl<T: GridCell + Default + PartialEq> Grid<T> {
         self.raw.grow_visible_lines(target);
         self.lines = target;
 
+        // b-terminal(#584): 커서가 맨 아래 줄이 아니면 스크롤백을 끌어내리지 않는다(Ghostty PageList.zig 3084~3100줄:
+        // `pull = cursor.y >= self.rows - 1`, "we don't want to pull down scrollback. This is purely a UX feature").
+        // 올려 본 화면도 그 자리에 남고(`display_offset`은 `scroll_up`이 맞춘다), 커서 줄도 그대로다
+        let pull = self.cursor.point.line.0 as usize + 1 >= self.lines - lines_added;
         let history_size = self.history_size();
-        let from_history = min(history_size, lines_added);
+        let from_history = if pull { min(history_size, lines_added) } else { 0 };
 
         // Move existing lines up for every line that couldn't be pulled from history.
         if from_history != lines_added {
@@ -108,7 +112,9 @@ impl<T: GridCell + Default + PartialEq> Grid<T> {
         self.saved_cursor.point.line += from_history;
         self.cursor.point.line += from_history;
 
-        self.display_offset = self.display_offset.saturating_sub(lines_added);
+        if pull {
+            self.display_offset = self.display_offset.saturating_sub(lines_added);
+        }
         self.decrease_scroll_limit(lines_added);
     }
 
@@ -334,6 +340,14 @@ impl<T: GridCell + Default + PartialEq> Grid<T> {
                             // whitespace and need to wrap it like normal content.
                             Vec::new()
                         } else {
+                            // b-terminal(#584): 줄을 다시 흘리지 않고 잘랐을 때(자동 줄바꿈 끔·대체 화면) 마지막 칸에 꼬리를 잃은
+                            // 넓은 글자 머리가 남으면 빈 칸으로 바꾼다(Ghostty 시험 `resize less cols without reflow cutting wide char tail`,
+                            // Terminal.zig 18659줄)
+                            if row.len() >= columns
+                                && row[Column(columns - 1)].flags().contains(Flags::WIDE_CHAR)
+                            {
+                                row[Column(columns - 1)] = T::default();
+                            }
                             // Since it fits, just push the existing line without any reflow.
                             new_raw.push(row);
                             break;
