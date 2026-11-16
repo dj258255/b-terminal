@@ -253,8 +253,8 @@ fn query_with_bad_id_gets_no_reply_and_nothing_is_injected() {
     ] {
         assert!(feed(&mut s, &st(bad)).is_empty(), "{bad}");
     }
-    // ESC는 OSC를 끊으므로 답이 없다
-    assert!(s.feed(b"\x1b]99;i=\x1b[31m:p=?;\x1b\\").is_empty());
+    // ESC는 OSC를 끝낸다(#595): `i=`까지가 한 패킷이고(제목 글 "i="), 뒤는 새 이스케이프와 글이다. 질의 답은 나가지 않는다
+    assert_eq!(s.feed(b"\x1b]99;i=\x1b[31m:p=?;\x1b\\"), vec![n("i=", "")]);
     // 아주 긴 i
     let long = format!("i={}:p=?;", "a".repeat(MAX_ID_LEN + 1));
     assert!(feed(&mut s, &st(&long)).is_empty());

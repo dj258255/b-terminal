@@ -506,7 +506,14 @@ mod tests {
 
     #[test]
     fn queries_inside_strings_are_not_signals() {
-        assert_eq!(signals(b"\x1b]0;\x1b[>q\x07"), vec![]);
-        assert_eq!(signals(b"\x1b_Gq\x1b[c\x1b\\"), vec![]);
+        // 문자열 안의 ST 아닌 ESC는 문자열을 끝내고, 뒤따르는 `[`부터는 새 CSI다(엔진과 같다, #595). 질의가 ST를 기다리지 않고 답을 받는다
+        assert_eq!(signals(b"\x1b]0;\x1b[>q\x07"), vec![Signal::XtVersion]);
+        assert_eq!(
+            signals(b"\x1b_Gq\x1b[c\x1b\\"),
+            vec![Signal::Graphics(b"q".to_vec()), Signal::Da1]
+        );
+        // 문자열 안의 CSI 모양은 ESC가 없으면 글자일 뿐이다
+        assert_eq!(signals(b"\x1b]0;[>q\x07"), vec![]);
+        assert_eq!(signals(b"\x1b_Gq[c\x1b\\"), vec![Signal::Graphics(b"q[c".to_vec())]);
     }
 }

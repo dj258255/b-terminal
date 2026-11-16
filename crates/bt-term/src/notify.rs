@@ -199,6 +199,8 @@ pub struct Scanner {
     dcs_kind: Option<DcsKind>,
     /// 본문이 상한을 넘어 버리는 중(DECRQSS는 두 바이트, XTGETTCAP은 `MAX_XTGETTCAP`)
     dcs_over: bool,
+    /// 이 DCS 안에서 ESC가 겹쳐 왔다(tmux 패스스루가 안의 ESC를 두 번 쓴다). 그 뒤 `\`가 아닌 바이트가 오면 이 DCS는 우리 것이 아니라 버린다
+    dcs_double: bool,
     /// kitty 알림(OSC 99)의 쌓인 조각. 스캐너는 세션마다 하나라 쌓임도 세션마다 하나다(#561)
     pub(crate) kitty_notify: crate::kitty_notify::Assembler,
 }
@@ -220,6 +222,26 @@ impl Scanner {
     pub fn feed_at(&mut self, bytes: &[u8]) -> Vec<(usize, Signal)> {
         let mut out = Vec::new();
         for (i, &b) in bytes.iter().enumerate() {
+            // 문자열(OSC·APC·DCS) 안에서 ESC 뒤가 `\`가 아니면 그 문자열은 거기서 끝나고, 이 바이트는 새 이스케이프의 둘째 바이트다
+            // (엔진 vte와 Ghostty `Parser.zig`가 같다). OSC·APC는 끝난 것으로 내보내고 DCS는 버린다(#595)
+            match self.st {
+                St::OscEsc if b != b'\\' => {
+                    self.finish(&mut out, i, false);
+                    self.st = St::Esc;
+                }
+                St::ApcEsc if b != b'\\' => {
+                    self.finish_apc(&mut out, i);
+                    self.st = St::Esc;
+                }
+                St::DcsEsc if b != b'\\' && b != 0x1b => {
+                    self.dcs = Vec::new();
+                    self.dcs_kind = None;
+                    // 겹친 ESC(tmux 패스스루) 뒤의 바이트는 안쪽 글이라 다시 읽지 않는다
+                    self.st = if self.dcs_double { St::Ground } else { St::Esc };
+                }
+                St::SkipEsc if b != b'\\' => self.st = St::Esc,
+                _ => {}
+            }
             self.st = match (self.st, b) {
                 (St::Ground, 0x1b) => St::Esc,
                 (St::Ground, 0x9d) => {
@@ -252,6 +274,7 @@ impl Scanner {
                     self.dcs.clear();
                     self.dcs_kind = None;
                     self.dcs_over = false;
+                    self.dcs_double = false;
                     St::DcsHdr
                 }
                 (St::DcsHdr, 0x1b) => St::DcsEsc,
@@ -317,13 +340,11 @@ impl Scanner {
                     St::Ground
                 }
                 // tmux 패스스루 안의 ESC는 두 번 쓴다: 겹친 ESC는 아직 DCS 안이다
-                (St::DcsEsc, 0x1b) => St::DcsEsc,
-                // DCS 안의 ESC 뒤가 \가 아니면 끊긴 것이다
-                (St::DcsEsc, _) => {
-                    self.dcs = Vec::new();
-                    self.dcs_kind = None;
-                    St::Ground
+                (St::DcsEsc, 0x1b) => {
+                    self.dcs_double = true;
+                    St::DcsEsc
                 }
+                (St::DcsEsc, _) => St::Ground,
                 // ENQ는 VT 엔진도 ESC 사이에서 실행한다
                 (St::Esc, 0x05) => {
                     out.push((i + 1, Signal::Enquiry));
@@ -342,6 +363,11 @@ impl Scanner {
                 (St::Esc, 0x1b) => St::Esc,
                 (St::Esc, _) => St::Ground,
                 (St::Apc, 0x1b) => St::ApcEsc,
+                // CAN·SUB는 문자열을 끝내고 Ground로 돌린다. 끝난 APC는 내보낸다(Ghostty `Parser.zig` 281줄 `apc_end`)(#595)
+                (St::Apc, 0x18 | 0x1a) => {
+                    self.finish_apc(&mut out, i + 1);
+                    St::Ground
+                }
                 (St::Apc, b) => {
                     if self.apc.len() >= MAX_APC {
                         self.apc = Vec::new();
@@ -352,13 +378,9 @@ impl Scanner {
                     St::Apc
                 }
                 (St::ApcEsc, b'\\') => {
-                    let raw = std::mem::take(&mut self.apc);
-                    if !self.apc_skip && raw.first() == Some(&b'G') {
-                        out.push((i + 1, Signal::Graphics(raw[1..].to_vec())));
-                    }
+                    self.finish_apc(&mut out, i + 1);
                     St::Ground
                 }
-                // APC 안의 ESC 뒤가 \가 아니면 끊긴 것이다
                 (St::ApcEsc, _) => St::Ground,
                 (St::Csi, b'0'..=b'9' | b';' | b'?') => {
                     // 중간 바이트 뒤의 매개변수는 VT 문법 밖이다
@@ -371,6 +393,8 @@ impl Scanner {
                     St::Csi
                 }
                 (St::Csi, 0x1b) => St::Esc,
+                // CAN·SUB는 CSI를 끊는다(엔진도 그렇다)(#595)
+                (St::Csi, 0x18 | 0x1a) => St::Ground,
                 (St::Csi, 0x05) => {
                     out.push((i + 1, Signal::Enquiry));
                     St::Csi
@@ -443,6 +467,11 @@ impl Scanner {
                     St::Ground
                 }
                 (St::Osc, 0x1b) => St::OscEsc,
+                // CAN·SUB도 OSC를 끝내고 내보낸다(vte `advance_osc_string`, Ghostty `Parser.zig` 276줄: 나가는 바이트와 상관없이 dispatch)(#595)
+                (St::Osc, 0x18 | 0x1a) => {
+                    self.finish(&mut out, i + 1, false);
+                    St::Ground
+                }
                 (St::Osc, b) => {
                     if self.buf.len() >= MAX_OSC {
                         self.buf.clear();
@@ -456,20 +485,23 @@ impl Scanner {
                     self.finish(&mut out, i + 1, false);
                     St::Ground
                 }
-                // ESC 뒤가 \가 아니면 OSC가 끊긴 것이다. 새 이스케이프의 시작으로 본다
-                (St::OscEsc, b']') => {
-                    self.buf.clear();
-                    St::Osc
-                }
                 (St::OscEsc, _) => St::Ground,
-                (St::Skip, 0x07) => St::Ground,
+                (St::Skip, 0x07 | 0x18 | 0x1a) => St::Ground,
                 (St::Skip, 0x1b) => St::SkipEsc,
                 (St::Skip, _) => St::Skip,
                 (St::SkipEsc, b'\\') => St::Ground,
-                (St::SkipEsc, _) => St::Skip,
+                (St::SkipEsc, _) => St::Ground,
             };
         }
         out
+    }
+
+    /// 끝난 APC를 내보낸다(상한을 넘겨 버리는 중이거나 kitty 그래픽(`G`)이 아니면 버린다)
+    fn finish_apc(&mut self, out: &mut Vec<(usize, Signal)>, at: usize) {
+        let raw = std::mem::take(&mut self.apc);
+        if !self.apc_skip && raw.first() == Some(&b'G') {
+            out.push((at, Signal::Graphics(raw[1..].to_vec())));
+        }
     }
 
     fn finish(&mut self, out: &mut Vec<(usize, Signal)>, at: usize, bel: bool) {
@@ -1148,8 +1180,11 @@ mod tests {
     #[test]
     fn control_chars_are_stripped_and_length_capped() {
         let evil = format!("\x1b]777;notify;t\x1b[31m;{}\x07", "가".repeat(2000));
-        // 제목 안의 ESC는 OSC를 끊는다: 끊긴 OSC는 알림을 내지 않는다
-        assert!(notes(evil.as_bytes()).is_empty());
+        // 제목 안의 ESC는 OSC를 끝낸다(#595, 엔진과 같다): 거기까지가 알림이고, 뒤의 `[31m;가가…`는 글자일 뿐 알림 글이 아니다
+        let out = notes(evil.as_bytes());
+        assert_eq!(out.len(), 1);
+        let Signal::Notify(note) = &out[0] else { panic!() };
+        assert_eq!((note.title.as_str(), note.body.as_str()), ("t", ""));
         let long = format!("\x1b]9;{}\x07", "a".repeat(5000));
         let out = notes(long.as_bytes());
         let Signal::Notify(note) = &out[0] else { panic!() };

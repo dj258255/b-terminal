@@ -3,6 +3,9 @@
 //!
 //! 보안: 답에는 요청의 글을 넣지 않는다. 알아본 키를 이 파일의 이름으로 다시 적고, 색은 숫자 세 개를 16진수로 적는다.
 
+use std::collections::HashMap;
+use std::sync::OnceLock;
+
 use alacritty_terminal::event::EventListener;
 use alacritty_terminal::term::Term;
 use alacritty_terminal::vte::ansi::{Handler, NamedColor, Rgb as VtRgb};
@@ -130,6 +133,26 @@ pub fn parse(data: &str) -> Option<Vec<Request>> {
 /// X11 색 이름 표(`r g b 이름`). `+list-colors`와 같은 파일이다
 const X11_COLORS: &str = include_str!("../../bt-app/src/x11_colors.txt");
 
+/// X11 색 이름 표를 소문자 이름으로 찾게 한 번만 만든 것. 이름이 겹치면 앞 줄이 이긴다(줄마다 훑던 때와 같다).
+/// OSC 21 하나에 이름 항목이 수백 개 올 수 있어 줄마다 훑으면 8KiB 하나가 1ms를 넘게 걸렸다(#596)
+fn x11_table() -> &'static HashMap<String, (u8, u8, u8)> {
+    static TABLE: OnceLock<HashMap<String, (u8, u8, u8)>> = OnceLock::new();
+    TABLE.get_or_init(|| {
+        let mut m = HashMap::new();
+        for l in X11_COLORS.lines() {
+            let mut f = l.split_whitespace();
+            let (Some(r), Some(g), Some(b), Some(n)) = (f.next(), f.next(), f.next(), f.next()) else {
+                continue;
+            };
+            let (Ok(r), Ok(g), Ok(b)) = (r.parse(), g.parse(), b.parse()) else {
+                continue;
+            };
+            m.entry(n.to_ascii_lowercase()).or_insert((r, g, b));
+        }
+        m
+    })
+}
+
 /// 16진수 1~4자리를 0~255로 줄인다. 버림이다(Ghostty color.zig `fromHex`: 값*255/최댓값)
 fn scale_hex(digits: &str) -> Option<u8> {
     if digits.is_empty() || digits.len() > 4 || !digits.bytes().all(|b| b.is_ascii_hexdigit()) {
@@ -177,14 +200,7 @@ pub fn parse_color(s: &str) -> Option<(u8, u8, u8)> {
     }
     // rgb.txt의 빈칸 든 이름(106개)은 모두 빈칸을 뺀 이름과 같은 값이라, 빈칸을 빼고 찾는다
     let squeezed: String = s.chars().filter(|&c| c != ' ').collect();
-    let named = X11_COLORS.lines().find_map(|l| {
-        let mut f = l.split_whitespace();
-        let (r, g, b, n) = (f.next()?, f.next()?, f.next()?, f.next()?);
-        if !n.eq_ignore_ascii_case(&squeezed) {
-            return None;
-        }
-        Some((r.parse().ok()?, g.parse().ok()?, b.parse().ok()?))
-    });
+    let named = x11_table().get(squeezed.to_ascii_lowercase().as_str()).copied();
     if named.is_some() {
         return named;
     }
