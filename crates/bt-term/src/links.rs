@@ -71,23 +71,26 @@ pub fn find_urls(chars: &[char]) -> Vec<(usize, usize)> {
         while j < chars.len() && url_char(chars[j]) {
             j += 1;
         }
-        // 끝의 문장 부호와 짝이 없는 닫는 괄호는 URL이 아니다("(https://a.b/c)."에서 ")." 빼기)
+        // 끝의 문장 부호와 짝이 없는 닫는 괄호는 URL이 아니다("(https://a.b/c)."에서 ")." 빼기).
+        // 괄호 수는 한 번만 세고 벗긴 닫는 괄호만큼 줄인다. 벗기는 글자에 여는 괄호는 없어 여는 수는 그대로다.
+        // 전에는 한 글자 벗길 때마다 구간 전체를 다시 세어 긴 닫는 괄호에 제곱 시간이 걸렸다(#597)
+        let count = |c: char| chars[i..j].iter().filter(|&&x| x == c).count();
+        let (paren_open, bracket_open) = (count('('), count('['));
+        let (mut paren_close, mut bracket_close) = (count(')'), count(']'));
         while j > body {
             let last = chars[j - 1];
-            let unbalanced = |open: char, close: char| {
-                last == close && {
-                    let s = &chars[i..j];
-                    s.iter().filter(|&&c| c == close).count() > s.iter().filter(|&&c| c == open).count()
-                }
-            };
-            if matches!(last, '.' | ',' | ';' | ':' | '!' | '?' | '\'' | '*')
-                || unbalanced('(', ')')
-                || unbalanced('[', ']')
-            {
-                j -= 1;
-            } else {
+            let strip = matches!(last, '.' | ',' | ';' | ':' | '!' | '?' | '\'' | '*')
+                || (last == ')' && paren_close > paren_open)
+                || (last == ']' && bracket_close > bracket_open);
+            if !strip {
                 break;
             }
+            match last {
+                ')' => paren_close -= 1,
+                ']' => bracket_close -= 1,
+                _ => {}
+            }
+            j -= 1;
         }
         if j > body {
             out.push((i, j));
@@ -366,6 +369,77 @@ mod tests {
             .into_iter()
             .map(|(a, b)| chars[a..b].iter().collect())
             .collect()
+    }
+
+    /// 0.73까지의 끝 벗기기(글자를 벗길 때마다 구간 전체를 다시 셈). #597 고침이 결과를 바꾸지 않는지 견주는 기준
+    fn reference_find_urls(chars: &[char]) -> Vec<(usize, usize)> {
+        let mut out = Vec::new();
+        let mut i = 0;
+        while i < chars.len() {
+            let scheme = SCHEMES.iter().find(|s| starts_with_ci(chars, i, s));
+            let boundary = i == 0 || !chars[i - 1].is_alphanumeric();
+            let Some(scheme) = scheme.filter(|_| boundary) else {
+                i += 1;
+                continue;
+            };
+            let body = i + scheme.len();
+            let mut j = body;
+            while j < chars.len() && url_char(chars[j]) {
+                j += 1;
+            }
+            while j > body {
+                let last = chars[j - 1];
+                let unbalanced = |open: char, close: char| {
+                    last == close && {
+                        let s = &chars[i..j];
+                        s.iter().filter(|&&c| c == close).count() > s.iter().filter(|&&c| c == open).count()
+                    }
+                };
+                if matches!(last, '.' | ',' | ';' | ':' | '!' | '?' | '\'' | '*')
+                    || unbalanced('(', ')')
+                    || unbalanced('[', ']')
+                {
+                    j -= 1;
+                } else {
+                    break;
+                }
+            }
+            if j > body {
+                out.push((i, j));
+            }
+            i = j.max(i + 1);
+        }
+        out
+    }
+
+    #[test]
+    fn trimming_matches_the_reference_on_generated_text() {
+        // 끝 벗기기에 걸리는 글자만으로 만든 꼬리를 URL 뒤에 붙여 옛 방식과 견준다(#597)
+        let parts = [
+            "(", ")", "[", "]", ".", ",", ";", ":", "!", "?", "'", "*", "a", "/", " ", "https://", "x",
+        ];
+        let mut seed: u64 = 0x5975_9759;
+        for _ in 0..4000 {
+            let mut s = String::from("https://a.b/");
+            for _ in 0..(seed % 24) {
+                seed ^= seed << 13;
+                seed ^= seed >> 7;
+                seed ^= seed << 17;
+                s.push_str(parts[(seed % parts.len() as u64) as usize]);
+            }
+            seed = seed.wrapping_add(0x9E37_79B9);
+            let chars: Vec<char> = s.chars().collect();
+            assert_eq!(find_urls(&chars), reference_find_urls(&chars), "{s:?}");
+        }
+    }
+
+    #[test]
+    fn long_run_of_closers_is_trimmed() {
+        // 끝의 긴 닫는 괄호: 짝이 있는 하나만 남기고 벗긴다(#597, 전에는 벗길 때마다 구간을 다시 세어 제곱 시간)
+        let s = format!("https://a.b/(x){}", ")".repeat(20_000));
+        assert_eq!(urls(&s), vec!["https://a.b/(x)"]);
+        let s = format!("see https://a.b/{} end", "]".repeat(20_000));
+        assert_eq!(urls(&s), vec!["https://a.b/"]);
     }
 
     #[test]
