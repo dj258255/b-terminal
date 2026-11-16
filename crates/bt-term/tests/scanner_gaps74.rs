@@ -173,3 +173,49 @@ fn esc_lf_c_resets_both_engine_and_scanner() {
     );
     assert_eq!(screen_text(&mut e), "");
 }
+
+// ---- 3. DCS 안의 8비트 ST(0x9C) ----
+
+#[test]
+fn dcs_8bit_st_ends_the_dcs_like_the_engine() {
+    // vte `advance_dcs_passthrough`: 0x9C에서 unhook하고 Ground
+    let bytes = b"\x1bP1$r\x9c\x05";
+    let o = oracle(bytes);
+    assert_eq!(o.last().unwrap(), "exec 0x05", "{o:?}");
+    assert!(o.contains(&"unhook".to_string()));
+    // 질의가 아닌 DCS: 끝난 뒤의 ENQ를 스캐너도 읽는다
+    assert_eq!(feed_all(b"\x1bP1$r\x9c\x05"), vec![Signal::Enquiry]);
+    assert_eq!(feed_all(b"\x1bPq\x9c\x05"), vec![Signal::Enquiry]);
+}
+
+#[test]
+fn dcs_8bit_st_answers_a_query_like_esc_backslash() {
+    // 끝을 ST로 보니 `ESC \`와 같이 답한다(vte는 0x9C에서 unhook, Ghostty `Parser.zig` 280줄도 dcs_unhook)
+    let via_esc = feed_all(b"\x1bP$qm\x1b\\");
+    let via_c1 = feed_all(b"\x1bP$qm\x9c");
+    assert_eq!(via_esc.len(), 1, "{via_esc:?}");
+    assert_eq!(via_c1, via_esc);
+    let via_esc = feed_all(b"\x1bP+q544e\x1b\\");
+    let via_c1 = feed_all(b"\x1bP+q544e\x9c");
+    assert_eq!(via_esc.len(), 1, "{via_esc:?}");
+    assert_eq!(via_c1, via_esc);
+}
+
+#[test]
+fn dcs_8bit_st_in_header_is_ignored_like_the_engine() {
+    // 머리(끝 바이트 전)의 0x9C는 vte가 무시하고 DCS를 이어 간다
+    let o = oracle(b"\x1bP$\x9cqm\x1b\\");
+    assert!(o.contains(&"hook q".to_string()), "{o:?}");
+    assert_eq!(feed_all(b"\x1bP$\x9cqm\x1b\\").len(), 1);
+}
+
+#[test]
+fn dcs_8bit_st_scanner_and_emulator_agree() {
+    let mut e = emu();
+    let sigs = e.feed(b"\x1bP$qm\x9chello");
+    assert_eq!(sigs.len(), 1, "{sigs:?}");
+    assert_eq!(screen_text(&mut e), "hello");
+    // 끝난 뒤 새 DCS도 읽는다
+    let sigs = e.feed(b"\x1bP1$r\x9c\x1bP$qm\x9c");
+    assert_eq!(sigs.len(), 1, "{sigs:?}");
+}

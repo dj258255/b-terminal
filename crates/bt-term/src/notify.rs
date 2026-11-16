@@ -304,6 +304,12 @@ impl Scanner {
                     St::DcsBody
                 }
                 (St::DcsHdr, _) => St::DcsHdr,
+                // 8비트 ST(0x9C)도 DCS를 끝낸다: vte는 통과 상태에서 unhook하고 Ground로 간다(`advance_dcs_passthrough` 332줄).
+                // 끝을 ST로 보니 `ESC \`와 같이 다룬다. 머리(끝 바이트 전)의 0x9C는 vte도 무시한다(#598)
+                (St::DcsBody, 0x9c) => {
+                    self.finish_dcs(&mut out, i + 1);
+                    St::Ground
+                }
                 (St::DcsBody, 0x1b) => St::DcsEsc,
                 (St::DcsBody, b) => {
                     if let Some(kind) = self.dcs_kind.filter(|_| !self.dcs_over) {
@@ -322,21 +328,7 @@ impl Scanner {
                     St::DcsBody
                 }
                 (St::DcsEsc, b'\\') => {
-                    let body = std::mem::take(&mut self.dcs);
-                    let kind = self.dcs_kind.take();
-                    if !self.dcs_over {
-                        match kind {
-                            Some(DcsKind::Decrqss) => {
-                                if let Some(d) = crate::dcs::parse_decrqss(&body) {
-                                    out.push((i + 1, Signal::DcsQuery(crate::dcs::Query::Decrqss(d))));
-                                }
-                            }
-                            Some(DcsKind::XtGetTcap) => {
-                                out.push((i + 1, Signal::DcsQuery(crate::dcs::Query::XtGetTcap(body))));
-                            }
-                            None => {}
-                        }
-                    }
+                    self.finish_dcs(&mut out, i + 1);
                     St::Ground
                 }
                 // tmux 패스스루 안의 ESC는 두 번 쓴다: 겹친 ESC는 아직 DCS 안이다
@@ -501,6 +493,25 @@ impl Scanner {
             };
         }
         out
+    }
+
+    /// 끝난 DCS(`ESC \`나 0x9C)를 마무리한다. 우리가 답하는 질의면 신호를 내고, 아니면 버린다
+    fn finish_dcs(&mut self, out: &mut Vec<(usize, Signal)>, at: usize) {
+        let body = std::mem::take(&mut self.dcs);
+        let kind = self.dcs_kind.take();
+        if !self.dcs_over {
+            match kind {
+                Some(DcsKind::Decrqss) => {
+                    if let Some(d) = crate::dcs::parse_decrqss(&body) {
+                        out.push((at, Signal::DcsQuery(crate::dcs::Query::Decrqss(d))));
+                    }
+                }
+                Some(DcsKind::XtGetTcap) => {
+                    out.push((at, Signal::DcsQuery(crate::dcs::Query::XtGetTcap(body))));
+                }
+                None => {}
+            }
+        }
     }
 
     /// 끝난 APC를 내보낸다(상한을 넘겨 버리는 중이거나 kitty 그래픽(`G`)이 아니면 버린다)
