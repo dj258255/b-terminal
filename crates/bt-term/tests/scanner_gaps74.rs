@@ -219,3 +219,66 @@ fn dcs_8bit_st_scanner_and_emulator_agree() {
     let sigs = e.feed(b"\x1bP1$r\x9c\x1bP$qm\x9c");
     assert_eq!(sigs.len(), 1, "{sigs:?}");
 }
+
+// ---- 4. ESC X · ESC ^ (SOS·PM) ----
+
+#[test]
+fn sos_pm_ignore_enq_like_the_engine() {
+    for intro in [&b"\x1bX"[..], b"\x1b^"] {
+        let bytes = [intro, b"a\x05b\x1b\\"].concat();
+        assert!(!oracle(&bytes).contains(&"exec 0x05".to_string()), "{intro:?}");
+        assert_eq!(enq(&feed_all(&bytes)), 0, "{intro:?}");
+    }
+}
+
+#[test]
+fn sos_pm_end_with_st_can_sub_esc() {
+    for intro in [&b"\x1bX"[..], b"\x1b^"] {
+        // ST(ESC \) 뒤의 ENQ는 Ground라 실행된다
+        let b = [intro, b"x\x1b\\\x05"].concat();
+        assert_eq!(enq(&feed_all(&b)), 1, "ST {intro:?}");
+        // CAN·SUB: 엔진은 실행하고 Ground
+        for c in [0x18u8, 0x1a] {
+            let b = [intro, b"x\x05", &[c], b"\x05"].concat();
+            assert_eq!(enq(&feed_all(&b)), 1, "{intro:?} {c:#04x}");
+            assert_eq!(oracle(&b).iter().filter(|e| *e == "exec 0x05").count(), 1);
+        }
+        // ESC 뒤 `[ c`: 문자열이 끝나고 새 CSI다
+        let b = [intro, b"x\x1b[c"].concat();
+        assert_eq!(feed_all(&b), vec![Signal::Da1], "{intro:?}");
+        // ESC 뒤 `]`: 새 OSC
+        let b = [intro, b"x\x1b]9;hi\x07"].concat();
+        assert!(matches!(feed_all(&b).first(), Some(Signal::Notify(_))), "{intro:?}");
+    }
+}
+
+#[test]
+fn sos_pm_scanner_and_emulator_agree() {
+    for intro in [&b"\x1bX"[..], b"\x1b^"] {
+        // 안의 글은 엔진이 먹는다. 스캐너가 그 안의 DA1을 읽지 않는다
+        let mut e = emu();
+        let sigs = e.feed(&[intro, b"abc\x05\x1b\\world"].concat());
+        assert!(sigs.is_empty(), "{sigs:?}");
+        assert_eq!(screen_text(&mut e), "world");
+        // 안의 ESC c는 문자열을 끝내고 RIS다
+        let mut e = emu();
+        e.feed(b"hello");
+        let sigs = e.feed(&[intro, b"abc\x1bc"].concat());
+        assert_eq!(
+            sigs,
+            vec![Signal::Erase {
+                visible: true,
+                scrollback: true
+            }]
+        );
+        assert_eq!(screen_text(&mut e), "");
+    }
+}
+
+#[test]
+fn apc_is_still_its_own_path() {
+    assert_eq!(
+        feed_all(b"\x1b_Ga=q,i=1\x1b\\"),
+        vec![Signal::Graphics(b"a=q,i=1".to_vec())]
+    );
+}

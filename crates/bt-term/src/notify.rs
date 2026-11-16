@@ -151,6 +151,8 @@ enum St {
     /// 상한을 넘은 OSC를 끝까지 버리는 중
     Skip,
     SkipEsc,
+    /// SOS(`ESC X`)·PM(`ESC ^`) 안: 엔진처럼 ST·CAN·SUB·ESC까지 버린다(#598)
+    SosPm,
     /// APC(`ESC _`) 안
     Apc,
     ApcEsc,
@@ -262,6 +264,13 @@ impl Scanner {
                     self.apc_skip = false;
                     St::Apc
                 }
+                // SOS·PM은 엔진이 문자열 상태(무시)로 들어간다(vte `advance_esc` 359·377줄). 그 안의 ENQ는 엔진이 실행하지 않으니 우리도 읽지 않는다.
+                // APC(`ESC _`)는 kitty 그래픽 때문에 위에서 따로 다룬다(#598)
+                (St::Esc, b'X' | b'^') => St::SosPm,
+                // ESC는 문자열을 끝내고 새 이스케이프를 연다(`ESC \`의 `\`는 Escape 상태에서 Ground로 간다). CAN·SUB는 Ground
+                (St::SosPm, 0x1b) => St::Esc,
+                (St::SosPm, 0x18 | 0x1a) => St::Ground,
+                (St::SosPm, _) => St::SosPm,
                 (St::Esc, b'[') => {
                     self.csi.clear();
                     self.csi_taint = false;
