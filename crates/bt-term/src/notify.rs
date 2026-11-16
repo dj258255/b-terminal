@@ -340,7 +340,9 @@ impl Scanner {
                     self.finish_dcs(&mut out, i + 1);
                     St::Ground
                 }
-                // tmux 패스스루 안의 ESC는 두 번 쓴다: 겹친 ESC는 아직 DCS 안이다
+                // tmux 패스스루 안의 ESC는 두 번 쓴다: 겹친 ESC는 아직 DCS 안이다.
+                // 일부러 엔진과 다르다: 엔진은 `ESC ESC`의 둘째 ESC를 새 이스케이프로 읽어 그 뒤 `[ c`를 DA1로 처리하지만,
+                // 우리는 겹친 ESC 뒤의 바이트를 tmux가 감싼 안쪽 글로 보고(위 `dcs_double`) 읽지 않는다. 답이 안 가는 쪽이라 안전하다(#598)
                 (St::DcsEsc, 0x1b) => {
                     self.dcs_double = true;
                     St::DcsEsc
@@ -494,6 +496,8 @@ impl Scanner {
                     St::Ground
                 }
                 (St::OscEsc, _) => St::Ground,
+                // 일부러 엔진과 다르다: 상한(MAX_OSC)을 넘긴 OSC는 BEL·CAN·SUB·ESC로 끝나도 내보내지 않는다. 엔진(vte)은 잘린 OSC를 내보낼 수 있다.
+                // 끝난 문자열의 앞부분만 믿고 알림·폴더·클립보드로 쓰지 않으려는 보안 결정이다(docs/troubleshooting.md, #598)
                 (St::Skip, 0x07 | 0x18 | 0x1a) => St::Ground,
                 (St::Skip, 0x1b) => St::SkipEsc,
                 (St::Skip, _) => St::Skip,

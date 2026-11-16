@@ -282,3 +282,30 @@ fn apc_is_still_its_own_path() {
         vec![Signal::Graphics(b"a=q,i=1".to_vec())]
     );
 }
+
+// ---- 5. 상한을 넘긴 OSC(Skip)는 일부러 엔진과 다르다 ----
+
+#[test]
+fn oversize_osc_is_never_emitted_even_after_can_or_esc() {
+    // 상한(8KiB)을 넘긴 문자열은 내보내지 않는 보안 결정이다. 엔진은 잘린 OSC를 내보낼 수 있다
+    for end in [&b"\x07"[..], b"\x18", b"\x1a", b"\x1b\\", b"\x1b[c"] {
+        let mut v = b"\x1b]9;".to_vec();
+        v.extend(vec![b'a'; 9000]);
+        v.extend(end);
+        let got = feed_all(&v);
+        assert!(!got.iter().any(|s| matches!(s, Signal::Notify(_))), "{end:?}: {got:?}");
+    }
+    // 끝난 뒤의 질의는 읽는다
+    let mut v = b"\x1b]9;".to_vec();
+    v.extend(vec![b'a'; 9000]);
+    v.extend(b"\x18\x1b[c");
+    assert_eq!(feed_all(&v), vec![Signal::Da1]);
+}
+
+// ---- 6. tmux 패스스루 겹친 ESC 뒤는 일부러 엔진과 다르다 ----
+
+#[test]
+fn tmux_double_esc_inner_query_is_not_ours() {
+    assert!(feed_all(b"\x1bPtmux;\x1b\x1bP$qm\x1b\x1b\\\x1b\\").is_empty());
+    assert!(feed_all(b"\x1bPtmux;\x1b\x1b[c\x1b\\").is_empty());
+}
