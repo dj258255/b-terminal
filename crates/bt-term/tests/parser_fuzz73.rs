@@ -432,8 +432,33 @@ fn csi(r: &Rng) -> Vec<u8> {
     out
 }
 
+/// #598: 스캐너와 엔진이 다르게 읽던 바이트(C0, 8비트 ST, SOS·PM)를 섞는다
+fn gap_bytes(r: &Rng) -> Vec<u8> {
+    let mut v = Vec::new();
+    for _ in 0..1 + r.below(6) {
+        match r.below(8) {
+            0 => v.push(*r.pick(&[0x00, 0x01, 0x05, 0x08, 0x0a, 0x0d, 0x17, 0x19, 0x1c, 0x1f])),
+            1 => v.push(0x9c),
+            2 => v.extend(b"\x1bX"),
+            3 => v.extend(b"\x1b^"),
+            4 => v.extend(b"\x1b\\"),
+            5 => v.extend([0x1b, *r.pick(&[0x18u8, 0x1a, 0x05, 0x0a])]),
+            6 => v.extend(*r.pick(&[
+                &b"\x1b]133;A"[..],
+                b"\x1bP$qm",
+                b"\x1bP+q544e",
+                b"\x1b[c",
+                b"\x1b]9;hi\x07",
+            ])),
+            _ => v.extend(rand_bytes(r, r.below(8))),
+        }
+    }
+    v
+}
+
 fn chunk(r: &Rng) -> Vec<u8> {
-    match r.below(12) {
+    match r.below(14) {
+        12 | 13 => gap_bytes(r),
         0..=2 => gfx_apc(r),
         3..=5 => osc(r),
         6 | 7 => dcs(r),
