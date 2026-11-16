@@ -8,6 +8,7 @@
 //! 규칙의 출처는 Ghostty `src/terminal/kitty/graphics_animation.zig`(상태·간격), `graphics_pixel.zig`(픽셀),
 //! `graphics_exec.zig`(프레임 번호·검사), `graphics_storage.zig`(`animationTick`, `deleteAnimationFrame`)다(main 7fa26e8b675f)
 
+use std::collections::VecDeque;
 use std::sync::Arc;
 
 /// 새 프레임에 간격을 안 줬을 때(z 없음 또는 0)의 간격(ms). kitty `DEFAULT_GAP`, Ghostty `default_gap_ms`
@@ -41,7 +42,8 @@ pub struct Frame {
 #[derive(Debug, Clone, Default)]
 pub struct Animation {
     /// 뿌리 다음 프레임: `frames[i]`는 프로토콜 프레임 번호 `i + 2`
-    pub frames: Vec<Frame>,
+    /// 앞뒤에서 빼는 것이 값싸도록 `VecDeque`다(`a=d,d=f`로 앞에서부터 하나씩 지우는 출력이 제곱 시간이 되지 않게, #596)
+    pub frames: VecDeque<Frame>,
     /// 뿌리 프레임의 간격(ms). 0이면 건너뛴다(뿌리는 간격 0으로 생기고 `a=a,r=1,z=N`으로 준다)
     pub root_gap_ms: u32,
     /// 지금 보이는 프레임의 0부터 센 번호: 0은 뿌리, i는 `frames[i - 1]`
@@ -96,12 +98,12 @@ impl Animation {
     /// 프레임을 끝에 더한다. `frames`에 바로 넣지 말고 이것을 쓴다(저장량을 함께 고친다)
     pub fn push_frame(&mut self, f: Frame) {
         self.bytes = self.bytes.saturating_add(f.data.len() + FRAME_OVERHEAD);
-        self.frames.push(f);
+        self.frames.push_back(f);
     }
 
     /// `frames[i]`를 뺀다(저장량을 함께 고친다)
     fn remove_frame(&mut self, i: usize) -> Frame {
-        let f = self.frames.remove(i);
+        let f = self.frames.remove(i).expect("프레임 번호는 호출하는 쪽이 범위를 본다");
         self.bytes = self.bytes.saturating_sub(f.data.len() + FRAME_OVERHEAD);
         f
     }
