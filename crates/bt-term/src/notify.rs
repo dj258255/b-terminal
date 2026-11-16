@@ -877,8 +877,11 @@ mod apc_tests {
         assert_eq!(notes(b"\x1b]22;\x07"), vec![Signal::MouseShape(None)]);
         assert_eq!(notes(b"\x1b]22;banana\x07"), vec![]);
         assert_eq!(notes(b"\x1b]22;Pointer\x07"), vec![]);
-        // 제어 문자가 섞인 이름은 믿지 않는다(ESC는 OSC를 끊으므로 BEL 아닌 다른 제어 문자로)
-        assert_eq!(notes(b"\x1b]22;poi\x01nter\x07"), vec![]);
+        // 이름 안의 C0는 엔진처럼 버린다(#598): 엔진이 `pointer`로 읽는 글을 우리도 같게 읽는다
+        assert_eq!(
+            notes(b"\x1b]22;poi\x01nter\x07"),
+            vec![Signal::MouseShape(Some(crate::mouse_shape::MouseShape::Pointer))]
+        );
         // 너무 긴 이름
         let mut long = b"\x1b]22;".to_vec();
         long.extend(std::iter::repeat_n(b'p', 500));
@@ -1181,9 +1184,16 @@ mod tests {
                 path: PathBuf::from("/a%20b")
             }]
         );
-        // 같은 검증: 경로가 없거나 NUL이 들면 버린다
+        // 같은 검증: 경로가 없거나 NUL이 들면 버린다. 글자로 온 NUL(0x00)은 엔진이 OSC 안에서 버리므로(#598) 퍼센트 인코딩한 `%00`으로 시험한다
         assert!(notes(b"\x1b]7;kitty-shell-cwd://host\x07").is_empty());
-        assert!(notes(b"\x1b]7;kitty-shell-cwd://h/a\0b\x07").is_empty());
+        assert!(notes(b"\x1b]7;file://h/a%00b\x07").is_empty());
+        assert_eq!(
+            notes(b"\x1b]7;kitty-shell-cwd://h/a\0b\x07"),
+            vec![Signal::Cwd {
+                host: "h".into(),
+                path: PathBuf::from("/ab")
+            }]
+        );
         // file 스킴의 퍼센트 해독은 그대로다
         assert_eq!(
             notes(b"\x1b]7;file://h/a%20b\x07"),
@@ -1222,7 +1232,8 @@ mod tests {
         assert_eq!(note.body.chars().count(), MAX_BODY);
         assert!(note.body.ends_with('…'));
         let tabbed = notes(b"\x1b]9;a\tb\x07");
-        assert_eq!(tabbed, vec![n("", "a b")]);
+        // 탭(0x09)도 OSC 안의 C0라 엔진처럼 버린다(#598)
+        assert_eq!(tabbed, vec![n("", "ab")]);
     }
 
     #[test]
