@@ -472,6 +472,9 @@ impl Scanner {
                     self.finish(&mut out, i + 1, false);
                     St::Ground
                 }
+                // 나머지 C0(BEL·CAN·ESC·SUB 말고)는 버린다. 엔진도 OSC 본문에 넣지 않는다(vte `advance_osc_string` 407줄).
+                // 본문에 쌓으면 엔진이 읽은 문자열과 달라지고, ENQ 같은 것을 우리가 실행하지도 않는다(#598)
+                (St::Osc, 0x00..=0x06 | 0x08..=0x17 | 0x19 | 0x1c..=0x1f) => St::Osc,
                 (St::Osc, b) => {
                     if self.buf.len() >= MAX_OSC {
                         self.buf.clear();
