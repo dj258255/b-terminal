@@ -55,7 +55,7 @@
 | [ADR-020](#adr-020-보안-키보드-입력은-pty의-termios로-암호-입력을-추측하고-상태-한-곳이-켠-횟수와-끈-횟수를-맞춘다) | 보안 키보드 입력은 PTY의 termios로 암호 입력을 추측하고, 상태 한 곳이 켠 횟수와 끈 횟수를 맞춘다 | 유효 |
 | [ADR-027](#adr-027-키-입력-모드decbkm-67-1035-1036-1039는-ghostty처럼-pty로-가는-키-바이트를-바꾸고-kitty-키보드-프로토콜이-켜져-있으면-무시한다) | 키 입력 모드(DECBKM 67, 1035, 1036, 1039)는 Ghostty처럼 PTY로 가는 키 바이트를 바꾸고, kitty 키보드 프로토콜이 켜져 있으면 무시한다 | 유효 |
 | [ADR-028](#adr-028-마우스-보고-바이트는-한-곳mouseencode에서-ghostty처럼-만들고-형식은-하나만-켜며-1016은-격자-원점-기준-실제-픽셀을-보낸다) | 마우스 보고 바이트는 한 곳(`mouse::encode`)에서 Ghostty처럼 만들고, 형식은 하나만 켜며, 1016은 격자 원점 기준 실제 픽셀을 보낸다 | 유효 |
-| [ADR-029](#adr-029-키패드-응용-모드-바이트와-modifyotherkeys-상태-2는-ghostty-표대로-키-바이트를-바꾸고-기본값과-kitty-키보드-프로토콜이-켜진-동안은-건드리지-않는다) | 키패드 응용 모드 바이트와 modifyOtherKeys 상태 2는 Ghostty 표대로 키 바이트를 바꾸고, 기본값과 kitty 키보드 프로토콜이 켜진 동안은 건드리지 않는다 | 유효 |
+| [ADR-029](#adr-029-키패드-응용-모드-바이트와-modifyotherkeys-상태-2는-ghostty-표대로-키-바이트를-바꾸고-기본값과-kitty-키보드-프로토콜이-켜진-동안은-건드리지-않는다) | 키패드 응용 모드 바이트와 modifyOtherKeys 상태 2는 Ghostty 표대로 키 바이트를 바꾸고, 기본값과 kitty 키보드 프로토콜이 켜진 동안은 건드리지 않는다 | 일부 바뀜(기본 모드에서도 수식 키가 붙은 Enter·Tab·Esc는 `CSI 27` 꼴, 키패드 숫자 모드는 늘 그 글자, ADR-055) |
 | [ADR-031](#adr-031-xtshiftescape는-프로그램이-shift-클릭을-보고로-보낼지-정하게-하되-alwaysnever가-정한-것은-바꾸지-못한다) | XTSHIFTESCAPE는 프로그램이 Shift 클릭을 보고로 보낼지 정하게 하되, always·never가 정한 것은 바꾸지 못한다 | 유효 |
 | [ADR-049](#adr-049-한국어-입력기로-조합-중-창칸이-포커스를-잃으면-조합-글자를-옛-칸에-확정한다) | 한국어 입력기로 조합 중 창·칸이 포커스를 잃으면 조합 글자를 옛 칸에 확정한다 | 유효 |
 | [ADR-050](#adr-050-kitty-키보드-프로토콜은-다섯-플래그-모두-ghostty-인코더대로-보내고-키-뗌은-누름을-보낸-칸에만-보낸다) | kitty 키보드 프로토콜은 다섯 플래그 모두 Ghostty 인코더대로 보내고, 키 뗌은 누름을 보낸 칸에만 보낸다 | 유효 |
@@ -874,7 +874,7 @@ macOS의 Carbon `EnableSecureEventInput`은 켜 있는 동안 키 입력이 다�
 
 ## ADR-029 키패드 응용 모드 바이트와 modifyOtherKeys 상태 2는 Ghostty 표대로 키 바이트를 바꾸고, 기본값과 kitty 키보드 프로토콜이 켜진 동안은 건드리지 않는다
 
-상태: 채택
+상태: 일부 바뀜(기본 모드에서도 수식 키가 붙은 Enter·Tab·Esc는 `CSI 27` 꼴, 키패드 숫자 모드는 늘 그 글자, ADR-055)
 관련: [#312](https://github.com/dj258255/b-terminal/issues/312), ADR-027(키 입력 모드. 5번과 한계에서 미룬 것을 이 ADR이 한다)
 
 ### 맥락
@@ -891,7 +891,7 @@ macOS의 Carbon `EnableSecureEventInput`은 켜 있는 동안 키 입력이 다�
 
 ### 결과
 - 기본 동작은 바뀌지 않는다. 프로그램이 모드를 켜면 키패드·글자·Enter 등의 바이트가 달라진다. 모드를 켜 둔 채 끝난 프로그램은 `reset`(RIS)으로 되돌린다.
-- 한계: 시험은 바이트와 모드 단위(Ghostty 시험 값)로 했고 실제 키는 창에서 보지 않았다. macOS 키패드가 winit에서 `Numpad` 위치로 오는지는 확인하지 못했다. NumLock이 꺼진 키패드가 이름 키(화살표·Home)로 오는 것은 커서 키와 같은 바이트라 따로 다루지 않았다. 상태 2에서 Ctrl이 붙은 키패드 숫자 등 Ghostty가 키패드 표를 먼저 보는 갈래는 따랐지만, 그 밖의 옛 꼴(Enter·Tab에 수식 키가 있을 때 기본값)은 Ghostty와 다른 채로 두었다.
+- 한계: 시험은 바이트와 모드 단위(Ghostty 시험 값)로 했고 실제 키는 창에서 보지 않았다. macOS 키패드가 winit에서 `Numpad` 위치로 오는지는 확인하지 못했다. NumLock이 꺼진 키패드가 이름 키(화살표·Home)로 오는 것은 커서 키와 같은 바이트라 따로 다루지 않았다. 상태 2에서 Ctrl이 붙은 키패드 숫자 등 Ghostty가 키패드 표를 먼저 보는 갈래는 따랐지만, ~~그 밖의 옛 꼴(Enter·Tab에 수식 키가 있을 때 기본값)은 Ghostty와 다른 채로 두었다.~~ 갱신(#571): ADR-055 결정 7에서 표 전체를 Ghostty와 맞췄다. 키패드 숫자 모드도 이제 응용 모드가 아닐 때 수식 키와 상관없이 그 글자다.
 
 ## ADR-030 kitty 클립보드 프로토콜(OSC 5522)과 붙여넣기 이벤트(모드 5522)는 OSC 52와 같은 정책을 따르고, 상한은 모으기 전에 보며, 암호 허가는 방향·위치별로 한 번만 쓴다
 
@@ -1723,7 +1723,7 @@ E8의 실제 창 로그에서 10ms 넘는 GPU 프레임은 세 가지였다. (1)
 ## ADR-055 레거시 키 인코딩은 Ghostty 앱이 보내는 바이트에 맞추고, Option은 글자 길에서만 설정을 따르며, macOS 기본 키 묶음에 글 편집 다섯 개를 더한다
 
 상태: 채택
-관련: [#567](https://github.com/dj258255/b-terminal/issues/567), ADR-029(키패드·modifyOtherKeys), ADR-050(kitty 키보드)
+관련: [#567](https://github.com/dj258255/b-terminal/issues/567), [#571](https://github.com/dj258255/b-terminal/issues/571), [#572](https://github.com/dj258255/b-terminal/issues/572), [#573](https://github.com/dj258255/b-terminal/issues/573), ADR-029(키패드·modifyOtherKeys), ADR-050(kitty 키보드)
 
 ### 맥락
 - kitty 키보드를 켜지 않은 프로그램(셸·vim·tmux 대부분)에 가는 바이트(레거시 인코딩)는 Ghostty와 한 번도 견준 적이 없었다. Ghostty `key_encode.zig`(main 7fa26e8b675f)의 `legacy:` 시험 44개와 `ctrlseq:` 시험 11개를 옮겨 돌리니, 옮길 수 있는 55개 중 18개가 달랐다. 옮기지 못한 3개는 조합 중(dead key) 시험이다. winit은 조합 중 키를 올리지 않고 확정 글자만 `Ime::Commit`으로 보낸다.
@@ -1737,11 +1737,15 @@ E8의 실제 창 로그에서 10ms 넘는 GPU 프레임은 세 가지였다. (1)
 4. Ctrl·Shift가 붙은 F3은 `ESC[13;수식~`, F13~F25와 Help·메뉴 키는 Ghostty `function_keys.zig`의 값으로 보낸다.
 5. macOS에서 키 묶음에 걸리지 않은 Cmd+글자는 아무것도 보내지 않는다(Ghostty `legacy()` 끝, Terminal.app·iTerm2와 같다).
 6. 시험은 앱 입구(`keys::encode_legacy`)와 `bt_term::ctrl_seq` 두 수준에서 Ghostty 시험 이름을 따라 둔다. kitty 길(ADR-050)의 바이트는 바꾸지 않는다.
+7. 갱신(#571): PC식 함수 키 표(`function_keys.zig`)는 시험 몇 개가 아니라 표 전체(키 67개 × 수식 16가지 × DECCKM·DECKPAM·1035·modifyOtherKeys 2·DECBKM, 34304칸)를 앱 입구에서 견준다. 기대값은 표를 읽는 스크립트로 만들어 시험 자료로 넣는다. 처음 견줄 때 15344칸이 달랐고 원인은 넷이었다: 이름 키에서 Cmd를 수식 키로 세지 않음(이제 수식 번호 9~16), Enter·Tab·Esc의 `ESC[27;수식;코드~` 칸이 modifyOtherKeys 꺼짐에서 없음(Shift+Enter·Ctrl+Enter·Ctrl+Tab·Shift+Esc 등. 수식 키 없음, Alt 혼자, Shift+Tab만 옛 꼴), DECBKM이 Shift·Alt·Cmd가 붙은 Backspace까지 맞바꿈, 키패드 숫자 모드 칸을 응용 모드가 아닐 때 타지 않음.
+8. 갱신(#572): `macos-option-as-alt = left`·`right`는 글자 앞 ESC, modifyOtherKeys 2의 Alt, kitty 연결 글자에서 눌린 Option의 좌우를 가른다. 양쪽이 눌렸으면 오른쪽으로 본다(Ghostty `Ghostty.Input.swift` 88~91줄).
+9. 갱신(#573): 기본 키 묶음은 Ghostty macOS 기본(`Config.zig` 6680~7440줄)과 통째로 견줘, 우리에게 있는 동작은 같은 키와 같은 performable 플래그로 건다. 기본 묶음에 걸린 키(Ctrl+Tab, Cmd+Enter 등)는 인코더에 가지 않고, `keybind = <키>=unbind`로 지우면 7의 바이트가 간다. Escape(찾기 닫기)와 Shift+방향 키(고른 글 끝점)는 performable이라 할 일이 없으면 프로그램으로 간다. 일부러 다른 것: Shift+Home·End·PageUp·PageDown은 Ghostty macOS의 `adjust_selection`이 아니라 스크롤로 둔다. `super+alt+i`(검사기)는 우리에게 그 동작이 없어 걸지 않는다.
 
 ### 감수한 트레이드오프
 - Ctrl+[를 Esc로, Ctrl+i를 Tab으로 쓰던 사람은 `CSI u`를 모르는 프로그램에서 그 키가 듣지 않는다(zsh 5.9의 기본 키 묶음에는 이 바이트가 없다. bash는 확인하지 않았다). Ghostty와 같은 바이트다. `keybind = ctrl+bracket_left=text:\e`, `keybind = ctrl+i=text:\t`로 되돌릴 수 있다.
-- `macos-option-as-alt = left`·`right`는 글자 앞 ESC에서 반대쪽 Option을 가르지 못한다(인코더가 참·거짓만 받는다). 글자 자체는 winit의 `option_as_alt`가 맞춘다.
-- 시험 밖의 차이는 그대로다: 기본 모드에서 수식 키가 붙은 Enter·Tab·Escape(Ghostty는 `ESC[27;수식;코드~`, ADR-029 한계), Cmd가 붙은 이름 키(Ghostty는 수식 9).
+- ~~`macos-option-as-alt = left`·`right`는 글자 앞 ESC에서 반대쪽 Option을 가르지 못한다(인코더가 참·거짓만 받는다). 글자 자체는 winit의 `option_as_alt`가 맞춘다.~~ 갱신(#572): 앱이 눌린 쪽을 반영한 참·거짓을 넘긴다(결정 8).
+- ~~시험 밖의 차이는 그대로다: 기본 모드에서 수식 키가 붙은 Enter·Tab·Escape(Ghostty는 `ESC[27;수식;코드~`, ADR-029 한계), Cmd가 붙은 이름 키(Ghostty는 수식 9).~~ 갱신(#571): 표 전체를 맞췄다(결정 7).
+- 갱신(#571): Shift+Enter·Ctrl+Enter·Ctrl+Tab·Shift+Esc가 `ESC[27;…~`가 되어, 이 꼴을 모르는 셸에서는 글자가 들어간다. 2026-11-16에 `zsh -f`(5.9)와 `bash --norc`(3.2.57)에 바이트를 넣어 보니 둘 다 기본 키 묶음에 이 꼴이 없고, 경고음 뒤 zsh는 `;2;13~`, bash는 `7;2;13~`를 입력 줄에 넣었다(Ctrl+i의 `ESC[105;5u`도 zsh에서 `05;5u`). Ghostty와 같은 바이트다. `keybind = shift+enter=text:\r`처럼 되돌린다. fish·vim·tmux는 재 보지 않았다.
 - `macos-option-as-alt`의 기본은 `false`로 둔다. Ghostty는 정하지 않으면 US·US International 배열에서 켠다(`Config.zig` 3503~3533줄). 우리는 키보드 배열을 읽지 않는다.
 - 실제 창에서 키를 쳐 보지 않았다(키 입력을 흉내 내지 않는다). 바이트는 단위 시험으로만 확인했다.
 
