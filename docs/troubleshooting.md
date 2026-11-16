@@ -113,3 +113,11 @@
   - 줄 수 2 이상에서 나던 같은 자리 패닉은 여백이 아니라 `split_cell_boundary`였다. 화면 맨 윗줄 첫 칸이 넓은 글자이고 앞줄 끝이 그 글자의 자리 표지(스크롤백)인 채 DCH·ECH를 하면, 스크롤백 줄(음수)을 `as usize`로 바꿔 손상 기록에 적어 `index out of bounds: ... 18446744073709551615`로 죽었다
 - 확인하는 법: `crates/bt-term/tests/engine_panics72.rs`의 `single_line_*`·`margin_*`·`dch_with_wide_char_at_top_of_screen_and_history_above`
 - b-terminal: 여백은 Ghostty와 같은 순서로 정하고, 스크롤백 줄은 화면 손상에 적지 않는다(화면에 보이는 줄이 아니다)
+
+## 17. 올려 본 뒤 영역 스크롤을 받으면 올려 본 자리가 스크롤백보다 위를 가리킨다
+
+- 언제: 2026-11-16, #589. 0.71 보안 검토의 퍼징(시드 고정 3만 회)에서 스냅샷의 `display_offset > history`가 887회 나왔다(0.70.0은 1823회). 실제 창에서 겪은 사례가 아니다. `grid/mod.rs`의 `display_iter` 패닉(`snapshot_of`에서 부름)이 이 상태 뒤에 나온다고 보았고, 고친 뒤 같은 퍼징에서 둘 다 0이 된 것만 확인했다(둘의 인과를 따로 증명하지는 않았다)
+- 만드는 바이트 순서(최소 재현): 스크롤백을 만들고(`ESC[3S`) 올려 본 뒤, 줄 수를 늘리고, `ESC[2;4r ESC[3B ESC D`. 위 여백이 맨 위가 아닌 영역에서 줄을 올리는 어떤 출력(IND·LF·SU)이든 같다
+- 원인: `Grid::scroll_up`이 스크롤백이 생기지 않는 영역 스크롤(위 여백 ≠ 0)에서도 올려 본 자리를 줄 수만큼 늘렸다. 올려 본 자리의 상한도 스크롤백 크기가 아니라 최대 스크롤백 한도였다. Ghostty는 올려 본 자리를 페이지 목록의 핀으로 가져(`PageList.zig` viewport) 영역 스크롤에 움직이지 않고 스크롤백 밖을 가리킬 수 없다
+- 확인하는 법: `crates/bt-term/tests/engine_panics72.rs`의 `region_scroll_*`와 시드 고정 퍼징 `fuzz_fixed_seed_has_no_panic_and_keeps_offset_in_history`
+- b-terminal: 올려 본 자리는 스크롤백이 실제로 생기는 길에서만 늘고 스크롤백 크기로 자른다. 그리기 쪽에서 자르는 방어선은 두지 않았다

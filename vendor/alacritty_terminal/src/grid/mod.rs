@@ -290,15 +290,17 @@ impl<T: GridCell + Default + PartialEq> Grid<T> {
             return;
         }
 
-        // Update display offset when not pinned to active area.
-        if history && self.display_offset != 0 {
-            self.display_offset = min(self.display_offset + positions, self.max_scroll_limit);
-        }
-
         // Only rotate the entire history if the active region starts at the top.
         if history && region.start == 0 {
             // Create scrollback for the new lines.
             self.increase_scroll_limit(positions);
+
+            // b-terminal(#589): 올려 본 자리는 스크롤백이 실제로 생기는 이 길에서만 함께 올리고, 스크롤백 안으로 자른다.
+            // 전에는 위 여백이 맨 위가 아닌 영역(스크롤백이 생기지 않음)에서도 늘려 스크롤백보다 위를 가리켰다
+            // (Ghostty는 올려 본 자리가 페이지 목록의 핀이라 영역 스크롤에 움직이지 않고 스크롤백 밖을 가리킬 수 없다)
+            if self.display_offset != 0 {
+                self.display_offset = min(self.display_offset + positions, self.history_size());
+            }
 
             // Swap the lines fixed at the top to their target positions after rotation.
             //
