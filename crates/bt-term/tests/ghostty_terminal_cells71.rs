@@ -392,3 +392,78 @@ fn autowrap_marks_row_wrap() {
     assert!(wrapped(&t, 0));
     assert!(!wrapped(&t, 1));
 }
+
+// Terminal.zig 3870줄 `deleteLines`: 영역 안 줄만 옮기고 스크롤백을 건드리지 않는다(#585).
+// 같은 `scroll_up`을 쓰는 LF·IND·SU(`scrollUp` 3400줄: 맨 위·전체 폭이면 스크롤백을 만든다)는 그대로다.
+fn hist(t: &T) -> usize {
+    t.term.history_size()
+}
+
+fn screen_text(t: &T) -> String {
+    let mut rows = Vec::new();
+    for l in 0..t.term.screen_lines() as i32 {
+        rows.push(
+            (0..t.term.columns())
+                .map(|c| t.cell(l, c).c)
+                .collect::<String>()
+                .trim_end()
+                .to_string(),
+        );
+    }
+    rows.join("|")
+}
+
+#[test]
+fn delete_lines_at_top_makes_no_scrollback() {
+    let mut t = T::new(3, 3);
+    t.feed("AAA\r\nBBB\r\nCCC\x1b[1;1H\x1b[M");
+    assert_eq!(hist(&t), 0);
+    assert_eq!(screen_text(&t), "BBB|CCC|");
+}
+
+#[test]
+fn delete_lines_variants_make_no_scrollback() {
+    // 여러 줄, 영역보다 큰 수, 위쪽 여백이 0인 DECSTBM
+    for seq in [
+        "\x1b[2M",
+        "\x1b[9M",
+        "\x1b[1;2r\x1b[1;1H\x1b[M",
+        "\x1b[1;2r\x1b[1;1H\x1b[5M",
+    ] {
+        let mut t = T::new(3, 3);
+        t.feed("AAA\r\nBBB\r\nCCC\x1b[1;1H");
+        t.feed(seq);
+        assert_eq!(hist(&t), 0, "{seq:?}");
+    }
+    // 이미 쌓인 스크롤백은 그대로
+    let mut t = T::new(3, 2);
+    t.feed("1\r\n2\r\n3\r\n4\x1b[1;1H\x1b[M");
+    assert_eq!(hist(&t), 2);
+    assert_eq!(screen_text(&t), "4|");
+}
+
+#[test]
+fn delete_lines_keeps_display_offset() {
+    let mut t = T::new(3, 3);
+    t.feed("1\r\n2\r\n3\r\n4\r\n5\r\n6\x1b[1;1H");
+    t.term.scroll_display(alacritty_terminal::grid::Scroll::Delta(2));
+    let before = t.term.grid().display_offset();
+    assert_eq!(before, 2);
+    t.feed("\x1b[M");
+    assert_eq!(t.term.grid().display_offset(), before);
+}
+
+#[test]
+fn scroll_up_paths_keep_scrollback() {
+    // LF(맨 아래), IND, SU는 맨 위 영역이면 스크롤백을 만든다(Ghostty `index` 3066줄·`scrollUp` 3400줄)
+    for seq in ["\x1b[3;1H\n", "\x1b[3;1H\x1bD", "\x1b[S", "\x1b[1;2r\x1b[S"] {
+        let mut t = T::new(3, 3);
+        t.feed("AAA\r\nBBB\r\nCCC");
+        t.feed(seq);
+        assert_eq!(hist(&t), 1, "{seq:?}");
+    }
+    // 대체 화면에는 스크롤백이 없다
+    let mut t = T::new(3, 3);
+    t.feed("\x1b[?1049hAAA\r\nBBB\r\nCCC\x1b[S\x1b[1;1H\x1b[M");
+    assert_eq!(hist(&t), 0);
+}

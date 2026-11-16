@@ -1315,7 +1315,12 @@ impl<T> Term<T> {
     /// Text moves up; clear at top
     /// Expects origin to be in scroll range.
     #[inline]
-    fn scroll_up_relative(&mut self, origin: Line, mut lines: usize) {
+    fn scroll_up_relative(&mut self, origin: Line, lines: usize) {
+        self.scroll_up_relative_with(origin, lines, true);
+    }
+
+    /// b-terminal(#585): `history`가 거짓이면 스크롤백을 만들지 않는다(DL)
+    fn scroll_up_relative_with(&mut self, origin: Line, mut lines: usize, history: bool) {
         self.grapheme_anchor = None;
         trace!("Scrolling up relative: origin={origin}, lines={lines}");
 
@@ -1326,7 +1331,11 @@ impl<T> Term<T> {
         // Scroll selection.
         self.selection = self.selection.take().and_then(|s| s.rotate(self, &region, lines as i32));
 
-        self.grid.scroll_up(&region, lines);
+        if history {
+            self.grid.scroll_up(&region, lines);
+        } else {
+            self.grid.scroll_up_in_place(&region, lines);
+        }
 
         // Scroll vi mode cursor.
         let viewport_top = Line(-(self.grid.display_offset() as i32));
@@ -2671,7 +2680,8 @@ impl<T: EventListener> Handler for Term<T> {
 
         if lines > 0 && self.scroll_region.contains(&origin) && self.cursor_in_margins() {
             if self.margins_full() {
-                self.scroll_up_relative(origin, lines);
+                // b-terminal(#585): DL은 스크롤백을 만들지 않는다(Ghostty `deleteLines`는 영역 안 줄만 옮긴다)
+                self.scroll_up_relative_with(origin, lines, false);
                 // b-terminal(#582): 전체 폭 영역에서 옮겨진 줄과 지워진 줄은 줄 이음 표지를 잃는다(Ghostty
                 // `deleteLines` 3942~3948줄의 `wrap = false`, 지운 줄은 `reset()`). 우리는 표지를 마지막 칸의
                 // `WRAPLINE`으로 들므로 커서 줄부터 영역 끝까지 푼다. 좌우 여백이 있으면 줄에 남긴다(아래 `scroll_rect`)
