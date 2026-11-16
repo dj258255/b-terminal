@@ -1746,6 +1746,11 @@ impl<T> Term<T> {
 
         self.damage.damage_line(point.line.0 as usize, left.0, right.0 - 1);
 
+        // b-terminal(#582): EL 1은 마지막 칸까지 지워도 줄 이음 표지를 유지한다(Ghostty `eraseLine` left는
+        // 줄 표지를 건드리지 않는다, Terminal.zig 17168줄 시험). 칸을 지우면 `WRAPLINE`도 함께 사라지므로 되살린다
+        let keep_wrap = matches!(mode, ansi::LineClearMode::Left)
+            && self.grid[point.line][Column(self.columns() - 1)].flags.contains(Flags::WRAPLINE);
+
         if keep_protected {
             self.clear_unprotected(point.line, left..right);
         } else {
@@ -1753,6 +1758,11 @@ impl<T> Term<T> {
             for cell in &mut row[left..right] {
                 *cell = bg.into();
             }
+        }
+
+        if keep_wrap {
+            let last = Column(self.columns() - 1);
+            self.grid[point.line][last].flags.insert(Flags::WRAPLINE);
         }
 
         let range = self.grid.cursor.point.line..=self.grid.cursor.point.line;
@@ -2650,6 +2660,12 @@ impl<T: EventListener> Handler for Term<T> {
         if lines > 0 && self.scroll_region.contains(&origin) && self.cursor_in_margins() {
             if self.margins_full() {
                 self.scroll_up_relative(origin, lines);
+                // b-terminal(#582): 전체 폭 영역에서 옮겨진 줄과 지워진 줄은 줄 이음 표지를 잃는다(Ghostty
+                // `deleteLines` 3942~3948줄의 `wrap = false`, 지운 줄은 `reset()`). 우리는 표지를 마지막 칸의
+                // `WRAPLINE`으로 들므로 커서 줄부터 영역 끝까지 푼다. 좌우 여백이 있으면 줄에 남긴다(아래 `scroll_rect`)
+                for y in origin.0..self.scroll_region.end.0 {
+                    self.reset_row_wrap(Line(y));
+                }
             } else {
                 self.scroll_rect(origin, lines, false);
             }

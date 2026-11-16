@@ -101,10 +101,7 @@ fn zero_width_cap_at_pending_wrap() {
 use alacritty_terminal::vte::ansi::{Color, NamedColor};
 
 fn is_blank_with_bg(c: &alacritty_terminal::term::cell::Cell, bg: Color) -> bool {
-    c.c == ' '
-        && c.bg == bg
-        && c.flags.is_empty()
-        && c.zerowidth().is_none()
+    c.c == ' ' && c.bg == bg && c.flags.is_empty() && c.zerowidth().is_none()
 }
 
 #[test]
@@ -113,7 +110,11 @@ fn overwrite_wide_head_clears_spacer_with_pen() {
     // 굵게·빨간 배경으로 넓은 글자를 쓰고, 기본 펜으로 머리를 덮는다
     t.feed("\x1b[1;41m😀\x1b[0m\x1b[1;1HA");
     assert_eq!(t.cell(0, 0).c, 'A');
-    assert!(is_blank_with_bg(t.cell(0, 1), Color::Named(NamedColor::Background)), "{:?}", t.cell(0, 1));
+    assert!(
+        is_blank_with_bg(t.cell(0, 1), Color::Named(NamedColor::Background)),
+        "{:?}",
+        t.cell(0, 1)
+    );
 }
 
 #[test]
@@ -122,7 +123,11 @@ fn overwrite_wide_head_clears_spacer_with_pen_bg() {
     // 지금 펜이 파란 배경이면 짝 칸은 파란 배경의 빈 칸(Ghostty `blankCell`)
     t.feed("\x1b[1;41m😀\x1b[0;44m\x1b[1;1HA");
     assert_eq!(t.cell(0, 0).c, 'A');
-    assert!(is_blank_with_bg(t.cell(0, 1), Color::Named(NamedColor::Blue)), "{:?}", t.cell(0, 1));
+    assert!(
+        is_blank_with_bg(t.cell(0, 1), Color::Named(NamedColor::Blue)),
+        "{:?}",
+        t.cell(0, 1)
+    );
 }
 
 #[test]
@@ -130,9 +135,17 @@ fn overwrite_wide_tail_clears_head_with_pen() {
     let mut t = T::new(10, 2);
     t.feed("\x1b[1;41m😀\x1b[0m\x1b[1;2HB");
     assert_eq!(t.cell(0, 1).c, 'B');
-    assert!(is_blank_with_bg(t.cell(0, 0), Color::Named(NamedColor::Background)), "{:?}", t.cell(0, 0));
+    assert!(
+        is_blank_with_bg(t.cell(0, 0), Color::Named(NamedColor::Background)),
+        "{:?}",
+        t.cell(0, 0)
+    );
     t.feed("\x1b[1;1H\x1b[1;41m😀\x1b[0;44m\x1b[1;2HC");
-    assert!(is_blank_with_bg(t.cell(0, 0), Color::Named(NamedColor::Blue)), "{:?}", t.cell(0, 0));
+    assert!(
+        is_blank_with_bg(t.cell(0, 0), Color::Named(NamedColor::Blue)),
+        "{:?}",
+        t.cell(0, 0)
+    );
 }
 
 // 덮은 뒤 넓은 글자 표시가 남지 않는다
@@ -157,7 +170,11 @@ fn zwj_narrow_plus_wide_emoji_widens_and_wraps() {
     let mut t = T::new(5, 3);
     t.feed("\x1b[?2027habcd\u{2764}\u{200d}\u{1F44D}");
     // 마지막 칸은 앞 칸 자리 표시가 되고 묶음은 다음 줄 첫 칸에서 넓은 글자가 된다
-    assert!(t.cell(0, 4).flags.contains(Flags::LEADING_WIDE_CHAR_SPACER), "{:?}", t.cell(0, 4));
+    assert!(
+        t.cell(0, 4).flags.contains(Flags::LEADING_WIDE_CHAR_SPACER),
+        "{:?}",
+        t.cell(0, 4)
+    );
     assert_eq!(t.cell(1, 0).c, '\u{2764}');
     assert!(t.cell(1, 0).flags.contains(Flags::WIDE_CHAR));
     assert!(t.cell(1, 1).flags.contains(Flags::WIDE_CHAR_SPACER));
@@ -201,7 +218,11 @@ fn zwj_widening_scrolls_single_row() {
             t.feed("\x1b[1;5H\u{2764}\u{200d}\u{1F44D}");
             let x = if margins { 2 } else { 0 };
             assert_eq!(t.cell(0, x).c, '\u{2764}', "alt={alternate} margins={margins}");
-            assert_eq!(zw(&t, 0, x), vec!['\u{200d}', '\u{1F44D}'], "alt={alternate} margins={margins}");
+            assert_eq!(
+                zw(&t, 0, x),
+                vec!['\u{200d}', '\u{1F44D}'],
+                "alt={alternate} margins={margins}"
+            );
             assert!(t.cell(0, x).flags.contains(Flags::WIDE_CHAR));
             if !alternate {
                 let g = t.term.grid();
@@ -232,4 +253,116 @@ fn zwj_wide_base_stays_wide() {
     t.feed("\x1b[?2027h\u{1F468}\u{200d}\u{1F469}");
     assert!(t.cell(0, 0).flags.contains(Flags::WIDE_CHAR));
     assert_eq!(t.cursor(), (0, 2));
+}
+
+// Terminal.zig 13190줄 `deleteLines resets wrap`, 3942~3948줄, 17168줄 `eraseLine on a blank row`의 EL 1 항목
+// 우리는 줄 이음을 줄의 마지막 칸 `WRAPLINE`으로 든다. 전체 폭 영역을 DL로 옮긴 줄은 이음 표지를 잃고,
+// EL 1(왼쪽 지우기)은 마지막 칸을 지워도 줄 이음 표지를 유지한다(EL 0·EL 2는 지운다).
+use alacritty_terminal::index::Point;
+
+fn wrapped(t: &T, line: i32) -> bool {
+    t.cell(line, t.term.columns() - 1).flags.contains(Flags::WRAPLINE)
+}
+
+fn copy_all(t: &T) -> String {
+    let last = t.term.screen_lines() as i32 - 1;
+    t.term.bounds_to_string(
+        Point::new(Line(0), Column(0)),
+        Point::new(Line(last), Column(t.term.columns() - 1)),
+    )
+}
+
+#[test]
+fn delete_lines_resets_wrap() {
+    let mut t = T::new(3, 3);
+    // "1" 다음 줄에 ABCDEF → ABC(이음) / DEF
+    t.feed("1\r\nABCDEF");
+    assert!(wrapped(&t, 1));
+    t.feed("\x1b[1;2r\x1b[1;1H\x1b[M");
+    t.feed("X");
+    // 옮겨 온 줄과 지운 줄 모두 이음 표지가 없다
+    for line in 0..3 {
+        assert!(!wrapped(&t, line), "line {line}");
+    }
+    assert_eq!(t.cell(0, 0).c, 'X');
+    assert_eq!(t.cell(0, 1).c, 'B');
+    assert_eq!(t.cell(0, 2).c, 'C');
+    assert_eq!(t.cell(2, 0).c, 'D');
+    // 복사하면 줄이 이어지지 않는다
+    assert_eq!(copy_all(&t), "XBC\n\nDEF");
+}
+
+#[test]
+fn delete_lines_resets_wrap_on_all_shifted_rows() {
+    // 4줄 중 위 두 줄이 이어진 줄이고, DL이 그 줄을 위로 올린다
+    let mut t = T::new(3, 4);
+    t.feed("ABCDEFGHI\r\nJ");
+    assert!(wrapped(&t, 0) && wrapped(&t, 1));
+    t.feed("\x1b[1;1H\x1b[M");
+    for line in 0..4 {
+        assert!(!wrapped(&t, line), "line {line}");
+    }
+    // DL 한 번에 영역을 다 지워도 마찬가지
+    let mut t = T::new(3, 3);
+    t.feed("ABCDEFGHI\x1b[1;1H\x1b[5M");
+    for line in 0..3 {
+        assert!(!wrapped(&t, line), "line {line}");
+    }
+}
+
+#[test]
+fn delete_lines_outside_region_leaves_wrap_alone() {
+    // 커서가 영역 밖이면 DL은 아무것도 하지 않으므로 이음 표지도 그대로
+    let mut t = T::new(3, 4);
+    t.feed("ABCDEF\x1b[3;4r\x1b[1;1H\x1b[M");
+    assert!(wrapped(&t, 0));
+}
+
+#[test]
+fn delete_lines_keeps_rows_above_cursor() {
+    // 커서 줄 위의 줄(영역 안이어도 옮기지 않는 줄)은 표지가 그대로
+    let mut t = T::new(3, 4);
+    t.feed("ABCDEFGHI\x1b[2;1H\x1b[M");
+    assert!(wrapped(&t, 0));
+    assert!(!wrapped(&t, 1));
+    assert!(!wrapped(&t, 2));
+}
+
+#[test]
+fn delete_lines_with_left_right_margins_keeps_wrap() {
+    // 좌우 여백이 있으면 줄 이음 표지는 줄에 남는다(Ghostty 3942줄은 전체 폭일 때만 지움)
+    let mut t = T::new(10, 3);
+    t.feed("0123456789abc");
+    assert!(wrapped(&t, 0));
+    t.feed("\x1b[?69h\x1b[2;9s\x1b[1;2H\x1b[M");
+    assert!(wrapped(&t, 0));
+    assert!(!wrapped(&t, 1));
+}
+
+#[test]
+fn erase_line_left_keeps_wrap() {
+    // 17168줄: EL 1은 줄 표지를 유지, EL 0·EL 2는 지운다. 마지막 칸을 지워도 유지한다
+    for (cursor, seq, keeps) in [
+        ("\x1b[1;5H", "\x1b[1K", true), // 커서가 마지막 칸: 마지막 칸까지 지운다
+        ("\x1b[1;3H", "\x1b[1K", true),
+        ("\x1b[1;5H", "\x1b[1;1H\x1b[0K", false),
+        ("\x1b[1;3H", "\x1b[0K", false),
+        ("\x1b[1;3H", "\x1b[2K", false),
+    ] {
+        let mut t = T::new(5, 3);
+        t.feed("ABCDEF");
+        assert!(wrapped(&t, 0));
+        t.feed(cursor);
+        t.feed(seq);
+        assert_eq!(wrapped(&t, 0), keeps, "{cursor:?} {seq:?}");
+    }
+}
+
+#[test]
+fn erase_line_left_wrap_with_protected_last_cell() {
+    // 보호 칸 건너뛰기(DECSEL)에서도 마지막 칸을 지울 때 표지를 유지한다
+    let mut t = T::new(5, 3);
+    t.feed("ABCDEF\x1b[1;5H\x1b[?1K");
+    assert!(wrapped(&t, 0));
+    assert_eq!(t.cell(0, 4).c, ' ');
 }
