@@ -143,3 +143,93 @@ fn overwrite_wide_leaves_no_wide_flags() {
     assert!(!t.cell(0, 0).flags.contains(Flags::WIDE_CHAR));
     assert!(!t.cell(0, 1).flags.contains(Flags::WIDE_CHAR_SPACER));
 }
+
+// Terminal.zig 7384·7404·7335줄 `grapheme transfer when widening ...`, grapheme.zig 66줄 `graphemeWidthEffect`
+// 묶음에 덧붙는 글자가 VS가 아니고 "묶음 안에서 폭 0"이 아니면(폭이 있으면) 묶음은 폭 2로 넓어진다.
+// 좁은 바탕 + ZWJ + 이미 넓은 이모지(❤ + ZWJ + 👍)도 넓어져 다음 줄로 넘어가고, 묶음 글자가 함께 옮겨진다.
+fn zw(t: &T, line: i32, col: usize) -> Vec<char> {
+    t.cell(line, col).zerowidth().map(|z| z.to_vec()).unwrap_or_default()
+}
+
+#[test]
+fn zwj_narrow_plus_wide_emoji_widens_and_wraps() {
+    // 5열: abcd 다음 칸(마지막 칸)에 ❤, ZWJ, 👍
+    let mut t = T::new(5, 3);
+    t.feed("\x1b[?2027habcd\u{2764}\u{200d}\u{1F44D}");
+    // 마지막 칸은 앞 칸 자리 표시가 되고 묶음은 다음 줄 첫 칸에서 넓은 글자가 된다
+    assert!(t.cell(0, 4).flags.contains(Flags::LEADING_WIDE_CHAR_SPACER), "{:?}", t.cell(0, 4));
+    assert_eq!(t.cell(1, 0).c, '\u{2764}');
+    assert!(t.cell(1, 0).flags.contains(Flags::WIDE_CHAR));
+    assert!(t.cell(1, 1).flags.contains(Flags::WIDE_CHAR_SPACER));
+    assert_eq!(zw(&t, 1, 0), vec!['\u{200d}', '\u{1F44D}']);
+}
+
+#[test]
+fn zwj_narrow_plus_narrow_pictographic_widens_like_before() {
+    // 7335줄: ☺ ZWJ ❤는 이미 넓어졌다. 같은 값이어야 한다
+    let mut t = T::new(3, 5);
+    t.feed("\x1b[?2027h\x1b[1;3H\u{263A}\u{200d}\u{2764}");
+    assert!(t.cell(0, 2).flags.contains(Flags::LEADING_WIDE_CHAR_SPACER));
+    assert_eq!(t.cell(1, 0).c, '\u{263A}');
+    assert!(t.cell(1, 0).flags.contains(Flags::WIDE_CHAR));
+    assert_eq!(zw(&t, 1, 0), vec!['\u{200d}', '\u{2764}']);
+}
+
+#[test]
+fn zwj_widening_below_scroll_region() {
+    // 7384줄: 3x3, 위아래 여백 1~2, 커서 (3,3)에서 ❤ ZWJ 👍. 여백 밖 맨 아래 줄이라 스크롤 없이 다음 줄(없음)로
+    let mut t = T::new(3, 3);
+    t.feed("\x1b[?2027h\x1b[1;2r\x1b[3;3H\u{2764}\u{200d}\u{1F44D}");
+    assert_eq!(t.cell(2, 0).c, '\u{2764}');
+    assert_eq!(zw(&t, 2, 0), vec!['\u{200d}', '\u{1F44D}']);
+}
+
+#[test]
+fn zwj_widening_scrolls_single_row() {
+    // 7404줄: 1행 5열. 위 줄(스크롤백)의 묶음은 그대로 둔다. 여백 유무와 대체 화면 유무 4가지
+    for alternate in [false, true] {
+        for margins in [false, true] {
+            let mut t = T::new(5, 1);
+            t.feed("\x1b[?2027h");
+            if alternate {
+                t.feed("\x1b[?1049h\x1b[?2027h");
+            }
+            t.feed("\x1b[1;5Ha\u{301}\n");
+            if margins {
+                t.feed("\x1b[?69h\x1b[3;s");
+            }
+            t.feed("\x1b[1;5H\u{2764}\u{200d}\u{1F44D}");
+            let x = if margins { 2 } else { 0 };
+            assert_eq!(t.cell(0, x).c, '\u{2764}', "alt={alternate} margins={margins}");
+            assert_eq!(zw(&t, 0, x), vec!['\u{200d}', '\u{1F44D}'], "alt={alternate} margins={margins}");
+            assert!(t.cell(0, x).flags.contains(Flags::WIDE_CHAR));
+            if !alternate {
+                let g = t.term.grid();
+                // 맨 위 스크롤백 줄(Ghostty `.screen` y=0)
+                let top = -(t.term.history_size() as i32);
+                let hist = &g[Line(top)][Column(4)];
+                assert_eq!(hist.c, 'a');
+                assert_eq!(hist.zerowidth(), Some(&['\u{301}'][..]));
+            }
+        }
+    }
+}
+
+// 자리가 있으면 그 자리에서 넓어지고 커서는 두 칸 뒤
+#[test]
+fn zwj_narrow_plus_wide_emoji_widens_in_place() {
+    let mut t = T::new(10, 2);
+    t.feed("\x1b[?2027h\u{2764}\u{200d}\u{1F44D}");
+    assert!(t.cell(0, 0).flags.contains(Flags::WIDE_CHAR));
+    assert!(t.cell(0, 1).flags.contains(Flags::WIDE_CHAR_SPACER));
+    assert_eq!(t.cursor(), (0, 2));
+}
+
+// 이미 넓은 바탕에 ZWJ와 넓은 이모지가 붙어도 폭은 그대로 2(0.64 #536의 값 유지)
+#[test]
+fn zwj_wide_base_stays_wide() {
+    let mut t = T::new(10, 2);
+    t.feed("\x1b[?2027h\u{1F468}\u{200d}\u{1F469}");
+    assert!(t.cell(0, 0).flags.contains(Flags::WIDE_CHAR));
+    assert_eq!(t.cursor(), (0, 2));
+}

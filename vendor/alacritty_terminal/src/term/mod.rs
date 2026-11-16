@@ -1883,7 +1883,10 @@ impl<T> Term<T> {
             } else {
                 Effect::NoChange
             }
-        } else if !was_wide && text.width() == 2 {
+        } else if !was_wide && (text.width() == 2 || c.width().is_some_and(|w| w > 0)) {
+            // b-terminal(#581): 묶음에 덧붙는 글자가 폭을 가지면(묶음 안에서 폭 0이 아니면) 묶음은 폭 2다
+            // (Ghostty `graphemeWidthEffect`, grapheme.zig 66줄: `!width_zero_in_grapheme`면 `.wide`). 묶음 전체의
+            // 합산 폭만 보면 ❤+ZWJ+👍처럼 ZWJ 뒤의 넓은 이모지를 놓친다
             Effect::Wide
         } else {
             Effect::NoChange
