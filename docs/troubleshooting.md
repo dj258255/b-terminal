@@ -130,19 +130,21 @@
 - 확인하는 법: `crates/bt-term/tests/parser_fuzz73.rs`의 `can_*`·`esc_*`·`session_answers_da1_after_interrupted_strings`
 - b-terminal: 문자열 안의 CAN·SUB·ESC는 그 문자열을 끝낸다. OSC·APC는 끝난 것으로 내보내고, ESC 뒤 바이트는 새 이스케이프로 다시 읽는다. 일부러 다르게 둔 것: DCS 질의는 끊기면 내보내지 않고(답을 PTY에 쓰는 길이라, 기존 시험이 정한 규칙), 겹친 ESC 뒤(tmux 패스스루)는 다시 읽지 않는다
 
-## 19. 신호 스캐너와 엔진이 C0·8비트 ST·SOS/PM을 다르게 읽어 질의 답이 빠진다
+## 19. 신호 스캐너와 엔진이 C0·8비트 ST·SOS/PM·DCS 머리를 다르게 읽어 질의 답이 빠진다
 
-- 언제: 2026-11-16, #598. 0.73 보안 검토(코드 읽기)에서 찾았다. 실제 창에서 겪은 사례가 아니고, 프로그램이 이런 바이트를 내는 빈도는 재지 않았다. 모두 스캐너가 덜 보는 쪽이라 답이나 알림이 빠질 뿐 주입은 되지 않는다(4번은 ENQ 답이 더 나가는 쪽이지만 Ground에서 ENQ를 직접 보내도 같아 새 능력은 아니다)
+- 언제: 2026-11-16, #598. 0.73 보안 검토(코드 읽기)에서 찾았다. 실제 창에서 겪은 사례가 아니고, 프로그램이 이런 바이트를 내는 빈도는 재지 않았다. 모두 스캐너가 덜 보는 쪽이라 답이나 알림이 빠질 뿐 주입은 되지 않는다(4·5번은 답이 더 나가는 쪽이지만 Ground에서 같은 질의·ENQ를 직접 보내도 같아 새 능력은 아니다). 5번(DCS 머리)은 0.74 PR 전체 보안 검토에서 찾았다
 - 만드는 바이트 순서(최소 재현)와 엔진의 동작(기준은 vendor/vte `src/lib.rs`):
   - OSC 안의 C0: `ESC ] 133 ; 0x01 A BEL`. 엔진은 0x01을 버려 `133;A`로 읽는데(407~413줄) 스캐너는 본문에 쌓아 프롬프트 표시를 놓쳤다
   - ESC 바로 뒤의 C0: `ESC LF [ c`·`ESC LF c`. 엔진은 LF를 실행하고 Escape에 머물러 DA1·RIS를 읽는데(340~347줄) 스캐너는 Ground로 가서 신호가 빠졌다
   - DCS 안의 8비트 ST: `ESC P $ q m 0x9C`. 엔진은 0x9C에서 unhook하고 Ground로 가는데(332줄) 스캐너는 다음 ESC까지 본문으로 모아 DECRQSS 답이 안 갔고 뒤의 바이트를 읽지 못했다
   - SOS·PM: `ESC X … ENQ … ESC \`·`ESC ^ …`. 엔진은 문자열 상태로 들어가 안의 바이트를 무시하는데(359·377줄) 스캐너는 Ground로 읽어 안의 ENQ에 답했다
+  - 엔진이 무시하는 DCS 머리: `ESC P $ 0 q m 0x9C ENQ`·`ESC P 1 ? $ q m 0x9C ENQ`. 엔진은 중간 바이트 뒤의 0x30~0x3F(291줄)와 첫 자리가 아닌 0x3C~0x3F(309줄)에서 무시 상태로 가고, 무시 상태는 ESC·CAN·SUB로만 끝난다(175줄). 스캐너는 매개변수를 건너뛰고 DECRQSS로 받아 0x9C에서 답했고 뒤의 ENQ에도 답했다. 맨 앞의 `?`(`ESC P ? $ q`)는 엔진·Ghostty가 중간 바이트로 모아 중간 바이트가 둘이 되는데, 스캐너는 `$`만 보고 답했다
 - 확인하는 법: `crates/bt-term/tests/scanner_gaps74.rs`(vte 파서에 같은 바이트를 먹여 엔진의 동작을 확인하고, `Emulator::feed`에 같이 넣어 신호와 화면을 견준다)
 - b-terminal: 네 틈 모두 엔진과 같게 맞췄다.
   - OSC 안의 C0(BEL·CAN·SUB·ESC 말고)는 버린다
   - ESC 뒤의 C0는 Escape에 머문다(ENQ는 Enquiry를 내고, CAN·SUB는 Ground)
   - DCS 본문의 0x9C는 `ESC \`와 같이 DCS를 끝내고 질의에 답한다(Ghostty `Parser.zig` 280줄도 dcs_passthrough를 나갈 때 늘 unhook한다). 머리의 0x9C는 vte가 무시하므로 그대로 둔다
+  - 엔진이 무시하는 DCS 머리는 스캐너도 따로 둔 무시 상태로 ESC·CAN·SUB까지 버린다(0x9C로 끝나지 않음). 머리 상한(16바이트)을 넘겨도 중간 바이트가 나왔는지는 센다. 맨 앞의 `< = > ?`는 중간 바이트로 세어 `$q`·`+q`에 맞지 않게 한다. 숫자 매개변수(`ESC P 1 $ q`)는 전처럼 보지 않는다
   - SOS·PM은 ST(`ESC \`)·CAN·SUB·ESC까지 무시한다. SOS·PM 안의 0x9C는 vte가 끝으로 보지 않아(`SosPmApcString`은 `anywhere`만 읽는다) 같게 무시한다. Ghostty는 0x9C로 끝내므로(`Parser.zig` 시험 437~438줄) 이 한 가지는 vte와 Ghostty가 다르고, 엔진(vte)을 따랐다
 - 일부러 엔진과 다르게 둔 것:
   - 상한(8KiB)을 넘겨 버리는 중인 OSC(Skip)는 BEL·CAN·SUB·ESC로 끝나도 내보내지 않는다. 엔진은 잘린 OSC를 내보낼 수 있다. 문자열 앞부분만 믿고 알림·폴더·클립보드로 쓰지 않으려는 보안 결정이다
