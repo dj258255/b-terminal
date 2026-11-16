@@ -611,7 +611,7 @@ fn option_arrows_reach_the_encoder_as_xterm_alt_when_unbound() {
         let left = ev(KeyCode::ArrowLeft).mods(ALT);
         assert_eq!(run(&left, alt_esc(opt)), b"\x1b[1;3D", "option-as-alt={opt}");
     }
-    // Cmd 수식 키는 이름 키 바이트에 들어가지 않는다(Ghostty `ESC[1;9D`와 다르다. 따로 두었다)
-    assert_eq!(run(&ev(KeyCode::ArrowLeft).mods(SUPER), default()), b"\x1b[D");
+    // Cmd도 PC식 함수 키 표의 수식 키다(수식 번호 9, #571). 0.69까지는 빼서 `ESC[D`였다
+    assert_eq!(run(&ev(KeyCode::ArrowLeft).mods(SUPER), default()), b"\x1b[1;9D");
     assert_eq!(run(&ev(KeyCode::Backspace).mods(SUPER), default()), b"\x7f");
 }
