@@ -263,8 +263,26 @@ impl<T: GridCell + Default + PartialEq> Grid<T> {
         T: ResetDiscriminant<D>,
         D: PartialEq,
     {
+        self.scroll_up_with_history(region, positions, true);
+    }
+
+    /// b-terminal(#585): 영역 안에서만 줄을 올리고 스크롤백은 만들지 않는다(DL). 영역이 맨 위에서 시작해도
+    /// 지운 줄은 어디에도 쌓이지 않고 보는 위치(display_offset)도 바뀌지 않는다.
+    pub fn scroll_up_in_place<D>(&mut self, region: &Range<Line>, positions: usize)
+    where
+        T: ResetDiscriminant<D>,
+        D: PartialEq,
+    {
+        self.scroll_up_with_history(region, positions, false);
+    }
+
+    fn scroll_up_with_history<D>(&mut self, region: &Range<Line>, positions: usize, history: bool)
+    where
+        T: ResetDiscriminant<D>,
+        D: PartialEq,
+    {
         // When rotating the entire region with fixed lines at the top, just reset everything.
-        if region.end - region.start <= positions && region.start != 0 {
+        if region.end - region.start <= positions && (region.start != 0 || !history) {
             for i in (region.start.0..region.end.0).map(Line::from) {
                 self.raw[i].reset(&self.cursor.template);
             }
@@ -273,12 +291,12 @@ impl<T: GridCell + Default + PartialEq> Grid<T> {
         }
 
         // Update display offset when not pinned to active area.
-        if self.display_offset != 0 {
+        if history && self.display_offset != 0 {
             self.display_offset = min(self.display_offset + positions, self.max_scroll_limit);
         }
 
         // Only rotate the entire history if the active region starts at the top.
-        if region.start == 0 {
+        if history && region.start == 0 {
             // Create scrollback for the new lines.
             self.increase_scroll_limit(positions);
 

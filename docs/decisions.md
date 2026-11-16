@@ -45,6 +45,7 @@
 | [ADR-014](#adr-014-글자-묶음-폭mode-2027을-위해-alacritty_terminal을-vendor로-고쳐-쓴다) | 글자 묶음 폭(mode 2027)을 위해 alacritty_terminal을 vendor로 고쳐 쓴다 | 유효 |
 | [ADR-025](#adr-025-윗줄sgr-5355은-vte를-vendor로-들여와-해석하고-격자-빈-비트-하나로-들고-글자색으로-긋는다) | 윗줄(SGR 53·55)은 vte를 vendor로 들여와 해석하고, 격자 빈 비트 하나로 들고, 글자색으로 긋는다 | 유효 |
 | [ADR-052](#adr-052-접근성은-accesskit로-보이는-화면만-늦춰서-내놓고-요청은-포커스만-받는다) | 접근성은 accesskit로, 보이는 화면만 늦춰서 내놓고 요청은 포커스만 받는다 | 유효 |
+| [ADR-056](#adr-056-한-칸에-덧붙는-글자는-64개까지만-두고-엔진이-ghostty와-다른-곳은-xterm과-같은-쪽이-아니면-ghostty를-따른다) | 한 칸에 덧붙는 글자는 64개까지만 두고, 엔진이 Ghostty와 다른 곳은 xterm과 같은 쪽이 아니면 Ghostty를 따른다 | 유효 |
 
 ### 입력·IME
 
@@ -1751,3 +1752,29 @@ E8의 실제 창 로그에서 10ms 넘는 GPU 프레임은 세 가지였다. (1)
 
 ### 보안
 - 바이트는 사람이 누른 키와 고정 표로만 만들고, 터미널에 찍힌 글은 들어가지 않는다. 새 기본 키 묶음도 고정 바이트만 보낸다. 새로 생기는 보안 경계는 없다.
+
+## ADR-056 한 칸에 덧붙는 글자는 64개까지만 두고, 엔진이 Ghostty와 다른 곳은 xterm과 같은 쪽이 아니면 Ghostty를 따른다
+
+상태: 채택
+관련: [#577](https://github.com/dj258255/b-terminal/issues/577), [#579](https://github.com/dj258255/b-terminal/issues/579), [#580](https://github.com/dj258255/b-terminal/issues/580), [#581](https://github.com/dj258255/b-terminal/issues/581), [#582](https://github.com/dj258255/b-terminal/issues/582), [#583](https://github.com/dj258255/b-terminal/issues/583), [#584](https://github.com/dj258255/b-terminal/issues/584), [#585](https://github.com/dj258255/b-terminal/issues/585), ADR-001(엔진), ADR-014(엔진 사본), ADR-010(그림 상한)
+
+### 맥락
+- 0.62·0.63에 이어 Ghostty `Terminal.zig`(main 7fa26e8b675f)의 시험 가운데 번역기가 건너뛴 197개를 손으로 옮겨 우리 엔진과 견줬다(#577). 같음 145, 다름 21(원인 14가지), 옮길 수 없음 31이었고 panic은 없었다.
+- 가장 큰 차이는 한 칸에 덧붙는 글자(결합 문자·ZWJ·변형 선택자)에 상한이 없는 것이었다. 결합 문자 2000만 개를 보내니 한 칸에 2000만 개가 쌓였다(release 빌드, 조사 에이전트가 한 번 잰 값). Ghostty는 64개에서 자른다(`page.zig` 92줄 `grapheme_max_len`, 1712줄).
+- `CSI 0 L`·`0 M`·`0 P`는 Ghostty가 아무것도 하지 않고, 우리(vte)는 xterm처럼 0을 1로 본다.
+
+### 결정
+1. 한 칸에 덧붙는 글자는 64개까지만 두고 나머지는 버린다. `vendor/alacritty_terminal`의 `Cell::push_zerowidth` 한 곳에서 지키며, 덧붙는 글자를 담는 칸은 비공개라 다른 길이 없다.
+2. 엔진이 Ghostty와 다른 곳은 Ghostty를 따라 `vendor/alacritty_terminal`을 고친다: 넓은 글자를 덮은 짝 칸(#580), 좁은 글자+ZWJ+폭 있는 글자의 넓힘(#581), 줄 이음 표지(DL은 풀고, EL 1과 마지막 칸 덮어쓰기는 남김, #582), `redraw=last` 프롬프트 재흐름(#583), 크기 바꾸기 둘레(동기 출력 풀기, 잘린 넓은 글자, 올려 본 화면 유지, 크기 0 막기, #584), 맨 윗줄 DL이 스크롤백을 만들지 않음(#585).
+3. 우리 동작이 xterm과 같고 Ghostty가 xterm에서 벗어난 곳(`CSI 0 L`·`0 M`·`0 P`)은 xterm을 따른다.
+4. 매우 드문 조합이라 고치지 않고 둔다: VS15가 넓은 칸을 좁히는 경계 둘, `?7l`에서 대기 중 CBT 뒤 대기 줄바꿈, 상태 줄(DECSASD), GR 뱅크(LS1R~LS3R). 이유는 #577 댓글에 적었다.
+
+### 감수한 트레이드오프
+- 64개를 넘는 덧붙는 글자는 화면과 복사에서 사라진다(Ghostty와 같다).
+- 고친 곳마다 vendor 사본이 원본 alacritty_terminal에서 더 멀어진다. 고친 곳은 `vendor/README.md`에 적고 `b-terminal(#번호)` 주석으로 찾게 한다.
+- 크기를 바꿀 때 커서가 맨 아래가 아니면 스크롤백을 끌어내리지 않아, 올려 보지 않은 화면에서도 동작이 바뀐다(Ghostty와 같다).
+- 실제 창에서는 평소 화면만 견줬고, 장면마다 눈으로 보지는 않았다. 엔진에 바이트를 직접 넣는 시험으로 확인했다.
+
+### 보안
+- 결정 1은 믿지 않는 출력(프로그램이나 `cat`한 파일)이 한 칸의 메모리를 끝없이 늘리지 못하게 하는 상한이다. 입력 바이트 자체의 양은 PTY 쪽이 따로 맡는다.
+- 크기 0 막기(#584)는 창 크기 경로의 panic 방지이고, 터미널 출력으로는 닿지 않는다.

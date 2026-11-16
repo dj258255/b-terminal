@@ -619,8 +619,10 @@ impl<T> Term<T> {
     }
 
     pub fn new<D: Dimensions>(config: Config, dimensions: &D, event_proxy: T) -> Term<T> {
-        let num_cols = dimensions.columns();
-        let num_lines = dimensions.screen_lines();
+        // b-terminal(#584): 크기 0은 1로 올린다(Ghostty `Terminal.init`은 0을 `InvalidValue`로 거절하지만 `new`는 오류를 돌려줄 수 없다.
+        // 0열은 이 아래에서 panic이 났다. 앱은 `GridSize::new`의 최소 크기(2열·1줄)로 먼저 막는다)
+        let num_cols = dimensions.columns().max(1);
+        let num_lines = dimensions.screen_lines().max(1);
 
         let history_size = config.scrolling_history;
         let grid = Grid::new(num_lines, num_cols, history_size);
@@ -877,6 +879,12 @@ impl<T> Term<T> {
 
     /// Resize terminal to new dimensions.
     pub fn resize<S: Dimensions>(&mut self, size: S) {
+        // b-terminal(#584): 크기 0은 아무것도 바꾸기 전에 거절한다(Ghostty `Terminal.resize`, Terminal.zig 5274줄 `resize rejects zero
+        // dimensions before mutation`). 0열은 격자 다시 흘리기에서 panic이 났다
+        if size.columns() == 0 || size.screen_lines() == 0 {
+            debug!("Term::resize rejected zero dimensions");
+            return;
+        }
         // b-terminal(#324): 창 크기를 적어 둔다. 격자가 DECCOLM으로 132·80열이어도 창이 바뀌면 창 크기로 돌아간다
         self.window_size = (size.columns(), size.screen_lines());
         self.resize_grid(size);
@@ -898,7 +906,7 @@ impl<T> Term<T> {
         debug!("New num_cols is {num_cols} and num_lines is {num_lines}");
 
         // b-terminal(#482): 줄 나누기 전에 프롬프트 줄들을 줄 수가 바뀌지 않는 빈 줄로 만든다
-        self.semantic_blank_prompt_for_resize(num_cols);
+        let lost_wraps = self.semantic_blank_prompt_for_resize(num_cols);
 
         // Move vi mode cursor with the content.
         let history_size = self.history_size();
@@ -911,8 +919,8 @@ impl<T> Term<T> {
         // b-terminal(#537): 다시 흘리기는 주 화면만, 자동 줄바꿈(DECAWM)이 켜져 있을 때만 한다
         // (Ghostty `Terminal.zig` `resize`의 `.reflow = modes.get(.wraparound)`, 대체 화면은 흘리지 않음)
         let reflow = self.mode.contains(TermMode::LINE_WRAP);
-        self.grid.resize(!is_alt && reflow, num_lines, num_cols);
-        self.inactive_grid.resize(is_alt && reflow, num_lines, num_cols);
+        self.grid.resize_with_lost_wraps(!is_alt && reflow, num_lines, num_cols, if is_alt { 0 } else { lost_wraps });
+        self.inactive_grid.resize_with_lost_wraps(is_alt && reflow, num_lines, num_cols, if is_alt { lost_wraps } else { 0 });
 
         // Invalidate selection and tabs only when necessary.
         if old_cols != num_cols {
@@ -1307,7 +1315,12 @@ impl<T> Term<T> {
     /// Text moves up; clear at top
     /// Expects origin to be in scroll range.
     #[inline]
-    fn scroll_up_relative(&mut self, origin: Line, mut lines: usize) {
+    fn scroll_up_relative(&mut self, origin: Line, lines: usize) {
+        self.scroll_up_relative_with(origin, lines, true);
+    }
+
+    /// b-terminal(#585): `history`가 거짓이면 스크롤백을 만들지 않는다(DL)
+    fn scroll_up_relative_with(&mut self, origin: Line, mut lines: usize, history: bool) {
         self.grapheme_anchor = None;
         trace!("Scrolling up relative: origin={origin}, lines={lines}");
 
@@ -1318,7 +1331,11 @@ impl<T> Term<T> {
         // Scroll selection.
         self.selection = self.selection.take().and_then(|s| s.rotate(self, &region, lines as i32));
 
-        self.grid.scroll_up(&region, lines);
+        if history {
+            self.grid.scroll_up(&region, lines);
+        } else {
+            self.grid.scroll_up_in_place(&region, lines);
+        }
 
         // Scroll vi mode cursor.
         let viewport_top = Line(-(self.grid.display_offset() as i32));
@@ -1746,6 +1763,11 @@ impl<T> Term<T> {
 
         self.damage.damage_line(point.line.0 as usize, left.0, right.0 - 1);
 
+        // b-terminal(#582): EL 1은 마지막 칸까지 지워도 줄 이음 표지를 유지한다(Ghostty `eraseLine` left는
+        // 줄 표지를 건드리지 않는다, Terminal.zig 17168줄 시험). 칸을 지우면 `WRAPLINE`도 함께 사라지므로 되살린다
+        let keep_wrap = matches!(mode, ansi::LineClearMode::Left)
+            && self.grid[point.line][Column(self.columns() - 1)].flags.contains(Flags::WRAPLINE);
+
         if keep_protected {
             self.clear_unprotected(point.line, left..right);
         } else {
@@ -1753,6 +1775,11 @@ impl<T> Term<T> {
             for cell in &mut row[left..right] {
                 *cell = bg.into();
             }
+        }
+
+        if keep_wrap {
+            let last = Column(self.columns() - 1);
+            self.grid[point.line][last].flags.insert(Flags::WRAPLINE);
         }
 
         let range = self.grid.cursor.point.line..=self.grid.cursor.point.line;
@@ -1776,10 +1803,13 @@ impl<T> Term<T> {
             // Remove wide char and spacer.
             let wide = cursor_cell.flags.contains(Flags::WIDE_CHAR);
             let point = self.grid.cursor.point;
+            // b-terminal(#580): 짝이 되는 칸은 지금 펜(배경색 포함)의 빈 칸이 된다(Ghostty `writeCell`의
+            // `clearCells(.., blankCell())`, Terminal.zig 2310~2349줄). 옛 굵게·배경색을 남기지 않는다.
+            let bg = self.grid.cursor.template.bg;
             if wide && point.column < self.last_column() {
-                self.grid[point.line][point.column + 1].flags.remove(Flags::WIDE_CHAR_SPACER);
+                self.blank_wide_partner(point.line, point.column + 1, bg);
             } else if point.column > 0 {
-                self.grid[point.line][point.column - 1].clear_wide();
+                self.blank_wide_partner(point.line, point.column - 1, bg);
             }
 
             // Remove leading spacers.
@@ -1795,7 +1825,11 @@ impl<T> Term<T> {
         cursor_cell.fg = fg;
         cursor_cell.bg = bg;
         // b-terminal(#314): 쓴 칸 표시. b-terminal(#329): 0번 칸에 둔 줄의 프롬프트 표시는 덮어써도 남긴다
-        cursor_cell.flags = flags | Flags::WRITTEN | (cursor_cell.flags & (Flags::ROW_PROMPT | Flags::ROW_PROMPT_CONTINUATION));
+        // b-terminal(#582): 줄 이음 표지(`WRAPLINE`)는 줄의 것이라 칸을 덮어써도 남긴다(Ghostty는 칸을 쓸 때 `row.wrap`을
+        // 건드리지 않는다. 지우는 것은 EL 0·2, ECH, DL 등 줄 단위 동작뿐이다)
+        cursor_cell.flags = flags
+            | Flags::WRITTEN
+            | (cursor_cell.flags & (Flags::ROW_PROMPT | Flags::ROW_PROMPT_CONTINUATION | Flags::WRAPLINE));
         // b-terminal(#338): 커서의 글 종류가 입력이면 입력 칸으로 쓴다(Ghostty `printCell`의 `semantic_content`)
         if input_content {
             cursor_cell.flags.insert(Flags::SEMANTIC_INPUT);
@@ -1809,6 +1843,14 @@ impl<T> Term<T> {
         let point =
             Point::new(self.grid.cursor.point.line.0 as usize, self.grid.cursor.point.column);
         self.damage.damage_point(point);
+    }
+
+    /// b-terminal(#580): 넓은 글자의 짝 칸을 배경색 `bg`의 빈 칸으로 만든다. 0번 칸의 프롬프트 표시는 남긴다.
+    fn blank_wide_partner(&mut self, line: Line, column: Column, bg: Color) {
+        let cell = &mut self.grid[line][column];
+        let keep = cell.flags & (Flags::ROW_PROMPT | Flags::ROW_PROMPT_CONTINUATION);
+        *cell = bg.into();
+        cell.flags = keep;
     }
 
     /// b-terminal 패치(#180): `c`가 방금 찍은 글자와 한 글자 묶음(extended grapheme cluster)이면
@@ -1872,7 +1914,10 @@ impl<T> Term<T> {
             } else {
                 Effect::NoChange
             }
-        } else if !was_wide && text.width() == 2 {
+        } else if !was_wide && (text.width() == 2 || c.width().is_some_and(|w| w > 0)) {
+            // b-terminal(#581): 묶음에 덧붙는 글자가 폭을 가지면(묶음 안에서 폭 0이 아니면) 묶음은 폭 2다
+            // (Ghostty `graphemeWidthEffect`, grapheme.zig 66줄: `!width_zero_in_grapheme`면 `.wide`). 묶음 전체의
+            // 합산 폭만 보면 ❤+ZWJ+👍처럼 ZWJ 뒤의 넓은 이모지를 놓친다
             Effect::Wide
         } else {
             Effect::NoChange
@@ -2635,7 +2680,14 @@ impl<T: EventListener> Handler for Term<T> {
 
         if lines > 0 && self.scroll_region.contains(&origin) && self.cursor_in_margins() {
             if self.margins_full() {
-                self.scroll_up_relative(origin, lines);
+                // b-terminal(#585): DL은 스크롤백을 만들지 않는다(Ghostty `deleteLines`는 영역 안 줄만 옮긴다)
+                self.scroll_up_relative_with(origin, lines, false);
+                // b-terminal(#582): 전체 폭 영역에서 옮겨진 줄과 지워진 줄은 줄 이음 표지를 잃는다(Ghostty
+                // `deleteLines` 3942~3948줄의 `wrap = false`, 지운 줄은 `reset()`). 우리는 표지를 마지막 칸의
+                // `WRAPLINE`으로 들므로 커서 줄부터 영역 끝까지 푼다. 좌우 여백이 있으면 줄에 남긴다(아래 `scroll_rect`)
+                for y in origin.0..self.scroll_region.end.0 {
+                    self.reset_row_wrap(Line(y));
+                }
             } else {
                 self.scroll_rect(origin, lines, false);
             }

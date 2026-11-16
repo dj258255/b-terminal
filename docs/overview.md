@@ -36,7 +36,7 @@ AI 에이전트를 다루는 화면(에이전트 목록·상태·훅·구독 사
 ### 다른 점
 
 - **Ghostty 없이 섭니다.** 테마 907개와 글꼴(JetBrains Mono, Nerd Font 기호)을 앱에 넣어 두어 Ghostty가 없어도 같은 설정이 같은 화면을 냅니다([ADR-006](decisions.md#adr-006-ghostty는-본보기일-뿐-기대지-않는다-ai-cli가-가장-잘-도는-우리-터미널)).
-- **VT 엔진이 다릅니다.** Ghostty의 엔진 대신 `alacritty_terminal`을 씁니다. 그래서 해석이 다른 곳이 있을 수 있습니다([ADR-001](decisions.md#adr-001-vt-엔진은-alacritty_terminal로-시작하고-bt-term-밖으로-엔진-타입을-내보내지-않는다)).
+- **VT 엔진이 다릅니다.** Ghostty의 엔진 대신 `alacritty_terminal`을 씁니다. 그래서 해석이 다른 곳이 있을 수 있습니다([ADR-001](decisions.md#adr-001-vt-엔진은-alacritty_terminal로-시작하고-bt-term-밖으로-엔진-타입을-내보내지-않는다)). Ghostty `Terminal.zig` 시험을 옮겨 견주고 다른 곳은 고친 사본을 씁니다. 우리 동작이 xterm과 같은 곳은 xterm을 따릅니다([ADR-056](decisions.md#adr-056-한-칸에-덧붙는-글자는-64개까지만-두고-엔진이-ghostty와-다른-곳은-xterm과-같은-쪽이-아니면-ghostty를-따른다)).
 - **`TERM` 기본이 `xterm-256color`입니다.** Ghostty의 `xterm-ghostty` terminfo는 많은 시스템에 없어서 `vim`·`less`가 깨질 수 있기 때문입니다([ADR-016](decisions.md#adr-016-설정이-칸의-환경과-시작-입력을-정한다-term은-xterm-256color를-지키고-input에는-상한을-둔다)).
 - **원격 조종 `btctl`이 있습니다.** kitty·WezTerm의 원격 조종과 같은 성격입니다. 탭 목록·새 탭·글 넣기·화면 읽기·알림, 셸 통합이 켜진 탭에서 명령 돌리고 결과 받기(`btctl run`)를 합니다. 제어 소켓은 같은 사용자만 닿습니다.
 - **한글 IME를 고쳤습니다.** macOS 한글 입력기는 조합 중 스페이스·Enter에서 확정과 그 키를 한 번에 보내는데, 원본 winit이 뒤의 것을 버려서 스페이스가 사라졌습니다. winit을 고쳐 쓰고([ADR-004](decisions.md#adr-004-한글-ime를-위해-winit을-vendor로-고쳐-쓴다)), 조합 중 창·칸이 포커스를 잃으면 조합 글자를 옛 칸에 확정합니다([ADR-049](decisions.md#adr-049-한국어-입력기로-조합-중-창칸이-포커스를-잃으면-조합-글자를-옛-칸에-확정한다)). 마지막 것은 Ghostty에서 아직 병합되지 않은 고침을 따른 것이고, 실제 창에서 한글을 쳐 확인하지는 못했습니다([troubleshooting.md](troubleshooting.md) 12번).
@@ -89,6 +89,7 @@ PTY 바이트 ──> bt-term 읽기 스레드 ──┬─> VT 엔진(alacritty
 
 터미널 출력은 믿지 않습니다. 원격 서버의 출력이나 남이 만든 파일을 `cat`한 글도 제어 열을 담을 수 있기 때문입니다. 전체 목록은 [SECURITY.md](../SECURITY.md)에 있고, 여기에는 줄기만 적습니다.
 
+- **출력이 쓰는 메모리에 상한이 있습니다.** 한 칸에 덧붙는 결합 문자는 64개까지, 그림은 저장 총량까지입니다([ADR-056](decisions.md#adr-056-한-칸에-덧붙는-글자는-64개까지만-두고-엔진이-ghostty와-다른-곳은-xterm과-같은-쪽이-아니면-ghostty를-따른다)).
 - **출력이 입력이 되는 길을 막습니다.** 터미널이 질의에 하는 답은 PTY로 돌아가 프로그램의 입력이 됩니다. 그래서 답은 고정 바이트와 검사한 숫자로만 만들고, 요청의 글은 답에 넣지 않습니다. 창 제목 보고는 기본으로 끕니다.
 - **링크는 Cmd-클릭으로만 엽니다.** 열기 전에 실제 주소를 보입니다. `http`·`https`와 이 컴퓨터의 `file`만 열고, 실행 파일과 앱 묶음은 Finder에서 보이기만 합니다([ADR-007](decisions.md#adr-007-링크는-cmd-클릭으로만-열고-웹과-이-컴퓨터의-파일만-연다)).
 - **클립보드는 사람의 동작이 있을 때만 읽힙니다.** 쓰기는 보고 있는 칸에서 온 것만 받고, 읽기는 창 안 막대로 묻습니다. 막대는 Enter로 허용되지 않고 `y`만 허용입니다([ADR-019](decisions.md#adr-019-클립보드-ask는-창-안-막대로-묻고-enter로는-허용하지-않으며-막대는-하나만-띄운다)).

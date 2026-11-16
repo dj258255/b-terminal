@@ -232,10 +232,24 @@ impl<T> Term<T> {
     /// `Row::shrink`는 빈 칸만 남은 줄을 나누지 않고(`is_empty`는 줄 표시 flags를 보지 않는다), `grow_columns`는 이어진 줄이 아닌 줄을 잇지 않아
     /// 프롬프트가 옛 폭에서의 줄 수를 그대로 가진다. 줄의 표시(0번 칸)는 남긴다. 커서는 줄을 그대로 두고 새 폭 안으로만 옮긴다
     /// (새 폭보다 오른쪽의 커서는 reflow가 빈 칸을 이어 줄을 늘린다)
-    pub(super) fn semantic_blank_prompt_for_resize(&mut self, new_columns: usize) {
-        let Some((first, last)) = self.semantic_redraw_span() else { return };
+    pub(super) fn semantic_blank_prompt_for_resize(&mut self, new_columns: usize) -> usize {
+        let Some((first, last)) = self.semantic_redraw_span() else { return 0 };
         let grid = if self.mode.contains(TermMode::ALT_SCREEN) { &mut self.inactive_grid } else { &mut self.grid };
         let columns = grid.columns();
+        // 비울 첫 줄 바로 위의 줄이 그 줄로 이어져 있었다면(`WRAPLINE`), 그 줄은 이제 비운 줄 앞에서 끝난다
+        // (Ghostty `reflowBlankRow`, PageList.zig 1990~1994줄: "If this row continued a line that isn't blanked, then that line now ends at the row before this one").
+        // 떼지 않으면 reflow가 위 줄과 빈 줄을 한 줄로 이어 커서가 위 줄로 올라가고, 뒤따르는 지우기가 그 줄의 글자를 지운다
+        let top = -(grid.history_size() as i32);
+        let wrapped = |grid: &Grid<Cell>, line: i32| {
+            line > top && grid[Line(line - 1)].last().is_some_and(|cell| cell.flags.contains(Flags::WRAPLINE))
+        };
+        // 커서 줄과 그 위로 활성 영역 안에서 윗줄이 이어지던 줄 수. 비우면 이 표시를 잃는다(`Grid::resize_with_lost_wraps`)
+        let lost_wraps = (first.max(0)..=last.min(grid.cursor.point.line.0)).filter(|&line| wrapped(grid, line)).count();
+        if wrapped(grid, first) {
+            if let Some(cell) = grid[Line(first - 1)].last_mut() {
+                cell.flags.remove(Flags::WRAPLINE);
+            }
+        }
         for line in first..=last {
             let row = &mut grid[Line(line)];
             let marks = row[Column(0)].flags & ROW_MARKS;
@@ -246,6 +260,7 @@ impl<T> Term<T> {
         }
         let cursor = &mut grid.cursor;
         cursor.point.column = Column(cmp::min(cursor.point.column.0, new_columns.saturating_sub(1)));
+        lost_wraps
     }
 
     /// 크기를 바꾼 뒤, 커서가 프롬프트·입력에 있으면 프롬프트 줄을 비워 셸이 다시 그리게 한다

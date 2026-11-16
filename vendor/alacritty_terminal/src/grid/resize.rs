@@ -27,6 +27,17 @@ impl<T: GridCell + Default + PartialEq> Grid<T> {
         T: ResetDiscriminant<D>,
         D: PartialEq,
     {
+        self.resize_with_lost_wraps(reflow, lines, columns, 0);
+    }
+
+    /// `resize`에, 크기를 바꾸기 전에 비운 프롬프트 줄 중 "윗줄이 이어지던 줄"의 수(`lost_wraps`)를 더한 것.
+    /// b-terminal(#583): Ghostty는 줄을 줄일 때 커서 아래 빈 줄을 "커서 위 이어진 줄(`wrap_continuation`)이 늘어난 만큼"만 씀
+    /// (PageList.zig 1651~1675줄 `preserved_cursor`). 비운 줄은 이어진 줄 표시를 잃으므로 그만큼은 늘어난 줄로 치지 않는다
+    pub fn resize_with_lost_wraps<D>(&mut self, reflow: bool, lines: usize, columns: usize, lost_wraps: usize)
+    where
+        T: ResetDiscriminant<D>,
+        D: PartialEq,
+    {
         // Use empty template cell for resetting cells due to resize.
         let template = mem::take(&mut self.cursor.template);
 
@@ -44,7 +55,7 @@ impl<T: GridCell + Default + PartialEq> Grid<T> {
         let mut trimmed = 0;
         match self.columns.cmp(&columns) {
             Ordering::Less => self.grow_columns(reflow, columns),
-            Ordering::Greater => trimmed = self.shrink_columns(reflow, columns, saved_spot.map(|s| s.below)),
+            Ordering::Greater => trimmed = self.shrink_columns(reflow, columns, saved_spot.map(|s| s.below), lost_wraps),
             Ordering::Equal => (),
         }
 
@@ -84,8 +95,12 @@ impl<T: GridCell + Default + PartialEq> Grid<T> {
         self.raw.grow_visible_lines(target);
         self.lines = target;
 
+        // b-terminal(#584): 커서가 맨 아래 줄이 아니면 스크롤백을 끌어내리지 않는다(Ghostty PageList.zig 3084~3100줄:
+        // `pull = cursor.y >= self.rows - 1`, "we don't want to pull down scrollback. This is purely a UX feature").
+        // 올려 본 화면도 그 자리에 남고(`display_offset`은 `scroll_up`이 맞춘다), 커서 줄도 그대로다
+        let pull = self.cursor.point.line.0 as usize + 1 >= self.lines - lines_added;
         let history_size = self.history_size();
-        let from_history = min(history_size, lines_added);
+        let from_history = if pull { min(history_size, lines_added) } else { 0 };
 
         // Move existing lines up for every line that couldn't be pulled from history.
         if from_history != lines_added {
@@ -97,7 +112,9 @@ impl<T: GridCell + Default + PartialEq> Grid<T> {
         self.saved_cursor.point.line += from_history;
         self.cursor.point.line += from_history;
 
-        self.display_offset = self.display_offset.saturating_sub(lines_added);
+        if pull {
+            self.display_offset = self.display_offset.saturating_sub(lines_added);
+        }
         self.decrease_scroll_limit(lines_added);
     }
 
@@ -284,6 +301,7 @@ impl<T: GridCell + Default + PartialEq> Grid<T> {
         reflow: bool,
         columns: usize,
         protect_below: Option<usize>,
+        lost_wraps: usize,
     ) -> usize {
         let old_len = self.raw.len();
         self.columns = columns;
@@ -322,6 +340,14 @@ impl<T: GridCell + Default + PartialEq> Grid<T> {
                             // whitespace and need to wrap it like normal content.
                             Vec::new()
                         } else {
+                            // b-terminal(#584): 줄을 다시 흘리지 않고 잘랐을 때(자동 줄바꿈 끔·대체 화면) 마지막 칸에 꼬리를 잃은
+                            // 넓은 글자 머리가 남으면 빈 칸으로 바꾼다(Ghostty 시험 `resize less cols without reflow cutting wide char tail`,
+                            // Terminal.zig 18659줄)
+                            if row.len() >= columns
+                                && row[Column(columns - 1)].flags().contains(Flags::WIDE_CHAR)
+                            {
+                                row[Column(columns - 1)] = T::default();
+                            }
                             // Since it fits, just push the existing line without any reflow.
                             new_raw.push(row);
                             break;
@@ -414,7 +440,7 @@ impl<T: GridCell + Default + PartialEq> Grid<T> {
         if reflow && reversed.len() > old_len {
             let below_cursor = (self.lines as i32 - 1 - self.cursor.point.line.0).max(0) as usize;
             let limit = min(
-                min(reversed.len() - old_len, below_cursor),
+                min((reversed.len() - old_len).saturating_sub(lost_wraps), below_cursor),
                 protect_below.unwrap_or(usize::MAX),
             );
             let wrapped = |row: &Row<T>| {
