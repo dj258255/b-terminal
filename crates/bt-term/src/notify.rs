@@ -225,7 +225,9 @@ pub struct Scanner {
 /// CSI 매개변수를 모으는 상한. 이만큼 차면 잘린 것으로 보고 믿지 않는다
 const MAX_CSI: usize = 40;
 
-/// 엔진 vte가 모으는 매개변수의 상한(`params::MAX_PARAMS`). 세미콜론이 이만큼 나오면 엔진은 그 CSI를 `ignore`로 dispatch한다(#605)
+/// 엔진 vte가 모으는 매개변수의 상한(`params::MAX_PARAMS`). 세미콜론이 이만큼 나오면 엔진은 그 CSI를 `ignore`로 dispatch한다(#605).
+/// 엔진은 `:`(하위 매개변수)도 같은 칸을 채우지만, 스캐너는 `:`가 끼면 `csi_taint`로 신호를 내지 않으므로 세미콜론만 세면 된다.
+/// `:`를 받는 신호를 더하면 `:`도 함께 세어야 한다
 const MAX_PARAMS: usize = 32;
 
 /// APC 하나의 상한. kitty는 조각을 4096바이트로 보내지만 한 번에 보내는 도구도 있다

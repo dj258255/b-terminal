@@ -362,13 +362,13 @@ fn fuzz(seed: u64, cases: usize) {
 }
 
 #[test]
-fn scanner_csi_signals_never_exceed_the_engine() {
+fn scanner_csi_signal_shapes_never_exceed_the_engine() {
     fuzz(0x0076_5EED, 200_000);
 }
 
 #[test]
 #[ignore = "큰 판: cargo test -p bt-term --test scanner_csi76 --release -- --ignored"]
-fn scanner_csi_signals_never_exceed_the_engine_large() {
+fn scanner_csi_signal_shapes_never_exceed_the_engine_large() {
     for seed in 1..=10u64 {
         fuzz(0x0076_0000 + seed, 1_000_000);
     }
