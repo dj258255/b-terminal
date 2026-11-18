@@ -4,8 +4,18 @@
 
 ## [아직 릴리스하지 않음]
 
+## [0.83.0] - 2026-11-19
+
+AppleScript `perform action`과 실험 E27 마무리. 마일스톤 0.83.
+
 - AppleScript 사전에 Ghostty의 `perform action "동작" on 터미널`을 더했습니다(명령 코드 `GhstPfAc`, `on` 인자 `GonT`, 결과 boolean). 키 묶음과 같은 해석기로 동작 글을 읽어 그 칸을 고른 칸으로 만든 뒤 실행하고, 했으면 참, 지금 할 수 없는 동작(`performable:`과 같은 판단)은 거짓을 돌려줍니다. 모르는 동작·인자가 틀린 동작·`all:` 같은 접두사가 붙은 글도 Ghostty처럼 오류가 아니라 거짓입니다. 키 테이블·키 순서 동작(`activate_key_table` 등, `end_key_sequence`)은 사람이 치던 키 순서를 건드리므로 스크립트에는 열지 않고 거짓입니다. `send key`와 같이 읽기 전용 칸과 확인·검색·팔레트·제목 막대가 열린 창에는 실행하지 않고, `macos-applescript = false`면 거절합니다. `text:`·`csi:`·`esc:`는 붙여넣기 보호 없이 바이트를 씁니다. 격리한 실제 창에서 Apple Event로 확인했습니다(나누기·탭·`text:` 실행, 할 수 없는·읽지 못한 동작의 거짓, 읽기 전용을 걸 수는 있지만 풀 수는 없음, 확인 막대 거절, 꺼짐) (#658)
 - 문서: 실험 E27 2차 측정. 저전력 모드를 끄면 출력 중 그림판 간격이 120Hz 화면에서 약 8.8ms(미룸을 끄면 8.32ms)이고 `CADisplayLink`로 더 줄지 않았습니다. E19·E27 1차의 16.6ms는 저전력 모드 탓이었습니다. 앱 코드는 바꾸지 않았습니다 (#656)
+
+### 알려진 한계
+
+- `perform action`의 키 테이블 거름은 단위 시험으로만 확인했습니다. 확인 막대가 뜨는 `close_surface`·`quit`, `write_*_file:open`·`paste_from_clipboard`는 실제 창에서 돌리지 않았습니다.
+- `macos-applescript = false`일 때 `perform action ... on terminal id N`은 -1743이 아니라 -1728입니다(`send key`·`input text`와 같음).
+- 한글 입력기에서 새 창의 첫 음절이 조합되는지(Ghostty #13235와 같은 결함 여부)는 합성 키로 시험할 수 없어 확인하지 못했습니다.
 
 ## [0.82.0] - 2026-11-19
 
