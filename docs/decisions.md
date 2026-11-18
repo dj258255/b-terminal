@@ -131,7 +131,8 @@
 | [ADR-043](#adr-043-사용자-셰이더는-칸마다-칸-크기-텍스처로-떼어-돌리고-칸-밖과-덧그림은-셰이더-뒤에-둔다) | 사용자 셰이더는 칸마다 칸 크기 텍스처로 떼어 돌리고, 칸 밖과 덧그림은 셰이더 뒤에 둔다 | 유효. ADR-041 결정 1을 대체 |
 | [ADR-044](#adr-044-gpu-길-surface는-그림판을-프레임-미룸-줄-깊이보다-한-장-더-허락한다) | GPU 길 surface는 그림판을 프레임 미룸 줄 깊이보다 한 장 더 허락한다 | 유효 |
 | [ADR-045](#adr-045-window-vsync--false에서도-프레임-미룸을-쓴다) | `window-vsync = false`에서도 프레임 미룸을 쓴다 | 유효 |
-| [ADR-047](#adr-047-window-colorspace--srgb는-gpu-길에서-display-p3-표시와-마지막-변환-패스로-맞춘다) | `window-colorspace = srgb`는 GPU 길에서 Display P3 표시와 마지막 변환 패스로 맞춘다 | 유효 |
+| [ADR-047](#adr-047-window-colorspace--srgb는-gpu-길에서-display-p3-표시와-마지막-변환-패스로-맞춘다) | `window-colorspace = srgb`는 GPU 길에서 Display P3 표시와 마지막 변환 패스로 맞춘다 | 유효. macOS에서 레이어를 달 수 있으면 ADR-061이 대체 |
+| [ADR-061](#adr-061-window-colorspace--srgb는-macos-gpu-길에서-창-레이어에-srgb-색-공간을-직접-달고-못-달면-adr-047의-길로-간다) | `window-colorspace = srgb`는 macOS GPU 길에서 창 레이어에 sRGB 색 공간을 직접 달고, 못 달면 ADR-047의 길로 간다 | 유효 |
 
 ## ADR-001 VT 엔진은 alacritty_terminal로 시작하고, bt-term 밖으로 엔진 타입을 내보내지 않는다
 
@@ -1511,7 +1512,7 @@ E8의 실제 창 로그에서 10ms 넘는 GPU 프레임은 세 가지였다. (1)
 
 ## ADR-047 `window-colorspace = srgb`는 GPU 길에서 Display P3 표시와 마지막 변환 패스로 맞춘다
 
-상태: 채택
+상태: 채택(macOS에서 레이어 색 공간을 달 수 있으면 ADR-061이 결정 1을 대체한다)
 관련: [#466](https://github.com/dj258255/b-terminal/issues/466), ADR-009(화면 색 공간), ADR-036·ADR-039(GPU 길), [실험 E26](experiments/2026-11-12-e26-gpu-srgb.md)
 
 ### 맥락
@@ -1873,3 +1874,32 @@ E8의 실제 창 로그에서 10ms 넘는 GPU 프레임은 세 가지였다. (1)
 
 ### 보안
 외부 프로그램이 경로를 넘기는 입력 길이 하나 늘었다. 할 수 있는 일은 "그 폴더에서 빈 셸 탭·창을 연다"까지이고 한 번에 16개로 막는다.
+
+## ADR-061 `window-colorspace = srgb`는 macOS GPU 길에서 창 레이어에 sRGB 색 공간을 직접 달고, 못 달면 ADR-047의 길로 간다
+
+상태: 채택(ADR-047의 결정 1을 macOS GPU 길에서 대체한다. 레이어를 달지 못하면 ADR-047의 길이 그대로 쓰인다)
+관련: [#632](https://github.com/dj258255/b-terminal/issues/632), ADR-047, ADR-058(vendor winit 길), [실험 E26](experiments/2026-11-12-e26-gpu-srgb.md)
+
+### 맥락
+- ADR-047은 `srgb`를 surface Display P3 + 창 크기 중간 텍스처 + 마지막 변환 패스로 맞췄다. 창마다 약 13.6MB를 더 썼다. 레이어에 sRGB 색 공간을 직접 다는 것은 `unsafe`가 필요해서였다.
+- wgpu-hal 30 metal의 `configure`는 호출마다 레이어 색 공간을 다시 쓴다(`SurfaceColorSpace::Srgb`면 nil, `wgpu-hal-30.0.1/src/metal/surface.rs` 326~327줄). 창 크기가 바뀌거나 `Outdated`·`Lost`로 다시 설정하면 단 색 공간이 지워진다.
+- Ghostty main(7a8ff4d, 2026-11-18에 읽음)은 레이어 색 공간을 설정에 따라 달지 않는다. 그리는 IOSurface를 늘 Display P3로 만들고(`src/renderer/metal/Target.zig` 50~59줄), `window-colorspace`는 셰이더 유니폼 `use_display_p3`로만 쓴다(`src/renderer/generic.zig`). 결과(sRGB 값이 sRGB로 보임)를 맞추는 것이고 방법은 같지 않아도 된다. 이슈 #632에 "Ghostty는 레이어 색 공간을 직접 단다"고 적은 것은 틀렸다.
+
+### 결정
+1. macOS에서 `srgb`이면 surface는 기본(nil) 색 공간으로 설정하고, vendor winit의 `set_metal_layer_srgb(&Window)`로 창 뷰 아래의 `CAMetalLayer`(루트 레이어의 하위 레이어일 수 있음, 깊이 4까지)에 `kCGColorSpaceSRGB`를 단다. 합성기가 sRGB에서 화면으로 맞추므로 중간 텍스처와 변환 패스가 없다.
+2. `surface.configure`를 부른 뒤마다 다시 단다(`WindowSurface::configure`). 다시 달지 못하면 경고만 남긴다.
+3. 처음에 레이어를 찾거나 달지 못하면(주 스레드가 아님 포함) ADR-047의 길로, surface가 Display P3도 주지 않으면 CPU 길로 간다. 고르기는 순수 함수 `srgb_path`다.
+4. 기본 `display-p3`와 macOS 밖은 바뀌지 않는다. FFI는 vendor winit(`layer_colorspace.rs`)에만 있다.
+
+### 감수한 트레이드오프
+- 메모리: 한 기기(M2 Pro 내장 화면, 디버그 빌드)에서 footprint를 번갈아 네 쌍 잰 값. 100×30칸 창은 ADR-047 길 96·96·102·103MB, 이 길 81·85·85·86MB. 120×40칸은 131~139MB 대 124~125MB. 차이 약 13~15MB. 릴리스 빌드와 프레임 시간은 재지 않았다.
+- 색: 바탕 (41,44,51), ANSI 빨강 (197,87,87), ANSI 1번 (191,107,105)로 ADR-047 길과 채널당 최대 1 차이다(E26의 CPU `srgb` 바탕과 같음). 창 크기를 두 번 바꾼 뒤에도 같은 값이었다.
+- wgpu가 `configure`에서 색 공간을 쓰는 방식에 기댄다. wgpu를 올릴 때 다시 본다.
+- 외부 sRGB 화면에서는 재지 않았다.
+
+### 하지 않은 것
+- Ghostty처럼 늘 P3 표면에 셰이더로 맞추기: 사용자 셰이더 출력까지 바꿔야 하고, 지금 기본(`display-p3`)과 ADR-047 길을 바꾸는 더 큰 일이다.
+- 작업 공간에 `unsafe` 허용.
+
+### 보안
+입력 경계는 바뀌지 않는다.
