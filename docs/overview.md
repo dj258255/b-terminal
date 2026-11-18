@@ -2,7 +2,7 @@
 
 처음 보는 분을 위한 안내입니다. 무엇인지, 무엇이 Ghostty와 같고 다른지, 어떻게 짜여 있는지, 어디까지 믿어도 되는지를 한 문서에 모았습니다. 자세한 설정은 [configuration.md](configuration.md), 이유와 근거는 [decisions.md](decisions.md)에 있습니다.
 
-이 문서는 0.78.0 기준입니다. 이 문서에 없는 숫자는 재지 않은 것입니다.
+이 문서는 0.79.0 기준입니다. 이 문서에 없는 숫자는 재지 않은 것입니다.
 
 ## 무엇인가
 
@@ -124,7 +124,7 @@ PTY 바이트 ──> bt-term 읽기 스레드 ──┬─> VT 엔진(alacritty
 
 ## 지금 상태와 한계
 
-- **판.** 0.78.0입니다. 1.0 전이라 기본 동작이 판마다 바뀔 수 있습니다. 바뀐 것은 [CHANGELOG.md](../CHANGELOG.md), 계획과 진행은 [ROADMAP.md](../ROADMAP.md)에 있습니다.
+- **판.** 0.79.0입니다. 1.0 전이라 기본 동작이 판마다 바뀔 수 있습니다. 바뀐 것은 [CHANGELOG.md](../CHANGELOG.md), 계획과 진행은 [ROADMAP.md](../ROADMAP.md)에 있습니다.
 - **macOS가 1순위입니다.** 실제 창에서 확인한 것은 macOS(Apple M2 Pro 한 기기)가 거의 전부입니다.
 - **Linux는 CPU 길입니다.** Linux GPU 길은 재지도 실제 창으로 보지도 않았습니다. CI는 Linux에서 전체를 빌드하고 시험하지만 GPU는 없습니다.
 - **다른 Mac에 나눠 줄 수 없습니다.** Developer ID 서명과 공증 없이는 배포하지 않습니다. 계정이 없어서 서명·공증·다른 Mac에서 열기는 해 보지 못했습니다([release-macos.md](release-macos.md)). 지금은 직접 빌드해 이 컴퓨터에서 씁니다.
