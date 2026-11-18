@@ -102,6 +102,16 @@ Claude Code는 자기가 아는 터미널(iTerm2·kitty·Ghostty)에서만 스�
 export FORCE_HYPERLINK=1   # 파일·주소를 OSC 8 링크로 씁니다(Cmd+클릭으로 엶)
 ```
 
+Codex CLI는 터미널 이름을 보지 않고 OSC 7501을 보내므로 탭 상태는 설정 없이 뜹니다. Codex 자신의 알림은 기본값(`auto`)에서 아는 터미널(Ghostty·iTerm2·kitty·Warp·WezTerm)에만 OSC 9로 가고 b-terminal에는 벨(BEL)로 옵니다. 벨은 `bell-features`를 따라 Dock 아이콘을 튀기고 탭 제목에 🔔를 붙입니다. 알림 글까지 받으려면 직접 켭니다(openai/codex main 코드에서 확인, 2026-11-18).
+
+```toml
+# ~/.codex/config.toml. OSC 7501 알림과 겹칠 수 있습니다
+[tui]
+notification_method = "osc9"
+```
+
+Codex는 터미널을 보고 있지 않을 때만 알립니다(포커스 보고, 모드 1004). 알림을 누르면 macOS가 스크립트 편집기를 엽니다([troubleshooting 23번](docs/troubleshooting.md#23-데스크톱-알림을-누르면-b-terminal이-아니라-스크립트-편집기가-열린다)).
+
 b-terminal은 다른 터미널인 척하지 않습니다(`TERM_PROGRAM=b-terminal`). 에이전트 목록이나 상태 모아 보기 같은 작업 화면은 터미널이 아닌 별도 도구의 일로 둡니다.
 
 ## 문서

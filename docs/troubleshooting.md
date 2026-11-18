@@ -189,3 +189,11 @@
 - b-terminal: `Session::spawn`이 `openpty`를 최대 5번 시도한다(시도 사이에 1·2·5·10ms 쉼, 합 18ms). 끝내 실패하면 `PTY 열기(openpty), N번 시도해도 실패`와 음수 errno 설명을 오류에 붙인다. portable-pty가 errno를 문자열로만 주므로 실패 종류로 가르지 않고 모든 실패를 다시 시도한다. 진짜 한도에 닿은 경우에는 18ms 더 늦게 같은 오류가 난다. 다시 시도하는 부분은 `open_pty_with_retry`로 열기 함수와 쉬기 함수를 주입해 `session.rs`의 단위 시험이 결정적으로 본다
 - 확인한 것: 고친 뒤 위 시험을 5번 돌려 5번 통과했다. 재시도를 빼면(빈 backoff) 3번 중 2번 실패했다(실패 확률이 낮아 1번은 우연히 통과). 단위 시험 3개(재시도 후 성공, 첫 성공이면 쉬지 않음, 상한과 오류 문구)와 음수 errno 문구 시험 1개를 더했다
 - 일부러 하지 않은 것: 시험 쪽에만 재시도를 넣지 않았다(앱에도 같은 길이 있다). portable-pty를 고치거나 `libc`·`nix`로 직접 열지 않았다(의존성·`unsafe` 제한). errno를 풀기 위해 문자열의 `code: -N`을 읽는 것은 문구용이라 취약하며, 재시도 판단에는 쓰지 않는다
+
+## 23. 데스크톱 알림을 누르면 b-terminal이 아니라 스크립트 편집기가 열린다
+
+- 언제: 2026-11-18, #623. 0.78에서 프로그램 상태(OSC 7501) 알림을 넣으며 알림 길을 다시 읽다가 적었다. 사용자 제보는 없다
+- 까닭: macOS의 b-terminal 데스크톱 알림(OSC 9·777·99, OSC 7501, 명령 끝 알림, `btctl notify`)은 모두 `crates/bt-app/src/desktop.rs`가 `osascript -e 'display notification …'`로 띄운다. macOS는 `osascript`의 알림을 스크립트 편집기의 알림으로 다루므로, 알림을 누르면 스크립트 편집기가 열리고 알림 설정도 스크립트 편집기 항목을 따른다. 이것은 널리 알려진 macOS 동작이고, 이 기기(macOS 26.3.1)에서 알림을 띄워 눌러 보지는 않았다(데스크톱 알림을 보내지 않는다는 작업 규칙, 마우스 흉내를 쓰지 않음)
+- 알림이 아예 안 보이면: 시스템 설정 → 알림에서 스크립트 편집기(또는 `osascript`) 항목이 허용인지 본다. b-terminal 쪽은 `desktop-notifications = false`(프로그램 알림만 끔)인지 본다
+- 일부러 하지 않은 것: 알림을 누르면 그 탭으로 가게 하려면 `UNUserNotificationCenter`로 알림을 내고 delegate가 누름을 받아야 한다(Ghostty macOS 앱이 이렇게 한다). Rust에서 delegate 클래스를 만들려면 `unsafe`가 필요하고 작업 공간은 `unsafe_code = "deny"`다. `UNUserNotificationCenter`는 서명한 앱 묶음(번들 식별자)도 있어야 한다. 그래서 지금은 `osascript`를 쓴다. Linux의 `notify-send`는 이 문제가 없다(누름 동작을 쓰지 않음)
+
