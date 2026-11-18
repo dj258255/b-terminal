@@ -3040,7 +3040,10 @@ impl App {
                 ));
             }
             if let Some(i) = self.pane_index(id) {
-                panes.push(self.panes.remove(i));
+                let mut pane = self.panes.remove(i);
+                // 칸을 닫을 때처럼 알림 센터의 그 칸 알림을 지운다(되살려도 옛 알림은 돌아오지 않는다, #625)
+                crate::desktop::forget(std::mem::take(&mut pane.notes));
+                panes.push(pane);
             }
         }
         self.hold(Closed::Tab {
