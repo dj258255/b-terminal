@@ -454,6 +454,7 @@ features = [
     "NSResponder",
     "NSRunningApplication",
     "NSScreen",
+    "NSScroller",
     "NSTextInputClient",
     "NSTextInputContext",
     "NSView",
@@ -484,6 +485,7 @@ features = [
     "NSString",
     "NSThread",
     "NSURL",
+    "NSUserDefaults",
     "NSValue",
 ]
 
