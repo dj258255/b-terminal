@@ -579,3 +579,41 @@ pub fn discard_marked_text(window: &Window) {
 pub fn set_open_file_handler(handler: Box<dyn Fn(std::path::PathBuf) + Send + Sync>) {
     crate::platform_impl::set_open_file_handler(handler)
 }
+
+/// What the user did with a notification posted by [`post_user_notification`]. b-terminal(#625)
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UserNotificationResponse {
+    /// The identifier the notification was posted with.
+    pub id: String,
+    /// `true` when the notification itself was clicked (the default action).
+    pub clicked: bool,
+}
+
+/// Whether notifications can go through `UNUserNotificationCenter`: the process must run from an app bundle (have a
+/// bundle identifier). When this is `false` the other notification functions do nothing. b-terminal(#625)
+pub fn user_notifications_supported() -> bool {
+    crate::platform_impl::user_notify::supported()
+}
+
+/// Posts a notification with `id` (asks the user for permission the first time). Returns `false` when
+/// [`user_notifications_supported`] is `false`. Delivery is asynchronous. b-terminal(#625)
+pub fn post_user_notification(id: &str, title: &str, body: &str) -> bool {
+    crate::platform_impl::user_notify::post(id, title, body)
+}
+
+/// Removes delivered notifications by identifier. b-terminal(#625)
+pub fn remove_user_notifications(ids: &[String]) {
+    crate::platform_impl::user_notify::remove(ids)
+}
+
+/// Removes every delivered notification of the app. b-terminal(#625)
+pub fn remove_all_user_notifications() {
+    crate::platform_impl::user_notify::remove_all()
+}
+
+/// Registers the function that receives clicks on notifications, installs the notification delegate and removes the
+/// notifications a previous run left behind. Call it once before the event loop runs. The function may run on any
+/// thread. b-terminal(#625)
+pub fn set_user_notification_handler(handler: Box<dyn Fn(UserNotificationResponse) + Send + Sync>) {
+    crate::platform_impl::user_notify::set_handler(handler)
+}
