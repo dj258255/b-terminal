@@ -225,6 +225,11 @@ pub struct Scanner {
 /// CSI 매개변수를 모으는 상한. 이만큼 차면 잘린 것으로 보고 믿지 않는다
 const MAX_CSI: usize = 40;
 
+/// 엔진 vte가 모으는 매개변수의 상한(`params::MAX_PARAMS`). 세미콜론이 이만큼 나오면 엔진은 그 CSI를 `ignore`로 dispatch한다(#605).
+/// 엔진은 `:`(하위 매개변수)도 같은 칸을 채우지만, 스캐너는 `:`가 끼면 `csi_taint`로 신호를 내지 않으므로 세미콜론만 세면 된다.
+/// `:`를 받는 신호를 더하면 `:`도 함께 세어야 한다
+const MAX_PARAMS: usize = 32;
+
 /// APC 하나의 상한. kitty는 조각을 4096바이트로 보내지만 한 번에 보내는 도구도 있다
 const MAX_APC: usize = 8 * 1024 * 1024;
 
@@ -480,7 +485,10 @@ impl Scanner {
                     St::Csi
                 }
                 (St::Csi, 0x40..=0x7e) => {
-                    if !self.csi_taint && self.csi.len() < MAX_CSI {
+                    // 엔진이 `ignore` 없이 dispatch할 수 있는 모양이어야 신호를 낸다: 모은 매개변수가 상한 안이고 세미콜론이 31개 이하다
+                    // (엔진은 매개변수 32개를 넘으면 `ignore`로 dispatch하고 `ansi.rs`가 버린다, #605)
+                    let fits = self.csi.len() < MAX_CSI && self.csi.iter().filter(|&&c| c == b';').count() < MAX_PARAMS;
+                    if !self.csi_taint && fits {
                         if let Some(sig) = csi_signal(b, &self.csi) {
                             out.push((i + 1, sig));
                         }
@@ -496,36 +504,38 @@ impl Scanner {
                         for sig in crate::csi_query::save_restore(b, &self.csi) {
                             out.push((i + 1, sig));
                         }
-                    } else if self.csi_gt && self.csi_inter.is_none() && self.csi.len() < MAX_CSI {
+                        // 화면 지우기(ED)도 다른 신호처럼 중간 바이트·표시가 없는 CSI에서만 읽는다. 엔진은 중간 바이트 뒤의 매개변수·
+                        // 매개변수 뒤의 표시를 CsiIgnore로 보내고, 맨 앞의 `< = >`나 매개변수 뒤의 중간 바이트는 `ED`가 아닌 다른 명령으로 dispatch한다(#605).
+                        // `?`가 붙은 `CSI ? 2 J`(DECSED)는 모은 매개변수가 `?2`라 여기서 읽지 않는다
+                        if b == b'J' {
+                            match self.csi.as_slice() {
+                                b"2" => out.push((
+                                    i + 1,
+                                    Signal::Erase {
+                                        visible: true,
+                                        scrollback: false,
+                                    },
+                                )),
+                                b"3" => out.push((
+                                    i + 1,
+                                    Signal::Erase {
+                                        visible: false,
+                                        scrollback: true,
+                                    },
+                                )),
+                                _ => {}
+                            }
+                        }
+                    } else if self.csi_gt && self.csi_inter.is_none() && fits {
                         if let Some(sig) = crate::csi_query::private_gt(b, &self.csi) {
                             out.push((i + 1, sig));
                         }
-                    } else if let (Some(inter), false, true) = (self.csi_inter, self.csi_bad, self.csi.len() < MAX_CSI)
-                    {
+                    } else if let (Some(inter), false, true) = (self.csi_inter, self.csi_bad, fits) {
                         if let Some(sig) = csi_inter_signal(inter, b, &self.csi) {
                             out.push((i + 1, sig));
                         }
                         if let Some(sig) = crate::csi_query::inter(inter, b, &self.csi) {
                             out.push((i + 1, sig));
-                        }
-                    }
-                    if b == b'J' {
-                        match self.csi.as_slice() {
-                            b"2" => out.push((
-                                i + 1,
-                                Signal::Erase {
-                                    visible: true,
-                                    scrollback: false,
-                                },
-                            )),
-                            b"3" => out.push((
-                                i + 1,
-                                Signal::Erase {
-                                    visible: false,
-                                    scrollback: true,
-                                },
-                            )),
-                            _ => {}
                         }
                     }
                     St::Ground
