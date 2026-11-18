@@ -18,7 +18,7 @@ mod memory;
 mod window;
 pub use compose::{LayerMemory, LayerUpdate, PaneDraw};
 pub use memory::GpuMemory;
-pub use window::PresentOutcome;
+pub use window::{LayerSrgbHook, PresentOutcome, SrgbPath, srgb_path};
 
 /// 한 프레임의 구간별 시간(ms). 마지막으로 그린 프레임의 값이다
 #[derive(Debug, Clone, Copy, Default)]

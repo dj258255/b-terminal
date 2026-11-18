@@ -661,3 +661,20 @@ pub fn release_named_pasteboard(name: &str) {
 pub fn scroller_preferences() -> Option<(bool, bool)> {
     crate::platform_impl::system_prefs::scroller_preferences()
 }
+
+/// Sets the color space of the window's `CAMetalLayer` (created by wgpu or raw-window-metal under the window's view,
+/// possibly as a sublayer of the root layer) to sRGB, so a renderer that draws sRGB values can leave its surface color
+/// space alone and let the compositor convert to the display. `Surface::configure` in wgpu resets the layer color space,
+/// so call this after every configure. Returns `false` (and changes nothing) when there is no metal layer yet, off the
+/// main thread, or for a non-AppKit handle. b-terminal(#632)
+#[cfg(feature = "rwh_06")]
+pub fn set_metal_layer_srgb(window: &crate::window::Window) -> bool {
+    use rwh_06::{HasWindowHandle, RawWindowHandle};
+    let Ok(handle) = window.window_handle() else {
+        return false;
+    };
+    let RawWindowHandle::AppKit(handle) = handle.as_raw() else {
+        return false;
+    };
+    crate::platform_impl::layer_colorspace::set_metal_layer_srgb(handle.ns_view.as_ptr().cast())
+}

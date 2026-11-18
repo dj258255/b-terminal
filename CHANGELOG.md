@@ -7,6 +7,7 @@
 - Finder 서비스 "New b-terminal Tab Here"·"New b-terminal Window Here"(Ghostty처럼): Finder에서 폴더를 오른쪽 눌러 서비스로 고르면 그 폴더에서 새 탭·새 창을 엽니다(파일이면 부모 폴더, 없는 경로·상대 경로는 버리고, 한 번에 16개 폴더까지). 폴더만 열고 실행하지 않습니다. 앱 묶음의 Info.plist에 `NSServices`를 더했고 서비스 제공 객체는 vendor winit에 있습니다. 시스템 서비스 목록 갱신(`pbs -update`)은 시스템 상태를 바꾸므로 돌리지 않아 Finder에서 서비스를 실제로 불러 보지는 못했습니다. 격리한 앱 묶음으로 서비스 제공 객체를 달고 띄워 앱이 무사한 것까지만 확인했습니다 (#631)
 - macOS에서 선택 클립보드(`copy-on-select`의 `primary`·`both`, ⌘⇧V)를 이름 붙은 pasteboard `com.dj258255.b-terminal.selection`에 담아 b-terminal 프로세스끼리 나눕니다(Ghostty처럼). 일반 클립보드는 건드리지 않고 앱 묶음 없이도 됩니다. 이 pasteboard를 읽고 쓰는 것은 단위 시험으로 확인했고, 두 프로세스 사이에 마우스로 골라 붙여넣어 보지는 않았습니다. ⌘⇧V는 이 창에서 고른 뒤 다른 b-terminal이 새로 골랐으면 그 글을, 아니면 이 창에서 고른 글을 붙입니다. 암호 입력 중인 칸에서 고른 글이나 보안 입력이 켜져 있을 때 고른 글은 앱 안에만 두고, 앱이 끝나면 이 pasteboard를 비웁니다(다른 b-terminal이 떠 있으면 그 선택도 사라집니다) (#629)
 - `scrollbar = system`이 macOS 시스템 설정 "스크롤 막대 보기"(항상이면 스크롤백이 있는 동안 막대가 늘 보임)와 "스크롤 막대 클릭 시"(누른 자리로 이동이면 빈 곳 누르기가 그 자리로 뜀)를 따릅니다. 앱이 앞으로 올 때 다시 읽습니다 (#630)
+- `window-colorspace = srgb`를 GPU 길에서 창 레이어(`CAMetalLayer`)에 sRGB 색 공간을 직접 달아 맞춥니다. 전에는 surface를 Display P3로 두고 창 크기 중간 텍스처에 그린 뒤 변환해 창마다 약 13.6MB를 더 썼는데, 이제 중간 텍스처가 없습니다. 레이어를 못 찾거나 달지 못하면 전처럼 중간 텍스처 길로, 그것도 안 되면 CPU 길로 돌아갑니다. 기본값(`display-p3`)과 macOS 밖은 그대로입니다 (#632)
 
 ## [0.79.0] - 2026-11-18
 

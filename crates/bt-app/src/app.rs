@@ -4583,7 +4583,20 @@ impl App {
             std::env::var("BT_GPU").ok().as_deref(),
             crate::render_path::GPU_BY_DEFAULT,
             || {
-                // `srgb`면 surface를 Display P3로 열고 마지막 변환 패스를 둔다(surface가 Display P3를 안 주면 `None`, CPU 길로 간다)
+                // `srgb`면 macOS는 창 레이어에 sRGB 색 공간을 직접 단다(#632, 추가 텍스처 없음). 달지 못하면 surface를 Display P3로 열고
+                // 마지막 변환 패스를 둔다(surface가 Display P3를 안 주면 `None`, CPU 길로 간다)
+                #[cfg(target_os = "macos")]
+                if colorspace_srgb {
+                    let layer_window = window.clone();
+                    return bt_gpu::GpuRenderer::new_for_window_srgb(
+                        window.clone(),
+                        (size.width, size.height),
+                        transparent_gpu,
+                        self.config.window_vsync,
+                        std::sync::Arc::new(move || winit::platform::macos::set_metal_layer_srgb(&layer_window)),
+                    )
+                    .map(Box::new);
+                }
                 if colorspace_srgb {
                     bt_gpu::GpuRenderer::new_for_window_srgb_p3(
                         window.clone(),
