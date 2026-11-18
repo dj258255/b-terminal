@@ -3059,7 +3059,7 @@ impl App {
         if index >= self.panes.len() {
             return;
         }
-        // Session을 떨어뜨리면 PTY가 닫히고 셸은 SIGHUP을 받는다. 들고 있으면 그때까지 떨어뜨리지 않는다
+        // Session을 떨어뜨리면 `Drop`이 셸에 SIGHUP을 보낸다(읽기 스레드가 PTY 주 쪽을 쥐고 있어 떨어뜨리는 것만으로는 닫히지 않는다, #651). 들고 있으면 그때까지 셸이 산다
         let mut pane = self.panes.remove(index);
         let id = pane.id;
         crate::desktop::forget(std::mem::take(&mut pane.notes));
@@ -5434,7 +5434,7 @@ impl App {
         let ids: Vec<u64> = self.w.tabs.iter().flat_map(|g| g.layout.leaves()).collect();
         for id in ids {
             if let Some(i) = self.pane_index(id) {
-                // Session을 떨어뜨리면 PTY가 닫히고 셸은 SIGHUP을 받는다
+                // Session을 떨어뜨리면 `Drop`이 셸에 SIGHUP을 보낸다(#651)
                 let mut pane = self.panes.remove(i);
                 crate::desktop::forget(std::mem::take(&mut pane.notes));
             }
@@ -7613,7 +7613,7 @@ impl ApplicationHandler<UserEvent> for App {
         self.fire_kitty_wakes(now);
         // 미뤄 둔 GPU 프레임을 다시 그릴 때가 됐다(ADR-038)
         self.fire_pace_wakes(now);
-        // 기한이 지난 닫은 칸·탭은 이때 떨어뜨린다(셸이 SIGHUP을 받는다, #164)
+        // 기한이 지난 닫은 칸·탭은 이때 떨어뜨린다(`Session`의 `Drop`이 셸에 SIGHUP을 보낸다, #164·#651)
         drop(self.undo.expire(now));
         drop(self.redo.expire(now));
         // 크기 표시가 끝난 칸은 지우고 다시 그린다(#122)

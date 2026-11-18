@@ -228,3 +228,14 @@
 - 까닭: 키 이름은 Ghostty `Ghostty.Input.Key`의 rawValue(`enter`, `arrowUp`, `digit1`, `bracketLeft`)라 대소문자를 가리고 다른 표기(`Return`, `arrow_up`, `ctrl`)는 모른다. 수식 키는 `modifiers "shift,control,option,command"` 인자로 따로 준다(`send key "c" modifiers "control" to t`). `send key "ctrl-c"`는 되지 않는다
 - 풀기: 이름은 소문자 시작 camelCase로 쓴다(`enter`, `tab`, `escape`, `space`, `backspace`, `arrowUp`, `pageDown`, `f5`). 뒤에 키 묶음(keybind)에 걸린 키를 보냈다면(예: `modifiers "command"`와 `t`) 그 동작이 일어난다
 - 2026-11-18 주 세션이 격리한 실제 창에서 `send key "Enter"`와 `modifiers "hyper"`가 이 오류(-10000)를 내는 것을 확인했다. `modifiers " shift , "`처럼 공백만 남는 조각이 있어도 오류다(Ghostty `split(separator:)`와 같다). `"shift,"`처럼 빈 조각은 건너뛴다
+
+## 28. 칸·탭·창을 닫아도 셸과 그 프로그램이 끝나지 않는다
+
+- 언제: 2026-11-18, #651. 주 세션이 격리한 실제 창에서 찾았다(칸 4개가 남았는데 앱 아래 `/bin/sh -l` 8개, ptmx fd 20개, 닫은 칸의 `sleep 100`도 살아 있었다). 0.81.0까지의 동작이다
+- 증상: 닫은 칸의 셸·ssh·편집기·빌드가 보이지 않는 채 계속 돈다. 칸을 열고 닫을수록 프로세스와 fd가 쌓인다
+- 까닭: 읽기 스레드가 복제한 읽기 fd와 쓰기 끝을 쥔 채 `read`에서 막혀 있어, `Session`을 떨어뜨려도 PTY 주 쪽이 닫히지 않는다. 주 쪽이 닫혀야 셸이 끊김(SIGHUP)을 받는데 그 일이 없었다
+- 고침: `Session`의 `Drop`이 자식에게 SIGHUP을 보낸다(Ghostty `termio/Exec.zig`의 `killPid`를 따랐다). 셸이 끝나면 slave 쪽이 닫혀 읽기 스레드의 `read`가 끝나고 fd가 풀린다. 되살리기(undo-timeout) 동안 들고 있는 칸은 떨어지기 전까지 셸이 산다
+  - 이미 끝난 칸에는 보내지 않는다. 읽기 스레드가 자식을 거두고 끝남을 표시하는 일을 `Drop`이 신호를 보내는 일과 같은 잠금 안에서 하므로, 거둔 뒤 재사용된 pid에 신호가 가지 않는다
+  - SIGHUP을 막은 셸(`trap '' HUP`)에는 100ms 간격으로 최대 약 3초 되풀이한 뒤 그만둔다. SIGKILL로 넘어가지 않는다(Ghostty도 SIGHUP만 되풀이한다). 이런 셸과 그 프로그램은 앱이 끝날 때까지 남는다. 이 경우는 시험하지 않았다
+  - Ghostty는 자식의 프로세스 그룹에 `killpg`를 보내지만, 여기서는 `unsafe`를 쓰지 않으려고 portable-pty의 `kill`(자식 pid에 SIGHUP)을 쓴다. 로그인 셸이 끊김을 받으면 자기 작업에 다시 전한다. 셸을 거치지 않는 전경 프로그램이 따로 남는지는 재지 않았다
+- 0.81.0에서 풀기: 앱을 끝내면 남은 셸도 끝난다(앱 프로세스가 사라지면 주 쪽 fd가 닫힌다)

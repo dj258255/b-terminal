@@ -457,6 +457,8 @@ pub struct Session {
     theme: Arc<Mutex<Arc<Theme>>>,
     pid: Option<u32>,
     exited: Arc<Mutex<Option<Option<u32>>>>,
+    /// 떨어뜨릴 때 자식에게 SIGHUP을 보내는 손잡이(#651). 읽기 스레드가 `child`를 가져가므로 복제해 둔다
+    killer: Arc<Mutex<Box<dyn portable_pty::ChildKiller + Send + Sync>>>,
     /// 셸 통합 표지(OSC 133;A)를 한 번이라도 받았다
     integrated: Arc<std::sync::atomic::AtomicBool>,
     /// 새 출력이 오면 맨 아래로 스크롤하는가(읽기 스레드가 본다)
@@ -671,6 +673,7 @@ impl Session {
         let mut child = pair.slave.spawn_command(cmd).context(what)?;
         drop(pair.slave);
         let pid = child.process_id();
+        let killer = Arc::new(Mutex::new(child.clone_killer()));
         let mut reader = pair.master.try_clone_reader().context("PTY 읽기 끝 복제")?;
         let writer: Writer = Arc::new(Mutex::new(pair.master.take_writer().context("PTY 쓰기 끝 얻기")?));
         let readonly = Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -1121,12 +1124,30 @@ impl Session {
                     Err(_) => break,
                 }
             }
-            let code = child.wait().ok().map(|s| s.exit_code());
+            // 거두기(wait)와 끝남 표시를 `exited` 잠금 안에서 한다. `Drop`도 같은 잠금 안에서 신호를 보내므로,
+            // 이미 거둔 pid가 다른 프로세스에 재사용된 뒤 신호가 가는 일이 없다(#651).
+            // 막는 `wait` 대신 `try_wait`을 짧게 되풀이한다(읽기가 끝난 뒤에만 도니 비용은 작다)
+            let code = loop {
+                let mut slot = thread_exited.lock();
+                match child.try_wait() {
+                    Ok(Some(s)) => {
+                        let code = Some(s.exit_code());
+                        *slot = Some(code);
+                        break code;
+                    }
+                    Ok(None) => {}
+                    Err(_) => {
+                        *slot = Some(None);
+                        break None;
+                    }
+                }
+                drop(slot);
+                std::thread::sleep(Duration::from_millis(10));
+            };
             // 붙어 있던 프로세스가 끝났다: 일하던 상태는 사라지고 done·error는 남는다(OSC 7501)
             if thread_status.lock().drop_live() {
                 sink(SessionEvent::ProgramStatus(None));
             }
-            *thread_exited.lock() = Some(code);
             sink(SessionEvent::Exited(code));
         })?;
 
@@ -1139,6 +1160,7 @@ impl Session {
             theme: current_theme,
             pid,
             exited,
+            killer,
             integrated,
             scroll_on_output,
             kam_locked,
@@ -2363,6 +2385,36 @@ impl Session {
             .as_ref()
             .and_then(|s| s.to_range(&g.term))
             .is_some_and(|r| r.contains(point))
+    }
+}
+
+/// 칸을 닫으면 셸에 SIGHUP을 보낸다(Ghostty `termio/Exec.zig` `killPid`의 몫, #651).
+/// 읽기 스레드가 PTY 주 쪽 fd를 쥐고 있어 `Session`을 떨어뜨리는 것만으로는 셸이 끊김을 받지 못한다.
+/// 이미 끝난 칸에는 보내지 않는다(pid 재사용). 셸이 SIGHUP을 막아 두었으면 짧게 되풀이한 뒤 그만둔다
+/// (SIGKILL로 넘어가지 않는다: 저장하던 편집기나 ssh를 강제로 끊지 않는다)
+impl Drop for Session {
+    fn drop(&mut self) {
+        {
+            let exited = self.exited.lock();
+            if exited.is_some() {
+                return;
+            }
+            // `exited` 잠금을 쥔 채 보낸다: 읽기 스레드는 이 잠금 안에서 거두므로 pid는 아직 우리 자식이다
+            let _ = self.killer.lock().kill();
+        }
+        let exited = self.exited.clone();
+        let killer = self.killer.clone();
+        // 앱 메인 스레드를 막지 않는 되풀이(최대 약 3초, 100ms 간격)
+        let _ = std::thread::Builder::new().name("bt-pty-hup".into()).spawn(move || {
+            for _ in 0..30 {
+                std::thread::sleep(Duration::from_millis(100));
+                let exited = exited.lock();
+                if exited.is_some() {
+                    return;
+                }
+                let _ = killer.lock().kill();
+            }
+        });
     }
 }
 
