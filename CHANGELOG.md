@@ -5,6 +5,7 @@
 ## [아직 릴리스하지 않음]
 
 - Finder 서비스 "New b-terminal Tab Here"·"New b-terminal Window Here"(Ghostty처럼): Finder에서 폴더를 오른쪽 눌러 서비스로 고르면 그 폴더에서 새 탭·새 창을 엽니다(파일이면 부모 폴더, 없는 경로·상대 경로는 버리고, 한 번에 16개 폴더까지). 폴더만 열고 실행하지 않습니다. 앱 묶음의 Info.plist에 `NSServices`를 더했고 서비스 제공 객체는 vendor winit에 있습니다. 시스템 서비스 목록 갱신(`pbs -update`)은 시스템 상태를 바꾸므로 돌리지 않아 Finder에서 서비스를 실제로 불러 보지는 못했습니다. 격리한 앱 묶음으로 서비스 제공 객체를 달고 띄워 앱이 무사한 것까지만 확인했습니다 (#631)
+- `window-colorspace = srgb`를 GPU 길에서 창 레이어(`CAMetalLayer`)에 sRGB 색 공간을 직접 달아 맞춥니다. 전에는 surface를 Display P3로 두고 창 크기 중간 텍스처에 그린 뒤 변환해 창마다 약 13.6MB를 더 썼는데, 이제 중간 텍스처가 없습니다. 레이어를 못 찾거나 달지 못하면 전처럼 중간 텍스처 길로, 그것도 안 되면 CPU 길로 돌아갑니다. 기본값(`display-p3`)과 macOS 밖은 그대로입니다 (#632)
 
 ## [0.79.0] - 2026-11-18
 
