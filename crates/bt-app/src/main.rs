@@ -173,6 +173,12 @@ fn main() -> anyhow::Result<()> {
             }
             let _ = proxy.send_event(app::UserEvent::OpenFile(path));
         }));
+        // Finder 서비스 "New b-terminal Tab/Window Here"(#631). 앱 묶음이 아니면 달지 않는다
+        let proxy = event_loop.create_proxy();
+        winit::platform::macos::set_services_handler(Box::new(move |target, paths| {
+            let want_tab = target == winit::platform::macos::ServiceTarget::Tab;
+            let _ = proxy.send_event(app::UserEvent::OpenFolders(want_tab, paths));
+        }));
         // 칸이 낸 데스크톱 알림을 누르면 그 칸으로 간다(#625). 앱 묶음이 아니면 처리 함수만 둔다(알림은 osascript로 나감)
         let proxy = event_loop.create_proxy();
         winit::platform::macos::set_user_notification_handler(Box::new(move |r| {

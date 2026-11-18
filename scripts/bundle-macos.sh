@@ -94,6 +94,34 @@ cat > "$APP/Contents/Info.plist" <<PLIST
       </array>
     </dict>
   </array>
+  <!-- Finder 서비스(#631): 폴더나 경로를 골라 "New b-terminal Tab Here"·"New b-terminal Window Here". Ghostty의 NSServices와 같은 구조(NSMessage는 openTab·openWindow) -->
+  <key>NSServices</key>
+  <array>
+    <dict>
+      <key>NSMenuItem</key>
+      <dict><key>default</key><string>New b-terminal Tab Here</string></dict>
+      <key>NSMessage</key><string>openTab</string>
+      <key>NSRequiredContext</key>
+      <dict><key>NSTextContent</key><string>FilePath</string></dict>
+      <key>NSSendTypes</key>
+      <array>
+        <string>NSFilenamesPboardType</string>
+        <string>public.plain-text</string>
+      </array>
+    </dict>
+    <dict>
+      <key>NSMenuItem</key>
+      <dict><key>default</key><string>New b-terminal Window Here</string></dict>
+      <key>NSMessage</key><string>openWindow</string>
+      <key>NSRequiredContext</key>
+      <dict><key>NSTextContent</key><string>FilePath</string></dict>
+      <key>NSSendTypes</key>
+      <array>
+        <string>NSFilenamesPboardType</string>
+        <string>public.plain-text</string>
+      </array>
+    </dict>
+  </array>
 </dict>
 </plist>
 PLIST

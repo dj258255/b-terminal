@@ -88,6 +88,8 @@
 | [ADR-026](#adr-026-dock에-놓은-파일은-확인-막대에서-y를-눌러야-실행하고-경로-글자는-허용-목록으로-좁히고-목록-밖이면-거부하며-통과한-경로만-작은따옴표로-감싼다) | Dock에 놓은 파일은 확인 막대에서 y를 눌러야 실행하고, 경로 글자는 허용 목록으로 좁히고 목록 밖이면 거부하며, 통과한 경로만 작은따옴표로 감싼다 | 유효 |
 | [ADR-053](#adr-053-kitty-알림osc-99은-kitty-명세대로-조각을-합치고-질의-답에-되돌리는-식별자는-검사한다) | kitty 알림(OSC 99)은 kitty 명세대로 조각을 합치고, 질의 답에 되돌리는 식별자는 검사한다 | 유효 |
 | [ADR-058](#adr-058-macos-앱-묶음의-데스크톱-알림은-unusernotificationcenter로-내고-누르면-그-칸으로-간다-프레임워크-호출은-vendor-winit-안에만-둔다) | macOS 앱 묶음의 데스크톱 알림은 UNUserNotificationCenter로 내고, 누르면 그 칸으로 간다. 프레임워크 호출은 vendor winit 안에만 둔다 | 유효 |
+| [ADR-059](#adr-059-finder-서비스는-경로만-받아-그-폴더에서-새-탭이나-창을-열고-아무것도-실행하지-않는다) | Finder 서비스는 경로만 받아 그 폴더에서 새 탭이나 창을 열고, 아무것도 실행하지 않는다 | 유효 |
+| [ADR-060](#adr-060-선택-클립보드는-이름-붙은-pasteboard로-b-terminal끼리-나누되-암호-입력-칸의-글은-내보내지-않고-스크롤-막대는-시스템-설정을-읽기만-한다) | 선택 클립보드는 이름 붙은 pasteboard로 b-terminal끼리 나누되 암호 입력 칸의 글은 내보내지 않고, 스크롤 막대는 시스템 설정을 읽기만 한다 | 유효 |
 
 ### 설정 기본값
 
@@ -130,7 +132,8 @@
 | [ADR-043](#adr-043-사용자-셰이더는-칸마다-칸-크기-텍스처로-떼어-돌리고-칸-밖과-덧그림은-셰이더-뒤에-둔다) | 사용자 셰이더는 칸마다 칸 크기 텍스처로 떼어 돌리고, 칸 밖과 덧그림은 셰이더 뒤에 둔다 | 유효. ADR-041 결정 1을 대체 |
 | [ADR-044](#adr-044-gpu-길-surface는-그림판을-프레임-미룸-줄-깊이보다-한-장-더-허락한다) | GPU 길 surface는 그림판을 프레임 미룸 줄 깊이보다 한 장 더 허락한다 | 유효 |
 | [ADR-045](#adr-045-window-vsync--false에서도-프레임-미룸을-쓴다) | `window-vsync = false`에서도 프레임 미룸을 쓴다 | 유효 |
-| [ADR-047](#adr-047-window-colorspace--srgb는-gpu-길에서-display-p3-표시와-마지막-변환-패스로-맞춘다) | `window-colorspace = srgb`는 GPU 길에서 Display P3 표시와 마지막 변환 패스로 맞춘다 | 유효 |
+| [ADR-047](#adr-047-window-colorspace--srgb는-gpu-길에서-display-p3-표시와-마지막-변환-패스로-맞춘다) | `window-colorspace = srgb`는 GPU 길에서 Display P3 표시와 마지막 변환 패스로 맞춘다 | 유효. macOS에서 레이어를 달 수 있으면 ADR-061이 대체 |
+| [ADR-061](#adr-061-window-colorspace--srgb는-macos-gpu-길에서-창-레이어에-srgb-색-공간을-직접-달고-못-달면-adr-047의-길로-간다) | `window-colorspace = srgb`는 macOS GPU 길에서 창 레이어에 sRGB 색 공간을 직접 달고, 못 달면 ADR-047의 길로 간다 | 유효 |
 
 ## ADR-001 VT 엔진은 alacritty_terminal로 시작하고, bt-term 밖으로 엔진 타입을 내보내지 않는다
 
@@ -1510,7 +1513,7 @@ E8의 실제 창 로그에서 10ms 넘는 GPU 프레임은 세 가지였다. (1)
 
 ## ADR-047 `window-colorspace = srgb`는 GPU 길에서 Display P3 표시와 마지막 변환 패스로 맞춘다
 
-상태: 채택
+상태: 채택(macOS에서 레이어 색 공간을 달 수 있으면 ADR-061이 결정 1을 대체한다)
 관련: [#466](https://github.com/dj258255/b-terminal/issues/466), ADR-009(화면 색 공간), ADR-036·ADR-039(GPU 길), [실험 E26](experiments/2026-11-12-e26-gpu-srgb.md)
 
 ### 맥락
@@ -1844,3 +1847,91 @@ E8의 실제 창 로그에서 10ms 넘는 GPU 프레임은 세 가지였다. (1)
 - 알림 글은 지금처럼 터미널에 찍힌 글에서 오고, 앱이 길이를 자르고 제어 문자를 지운 뒤 넘긴다. 프레임워크에는 `NSString`으로 넘기므로 셸이나 스크립트로 읽히는 길이 없다.
 - 누름에서 앱으로 들어오는 것은 우리가 만든 알림 ID뿐이다. 앱은 ID에서 숫자 셋을 엄격히 읽고(이 실행의 pid만), 있는 칸이면 고르기만 한다. PTY에는 아무것도 쓰지 않는다.
 - delegate는 상태가 없고 어느 스레드에서 불려도 처리 함수에 넘기기만 한다. 처리 함수는 `EventLoopProxy`로 창 스레드에 칸 번호를 보낸다.
+
+## ADR-059 Finder 서비스는 경로만 받아 그 폴더에서 새 탭이나 창을 열고, 아무것도 실행하지 않는다
+
+상태: 채택
+관련: [#631](https://github.com/dj258255/b-terminal/issues/631), ADR-026(Dock에 놓은 파일), ADR-058(vendor winit 길)
+
+### 맥락
+- Ghostty는 `Info.plist`의 `NSServices`로 Finder 서비스 "New Ghostty Tab Here"·"New Ghostty Window Here"를 낸다. 시스템이 서비스 제공 객체(`macos/Sources/Features/Services/ServiceProvider.swift`)의 `openTab:userData:error:`·`openWindow:userData:error:`를 부르며 선택한 경로가 든 pasteboard를 넘긴다. Ghostty는 폴더는 그대로, 파일은 부모 폴더로 줄이고 겹침을 없애 폴더마다 새 탭·창을 연다.
+- Dock 드롭(ADR-026)처럼 다른 프로그램이 경로를 넘기는 새 입력 길이다. Finder뿐 아니라 어떤 앱이든 서비스를 부를 수 있고, pasteboard의 내용은 보낸 쪽이 정한다.
+- 작업 공간은 `unsafe_code = "deny"`라 AppKit 호출은 vendor winit(`platform_impl/macos/services.rs`)에만 둔다.
+
+### 결정
+1. 받는 것은 pasteboard의 절대 경로 목록뿐이다. `NSFilenamesPboardType`, 없으면 파일 URL, 없으면 글을 줄 단위로 읽는다. 한 요청에서 경로 256개까지 읽는다. 경로 한 개는 4096자, 글은 64K자(UTF-16 단위)를 넘으면 복사하기 전에 버리고, 상대 경로와 NUL이 든 글도 버린다. 앱이 처리 함수를 등록하기 전에는 요청을 16개까지만 쌓는다.
+2. 폴더는 그 폴더를, 파일은 부모 폴더를 작업 폴더로 새 탭 또는 새 창을 연다(`dock_open::service_dirs`). 없는 경로는 버리고, 겹친 폴더는 한 번만, 한 번에 16개 폴더까지다(이 상한은 Ghostty에 없다). 메인 스레드에서 살펴보는(stat) 경로는 64개까지다(멈춘 네트워크 마운트 경로가 잔뜩 와도 오래 막히지 않게). 탭을 골랐어도 창이 없으면 새 창이다.
+3. 파일을 실행하지 않고 셸에 아무것도 치지 않는다. 작업 폴더만 정하므로 ADR-026의 경로 글자 허용 목록(셸 입력을 만드는 길에만 필요)과 확인 막대는 거치지 않는다.
+4. 서비스 제공 객체는 번들 식별자가 있을 때만 단다. 앱이 처리 함수를 등록하기 전에 온 요청은 쌓아 두었다가 넘긴다(#279와 같다).
+
+### 감수한 트레이드오프
+- 다른 프로그램이 서비스를 불러 경로를 넘기면 그 폴더에서 사용자의 로그인 셸이 뜬다. 그 폴더의 셸 설정 파일(예: direnv가 읽는 `.envrc`)은 사용자의 셸 설정이 정한 대로 동작한다. 폴더를 직접 `cd`하는 것과 같다.
+- 같은 사용자의 프로세스는 서비스를 되풀이해 불러 요청마다 16개씩 열 수 있다. 같은 권한으로 어차피 할 수 있는 일이라 횟수 제한은 두지 않았다. 샌드박스 앱이 자기 컨테이너 안 폴더로 서비스를 부를 수 있는지는 확인하지 않았다.
+- 시스템 서비스 목록 갱신(`pbs -update`)은 시스템 상태를 바꾸므로 돌리지 않았다. Finder에서 메뉴가 뜨는지와 눌렀을 때 열리는지는 확인하지 않았다. 격리한 앱 묶음에서 제공 객체를 단 채 앱이 정상으로 뜨는 것까지 봤다.
+
+### 하지 않은 것
+- 파일을 그 프로그램으로 열거나 실행하기: 실행은 확인 막대가 있는 Dock 드롭 길(ADR-026)에만 둔다.
+- 서비스로 받은 글을 칸에 넣기(Ghostty에도 없다).
+
+### 보안
+외부 프로그램이 경로를 넘기는 입력 길이 하나 늘었다. 할 수 있는 일은 "그 폴더에서 빈 셸 탭·창을 연다"까지이고 한 번에 16개로 막는다.
+
+## ADR-060 선택 클립보드는 이름 붙은 pasteboard로 b-terminal끼리 나누되 암호 입력 칸의 글은 내보내지 않고, 스크롤 막대는 시스템 설정을 읽기만 한다
+
+상태: 채택
+관련: [#629](https://github.com/dj258255/b-terminal/issues/629), [#630](https://github.com/dj258255/b-terminal/issues/630), ADR-049 근처(고르기 복사, #491), ADR-058(vendor winit 길)
+
+### 맥락
+- `copy-on-select`의 선택 클립보드(`paste_from_selection`, ⌘⇧V)는 macOS에서 앱 안 메모리에만 있었다. Ghostty는 이름 붙은 `NSPasteboard`(`com.mitchellh.ghostty.selection`, `NSPasteboard+Extension.swift`)로 Ghostty 프로세스끼리 선택을 나눈다.
+- `scrollbar = system`은 시스템 설정 "스크롤 막대 보기"와 "스크롤 막대 클릭 시"를 읽지 않았다.
+- 둘 다 `unsafe`가 필요해 뺐다. 작업 공간 규칙은 두고 AppKit 호출을 vendor winit(`platform_impl/macos/system_prefs.rs`)에만 둔다.
+
+### 결정
+1. 앱은 macOS에서 선택 클립보드를 `com.dj258255.b-terminal.selection`에 쓴다. 고를 때마다 그 pasteboard의 바뀜 번호(`changeCount`)를 적어 두고, 읽을 때 그 뒤에 바뀌었으면(다른 b-terminal이 나중에 골랐다) 그 글을, 아니면 앱 안 저장소를 쓴다. 다른 프로세스가 쓴 글은 1M자(UTF-16 단위)를 넘으면 복사하기 전에 버린다. 쓰기에 실패해도 앱 안 저장소는 남는다. 앱 묶음이 없어도 된다.
+2. vendor 함수는 `Apple `로 시작하는 이름(시스템의 일반·찾기·글꼴·끌기 pasteboard)과 빈 이름을 거절한다. 사용자의 일반 클립보드는 이 길로 닿지 않는다.
+3. 고른 글이 나온 칸이 암호 입력 중이거나(termios 추측, #258. 붙여넣기처럼 고르기를 마칠 때 termios를 다시 읽는다) 보안 입력이 켜져 있으면(전역이거나 그 칸) 이름 붙은 pasteboard에 쓰지 않고 앱 안 저장소에만 둔다(`share_selection`). 그 뒤 붙여넣기는 앱 안 저장소의 그 글이다.
+4. 앱이 끝날 때 그 pasteboard를 비운다(`releaseGlobally`).
+5. 스크롤 막대: `NSScroller.preferredScrollerStyle`이 Legacy면 스크롤백이 있는 동안 막대를 늘 그린다. `AppleScrollerPagingBehavior`가 참이면 빈 곳 누르기가 손잡이 가운데를 그 자리로 옮긴다. 시작할 때와 창이 초점을 얻을 때 다시 읽고, 읽지 못하면 지금 동작(스크롤할 때, 한 쪽씩)이다. 시스템 설정은 읽기만 한다.
+
+### 감수한 트레이드오프
+- 이름 붙은 pasteboard는 같은 사용자의 다른 프로세스가 이름으로 읽을 수 있다. 고른 글이 프로세스 밖에 보인다(Ghostty와 같은 성질, 일반 클립보드와 같은 범위). 끄는 설정 키는 두지 않았다.
+- 암호 입력 판단은 termios 추측이라 놓칠 수 있다(예: 원격 셸 안의 암호 입력).
+- 같은 사용자의 다른 프로세스가 그 pasteboard에 글을 써 두면, 다른 b-terminal이 고른 것과 구별하지 못해 ⌘⇧V가 그 글을 붙인다. 붙여넣기 확인(`clipboard-paste-protection`)과 괄호 붙여넣기 처리는 그대로 거친다. 일반 클립보드도 같은 성질이다.
+- 한 인스턴스가 끝나며 비우면 떠 있는 다른 b-terminal의 공유 선택도 사라진다(그쪽 앱 안 저장소는 남는다).
+- 두 프로세스 사이 붙여넣기, Legacy 스타일과 "누른 자리로" 설정의 실제 화면은 재지 않았다(이 기기는 Overlay이고 시스템 설정은 바꾸지 않았다).
+
+### 하지 않은 것
+- 공유를 끄는 설정 키: Ghostty에 없고, 일반 클립보드보다 넓지 않다.
+- 바뀜 알림 구독(`NSPreferredScrollerStyleDidChangeNotification`): 초점을 얻을 때 다시 읽는 것으로 충분하다.
+
+### 보안
+고른 글이 같은 사용자의 다른 프로세스가 읽을 수 있는 곳으로 나간다. 암호 입력 칸의 글은 나가지 않고, 앱이 끝나면 지운다. 들어오는 쪽은 사용자가 ⌘⇧V를 누를 때만 칸에 붙여넣기 길(괄호 붙여넣기 처리 포함)로 간다.
+
+## ADR-061 `window-colorspace = srgb`는 macOS GPU 길에서 창 레이어에 sRGB 색 공간을 직접 달고, 못 달면 ADR-047의 길로 간다
+
+상태: 채택(ADR-047의 결정 1을 macOS GPU 길에서 대체한다. 레이어를 달지 못하면 ADR-047의 길이 그대로 쓰인다)
+관련: [#632](https://github.com/dj258255/b-terminal/issues/632), ADR-047, ADR-058(vendor winit 길), [실험 E26](experiments/2026-11-12-e26-gpu-srgb.md)
+
+### 맥락
+- ADR-047은 `srgb`를 surface Display P3 + 창 크기 중간 텍스처 + 마지막 변환 패스로 맞췄다. 창마다 약 13.6MB를 더 썼다. 레이어에 sRGB 색 공간을 직접 다는 것은 `unsafe`가 필요해서였다.
+- wgpu-hal 30 metal의 `configure`는 호출마다 레이어 색 공간을 다시 쓴다(`SurfaceColorSpace::Srgb`면 nil, `wgpu-hal-30.0.1/src/metal/surface.rs` 326~327줄). 창 크기가 바뀌거나 `Outdated`·`Lost`로 다시 설정하면 단 색 공간이 지워진다.
+- Ghostty main(7a8ff4d, 2026-11-18에 읽음)은 레이어 색 공간을 설정에 따라 달지 않는다. 그리는 IOSurface를 늘 Display P3로 만들고(`src/renderer/metal/Target.zig` 50~59줄), `window-colorspace`는 셰이더 유니폼 `use_display_p3`로만 쓴다(`src/renderer/generic.zig`). 결과(sRGB 값이 sRGB로 보임)를 맞추는 것이고 방법은 같지 않아도 된다. 이슈 #632에 "Ghostty는 레이어 색 공간을 직접 단다"고 적은 것은 틀렸다.
+
+### 결정
+1. macOS에서 `srgb`이면 surface는 기본(nil) 색 공간으로 설정하고, vendor winit의 `set_metal_layer_srgb(&Window)`로 창 뷰 아래의 `CAMetalLayer`(루트 레이어의 하위 레이어일 수 있음, 깊이 4까지)에 `kCGColorSpaceSRGB`를 단다. 합성기가 sRGB에서 화면으로 맞추므로 중간 텍스처와 변환 패스가 없다.
+2. `surface.configure`를 부른 뒤마다 다시 단다(`WindowSurface::configure`). 다시 달지 못하면 경고만 남긴다.
+3. 처음에 레이어를 찾거나 달지 못하면(주 스레드가 아님 포함) ADR-047의 길로, surface가 Display P3도 주지 않으면 CPU 길로 간다. 고르기는 순수 함수 `srgb_path`다.
+4. 기본 `display-p3`와 macOS 밖은 바뀌지 않는다. FFI는 vendor winit(`layer_colorspace.rs`)에만 있다.
+
+### 감수한 트레이드오프
+- 메모리: 한 기기(M2 Pro 내장 화면, 디버그 빌드)에서 footprint를 번갈아 네 쌍 잰 값. 100×30칸 창은 ADR-047 길 96·96·102·103MB, 이 길 81·85·85·86MB. 120×40칸은 131~139MB 대 124~125MB. 차이 약 13~15MB. 릴리스 빌드와 프레임 시간은 재지 않았다.
+- 색: 바탕 (41,44,51), ANSI 빨강 (197,87,87), ANSI 1번 (191,107,105)로 ADR-047 길과 채널당 최대 1 차이다(E26의 CPU `srgb` 바탕과 같음). 창 크기를 두 번 바꾼 뒤에도 같은 값이었다.
+- wgpu가 `configure`에서 색 공간을 쓰는 방식에 기댄다. wgpu를 올릴 때 다시 본다.
+- 외부 sRGB 화면에서는 재지 않았다.
+
+### 하지 않은 것
+- Ghostty처럼 늘 P3 표면에 셰이더로 맞추기: 사용자 셰이더 출력까지 바꿔야 하고, 지금 기본(`display-p3`)과 ADR-047 길을 바꾸는 더 큰 일이다.
+- 작업 공간에 `unsafe` 허용.
+
+### 보안
+입력 경계는 바뀌지 않는다.

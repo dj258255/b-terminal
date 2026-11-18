@@ -10,5 +10,5 @@ pub mod shadertoy;
 
 pub use atlas::{Atlas, Full};
 pub use renderer::{CompileStages, FrameTimings, GpuRenderer, PixelRect, ShaderRegion, ShaderWaker};
-pub use renderer::{GpuMemory, LayerMemory, LayerUpdate, PaneDraw, PresentOutcome};
+pub use renderer::{GpuMemory, LayerMemory, LayerSrgbHook, LayerUpdate, PaneDraw, PresentOutcome, SrgbPath, srgb_path};
 pub use shadertoy::{CustomShaderSource, ShaderUniforms};

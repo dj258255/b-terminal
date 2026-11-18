@@ -819,11 +819,12 @@ pub enum Scrollbar {
 }
 
 impl Scrollbar {
-    /// 막대를 그리는가. `history`는 스크롤백 줄 수, `scrolling`은 방금 스크롤했다, `hovering`은 마우스가 오른쪽 끝 위에 있다
-    pub fn shows(self, history: usize, scrolling: bool, hovering: bool) -> bool {
+    /// 막대를 그리는가. `history`는 스크롤백 줄 수, `scrolling`은 방금 스크롤했다, `hovering`은 마우스가 오른쪽 끝 위에 있다,
+    /// `always`는 시스템 설정 "스크롤 막대 보기: 항상"(#630)
+    pub fn shows(self, history: usize, scrolling: bool, hovering: bool, always: bool) -> bool {
         match self {
             Scrollbar::Never => false,
-            Scrollbar::System => history > 0 && (scrolling || hovering),
+            Scrollbar::System => history > 0 && (always || scrolling || hovering),
         }
     }
 }
@@ -4202,14 +4203,25 @@ mod tests {
     #[test]
     fn scrollbar_shows_by_mode_history_and_activity() {
         // 스크롤백이 없으면 보일 것이 없다
-        assert!(!Scrollbar::System.shows(0, true, true));
+        assert!(!Scrollbar::System.shows(0, true, true, false));
         // 스크롤했거나 마우스가 끝에 있으면 보인다
-        assert!(Scrollbar::System.shows(10, true, false));
-        assert!(Scrollbar::System.shows(10, false, true));
+        assert!(Scrollbar::System.shows(10, true, false, false));
+        assert!(Scrollbar::System.shows(10, false, true, false));
         // 가만히 있으면 숨는다
-        assert!(!Scrollbar::System.shows(10, false, false));
+        assert!(!Scrollbar::System.shows(10, false, false, false));
         // never는 언제나 그리지 않는다
-        assert!(!Scrollbar::Never.shows(10, true, true));
+        assert!(!Scrollbar::Never.shows(10, true, true, true));
+    }
+
+    /// 시스템 설정 "스크롤 막대 보기: 항상"(Legacy 스타일, #630)이면 스크롤백이 있는 동안 늘 보인다
+    #[test]
+    fn scrollbar_always_shows_with_history_when_system_style_is_legacy() {
+        assert!(Scrollbar::System.shows(10, false, false, true));
+        assert!(
+            !Scrollbar::System.shows(0, false, false, true),
+            "스크롤백이 없으면 항상 보기여도 없다"
+        );
+        assert!(!Scrollbar::Never.shows(10, false, false, true));
     }
 
     #[test]

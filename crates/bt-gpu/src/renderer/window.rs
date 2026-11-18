@@ -1,5 +1,6 @@
 //! 창 surface에 합친 프레임을 올린다(ADR-036). 안전한 API만 쓴다: `Instance::create_surface`에 `'static` 창 대상을 넘긴다
 
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use bt_render::Fonts;
@@ -10,6 +11,47 @@ use crate::pacing::{
     DEFAULT_REFRESH, FramePacer, PaceDecision, SurfaceVisibility, frame_latency_from_env, surface_latency,
 };
 use bt_core::AlphaBlending;
+
+/// surface를 설정한 뒤 창의 레이어에 sRGB 색 공간을 다는 함수(#632). 성공하면 참. wgpu는 `configure`마다 레이어 색 공간을 다시 쓰므로
+/// (wgpu-hal 30 metal `configure`) 설정할 때마다 부른다. 앱이 창(vendor winit)을 잡고 넘긴다
+pub type LayerSrgbHook = Arc<dyn Fn() -> bool + Send + Sync>;
+
+/// `window-colorspace = srgb`를 GPU 길에서 맞추는 방법(#632)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SrgbPath {
+    /// surface는 기본(nil) 색 공간이고 레이어에 sRGB를 단다. 추가 텍스처가 없다
+    Layer,
+    /// surface를 Display P3로 두고 창 크기 중간 텍스처에 그린 뒤 마지막 패스에서 바꾼다(ADR-047)
+    Intermediate,
+    /// 어느 쪽도 안 된다(앱이 CPU 길로 돌아간다)
+    Unavailable,
+}
+
+impl SrgbPath {
+    /// 창 크기 중간 텍스처와 변환 패스를 쓰는가
+    pub fn needs_intermediate(self) -> bool {
+        self == SrgbPath::Intermediate
+    }
+}
+
+/// 길을 고른다(#632). `layer_applied`: 레이어에 sRGB를 달았다. `p3_supported`: surface가 이 꼴에 Display P3를 준다
+pub fn srgb_path(layer_applied: bool, p3_supported: bool) -> SrgbPath {
+    if layer_applied {
+        SrgbPath::Layer
+    } else if p3_supported {
+        SrgbPath::Intermediate
+    } else {
+        SrgbPath::Unavailable
+    }
+}
+
+/// `open_window`가 받는 `window-colorspace`
+enum Srgb {
+    /// 맞추지 않는다(기본 `display-p3`)
+    Off,
+    /// `srgb`. 레이어에 직접 달 함수가 있으면 먼저 시도한다
+    On(Option<LayerSrgbHook>),
+}
 
 /// 창이 가려졌을 때 `present`가 돌려주는 이유
 const OCCLUDED: &str = "창이 가려졌다";
@@ -28,6 +70,20 @@ pub(super) struct WindowSurface {
     visibility: SurfaceVisibility,
     /// `window-colorspace = srgb`(#466): surface를 Display P3로 두고 마지막에 sRGB 값을 P3 값으로 바꿔 쓴다. 꺼져 있으면 없다
     p3: Option<P3Out>,
+    /// `srgb`를 레이어에 직접 달았다면 그 함수(#632). `configure`가 레이어 색 공간을 지우므로 설정할 때마다 다시 부른다
+    layer_srgb: Option<LayerSrgbHook>,
+}
+
+impl WindowSurface {
+    /// surface를 설정하고, 레이어 색 공간 길이면 sRGB를 다시 단다
+    fn configure(&self, device: &wgpu::Device) {
+        self.surface.configure(device, &self.config);
+        if let Some(apply) = &self.layer_srgb {
+            if !apply() {
+                log::warn!("window-colorspace = srgb: 창 레이어에 sRGB 색 공간을 다시 달지 못했다");
+            }
+        }
+    }
 }
 
 /// sRGB 변환 패스와 그 앞 중간 텍스처(창 크기, surface와 같은 꼴). 안 (나): 모든 파이프라인(셀·층·사용자 셰이더·덧그림)이 이 텍스처에
@@ -108,7 +164,7 @@ impl GpuRenderer {
         transparent: bool,
         vsync: bool,
     ) -> Option<Self> {
-        Self::open_window(target, size, transparent, vsync, false)
+        Self::open_window(target, size, transparent, vsync, Srgb::Off)
     }
 
     /// `window-colorspace = srgb`(#466): `new_for_window_with`에 surface를 Display P3로 설정하고 sRGB 값을 P3 값으로 바꿔 쓰는 길을 더한다
@@ -119,7 +175,29 @@ impl GpuRenderer {
         transparent: bool,
         vsync: bool,
     ) -> Option<Self> {
-        Self::open_window(target, size, transparent, vsync, true)
+        Self::open_window(target, size, transparent, vsync, Srgb::On(None))
+    }
+
+    /// `window-colorspace = srgb`(#632): surface는 기본 색 공간으로 두고 `layer_srgb`로 창 레이어에 sRGB를 직접 단다(추가 텍스처 없음).
+    /// 함수가 거짓을 돌려주면 `new_for_window_srgb_p3`와 같은 길(Display P3 surface + 변환 패스)로 떨어진다
+    pub fn new_for_window_srgb(
+        target: impl Into<wgpu::SurfaceTarget<'static>>,
+        size: (u32, u32),
+        transparent: bool,
+        vsync: bool,
+        layer_srgb: LayerSrgbHook,
+    ) -> Option<Self> {
+        Self::open_window(target, size, transparent, vsync, Srgb::On(Some(layer_srgb)))
+    }
+
+    /// 지금 창이 `srgb`를 맞추는 길. `srgb`가 아니면 없다
+    pub fn srgb_path(&self) -> Option<SrgbPath> {
+        let w = self.window.as_ref()?;
+        if w.p3.is_some() {
+            Some(SrgbPath::Intermediate)
+        } else {
+            w.layer_srgb.as_ref().map(|_| SrgbPath::Layer)
+        }
     }
 
     fn open_window(
@@ -127,7 +205,7 @@ impl GpuRenderer {
         size: (u32, u32),
         transparent: bool,
         vsync: bool,
-        p3: bool,
+        srgb: Srgb,
     ) -> Option<Self> {
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
         let surface = instance
@@ -143,7 +221,12 @@ impl GpuRenderer {
             log::warn!("창 surface가 sRGB가 아닌 꼴을 주지 않는다: {:?}", caps.formats);
             return None;
         };
-        if p3 && !caps.color_spaces(format).contains(wgpu::SurfaceColorSpaces::DISPLAY_P3) {
+        let p3_supported = caps.color_spaces(format).contains(wgpu::SurfaceColorSpaces::DISPLAY_P3);
+        let (layer_hook, want_srgb) = match srgb {
+            Srgb::Off => (None, false),
+            Srgb::On(hook) => (hook, true),
+        };
+        if want_srgb && layer_hook.is_none() && !p3_supported {
             log::warn!(
                 "window-colorspace = srgb: 창 surface가 {format:?}에 Display P3를 주지 않는다({:?}): CPU 길로 돌아간다",
                 caps.color_spaces(format)
@@ -176,7 +259,8 @@ impl GpuRenderer {
         let config = wgpu::SurfaceConfiguration {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
             format,
-            color_space: if p3 {
+            // 레이어 길이 먼저다: surface는 기본(nil) 색 공간으로 설정하고 레이어에 sRGB를 단다(안 되면 아래서 Display P3로 다시 설정)
+            color_space: if want_srgb && layer_hook.is_none() {
                 wgpu::SurfaceColorSpace::DisplayP3
             } else {
                 wgpu::SurfaceColorSpace::Auto
@@ -200,20 +284,45 @@ impl GpuRenderer {
                 pacer: FramePacer::new(frame_latency as usize, DEFAULT_REFRESH),
                 visibility: SurfaceVisibility::default(),
                 p3: None,
+                layer_srgb: None,
             }),
         )?;
-        if let Some(w) = &me.window {
+        let mut me = me;
+        if let Some(w) = me.window.as_ref() {
             w.surface.configure(&me.device, &w.config);
         }
         log::info!("GPU 창 길: {} ({format:?}, {alpha_mode:?})", me.adapter_name());
-        if p3 {
-            log::info!("sRGB 색 맞춤: GPU 길(surface Display P3 + 마지막 변환 패스)");
-            let convert = P3Convert::new(&me.device, format);
-            let mut me = me;
-            if let Some(w) = me.window.as_mut() {
-                w.p3 = Some(P3Out { convert, mid: None });
-            }
+        if !want_srgb {
             return Some(me);
+        }
+        // `configure`가 레이어 색 공간을 지우므로 설정 뒤에 단다(#632)
+        let layer_applied = layer_hook.as_ref().is_some_and(|apply| apply());
+        match srgb_path(layer_applied, p3_supported) {
+            SrgbPath::Layer => {
+                log::info!("sRGB 색 맞춤: GPU 길(창 레이어 색 공간 sRGB, 추가 텍스처 없음)");
+                if let Some(w) = me.window.as_mut() {
+                    w.layer_srgb = layer_hook;
+                }
+            }
+            SrgbPath::Intermediate => {
+                if layer_hook.is_some() {
+                    log::warn!("window-colorspace = srgb: 창 레이어에 sRGB 색 공간을 달지 못해 중간 텍스처 길로 간다");
+                }
+                log::info!("sRGB 색 맞춤: GPU 길(surface Display P3 + 마지막 변환 패스)");
+                let convert = P3Convert::new(&me.device, format);
+                if let Some(w) = me.window.as_mut() {
+                    w.config.color_space = wgpu::SurfaceColorSpace::DisplayP3;
+                    w.surface.configure(&me.device, &w.config);
+                    w.p3 = Some(P3Out { convert, mid: None });
+                }
+            }
+            SrgbPath::Unavailable => {
+                log::warn!(
+                    "window-colorspace = srgb: 레이어 sRGB도 Display P3 surface도 쓸 수 없다({:?}): CPU 길로 돌아간다",
+                    caps.color_spaces(format)
+                );
+                return None;
+            }
         }
         Some(me)
     }
@@ -335,7 +444,7 @@ impl GpuRenderer {
                     return Ok(f);
                 }
                 wgpu::CurrentSurfaceTexture::Outdated | wgpu::CurrentSurfaceTexture::Lost if attempt == 0 => {
-                    win.surface.configure(&self.device, &win.config);
+                    win.configure(&self.device);
                 }
                 wgpu::CurrentSurfaceTexture::Outdated | wgpu::CurrentSurfaceTexture::Lost => {
                     return Err("surface를 다시 설정해도 얻지 못했다");
@@ -404,7 +513,7 @@ impl GpuRenderer {
             win.config.width = size.0;
             win.config.height = size.1;
             win.stale = false;
-            win.surface.configure(&self.device, &win.config);
+            win.configure(&self.device);
         }
         let mut acquire_ms = 0.0;
         let probe = win.visibility.probe_before_upload();
@@ -458,6 +567,25 @@ mod tests {
     use super::*;
     use wgpu::CompositeAlphaMode as M;
     use wgpu::PresentMode as P;
+
+    #[test]
+    fn srgb_prefers_the_layer_and_needs_no_intermediate_texture() {
+        // 레이어에 sRGB를 달았으면 Display P3 surface 지원 여부와 상관없이 그 길이다
+        assert_eq!(srgb_path(true, true), SrgbPath::Layer);
+        assert_eq!(srgb_path(true, false), SrgbPath::Layer);
+        assert!(!SrgbPath::Layer.needs_intermediate());
+    }
+
+    #[test]
+    fn srgb_falls_back_to_the_intermediate_pass_when_the_layer_cannot_be_set() {
+        assert_eq!(srgb_path(false, true), SrgbPath::Intermediate);
+        assert!(SrgbPath::Intermediate.needs_intermediate());
+    }
+
+    #[test]
+    fn srgb_is_unavailable_when_neither_way_works() {
+        assert_eq!(srgb_path(false, false), SrgbPath::Unavailable);
+    }
 
     #[test]
     fn vsync_on_uses_fifo_without_warning() {

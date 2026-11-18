@@ -618,6 +618,67 @@ pub fn set_user_notification_handler(handler: Box<dyn Fn(UserNotificationRespons
     crate::platform_impl::user_notify::set_handler(handler)
 }
 
+/// Which Finder Service the user picked: "New ... Tab Here" or "New ... Window Here". b-terminal(#631)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ServiceTarget {
+    Tab,
+    Window,
+}
+
+/// Registers the function that receives the paths a Finder Service hands over (the paths are as the sender gave them:
+/// absolute, not checked for existence). Requests that arrived earlier are passed first. The function runs on the main
+/// thread. Does nothing without a bundle identifier (the system cannot offer the services then). b-terminal(#631)
+pub fn set_services_handler(handler: Box<dyn Fn(ServiceTarget, Vec<std::path::PathBuf>) + Send + Sync>) {
+    crate::platform_impl::services::set_handler(handler)
+}
+
+/// Writes `text` to the pasteboard called `name` (an app-private pasteboard, never a system one: names starting with
+/// `Apple ` are refused) and returns its change count afterwards, `None` if refused or the write failed. b-terminal(#629)
+pub fn set_named_pasteboard_string(name: &str, text: &str) -> Option<isize> {
+    crate::platform_impl::system_prefs::set_named_pasteboard_string(name, text)
+}
+
+/// The text on the pasteboard called `name`, `None` if it holds none, holds more than `max_len` UTF-16 units (checked
+/// before copying), or `name` is a system pasteboard. b-terminal(#629)
+pub fn named_pasteboard_string(name: &str, max_len: usize) -> Option<String> {
+    crate::platform_impl::system_prefs::named_pasteboard_string(name, max_len)
+}
+
+/// The change count of the pasteboard called `name` (any process writing to it raises it), `None` for a system name.
+/// b-terminal(#629)
+pub fn named_pasteboard_change_count(name: &str) -> Option<isize> {
+    crate::platform_impl::system_prefs::named_pasteboard_change_count(name)
+}
+
+/// Frees the named pasteboard and what it holds for every process (`releaseGlobally`). b-terminal(#629)
+pub fn release_named_pasteboard(name: &str) {
+    crate::platform_impl::system_prefs::release_named_pasteboard(name)
+}
+
+/// The system scroll bar settings as `(always_visible, jump_to_click)`: "Show scroll bars" is "Always" (the preferred
+/// scroller style is legacy), and "Click in the scroll bar to" is "Jump to the spot that's clicked"
+/// (`AppleScrollerPagingBehavior`). Reads only. `None` when not called on the main thread. b-terminal(#630)
+pub fn scroller_preferences() -> Option<(bool, bool)> {
+    crate::platform_impl::system_prefs::scroller_preferences()
+}
+
+/// Sets the color space of the window's `CAMetalLayer` (created by wgpu or raw-window-metal under the window's view,
+/// possibly as a sublayer of the root layer) to sRGB, so a renderer that draws sRGB values can leave its surface color
+/// space alone and let the compositor convert to the display. `Surface::configure` in wgpu resets the layer color space,
+/// so call this after every configure. Returns `false` (and changes nothing) when there is no metal layer yet, off the
+/// main thread, or for a non-AppKit handle. b-terminal(#632)
+#[cfg(feature = "rwh_06")]
+pub fn set_metal_layer_srgb(window: &crate::window::Window) -> bool {
+    use rwh_06::{HasWindowHandle, RawWindowHandle};
+    let Ok(handle) = window.window_handle() else {
+        return false;
+    };
+    let RawWindowHandle::AppKit(handle) = handle.as_raw() else {
+        return false;
+    };
+    crate::platform_impl::layer_colorspace::set_metal_layer_srgb(handle.ns_view.as_ptr().cast())
+}
+
 pub use crate::platform_impl::scripting::{
     ScriptCommand, ScriptRefresh, ScriptReply, ScriptSnapshot, ScriptTab, ScriptTarget, ScriptTerminal, ScriptTicket,
     ScriptWindow,

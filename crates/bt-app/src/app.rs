@@ -89,6 +89,9 @@ pub enum UserEvent {
     /// Dock·Finder가 열라고 한 경로(#279). macOS에만 온다
     #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     OpenFile(std::path::PathBuf),
+    /// Finder 서비스 "여기서 새 탭/창"이 넘긴 경로(#631). macOS에만 온다
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    OpenFolders(bool, Vec<std::path::PathBuf>),
     /// 사용자 셰이더 컴파일이 끝났다(컴파일 스레드가 보낸다, ADR-042)
     ShaderCompiled,
     /// 접근성 클라이언트(VoiceOver)의 요청(창, 요청, #560)
@@ -1011,6 +1014,10 @@ pub struct App {
     clipboard: Option<arboard::Clipboard>,
     /// 선택 클립보드(`copy-on-select = primary`·`both`). 앱 안 저장소라 창·탭·칸이 나눠 쓰고 다른 프로세스와는 나누지 않는다
     selection_clipboard: Option<String>,
+    /// 이 앱이 마지막으로 선택 클립보드에 쓸 때 본 이름 붙은 pasteboard의 바뀜 번호(macOS, #629)
+    selection_seen: Option<isize>,
+    /// 시스템 설정의 스크롤 막대(앱이 앞으로 올 때마다 다시 읽는다, #630)
+    system_scroller: SystemScroller,
     first: Option<SpawnOptions>,
     next_poll: Instant,
     /// 셸 통합 스크립트를 풀어 둔 폴더(없으면 셸 통합을 싣지 않는다)
@@ -1097,6 +1104,8 @@ impl App {
             raw_mods: Default::default(),
             clipboard: arboard::Clipboard::new().ok(),
             selection_clipboard: None,
+            selection_seen: None,
+            system_scroller: SystemScroller::read(),
             first: Some(first),
             next_poll: Instant::now(),
             #[cfg(target_os = "macos")]
@@ -1310,6 +1319,16 @@ impl App {
         };
         let grab = match hit {
             bt_render::scrollbar::Hit::Thumb { grab } => Some(grab),
+            // 시스템 설정 "누른 자리로 이동"이면 그 자리로 뛰고, 이어서 끌 수 있다(손잡이 가운데를 쥔 것으로 본다)
+            bt_render::scrollbar::Hit::Page { .. } if self.system_scroller.jump => {
+                match bt_render::scrollbar::jump_top(track, rows, history, y) {
+                    Some((row, grab)) => {
+                        self.panes[idx].session.scroll_to_row(row);
+                        Some(grab)
+                    }
+                    None => None,
+                }
+            }
             bt_render::scrollbar::Hit::Page { up } => {
                 let n = bt_render::scrollbar::page_lines(rows) as i32;
                 self.panes[idx].session.scroll(if up { n } else { -n });
@@ -2305,13 +2324,51 @@ impl App {
         }
     }
 
+    /// 선택 클립보드에 쓴다. macOS는 이름 붙은 pasteboard에도 써서 다른 b-terminal과 나눈다(실패해도 앱 안 저장소는 남는다).
+    /// 암호 입력 중인 칸(붙여넣기처럼 termios를 다시 읽음)이나 보안 입력이 켜져 있으면 나누지 않는다. 어느 쪽이든 그때의
+    /// 바뀜 번호를 적어 두어, 읽을 때 그 뒤에 바뀐 경우에만 공유된 글을 쓴다(`pick_selection`)
+    fn set_selection_clipboard(&mut self, text: String) {
+        #[cfg(target_os = "macos")]
+        {
+            use winit::platform::macos::{named_pasteboard_change_count, set_named_pasteboard_string};
+            let id = self.focused_id();
+            let password = id.and_then(|i| self.pane_index(i)).is_some_and(|i| {
+                let p = &self.panes[i];
+                paste_hidden(p.password, p.session.password_input())
+            });
+            let secure = self.secure.global() || id.is_some_and(|i| self.secure.has_scoped(i));
+            let written = if share_selection(password, secure) {
+                set_named_pasteboard_string(SELECTION_PASTEBOARD, &text)
+            } else {
+                None
+            };
+            self.selection_seen = written.or_else(|| named_pasteboard_change_count(SELECTION_PASTEBOARD));
+        }
+        self.selection_clipboard = Some(text);
+    }
+
+    /// 선택 클립보드의 글(macOS는 다른 b-terminal이 나중에 고른 것 포함)
+    fn selection_clipboard_text(&self) -> Option<String> {
+        #[cfg(target_os = "macos")]
+        let (shared, count) = {
+            use winit::platform::macos::{named_pasteboard_change_count, named_pasteboard_string};
+            (
+                named_pasteboard_string(SELECTION_PASTEBOARD, SELECTION_MAX_LEN),
+                named_pasteboard_change_count(SELECTION_PASTEBOARD),
+            )
+        };
+        #[cfg(not(target_os = "macos"))]
+        let (shared, count) = (None, None);
+        pick_selection(shared, count, self.selection_seen, self.selection_clipboard.as_deref())
+    }
+
     /// `copy-on-select`: 고르기를 마칠 때 값에 따라 선택 클립보드·시스템 클립보드로 보낸다.
     /// 시스템 클립보드는 Ghostty처럼 mixed(글 + HTML)다
     fn copy_on_select_now(&mut self) {
         let (selection, system) = self.config.copy_on_select.targets();
         if selection {
             if let Some(text) = self.selection_for_copy() {
-                self.selection_clipboard = Some(text);
+                self.set_selection_clipboard(text);
             }
         }
         if system {
@@ -2773,6 +2830,28 @@ impl App {
             if let Some(i) = self.pane_index(id) {
                 self.panes[i].wait_after_exit = true;
             }
+        }
+    }
+
+    /// Finder 서비스가 넘긴 경로(#631). 폴더(파일이면 부모 폴더)마다 새 탭이나 새 창을 띄운다. 실행하지 않는다
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    fn on_open_folders(&mut self, event_loop: &ActiveEventLoop, want_tab: bool, paths: Vec<std::path::PathBuf>) {
+        use crate::dock_open::{Placement, kind_of, service_dirs, service_placement};
+        let dirs = service_dirs(paths, kind_of);
+        if dirs.is_empty() {
+            log::warn!("Finder 서비스가 넘긴 경로 중 열 폴더가 없습니다");
+            return;
+        }
+        if let Some(w) = self.last_focused {
+            self.switch_to(w);
+        }
+        for cwd in dirs {
+            let mut opts = self.default_spawn();
+            opts.cwd = Some(cwd);
+            match service_placement(want_tab, self.windowless()) {
+                Placement::NewTab => self.open_tab(opts),
+                Placement::NewWindow => self.open_window(event_loop, opts),
+            };
         }
     }
 
@@ -3801,7 +3880,7 @@ impl App {
             | Action::ScrollToSelection
             | Action::SearchSelection
             | Action::WriteFile(crate::keymap::FileSource::Selection, _) => has_selection(self),
-            Action::PasteSelection => selection_paste_text(self.selection_clipboard.as_deref()).is_some(),
+            Action::PasteSelection => self.selection_clipboard_text().is_some(),
             Action::Paste => self
                 .clipboard
                 .as_mut()
@@ -3847,9 +3926,9 @@ impl App {
                 }
             }
             Action::PasteSelection if self.w.search.is_some() => {
-                let line = selection_paste_text(self.selection_clipboard.as_deref())
-                    .and_then(|t| t.lines().next())
-                    .map(str::to_owned);
+                let line = self
+                    .selection_clipboard_text()
+                    .and_then(|t| t.lines().next().map(str::to_owned));
                 if let Some(line) = line {
                     self.search_push(&line);
                 }
@@ -3871,7 +3950,7 @@ impl App {
             }
             // 선택 클립보드 글을 시스템 클립보드와 같은 길(붙여넣기 보호)로 붙여넣는다. 비었으면 하지 않는다
             Action::PasteSelection => {
-                if let Some(text) = selection_paste_text(self.selection_clipboard.as_deref()).map(str::to_owned) {
+                if let Some(text) = self.selection_clipboard_text() {
                     self.paste(text);
                 }
             }
@@ -4530,7 +4609,20 @@ impl App {
             std::env::var("BT_GPU").ok().as_deref(),
             crate::render_path::GPU_BY_DEFAULT,
             || {
-                // `srgb`면 surface를 Display P3로 열고 마지막 변환 패스를 둔다(surface가 Display P3를 안 주면 `None`, CPU 길로 간다)
+                // `srgb`면 macOS는 창 레이어에 sRGB 색 공간을 직접 단다(#632, 추가 텍스처 없음). 달지 못하면 surface를 Display P3로 열고
+                // 마지막 변환 패스를 둔다(surface가 Display P3를 안 주면 `None`, CPU 길로 간다)
+                #[cfg(target_os = "macos")]
+                if colorspace_srgb {
+                    let layer_window = window.clone();
+                    return bt_gpu::GpuRenderer::new_for_window_srgb(
+                        window.clone(),
+                        (size.width, size.height),
+                        transparent_gpu,
+                        self.config.window_vsync,
+                        std::sync::Arc::new(move || winit::platform::macos::set_metal_layer_srgb(&layer_window)),
+                    )
+                    .map(Box::new);
+                }
                 if colorspace_srgb {
                     bt_gpu::GpuRenderer::new_for_window_srgb_p3(
                         window.clone(),
@@ -5681,7 +5773,9 @@ impl App {
                 let hovering =
                     self.w.gutter_hot == Some(v.id) || self.w.scrollbar_press.is_some_and(|p| p.pane == v.id);
                 (
-                    self.config.scrollbar.shows(v.screen.history, scrolling, hovering),
+                    self.config
+                        .scrollbar
+                        .shows(v.screen.history, scrolling, hovering, self.system_scroller.always),
                     hovering,
                 )
             })
@@ -6453,9 +6547,56 @@ fn ime_commits_on_focus_loss(source: Option<&str>) -> bool {
     source.is_some_and(|s| s.starts_with("com.apple.inputmethod.Korean"))
 }
 
-/// 선택 클립보드에서 붙여넣을 글. 비었으면(없거나 빈 글) 붙여넣을 것이 없다
-fn selection_paste_text(store: Option<&str>) -> Option<&str> {
-    store.filter(|t| !t.is_empty())
+/// macOS에서 선택 클립보드를 b-terminal 프로세스끼리 나누는 pasteboard 이름(Ghostty는 `com.mitchellh.ghostty.selection`, #629)
+#[cfg(target_os = "macos")]
+const SELECTION_PASTEBOARD: &str = "com.dj258255.b-terminal.selection";
+
+/// 다른 프로세스가 쓴 선택 클립보드 글을 읽는 상한(UTF-16 단위, OSC 52와 같은 1MiB 꼴). 넘으면 없다고 본다
+#[cfg(target_os = "macos")]
+const SELECTION_MAX_LEN: usize = 1 << 20;
+
+/// 고른 글을 이름 붙은 pasteboard(같은 사용자의 다른 프로세스가 읽을 수 있다)에 써도 되는가. 암호 입력 중인 칸(`password`)이나
+/// 보안 입력이 켜진 때(`secure`: 전역이거나 그 칸)의 글은 앱 안 저장소에만 둔다
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn share_selection(password: bool, secure: bool) -> bool {
+    !password && !secure
+}
+
+/// 선택 클립보드에서 읽을 글. 이름 붙은 pasteboard의 바뀜 번호(`count`)가 이 앱이 마지막으로 고를 때 적어 둔 번호(`seen`)와
+/// 다르면 다른 b-terminal이 나중에 고른 것이니 그 글이 먼저다. 같으면(그 뒤 아무도 쓰지 않음) 앱 안 저장소가 먼저다. 그래서
+/// 공유하지 않은 글(암호 칸)을 고른 뒤에도 예전 공유 글이 붙지 않는다. 먼저 고른 쪽이 비었으면 다른 쪽, 둘 다 없으면 없다
+fn pick_selection(
+    shared: Option<String>,
+    count: Option<isize>,
+    seen: Option<isize>,
+    local: Option<&str>,
+) -> Option<String> {
+    let shared = shared.filter(|t| !t.is_empty());
+    let local = local.filter(|t| !t.is_empty()).map(str::to_owned);
+    if count.is_some() && count != seen {
+        shared.or(local)
+    } else {
+        local.or(shared)
+    }
+}
+
+/// 시스템 설정의 스크롤 막대 두 가지(#630). 읽지 못하면(macOS가 아니거나 앱 스레드가 아니면) 기본: 스크롤할 때만 보이고 한 쪽씩
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct SystemScroller {
+    /// "스크롤 막대 보기: 항상"
+    always: bool,
+    /// "스크롤 막대 클릭 시: 누른 자리로 이동"
+    jump: bool,
+}
+
+impl SystemScroller {
+    fn read() -> Self {
+        #[cfg(target_os = "macos")]
+        if let Some((always, jump)) = winit::platform::macos::scroller_preferences() {
+            return Self { always, jump };
+        }
+        Self::default()
+    }
 }
 
 /// 칸의 밑줄 모양(#276). 숨김(SGR 8) 칸은 꾸밈도 그리지 않는다(Ghostty가 xterm을 따른다)
@@ -6638,6 +6779,9 @@ impl ApplicationHandler<UserEvent> for App {
     fn exiting(&mut self, _event_loop: &ActiveEventLoop) {
         // 켜 둔 보안 입력은 풀고 나간다(#258)
         self.secure.shutdown();
+        // 선택 클립보드 pasteboard는 비우고 나간다(다른 b-terminal이 떠 있으면 그 선택도 사라진다, #629)
+        #[cfg(target_os = "macos")]
+        winit::platform::macos::release_named_pasteboard(SELECTION_PASTEBOARD);
         // 남긴 데스크톱 알림은 칸이 없어지므로 지운다(Ghostty `applicationWillTerminate`, #625)
         crate::desktop::forget_all();
         // write_*_file로 쓴 파일은 화면 내용이라 남기지 않는다(#125)
@@ -6675,6 +6819,7 @@ impl ApplicationHandler<UserEvent> for App {
                 None => {}
             },
             UserEvent::OpenFile(path) => self.on_open_file(event_loop, path),
+            UserEvent::OpenFolders(want_tab, paths) => self.on_open_folders(event_loop, want_tab, paths),
             UserEvent::NoteClicked(pane) => self.on_note_clicked(event_loop, pane),
             #[cfg(target_os = "macos")]
             UserEvent::Script(cmd, ticket, reply) => self.on_script(event_loop, cmd, ticket, reply),
@@ -6855,6 +7000,9 @@ impl ApplicationHandler<UserEvent> for App {
                 self.update_secure_active();
                 if focused {
                     self.next_secure_poll = Instant::now();
+                    // 시스템 설정의 스크롤 막대(보기·클릭 시)는 앱이 앞으로 올 때 다시 읽는다(#630)
+                    self.system_scroller = SystemScroller::read();
+                    self.request_redraw();
                 }
                 // 퀵 터미널은 포커스를 잃으면 숨는다(Ghostty quick-terminal-autohide 기본과 같다)
                 // 보인 직후(0.5초 안)의 포커스 잃음은 앱이 앞으로 오는 중일 수 있어 무시한다
@@ -7592,11 +7740,71 @@ mod tests {
         assert!(!ime_commits_on_focus_loss(None));
     }
 
+    /// vendor 함수가 실제로 이름 붙은 pasteboard에 쓰고 읽는다(시험 전용 이름만 쓰고 끝나면 비운다. 일반 클립보드는 건드리지 않는다).
+    /// 앱 묶음 없이 돈다는 것도 이 시험이 보인다. 시스템 이름(일반 클립보드)은 거절한다
+    #[cfg(target_os = "macos")]
     #[test]
-    fn selection_paste_skips_empty_store() {
-        assert_eq!(selection_paste_text(None), None);
-        assert_eq!(selection_paste_text(Some("")), None);
-        assert_eq!(selection_paste_text(Some("abc")), Some("abc"));
+    fn named_pasteboard_round_trips_and_refuses_system_names() {
+        use winit::platform::macos::{
+            named_pasteboard_change_count, named_pasteboard_string, release_named_pasteboard,
+            set_named_pasteboard_string,
+        };
+        let name = format!("com.dj258255.b-terminal.test-{}", std::process::id());
+        let c1 = set_named_pasteboard_string(&name, "고른 글 abc");
+        assert!(c1.is_some());
+        assert_eq!(named_pasteboard_string(&name, 1024).as_deref(), Some("고른 글 abc"));
+        assert_eq!(named_pasteboard_change_count(&name), c1);
+        let c2 = set_named_pasteboard_string(&name, "둘째");
+        assert!(c2.is_some() && c2 != c1);
+        assert_eq!(named_pasteboard_string(&name, 1024).as_deref(), Some("둘째"));
+        // 상한(UTF-16 단위)을 넘는 글은 복사하지 않고 없다고 본다
+        assert_eq!(named_pasteboard_string(&name, 1), None);
+        release_named_pasteboard(&name);
+        assert_eq!(set_named_pasteboard_string("Apple CFPasteboard general", "x"), None);
+        assert_eq!(named_pasteboard_string("Apple CFPasteboard general", 1024), None);
+        assert_eq!(named_pasteboard_change_count("Apple CFPasteboard general"), None);
+        assert_eq!(set_named_pasteboard_string("", "x"), None);
+    }
+
+    /// 암호 입력 중이거나 보안 입력이 켜진 칸에서 고른 글은 다른 프로세스가 읽을 수 있는 pasteboard에 쓰지 않는다
+    #[test]
+    fn password_pane_selection_is_not_shared() {
+        assert!(share_selection(false, false));
+        assert!(!share_selection(true, false));
+        assert!(!share_selection(false, true));
+        assert!(!share_selection(true, true));
+        // 붙여넣기처럼 칸의 마지막 살핀 값이 거짓이어도 termios를 다시 읽어 암호 입력이면 공유하지 않는다(살핌 주기 200ms 사이)
+        assert!(!share_selection(paste_hidden(false, Some(true)), false));
+        assert!(share_selection(paste_hidden(false, None), false));
+    }
+
+    /// 선택 클립보드(#629): 이 앱이 마지막으로 고른 뒤 pasteboard가 바뀌었으면(다른 b-terminal이 나중에 골랐다) 그 글,
+    /// 아니면 앱 안 저장소. 암호 칸에서 방금 고른 글(공유하지 않음)이 예전에 공유된 글에 밀리지 않는다(PR #637 보안 검토)
+    #[test]
+    fn selection_prefers_what_changed_last() {
+        let other = || Some("other".to_string());
+        // 다른 쪽이 그 뒤에 썼다(바뀜 번호가 내가 적어 둔 것과 다르다)
+        assert_eq!(pick_selection(other(), Some(8), Some(7), Some("mine")), other());
+        // 내가 고른 뒤 아무도 쓰지 않았다: 앱 안 저장소(암호 칸에서 고른 글이면 공유되지 않은 그 글)
+        assert_eq!(
+            pick_selection(other(), Some(7), Some(7), Some("mine")),
+            Some("mine".to_string())
+        );
+        // 이 앱에서 아직 고른 적이 없다: 공유된 글
+        assert_eq!(pick_selection(other(), Some(3), None, None), other());
+        // 공유된 글이 없거나 비었다
+        assert_eq!(
+            pick_selection(None, Some(8), Some(7), Some("mine")),
+            Some("mine".to_string())
+        );
+        assert_eq!(
+            pick_selection(Some(String::new()), Some(8), Some(7), Some("mine")),
+            Some("mine".to_string())
+        );
+        // 앱 안 저장소가 비었으면 바뀌지 않았어도 공유된 글
+        assert_eq!(pick_selection(other(), Some(7), Some(7), None), other());
+        assert_eq!(pick_selection(None, None, None, None), None);
+        assert_eq!(pick_selection(Some(String::new()), None, None, Some("")), None);
     }
 
     #[test]

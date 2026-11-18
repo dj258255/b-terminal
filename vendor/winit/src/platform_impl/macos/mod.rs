@@ -14,7 +14,12 @@ mod observer;
 /// b-terminal(#634)
 pub(crate) mod scripting;
 /// b-terminal(#625)
+pub(crate) mod system_prefs;
 pub(crate) mod user_notify;
+/// b-terminal(#631)
+pub(crate) mod services;
+/// b-terminal(#632)
+pub(crate) mod layer_colorspace;
 mod view;
 mod window;
 mod window_delegate;
