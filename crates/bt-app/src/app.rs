@@ -886,6 +886,8 @@ struct Win {
     quick_anim: Option<QuickAnim>,
     /// 키 순서(`ctrl+a>n`)의 기다리는 앞 키들(#106)
     keyseq: crate::keymap::Sequencer,
+    /// AppleScript `send key`의 키 순서와 그 칸(#650). 사람의 `keyseq`와 섞이지 않게 따로 둔다
+    script_keyseq: Option<(u64, crate::keymap::Sequencer)>,
     /// 닫기·끝내기 확인 막대(#108)
     confirm: Option<Confirm>,
     /// 칸 제목 입력 막대(#124): 그 칸과 친 글
@@ -966,6 +968,7 @@ impl Win {
             quick_place: None,
             quick_anim: None,
             keyseq: Default::default(),
+            script_keyseq: None,
             confirm: None,
             title_prompt: None,
             window_title: None,
@@ -3348,11 +3351,24 @@ impl App {
         script_pane: Option<u64>,
     ) {
         // performable: 묶음은 동작을 지금 할 수 있을 때만 키를 먹는다
-        let mut seq = std::mem::take(&mut self.w.keyseq);
+        // 사람의 키 순서와 스크립트의 키 순서는 나눈다: 한쪽이 쌓은 앞 키가 다른 쪽 칸으로 새지 않게(#650)
+        let mut seq = match script_pane {
+            None => std::mem::take(&mut self.w.keyseq),
+            Some(pane) => {
+                let (seq, flush) = crate::keymap::script_sequencer(&mut self.w.script_keyseq, pane);
+                if let Some((left_pane, left)) = flush {
+                    self.write_pane(left_pane, &left);
+                }
+                seq
+            }
+        };
         let keymap = std::mem::take(&mut self.keymap);
         let out = seq.feed_with(&keymap, trigger, bytes, &mut |a| self.can_perform(a));
         self.keymap = keymap;
-        self.w.keyseq = seq;
+        match script_pane {
+            None => self.w.keyseq = seq,
+            Some(pane) => self.w.script_keyseq = Some((pane, seq)),
+        }
         if out.action.is_none() && script_pane.is_none() && self.config.mouse_hide_while_typing {
             if let Some(g) = &self.w.gfx {
                 g.window.set_cursor_visible(false);
@@ -4395,6 +4411,7 @@ impl App {
         // 기다리던 키 순서는 옛 키 묶음의 것이라 버린다
         for w in std::iter::once(&mut self.w).chain(&mut self.others) {
             w.keyseq = Default::default();
+            w.script_keyseq = None;
         }
         // 설정의 `font-size`가 바뀌었으면 모든 칸(과 창의 기준 크기)을 새 값으로, 아니면 칸마다 고른 크기를 둔다(#416·#422)
         let (old_size, new_size) = (self.config.font_size, next.font_size);

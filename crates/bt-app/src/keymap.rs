@@ -1184,6 +1184,12 @@ impl Sequencer {
         }
     }
 
+    /// 기다리던 앞 키들의 바이트를 꺼내고 순서를 비운다(켜진 키 테이블은 그대로)
+    pub fn take_pending(&mut self) -> Vec<u8> {
+        self.pending_layer = None;
+        self.pending.drain(..).flat_map(|(_, b)| b).collect()
+    }
+
     /// `performable:` 묶음의 동작을 지금 할 수 있는가. 키 테이블 동작은 테이블 쌓임을 보고 정한다
     fn can_do(&self, km: &Keymap, action: &Action, can: &mut dyn FnMut(&Action) -> bool) -> bool {
         match action {
@@ -1194,6 +1200,23 @@ impl Sequencer {
             Action::EndKeySequence => !self.pending.is_empty(),
             a => can(a),
         }
+    }
+}
+
+/// 스크립트(AppleScript `send key`)가 쓸 키 순서 상태를 고른다(#650).
+///
+/// 사람의 키 순서(`Win::keyseq`)와 나눈다: 나누지 않으면 사람이 A 칸에 친 앞 키(`ctrl+a`)가 스크립트가
+/// B 칸에 보낸 키로 깨져 B에 들어가고, 거꾸로 스크립트의 앞 키가 사람의 키로 깨져 A에 들어간다.
+/// `slot`은 창마다 하나인 스크립트 순서와 그 칸이다. 같은 칸이면 이어 쓰고, 다른 칸이면 앞 칸에 쌓였던
+/// 바이트를 그 칸에 돌려줄 몫(`flush`)으로 내고 새로 시작한다
+pub fn script_sequencer(slot: &mut Option<(u64, Sequencer)>, pane: u64) -> (Sequencer, Option<(u64, Vec<u8>)>) {
+    match slot.take() {
+        Some((p, seq)) if p == pane => (seq, None),
+        Some((p, mut seq)) => {
+            let left = seq.take_pending();
+            (Sequencer::default(), (!left.is_empty()).then_some((p, left)))
+        }
+        None => (Sequencer::default(), None),
     }
 }
 
@@ -1787,6 +1810,50 @@ mod tests {
             Some("ctrl+Digit1")
         );
         assert_eq!(Keymap::hotkey_string(&trig("ctrl+page_up")), None);
+    }
+
+    #[test]
+    fn script_keys_keep_their_own_sequence_per_pane() {
+        let (km, _) = Keymap::build(&["ctrl+a>c=new_tab".into()]);
+        let ctrl_a = || (Some(trig("ctrl+a")), vec![0x01]);
+        // 사람이 앞 키를 쳐 둔 순서는 스크립트가 건드리지 않는다
+        let mut human = Sequencer::default();
+        let (t, b) = ctrl_a();
+        assert_eq!(human.feed(&km, t, b), KeyOutcome::default());
+        let mut slot = None;
+        let (mut seq, flush) = script_sequencer(&mut slot, 8);
+        assert_eq!(flush, None);
+        let out = seq.feed(&km, Some(trig("x")), b"x".to_vec());
+        assert_eq!(out.send, b"x".to_vec(), "스크립트 키에 사람의 Ctrl-A가 섞이지 않는다");
+        slot = Some((8, seq));
+        // 같은 칸이면 스크립트의 순서가 이어진다(ctrl+a 다음 c)
+        let (mut seq, flush) = script_sequencer(&mut slot, 8);
+        assert_eq!(flush, None);
+        let (t, b) = ctrl_a();
+        assert_eq!(seq.feed(&km, t, b), KeyOutcome::default());
+        slot = Some((8, seq));
+        let (mut seq, flush) = script_sequencer(&mut slot, 8);
+        assert_eq!(flush, None);
+        assert_eq!(
+            seq.feed(&km, Some(trig("c")), b"c".to_vec()).action,
+            Some(Action::NewTab)
+        );
+        slot = Some((8, seq));
+        // 앞 키를 쌓아 둔 채 다른 칸으로 가면 쌓인 바이트는 앞 칸(8)의 몫이다
+        let (mut seq, _) = script_sequencer(&mut slot, 8);
+        let (t, b) = ctrl_a();
+        let _ = seq.feed(&km, t, b);
+        slot = Some((8, seq));
+        let (mut seq, flush) = script_sequencer(&mut slot, 9);
+        assert_eq!(flush, Some((8, vec![0x01])));
+        assert_eq!(
+            seq.feed(&km, Some(trig("c")), b"c".to_vec()).send,
+            b"c".to_vec(),
+            "9에서는 새 순서"
+        );
+        assert!(slot.is_none(), "고른 순서는 꺼내 간다");
+        // 사람의 순서는 그대로 기다린다
+        assert_eq!(human.take_pending(), vec![0x01]);
     }
 
     #[test]

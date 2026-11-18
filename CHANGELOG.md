@@ -4,7 +4,7 @@
 
 ## [아직 릴리스하지 않음]
 
-- AppleScript 사전에 Ghostty의 명령 다섯을 더했습니다: `send key`(키 이름·수식 키·누름/뗌), `split 터미널 direction right|left|down|up`(새 터미널을 돌려줌), `close 터미널`, `close tab 탭`, `close window 창`. 이제 스크립트로 `input text "echo hi" to t` 다음 `send key "enter" to t`로 명령을 실행할 수 있습니다. `send key`는 사람이 누른 키와 같은 인코더와 키 묶음(keybind)·`key-remap` 길을 지나 같은 바이트가 나가고(kitty 키보드·옛 길·DECCKM·Option-as-Alt) 붙여넣기 보호는 거치지 않습니다. 읽기 전용 칸과 확인·검색·팔레트·제목 막대가 열린 창에는 보내지 않습니다. `close` 계열은 Ghostty처럼 확인 막대 없이 닫고 되살리기 목록에도 넣지 않습니다(실행 중인 프로그램이 묻지 않고 끝납니다). 자판 배열은 미국으로 봅니다. `with configuration`은 없습니다. 읽기 전용 칸에는 키 묶음 동작도 보내지 않아(사람의 키와 다름) 스크립트가 읽기 전용을 풀 수 없습니다. 앱이 뒤에 있을 때 스크립트로 앞 창을 닫으면 `front window`가 없어지던 것도 고쳐, 남은 지금 창을 앞 창으로 봅니다. 격리한 실제 창에서 Apple Event로 확인했습니다(`input text` 뒤 `send key "enter"`로 실행, 방향 키·Ctrl-C·Shift·⌘T 키 묶음, 네 방향 `split`, 세 닫기, 읽기 전용·확인 막대 거절, 꺼짐) (#650)
+- AppleScript 사전에 Ghostty의 명령 다섯을 더했습니다: `send key`(키 이름·수식 키·누름/뗌), `split 터미널 direction right|left|down|up`(새 터미널을 돌려줌), `close 터미널`, `close tab 탭`, `close window 창`. 이제 스크립트로 `input text "echo hi" to t` 다음 `send key "enter" to t`로 명령을 실행할 수 있습니다. `send key`는 사람이 누른 키와 같은 인코더와 키 묶음(keybind)·`key-remap` 길을 지나 같은 바이트가 나가고(kitty 키보드·옛 길·DECCKM·Option-as-Alt) 붙여넣기 보호는 거치지 않습니다. 읽기 전용 칸과 확인·검색·팔레트·제목 막대가 열린 창에는 보내지 않습니다. `close` 계열은 Ghostty처럼 확인 막대 없이 닫고 되살리기 목록에도 넣지 않습니다(실행 중인 프로그램이 묻지 않고 끝납니다). 자판 배열은 미국으로 봅니다. `with configuration`은 없습니다. 키 순서(`ctrl+a>c`)의 대기 상태는 사람의 것과 나눠 서로의 칸으로 새지 않습니다. 읽기 전용 칸에는 키 묶음 동작도 보내지 않아(사람의 키와 다름) 스크립트가 읽기 전용을 풀 수 없습니다. 앱이 뒤에 있을 때 스크립트로 앞 창을 닫으면 `front window`가 없어지던 것도 고쳐, 남은 지금 창을 앞 창으로 봅니다. 격리한 실제 창에서 Apple Event로 확인했습니다(`input text` 뒤 `send key "enter"`로 실행, 방향 키·Ctrl-C·Shift·⌘T 키 묶음, 네 방향 `split`, 세 닫기, 읽기 전용·확인 막대 거절, 꺼짐) (#650)
 
 ## [0.81.0] - 2026-11-18
 
