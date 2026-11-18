@@ -684,6 +684,18 @@ pub use crate::platform_impl::scripting::{
     ScriptWindow,
 };
 
+/// The selectors scripting adds to `NSApplication` for the application-level keys and commands of the sdef.
+/// b-terminal(#645)
+pub fn scripting_app_keys() -> &'static [&'static str] {
+    &crate::platform_impl::scripting::APP_KEYS
+}
+
+/// The selectors of [`scripting_app_keys`] that `NSApplication` already implements (such a key would run AppKit's
+/// method, not the scripting one). Empty when the keys are chosen well. b-terminal(#645)
+pub fn scripting_app_key_conflicts() -> Vec<&'static str> {
+    crate::platform_impl::scripting::app_key_conflicts()
+}
+
 /// Whether AppleScript can be served: the process must run from an app bundle (have a bundle identifier), because
 /// the scripting dictionary is read from the bundle. b-terminal(#634)
 pub fn scripting_supported() -> bool {

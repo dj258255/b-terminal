@@ -18,7 +18,7 @@
         <cocoa key="isActive"/>
       </property>
       <property name="front window" code="GFWn" type="window" access="r" description="The frontmost b-terminal window.">
-        <cocoa key="frontWindow"/>
+        <cocoa key="btFrontWindow"/>
       </property>
       <property name="version" code="vers" type="text" access="r" description="The version number of the application."/>
       <responds-to command="new window">
@@ -26,6 +26,9 @@
       </responds-to>
       <responds-to command="new tab">
         <cocoa method="handleNewTabScriptCommand:"/>
+      </responds-to>
+      <responds-to command="quit">
+        <cocoa method="handleQuitScriptCommand:"/>
       </responds-to>
 
       <element type="window" access="r">

@@ -41,10 +41,11 @@ pub struct WinView {
     pub tabs: Vec<TabView>,
 }
 
-/// 창을 만든 차례로, 탭 줄 순서로, 탭 안에서는 왼쪽·위부터 스냅숏을 만든다. `front`는 마지막으로 보던 창
+/// 앞 창을 먼저, 나머지 창은 만든 차례로, 탭 줄 순서로, 탭 안에서는 왼쪽·위부터 스냅숏을 만든다. `front`는 마지막으로 보던 창
 pub fn build_snapshot(windows: &[WinView], front: Option<u64>) -> ScriptSnapshot {
+    // Ghostty처럼 앞에서 뒤 차례: 앞 창이 먼저(`window 1`), 나머지는 만든 차례(#645). 앞뒤 전체 순서는 기록하지 않는다
     let mut sorted: Vec<&WinView> = windows.iter().collect();
-    sorted.sort_by_key(|w| w.serial);
+    sorted.sort_by_key(|w| (Some(w.id) != front, w.serial));
     let windows: Vec<ScriptWindow> = sorted
         .into_iter()
         .map(|w| {
@@ -362,12 +363,28 @@ mod tests {
         ]
     }
 
+    /// Ghostty처럼 창은 앞에서 뒤 차례다: 앞 창이 `window 1`이고 나머지는 만든 차례(#645)
     #[test]
-    fn snapshot_follows_creation_order_and_names_tabs_by_first_pane() {
-        let s = build_snapshot(&two_windows(), Some(22));
+    fn front_window_comes_first_then_creation_order() {
+        let ids = |front| -> Vec<String> {
+            build_snapshot(&two_windows(), front)
+                .windows
+                .into_iter()
+                .map(|w| w.id)
+                .collect()
+        };
+        assert_eq!(ids(Some(22)), ["22", "11"]);
+        assert_eq!(ids(Some(11)), ["11", "22"]);
+        assert_eq!(ids(None), ["11", "22"]);
+        assert_eq!(ids(Some(99)), ["11", "22"], "모르는 창은 앞 창이 아니다");
+    }
+
+    #[test]
+    fn snapshot_names_tabs_by_first_pane() {
+        let s = build_snapshot(&two_windows(), Some(11));
         let ids: Vec<&str> = s.windows.iter().map(|w| w.id.as_str()).collect();
         assert_eq!(ids, ["11", "22"]);
-        assert_eq!(s.front_window.as_deref(), Some("22"));
+        assert_eq!(s.front_window.as_deref(), Some("11"));
         let w = &s.windows[0];
         let tab_ids: Vec<&str> = w.tabs.iter().map(|t| t.id.as_str()).collect();
         assert_eq!(tab_ids, ["1", "3"], "탭의 id는 첫 칸의 번호");
@@ -377,6 +394,51 @@ mod tests {
         assert_eq!(w.tabs[1].terminals.len(), 2);
         assert_eq!(w.tabs[1].terminals[0].working_directory.as_deref(), Some("/work/3"));
         assert_eq!(w.title, "split", "창 제목은 보고 있는 탭의 제목");
+    }
+
+    const SDEF: &str = include_str!("../../../../assets/macos/b-terminal.sdef");
+
+    /// sdef의 application 클래스 부분
+    fn sdef_application_class() -> &'static str {
+        let start = SDEF.find("<class name=\"application\"").expect("application 클래스");
+        let len = SDEF[start..].find("</class>").expect("application 클래스 끝");
+        &SDEF[start..start + len]
+    }
+
+    /// 로그아웃·종료 때 macOS가 보내는 `quit`(aevtquit)를 사전이 받는다. sdef가 있으면 Cocoa Scripting은 받는 클래스의
+    /// `responds-to`가 있어야 메서드를 부른다(#644)
+    #[test]
+    fn application_class_responds_to_quit() {
+        let app = sdef_application_class();
+        assert!(
+            app.contains("<responds-to command=\"quit\">")
+                && app.contains("<cocoa method=\"handleQuitScriptCommand:\"/>"),
+            "application 클래스에 quit 응답이 없다"
+        );
+    }
+
+    /// vendor가 `NSApplication`에 다는 메서드는 AppKit에 이미 있는 이름과 겹치면 안 된다(겹치면 AppKit 것이 그대로 불린다,
+    /// `frontWindow`가 그랬다). sdef application 클래스의 키·메서드는 vendor가 다는 것이거나 일부러 쓰는 AppKit 것이다(#645)
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn application_keys_do_not_collide_with_appkit() {
+        assert_eq!(
+            winit::platform::macos::scripting_app_key_conflicts(),
+            Vec::<&str>::new()
+        );
+        // AppKit 것을 그대로 쓰는 키: 앞 앱인지(`isActive`), quit
+        const APPKIT: [&str; 2] = ["isActive", "handleQuitScriptCommand:"];
+        let installed = winit::platform::macos::scripting_app_keys();
+        let app = sdef_application_class();
+        for attr in ["cocoa key=\"", "cocoa method=\""] {
+            for part in app.split(attr).skip(1) {
+                let name = &part[..part.find('"').expect("따옴표")];
+                assert!(
+                    installed.contains(&name) || APPKIT.contains(&name),
+                    "sdef의 {name}을 vendor가 달지 않는다"
+                );
+            }
+        }
     }
 
     #[test]

@@ -4,8 +4,11 @@
 //! How it fits together:
 //! - The app bundle's `Info.plist` names a scripting definition (`b-terminal.sdef`). Cocoa Scripting reads it and maps
 //!   the dictionary's classes and keys to Objective-C classes and methods by name.
-//! - `NSApplication` gets the application-level keys (`scriptWindows`, `terminals`, `frontWindow`, `name`, `version`)
+//! - `NSApplication` gets the application-level keys (`scriptWindows`, `terminals`, `btFrontWindow`, `name`, `version`)
 //!   and the `new window` / `new tab` handlers through `class_addMethod` (Ghostty does the same with a Swift extension).
+//!   `class_addMethod` does not replace a method AppKit already has, so the keys avoid AppKit's names (`frontWindow` is
+//!   a private `NSApplication` method that returns an `NSWindow`; the sdef names `btFrontWindow` instead, #645). `quit`
+//!   uses AppKit's own `handleQuitScriptCommand:`, which terminates the app as the plain Apple Event handler did (#644).
 //! - `window`, `tab` and `terminal` objects are small classes holding only an id string (`BTScriptWindow`, ...). Their
 //!   properties are looked up in a snapshot of the app's state. The snapshot is refreshed (one `Snapshot` command to the
 //!   app) when a read finds it older than `SNAPSHOT_FRESH`, so a script that reads many properties asks the app once.
@@ -773,6 +776,30 @@ unsafe extern "C-unwind" fn app_new_tab(_this: &AnyObject, _sel: Sel, command: &
     perform(ScriptCommand::NewTab { window })
 }
 
+/// Selectors this module adds to `NSApplication` (the application-level keys and command handlers the sdef names).
+/// `install` adds exactly these; `app_key_conflicts` checks them against what AppKit already has.
+pub(crate) const APP_KEYS: [&str; 7] = [
+    "scriptWindows",
+    "terminals",
+    "btFrontWindow",
+    "name",
+    "version",
+    "handleNewWindowScriptCommand:",
+    "handleNewTabScriptCommand:",
+];
+
+/// The `APP_KEYS` that `NSApplication` already implements. `class_addMethod` leaves an existing method in place, so a
+/// key listed here would silently run AppKit's method instead of ours. Meant to be called before `install`.
+pub(crate) fn app_key_conflicts() -> Vec<&'static str> {
+    let app = NSApplication::class();
+    APP_KEYS
+        .into_iter()
+        .filter(|name| {
+            app.instance_method(Sel::register(name)).is_some()
+        })
+        .collect()
+}
+
 /// Adds a method to a class that already exists (`NSApplication`), unless it already has one by that name.
 fn add_method(class: &AnyClass, sel: Sel, imp: Imp, types: &CStr) {
     // SAFETY: `class` is a live class, `imp` has the C signature `types` describes (see the callers), and the selector
@@ -786,7 +813,7 @@ fn add_method(class: &AnyClass, sel: Sel, imp: Imp, types: &CStr) {
         )
     };
     if !added {
-        tracing::debug!("NSApplication already has {sel:?}; scripting leaves it alone");
+        tracing::warn!("NSApplication already has {sel:?}; scripting leaves AppKit's method in place");
     }
 }
 
@@ -808,7 +835,7 @@ fn install() {
     let h = c"@@:@";
     add_method(app, sel!(scriptWindows), getter(app_script_windows), g);
     add_method(app, sel!(terminals), getter(app_terminals), g);
-    add_method(app, sel!(frontWindow), getter(app_front_window), g);
+    add_method(app, sel!(btFrontWindow), getter(app_front_window), g);
     add_method(app, sel!(name), getter(app_name), g);
     add_method(app, sel!(version), getter(app_version), g);
     add_method(app, sel!(handleNewWindowScriptCommand:), handler(app_new_window), h);

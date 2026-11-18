@@ -214,7 +214,22 @@ mod tests {
             cmd.env("BT_BIN_DIR", b);
         }
         let out = cmd.output().unwrap();
-        String::from_utf8_lossy(&out.stdout).into_owned()
+        let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+        // 셸이 실패하거나 아무것도 찍지 않으면 원인(종료 상태·stderr)을 남긴다. 전체 시험 중 한 번 bash 출력이 빈 채로
+        // 실패했는데 원인이 남지 않았다(#642)
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            out.status.success(),
+            "{shell:?}가 실패로 끝났다: {:?}\nstderr: {stderr}\nstdout: {stdout:?}",
+            out.status
+        );
+        if stdout.is_empty() {
+            eprintln!(
+                "{shell:?}: stdout이 비었다. 종료 상태 {:?}, stderr: {stderr}",
+                out.status
+            );
+        }
+        stdout
     }
 
     // zsh는 훅 함수를 직접 부르고, bash는 DEBUG 덫이 명령 앞에서 preexec를 부르게 `: 글`을 실행한다
