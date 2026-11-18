@@ -204,3 +204,20 @@
 - 까닭: 스크립트 명령은 주 스레드로 오고, 앱의 이벤트 루프가 처리해야 답이 나간다. 오른쪽 클릭 메뉴가 열려 있는 동안(메뉴 추적이 이벤트 처리기 안에서 도는 모달이다)이나 앱이 바쁠 때는 그 사건이 처리되지 못해 5초 뒤 이 오류가 난다
 - 이때 명령은 실행되지 않고 버려진다. 늦게 처리되어 `input text`의 글이 뒤늦게 칸에 들어가거나 창이 뜨는 일은 없다(요청마다 표를 달아 시간 초과 쪽이 취소하고 앱은 실행 직전에 표를 가져간다. 앱이 이미 실행을 시작했으면 답을 5초 더 기다리고, 그래도 답이 없으면 "명령이 실행 중이었을 수 있습니다"를 낸다. 이때는 실행됐을 수 있다). 목록·속성을 읽는 쪽은 앱이 답하지 않으면 2초 동안 다시 묻지 않고 마지막 스냅숏을 쓴다
 - 풀기: 메뉴를 닫거나 앱이 한가해진 뒤 스크립트를 다시 보낸다. 이 환경에서 메뉴를 띄워 재현해 보지는 않았다(마우스 흉내를 쓰지 않는다는 작업 규칙)
+
+## 25. 0.80.0 앱 묶음이 AppleScript `quit`(로그아웃·종료 때 오는 Apple Event)로 끝나지 않는다
+
+- 언제: 2026-11-18, #644. 0.80에서 범수 님 확인 몫으로 남긴 AppleScript를 주 세션이 격리한 실제 창에서 돌리다 찾았다. 사용자 제보는 없다
+- 증상: `osascript -e 'tell application "b-terminal" to quit'`이 오류 없이 끝나지만 앱이 남는다. 앱 로그에는 아무것도 없다. macOS는 로그아웃·재시동·종료 때 앱마다 같은 `aevtquit` Apple Event를 보내므로 로그아웃이 b-terminal에서 막힐 수 있다(로그아웃 자체는 재지 않았다)
+- 까닭: `Info.plist`에 AppleScript 사전(`OSAScriptingDefinition`)이 있으면 Cocoa Scripting이 `aevtquit`를 사전의 `quit` 명령(`NSQuitCommand`)으로 처리한다. 받는 객체의 클래스(application)에 `<responds-to command="quit">`가 있어야 메서드가 불리는데, #634에서 Ghostty sdef를 줄여 옮기며 이 줄을 빠뜨렸다. 사전이 없던 0.79는 AppKit 기본 처리기가 바로 `terminate:`를 불렀다
+- 가리는 법: 같은 묶음 사본에서 `OSAScriptingDefinition`·`NSAppleScriptEnabled`를 빼면 같은 명령으로 끝난다
+- 고침(0.81): application 클래스에 `quit` 응답을 넣어 AppKit의 `handleQuitScriptCommand:`(→ `terminate:`)로 보낸다. `macos-applescript = false`여도 막지 않는다(Ghostty는 이때 `quit`도 막지만, 로그아웃이 막히면 안 된다)
+- 0.80.0에서 풀기: 메뉴의 끝내기(⌘Q)는 이 길과 상관없이 된다. 로그아웃 전에 b-terminal을 ⌘Q로 끈다
+
+## 26. AppleScript `focus`·`activate window`가 b-terminal을 앞으로 가져오지 못한다
+
+- 언제: 2026-11-18, #645를 찾던 실제 창 확인. 사용자 제보는 없다
+- 증상: 칸·창은 골라지지만(`btctl list`의 `*`가 옮겨 감) 다른 앱이 앞에 있으면 b-terminal이 앞으로 오지 않을 때가 있다. 같은 실행에서 처음 한 번은 앞으로 왔다
+- 까닭: macOS 14부터 앱은 스스로 앞으로 나올 수 없고(협력 활성화), 앞에 있는 앱이 양보해야 한다. b-terminal은 `activateIgnoringOtherApps`를 부르지만 이 규칙을 따른다. 스크립트를 보낸 `osascript`는 앞 앱이 아니어서 양보할 수 없다
+- 풀기: 스크립트에서 먼저 `activate`를 보낸다(`tell application "b-terminal" to activate`는 보내는 쪽이 활성화를 요청하므로 앞으로 온다). 실제 창에서 이 방법으로 앞으로 오는 것을 확인했다
+
