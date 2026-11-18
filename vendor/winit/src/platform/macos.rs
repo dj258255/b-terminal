@@ -619,7 +619,8 @@ pub fn set_user_notification_handler(handler: Box<dyn Fn(UserNotificationRespons
 }
 
 pub use crate::platform_impl::scripting::{
-    ScriptCommand, ScriptReply, ScriptSnapshot, ScriptTab, ScriptTarget, ScriptTerminal, ScriptWindow,
+    ScriptCommand, ScriptRefresh, ScriptReply, ScriptSnapshot, ScriptTab, ScriptTarget, ScriptTerminal, ScriptTicket,
+    ScriptWindow,
 };
 
 /// Whether AppleScript can be served: the process must run from an app bundle (have a bundle identifier), because
@@ -643,9 +644,10 @@ pub fn set_scripting_snapshot(snapshot: ScriptSnapshot) {
 /// Registers the function that receives scripting commands (`new window`, `input text`, ...) and installs the scripting
 /// classes. The function runs on the main thread, so it must not block: it queues the request for the app's event loop
 /// and later sends the answer through the channel; the caller spins the run loop until the answer arrives (5 seconds at
-/// most). Does nothing but store the function when [`scripting_supported`] is `false`. b-terminal(#634)
+/// most). The [`ScriptTicket`] says whether the caller already gave up: the app must call `take()` on it right before
+/// running the command and drop the command when that returns `false`. Does nothing but store the function when [`scripting_supported`] is `false`. b-terminal(#634)
 pub fn set_scripting_handler(
-    handler: Box<dyn Fn(ScriptCommand, std::sync::mpsc::Sender<ScriptReply>) + Send + Sync>,
+    handler: Box<dyn Fn(ScriptCommand, ScriptTicket, std::sync::mpsc::Sender<ScriptReply>) + Send + Sync>,
 ) {
     crate::platform_impl::scripting::set_handler(handler)
 }

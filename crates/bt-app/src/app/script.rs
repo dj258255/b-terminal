@@ -11,7 +11,7 @@ use std::sync::mpsc::Sender;
 
 use winit::event_loop::ActiveEventLoop;
 use winit::platform::macos::{
-    ScriptCommand, ScriptReply, ScriptSnapshot, ScriptTab, ScriptTarget, ScriptTerminal, ScriptWindow,
+    ScriptCommand, ScriptReply, ScriptSnapshot, ScriptTab, ScriptTarget, ScriptTerminal, ScriptTicket, ScriptWindow,
 };
 
 use super::{App, UserEvent};
@@ -115,7 +115,18 @@ pub fn admit(enabled: bool, cmd: ScriptCommand) -> Result<ScriptCommand, String>
 
 impl App {
     /// vendor가 넘긴 명령 하나를 처리하고 답을 보낸다
-    pub(super) fn on_script(&mut self, event_loop: &ActiveEventLoop, cmd: ScriptCommand, reply: Sender<ScriptReply>) {
+    pub(super) fn on_script(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        cmd: ScriptCommand,
+        ticket: ScriptTicket,
+        reply: Sender<ScriptReply>,
+    ) {
+        // 스크립트가 시간 초과로 이미 포기한 요청은 늦게 와도 실행하지 않는다(글이 PTY에 들어가거나 창이 뜨면 안 된다)
+        if !ticket.take() {
+            log::debug!("AppleScript: 포기된 요청을 버렸습니다: {cmd:?}");
+            return;
+        }
         let result = admit(self.config.macos_applescript, cmd).and_then(|cmd| self.run_script(event_loop, cmd));
         // 읽기 쪽이 바뀐 상태를 보게 답보다 먼저 스냅숏을 넘긴다
         winit::platform::macos::set_scripting_snapshot(self.script_snapshot());
@@ -286,8 +297,8 @@ impl App {
 /// vendor에 명령 처리 함수를 등록한다. 함수는 주 스레드에서 불리므로 이벤트 루프에 일을 넘기기만 한다
 pub fn install(proxy: winit::event_loop::EventLoopProxy<UserEvent>, enabled: bool) {
     winit::platform::macos::set_scripting_enabled(enabled);
-    winit::platform::macos::set_scripting_handler(Box::new(move |cmd, reply| {
-        if let Err(e) = proxy.send_event(UserEvent::Script(cmd, reply.clone())) {
+    winit::platform::macos::set_scripting_handler(Box::new(move |cmd, ticket, reply| {
+        if let Err(e) = proxy.send_event(UserEvent::Script(cmd, ticket, reply.clone())) {
             let _ = reply.send(Err(format!("터미널이 끝나는 중입니다: {e}")));
         }
     }));
@@ -406,5 +417,42 @@ mod tests {
             text: "x".repeat(MAX_TEXT + 1),
         };
         assert!(admit(true, big).is_err(), "켜져 있어도 너무 긴 글은 거절");
+    }
+
+    #[test]
+    fn a_ticket_is_won_by_exactly_one_side() {
+        use winit::platform::macos::ScriptTicket;
+        // 앱이 먼저 가져가면 시간 초과 쪽의 취소는 실패한다(앱이 이미 실행 중이니 답을 더 기다린다)
+        let t = ScriptTicket::new();
+        assert!(t.clone().take());
+        assert!(!t.cancel());
+        assert!(!t.take(), "두 번 가져가지 못한다");
+        // 취소가 먼저면 늦게 온 사건은 가져가지 못한다(버린다)
+        let t = ScriptTicket::new();
+        let seen_by_app = t.clone();
+        assert!(t.cancel());
+        assert!(!seen_by_app.take());
+        assert!(!seen_by_app.take());
+    }
+
+    #[test]
+    fn snapshot_refresh_backs_off_after_a_failure() {
+        use std::time::{Duration, Instant};
+        use winit::platform::macos::ScriptRefresh;
+        let t0 = Instant::now();
+        let ms = Duration::from_millis;
+        let mut r = ScriptRefresh::new();
+        assert!(r.due(t0), "처음에는 묻는다");
+        r.record_ok(t0);
+        assert!(!r.due(t0 + ms(50)), "0.1초 안은 그대로 쓴다");
+        assert!(r.due(t0 + ms(200)));
+        // 앱이 답하지 않았다: 한동안 다시 묻지 않는다(읽을 때마다 5초씩 기다리지 않게)
+        r.record_fail(t0 + ms(300));
+        assert!(!r.due(t0 + ms(300)));
+        assert!(!r.due(t0 + ms(2200)));
+        assert!(r.due(t0 + ms(2400)));
+        r.record_ok(t0 + ms(2500));
+        assert!(!r.due(t0 + ms(2550)), "성공하면 실패 기록은 지워진다");
+        assert!(r.due(t0 + ms(2700)));
     }
 }

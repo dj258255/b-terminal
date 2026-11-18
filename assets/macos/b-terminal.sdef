@@ -6,7 +6,7 @@
   Ghostty contributors)를 줄여 옮겼습니다. 클래스·명령·속성 이름과 4글자 코드는 Ghostty와 같게 두었습니다(스크립트가
   그대로 돌게). 뺀 것: perform action, new surface configuration(과 surface configuration 레코드), split, close,
   close tab, close window, send key, send mouse button·position·scroll, name override, pid, tty.
-  이유와 남은 일은 docs/decisions.md의 AppleScript 항목을 보십시오.
+  이유와 남은 일은 docs/decisions.md ADR-062를 보십시오.
   Ghostty 원본의 Standard Suite는 Apple의 /System/Library/ScriptingDefinitions/CocoaStandard.sdef를 줄인 것이라 그 부분도 같습니다.
 -->
 <dictionary title="b-terminal Scripting Dictionary">

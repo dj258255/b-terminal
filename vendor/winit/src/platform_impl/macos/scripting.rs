@@ -19,7 +19,7 @@
 //! script error on the current command.
 
 use std::ffi::CStr;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex, Once};
 use std::time::{Duration, Instant};
@@ -43,6 +43,10 @@ const ERR_PARAM: NSInteger = -1715;
 const REPLY_TIMEOUT: Duration = Duration::from_secs(5);
 /// A snapshot younger than this is used as it is.
 const SNAPSHOT_FRESH: Duration = Duration::from_millis(100);
+/// After a failed snapshot ask, wait this long before asking again.
+const SNAPSHOT_RETRY: Duration = Duration::from_secs(2);
+/// `input text` is refused above this many UTF-8 bytes (checked before the text is copied into a Rust string).
+const MAX_TEXT_BYTES: usize = 1 << 20;
 
 /// One terminal pane as the app reports it.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -101,11 +105,68 @@ pub enum ScriptTarget {
 /// The app's answer to a command: the new object, or a message for the script error.
 pub type ScriptReply = Result<Option<ScriptTarget>, String>;
 
-type Handler = Arc<dyn Fn(ScriptCommand, mpsc::Sender<ScriptReply>) + Send + Sync>;
+/// Decides, once, who owns a request: the app (it runs the command) or the waiting side (it gave up after the
+/// timeout). Without it a request still sitting in the app's event queue would run long after the script was told it
+/// failed (for example when a modal context menu delayed the queue). Whichever side calls first wins.
+#[derive(Debug, Clone, Default)]
+pub struct ScriptTicket(Arc<AtomicU8>);
+
+impl ScriptTicket {
+    const PENDING: u8 = 0;
+    const TAKEN: u8 = 1;
+    const CANCELLED: u8 = 2;
+
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// The app calls this right before it runs the command. `false` means the script already gave up: drop it.
+    pub fn take(&self) -> bool {
+        self.0.compare_exchange(Self::PENDING, Self::TAKEN, Ordering::AcqRel, Ordering::Acquire).is_ok()
+    }
+
+    /// The waiting side calls this on timeout. `false` means the app already started the command, so the answer is
+    /// still coming.
+    pub fn cancel(&self) -> bool {
+        self.0.compare_exchange(Self::PENDING, Self::CANCELLED, Ordering::AcqRel, Ordering::Acquire).is_ok()
+    }
+}
+
+/// When to ask the app for a fresh snapshot. A snapshot is used for `SNAPSHOT_FRESH`; after a failed ask (the app did
+/// not answer) the next ask waits `SNAPSHOT_RETRY`, so a script reading twenty properties does not wait twenty times.
+#[derive(Debug, Clone, Default)]
+pub struct ScriptRefresh {
+    last_ok: Option<Instant>,
+    last_fail: Option<Instant>,
+}
+
+impl ScriptRefresh {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn due(&self, now: Instant) -> bool {
+        let within = |at: Option<Instant>, span: Duration| at.is_some_and(|t| now.saturating_duration_since(t) < span);
+        !within(self.last_ok, SNAPSHOT_FRESH) && !within(self.last_fail, SNAPSHOT_RETRY)
+    }
+
+    pub fn record_ok(&mut self, now: Instant) {
+        self.last_ok = Some(now);
+        self.last_fail = None;
+    }
+
+    pub fn record_fail(&mut self, now: Instant) {
+        self.last_fail = Some(now);
+    }
+}
+
+type Handler = Arc<dyn Fn(ScriptCommand, ScriptTicket, mpsc::Sender<ScriptReply>) + Send + Sync>;
 
 static HANDLER: Mutex<Option<Handler>> = Mutex::new(None);
-static SNAPSHOT: Mutex<(Option<Instant>, ScriptSnapshot)> =
-    Mutex::new((None, ScriptSnapshot { windows: Vec::new(), front_window: None }));
+static SNAPSHOT: Mutex<(ScriptRefresh, ScriptSnapshot)> = Mutex::new((
+    ScriptRefresh { last_ok: None, last_fail: None },
+    ScriptSnapshot { windows: Vec::new(), front_window: None },
+));
 static ENABLED: AtomicBool = AtomicBool::new(true);
 static INSTALL: Once = Once::new();
 
@@ -119,6 +180,10 @@ pub fn supported() -> bool {
 /// Turns scripting on or off (`macos-applescript`). Safe to call from any thread, any time.
 pub fn set_enabled(enabled: bool) {
     ENABLED.store(enabled, Ordering::Relaxed);
+    if !enabled {
+        // Nothing the app showed earlier may stay readable.
+        *SNAPSHOT.lock().unwrap_or_else(|e| e.into_inner()) = Default::default();
+    }
 }
 
 fn enabled() -> bool {
@@ -127,19 +192,27 @@ fn enabled() -> bool {
 
 /// Replaces the state that property reads see.
 pub fn set_snapshot(snapshot: ScriptSnapshot) {
-    *SNAPSHOT.lock().unwrap_or_else(|e| e.into_inner()) = (Some(Instant::now()), snapshot);
+    let mut g = SNAPSHOT.lock().unwrap_or_else(|e| e.into_inner());
+    g.0.record_ok(Instant::now());
+    g.1 = snapshot;
 }
 
-/// The app's state as of at most `SNAPSHOT_FRESH` ago (asks the app when the stored one is older).
+/// The app's state as of at most `SNAPSHOT_FRESH` ago (asks the app when the stored one is older and the last ask did
+/// not just fail). Empty while scripting is off, so every object getter reads nothing then.
 fn snapshot() -> ScriptSnapshot {
-    let fresh = SNAPSHOT
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .0
-        .is_some_and(|at| at.elapsed() < SNAPSHOT_FRESH);
-    if !fresh && enabled() {
-        if let Err(message) = run_command(ScriptCommand::Snapshot) {
-            tracing::debug!("scripting: no snapshot from the app: {message}");
+    if !enabled() {
+        return ScriptSnapshot::default();
+    }
+    let due = SNAPSHOT.lock().unwrap_or_else(|e| e.into_inner()).0.due(Instant::now());
+    if due {
+        let result = run_command(ScriptCommand::Snapshot);
+        let mut g = SNAPSHOT.lock().unwrap_or_else(|e| e.into_inner());
+        match result {
+            Ok(_) => g.0.record_ok(Instant::now()),
+            Err(message) => {
+                g.0.record_fail(Instant::now());
+                tracing::debug!("scripting: no snapshot from the app: {message}");
+            }
         }
     }
     SNAPSHOT.lock().unwrap_or_else(|e| e.into_inner()).1.clone()
@@ -147,7 +220,7 @@ fn snapshot() -> ScriptSnapshot {
 
 /// Registers the function that receives commands and installs the scripting classes. Does nothing but store the handler
 /// when the process has no bundle identifier.
-pub fn set_handler(handler: Box<dyn Fn(ScriptCommand, mpsc::Sender<ScriptReply>) + Send + Sync>) {
+pub fn set_handler(handler: Box<dyn Fn(ScriptCommand, ScriptTicket, mpsc::Sender<ScriptReply>) + Send + Sync>) {
     *HANDLER.lock().unwrap_or_else(|e| e.into_inner()) = Some(handler.into());
     if !supported() {
         return;
@@ -189,8 +262,10 @@ fn run_command(cmd: ScriptCommand) -> ScriptReply {
         return Err("터미널이 스크립트 명령을 받을 준비가 되지 않았습니다".into());
     };
     let (tx, rx) = mpsc::channel();
-    handler(cmd, tx);
-    let deadline = Instant::now() + REPLY_TIMEOUT;
+    let ticket = ScriptTicket::new();
+    handler(cmd, ticket.clone(), tx);
+    let mut deadline = Instant::now() + REPLY_TIMEOUT;
+    let mut cancelled = false;
     loop {
         match rx.try_recv() {
             Ok(reply) => return reply,
@@ -198,7 +273,14 @@ fn run_command(cmd: ScriptCommand) -> ScriptReply {
             Err(mpsc::TryRecvError::Empty) => {}
         }
         if Instant::now() >= deadline {
-            return Err("터미널이 답하지 않습니다".into());
+            // Still queued: cancel it so the app drops it when it gets to it. Already running: the answer is on its
+            // way, so wait once more (bounded) instead of leaving the command half done.
+            if !cancelled && !ticket.cancel() {
+                cancelled = true;
+                deadline = Instant::now() + REPLY_TIMEOUT;
+                continue;
+            }
+            return Err("터미널이 답하지 않습니다(명령은 실행되지 않고 버려졌습니다)".into());
         }
         // SAFETY: called on the main thread (Apple Events arrive there); the mode constant is valid for the process.
         unsafe {
@@ -250,6 +332,11 @@ fn kind_of<T: ClassType>(object: &AnyObject) -> bool {
     // SAFETY: `isKindOfClass:` is defined for every object and takes a class.
     let yes: Bool = unsafe { objc2::msg_send![object, isKindOfClass: T::class()] };
     yes.as_bool()
+}
+
+/// UTF-8 size of the string, without copying it.
+fn utf8_len(s: &NSString) -> usize {
+    s.lengthOfBytesUsingEncoding(objc2_foundation::NSUTF8StringEncoding)
 }
 
 /// The object as a `T`, when it is one.
@@ -575,7 +662,12 @@ declare_class!(
                 return std::ptr::null_mut();
             }
             // SAFETY: a property read on the live command; the value is checked for its class.
-            let text = unsafe { self.directParameter() }.and_then(downcast::<NSString>).map(|s| s.to_string());
+            let text = unsafe { self.directParameter() }.and_then(downcast::<NSString>);
+            if text.as_ref().is_some_and(|s| utf8_len(s) > MAX_TEXT_BYTES) {
+                set_script_error(ERR_PARAM, "글이 너무 깁니다(상한 1MiB)");
+                return std::ptr::null_mut();
+            }
+            let text = text.map(|s| s.to_string());
             let terminal = argument_id::<ScriptTerminalObj>(self, "terminal", |o| o.ivars().0.clone());
             let (Some(text), Some(terminal)) = (text, terminal) else {
                 set_script_error(ERR_PARAM, "input text에는 글과 터미널이 필요합니다");

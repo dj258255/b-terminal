@@ -100,6 +100,7 @@ pub enum UserEvent {
     #[cfg(target_os = "macos")]
     Script(
         winit::platform::macos::ScriptCommand,
+        winit::platform::macos::ScriptTicket,
         std::sync::mpsc::Sender<winit::platform::macos::ScriptReply>,
     ),
 }
@@ -6676,7 +6677,7 @@ impl ApplicationHandler<UserEvent> for App {
             UserEvent::OpenFile(path) => self.on_open_file(event_loop, path),
             UserEvent::NoteClicked(pane) => self.on_note_clicked(event_loop, pane),
             #[cfg(target_os = "macos")]
-            UserEvent::Script(cmd, reply) => self.on_script(event_loop, cmd, reply),
+            UserEvent::Script(cmd, ticket, reply) => self.on_script(event_loop, cmd, ticket, reply),
             UserEvent::Control(req, reply) => {
                 let req_id = req.id;
                 let timeout = match &req.call {
