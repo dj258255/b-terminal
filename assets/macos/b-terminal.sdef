@@ -1,0 +1,150 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE dictionary SYSTEM "file://localhost/System/Library/DTDs/sdef.dtd">
+
+<!--
+  b-terminal(#634): AppleScript 사전. Ghostty의 macos/Ghostty.sdef(MIT 라이선스, Copyright (c) 2024 Mitchell Hashimoto,
+  Ghostty contributors)를 줄여 옮겼습니다. 클래스·명령·속성 이름과 4글자 코드는 Ghostty와 같게 두었습니다(스크립트가
+  그대로 돌게). 뺀 것: perform action, new surface configuration(과 surface configuration 레코드), split, close,
+  close tab, close window, send key, send mouse button·position·scroll, name override, pid, tty.
+  이유와 남은 일은 docs/decisions.md의 AppleScript 항목을 보십시오.
+  Ghostty 원본의 Standard Suite는 Apple의 /System/Library/ScriptingDefinitions/CocoaStandard.sdef를 줄인 것이라 그 부분도 같습니다.
+-->
+<dictionary title="b-terminal Scripting Dictionary">
+  <suite name="b-terminal Suite" code="Ghst" description="b-terminal scripting support.">
+    <class name="application" code="capp" description="The b-terminal application.">
+      <cocoa class="NSApplication"/>
+      <property name="name" code="pnam" type="text" access="r" description="The name of the application."/>
+      <property name="frontmost" code="pisf" type="boolean" access="r" description="Is this the active application?">
+        <cocoa key="isActive"/>
+      </property>
+      <property name="front window" code="GFWn" type="window" access="r" description="The frontmost b-terminal window.">
+        <cocoa key="frontWindow"/>
+      </property>
+      <property name="version" code="vers" type="text" access="r" description="The version number of the application."/>
+      <responds-to command="new window">
+        <cocoa method="handleNewWindowScriptCommand:"/>
+      </responds-to>
+      <responds-to command="new tab">
+        <cocoa method="handleNewTabScriptCommand:"/>
+      </responds-to>
+
+      <element type="window" access="r">
+        <cocoa key="scriptWindows"/>
+      </element>
+
+      <element type="terminal" access="r">
+        <cocoa key="terminals"/>
+      </element>
+    </class>
+
+    <class name="window" code="Gwnd" plural="windows" description="A b-terminal window containing one or more tabs.">
+      <cocoa class="BTScriptWindow"/>
+      <property name="id" code="ID  " type="text" access="r" description="ID for this window (valid while the window is open)."/>
+      <property name="name" code="pnam" type="text" access="r" description="The title of the window.">
+        <cocoa key="title"/>
+      </property>
+      <property name="selected tab" code="GWsT" type="tab" access="r" description="The selected tab in this window.">
+        <cocoa key="selectedTab"/>
+      </property>
+      <responds-to command="activate window">
+        <cocoa method="handleActivateWindowCommand:"/>
+      </responds-to>
+      <element type="tab" access="r">
+        <cocoa key="tabs"/>
+      </element>
+      <element type="terminal" access="r">
+        <cocoa key="terminals"/>
+      </element>
+    </class>
+
+    <class name="tab" code="Gtab" plural="tabs" description="A tab within a b-terminal window.">
+      <cocoa class="BTScriptTab"/>
+      <property name="id" code="ID  " type="text" access="r" description="ID for this tab (the ID of its first terminal when listed)."/>
+      <property name="name" code="pnam" type="text" access="r" description="The title of the tab.">
+        <cocoa key="title"/>
+      </property>
+      <property name="index" code="pidx" type="integer" access="r" description="1-based index of this tab in its window."/>
+      <property name="selected" code="GTsl" type="boolean" access="r" description="Whether this tab is selected in its window."/>
+      <property name="focused terminal" code="GTfT" type="terminal" access="r" description="The currently focused terminal in this tab.">
+        <cocoa key="focusedTerminal"/>
+      </property>
+      <responds-to command="select tab">
+        <cocoa method="handleSelectTabCommand:"/>
+      </responds-to>
+      <element type="terminal" access="r">
+        <cocoa key="terminals"/>
+      </element>
+    </class>
+
+    <class name="terminal" code="Gtrm" plural="terminals" description="An individual terminal pane.">
+      <cocoa class="BTScriptTerminal"/>
+      <property name="id" code="ID  " type="text" access="r" description="ID for this terminal (the same number btctl list shows)."/>
+      <property name="name" code="pnam" type="text" access="r" description="Current terminal title.">
+        <cocoa key="title"/>
+      </property>
+      <property name="working directory" code="Gwdr" type="text" access="r" description="Current working directory for the terminal process."/>
+      <responds-to command="focus">
+        <cocoa method="handleFocusCommand:"/>
+      </responds-to>
+    </class>
+
+    <command name="new window" code="GhstNWin" description="Create a new b-terminal window.">
+      <result type="window" description="The newly created window."/>
+    </command>
+
+    <command name="new tab" code="GhstNTab" description="Create a new b-terminal tab.">
+      <parameter name="in" code="GNtW" type="window" optional="yes" description="Target window for the new tab.">
+        <cocoa key="window"/>
+      </parameter>
+      <result type="tab" description="The newly created tab."/>
+    </command>
+
+    <command name="focus" code="GhstFcus" description="Focus a terminal, bringing its window to the front.">
+      <direct-parameter type="specifier" description="The terminal to focus."/>
+    </command>
+
+    <command name="activate window" code="GhstAcWn" description="Activate a b-terminal window, bringing it to the front.">
+      <direct-parameter type="specifier" description="The window to activate."/>
+    </command>
+
+    <command name="select tab" code="GhstSlTb" description="Select a tab in its window.">
+      <direct-parameter type="specifier" description="The tab to select."/>
+    </command>
+
+    <command name="input text" code="GhstInTx" description="Input text to a terminal as if it was pasted.">
+      <cocoa class="BTScriptInputTextCommand"/>
+      <direct-parameter type="text" description="The text to input."/>
+      <parameter name="to" code="GItT" type="terminal" description="The terminal to input text to.">
+        <cocoa key="terminal"/>
+      </parameter>
+    </command>
+  </suite>
+
+  <!--
+    The Standard Suite definition below is copied from Apple's
+    /System/Library/ScriptingDefinitions/CocoaStandard.sdef, trimmed to only
+    include what we need.
+  -->
+  <suite name="Standard Suite" code="????" description="Common classes and commands for all applications.">
+    <command name="count" code="corecnte" description="Return the number of elements of a particular class within an object.">
+      <cocoa class="NSCountCommand"/>
+      <access-group identifier="*"/>
+      <direct-parameter type="specifier" requires-access="r" description="The objects to be counted."/>
+      <parameter name="each" code="kocl" type="type" optional="yes" description="The class of objects to be counted." hidden="yes">
+        <cocoa key="ObjectClass"/>
+      </parameter>
+      <result type="integer" description="The count."/>
+    </command>
+
+    <command name="exists" code="coredoex" description="Verify that an object exists.">
+      <cocoa class="NSExistsCommand"/>
+      <access-group identifier="*"/>
+      <direct-parameter type="any" requires-access="r" description="The object(s) to check."/>
+      <result type="boolean" description="Did the object(s) exist?"/>
+    </command>
+
+    <command name="quit" code="aevtquit" description="Quit the application.">
+      <cocoa class="NSQuitCommand"/>
+    </command>
+  </suite>
+</dictionary>

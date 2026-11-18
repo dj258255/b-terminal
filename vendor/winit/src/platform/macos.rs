@@ -617,3 +617,35 @@ pub fn remove_all_user_notifications() {
 pub fn set_user_notification_handler(handler: Box<dyn Fn(UserNotificationResponse) + Send + Sync>) {
     crate::platform_impl::user_notify::set_handler(handler)
 }
+
+pub use crate::platform_impl::scripting::{
+    ScriptCommand, ScriptReply, ScriptSnapshot, ScriptTab, ScriptTarget, ScriptTerminal, ScriptWindow,
+};
+
+/// Whether AppleScript can be served: the process must run from an app bundle (have a bundle identifier), because
+/// the scripting dictionary is read from the bundle. b-terminal(#634)
+pub fn scripting_supported() -> bool {
+    crate::platform_impl::scripting::supported()
+}
+
+/// Turns AppleScript on or off (the `macos-applescript` setting). While off, every scripting command and object lookup
+/// fails with a script error. May be called from any thread at any time. b-terminal(#634)
+pub fn set_scripting_enabled(enabled: bool) {
+    crate::platform_impl::scripting::set_enabled(enabled)
+}
+
+/// Replaces the state AppleScript reads (windows, tabs, terminals). The app calls it when it answers a
+/// [`ScriptCommand::Snapshot`] and after every command that changes the state. b-terminal(#634)
+pub fn set_scripting_snapshot(snapshot: ScriptSnapshot) {
+    crate::platform_impl::scripting::set_snapshot(snapshot)
+}
+
+/// Registers the function that receives scripting commands (`new window`, `input text`, ...) and installs the scripting
+/// classes. The function runs on the main thread, so it must not block: it queues the request for the app's event loop
+/// and later sends the answer through the channel; the caller spins the run loop until the answer arrives (5 seconds at
+/// most). Does nothing but store the function when [`scripting_supported`] is `false`. b-terminal(#634)
+pub fn set_scripting_handler(
+    handler: Box<dyn Fn(ScriptCommand, std::sync::mpsc::Sender<ScriptReply>) + Send + Sync>,
+) {
+    crate::platform_impl::scripting::set_handler(handler)
+}
