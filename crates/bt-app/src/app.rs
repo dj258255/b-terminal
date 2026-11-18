@@ -2309,7 +2309,16 @@ impl App {
     /// 선택 클립보드에 쓴다. macOS는 이름 붙은 pasteboard에도 써서 다른 b-terminal과 나눈다(실패해도 앱 안 저장소는 남는다)
     fn set_selection_clipboard(&mut self, text: String) {
         #[cfg(target_os = "macos")]
-        winit::platform::macos::set_named_pasteboard_string(SELECTION_PASTEBOARD, &text);
+        {
+            let id = self.focused_id();
+            let password = id
+                .and_then(|i| self.pane_index(i))
+                .is_some_and(|i| self.panes[i].password);
+            let scoped = id.is_some_and(|i| self.secure.has_scoped(i));
+            if share_selection(password, scoped) {
+                winit::platform::macos::set_named_pasteboard_string(SELECTION_PASTEBOARD, &text);
+            }
+        }
         self.selection_clipboard = Some(text);
     }
 
@@ -6462,6 +6471,12 @@ fn ime_commits_on_focus_loss(source: Option<&str>) -> bool {
 #[cfg(target_os = "macos")]
 const SELECTION_PASTEBOARD: &str = "com.dj258255.b-terminal.selection";
 
+/// 고른 글을 이름 붙은 pasteboard(같은 사용자의 다른 프로세스가 읽을 수 있다)에 써도 되는가. 암호 입력 중인 칸(`password`)이나
+/// 보안 입력이 칸 단위로 켜진 칸(`secure_scoped`)에서 나온 글은 앱 안 저장소에만 둔다
+fn share_selection(password: bool, secure_scoped: bool) -> bool {
+    !password && !secure_scoped
+}
+
 /// 선택 클립보드에서 읽을 글: 시스템의 이름 붙은 pasteboard(다른 b-terminal이 나중에 골랐을 수 있다)가 먼저이고,
 /// 없거나 비었으면 앱 안 저장소. 둘 다 없으면 없다
 fn pick_selection(shared: Option<String>, local: Option<&str>) -> Option<String> {
@@ -6669,6 +6684,9 @@ impl ApplicationHandler<UserEvent> for App {
     fn exiting(&mut self, _event_loop: &ActiveEventLoop) {
         // 켜 둔 보안 입력은 풀고 나간다(#258)
         self.secure.shutdown();
+        // 선택 클립보드 pasteboard는 비우고 나간다(다른 b-terminal이 떠 있으면 그 선택도 사라진다, #629)
+        #[cfg(target_os = "macos")]
+        winit::platform::macos::release_named_pasteboard(SELECTION_PASTEBOARD);
         // 남긴 데스크톱 알림은 칸이 없어지므로 지운다(Ghostty `applicationWillTerminate`, #625)
         crate::desktop::forget_all();
         // write_*_file로 쓴 파일은 화면 내용이라 남기지 않는다(#125)
@@ -7639,6 +7657,15 @@ mod tests {
         assert!(!set_named_pasteboard_string("Apple CFPasteboard general", "x"));
         assert_eq!(named_pasteboard_string("Apple CFPasteboard general"), None);
         assert!(!set_named_pasteboard_string("", "x"));
+    }
+
+    /// 암호 입력 중이거나 보안 입력이 켜진 칸에서 고른 글은 다른 프로세스가 읽을 수 있는 pasteboard에 쓰지 않는다
+    #[test]
+    fn password_pane_selection_is_not_shared() {
+        assert!(share_selection(false, false));
+        assert!(!share_selection(true, false));
+        assert!(!share_selection(false, true));
+        assert!(!share_selection(true, true));
     }
 
     /// 선택 클립보드(#629): 시스템의 이름 붙은 pasteboard가 비었으면 앱 안 저장소를 쓴다. 있으면 그쪽이 먼저다
