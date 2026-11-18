@@ -615,7 +615,7 @@ impl Session {
     /// 프로그램을 PTY로 띄운다. `sink`는 읽기 스레드에서 불린다
     pub fn spawn(mut options: SpawnOptions, size: GridSize, theme: Theme, sink: EventSink) -> anyhow::Result<Self> {
         let pty = native_pty_system();
-        let pair = pty.openpty(size.pty()).context("PTY 열기(openpty)")?;
+        let pair = open_pty_with_retry(|| pty.openpty(size.pty()), OPENPTY_BACKOFF, std::thread::sleep)?;
 
         let mut cmd = match &options.program {
             Some(p) => {
@@ -1667,6 +1667,56 @@ fn update_inclusive(sel: &mut Selection, point: Point) {
     *sel = next;
 }
 
+/// openpty가 실패했을 때 다시 시도하기 전에 쉬는 시간(시도 사이마다 하나). 길이가 시도 횟수 - 1이다.
+/// macOS에서 여러 스레드가 동시에 `/dev/ptmx`를 열면 가끔 `Os { code: -6 }`으로 일시 실패한다(#607)
+const OPENPTY_BACKOFF: [Duration; 4] = [
+    Duration::from_millis(1),
+    Duration::from_millis(2),
+    Duration::from_millis(5),
+    Duration::from_millis(10),
+];
+
+/// `open`(openpty)을 `backoff.len() + 1`번까지 시도한다. 먼저 성공하면 바로 돌려주고, 시도 사이에 `sleep`으로 쉰다.
+/// 다 실패하면 시도 횟수와 마지막 오류를 담는다. 진짜 한도(PTY 수·파일 수)에 닿은 경우에도 같은 길로 가지만
+/// 늘어나는 시간은 backoff 합(18ms)뿐이다. 오류에서 errno를 꺼낼 수 없어(portable-pty가 문자열로 만든다) 종류로 가르지 않는다
+fn open_pty_with_retry<T>(
+    mut open: impl FnMut() -> anyhow::Result<T>,
+    backoff: impl AsRef<[Duration]>,
+    mut sleep: impl FnMut(Duration),
+) -> anyhow::Result<T> {
+    let backoff = backoff.as_ref();
+    let tries = backoff.len() + 1;
+    let mut attempt = 0;
+    loop {
+        match open() {
+            Ok(v) => return Ok(v),
+            Err(e) if attempt >= backoff.len() => {
+                let note = explain_negative_errno(&format!("{e:#}"));
+                return Err(e.context(format!("PTY 열기(openpty), {tries}번 시도해도 실패{note}")));
+            }
+            Err(_) => {
+                sleep(backoff[attempt]);
+                attempt += 1;
+            }
+        }
+    }
+}
+
+/// 오류 문구의 `code: -N`(음수 errno)을 풀어 쓴다. 양수 N은 POSIX errno지만 음수는 libc 오류 번호가 아니다.
+/// macOS에서 `/dev/ptmx`를 동시에 열 때 -6이 나온다(원인은 확인하지 못함, troubleshooting 22번)
+fn explain_negative_errno(msg: &str) -> String {
+    let Some(rest) = msg.split("code: -").nth(1) else {
+        return String::new();
+    };
+    let digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
+    if digits.is_empty() {
+        return String::new();
+    }
+    format!(
+        " (errno -{digits}: 음수라 libc 오류 번호가 아니다. 커널이 /dev/ptmx 열기에서 돌려준 일시 실패로 보이며 양수 errno와 뜻이 같지 않다)"
+    )
+}
+
 fn dirs_home() -> Option<PathBuf> {
     std::env::var_os("HOME").map(PathBuf::from)
 }
@@ -2278,6 +2328,74 @@ impl Session {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn openpty_retries_transient_failures_then_succeeds() {
+        let mut calls = 0;
+        let mut slept = Vec::new();
+        let got = open_pty_with_retry(
+            || {
+                calls += 1;
+                if calls < 3 {
+                    anyhow::bail!(
+                        "failed to openpty: Os {{ code: -6, kind: Uncategorized, message: \"Unknown error: -6\" }}"
+                    )
+                }
+                Ok(calls)
+            },
+            OPENPTY_BACKOFF,
+            |d| slept.push(d),
+        );
+        assert_eq!(got.unwrap(), 3);
+        assert_eq!(
+            slept,
+            [Duration::from_millis(1), Duration::from_millis(2)],
+            "실패한 만큼만 쉰다"
+        );
+    }
+
+    #[test]
+    fn openpty_succeeding_first_time_does_not_sleep() {
+        let mut slept = 0;
+        let got = open_pty_with_retry(|| Ok(7), OPENPTY_BACKOFF, |_| slept += 1);
+        assert_eq!(got.unwrap(), 7);
+        assert_eq!(slept, 0);
+    }
+
+    #[test]
+    fn openpty_gives_up_after_bounded_tries_and_explains_negative_errno() {
+        let mut calls = 0;
+        let mut slept = Duration::ZERO;
+        let err = open_pty_with_retry::<()>(
+            || {
+                calls += 1;
+                anyhow::bail!(
+                    "failed to openpty: Os {{ code: -6, kind: Uncategorized, message: \"Unknown error: -6\" }}"
+                )
+            },
+            OPENPTY_BACKOFF,
+            |d| slept += d,
+        )
+        .unwrap_err();
+        assert_eq!(calls, OPENPTY_BACKOFF.len() + 1, "시도 횟수에 상한이 있다");
+        assert!(
+            slept <= Duration::from_millis(20),
+            "쉬는 시간에도 상한이 있다: {slept:?}"
+        );
+        let msg = format!("{err:#}");
+        assert!(msg.contains("5번 시도"), "시도 횟수가 오류에 없다: {msg}");
+        assert!(msg.contains("errno -6: 음수"), "음수 errno 설명이 없다: {msg}");
+        assert!(msg.contains("code: -6"), "원래 오류가 사라졌다: {msg}");
+    }
+
+    #[test]
+    fn positive_errno_gets_no_negative_errno_note() {
+        assert_eq!(
+            explain_negative_errno("failed to openpty: Os { code: 24, kind: Uncategorized }"),
+            ""
+        );
+        assert_eq!(explain_negative_errno("code: -"), "");
+    }
 
     #[test]
     fn graphics_yield_waits_until_enough_time_piles_up() {
