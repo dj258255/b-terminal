@@ -31,8 +31,12 @@ static PROVIDER: Once = Once::new();
 
 /// Upper bound on the paths taken from one request (a pasteboard can hold anything the sender put there).
 const MAX_PATHS: usize = 256;
-/// Upper bound on the plain-text fallback that is split into lines.
-const MAX_TEXT_BYTES: usize = 64 * 1024;
+/// Upper bound on the plain-text fallback that is split into lines (checked in UTF-16 units before copying).
+const MAX_TEXT_UNITS: usize = 64 * 1024;
+/// Upper bound on one path string (checked before copying; macOS paths are at most 1024 bytes).
+const MAX_PATH_UNITS: usize = 4096;
+/// Upper bound on the requests kept before the app registers its handler.
+const MAX_PENDING: usize = 16;
 
 declare_class!(
     struct ServicesProvider;
@@ -97,14 +101,16 @@ fn paths_from(pb: &NSPasteboard) -> Vec<PathBuf> {
                 if kind_of::<NSString>(item) {
                     // SAFETY: class checked on the line above.
                     let s: &NSString = unsafe { &*(item as *const AnyObject).cast::<NSString>() };
-                    push_abs(&mut out, s.to_string());
+                    if s.length() <= MAX_PATH_UNITS {
+                        push_abs(&mut out, s.to_string());
+                    }
                 }
             }
         }
     }
     if out.is_empty() {
         // SAFETY: plain read of a string type; a missing type returns nil.
-        if let Some(s) = unsafe { pb.stringForType(NSPasteboardTypeFileURL) } {
+        if let Some(s) = unsafe { pb.stringForType(NSPasteboardTypeFileURL) }.filter(|s| s.length() <= MAX_PATH_UNITS) {
             if let Some(p) = file_url_path(&s.to_string()) {
                 push_abs(&mut out, p);
             }
@@ -112,15 +118,13 @@ fn paths_from(pb: &NSPasteboard) -> Vec<PathBuf> {
     }
     if out.is_empty() {
         // SAFETY: as above.
-        if let Some(s) = unsafe { pb.stringForType(NSPasteboardTypeString) } {
+        if let Some(s) = unsafe { pb.stringForType(NSPasteboardTypeString) }.filter(|s| s.length() <= MAX_TEXT_UNITS) {
             let text = s.to_string();
-            if text.len() <= MAX_TEXT_BYTES {
-                for line in text.lines().take(MAX_PATHS) {
-                    let line = line.trim();
-                    match file_url_path(line) {
-                        Some(p) => push_abs(&mut out, p),
-                        None => push_abs(&mut out, line.to_owned()),
-                    }
+            for line in text.lines().take(MAX_PATHS) {
+                let line = line.trim();
+                match file_url_path(line) {
+                    Some(p) => push_abs(&mut out, p),
+                    None => push_abs(&mut out, line.to_owned()),
                 }
             }
         }
@@ -163,7 +167,9 @@ fn deliver(target: ServiceTarget, paths: Vec<PathBuf>) {
         match g.handler.clone() {
             Some(h) => h,
             None => {
-                g.pending.push((target, paths));
+                if g.pending.len() < MAX_PENDING {
+                    g.pending.push((target, paths));
+                }
                 return;
             }
         }

@@ -141,15 +141,15 @@ pub fn placement(behavior: MacDockDropBehavior, windowless: bool) -> Placement {
 /// Finder 서비스 한 번에 여는 폴더 수의 상한(한 번에 탭 수천 개가 뜨지 않게)
 pub const SERVICE_MAX_DIRS: usize = 16;
 
+/// Finder 서비스 한 번에 살펴보는(stat) 경로 수의 상한. 멈춘 네트워크 마운트 경로가 잔뜩 와도 메인 스레드가 오래 막히지 않게
+pub const SERVICE_MAX_INSPECT: usize = SERVICE_MAX_DIRS * 4;
+
 /// Finder 서비스(#631)가 넘긴 경로에서 열 폴더를 고른다. 폴더는 그대로, 파일은 부모 폴더. 상대 경로와 없는 경로는
 /// 버리고, 겹치는 폴더는 한 번만(순서 유지) 담고, `SERVICE_MAX_DIRS`개에서 멈춘다. 파일을 셸에 치지 않는다
 /// (실행은 Dock 드롭의 확인 막대 길(`plan`)에만 있다)
 pub fn service_dirs(paths: Vec<PathBuf>, kind: impl Fn(&Path) -> Kind) -> Vec<PathBuf> {
     let mut out: Vec<PathBuf> = Vec::new();
-    for path in paths {
-        if !path.is_absolute() {
-            continue;
-        }
+    for path in paths.into_iter().filter(|p| p.is_absolute()).take(SERVICE_MAX_INSPECT) {
         let dir = match kind(&path) {
             Kind::Dir => path,
             Kind::File => path.parent().map_or_else(|| PathBuf::from("/"), Path::to_path_buf),
@@ -400,6 +400,19 @@ mod tests {
         );
         assert!(service_dirs(vec![], kind).is_empty());
         assert!(service_dirs(vec!["/w/none".into()], kind).is_empty());
+    }
+
+    #[test]
+    fn service_dirs_stats_a_bounded_number_of_paths() {
+        // 없는 경로(멈춘 네트워크 마운트일 수 있음)만 잔뜩 와도 메인 스레드에서 stat하는 수는 상한에서 멈춘다
+        let seen = std::cell::Cell::new(0usize);
+        let paths: Vec<PathBuf> = (0..256).map(|i| PathBuf::from(format!("/net/m{i}"))).collect();
+        let got = service_dirs(paths, |_| {
+            seen.set(seen.get() + 1);
+            Kind::Missing
+        });
+        assert!(got.is_empty());
+        assert_eq!(seen.get(), SERVICE_MAX_INSPECT);
     }
 
     #[test]
