@@ -11,8 +11,48 @@ pub struct TabLabel {
     pub active: bool,
     /// 보지 않은 알림(OSC 9·99·777, 벨)이 있다
     pub unread: bool,
-    /// 진행 표시(OSC 9;4): (상태 1 보통·2 오류·3 끝 모름·4 멈춤, 퍼센트)
+    /// 진행 표시(OSC 9;4): (상태 1 보통·2 오류·3 끝 모름·4 멈춤, 퍼센트).
+    /// 프로그램 상태(OSC 7501)도 같은 막대로 보인다: 5는 사용자를 기다림, 6은 끝남(`status_bar`)
     pub progress: Option<(u8, u8)>,
+}
+
+/// 막대 상태 코드: 프로그램 상태(OSC 7501)에서 온 것(`status_bar`)
+const BAR_BLOCKED: u8 = 5;
+const BAR_DONE: u8 = 6;
+
+/// 칸들의 프로그램 상태 가운데 가장 급한 것(`blocked` > `error` > `working` > `done`). 같으면 앞의 것
+pub fn most_urgent(
+    list: impl IntoIterator<Item = bt_term::program_status::Summary>,
+) -> Option<bt_term::program_status::Summary> {
+    use bt_term::program_status::State;
+    let rank = |s: State| match s {
+        State::Blocked => 3,
+        State::Error => 2,
+        State::Working => 1,
+        _ => 0,
+    };
+    let mut best: Option<bt_term::program_status::Summary> = None;
+    for s in list {
+        if best.is_none_or(|b| rank(s.state) > rank(b.state)) {
+            best = Some(s);
+        }
+    }
+    best
+}
+
+/// 프로그램 상태(OSC 7501)를 진행 막대 값으로 바꾼다. 사용자를 기다림·오류·끝남은 가득 찬 막대(마젠타·빨강·초록)이고,
+/// 일하는 중은 퍼센트가 있으면 보통 막대, 없으면 가운데 3분의 1을 칠한 정지한 막대다(움직이지 않는다).
+/// `bars`가 거짓(`progress-style = false`)이면 일하는 중은 그리지 않는다. 기다림·오류·끝남은 사람이 봐야 하므로 그대로 그린다.
+/// 같은 자리의 안 읽음 점(노랑)과 색·모양이 겹치지 않는다
+pub fn status_bar(s: bt_term::program_status::Summary, bars: bool) -> Option<(u8, u8)> {
+    use bt_term::program_status::State;
+    match s.state {
+        State::Blocked => Some((BAR_BLOCKED, 100)),
+        State::Error => Some((2, 100)),
+        State::Done => Some((BAR_DONE, 100)),
+        State::Working => bars.then(|| s.progress.map_or((3, 0), |p| (1, p))),
+        State::Idle | State::Clear => None,
+    }
 }
 
 /// 프로그램이 보낸 진행 표시(OSC 9;4)를 받는가: `progress-style`이 꺼져 있으면 조용히 버린다.
@@ -27,6 +67,8 @@ pub fn draw_progress(canvas: &mut Canvas, theme: &Theme, x: i32, y: i32, w: u32,
     let color = match state {
         2 => theme.palette[1],
         4 => theme.palette[3],
+        BAR_BLOCKED => theme.palette[5],
+        BAR_DONE => theme.palette[2],
         _ => theme.palette[4],
     };
     let h = h.max(2);
@@ -695,6 +737,41 @@ mod tests {
             assert_eq!(s.len(), count);
             assert!(s.iter().all(|&(_, w)| w >= 1));
             let _ = hit(width, 0.0, count);
+        }
+    }
+
+    #[test]
+    fn status_maps_to_a_bar_and_the_most_urgent_wins() {
+        use bt_term::program_status::{State, Summary};
+        let sm = |state, progress| Summary { state, progress };
+        assert_eq!(status_bar(sm(State::Blocked, None), true), Some((5, 100)));
+        assert_eq!(status_bar(sm(State::Error, None), true), Some((2, 100)));
+        assert_eq!(status_bar(sm(State::Done, None), true), Some((6, 100)));
+        assert_eq!(status_bar(sm(State::Working, Some(40)), true), Some((1, 40)));
+        assert_eq!(status_bar(sm(State::Working, None), true), Some((3, 0)));
+        assert_eq!(status_bar(sm(State::Idle, None), true), None);
+        // progress-style = false: 일하는 중은 숨기고 사람이 봐야 하는 것은 남긴다
+        assert_eq!(status_bar(sm(State::Working, Some(40)), false), None);
+        assert_eq!(status_bar(sm(State::Blocked, None), false), Some((5, 100)));
+        let urgent = most_urgent([
+            sm(State::Done, None),
+            sm(State::Working, None),
+            sm(State::Blocked, None),
+            sm(State::Error, None),
+        ]);
+        assert_eq!(urgent.map(|u| u.state), Some(State::Blocked));
+        assert_eq!(most_urgent([]), None);
+    }
+
+    #[test]
+    fn status_bars_are_drawn_in_their_own_colors() {
+        let theme = Theme::ghostty_default();
+        for (state, color) in [(5, theme.palette[5]), (6, theme.palette[2]), (2, theme.palette[1])] {
+            let mut buf = vec![0u32; 40 * 10];
+            let mut c = Canvas::new(&mut buf, 40, 10);
+            c.clear(theme.background);
+            draw_progress(&mut c, &theme, 0, 0, 40, (state, 100), 4);
+            assert_eq!(buf[2 * 40 + 39] & 0xFF_FFFF, color.to_u32() & 0xFF_FFFF, "상태 {state}");
         }
     }
 
