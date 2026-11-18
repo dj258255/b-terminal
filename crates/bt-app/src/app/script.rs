@@ -4,6 +4,9 @@
 //! 창·탭·칸 목록은 여기서 만든 스냅숏을 vendor가 읽고, 바꾸는 명령(새 창·새 탭·포커스·글 넣기)은 btctl과 같은 길
 //! (`handle_call`, `paste`의 붙여넣기 보호)로 처리한다. 순수 함수(스냅숏 만들기·인자 판단)는 아래 시험이 덮는다.
 //!
+//! `send key`(#650)는 키 이름을 `script_key`가 사람이 누른 키와 같은 입력으로 만들고, 같은 인코더와 키 묶음 길(`feed_key`)로 보낸다.
+//! `split`은 `btctl new --split`과 같은 길(`handle_call`)이고, `close`·`close tab`·`close window`는 확인 막대 없이 닫는다(Ghostty처럼).
+//!
 //! ids: 칸은 `btctl list`의 번호 그대로, 탭은 그 탭의 첫 칸 번호(칸이 닫히거나 탭 첫 칸이 바뀌면 바뀐다),
 //! 창은 창 번호(winit `WindowId`)다. 모두 10진수 글이다.
 
@@ -11,13 +14,17 @@ use std::sync::mpsc::Sender;
 
 use winit::event_loop::ActiveEventLoop;
 use winit::platform::macos::{
-    ScriptCommand, ScriptReply, ScriptSnapshot, ScriptTab, ScriptTarget, ScriptTerminal, ScriptTicket, ScriptWindow,
+    ScriptCommand, ScriptReply, ScriptSnapshot, ScriptSplit, ScriptTab, ScriptTarget, ScriptTerminal, ScriptTicket,
+    ScriptWindow,
 };
 
 use super::{App, UserEvent};
 
 /// 한 번에 넣을 글의 상한(바이트). 제어 소켓 요청 한 줄의 상한(1MiB)과 같다
 const MAX_TEXT: usize = 1 << 20;
+
+/// `send key`의 키 이름·수식 키 글의 상한(바이트). 가장 긴 키 이름은 20바이트다
+const MAX_KEY: usize = 256;
 
 /// 스냅숏을 만들 재료: 칸
 pub struct PaneView {
@@ -39,6 +46,15 @@ pub struct WinView {
     pub serial: u64,
     pub active: usize,
     pub tabs: Vec<TabView>,
+}
+
+/// 스냅숏의 앞 창: 마지막으로 포커스를 받은 창이 아직 있으면 그 창, 없으면 지금 창(명령이 향하는 창)
+///
+/// 앱이 뒤에 있을 때 스크립트로 앞 창을 닫으면 남은 창이 포커스를 받지 못해 마지막 포커스가 닫힌 창을 가리킨다.
+/// 그래도 창이 남아 있으면 Ghostty(`NSApp.orderedWindows`의 첫 창)처럼 `front window`가 있어야 한다
+pub fn front_window_id(last_focused: Option<u64>, current: Option<u64>, ids: &[u64]) -> Option<u64> {
+    let alive = |id: &u64| ids.contains(id);
+    last_focused.filter(alive).or(current.filter(alive))
 }
 
 /// 앞 창을 먼저, 나머지 창은 만든 차례로, 탭 줄 순서로, 탭 안에서는 왼쪽·위부터 스냅숏을 만든다. `front`는 마지막으로 보던 창
@@ -108,10 +124,38 @@ pub fn admit(enabled: bool, cmd: ScriptCommand) -> Result<ScriptCommand, String>
     if !enabled {
         return Err("AppleScript는 설정 macos-applescript = false로 꺼져 있습니다".into());
     }
-    if let ScriptCommand::InputText { text, .. } = &cmd {
-        check_text(text)?;
+    match &cmd {
+        ScriptCommand::InputText { text, .. } => check_text(text)?,
+        ScriptCommand::SendKey { key, modifiers, .. }
+            if key.len() > MAX_KEY || modifiers.as_ref().is_some_and(|m| m.len() > MAX_KEY) =>
+        {
+            return Err(format!("키 이름이나 수식 키가 너무 깁니다(상한 {MAX_KEY} 바이트)"));
+        }
+        _ => {}
     }
     Ok(cmd)
+}
+
+/// 칸을 나누는 요청(`btctl new --split 방향 --tab 칸`과 같다)
+pub fn split_call(pane: u64, direction: ScriptSplit) -> bt_core::proto::Call {
+    bt_core::proto::Call::New {
+        cwd: None,
+        command: Vec::new(),
+        split: Some(direction.as_str().into()),
+        tab: Some(pane),
+        window: false,
+    }
+}
+
+/// 창에 막대(확인·검색·팔레트·제목)가 떠 있으면 키를 보내지 않는 까닭. 없으면 보낸다
+pub fn overlay_refusal(confirm: bool, other_bar: bool) -> Option<&'static str> {
+    if confirm {
+        Some("그 창에 확인할 일이 있어 키를 보내지 않았습니다")
+    } else if other_bar {
+        Some("그 창에 검색·팔레트·제목 입력이 열려 있어 키를 보내지 않았습니다")
+    } else {
+        None
+    }
 }
 
 impl App {
@@ -182,7 +226,9 @@ impl App {
                 })
             })
             .collect();
-        build_snapshot(&windows, self.last_focused.map(u64::from))
+        let ids: Vec<u64> = windows.iter().map(|w| w.id).collect();
+        let front = front_window_id(self.last_focused.map(u64::from), self.w.id().map(u64::from), &ids);
+        build_snapshot(&windows, front)
     }
 
     /// 창 번호로 창을 찾아 그 창의 아무 칸(없으면 오류)을 돌려준다
@@ -204,17 +250,37 @@ impl App {
             .map(u64::from)
     }
 
+    /// `send key`: 해석한 키를 사람이 누른 키와 같은 인코더로 바이트로 만들어 그 칸에 쓴다. 붙여넣기 보호는 거치지 않는다.
+    /// 키 묶음(`keybind`)과 `key-remap`을 사람이 누른 키와 같게 거친다(Ghostty `surface.sendKeyEvent`가 코어의 `keyCallback`을 거치는 것처럼)
+    fn send_script_key(&mut self, event_loop: &ActiveEventLoop, pane: u64, prepared: crate::script_key::Prepared) {
+        use crate::keys;
+        let Some(input) = prepared.input else { return };
+        let Some(i) = self.pane_index(pane) else { return };
+        let modes = self.panes[i].session.modes();
+        let sided = keys::sided_from_state(prepared.mods);
+        let mods = keys::remapped_state(&self.config.key_remap, sided);
+        let raw = keys::to_state(sided);
+        let meta = keys::option_counts_as_alt(self.config.option_as_alt, sided);
+        let bytes = keys::encode_input(&input, mods, raw, modes, meta);
+        if !input.pressed {
+            // 뗌: 사람이 뗄 때와 같다. 프로그램이 이벤트 종류 보고(kitty 2)를 켰고 이 키의 누름을 프로그램에 보냈을 때만 보낸다
+            if self.w.kitty_down.remove(&input.physical) == Some(pane) && modes.kitty.report_events {
+                if let Some(t) = self.pane_index(pane).map(|i| &self.panes[i]) {
+                    t.session.write_input(&bytes, false);
+                }
+            }
+            return;
+        }
+        let report_release = modes.kitty.report_events;
+        // 키 묶음 판단도 `key-remap`을 거친 수식 키로 한다(`keys::trigger`가 `self.mods`로 하는 것과 같다)
+        let trigger = keys::trigger_of(&input.without_modifiers, mods);
+        self.feed_key(event_loop, trigger, bytes, input.physical, report_release, Some(pane));
+    }
+
     fn run_script(&mut self, event_loop: &ActiveEventLoop, cmd: ScriptCommand) -> ScriptReply {
         use bt_core::proto::{Call, Request};
         // btctl `new`와 같은 길: 만든 칸의 번호가 답에 들어 있다
-        let new_pane = |app: &mut App, tab: Option<u64>, window: bool| -> Result<u64, String> {
-            let call = Call::New {
-                cwd: None,
-                command: Vec::new(),
-                split: None,
-                tab,
-                window,
-            };
+        let run_new = |app: &mut App, call: Call| -> Result<u64, String> {
             let resp = app.handle_call(Request { id: 0, call }, event_loop);
             if !resp.ok {
                 return Err(resp.error.unwrap_or_else(|| "열지 못했습니다".into()));
@@ -223,6 +289,16 @@ impl App {
                 .get("tab")
                 .and_then(|v| v.as_u64())
                 .ok_or_else(|| "열린 칸을 알 수 없습니다".to_string())
+        };
+        let new_pane = |app: &mut App, tab: Option<u64>, window: bool| -> Result<u64, String> {
+            let call = Call::New {
+                cwd: None,
+                command: Vec::new(),
+                split: None,
+                tab,
+                window,
+            };
+            run_new(app, call)
         };
         match cmd {
             ScriptCommand::Snapshot => Ok(None),
@@ -263,6 +339,75 @@ impl App {
                     .map(|g| g.focus)
                     .ok_or_else(|| format!("탭 {tab}이 없습니다"))?;
                 self.focus_pane(focus);
+                Ok(None)
+            }
+            ScriptCommand::SendKey {
+                terminal,
+                key,
+                release,
+                modifiers,
+            } => {
+                let pane = parse_id(&terminal)?;
+                let i = self
+                    .pane_index(pane)
+                    .ok_or_else(|| format!("터미널 {terminal}이 없습니다"))?;
+                // `input text`와 같은 거절: 읽기 전용 칸에는 보내지 않는다
+                if self.panes[i].session.readonly() {
+                    return Err(super::READONLY_REFUSAL.into());
+                }
+                // 키 이름·수식 키가 틀렸으면 칸이나 창을 건드리기 전에 알린다
+                let prepared = crate::script_key::prepare(&key, modifiers.as_deref(), release)?;
+                self.switch_to_pane(pane);
+                let other_bar = self.w.search.is_some() || self.w.palette.is_some() || self.w.title_prompt.is_some();
+                if let Some(why) = overlay_refusal(self.w.confirm.is_some(), other_bar) {
+                    return Err(why.into());
+                }
+                self.send_script_key(event_loop, pane, prepared);
+                Ok(None)
+            }
+            ScriptCommand::Split { terminal, direction } => {
+                let pane = parse_id(&terminal)?;
+                self.pane_index(pane)
+                    .ok_or_else(|| format!("터미널 {terminal}이 없습니다"))?;
+                let new = run_new(self, split_call(pane, direction))?;
+                Ok(Some(ScriptTarget::Terminal(new.to_string())))
+            }
+            // 닫기는 Ghostty처럼 확인 막대 없이 한다(`closeSurface(withConfirmation: false)`). 되살리기 목록에도 넣지 않는다(`registerRedo: false`)
+            ScriptCommand::Close { terminal } => {
+                let pane = parse_id(&terminal)?;
+                self.pane_index(pane)
+                    .ok_or_else(|| format!("터미널 {terminal}이 없습니다"))?;
+                self.switch_to_pane(pane);
+                drop(self.redo.clear());
+                if let Some(i) = self.pane_index(pane) {
+                    self.close_pane(i, event_loop, false);
+                }
+                Ok(None)
+            }
+            ScriptCommand::CloseTab { tab } => {
+                let first = parse_id(&tab)?;
+                self.switch_to_pane(first);
+                let leaves = self
+                    .w
+                    .tabs
+                    .iter()
+                    .map(|g| g.layout.leaves())
+                    .find(|l| l.first() == Some(&first))
+                    .ok_or_else(|| format!("탭 {tab}이 없습니다"))?;
+                drop(self.redo.clear());
+                // 칸을 하나씩 닫는다. 마지막 칸이 닫히면 탭이, 창의 마지막 탭이면 창이 닫힌다
+                for id in leaves {
+                    if let Some(i) = self.pane_index(id) {
+                        self.close_pane(i, event_loop, false);
+                    }
+                }
+                Ok(None)
+            }
+            ScriptCommand::CloseWindow { window } => {
+                let pane = self.script_window_pane(&window)?;
+                self.switch_to_pane(pane);
+                drop(self.redo.clear());
+                self.close_current_window(event_loop);
                 Ok(None)
             }
             ScriptCommand::InputText { terminal, text } => {
@@ -320,6 +465,137 @@ mod tests {
         assert!(!shown.contains("hunter2"), "{shown}");
         assert!(!shown.contains("비밀"), "{shown}");
         assert!(shown.contains("InputText"), "{shown}");
+    }
+
+    /// `send key`의 키 이름과 수식 키도 로그에 나오지 않는다(눌러 쓴 암호일 수 있다)
+    #[test]
+    fn command_debug_hides_send_key() {
+        let cmd = ScriptCommand::SendKey {
+            terminal: "3".into(),
+            key: "hunterkey".into(),
+            release: false,
+            modifiers: Some("secretmod".into()),
+        };
+        let shown = format!("{cmd:?}");
+        assert!(!shown.contains("hunterkey") && !shown.contains("secretmod"), "{shown}");
+        assert!(shown.contains("SendKey") && shown.contains("terminal"), "{shown}");
+    }
+
+    #[test]
+    fn send_key_text_is_capped_before_it_is_used() {
+        use winit::platform::macos::ScriptCommand as C;
+        let key = |key: String, modifiers: Option<String>| C::SendKey {
+            terminal: "1".into(),
+            key,
+            release: false,
+            modifiers,
+        };
+        assert!(admit(true, key("enter".into(), Some("shift,control".into()))).is_ok());
+        assert!(admit(true, key("x".repeat(MAX_KEY), None)).is_ok());
+        assert!(admit(true, key("x".repeat(MAX_KEY + 1), None)).is_err());
+        assert!(admit(true, key("a".into(), Some("x".repeat(MAX_KEY + 1)))).is_err());
+    }
+
+    /// `split`은 `btctl new --split 방향 --tab 칸`과 같은 요청이다
+    #[test]
+    fn split_is_the_same_call_as_btctl_new_split() {
+        use bt_core::proto::Call;
+        for (dir, word) in [
+            (ScriptSplit::Right, "right"),
+            (ScriptSplit::Left, "left"),
+            (ScriptSplit::Down, "down"),
+            (ScriptSplit::Up, "up"),
+        ] {
+            assert_eq!(
+                split_call(7, dir),
+                Call::New {
+                    cwd: None,
+                    command: Vec::new(),
+                    split: Some(word.into()),
+                    tab: Some(7),
+                    window: false,
+                },
+                "{word}"
+            );
+        }
+    }
+
+    /// 확인 막대가 떠 있는 창에는 키를 보내지 않는다(`input text`와 같다). 검색·팔레트·제목 입력이 열린 창도 같다
+    #[test]
+    fn keys_are_refused_while_a_bar_is_open() {
+        assert!(overlay_refusal(true, false).is_some_and(|m| m.contains("확인")));
+        assert!(overlay_refusal(false, true).is_some());
+        assert!(overlay_refusal(true, true).is_some());
+        assert_eq!(overlay_refusal(false, false), None);
+    }
+
+    /// sdef의 enumeration 네 글자 코드는 Ghostty와 같고 vendor가 같은 코드를 읽는다
+    #[test]
+    fn enumeration_codes_match_ghostty_and_vendor() {
+        let code = |s: &[u8; 4]| u32::from_be_bytes(*s);
+        assert_eq!(ScriptSplit::from_code(code(b"GSrt")), Some(ScriptSplit::Right));
+        assert_eq!(ScriptSplit::from_code(code(b"GSlf")), Some(ScriptSplit::Left));
+        assert_eq!(ScriptSplit::from_code(code(b"GSdn")), Some(ScriptSplit::Down));
+        assert_eq!(ScriptSplit::from_code(code(b"GSup")), Some(ScriptSplit::Up));
+        assert_eq!(ScriptSplit::from_code(code(b"GIpr")), None);
+        assert_eq!(ScriptSplit::from_code(0), None);
+        assert!(winit::platform::macos::script_input_action_is_release(code(b"GIrl")));
+        assert!(!winit::platform::macos::script_input_action_is_release(code(b"GIpr")));
+        // 모르는 값은 누름이다(Ghostty `send key`의 default)
+        assert!(!winit::platform::macos::script_input_action_is_release(0));
+        // sdef에 같은 코드가 있다
+        for needle in [
+            "<enumeration name=\"split direction\" code=\"GSpD\"",
+            "<enumerator name=\"right\" code=\"GSrt\"",
+            "<enumerator name=\"left\" code=\"GSlf\"",
+            "<enumerator name=\"down\" code=\"GSdn\"",
+            "<enumerator name=\"up\" code=\"GSup\"",
+            "<enumeration name=\"input action\" code=\"GIAc\"",
+            "<enumerator name=\"press\" code=\"GIpr\"",
+            "<enumerator name=\"release\" code=\"GIrl\"",
+        ] {
+            assert!(SDEF.contains(needle), "sdef에 없다: {needle}");
+        }
+    }
+
+    /// 새 명령의 이름·네 글자 코드·인자는 Ghostty 사전과 같다(스크립트가 그대로 돌게)
+    #[test]
+    fn new_commands_match_the_ghostty_dictionary() {
+        for needle in [
+            "<command name=\"send key\" code=\"GhstSKey\"",
+            "<cocoa class=\"BTScriptSendKeyCommand\"/>",
+            "<parameter name=\"action\" code=\"GKeA\" type=\"input action\" optional=\"yes\"",
+            "<parameter name=\"modifiers\" code=\"GKeM\" type=\"text\" optional=\"yes\"",
+            "<parameter name=\"to\" code=\"GKeT\" type=\"terminal\"",
+            "<command name=\"split\" code=\"GhstSplt\"",
+            "<parameter name=\"direction\" code=\"GSpd\" type=\"split direction\"",
+            "<command name=\"close\" code=\"GhstClos\"",
+            "<command name=\"close tab\" code=\"GhstClTb\"",
+            "<command name=\"close window\" code=\"GhstClWn\"",
+        ] {
+            assert!(SDEF.contains(needle), "sdef에 없다: {needle}");
+        }
+        // 클래스가 새 명령에 응답한다
+        let class = |name: &str| -> &str {
+            let start = SDEF.find(&format!("<class name=\"{name}\"")).expect(name);
+            let len = SDEF[start..].find("</class>").expect(name);
+            &SDEF[start..start + len]
+        };
+        for (cls, command, method) in [
+            ("terminal", "split", "handleSplitCommand:"),
+            ("terminal", "close", "handleCloseCommand:"),
+            ("tab", "close tab", "handleCloseTabCommand:"),
+            ("window", "close window", "handleCloseWindowCommand:"),
+        ] {
+            let c = class(cls);
+            assert!(
+                c.contains(&format!("<responds-to command=\"{command}\">"))
+                    && c.contains(&format!("<cocoa method=\"{method}\"/>")),
+                "{cls} 클래스가 {command}에 응답하지 않는다"
+            );
+        }
+        // 뺀 것: split의 with configuration
+        assert!(!SDEF.contains("name=\"with configuration\""));
     }
 
     fn pane(id: u64, title: &str) -> PaneView {
@@ -441,6 +717,48 @@ mod tests {
         }
     }
 
+    /// 창·탭·칸 클래스가 답하는 새 메서드 이름은 `NSObject`에 이미 있는 것과 겹치지 않는다(겹치면 모든 객체에서 덮어쓴다, #650).
+    /// sdef의 창·탭·칸 클래스 메서드는 모두 vendor가 선언한 것이다
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn object_keys_do_not_collide_with_nsobject() {
+        assert_eq!(
+            winit::platform::macos::scripting_object_key_conflicts(),
+            Vec::<&str>::new()
+        );
+        let declared = winit::platform::macos::scripting_object_keys();
+        for part in SDEF.split("<cocoa method=\"").skip(1) {
+            let name = &part[..part.find('"').expect("따옴표")];
+            // application 클래스의 메서드(new window, new tab, quit)는 NSApplication에 단다
+            if name.starts_with("handleNew") || name == "handleQuitScriptCommand:" {
+                continue;
+            }
+            assert!(declared.contains(&name), "sdef의 {name}을 vendor가 선언하지 않는다");
+        }
+    }
+
+    #[test]
+    fn front_window_falls_back_to_the_current_window_when_the_focused_one_closed() {
+        // 마지막 포커스 창(11)이 스크립트의 close window로 닫혔다. 남은 창 12가 지금 창이다
+        assert_eq!(front_window_id(Some(11), Some(12), &[12, 13]), Some(12));
+        assert_eq!(
+            front_window_id(None, Some(13), &[12, 13]),
+            Some(13),
+            "포커스를 받은 적 없는 창만 있어도 앞 창이 있다"
+        );
+        assert_eq!(
+            front_window_id(Some(12), Some(13), &[12, 13]),
+            Some(12),
+            "포커스 받은 창이 남아 있으면 그 창"
+        );
+        assert_eq!(front_window_id(Some(11), None, &[]), None, "창이 없으면 앞 창도 없다");
+        assert_eq!(
+            front_window_id(Some(11), Some(99), &[12]),
+            None,
+            "지금 창이 목록에 없으면 앞 창이 아니다"
+        );
+    }
+
     #[test]
     fn snapshot_without_front_window_has_none() {
         assert_eq!(build_snapshot(&two_windows(), None).front_window, None);
@@ -482,6 +800,19 @@ mod tests {
                 terminal: "1".into(),
                 text: "x".into(),
             },
+            C::SendKey {
+                terminal: "1".into(),
+                key: "enter".into(),
+                release: false,
+                modifiers: None,
+            },
+            C::Split {
+                terminal: "1".into(),
+                direction: ScriptSplit::Right,
+            },
+            C::Close { terminal: "1".into() },
+            C::CloseTab { tab: "1".into() },
+            C::CloseWindow { window: "1".into() },
         ];
         for c in &cmds {
             assert!(admit(false, c.clone()).is_err(), "{c:?}");

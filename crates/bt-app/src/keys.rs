@@ -46,6 +46,18 @@ fn sided_from(kinds: [(bool, (bool, bool)); 4]) -> SidedMods {
     out
 }
 
+/// 수정 키 상태를 왼쪽 키를 누른 것으로 적는다(스크립트의 `send key`는 좌우를 말하지 않는다)
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub(crate) fn sided_from_state(s: ModifiersState) -> SidedMods {
+    let pressed = |on: bool| (on, (false, false));
+    sided_from([
+        pressed(s.shift_key()),
+        pressed(s.control_key()),
+        pressed(s.alt_key()),
+        pressed(s.super_key()),
+    ])
+}
+
 /// 좌우를 합쳐 winit의 수정 키 상태로
 pub fn to_state(m: SidedMods) -> ModifiersState {
     let mut s = ModifiersState::empty();
@@ -64,9 +76,14 @@ pub fn remapped_state(remaps: &[KeyRemap], pressed: SidedMods) -> ModifiersState
 /// 키 이벤트를 키 묶음 트리거로(Ghostty 키 이름). 수식 키를 뺀 글자를 쓴다(Shift+]도 bracket_right)
 pub fn trigger(event: &KeyEvent, mods: ModifiersState) -> Option<Trigger> {
     use winit::platform::modifier_supplement::KeyEventExtModifierSupplement;
-    let key = match event.key_without_modifiers() {
-        Key::Character(s) => normalize_key(&s),
-        Key::Named(n) => named_key_name(n)?.to_string(),
+    trigger_of(&event.key_without_modifiers(), mods)
+}
+
+/// 수식 키를 뺀 키로 키 묶음 트리거를 만든다(`trigger`와 스크립트의 `send key`가 같이 쓴다)
+pub(crate) fn trigger_of(without_modifiers: &Key, mods: ModifiersState) -> Option<Trigger> {
+    let key = match without_modifiers {
+        Key::Character(s) => normalize_key(s),
+        Key::Named(n) => named_key_name(*n)?.to_string(),
         _ => return None,
     };
     Some(Trigger {
@@ -275,7 +292,7 @@ fn kitty_key_of(code: KeyCode) -> KittyKey {
 
 /// 물리 키의 US 배열 글자(kitty의 기본 배열 키). Ghostty `key.zig`의 `codepoint_map`과 같은 표다.
 /// 글자가 없는 키(Enter, 방향 키 …)는 없다
-fn base_layout_codepoint(code: KeyCode) -> Option<u32> {
+pub(crate) fn base_layout_codepoint(code: KeyCode) -> Option<u32> {
     use KeyCode as C;
     let c = match code {
         C::KeyA => 'a',
@@ -346,26 +363,61 @@ fn modifier_key_set(key: KittyKey, mods: &mut TermMods, down: bool) {
     }
 }
 
+/// 키 하나가 인코더에 주는 값. winit 키 이벤트에서 읽거나(`KeyInput::from_event`) 스크립트의 `send key`가 만든다.
+/// 사람이 누른 키와 스크립트가 보낸 키가 같은 인코더(`encode_input`)를 지나게 하려고 winit `KeyEvent`(밖에서 만들 수 없다)와 떼어 놓았다
+#[derive(Debug, Clone)]
+pub(crate) struct KeyInput {
+    /// 누름이면 참, 뗌이면 거짓
+    pub pressed: bool,
+    pub repeat: bool,
+    /// 글자를 반영한 논리 키
+    pub logical: Key,
+    /// 수식 키 없이 눌렀을 때의 논리 키(배열 기준)
+    pub without_modifiers: Key,
+    pub location: KeyLocation,
+    pub physical: PhysicalKey,
+    /// 키가 만든 글(누를 때만)
+    pub text: Option<winit::keyboard::SmolStr>,
+}
+
+impl KeyInput {
+    pub(crate) fn from_event(event: &KeyEvent) -> Self {
+        use winit::platform::modifier_supplement::KeyEventExtModifierSupplement;
+        Self {
+            pressed: event.state == ElementState::Pressed,
+            repeat: event.repeat,
+            logical: event.logical_key.clone(),
+            without_modifiers: event.key_without_modifiers(),
+            location: event.location,
+            physical: event.physical_key,
+            text: event.text.clone(),
+        }
+    }
+
+    fn code(&self) -> Option<KeyCode> {
+        match self.physical {
+            PhysicalKey::Code(c) => Some(c),
+            PhysicalKey::Unidentified(_) => None,
+        }
+    }
+}
+
 /// kitty 키보드 프로토콜이 켜져 있을 때 키 이벤트를 바이트로(Ghostty `key_encode.zig`의 `kitty()`).
 /// 누름·반복·뗌을 모두 여기로 보낸다. 뗌과 반복은 인코더가 플래그 2가 있을 때만 쓴다.
 /// IME가 쓴 키는 winit이 이 이벤트로 올려 주지 않으므로(조합 중 누름·뗌은 버리고 확정만 `Ime::Commit`으로 온다) 조합 중 글자는 여기 오지 않는다
 fn encode_kitty(
-    event: &KeyEvent,
+    input: &KeyInput,
     mods: ModifiersState,
     raw: ModifiersState,
     kitty: bt_term::KittyFlags,
     option_as_alt: bool,
 ) -> Vec<u8> {
-    use winit::platform::modifier_supplement::KeyEventExtModifierSupplement;
-    let action = match (event.state, event.repeat) {
-        (ElementState::Released, _) => KeyAction::Release,
-        (ElementState::Pressed, true) => KeyAction::Repeat,
-        (ElementState::Pressed, false) => KeyAction::Press,
+    let action = match (input.pressed, input.repeat) {
+        (false, _) => KeyAction::Release,
+        (true, true) => KeyAction::Repeat,
+        (true, false) => KeyAction::Press,
     };
-    let code = match event.physical_key {
-        PhysicalKey::Code(c) => Some(c),
-        PhysicalKey::Unidentified(_) => None,
-    };
+    let code = input.code();
     let key = code.map(kitty_key_of).unwrap_or(KittyKey::Text);
     // Alt는 Option이어도 수식 키로 알리고, 글을 막는지는 option-as-alt가 정한다(Ghostty `macos_option_as_alt`)
     let alt_prevents_text = option_gate(option_as_alt, raw);
@@ -378,8 +430,8 @@ fn encode_kitty(
     modifier_key_set(key, &mut m, action != KeyAction::Release);
     // 누를 때의 글은 winit이 주고, 뗄 때는 주지 않아 같은 키의 논리 글자로 같은 대체 키를 만든다
     let utf8 = match action {
-        KeyAction::Release => event.logical_key.to_text().unwrap_or(""),
-        _ => event.text.as_deref().unwrap_or(""),
+        KeyAction::Release => input.logical.to_text().unwrap_or(""),
+        _ => input.text.as_deref().unwrap_or(""),
     };
     // 글을 만드는 데 Shift가 쓰인다. Option도 Alt로 쓰지 않으면 글자를 바꾸는 데 쓰인다
     let consumed = TermMods {
@@ -388,7 +440,7 @@ fn encode_kitty(
         ..TermMods::default()
     };
     // 수식 키 없는 글자(배열 기준). 이름 키(Space)는 글자로 센다
-    let unshifted = match event.key_without_modifiers() {
+    let unshifted = match &input.without_modifiers {
         Key::Character(s) => s.chars().next().map_or(0, |c| c as u32),
         Key::Named(WKey::Space) => ' ' as u32,
         _ => 0,
@@ -418,30 +470,36 @@ pub fn encode(
     modes: bt_term::Modes,
     option_as_alt: bool,
 ) -> Vec<u8> {
+    encode_input(&KeyInput::from_event(event), mods, raw, modes, option_as_alt)
+}
+
+/// `encode`의 본체. 사람이 누른 키(winit 이벤트)와 스크립트가 보낸 키가 모두 여기를 지난다
+pub(crate) fn encode_input(
+    input: &KeyInput,
+    mods: ModifiersState,
+    raw: ModifiersState,
+    modes: bt_term::Modes,
+    option_as_alt: bool,
+) -> Vec<u8> {
     let kitty = modes.kitty;
     // 프로그램이 kitty 키보드 프로토콜을 켰으면 모든 키(누름·반복·뗌)를 그 길로(#41, #546)
     if kitty.active() {
-        return encode_kitty(event, mods, raw, kitty, option_as_alt);
+        return encode_kitty(input, mods, raw, kitty, option_as_alt);
     }
     // 켜지 않았으면 뗌은 보내지 않고 누름·반복은 옛 길 그대로다
-    if event.state == ElementState::Released {
+    if !input.pressed {
         return Vec::new();
     }
-    use winit::platform::modifier_supplement::KeyEventExtModifierSupplement;
-    let unshifted = match event.key_without_modifiers() {
+    let unshifted = match &input.without_modifiers {
         Key::Character(s) => s.chars().next().map_or(0, |c| c as u32),
         Key::Named(WKey::Space) => ' ' as u32,
         _ => 0,
     };
-    let physical = match event.physical_key {
-        PhysicalKey::Code(c) => Some(c),
-        PhysicalKey::Unidentified(_) => None,
-    };
     let key = LegacyKey {
-        logical: &event.logical_key,
-        location: event.location,
-        physical,
-        text: event.text.as_deref(),
+        logical: &input.logical,
+        location: input.location,
+        physical: input.code(),
+        text: input.text.as_deref(),
         unshifted,
         mods,
         raw,

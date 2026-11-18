@@ -680,9 +680,20 @@ pub fn set_metal_layer_srgb(window: &crate::window::Window) -> bool {
 }
 
 pub use crate::platform_impl::scripting::{
-    ScriptCommand, ScriptRefresh, ScriptReply, ScriptSnapshot, ScriptTab, ScriptTarget, ScriptTerminal, ScriptTicket,
-    ScriptWindow,
+    input_action_is_release as script_input_action_is_release, ScriptCommand, ScriptRefresh, ScriptReply, ScriptSnapshot,
+    ScriptSplit, ScriptTab, ScriptTarget, ScriptTerminal, ScriptTicket, ScriptWindow,
 };
+
+/// The selectors of the scripting object classes (window, tab, terminal) that `NSObject` already implements. Empty when
+/// the names are chosen well (a name `NSObject` has would be overridden for every object). b-terminal(#650)
+pub fn scripting_object_key_conflicts() -> Vec<&'static str> {
+    crate::platform_impl::scripting::object_key_conflicts()
+}
+
+/// The selectors the scripting object classes answer for the sdef's commands (see [`scripting_object_key_conflicts`]).
+pub fn scripting_object_keys() -> &'static [&'static str] {
+    &crate::platform_impl::scripting::OBJECT_KEYS
+}
 
 /// The selectors scripting adds to `NSApplication` for the application-level keys and commands of the sdef.
 /// b-terminal(#645)
