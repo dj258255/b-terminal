@@ -151,6 +151,8 @@ enum St {
     /// 상한을 넘은 OSC를 끝까지 버리는 중
     Skip,
     SkipEsc,
+    /// SOS(`ESC X`)·PM(`ESC ^`) 안: 엔진처럼 ST·CAN·SUB·ESC까지 버린다(#598)
+    SosPm,
     /// APC(`ESC _`) 안
     Apc,
     ApcEsc,
@@ -162,6 +164,9 @@ enum St {
     DcsBody,
     /// DCS 안에서 ESC를 봤다(다음이 `\`면 끝)
     DcsEsc,
+    /// 엔진이 무시하는 DCS 머리(중간 바이트 뒤의 매개변수, 첫 자리가 아닌 `< = > ?`): ESC·CAN·SUB까지 버린다.
+    /// 0x9C로는 끝나지 않는다(vte `DcsIgnore`는 `anywhere`만 본다)
+    DcsIgnore,
 }
 
 /// 우리가 답하는 DCS의 종류
@@ -201,6 +206,8 @@ pub struct Scanner {
     dcs_over: bool,
     /// 이 DCS 안에서 ESC가 겹쳐 왔다(tmux 패스스루가 안의 ESC를 두 번 쓴다). 그 뒤 `\`가 아닌 바이트가 오면 이 DCS는 우리 것이 아니라 버린다
     dcs_double: bool,
+    /// 이 DCS 머리에 중간 바이트(0x20~0x2f)가 나왔다. 머리 상한과 상관없이 센다
+    dcs_inter: bool,
     /// kitty 알림(OSC 99)의 쌓인 조각. 스캐너는 세션마다 하나라 쌓임도 세션마다 하나다(#561)
     pub(crate) kitty_notify: crate::kitty_notify::Assembler,
 }
@@ -262,6 +269,13 @@ impl Scanner {
                     self.apc_skip = false;
                     St::Apc
                 }
+                // SOS·PM은 엔진이 문자열 상태(무시)로 들어간다(vte `advance_esc` 359·377줄). 그 안의 ENQ는 엔진이 실행하지 않으니 우리도 읽지 않는다.
+                // APC(`ESC _`)는 kitty 그래픽 때문에 위에서 따로 다룬다(#598)
+                (St::Esc, b'X' | b'^') => St::SosPm,
+                // ESC는 문자열을 끝내고 새 이스케이프를 연다(`ESC \`의 `\`는 Escape 상태에서 Ground로 간다). CAN·SUB는 Ground
+                (St::SosPm, 0x1b) => St::Esc,
+                (St::SosPm, 0x18 | 0x1a) => St::Ground,
+                (St::SosPm, _) => St::SosPm,
                 (St::Esc, b'[') => {
                     self.csi.clear();
                     self.csi_taint = false;
@@ -275,15 +289,29 @@ impl Scanner {
                     self.dcs_kind = None;
                     self.dcs_over = false;
                     self.dcs_double = false;
+                    self.dcs_inter = false;
                     St::DcsHdr
                 }
                 (St::DcsHdr, 0x1b) => St::DcsEsc,
-                (St::DcsHdr | St::DcsBody, 0x18 | 0x1a) => {
+                (St::DcsHdr | St::DcsBody | St::DcsIgnore, 0x18 | 0x1a) => {
                     self.dcs = Vec::new();
                     self.dcs_kind = None;
                     St::Ground
                 }
+                // vte: 중간 바이트 뒤의 0x30~0x3F(`advance_dcs_intermediate` 291줄)와
+                // 첫 자리가 아닌 0x3C~0x3F(`advance_dcs_param` 309줄)는 무시 상태로 간다
+                (St::DcsHdr, 0x20..=0x3f)
+                    if (self.dcs_inter && b >= 0x30)
+                        || ((0x3c..=0x3f).contains(&b) && (self.dcs_over || !self.dcs.is_empty())) =>
+                {
+                    self.dcs = Vec::new();
+                    self.dcs_kind = None;
+                    St::DcsIgnore
+                }
                 (St::DcsHdr, 0x20..=0x3f) => {
+                    if b <= 0x2f {
+                        self.dcs_inter = true;
+                    }
                     if self.dcs.len() >= MAX_DCS_HEADER {
                         self.dcs_over = true;
                     } else {
@@ -292,8 +320,15 @@ impl Scanner {
                     St::DcsHdr
                 }
                 (St::DcsHdr, 0x40..=0x7e) => {
-                    // 중간 바이트가 `$` 하나나 `+` 하나이고 끝 바이트가 `q`일 때만 우리 것이다. 매개변수는 Ghostty처럼 보지 않는다
-                    let inter: Vec<u8> = self.dcs.iter().copied().filter(|c| (0x20..=0x2f).contains(c)).collect();
+                    // 중간 바이트가 `$` 하나나 `+` 하나이고 끝 바이트가 `q`일 때만 우리 것이다. 숫자 매개변수는 Ghostty처럼 보지 않는다.
+                    // 맨 앞의 `< = > ?`는 엔진과 Ghostty가 중간 바이트로 모으므로 함께 센다
+                    let inter: Vec<u8> = self
+                        .dcs
+                        .iter()
+                        .enumerate()
+                        .filter(|&(k, c)| (0x20..=0x2f).contains(c) || (k == 0 && (0x3c..=0x3f).contains(c)))
+                        .map(|(_, &c)| c)
+                        .collect();
                     self.dcs_kind = match (self.dcs_over, inter.as_slice(), b) {
                         (false, b"$", b'q') => Some(DcsKind::Decrqss),
                         (false, b"+", b'q') => Some(DcsKind::XtGetTcap),
@@ -304,6 +339,14 @@ impl Scanner {
                     St::DcsBody
                 }
                 (St::DcsHdr, _) => St::DcsHdr,
+                (St::DcsIgnore, 0x1b) => St::DcsEsc,
+                (St::DcsIgnore, _) => St::DcsIgnore,
+                // 8비트 ST(0x9C)도 DCS를 끝낸다: vte는 통과 상태에서 unhook하고 Ground로 간다(`advance_dcs_passthrough` 332줄).
+                // 끝을 ST로 보니 `ESC \`와 같이 다룬다. 머리(끝 바이트 전)의 0x9C는 vte도 무시한다(#598)
+                (St::DcsBody, 0x9c) => {
+                    self.finish_dcs(&mut out, i + 1);
+                    St::Ground
+                }
                 (St::DcsBody, 0x1b) => St::DcsEsc,
                 (St::DcsBody, b) => {
                     if let Some(kind) = self.dcs_kind.filter(|_| !self.dcs_over) {
@@ -322,24 +365,14 @@ impl Scanner {
                     St::DcsBody
                 }
                 (St::DcsEsc, b'\\') => {
-                    let body = std::mem::take(&mut self.dcs);
-                    let kind = self.dcs_kind.take();
-                    if !self.dcs_over {
-                        match kind {
-                            Some(DcsKind::Decrqss) => {
-                                if let Some(d) = crate::dcs::parse_decrqss(&body) {
-                                    out.push((i + 1, Signal::DcsQuery(crate::dcs::Query::Decrqss(d))));
-                                }
-                            }
-                            Some(DcsKind::XtGetTcap) => {
-                                out.push((i + 1, Signal::DcsQuery(crate::dcs::Query::XtGetTcap(body))));
-                            }
-                            None => {}
-                        }
-                    }
+                    self.finish_dcs(&mut out, i + 1);
                     St::Ground
                 }
-                // tmux 패스스루 안의 ESC는 두 번 쓴다: 겹친 ESC는 아직 DCS 안이다
+                // tmux 패스스루 안의 ESC는 두 번 쓴다: 겹친 ESC는 아직 DCS 안이다.
+                // 일부러 엔진과 다르다: 엔진은 `ESC ESC`의 둘째 ESC를 새 이스케이프로 읽어 그 뒤 `[ c`를 DA1로 처리하지만,
+                // 우리는 겹친 ESC 뒤의 바이트를 tmux가 감싼 안쪽 글로 보고(위 `dcs_double`) 읽지 않는다. 질의 답과 알림은 빠지는 쪽이다.
+                // 다만 겹친 ESC 뒤가 `X ^ _ ] P`이면 엔진은 문자열로 들어가 뒤의 ENQ를 버리는데 우리는 Ground로 읽어 ENQ에 답한다.
+                // ENQ 답은 사용자가 정한 고정 글이고 Ground에서 바로 보내도 같아 새 능력은 아니다(#598)
                 (St::DcsEsc, 0x1b) => {
                     self.dcs_double = true;
                     St::DcsEsc
@@ -361,6 +394,10 @@ impl Scanner {
                     St::Ground
                 }
                 (St::Esc, 0x1b) => St::Esc,
+                // CAN·SUB는 Ground로 간다(vte `advance_esc` 372줄)
+                (St::Esc, 0x18 | 0x1a) => St::Ground,
+                // 그 밖의 C0는 엔진이 실행하고 Escape에 머문다(vte `advance_esc` 342줄, Ghostty의 escape 상태). `ESC LF [ c`의 DA1을 읽어야 한다(#598)
+                (St::Esc, 0x00..=0x17 | 0x19 | 0x1c..=0x1f) => St::Esc,
                 (St::Esc, _) => St::Ground,
                 (St::Apc, 0x1b) => St::ApcEsc,
                 // CAN·SUB는 문자열을 끝내고 Ground로 돌린다. 끝난 APC는 내보낸다(Ghostty `Parser.zig` 281줄 `apc_end`)(#595)
@@ -472,6 +509,9 @@ impl Scanner {
                     self.finish(&mut out, i + 1, false);
                     St::Ground
                 }
+                // 나머지 C0(BEL·CAN·ESC·SUB 말고)는 버린다. 엔진도 OSC 본문에 넣지 않는다(vte `advance_osc_string` 407줄).
+                // 본문에 쌓으면 엔진이 읽은 문자열과 달라지고, ENQ 같은 것을 우리가 실행하지도 않는다(#598)
+                (St::Osc, 0x00..=0x06 | 0x08..=0x17 | 0x19 | 0x1c..=0x1f) => St::Osc,
                 (St::Osc, b) => {
                     if self.buf.len() >= MAX_OSC {
                         self.buf.clear();
@@ -486,6 +526,8 @@ impl Scanner {
                     St::Ground
                 }
                 (St::OscEsc, _) => St::Ground,
+                // 일부러 엔진과 다르다: 상한(MAX_OSC)을 넘긴 OSC는 BEL·CAN·SUB·ESC로 끝나도 내보내지 않는다. 엔진(vte)은 잘린 OSC를 내보낼 수 있다.
+                // 끝난 문자열의 앞부분만 믿고 알림·폴더·클립보드로 쓰지 않으려는 보안 결정이다(docs/troubleshooting.md, #598)
                 (St::Skip, 0x07 | 0x18 | 0x1a) => St::Ground,
                 (St::Skip, 0x1b) => St::SkipEsc,
                 (St::Skip, _) => St::Skip,
@@ -494,6 +536,25 @@ impl Scanner {
             };
         }
         out
+    }
+
+    /// 끝난 DCS(`ESC \`나 0x9C)를 마무리한다. 우리가 답하는 질의면 신호를 내고, 아니면 버린다
+    fn finish_dcs(&mut self, out: &mut Vec<(usize, Signal)>, at: usize) {
+        let body = std::mem::take(&mut self.dcs);
+        let kind = self.dcs_kind.take();
+        if !self.dcs_over {
+            match kind {
+                Some(DcsKind::Decrqss) => {
+                    if let Some(d) = crate::dcs::parse_decrqss(&body) {
+                        out.push((at, Signal::DcsQuery(crate::dcs::Query::Decrqss(d))));
+                    }
+                }
+                Some(DcsKind::XtGetTcap) => {
+                    out.push((at, Signal::DcsQuery(crate::dcs::Query::XtGetTcap(body))));
+                }
+                None => {}
+            }
+        }
     }
 
     /// 끝난 APC를 내보낸다(상한을 넘겨 버리는 중이거나 kitty 그래픽(`G`)이 아니면 버린다)
@@ -846,8 +907,11 @@ mod apc_tests {
         assert_eq!(notes(b"\x1b]22;\x07"), vec![Signal::MouseShape(None)]);
         assert_eq!(notes(b"\x1b]22;banana\x07"), vec![]);
         assert_eq!(notes(b"\x1b]22;Pointer\x07"), vec![]);
-        // 제어 문자가 섞인 이름은 믿지 않는다(ESC는 OSC를 끊으므로 BEL 아닌 다른 제어 문자로)
-        assert_eq!(notes(b"\x1b]22;poi\x01nter\x07"), vec![]);
+        // 이름 안의 C0는 엔진처럼 버린다(#598): 엔진이 `pointer`로 읽는 글을 우리도 같게 읽는다
+        assert_eq!(
+            notes(b"\x1b]22;poi\x01nter\x07"),
+            vec![Signal::MouseShape(Some(crate::mouse_shape::MouseShape::Pointer))]
+        );
         // 너무 긴 이름
         let mut long = b"\x1b]22;".to_vec();
         long.extend(std::iter::repeat_n(b'p', 500));
@@ -1150,9 +1214,16 @@ mod tests {
                 path: PathBuf::from("/a%20b")
             }]
         );
-        // 같은 검증: 경로가 없거나 NUL이 들면 버린다
+        // 같은 검증: 경로가 없거나 NUL이 들면 버린다. 글자로 온 NUL(0x00)은 엔진이 OSC 안에서 버리므로(#598) 퍼센트 인코딩한 `%00`으로 시험한다
         assert!(notes(b"\x1b]7;kitty-shell-cwd://host\x07").is_empty());
-        assert!(notes(b"\x1b]7;kitty-shell-cwd://h/a\0b\x07").is_empty());
+        assert!(notes(b"\x1b]7;file://h/a%00b\x07").is_empty());
+        assert_eq!(
+            notes(b"\x1b]7;kitty-shell-cwd://h/a\0b\x07"),
+            vec![Signal::Cwd {
+                host: "h".into(),
+                path: PathBuf::from("/ab")
+            }]
+        );
         // file 스킴의 퍼센트 해독은 그대로다
         assert_eq!(
             notes(b"\x1b]7;file://h/a%20b\x07"),
@@ -1191,7 +1262,8 @@ mod tests {
         assert_eq!(note.body.chars().count(), MAX_BODY);
         assert!(note.body.ends_with('…'));
         let tabbed = notes(b"\x1b]9;a\tb\x07");
-        assert_eq!(tabbed, vec![n("", "a b")]);
+        // 탭(0x09)도 OSC 안의 C0라 엔진처럼 버린다(#598)
+        assert_eq!(tabbed, vec![n("", "ab")]);
     }
 
     #[test]
