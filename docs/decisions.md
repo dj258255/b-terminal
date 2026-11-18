@@ -90,6 +90,7 @@
 | [ADR-058](#adr-058-macos-앱-묶음의-데스크톱-알림은-unusernotificationcenter로-내고-누르면-그-칸으로-간다-프레임워크-호출은-vendor-winit-안에만-둔다) | macOS 앱 묶음의 데스크톱 알림은 UNUserNotificationCenter로 내고, 누르면 그 칸으로 간다. 프레임워크 호출은 vendor winit 안에만 둔다 | 유효 |
 | [ADR-059](#adr-059-finder-서비스는-경로만-받아-그-폴더에서-새-탭이나-창을-열고-아무것도-실행하지-않는다) | Finder 서비스는 경로만 받아 그 폴더에서 새 탭이나 창을 열고, 아무것도 실행하지 않는다 | 유효 |
 | [ADR-060](#adr-060-선택-클립보드는-이름-붙은-pasteboard로-b-terminal끼리-나누되-암호-입력-칸의-글은-내보내지-않고-스크롤-막대는-시스템-설정을-읽기만-한다) | 선택 클립보드는 이름 붙은 pasteboard로 b-terminal끼리 나누되 암호 입력 칸의 글은 내보내지 않고, 스크롤 막대는 시스템 설정을 읽기만 한다 | 유효 |
+| [ADR-062](#adr-062-applescript-사전은-macos-자동화-허락에-기대고-글-넣기는-사람의-붙여넣기와-같은-길로만-보내며-macos-applescript로-끈다) | AppleScript 사전은 macOS 자동화 허락에 기대고, 글 넣기는 사람의 붙여넣기와 같은 길로만 보내며, macos-applescript로 끈다 | 유효 |
 
 ### 설정 기본값
 
@@ -1935,3 +1936,37 @@ E8의 실제 창 로그에서 10ms 넘는 GPU 프레임은 세 가지였다. (1)
 
 ### 보안
 입력 경계는 바뀌지 않는다.
+
+## ADR-062 AppleScript 사전은 macOS 자동화 허락에 기대고, 글 넣기는 사람의 붙여넣기와 같은 길로만 보내며, macos-applescript로 끈다
+
+상태: 채택
+관련: [#634](https://github.com/dj258255/b-terminal/issues/634), ADR-058(vendor winit 길), ADR-018(읽기 전용 칸)
+
+### 맥락
+- Ghostty 1.4는 AppleScript 사전(`macos/Ghostty.sdef`)을 내놓고 `macos-applescript`(기본 켬)로 끈다. b-terminal은 이 키를 받기만 했다.
+- 다른 앱이 칸에 글을 넣을 수 있게 되는 새 입력 길이다. Ghostty의 `input text`는 "붙여넣은 것처럼" 보낸다(`ScriptInputTextCommand.swift`의 `surface.sendText`).
+- Cocoa Scripting은 클래스 선언과 `class_addMethod`가 필요해 `unsafe`다. 작업 공간 규칙은 두고 vendor winit(`platform_impl/macos/scripting.rs`)에만 둔다.
+
+### 결정
+1. 사전은 `assets/macos/b-terminal.sdef`다. Ghostty sdef를 줄여 옮겼고(MIT, 출처를 파일 머리에 적음) 이름과 4글자 코드는 같다. 앱 묶음의 `Info.plist`에 `NSAppleScriptEnabled`와 `OSAScriptingDefinition`을 넣는다. 번들 식별자가 없는 실행은 아무것도 설치하지 않는다.
+2. 객체는 application → window → tab → terminal이고 속성은 모두 읽기 전용이다(id, name, working directory, selected tab, focused terminal, index, selected, frontmost, front window, version). 명령은 `new window`, `new tab [in]`, `focus`, `activate window`, `select tab`, `input text ... to`와 표준 스위트의 `count`·`exists`·`quit`이다.
+3. 명령은 앱 이벤트 루프에서 기존 길로 처리한다. 새 창·탭은 btctl `new`와 같은 `handle_call`, 초점은 알림 누름과 같은 `on_note_clicked`, 글 넣기는 사람의 붙여넣기와 같은 `paste_to`다. vendor는 앱의 답을 실행 루프를 돌며 5초까지 기다린다. 시간 초과로 실패를 돌려준 요청은 취소 표시를 세워, 나중에 앱에 닿아도 실행하지 않는다.
+4. `input text`는 1MiB(복사 전에 봄) 이하 글만 받는다. 괄호 붙여넣기 감싸기와 글 안의 끝 표시 지우기(`encode_paste`), 붙여넣기 보호(`clipboard-paste-protection`)를 거친다. 보호가 확인 막대를 띄우면 스크립트는 오류를 받고 글은 사용자가 허용할 때만 들어간다. 읽기 전용 칸과 확인 막대가 떠 있는 창에는 넣지 않는다.
+5. `macos-applescript = false`면 b-terminal 사전의 모든 명령과 객체 조회가 `errAEEventNotPermitted`(-1743)를 돌려준다(Ghostty와 같다). 설정을 다시 읽으면 바로 따른다.
+
+### 감수한 트레이드오프
+- macOS 자동화 허락(TCC)에 기댄다. 다른 앱이 b-terminal에 Apple Event를 보내려면 macOS가 보내는 앱마다 처음에 사용자에게 묻는다. 이미 허락받은 앱은 `input text`를 쓸 수 있고, b-terminal은 보내는 앱을 따로 가리지 않는다. 제어 소켓(0700 폴더, btctl)과는 다른 경계다.
+- 붙여넣기 보호를 거치는 것은 Ghostty보다 보수적이다(Ghostty `sendText`는 확인 없이 붙여넣는 것으로 보인다). 그래서 줄바꿈이 든 글은 괄호 붙여넣기가 없는 칸에서 확인 막대를 띄운다. 괄호 붙여넣기가 켜진 셸에서는 줄바꿈이 실행되지 않고 편집 줄에 남는다(`send key`가 없어 스크립트로 실행을 확정할 수 없다).
+- 제목과 작업 폴더는 허락한 앱에 보인다.
+- `quit`·`activate`는 Apple Event 기본 처리라 꺼도 시스템이 전달한다.
+- 탭 id는 탭의 첫 칸 번호라 첫 칸이 닫히면 바뀐다(Ghostty는 안정된 id).
+- 오른쪽 클릭 메뉴처럼 winit 처리기 안에서 실행 루프가 도는 동안 온 명령은 5초 뒤 실패하고 버려진다(troubleshooting).
+- 실제 Apple Event로 명령을 보내 보지 않았다. 사전이 읽히는 것(`sdef`), `plutil -lint`, 앱 묶음이 뜨고 `btctl list`가 되는 것, 코드 검토(재진입 경로를 읽어 보통 경로는 시간 초과가 아님을 확인)까지다.
+
+### 하지 않은 것
+- `send key`·`send mouse ...`: 키·마우스 이벤트를 합성해 입력 길에 넣는 일이라 IME·키 묶음·보안 입력과 얽히고 붙여넣기 틀이 없다.
+- `perform action`: 동작 문자열 전체를 스크립트에 연다.
+- `split`, `new surface configuration`, `close*`, `name override`, `pid`, `tty`: 따로 큰 일이거나 닫기 확인·되돌리기 정책을 맞춰야 한다.
+
+### 보안
+다른 앱이 칸에 글을 넣는 입력 길이 늘었다. 막는 것은 macOS 자동화 허락, 붙여넣기와 같은 틀, 읽기 전용 칸 거절, 1MiB 상한, `macos-applescript = false`다.
