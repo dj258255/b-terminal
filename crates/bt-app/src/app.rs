@@ -88,6 +88,9 @@ pub enum UserEvent {
     ShaderCompiled,
     /// 접근성 클라이언트(VoiceOver)의 요청(창, 요청, #560)
     Access(WindowId, crate::a11y::Request),
+    /// 칸이 낸 데스크톱 알림을 눌렀다(칸 번호, #625). macOS 앱 묶음에서만 온다
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    NoteClicked(u64),
 }
 
 /// 앱 설정: 설정 파일(bt_core::Config, Ghostty 문법)을 그대로 쓴다(#13)
@@ -173,6 +176,8 @@ pub struct Pane {
     last_desktop: Option<Instant>,
     /// 프로그램 상태(OSC 7501)로 마지막 데스크톱 알림을 띄운 때(칸마다 5초에 한 번, #618)
     last_status_note: Option<Instant>,
+    /// 이 칸이 낸 데스크톱 알림의 ID(#625). 그 칸을 보거나 닫으면 알림 센터에서 지운다
+    notes: Vec<String>,
     /// 셸 통합: 지금 도는 명령(글, 시작한 때)과 마지막으로 끝난 명령
     pub running: Option<(Option<String>, Instant)>,
     pub last_command: Option<bt_term::CommandRecord>,
@@ -1511,6 +1516,10 @@ impl App {
             }
             if self.w.focused && self.is_focused(i) {
                 self.panes[i].session.clear_seen_program_status();
+                // 그 칸을 봤으니 알림 센터의 그 칸 알림도 지운다(Ghostty `focusDidChange`, #625)
+                if !self.panes[i].notes.is_empty() {
+                    crate::desktop::forget(std::mem::take(&mut self.panes[i].notes));
+                }
             }
         }
     }
@@ -1531,7 +1540,32 @@ impl App {
         if crate::status_note::due(t.last_status_note.map(|at| at.elapsed())) {
             t.last_status_note = Some(Instant::now());
             let (title, body) = crate::status_note::text(&alert, &title);
-            crate::desktop::notify(&title, &body);
+            if let Some(id) = crate::desktop::notify_pane(t.id, &title, &body) {
+                crate::desktop::remember_note(&mut t.notes, id);
+            }
+        }
+    }
+
+    /// 칸이 낸 데스크톱 알림을 눌렀다(#625): 그 칸의 창을 앞으로 가져오고 그 탭과 칸을 고른다(Ghostty `handleUserNotification`).
+    /// 칸이 이미 닫혔으면 아무것도 하지 않는다. 숨은 퀵 터미널의 칸이면 퀵 터미널을 보인다
+    fn on_note_clicked(&mut self, event_loop: &ActiveEventLoop, pane: u64) {
+        if !self.switch_to_pane(pane) {
+            log::debug!("누른 알림의 칸 {pane}이 없습니다(이미 닫힘)");
+            return;
+        }
+        self.focus_pane(pane);
+        if self.w.quick {
+            let hiding = self.w.quick_anim.as_ref().is_some_and(|a| a.hide);
+            let shown = self.w.gfx.as_ref().is_some_and(|g| g.window.is_visible() == Some(true));
+            if !shown || hiding {
+                self.show_quick(event_loop);
+            }
+            if let Some(id) = self.w.id() {
+                self.last_focused = Some(id);
+            }
+        } else if let Some(g) = &self.w.gfx {
+            g.window.set_minimized(false);
+            g.window.focus_window();
         }
     }
 
@@ -1582,7 +1616,9 @@ impl App {
                 } else {
                     note.title.clone()
                 };
-                crate::desktop::notify(&title, &note.body);
+                if let Some(id) = crate::desktop::notify_pane(t.id, &title, &note.body) {
+                    crate::desktop::remember_note(&mut t.notes, id);
+                }
             }
         }
         self.request_redraw();
@@ -1787,6 +1823,7 @@ impl App {
                 cwd_reset: false,
                 last_desktop: None,
                 last_status_note: None,
+                notes: Vec::new(),
                 progress: None,
                 scroll_seen: 0,
                 scrollbar_until: None,
@@ -2918,8 +2955,9 @@ impl App {
             return;
         }
         // Session을 떨어뜨리면 PTY가 닫히고 셸은 SIGHUP을 받는다. 들고 있으면 그때까지 떨어뜨리지 않는다
-        let pane = self.panes.remove(index);
+        let mut pane = self.panes.remove(index);
         let id = pane.id;
+        crate::desktop::forget(std::mem::take(&mut pane.notes));
         self.fail_text_waiters(|w| w.pane == id, "글이 나오기 전에 칸이 닫혔습니다");
         if let Some((req_id, reply, _)) = self.run_waiters.remove(&id) {
             let _ = reply.send(bt_core::proto::Response::err(
@@ -5197,7 +5235,8 @@ impl App {
         for id in ids {
             if let Some(i) = self.pane_index(id) {
                 // Session을 떨어뜨리면 PTY가 닫히고 셸은 SIGHUP을 받는다
-                self.panes.remove(i);
+                let mut pane = self.panes.remove(i);
+                crate::desktop::forget(std::mem::take(&mut pane.notes));
             }
             self.fail_text_waiters(|w| w.pane == id, "글이 나오기 전에 창이 닫혔습니다");
             if let Some((req_id, reply, _)) = self.run_waiters.remove(&id) {
@@ -6570,6 +6609,8 @@ impl ApplicationHandler<UserEvent> for App {
     fn exiting(&mut self, _event_loop: &ActiveEventLoop) {
         // 켜 둔 보안 입력은 풀고 나간다(#258)
         self.secure.shutdown();
+        // 남긴 데스크톱 알림은 칸이 없어지므로 지운다(Ghostty `applicationWillTerminate`, #625)
+        crate::desktop::forget_all();
         // write_*_file로 쓴 파일은 화면 내용이라 남기지 않는다(#125)
         for f in self.written_files.drain(..) {
             let _ = std::fs::remove_file(f);
@@ -6605,6 +6646,7 @@ impl ApplicationHandler<UserEvent> for App {
                 None => {}
             },
             UserEvent::OpenFile(path) => self.on_open_file(event_loop, path),
+            UserEvent::NoteClicked(pane) => self.on_note_clicked(event_loop, pane),
             UserEvent::Control(req, reply) => {
                 let req_id = req.id;
                 let timeout = match &req.call {

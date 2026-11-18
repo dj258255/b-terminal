@@ -469,6 +469,8 @@ features = [
     "dispatch",
     "NSArray",
     "NSAttributedString",
+    "NSBundle",
+    "NSError",
     "NSData",
     "NSDictionary",
     "NSDistributedNotificationCenter",
@@ -483,6 +485,22 @@ features = [
     "NSThread",
     "NSURL",
     "NSValue",
+]
+
+# b-terminal(#625): notifications that bring the app to the pane when clicked
+[target.'cfg(target_os = "macos")'.dependencies.objc2-user-notifications]
+version = "0.2.2"
+default-features = false
+features = [
+    "std",
+    "block2",
+    "UNNotification",
+    "UNNotificationContent",
+    "UNNotificationRequest",
+    "UNNotificationResponse",
+    "UNNotificationSound",
+    "UNNotificationTrigger",
+    "UNUserNotificationCenter",
 ]
 
 [target.'cfg(target_os = "redox")'.dependencies.orbclient]

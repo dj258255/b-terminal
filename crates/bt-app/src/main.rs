@@ -173,6 +173,19 @@ fn main() -> anyhow::Result<()> {
             }
             let _ = proxy.send_event(app::UserEvent::OpenFile(path));
         }));
+        // 칸이 낸 데스크톱 알림을 누르면 그 칸으로 간다(#625). 앱 묶음이 아니면 처리 함수만 둔다(알림은 osascript로 나감)
+        let proxy = event_loop.create_proxy();
+        winit::platform::macos::set_user_notification_handler(Box::new(move |r| {
+            if !r.clicked {
+                return;
+            }
+            match desktop::pane_of_note(&r.id) {
+                Some(pane) => {
+                    let _ = proxy.send_event(app::UserEvent::NoteClicked(pane));
+                }
+                None => log::debug!("이 실행이 낸 칸 알림이 아닙니다: {:?}", r.id),
+            }
+        }));
     }
     let mut app = app::App::new(
         config,
