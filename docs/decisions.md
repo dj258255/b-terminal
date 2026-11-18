@@ -88,6 +88,7 @@
 | [ADR-026](#adr-026-dock에-놓은-파일은-확인-막대에서-y를-눌러야-실행하고-경로-글자는-허용-목록으로-좁히고-목록-밖이면-거부하며-통과한-경로만-작은따옴표로-감싼다) | Dock에 놓은 파일은 확인 막대에서 y를 눌러야 실행하고, 경로 글자는 허용 목록으로 좁히고 목록 밖이면 거부하며, 통과한 경로만 작은따옴표로 감싼다 | 유효 |
 | [ADR-053](#adr-053-kitty-알림osc-99은-kitty-명세대로-조각을-합치고-질의-답에-되돌리는-식별자는-검사한다) | kitty 알림(OSC 99)은 kitty 명세대로 조각을 합치고, 질의 답에 되돌리는 식별자는 검사한다 | 유효 |
 | [ADR-058](#adr-058-macos-앱-묶음의-데스크톱-알림은-unusernotificationcenter로-내고-누르면-그-칸으로-간다-프레임워크-호출은-vendor-winit-안에만-둔다) | macOS 앱 묶음의 데스크톱 알림은 UNUserNotificationCenter로 내고, 누르면 그 칸으로 간다. 프레임워크 호출은 vendor winit 안에만 둔다 | 유효 |
+| [ADR-060](#adr-060-선택-클립보드는-이름-붙은-pasteboard로-b-terminal끼리-나누되-암호-입력-칸의-글은-내보내지-않고-스크롤-막대는-시스템-설정을-읽기만-한다) | 선택 클립보드는 이름 붙은 pasteboard로 b-terminal끼리 나누되 암호 입력 칸의 글은 내보내지 않고, 스크롤 막대는 시스템 설정을 읽기만 한다 | 유효 |
 
 ### 설정 기본값
 
@@ -1844,3 +1845,33 @@ E8의 실제 창 로그에서 10ms 넘는 GPU 프레임은 세 가지였다. (1)
 - 알림 글은 지금처럼 터미널에 찍힌 글에서 오고, 앱이 길이를 자르고 제어 문자를 지운 뒤 넘긴다. 프레임워크에는 `NSString`으로 넘기므로 셸이나 스크립트로 읽히는 길이 없다.
 - 누름에서 앱으로 들어오는 것은 우리가 만든 알림 ID뿐이다. 앱은 ID에서 숫자 셋을 엄격히 읽고(이 실행의 pid만), 있는 칸이면 고르기만 한다. PTY에는 아무것도 쓰지 않는다.
 - delegate는 상태가 없고 어느 스레드에서 불려도 처리 함수에 넘기기만 한다. 처리 함수는 `EventLoopProxy`로 창 스레드에 칸 번호를 보낸다.
+
+## ADR-060 선택 클립보드는 이름 붙은 pasteboard로 b-terminal끼리 나누되 암호 입력 칸의 글은 내보내지 않고, 스크롤 막대는 시스템 설정을 읽기만 한다
+
+상태: 채택
+관련: [#629](https://github.com/dj258255/b-terminal/issues/629), [#630](https://github.com/dj258255/b-terminal/issues/630), ADR-049 근처(고르기 복사, #491), ADR-058(vendor winit 길)
+
+### 맥락
+- `copy-on-select`의 선택 클립보드(`paste_from_selection`, ⌘⇧V)는 macOS에서 앱 안 메모리에만 있었다. Ghostty는 이름 붙은 `NSPasteboard`(`com.mitchellh.ghostty.selection`, `NSPasteboard+Extension.swift`)로 Ghostty 프로세스끼리 선택을 나눈다.
+- `scrollbar = system`은 시스템 설정 "스크롤 막대 보기"와 "스크롤 막대 클릭 시"를 읽지 않았다.
+- 둘 다 `unsafe`가 필요해 뺐다. 작업 공간 규칙은 두고 AppKit 호출을 vendor winit(`platform_impl/macos/system_prefs.rs`)에만 둔다.
+
+### 결정
+1. 앱은 macOS에서 선택 클립보드를 `com.dj258255.b-terminal.selection`에 쓰고, 읽을 때 그 pasteboard가 먼저, 비었으면 앱 안 저장소를 쓴다. 쓰기에 실패해도 앱 안 저장소는 남는다. 앱 묶음이 없어도 된다.
+2. vendor 함수는 `Apple `로 시작하는 이름(시스템의 일반·찾기·글꼴·끌기 pasteboard)과 빈 이름을 거절한다. 사용자의 일반 클립보드는 이 길로 닿지 않는다.
+3. 고른 글이 나온 칸이 암호 입력 중(termios 추측, #258)이거나 그 칸에 보안 입력이 켜져 있으면 이름 붙은 pasteboard에 쓰지 않고 앱 안 저장소에만 둔다(`share_selection`).
+4. 앱이 끝날 때 그 pasteboard를 비운다(`releaseGlobally`).
+5. 스크롤 막대: `NSScroller.preferredScrollerStyle`이 Legacy면 스크롤백이 있는 동안 막대를 늘 그린다. `AppleScrollerPagingBehavior`가 참이면 빈 곳 누르기가 손잡이 가운데를 그 자리로 옮긴다. 시작할 때와 창이 초점을 얻을 때 다시 읽고, 읽지 못하면 지금 동작(스크롤할 때, 한 쪽씩)이다. 시스템 설정은 읽기만 한다.
+
+### 감수한 트레이드오프
+- 이름 붙은 pasteboard는 같은 사용자의 다른 프로세스가 이름으로 읽을 수 있다. 고른 글이 프로세스 밖에 보인다(Ghostty와 같은 성질, 일반 클립보드와 같은 범위). 끄는 설정 키는 두지 않았다.
+- 암호 입력 판단은 termios 추측이라 놓칠 수 있다(예: 원격 셸 안의 암호 입력).
+- 한 인스턴스가 끝나며 비우면 떠 있는 다른 b-terminal의 공유 선택도 사라진다(그쪽 앱 안 저장소는 남는다).
+- 두 프로세스 사이 붙여넣기, Legacy 스타일과 "누른 자리로" 설정의 실제 화면은 재지 않았다(이 기기는 Overlay이고 시스템 설정은 바꾸지 않았다).
+
+### 하지 않은 것
+- 공유를 끄는 설정 키: Ghostty에 없고, 일반 클립보드보다 넓지 않다.
+- 바뀜 알림 구독(`NSPreferredScrollerStyleDidChangeNotification`): 초점을 얻을 때 다시 읽는 것으로 충분하다.
+
+### 보안
+고른 글이 같은 사용자의 다른 프로세스가 읽을 수 있는 곳으로 나간다. 암호 입력 칸의 글은 나가지 않고, 앱이 끝나면 지운다. 들어오는 쪽은 사용자가 ⌘⇧V를 누를 때만 칸에 붙여넣기 길(괄호 붙여넣기 처리 포함)로 간다.
