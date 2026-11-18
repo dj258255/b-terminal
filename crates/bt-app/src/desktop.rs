@@ -75,6 +75,7 @@ fn format_note_id(pid: u32, pane: Option<u64>, seq: u64) -> String {
 }
 
 /// `format_note_id`가 만든 ID이고 pid가 `pid`면 칸 번호. 숫자는 십진 숫자만 받는다
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 fn parse_note_id(id: &str, pid: u32) -> Option<u64> {
     let digits = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit());
     let mut parts = id.strip_prefix("bt-")?.split('-');
@@ -94,6 +95,7 @@ fn note_id(pane: Option<u64>) -> String {
 }
 
 /// 이 실행이 낸 칸 알림의 ID면 그 칸 번호(알림을 눌렀을 때, #625)
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub fn pane_of_note(id: &str) -> Option<u64> {
     parse_note_id(id, std::process::id())
 }
