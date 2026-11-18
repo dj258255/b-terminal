@@ -2,7 +2,7 @@
 
 처음 보는 분을 위한 안내입니다. 무엇인지, 무엇이 Ghostty와 같고 다른지, 어떻게 짜여 있는지, 어디까지 믿어도 되는지를 한 문서에 모았습니다. 자세한 설정은 [configuration.md](configuration.md), 이유와 근거는 [decisions.md](decisions.md)에 있습니다.
 
-이 문서는 0.79.0 기준입니다. 이 문서에 없는 숫자는 재지 않은 것입니다.
+이 문서는 0.80.0 기준입니다. 이 문서에 없는 숫자는 재지 않은 것입니다.
 
 ## 무엇인가
 
@@ -124,11 +124,11 @@ PTY 바이트 ──> bt-term 읽기 스레드 ──┬─> VT 엔진(alacritty
 
 ## 지금 상태와 한계
 
-- **판.** 0.79.0입니다. 1.0 전이라 기본 동작이 판마다 바뀔 수 있습니다. 바뀐 것은 [CHANGELOG.md](../CHANGELOG.md), 계획과 진행은 [ROADMAP.md](../ROADMAP.md)에 있습니다.
+- **판.** 0.80.0입니다. 1.0 전이라 기본 동작이 판마다 바뀔 수 있습니다. 바뀐 것은 [CHANGELOG.md](../CHANGELOG.md), 계획과 진행은 [ROADMAP.md](../ROADMAP.md)에 있습니다.
 - **macOS가 1순위입니다.** 실제 창에서 확인한 것은 macOS(Apple M2 Pro 한 기기)가 거의 전부입니다.
 - **Linux는 CPU 길입니다.** Linux GPU 길은 재지도 실제 창으로 보지도 않았습니다. CI는 Linux에서 전체를 빌드하고 시험하지만 GPU는 없습니다.
 - **다른 Mac에 나눠 줄 수 없습니다.** Developer ID 서명과 공증 없이는 배포하지 않습니다. 계정이 없어서 서명·공증·다른 Mac에서 열기는 해 보지 못했습니다([release-macos.md](release-macos.md)). 지금은 직접 빌드해 이 컴퓨터에서 씁니다.
-- **`unsafe`를 쓰지 않아서 못 하는 것.** ROADMAP의 "다음"에 사람이 정할 것으로 남아 있습니다. 출력 중에도 120Hz로 그리기(`CADisplayLink`), 레이어 색 공간을 sRGB로 직접 달기, Ghostty처럼 앱 사이에서 나누는 선택 클립보드입니다. 풀지 않으면 화면이 주는 주기를 따르고, 선택 클립보드는 앱 안에서만 씁니다.
+- **`unsafe`가 필요한 macOS 기능.** 작업 공간은 `unsafe_code = "deny"` 그대로이고, 프레임워크 호출은 vendor winit 안에만 둡니다(알림 누름 0.79, 0.80의 선택 클립보드 공유·스크롤 막대 시스템 설정·Finder 서비스·sRGB 레이어 색 공간·AppleScript). 출력 중 120Hz(`CADisplayLink`)는 저전력 모드에서 재 보니 줄지 않아 넣지 않았습니다(실험 E27, 저전력 모드를 끈 상태는 재지 않음).
 - **엔진 차이.** Ghostty와 해석이 다른 곳이 있을 수 있습니다. 다르게 보이는 화면을 찾으면 [troubleshooting.md](troubleshooting.md)에 적습니다.
 - **재지 않은 것이 많습니다.** 문서마다 "재지 않았다"고 적었습니다. 성능 숫자는 모두 [실험 보고서](experiments/)에 있는 한 번 잰 값입니다.
 
