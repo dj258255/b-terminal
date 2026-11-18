@@ -617,3 +617,27 @@ pub fn remove_all_user_notifications() {
 pub fn set_user_notification_handler(handler: Box<dyn Fn(UserNotificationResponse) + Send + Sync>) {
     crate::platform_impl::user_notify::set_handler(handler)
 }
+
+/// Writes `text` as the only content of the pasteboard called `name` (replacing what it held). Only the app's own
+/// named pasteboards are allowed: the system's pasteboards (general, find, ...) are refused with `false`. Needs no app
+/// bundle. b-terminal(#629)
+pub fn set_named_pasteboard_string(name: &str, text: &str) -> bool {
+    crate::platform_impl::system_prefs::set_named_pasteboard_string(name, text)
+}
+
+/// The text on the pasteboard called `name`, `None` if it holds none (or `name` is a system pasteboard). b-terminal(#629)
+pub fn named_pasteboard_string(name: &str) -> Option<String> {
+    crate::platform_impl::system_prefs::named_pasteboard_string(name)
+}
+
+/// Frees the named pasteboard and what it holds for every process (`releaseGlobally`). b-terminal(#629)
+pub fn release_named_pasteboard(name: &str) {
+    crate::platform_impl::system_prefs::release_named_pasteboard(name)
+}
+
+/// The system scroll bar settings as `(always_visible, jump_to_click)`: "Show scroll bars" is "Always" (the preferred
+/// scroller style is legacy), and "Click in the scroll bar to" is "Jump to the spot that's clicked"
+/// (`AppleScrollerPagingBehavior`). Reads only. `None` when not called on the main thread. b-terminal(#630)
+pub fn scroller_preferences() -> Option<(bool, bool)> {
+    crate::platform_impl::system_prefs::scroller_preferences()
+}

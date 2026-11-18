@@ -12,6 +12,7 @@ mod menu;
 mod monitor;
 mod observer;
 /// b-terminal(#625)
+pub(crate) mod system_prefs;
 pub(crate) mod user_notify;
 mod view;
 mod window;
