@@ -308,6 +308,19 @@ pub fn install(proxy: winit::event_loop::EventLoopProxy<UserEvent>, enabled: boo
 mod tests {
     use super::*;
 
+    /// 명령을 로그에 찍어도 `input text`의 글은 나오지 않는다(암호나 비밀이 들어 있을 수 있다)
+    #[test]
+    fn command_debug_hides_input_text() {
+        let cmd = ScriptCommand::InputText {
+            terminal: "3".into(),
+            text: "hunter2 비밀".into(),
+        };
+        let shown = format!("{cmd:?}");
+        assert!(!shown.contains("hunter2"), "{shown}");
+        assert!(!shown.contains("비밀"), "{shown}");
+        assert!(shown.contains("InputText"), "{shown}");
+    }
+
     fn pane(id: u64, title: &str) -> PaneView {
         PaneView {
             id,

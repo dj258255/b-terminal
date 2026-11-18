@@ -82,8 +82,9 @@ pub struct ScriptSnapshot {
     pub front_window: Option<String>,
 }
 
-/// A command that changes the app. Ids are the strings from the snapshot.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// A command that changes the app. Ids are the strings from the snapshot. `Debug` leaves out the text of `InputText`
+/// (it may hold a password or a secret and commands end up in logs).
+#[derive(Clone, PartialEq, Eq)]
 pub enum ScriptCommand {
     /// Asks the app to call `set_snapshot` with its current state and then answer `Ok(None)`.
     Snapshot,
@@ -93,6 +94,24 @@ pub enum ScriptCommand {
     ActivateWindow { window: String },
     SelectTab { tab: String },
     InputText { terminal: String, text: String },
+}
+
+impl std::fmt::Debug for ScriptCommand {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Snapshot => f.write_str("Snapshot"),
+            Self::NewWindow => f.write_str("NewWindow"),
+            Self::NewTab { window } => f.debug_struct("NewTab").field("window", window).finish(),
+            Self::Focus { terminal } => f.debug_struct("Focus").field("terminal", terminal).finish(),
+            Self::ActivateWindow { window } => f.debug_struct("ActivateWindow").field("window", window).finish(),
+            Self::SelectTab { tab } => f.debug_struct("SelectTab").field("tab", tab).finish(),
+            Self::InputText { terminal, text } => f
+                .debug_struct("InputText")
+                .field("terminal", terminal)
+                .field("text_bytes", &text.len())
+                .finish(),
+        }
+    }
 }
 
 /// What a command returns to the script: the object it created, if any.
@@ -265,7 +284,8 @@ fn run_command(cmd: ScriptCommand) -> ScriptReply {
     let ticket = ScriptTicket::new();
     handler(cmd, ticket.clone(), tx);
     let mut deadline = Instant::now() + REPLY_TIMEOUT;
-    let mut cancelled = false;
+    // The app took the command before the first deadline (it may be running it)
+    let mut taken = false;
     loop {
         match rx.try_recv() {
             Ok(reply) => return reply,
@@ -275,8 +295,11 @@ fn run_command(cmd: ScriptCommand) -> ScriptReply {
         if Instant::now() >= deadline {
             // Still queued: cancel it so the app drops it when it gets to it. Already running: the answer is on its
             // way, so wait once more (bounded) instead of leaving the command half done.
-            if !cancelled && !ticket.cancel() {
-                cancelled = true;
+            if taken {
+                return Err("터미널이 답하지 않습니다(명령이 실행 중이었을 수 있습니다)".into());
+            }
+            if !ticket.cancel() {
+                taken = true;
                 deadline = Instant::now() + REPLY_TIMEOUT;
                 continue;
             }
