@@ -4,6 +4,8 @@
 
 ## [아직 릴리스하지 않음]
 
+- AppleScript 사전에 Ghostty의 명령 다섯을 더했습니다: `send key`(키 이름·수식 키·누름/뗌), `split 터미널 direction right|left|down|up`(새 터미널을 돌려줌), `close 터미널`, `close tab 탭`, `close window 창`. 이제 스크립트로 `input text "echo hi" to t` 다음 `send key "enter" to t`로 명령을 실행할 수 있습니다. `send key`는 사람이 누른 키와 같은 인코더와 키 묶음(keybind)·`key-remap` 길을 지나 같은 바이트가 나가고(kitty 키보드·옛 길·DECCKM·Option-as-Alt) 붙여넣기 보호는 거치지 않습니다. 읽기 전용 칸과 확인·검색·팔레트·제목 막대가 열린 창에는 보내지 않습니다. `close` 계열은 Ghostty처럼 확인 막대 없이 닫고 되살리기 목록에도 넣지 않습니다(실행 중인 프로그램이 묻지 않고 끝납니다). 자판 배열은 미국으로 봅니다. `with configuration`은 없습니다. 격리한 실제 창에서 Apple Event로 실행해 보지는 않았고 단위 시험(키 이름 175개, 수식 키, 바이트, 사전의 코드)까지입니다 (#650)
+
 ## [0.81.0] - 2026-11-18
 
 0.80 실제 창 확인에서 나온 결함 고치기. 마일스톤 0.81.

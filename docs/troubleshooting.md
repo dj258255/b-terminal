@@ -221,3 +221,10 @@
 - 까닭: macOS 14부터 앱은 스스로 앞으로 나올 수 없고(협력 활성화), 앞에 있는 앱이 양보해야 한다. b-terminal은 `activateIgnoringOtherApps`를 부르지만 이 규칙을 따른다. 스크립트를 보낸 `osascript`는 앞 앱이 아니어서 양보할 수 없다
 - 풀기: 스크립트에서 먼저 `activate`를 보낸다(`tell application "b-terminal" to activate`는 보내는 쪽이 활성화를 요청하므로 앞으로 온다). 실제 창에서 이 방법으로 앞으로 오는 것을 확인했다
 
+## 27. AppleScript `send key`가 "알 수 없는 키 이름"을 낸다
+
+- 언제: 2026-11-18, #650. `send key`를 넣으며 Ghostty의 이름 규칙을 시험으로 확인했다. 사용자 제보는 없다
+- 증상: `send key "Enter" to t`나 `send key "return" to t`가 `알 수 없는 키 이름: Enter` 오류(-10000)를 낸다
+- 까닭: 키 이름은 Ghostty `Ghostty.Input.Key`의 rawValue(`enter`, `arrowUp`, `digit1`, `bracketLeft`)라 대소문자를 가리고 다른 표기(`Return`, `arrow_up`, `ctrl`)는 모른다. 수식 키는 `modifiers "shift,control,option,command"` 인자로 따로 준다(`send key "c" modifiers "control" to t`). `send key "ctrl-c"`는 되지 않는다
+- 풀기: 이름은 소문자 시작 camelCase로 쓴다(`enter`, `tab`, `escape`, `space`, `backspace`, `arrowUp`, `pageDown`, `f5`). 뒤에 키 묶음(keybind)에 걸린 키를 보냈다면(예: `modifiers "command"`와 `t`) 그 동작이 일어난다
+- 이 환경에서 실제 Apple Event로 오류를 내 보지는 않았다. 이름 해석은 단위 시험(`script_key`)으로 확인했다

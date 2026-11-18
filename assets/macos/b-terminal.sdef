@@ -4,8 +4,8 @@
 <!--
   b-terminal(#634): AppleScript 사전. Ghostty의 macos/Ghostty.sdef(MIT 라이선스, Copyright (c) 2024 Mitchell Hashimoto,
   Ghostty contributors)를 줄여 옮겼습니다. 클래스·명령·속성 이름과 4글자 코드는 Ghostty와 같게 두었습니다(스크립트가
-  그대로 돌게). 뺀 것: perform action, new surface configuration(과 surface configuration 레코드), split, close,
-  close tab, close window, send key, send mouse button·position·scroll, name override, pid, tty.
+  그대로 돌게). 뺀 것: perform action, new surface configuration(과 surface configuration 레코드), split의
+  with configuration 인자, send mouse button·position·scroll, name override, pid, tty.
   이유와 남은 일은 docs/decisions.md ADR-062를 보십시오.
   Ghostty 원본의 Standard Suite는 Apple의 /System/Library/ScriptingDefinitions/CocoaStandard.sdef를 줄인 것이라 그 부분도 같습니다.
 -->
@@ -52,6 +52,9 @@
       <responds-to command="activate window">
         <cocoa method="handleActivateWindowCommand:"/>
       </responds-to>
+      <responds-to command="close window">
+        <cocoa method="handleCloseWindowCommand:"/>
+      </responds-to>
       <element type="tab" access="r">
         <cocoa key="tabs"/>
       </element>
@@ -74,6 +77,9 @@
       <responds-to command="select tab">
         <cocoa method="handleSelectTabCommand:"/>
       </responds-to>
+      <responds-to command="close tab">
+        <cocoa method="handleCloseTabCommand:"/>
+      </responds-to>
       <element type="terminal" access="r">
         <cocoa key="terminals"/>
       </element>
@@ -86,10 +92,28 @@
         <cocoa key="title"/>
       </property>
       <property name="working directory" code="Gwdr" type="text" access="r" description="Current working directory for the terminal process."/>
+      <responds-to command="split">
+        <cocoa method="handleSplitCommand:"/>
+      </responds-to>
       <responds-to command="focus">
         <cocoa method="handleFocusCommand:"/>
       </responds-to>
+      <responds-to command="close">
+        <cocoa method="handleCloseCommand:"/>
+      </responds-to>
     </class>
+
+    <enumeration name="split direction" code="GSpD" description="Direction for a new split.">
+      <enumerator name="right" code="GSrt" description="Split to the right."/>
+      <enumerator name="left" code="GSlf" description="Split to the left."/>
+      <enumerator name="down" code="GSdn" description="Split downward."/>
+      <enumerator name="up" code="GSup" description="Split upward."/>
+    </enumeration>
+
+    <enumeration name="input action" code="GIAc" description="Whether an input is pressed or released.">
+      <enumerator name="press" code="GIpr" description="Press."/>
+      <enumerator name="release" code="GIrl" description="Release."/>
+    </enumeration>
 
     <command name="new window" code="GhstNWin" description="Create a new b-terminal window.">
       <result type="window" description="The newly created window."/>
@@ -102,8 +126,20 @@
       <result type="tab" description="The newly created tab."/>
     </command>
 
+    <command name="split" code="GhstSplt" description="Split a terminal in the given direction.">
+      <direct-parameter type="specifier" description="The terminal to split."/>
+      <parameter name="direction" code="GSpd" type="split direction" description="The direction to split.">
+        <cocoa key="direction"/>
+      </parameter>
+      <result type="terminal" description="The newly created terminal."/>
+    </command>
+
     <command name="focus" code="GhstFcus" description="Focus a terminal, bringing its window to the front.">
       <direct-parameter type="specifier" description="The terminal to focus."/>
+    </command>
+
+    <command name="close" code="GhstClos" description="Close a terminal.">
+      <direct-parameter type="specifier" description="The terminal to close."/>
     </command>
 
     <command name="activate window" code="GhstAcWn" description="Activate a b-terminal window, bringing it to the front.">
@@ -114,10 +150,32 @@
       <direct-parameter type="specifier" description="The tab to select."/>
     </command>
 
+    <command name="close tab" code="GhstClTb" description="Close a tab.">
+      <direct-parameter type="specifier" description="The tab to close."/>
+    </command>
+
+    <command name="close window" code="GhstClWn" description="Close a window.">
+      <direct-parameter type="specifier" description="The window to close."/>
+    </command>
+
     <command name="input text" code="GhstInTx" description="Input text to a terminal as if it was pasted.">
       <cocoa class="BTScriptInputTextCommand"/>
       <direct-parameter type="text" description="The text to input."/>
       <parameter name="to" code="GItT" type="terminal" description="The terminal to input text to.">
+        <cocoa key="terminal"/>
+      </parameter>
+    </command>
+
+    <command name="send key" code="GhstSKey" description="Send a keyboard event to a terminal. Keys are translated once through the US keyboard layout. Dead keys do not compose with subsequent keys.">
+      <cocoa class="BTScriptSendKeyCommand"/>
+      <direct-parameter type="text" description="The key name (e.g. &quot;enter&quot;, &quot;a&quot;, &quot;space&quot;)."/>
+      <parameter name="action" code="GKeA" type="input action" optional="yes" description="Press or release (default: press).">
+        <cocoa key="action"/>
+      </parameter>
+      <parameter name="modifiers" code="GKeM" type="text" optional="yes" description="Comma-separated modifier keys: shift, control, option, command.">
+        <cocoa key="modifiers"/>
+      </parameter>
+      <parameter name="to" code="GKeT" type="terminal" description="The terminal to send the key event to.">
         <cocoa key="terminal"/>
       </parameter>
     </command>
