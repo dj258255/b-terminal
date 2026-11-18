@@ -7,6 +7,9 @@
 //! `send key`(#650)는 키 이름을 `script_key`가 사람이 누른 키와 같은 입력으로 만들고, 같은 인코더와 키 묶음 길(`feed_key`)로 보낸다.
 //! `split`은 `btctl new --split`과 같은 길(`handle_call`)이고, `close`·`close tab`·`close window`는 확인 막대 없이 닫는다(Ghostty처럼).
 //!
+//! `perform action`(#658)은 동작 글을 키 묶음과 같은 해석기(`parse_script_action`)로 읽어 그 칸을 고른 칸으로 만든 뒤 `handle_action`으로 하고,
+//! 지금 할 수 없는 동작(`can_perform`)은 거짓을 돌려준다. 거절은 `send key`와 같다.
+//!
 //! ids: 칸은 `btctl list`의 번호 그대로, 탭은 그 탭의 첫 칸 번호(칸이 닫히거나 탭 첫 칸이 바뀌면 바뀐다),
 //! 창은 창 번호(winit `WindowId`)다. 모두 10진수 글이다.
 
@@ -25,6 +28,9 @@ const MAX_TEXT: usize = 1 << 20;
 
 /// `send key`의 키 이름·수식 키 글의 상한(바이트). 가장 긴 키 이름은 20바이트다
 const MAX_KEY: usize = 256;
+
+/// `perform action`의 동작 글의 상한(바이트). 가장 긴 보통 동작(`text:`로 몇 줄)도 이보다 짧다. 더 긴 글은 `input text`로 넣는다
+const MAX_ACTION: usize = 4096;
 
 /// 스냅숏을 만들 재료: 칸
 pub struct PaneView {
@@ -131,6 +137,12 @@ pub fn admit(enabled: bool, cmd: ScriptCommand) -> Result<ScriptCommand, String>
         {
             return Err(format!("키 이름이나 수식 키가 너무 깁니다(상한 {MAX_KEY} 바이트)"));
         }
+        ScriptCommand::PerformAction { action, .. } if action.len() > MAX_ACTION => {
+            return Err(format!(
+                "동작 문자열이 너무 깁니다({} 바이트, 상한 {MAX_ACTION})",
+                action.len()
+            ));
+        }
         _ => {}
     }
     Ok(cmd)
@@ -148,13 +160,47 @@ pub fn split_call(pane: u64, direction: ScriptSplit) -> bt_core::proto::Call {
 }
 
 /// 창에 막대(확인·검색·팔레트·제목)가 떠 있으면 키를 보내지 않는 까닭. 없으면 보낸다
-pub fn overlay_refusal(confirm: bool, other_bar: bool) -> Option<&'static str> {
+pub fn overlay_refusal(confirm: bool, other_bar: bool) -> Option<String> {
+    overlay_refusal_for("키를 보내지", confirm, other_bar)
+}
+
+/// `overlay_refusal`의 일반형. `what`은 하지 않은 일("키를 보내지", "동작을 실행하지")
+pub fn overlay_refusal_for(what: &str, confirm: bool, other_bar: bool) -> Option<String> {
     if confirm {
-        Some("그 창에 확인할 일이 있어 키를 보내지 않았습니다")
+        Some(format!("그 창에 확인할 일이 있어 {what} 않았습니다"))
     } else if other_bar {
-        Some("그 창에 검색·팔레트·제목 입력이 열려 있어 키를 보내지 않았습니다")
+        Some(format!("그 창에 검색·팔레트·제목 입력이 열려 있어 {what} 않았습니다"))
     } else {
         None
+    }
+}
+
+/// `perform action`의 동작 글을 키 묶음과 같은 해석기(`keymap::parse_action`)로 읽는다. 모르는 동작과 인자 오류는 오류다.
+/// `unbind`는 키를 푸는 글자라 칸에서 할 동작이 없고, `all:`·`performable:` 같은 접두사는 키 묶음 줄의 것이라 동작 이름이
+/// 아니다(모르는 동작으로 오류). Ghostty는 이런 글에 오류 대신 거짓을 돌려준다(`ghostty_surface_binding_action`이 읽기 실패를 거짓으로 돌려준다)
+pub fn parse_script_action(action: &str) -> Result<crate::keymap::Action, String> {
+    match crate::keymap::parse_action(action)? {
+        Some(a) => Ok(a),
+        None => Err("unbind는 칸에서 할 동작이 아닙니다".into()),
+    }
+}
+
+/// `perform action`이 실행할 동작. 읽지 못한 글(모르는 동작, 인자 오류, `unbind`, `all:` 같은 접두사)과 키 테이블·순서 동작은 `None`이고
+/// 스크립트는 오류가 아니라 거짓을 받는다(Ghostty `ghostty_surface_binding_action`이 해석 실패에 `false`를 돌려주는 것과 같다)
+pub fn resolve_script_action(action: &str) -> Option<crate::keymap::Action> {
+    match parse_script_action(action) {
+        // 키 테이블·키 순서 동작은 사람의 순서 상태(`Win::keyseq`)를 바꾸고 사람이 쌓은 앞 키를 대상 칸에 쏟아낸다.
+        // 스크립트의 키는 사람이 켠 키 테이블을 쓰지 않으므로(`send key`) 스크립트에는 열지 않는다
+        Ok(a) if crate::keymap::is_table_action(&a) => {
+            log::debug!("AppleScript perform action: 키 테이블·순서 동작은 스크립트에 열지 않습니다");
+            None
+        }
+        Ok(a) => Some(a),
+        // 해석 오류 글에는 스크립트가 보낸 글이 들어 있어 로그에 남기지 않는다(길이만)
+        Err(_) => {
+            log::debug!("AppleScript perform action: 읽지 못한 동작({} 바이트)", action.len());
+            None
+        }
     }
 }
 
@@ -360,10 +406,37 @@ impl App {
                 self.switch_to_pane(pane);
                 let other_bar = self.w.search.is_some() || self.w.palette.is_some() || self.w.title_prompt.is_some();
                 if let Some(why) = overlay_refusal(self.w.confirm.is_some(), other_bar) {
-                    return Err(why.into());
+                    return Err(why);
                 }
                 self.send_script_key(event_loop, pane, prepared);
                 Ok(None)
+            }
+            // Ghostty `perform action`(`ghostty_surface_binding_action`): 키 묶음의 동작을 그 칸에서 한다. 했으면 참, 지금 할 수 없으면 거짓
+            ScriptCommand::PerformAction { terminal, action } => {
+                let pane = parse_id(&terminal)?;
+                let i = self
+                    .pane_index(pane)
+                    .ok_or_else(|| format!("터미널 {terminal}이 없습니다"))?;
+                // `send key`와 같은 거절: 읽기 전용 칸에는 키 묶음 동작도 하지 않는다(스크립트가 `toggle_readonly`로 읽기 전용을 풀 수 없게)
+                if self.panes[i].session.readonly() {
+                    return Err(super::READONLY_REFUSAL.into());
+                }
+                // 읽지 못한 동작은 칸이나 창을 건드리기 전에 거짓으로 답한다(Ghostty처럼 오류가 아니다)
+                let Some(action) = resolve_script_action(&action) else {
+                    return Ok(Some(ScriptTarget::Performed(false)));
+                };
+                self.switch_to_pane(pane);
+                let other_bar = self.w.search.is_some() || self.w.palette.is_some() || self.w.title_prompt.is_some();
+                if let Some(why) = overlay_refusal_for("동작을 실행하지", self.w.confirm.is_some(), other_bar) {
+                    return Err(why);
+                }
+                // 동작은 고른 칸에 한다(`feed_key`가 스크립트 키의 동작을 하기 전에 하는 것과 같다). 지금 할 수 있는지는 그 칸 기준이다
+                self.focus_pane(pane);
+                if !self.can_perform(&action) {
+                    return Ok(Some(ScriptTarget::Performed(false)));
+                }
+                self.handle_action(action, event_loop);
+                Ok(Some(ScriptTarget::Performed(true)))
             }
             ScriptCommand::Split { terminal, direction } => {
                 let pane = parse_id(&terminal)?;
@@ -494,6 +567,131 @@ mod tests {
         assert!(admit(true, key("x".repeat(MAX_KEY), None)).is_ok());
         assert!(admit(true, key("x".repeat(MAX_KEY + 1), None)).is_err());
         assert!(admit(true, key("a".into(), Some("x".repeat(MAX_KEY + 1)))).is_err());
+    }
+
+    /// 동작 글은 키 묶음과 같은 해석기(`keymap::parse_action`)로 읽는다. 모르는 동작·인자 오류·`unbind`·접두사는 오류다
+    #[test]
+    fn unreadable_actions_answer_false_like_ghostty() {
+        for bad in [
+            "no_such_action",
+            "all:text:x",
+            "unbind",
+            "",
+            "new_split:sideways",
+            // 키 테이블·키 순서 동작은 사람의 순서 상태를 바꾸고 쌓인 앞 키를 쏟아내므로 스크립트에는 열지 않는다
+            "end_key_sequence",
+            "activate_key_table:vim",
+            "activate_key_table_once:vim",
+            "deactivate_key_table",
+            "deactivate_all_key_tables",
+        ] {
+            assert_eq!(resolve_script_action(bad), None, "{bad}은 오류가 아니라 거짓");
+        }
+        assert_eq!(resolve_script_action("new_tab"), Some(crate::keymap::Action::NewTab));
+        assert_eq!(
+            resolve_script_action("text:a\\nb"),
+            Some(crate::keymap::Action::Text("a\nb".into()))
+        );
+    }
+
+    #[test]
+    fn perform_action_is_read_by_the_keybind_parser() {
+        for ok in [
+            "new_split:right",
+            "goto_tab:2",
+            "toggle_fullscreen",
+            "text:ls\\n",
+            "csi:A",
+            "esc:b",
+            "close_surface",
+            "copy_to_clipboard:plain",
+            "scroll_page_lines:-3",
+        ] {
+            let got = parse_script_action(ok).unwrap_or_else(|e| panic!("{ok}: {e}"));
+            let want = crate::keymap::parse_action(ok).unwrap().expect("unbind가 아니다");
+            assert_eq!(got, want, "{ok}는 키 묶음과 같은 해석");
+        }
+        // text:는 키 묶음처럼 이스케이프를 푼다
+        assert_eq!(
+            parse_script_action("text:a\\nb").unwrap(),
+            crate::keymap::Action::Text("a\nb".into())
+        );
+        for bad in [
+            "",
+            "   ",
+            "no_such_action",
+            "new_split:sideways",
+            "goto_tab",
+            "goto_tab:0",
+            "cursor_key:x",
+            // unbind는 키를 푸는 글자라 칸에서 할 동작이 아니다
+            "unbind",
+            // 접두사는 키 묶음 줄의 것이다. `all:`은 동작 글에 오지 않고 오면 모르는 동작이다(Ghostty도 동작 이름 `all`이 없어 거짓)
+            "all:text:x",
+            "performable:new_tab",
+            "unconsumed:new_tab",
+            "global:quit",
+        ] {
+            assert!(parse_script_action(bad).is_err(), "{bad:?}");
+        }
+    }
+
+    /// 동작 글도 읽기 전에 크기를 건다
+    #[test]
+    fn perform_action_text_is_capped_before_it_is_used() {
+        use winit::platform::macos::ScriptCommand as C;
+        let cmd = |action: String| C::PerformAction {
+            terminal: "1".into(),
+            action,
+        };
+        assert!(admit(true, cmd("new_split:right".into())).is_ok());
+        assert!(admit(true, cmd("x".repeat(MAX_ACTION))).is_ok());
+        assert!(admit(true, cmd("x".repeat(MAX_ACTION + 1))).is_err());
+        assert!(admit(false, cmd("new_tab".into())).is_err(), "꺼져 있으면 거절");
+    }
+
+    /// 로그에는 동작 글이 나오지 않는다(`text:`에 비밀이 들어 있을 수 있다)
+    #[test]
+    fn command_debug_hides_perform_action() {
+        let cmd = ScriptCommand::PerformAction {
+            terminal: "3".into(),
+            action: "text:hunter2 비밀".into(),
+        };
+        let shown = format!("{cmd:?}");
+        assert!(!shown.contains("hunter2") && !shown.contains("비밀"), "{shown}");
+        assert!(shown.contains("PerformAction") && shown.contains("terminal"), "{shown}");
+    }
+
+    /// 막대가 떠 있는 창에는 동작도 실행하지 않는다. 까닭 글은 한 일에 맞다
+    #[test]
+    fn actions_are_refused_while_a_bar_is_open() {
+        let why = overlay_refusal_for("동작을 실행하지", true, false).expect("확인 막대");
+        assert!(why.contains("확인") && why.contains("동작을 실행하지"), "{why}");
+        let why = overlay_refusal_for("동작을 실행하지", false, true).expect("다른 막대");
+        assert!(why.contains("검색") && why.contains("동작을 실행하지"), "{why}");
+        assert_eq!(overlay_refusal_for("동작을 실행하지", false, false), None);
+        // 키 쪽 글은 그대로다
+        assert!(overlay_refusal(true, false).is_some_and(|m| m.contains("키를 보내지")));
+    }
+
+    /// `perform action`의 이름·네 글자 코드는 Ghostty 사전과 같다: 명령 `GhstPfAc`, 직접 인자 text, `on` 인자 `GonT`(terminal), 결과 boolean
+    #[test]
+    fn perform_action_matches_the_ghostty_dictionary() {
+        let start = SDEF
+            .find("<command name=\"perform action\"")
+            .expect("perform action 명령");
+        let len = SDEF[start..].find("</command>").expect("명령 끝");
+        let cmd = &SDEF[start..start + len];
+        for needle in [
+            "<command name=\"perform action\" code=\"GhstPfAc\"",
+            "<direct-parameter type=\"text\"",
+            "<parameter name=\"on\" code=\"GonT\" type=\"terminal\"",
+            "<cocoa key=\"terminal\"/>",
+            "<cocoa class=\"BTScriptPerformActionCommand\"/>",
+            "<result type=\"boolean\"",
+        ] {
+            assert!(cmd.contains(needle), "sdef의 perform action에 없다: {needle}");
+        }
     }
 
     /// `split`은 `btctl new --split 방향 --tab 칸`과 같은 요청이다
@@ -805,6 +1003,10 @@ mod tests {
                 key: "enter".into(),
                 release: false,
                 modifiers: None,
+            },
+            C::PerformAction {
+                terminal: "1".into(),
+                action: "new_tab".into(),
             },
             C::Split {
                 terminal: "1".into(),

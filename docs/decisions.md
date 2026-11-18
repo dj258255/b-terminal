@@ -92,6 +92,7 @@
 | [ADR-060](#adr-060-선택-클립보드는-이름-붙은-pasteboard로-b-terminal끼리-나누되-암호-입력-칸의-글은-내보내지-않고-스크롤-막대는-시스템-설정을-읽기만-한다) | 선택 클립보드는 이름 붙은 pasteboard로 b-terminal끼리 나누되 암호 입력 칸의 글은 내보내지 않고, 스크롤 막대는 시스템 설정을 읽기만 한다 | 유효 |
 | [ADR-062](#adr-062-applescript-사전은-macos-자동화-허락에-기대고-글-넣기는-사람의-붙여넣기와-같은-길로만-보내며-macos-applescript로-끈다) | AppleScript 사전은 macOS 자동화 허락에 기대고, 글 넣기는 사람의 붙여넣기와 같은 길로만 보내며, macos-applescript로 끈다 | 일부 바뀜(send key·split·close가 더해짐, ADR-063) |
 | [ADR-063](#adr-063-applescript-send-key는-사람이-누른-키와-같은-인코더키-묶음-길로-보내고-close-계열은-확인-없이-닫는다) | AppleScript `send key`는 사람이 누른 키와 같은 인코더·키 묶음 길로 보내고, `close` 계열은 확인 없이 닫는다 | 유효 |
+| [ADR-064](#adr-064-applescript-perform-action은-키-묶음과-같은-해석기로-동작-글을-읽어-그-칸에서-실행하고-send-key와-같은-거절을-따른다) | AppleScript `perform action`은 키 묶음과 같은 해석기로 동작 글을 읽어 그 칸에서 실행하고, `send key`와 같은 거절을 따른다 | 유효 |
 
 ### 설정 기본값
 
@@ -1966,7 +1967,7 @@ E8의 실제 창 로그에서 10ms 넘는 GPU 프레임은 세 가지였다. (1)
 
 ### 하지 않은 것
 - `send key`·`send mouse ...`: 키·마우스 이벤트를 합성해 입력 길에 넣는 일이라 IME·키 묶음·보안 입력과 얽히고 붙여넣기 틀이 없다.
-- `perform action`: 동작 문자열 전체를 스크립트에 연다.
+- `perform action`: 동작 문자열 전체를 스크립트에 연다. → 0.83에서 넣음(ADR-064, `send key`와 같은 거절).
 - `split`, `new surface configuration`, `close*`, `name override`, `pid`, `tty`: 따로 큰 일이거나 닫기 확인·되돌리기 정책을 맞춰야 한다.
 
 ### 보안
@@ -2007,7 +2008,41 @@ E8의 실제 창 로그에서 10ms 넘는 GPU 프레임은 세 가지였다. (1)
 - 2026-11-18 주 세션이 격리한 실제 창(release 묶음, 격리 HOME·TMPDIR, `SHELL=/bin/sh`)에서 `osascript`로 확인했다: `input text` 뒤 `send key "enter"`로 실행, `arrowUp`, `c`+control(Ctrl-C로 `sleep` 중단), `a`+shift, ⌘T가 새 탭(키 묶음), 네 방향 `split`이 새 terminal을 돌려줌(enumeration이 네 글자 코드로 옴), `close`·`close tab`·`close window`, 읽기 전용·확인 막대 거절, 키 이름·수식 키 오류, 꺼짐. 이때 닫은 칸의 셸이 끝나지 않는 것을 찾았다. 이 ADR 전부터 있던 결함이라 #651로 따로 고친다. 단위 시험은 키 이름 175개, 수식 키, 사람의 키와 같은 인코더가 낸 바이트(Enter, Ctrl-C, 방향 키, DECCKM, Option-as-Alt, kitty 플래그 1·2·8, 키패드), 사전의 이름·코드가 Ghostty와 같은 것, 새 선택자가 `NSObject`와 겹치지 않는 것까지다.
 
 ### 하지 않은 것
-- `send mouse button·position·scroll`, `perform action`, `new surface configuration`·`with configuration`, `name override`, `pid`, `tty`.
+- `send mouse button·position·scroll`, `perform action`(0.83에서 넣음, ADR-064), `new surface configuration`·`with configuration`, `name override`, `pid`, `tty`.
 
 ### 보안
 다른 앱이 칸에 키를 넣을 수 있고 닫기까지 시킬 수 있게 됐다. 막는 것은 macOS 자동화 허락, 읽기 전용 칸과 확인·검색·팔레트·제목 막대 거절, 키 이름·수식 키 256바이트 상한(복사 전에 봄), `macos-applescript = false`, 시간 초과 뒤 늦은 실행 방지다.
+
+## ADR-064 AppleScript `perform action`은 키 묶음과 같은 해석기로 동작 글을 읽어 그 칸에서 실행하고, `send key`와 같은 거절을 따른다
+
+상태: 채택
+관련: [#658](https://github.com/dj258255/b-terminal/issues/658), ADR-062(AppleScript 사전), ADR-063(`send key`), ADR-018(읽기 전용 칸), ADR-019(확인 막대)
+
+### 맥락
+- Ghostty 사전에는 `perform action "동작" on 터미널`이 있다(sdef: 명령 `GhstPfAc`, 직접 인자 text, `on` 인자 `GonT`, 결과 boolean). 키 묶음 동작(`new_split:right`, `goto_tab:2`, `text:...`, `toggle_fullscreen` 등)을 스크립트가 칸에서 직접 실행하는 길이다.
+- Ghostty는 `ScriptTerminal.perform(action:)`(89~94줄) → `Ghostty.Surface.perform(action:)` → `ghostty_surface_binding_action`(`src/apprt/embedded.zig` 2304~2318줄)이다. 이 함수는 `input.Binding.Action.parse`가 실패하면 거짓을 돌려주고(2310~2312줄, 오류로 올리지 않는다), 아니면 `Surface.performBindingAction`(`src/Surface.zig` 4941줄 이하)의 결과를 돌려준다. 그 함수의 주석(4930~4940줄)이 "동작을 했으면 참, 지원하지 않거나 할 일이 없으면 거짓"이라고 적었다. 앱 단위 동작(`new_window` 등)은 늘 참(4972줄), 거짓은 검색이 없는데 `navigate_search`(5149줄)·`search:` 비움(5104줄), 고른 글이 없는데 `search_selection`(5071줄)·`copy_to_clipboard`(5186줄)·`scroll_to_selection`(5393줄), 링크가 없는데 `copy_url_to_clipboard`(5191~5231줄), 대체 화면의 `clear_screen`(5354~5358줄), 그리고 앱이 `performAction`으로 거짓을 돌려준 동작(탭·분할·창 동작이 대부분 `return try self.rt_app.performAction(...)`이다)이다.
+- b-terminal의 `can_perform`은 이미 같은 판단(키 묶음의 `performable:`)을 한다. `send key`의 키 묶음 길(`feed_key`)도 이것을 쓴다.
+
+### 결정
+1. `perform action "동작" on 터미널` → boolean. 사전은 Ghostty와 같은 이름·코드(`GhstPfAc`, `GonT`)이고, 명령 클래스(`BTScriptPerformActionCommand`)로 받는다(`input text`·`send key`와 같은 틀). 새 선택자를 `NSApplication`·`NSObject`에 달지 않는다(`performDefaultImplementation`은 명령 클래스 자신의 것이라 겹침이 없다). 겹침 시험(`APP_KEYS`·`OBJECT_KEYS`)은 새 선택자가 없어 그대로 통과한다.
+2. 동작 글은 키 묶음과 같은 해석기 `keymap::parse_action`으로 읽는다(`parse_script_action`). 읽지 못한 글(모르는 동작, 인자 오류, `unbind`)은 Ghostty처럼 오류가 아니라 거짓을 돌려준다(`resolve_script_action`, 로그에는 길이만 남긴다). 에이전트 구현은 처음에 오류로 했으나 주 세션이 Ghostty 스크립트와 같게 거짓으로 바꿨다. 글은 4096바이트까지고 복사 전에 본다(vendor `MAX_ACTION_BYTES`와 앱 `admit`의 `MAX_ACTION`). 더 긴 글은 `input text`로 넣는다.
+3. `all:`·`performable:`·`unconsumed:`·`global:` 같은 접두사는 키 묶음 줄의 성질이라 동작 이름이 아니다. 동작 글에 오면 읽지 못한 글로 거짓이다(Ghostty도 `Binding.Action.parse`에는 접두사 처리가 없고 `all`이라는 동작이 없어 거짓을 돌려준다. 접두사는 `Binding.parse`의 `Flags`(159줄)가 읽는다). "모든 칸에 보내기"는 스크립트에서 `terminals`를 돌며 칸마다 하면 된다.
+4. 대상 칸은 고른 칸으로 만든 뒤 `handle_action`으로 한다. `send key`의 동작 가지(`feed_key`)가 동작이 나올 때 `focus_pane`을 부르고 `handle_action`을 부르는 것과 같은 길이다. 지금 할 수 있는지(`can_perform`)는 그 칸을 고른 뒤에 재서, 못 하면 거짓을 돌려주고 동작은 하지 않는다. 참은 "동작을 했다(요청을 받아들였다)"는 뜻이다(확인 막대가 뜨는 `close_*`·`quit`도 참이다. 막대는 사용자가 답한다).
+5. 거절은 `send key`와 같다: 읽기 전용 칸에는 키 묶음 동작도 실행하지 않고(스크립트가 `toggle_readonly`로 읽기 전용을 풀 수 없게), 확인 막대가 떠 있거나 검색·팔레트·제목 막대가 열린 창에는 실행하지 않는다. 오류를 돌려주고 거짓이 아니다. 오류는 칸·창 상태를 바꾸기 전에(읽기 전용) 또는 창을 고른 직후에(막대) 낸다. 읽지 못한 동작 글의 거짓도 칸·창을 건드리기 전에 돌려준다.
+6. `macos-applescript = false`면 거절한다(`... on terminal id N`은 terminal 객체를 먼저 못 찾아 -1728, `send key`와 같다), 시간 초과·취소 표(`ScriptTicket`)를 따른다. `Debug`는 동작 글을 로그에 내지 않고 길이만 보인다.
+7. `text:`·`csi:`·`esc:` 동작은 붙여넣기 보호 없이 바이트를 칸에 쓴다(`send key`와 같은 경계). 괄호 붙여넣기 감싸기도 없다.
+8. 키 테이블·키 순서 동작(`activate_key_table`·`activate_key_table_once`·`deactivate_key_table`·`deactivate_all_key_tables`·`end_key_sequence`)은 스크립트에 열지 않고 거짓을 돌려준다. 이 동작들은 사람의 키 순서 상태를 바꾸고(`end_key_sequence`는 사람이 쌓은 앞 키를 대상 칸에 쏟아낸다), ADR-063이 막은 사람·스크립트 섞임이 이 길로 되살아난다(PR 보안 검토에서 찾음). 스크립트의 키는 사람이 켠 키 테이블을 쓰지 않으므로 스크립트에는 뜻도 없다.
+9. 로그에는 동작 글을 남기지 않는다. 해석 오류 글에도 보낸 글이 들어 있어 길이만 남긴다(PR 보안 검토에서 찾음).
+
+### 감수한 트레이드오프
+- 모르는 동작도 Ghostty처럼 거짓이라 오타가 조용히 거짓으로 넘어간다. Ghostty 스크립트가 그대로 돌게 하는 쪽을 골랐다.
+- 동작이 칸을 고른 칸으로 만든 뒤 판단하므로, 거짓을 받아도 그 칸이 고른 칸이 되어 있다(창이 앞으로 오지는 않는다). Ghostty에는 고른 칸이라는 개념 없이 대상 surface에 바로 하므로 다른 점이다.
+- 이미 자동화 허락을 받은 앱은 이 명령으로 키 묶음에 걸 수 있는 동작을 모두 할 수 있다: 클립보드 쓰기·붙여넣기(`copy_to_clipboard`, `paste_from_clipboard`; 붙여넣기는 붙여넣기 보호를 거친다), 파일 쓰기·열기(`write_*_file:open`), `reload_config`, 창·칸 닫기(`close_*`, `quit`는 사람이 누를 때와 같이 확인 설정을 따른다), 글 보내기(`text:`·`csi:`·`esc:`는 보호 없이). `send key`로 키 묶음 키를 보내는 것과 같은 힘이고, 막는 것은 macOS 자동화 허락과 `macos-applescript = false`뿐이다.
+- 되돌아오는 값은 참·거짓 하나뿐이라, `copy_to_clipboard`로 만든 글 같은 결과는 스크립트가 따로 읽어야 한다.
+- 2026-11-19 주 세션이 격리한 실제 창(release 묶음)에서 `osascript`로 확인했다: `new_split:right`·`goto_split:left`·`new_tab`·`goto_tab:1`이 참, `text:echo …\n`이 실행됨, `copy_to_clipboard`(고른 글 없음)·`navigate_search:next`(찾는 중 아님)·`no_such_action`·`all:text:x`·`unbind`가 거짓, `toggle_readonly`로 걸기는 참이고 다시 풀기는 읽기 전용 오류, 확인 막대 중 오류, 꺼짐 -1728, 4097바이트 -1715. 단위 시험에는 `can_perform`과 `handle_action` 실행이 없다.
+
+### 하지 않은 것
+- `send mouse button·position·scroll`, `new surface configuration`·`with configuration`, `name override`, `pid`, `tty`.
+
+### 보안
+다른 앱이 키 묶음의 모든 동작을 칸에서 실행할 수 있게 됐다. 막는 것은 macOS 자동화 허락, 읽기 전용 칸과 확인·검색·팔레트·제목 막대 거절, 동작 글 4096바이트 상한(복사 전에 봄), `macos-applescript = false`, 시간 초과 뒤 늦은 실행 방지다.

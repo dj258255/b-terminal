@@ -22,6 +22,10 @@
 //!   of the object they act on. This module only parses the Apple Event; the key names, the key encoding and the close
 //!   policy belong to the app.
 //!
+//! - `perform action` (#658) is also a command class (`BTScriptPerformActionCommand`: the action string is the direct
+//!   parameter, the terminal is the `on` argument) so no selector is added to `NSApplication` or `NSObject`. Its answer is
+//!   a boolean (`ScriptTarget::Performed`, returned as an `NSNumber`); the action string is read by the app.
+//!
 //! Nothing here is installed in a process without a bundle identifier (a plain `cargo run`): there is no sdef to read.
 //! When the app turns scripting off (`macos-applescript = false`), every command and every object lookup sets a
 //! script error on the current command.
@@ -57,6 +61,8 @@ const SNAPSHOT_RETRY: Duration = Duration::from_secs(2);
 const MAX_TEXT_BYTES: usize = 1 << 20;
 /// `send key` refuses a key name or a modifier list above this many UTF-8 bytes (the longest key name is 20 bytes).
 const MAX_KEY_BYTES: usize = 256;
+/// `perform action` refuses an action string above this many UTF-8 bytes (checked before the text is copied into a Rust string).
+const MAX_ACTION_BYTES: usize = 4096;
 
 /// The four-character codes of the `split direction` and `input action` enumerations in the sdef (the same as Ghostty's).
 const fn fourcc(code: &[u8; 4]) -> u32 {
@@ -149,6 +155,8 @@ pub enum ScriptCommand {
     InputText { terminal: String, text: String },
     /// `send key`: the key name (Ghostty's raw values), whether it is a release, the comma-separated modifiers.
     SendKey { terminal: String, key: String, release: bool, modifiers: Option<String> },
+    /// `perform action "..." on terminal` (#658): the action string, which the app reads as a keybind action.
+    PerformAction { terminal: String, action: String },
     Split { terminal: String, direction: ScriptSplit },
     Close { terminal: String },
     CloseTab { tab: String },
@@ -176,6 +184,11 @@ impl std::fmt::Debug for ScriptCommand {
                 .field("release", release)
                 .field("modifier_bytes", &modifiers.as_ref().map(|m| m.len()))
                 .finish(),
+            Self::PerformAction { terminal, action } => f
+                .debug_struct("PerformAction")
+                .field("terminal", terminal)
+                .field("action_bytes", &action.len())
+                .finish(),
             Self::Split { terminal, direction } => {
                 f.debug_struct("Split").field("terminal", terminal).field("direction", direction).finish()
             }
@@ -192,6 +205,8 @@ pub enum ScriptTarget {
     Window(String),
     Tab(String),
     Terminal(String),
+    /// The result of `perform action`: whether the action was performed.
+    Performed(bool),
 }
 
 /// The app's answer to a command: the new object, or a message for the script error.
@@ -393,6 +408,7 @@ fn perform(cmd: ScriptCommand) -> *mut AnyObject {
         Ok(Some(ScriptTarget::Window(id))) => Retained::autorelease_return(ScriptWindowObj::new(&id)).cast(),
         Ok(Some(ScriptTarget::Tab(id))) => Retained::autorelease_return(ScriptTabObj::new(&id)).cast(),
         Ok(Some(ScriptTarget::Terminal(id))) => Retained::autorelease_return(ScriptTerminalObj::new(&id)).cast(),
+        Ok(Some(ScriptTarget::Performed(done))) => Retained::autorelease_return(NSNumber::numberWithBool(done)).cast(),
         Err(message) => {
             set_script_error(ERR_FAILED, &message);
             std::ptr::null_mut()
@@ -878,6 +894,42 @@ declare_class!(
     }
 );
 
+declare_class!(
+    /// `perform action "new_split:right" on terminal`: the action string is the direct parameter. The answer is a boolean.
+    struct ScriptPerformActionCommand;
+
+    unsafe impl ClassType for ScriptPerformActionCommand {
+        type Super = NSScriptCommand;
+        type Mutability = mutability::InteriorMutable;
+        const NAME: &'static str = "BTScriptPerformActionCommand";
+    }
+
+    impl DeclaredClass for ScriptPerformActionCommand {}
+
+    unsafe impl ScriptPerformActionCommand {
+        #[method(performDefaultImplementation)]
+        fn perform_default(&self) -> *mut AnyObject {
+            if !gate() {
+                return std::ptr::null_mut();
+            }
+            // SAFETY: a property read on the live command; the value is checked for its class.
+            let action = unsafe { self.directParameter() }.and_then(downcast::<NSString>);
+            // Size first, before anything is copied into a Rust string.
+            if action.as_ref().is_some_and(|s| utf8_len(s) > MAX_ACTION_BYTES) {
+                set_script_error(ERR_PARAM, "동작 문자열이 너무 깁니다(상한 4096 바이트)");
+                return std::ptr::null_mut();
+            }
+            let terminal = argument_id::<ScriptTerminalObj>(self, "terminal", |o| o.ivars().0.clone());
+            let (Some(action), Some(terminal)) = (action, terminal) else {
+                set_script_error(ERR_PARAM, "perform action에는 동작 문자열과 터미널(on)이 필요합니다");
+                return std::ptr::null_mut();
+            };
+            // `perform` turns the app's `Performed` answer into an `NSNumber`; a failure sets the script error.
+            perform(ScriptCommand::PerformAction { terminal, action: action.to_string() })
+        }
+    }
+);
+
 // ---------------------------------------------------------------------------------------------------------------
 // NSApplication additions
 
@@ -1018,6 +1070,7 @@ fn install() {
         ScriptTerminalObj::class(),
         ScriptInputTextCommand::class(),
         ScriptSendKeyCommand::class(),
+        ScriptPerformActionCommand::class(),
     );
     let app = NSApplication::class();
     // SAFETY (all `transmute`s below): each function has the C signature of its type alias, which is the shape the
