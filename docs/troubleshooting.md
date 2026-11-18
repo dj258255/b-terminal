@@ -194,6 +194,6 @@
 
 - 언제: 2026-11-18, #623. 0.78에서 프로그램 상태(OSC 7501) 알림을 넣으며 알림 길을 다시 읽다가 적었다. 사용자 제보는 없다
 - 까닭: macOS의 b-terminal 데스크톱 알림(OSC 9·777·99, OSC 7501, 명령 끝 알림, `btctl notify`)은 모두 `crates/bt-app/src/desktop.rs`가 `osascript -e 'display notification …'`로 띄운다. macOS는 `osascript`의 알림을 스크립트 편집기의 알림으로 다루므로, 알림을 누르면 스크립트 편집기가 열리고 알림 설정도 스크립트 편집기 항목을 따른다. 이것은 널리 알려진 macOS 동작이고, 이 기기(macOS 26.3.1)에서 알림을 띄워 눌러 보지는 않았다(데스크톱 알림을 보내지 않는다는 작업 규칙, 마우스 흉내를 쓰지 않음)
-- 알림이 아예 안 보이면: 시스템 설정 → 알림에서 스크립트 편집기(또는 `osascript`) 항목이 허용인지 본다. b-terminal 쪽은 `desktop-notifications = false`(프로그램 알림만 끔)인지 본다
-- 일부러 하지 않은 것: 알림을 누르면 그 탭으로 가게 하려면 `UNUserNotificationCenter`로 알림을 내고 delegate가 누름을 받아야 한다(Ghostty macOS 앱이 이렇게 한다). Rust에서 delegate 클래스를 만들려면 `unsafe`가 필요하고 작업 공간은 `unsafe_code = "deny"`다. `UNUserNotificationCenter`는 서명한 앱 묶음(번들 식별자)도 있어야 한다. 그래서 지금은 `osascript`를 쓴다. Linux의 `notify-send`는 이 문제가 없다(누름 동작을 쓰지 않음)
+- 알림이 아예 안 보이면: 시스템 설정 → 알림에서 b-terminal(앱 묶음일 때) 또는 스크립트 편집기(그 밖) 항목이 허용인지 본다. b-terminal 쪽은 `desktop-notifications = false`(프로그램 알림만 끔)인지 본다
+- b-terminal(#625, ADR-058): `scripts/bundle-macos.sh`로 만든 앱 묶음으로 돌면 알림을 `UNUserNotificationCenter`로 내고, 누르면 그 칸의 창·탭·칸으로 간다(Ghostty와 같다). 처음 알림을 낼 때 b-terminal 알림 권한을 묻는다. 그 칸을 보면 알림 센터의 그 칸 알림이 지워진다. 앱 묶음이 아닌 실행(`cargo run`, 내려받은 실행 파일만 돌림)은 번들 식별자가 없어 이 프레임워크를 쓸 수 없으므로(쓰면 앱이 죽는다) 여전히 `osascript`이고 스크립트 편집기가 열린다. 프레임워크 호출은 vendor winit 안에만 두어 작업 공간의 `unsafe_code = "deny"`는 그대로다. 실제로 알림을 띄워 눌러 보지는 않았다(데스크톱 알림을 보내지 않는다는 작업 규칙)
 

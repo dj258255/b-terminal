@@ -110,7 +110,7 @@ Codex CLI는 터미널 이름을 보지 않고 OSC 7501을 보내므로 탭 상�
 notification_method = "osc9"
 ```
 
-Codex는 터미널을 보고 있지 않을 때만 알립니다(포커스 보고, 모드 1004). 알림을 누르면 macOS가 스크립트 편집기를 엽니다([troubleshooting 23번](docs/troubleshooting.md#23-데스크톱-알림을-누르면-b-terminal이-아니라-스크립트-편집기가-열린다)).
+Codex는 터미널을 보고 있지 않을 때만 알립니다(포커스 보고, 모드 1004). 앱 묶음으로 돌면 b-terminal이 낸 알림을 눌러 그 탭·칸으로 바로 갑니다(그 밖에는 스크립트 편집기가 열립니다, [troubleshooting 23번](docs/troubleshooting.md#23-데스크톱-알림을-누르면-b-terminal이-아니라-스크립트-편집기가-열린다)).
 
 b-terminal은 다른 터미널인 척하지 않습니다(`TERM_PROGRAM=b-terminal`). 에이전트 목록이나 상태 모아 보기 같은 작업 화면은 터미널이 아닌 별도 도구의 일로 둡니다.
 
