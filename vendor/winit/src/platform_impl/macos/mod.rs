@@ -13,6 +13,8 @@ mod monitor;
 mod observer;
 /// b-terminal(#625)
 pub(crate) mod user_notify;
+/// b-terminal(#631)
+pub(crate) mod services;
 mod view;
 mod window;
 mod window_delegate;
