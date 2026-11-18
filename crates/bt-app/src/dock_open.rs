@@ -138,6 +138,42 @@ pub fn placement(behavior: MacDockDropBehavior, windowless: bool) -> Placement {
     }
 }
 
+/// Finder 서비스 한 번에 여는 폴더 수의 상한(한 번에 탭 수천 개가 뜨지 않게)
+pub const SERVICE_MAX_DIRS: usize = 16;
+
+/// Finder 서비스(#631)가 넘긴 경로에서 열 폴더를 고른다. 폴더는 그대로, 파일은 부모 폴더. 상대 경로와 없는 경로는
+/// 버리고, 겹치는 폴더는 한 번만(순서 유지) 담고, `SERVICE_MAX_DIRS`개에서 멈춘다. 파일을 셸에 치지 않는다
+/// (실행은 Dock 드롭의 확인 막대 길(`plan`)에만 있다)
+pub fn service_dirs(paths: Vec<PathBuf>, kind: impl Fn(&Path) -> Kind) -> Vec<PathBuf> {
+    let mut out: Vec<PathBuf> = Vec::new();
+    for path in paths {
+        if !path.is_absolute() {
+            continue;
+        }
+        let dir = match kind(&path) {
+            Kind::Dir => path,
+            Kind::File => path.parent().map_or_else(|| PathBuf::from("/"), Path::to_path_buf),
+            Kind::Missing => continue,
+        };
+        if !out.contains(&dir) {
+            out.push(dir);
+        }
+        if out.len() >= SERVICE_MAX_DIRS {
+            break;
+        }
+    }
+    out
+}
+
+/// 서비스가 탭을 달라고 했을 때: 열린 창이 없으면 창으로 띄운다(Ghostty `preferredParent`가 없을 때와 같다)
+pub fn service_placement(want_tab: bool, windowless: bool) -> Placement {
+    if want_tab && !windowless {
+        Placement::NewTab
+    } else {
+        Placement::NewWindow
+    }
+}
+
 /// 띄울 때 명령줄 인자로 온 경로를 AppKit이 열기 요청으로 다시 알린다. 그 요청을 한 번씩 걸러낸다
 #[derive(Debug, Default)]
 pub struct ArgFilter {
@@ -338,6 +374,55 @@ mod tests {
         std::fs::write(&f, b"x").unwrap();
         assert_eq!(kind_of(&f), Kind::File);
         std::fs::remove_file(&f).unwrap();
+    }
+
+    #[test]
+    fn service_dirs_maps_folders_files_and_drops_the_rest() {
+        let kind = |p: &Path| match p.to_str().unwrap() {
+            "/w/proj" | "/w/other" => Kind::Dir,
+            "/w/proj/a.txt" | "/w/b.sh" => Kind::File,
+            _ => Kind::Missing,
+        };
+        let got = service_dirs(
+            vec![
+                "/w/proj".into(),
+                "/w/proj/a.txt".into(), // 파일은 부모 폴더, 이미 있는 폴더와 겹치면 한 번만
+                "/w/b.sh".into(),
+                "/w/none".into(), // 없는 경로는 버린다
+                "rel/dir".into(), // 상대 경로는 버린다
+                "/w/other".into(),
+            ],
+            kind,
+        );
+        assert_eq!(
+            got,
+            vec![PathBuf::from("/w/proj"), PathBuf::from("/w"), PathBuf::from("/w/other")]
+        );
+        assert!(service_dirs(vec![], kind).is_empty());
+        assert!(service_dirs(vec!["/w/none".into()], kind).is_empty());
+    }
+
+    #[test]
+    fn service_dirs_caps_the_count() {
+        let paths: Vec<PathBuf> = (0..SERVICE_MAX_DIRS + 10)
+            .map(|i| PathBuf::from(format!("/d/{i}")))
+            .collect();
+        assert_eq!(service_dirs(paths, |_| Kind::Dir).len(), SERVICE_MAX_DIRS);
+    }
+
+    #[test]
+    fn service_dirs_never_turns_a_file_into_input() {
+        // 서비스는 실행하지 않는다: 글자에 상관없이 폴더 경로만 나온다
+        let got = service_dirs(vec!["/a/b\nls; rm -rf ~.sh".into()], |_| Kind::File);
+        assert_eq!(got, vec![PathBuf::from("/a")]);
+    }
+
+    #[test]
+    fn service_placement_opens_a_window_when_none_exists() {
+        assert_eq!(service_placement(true, false), Placement::NewTab);
+        assert_eq!(service_placement(true, true), Placement::NewWindow);
+        assert_eq!(service_placement(false, false), Placement::NewWindow);
+        assert_eq!(service_placement(false, true), Placement::NewWindow);
     }
 
     fn filter(args: &[&str]) -> ArgFilter {

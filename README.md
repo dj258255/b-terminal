@@ -20,6 +20,8 @@ scripts/bundle-macos.sh --install   # ~/Applications/b-terminal.app (btctl도 �
 open ~/Applications/b-terminal.app
 ```
 
+Finder에서 폴더(나 파일)를 오른쪽 눌러 "서비스" → "New b-terminal Tab Here" 또는 "New b-terminal Window Here"를 고르면 그 폴더에서 새 탭·창이 뜹니다(파일이면 그 부모 폴더. 실행하지는 않습니다). 앱 묶음을 `~/Applications`나 `/Applications`에 두면 macOS가 서비스를 찾습니다. 메뉴에 안 보이면 시스템 설정 → 키보드 → 키보드 단축키 → 서비스에서 "파일 및 폴더" 아래 항목을 켜거나 로그아웃·로그인을 해 보세요.
+
 다른 Mac에 나눠 주려면 Developer ID 서명과 공증이 필요합니다: [docs/release-macos.md](docs/release-macos.md).
 
 개발 중에는 `cargo run --release -p bt-app`(인자: `-e <프로그램>`, `--cwd <폴더>`, `--config-file`, `--show-config`, `--list-themes`)로 띄웁니다. 메뉴 막대의 "설정…"이 `~/.config/b-terminal/config`를 예시와 함께 만들어 엽니다.
