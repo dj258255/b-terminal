@@ -67,6 +67,14 @@ pub fn drag_top(track: u32, rows: usize, history: usize, y: f64, grab: u32) -> O
     Some(((top_px * history as u64 + room / 2) / room) as usize)
 }
 
+/// 시스템 설정 "스크롤 막대 클릭 시: 누른 자리로 이동"(#630): 트랙 맨 위에서 `y`픽셀 아래를 눌렀을 때 손잡이 가운데가
+/// 그 자리에 오게 하는 줄(`drag_top`과 같은 단위)과, 이어서 끌 때 쥔 곳(손잡이 가운데)
+pub fn jump_top(track: u32, rows: usize, history: usize, y: f64) -> Option<(usize, u32)> {
+    let (_, len) = thumb(track, rows, history, 0)?;
+    let grab = len / 2;
+    drag_top(track, rows, history, y, grab).map(|row| (row, grab))
+}
+
 /// 빈 곳을 누르면 옮기는 줄 수: 한 쪽에서 겹치는 한 줄을 뺀 만큼(최소 1)
 pub fn page_lines(rows: usize) -> usize {
     rows.saturating_sub(1).max(1)
@@ -99,6 +107,18 @@ pub fn draw(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 시스템 설정 "스크롤 막대 클릭 시: 누른 자리로 이동"(#630): 누른 곳이 손잡이 가운데가 되는 줄
+    #[test]
+    fn jump_top_centers_thumb_on_click() {
+        // 24줄 + 스크롤백 76줄, 트랙 200: 길이 48, 남는 152
+        let (row, grab) = jump_top(200, 24, 76, 100.0).unwrap();
+        assert_eq!(grab, 24, "손잡이 가운데를 쥔 것으로 본다");
+        assert_eq!(row, 38, "가운데를 누르면 가운데 줄");
+        assert_eq!(jump_top(200, 24, 76, 0.0).unwrap().0, 0, "맨 위");
+        assert_eq!(jump_top(200, 24, 76, 199.0).unwrap().0, 76, "맨 아래");
+        assert_eq!(jump_top(200, 24, 0, 100.0), None, "스크롤백이 없으면 없다");
+    }
 
     #[test]
     fn thumb_is_none_without_history() {
