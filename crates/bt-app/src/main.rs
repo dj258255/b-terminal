@@ -187,6 +187,9 @@ fn main() -> anyhow::Result<()> {
             }
         }));
     }
+    // AppleScript 사전(#634). 앱 묶음이 아니면 처리 함수만 둔다(사전을 읽을 묶음이 없다)
+    #[cfg(target_os = "macos")]
+    app::install_scripting(event_loop.create_proxy(), config.macos_applescript);
     let mut app = app::App::new(
         config,
         (cli.config_file.clone(), cli.default_files),

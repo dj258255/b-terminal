@@ -4,6 +4,8 @@
 
 ## [아직 릴리스하지 않음]
 
+- macOS 앱 묶음에 AppleScript 사전을 넣었습니다(Ghostty `macos-applescript`, 기본 켬). application → window → tab → terminal 객체(`id`·`name`·`working directory` 등)와 명령 `new window`, `new tab`, `focus`, `activate window`, `select tab`, `input text`를 받습니다. `input text`는 사람이 붙여넣을 때와 같은 길(괄호 붙여넣기 틀, `ESC[201~` 지우기, 붙여넣기 보호)로 들어가고 읽기 전용 칸에는 넣지 않습니다. `macos-applescript = false`면 모든 명령과 조회가 오류를 돌려줍니다. macOS가 보내는 앱마다 자동화 허락을 처음에 묻습니다. `send key`·마우스 명령·`perform action`·`split`·`new surface configuration`·`close`는 아직 없습니다. 사전이 읽히는지(`sdef`)와 앱 묶음이 무사히 뜨는 것만 확인했고 실제 Apple Event 실행은 확인하지 않았습니다 (#634)
+
 ## [0.79.0] - 2026-11-18
 
 알림을 누르면 그 칸으로(Ghostty처럼). 마일스톤 0.79.
