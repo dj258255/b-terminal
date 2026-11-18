@@ -128,7 +128,7 @@ PTY 바이트 ──> bt-term 읽기 스레드 ──┬─> VT 엔진(alacritty
 - **macOS가 1순위입니다.** 실제 창에서 확인한 것은 macOS(Apple M2 Pro 한 기기)가 거의 전부입니다.
 - **Linux는 CPU 길입니다.** Linux GPU 길은 재지도 실제 창으로 보지도 않았습니다. CI는 Linux에서 전체를 빌드하고 시험하지만 GPU는 없습니다.
 - **다른 Mac에 나눠 줄 수 없습니다.** Developer ID 서명과 공증 없이는 배포하지 않습니다. 계정이 없어서 서명·공증·다른 Mac에서 열기는 해 보지 못했습니다([release-macos.md](release-macos.md)). 지금은 직접 빌드해 이 컴퓨터에서 씁니다.
-- **`unsafe`가 필요한 macOS 기능.** 작업 공간은 `unsafe_code = "deny"` 그대로이고, 프레임워크 호출은 vendor winit 안에만 둡니다(알림 누름 0.79, 0.80의 선택 클립보드 공유·스크롤 막대 시스템 설정·Finder 서비스·sRGB 레이어 색 공간·AppleScript). 출력 중 120Hz(`CADisplayLink`)는 저전력 모드에서 재 보니 줄지 않아 넣지 않았습니다(실험 E27, 저전력 모드를 끈 상태는 재지 않음).
+- **`unsafe`가 필요한 macOS 기능.** 작업 공간은 `unsafe_code = "deny"` 그대로이고, 프레임워크 호출은 vendor winit 안에만 둡니다(알림 누름 0.79, 0.80의 선택 클립보드 공유·스크롤 막대 시스템 설정·Finder 서비스·sRGB 레이어 색 공간·AppleScript). 출력 중 그림판 간격은 저전력 모드를 끄면 120Hz 화면에서 약 8.8ms이고, `CADisplayLink`를 돌려도 더 줄지 않아 넣지 않았습니다(실험 E27). 저전력 모드에서는 macOS가 화면을 60Hz로 묶어 16.6ms입니다.
 - **엔진 차이.** Ghostty와 해석이 다른 곳이 있을 수 있습니다. 다르게 보이는 화면을 찾으면 [troubleshooting.md](troubleshooting.md)에 적습니다.
 - **재지 않은 것이 많습니다.** 문서마다 "재지 않았다"고 적었습니다. 성능 숫자는 모두 [실험 보고서](experiments/)에 있는 한 번 잰 값입니다.
 

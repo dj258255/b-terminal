@@ -1422,7 +1422,7 @@ AI 에이전트 CLI를 위한 터미널: 프로그램 상태(OSC 7501). 추적 �
 
 1. `scripts/bundle-macos.sh`로 만든 앱에서 AppleScript: `tell application "b-terminal" to count windows`, `new window`, `input text "echo hi" to terminal 1`(처음에 자동화 허락 창이 뜨는지).
 2. 그 앱을 `/Applications`에 두고 Finder에서 폴더 오른쪽 클릭 → 서비스 → "New b-terminal Tab Here".
-3. 저전력 모드를 끈 상태에서 출력 중 그림판 간격(E27 "다음에 확인할 것" 1번).
+3. 저전력 모드를 끈 상태에서 출력 중 그림판 간격(E27 "다음에 확인할 것" 1번). → 2026-11-19 주 세션이 범수 님이 준 관리자 권한으로 재 마쳤습니다(#656): 미룸 끔 8.32ms, 지금 main 꼴 약 8.8ms, 링크로 더 줄지 않음. 저전력 모드가 원인이었습니다.
 
 ## 0.81.0 (2026-11-18)
 
