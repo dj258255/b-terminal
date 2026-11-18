@@ -11,6 +11,8 @@ mod ffi;
 mod menu;
 mod monitor;
 mod observer;
+/// b-terminal(#634)
+pub(crate) mod scripting;
 /// b-terminal(#625)
 pub(crate) mod system_prefs;
 pub(crate) mod user_notify;

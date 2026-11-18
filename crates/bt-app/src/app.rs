@@ -19,6 +19,11 @@ mod gpu_frame;
 mod gpu_pace;
 mod input_latency;
 mod kitty_images;
+/// AppleScript 명령과 상태 스냅숏(#634). macOS에만 있다
+#[cfg(target_os = "macos")]
+mod script;
+#[cfg(target_os = "macos")]
+pub use script::install as install_scripting;
 mod shader_inputs;
 
 use crate::icon;
@@ -94,6 +99,13 @@ pub enum UserEvent {
     /// 칸이 낸 데스크톱 알림을 눌렀다(칸 번호, #625). macOS 앱 묶음에서만 온다
     #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     NoteClicked(u64),
+    /// AppleScript 명령(#634). vendor가 주 스레드에서 넘기고 답을 기다린다. macOS 앱 묶음에서만 온다
+    #[cfg(target_os = "macos")]
+    Script(
+        winit::platform::macos::ScriptCommand,
+        winit::platform::macos::ScriptTicket,
+        std::sync::mpsc::Sender<winit::platform::macos::ScriptReply>,
+    ),
 }
 
 /// 앱 설정: 설정 파일(bt_core::Config, Ghostty 문법)을 그대로 쓴다(#13)
@@ -2453,15 +2465,26 @@ impl App {
                 return;
             }
         }
-        let (id, bracketed) = (t.id, t.session.modes().bracketed_paste);
+        let id = t.id;
+        self.paste_to(id, text);
+    }
+
+    /// 그 칸에 붙여넣는다. 붙여넣기 보호가 막으면 확인 막대를 띄우고 거짓을 돌려준다(글은 사용자가 허용해야 들어간다).
+    /// 사람의 붙여넣기(`paste`)와 AppleScript `input text`(#634)가 같이 쓴다
+    fn paste_to(&mut self, id: u64, text: String) -> bool {
+        let Some(t) = self.pane_index(id).map(|i| &self.panes[i]) else {
+            return false;
+        };
+        let bracketed = t.session.modes().bracketed_paste;
         // 요청한 때의 암호 상태. 막대가 떠 있는 동안 바뀌어도 막대 글은 다시 만들지 않는다
         let password = paste_hidden(t.password, t.session.password_input());
         if !self.config.paste_protection || bt_term::paste_is_safe(&text, bracketed, self.config.paste_bracketed_safe) {
             self.paste_into(id, &text);
-            return;
+            return true;
         }
         let message = paste_prompt(&text, password);
         self.ask(Pending::Paste { pane: id, text }, message, "붙여넣기");
+        false
     }
 
     /// 창에 끌어다 놓은 파일 경로를 놓은 창의 지금 칸에 붙여넣는다(#566). 글은 `paste`를 거쳐
@@ -4341,6 +4364,9 @@ impl App {
             }
         }
         self.config = next;
+        // AppleScript를 껐다 켰으면 vendor에도 알린다(#634)
+        #[cfg(target_os = "macos")]
+        self.sync_scripting_enabled();
         self.apply_window_look();
         self.refresh_mods();
         apply_hidden_from_dock(self.config.macos_hidden);
@@ -6795,6 +6821,8 @@ impl ApplicationHandler<UserEvent> for App {
             UserEvent::OpenFile(path) => self.on_open_file(event_loop, path),
             UserEvent::OpenFolders(want_tab, paths) => self.on_open_folders(event_loop, want_tab, paths),
             UserEvent::NoteClicked(pane) => self.on_note_clicked(event_loop, pane),
+            #[cfg(target_os = "macos")]
+            UserEvent::Script(cmd, ticket, reply) => self.on_script(event_loop, cmd, ticket, reply),
             UserEvent::Control(req, reply) => {
                 let req_id = req.id;
                 let timeout = match &req.call {

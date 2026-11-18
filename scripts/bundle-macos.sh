@@ -37,6 +37,8 @@ rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp target/release/b-terminal target/release/btctl "$APP/Contents/MacOS/"
 cp assets/icon/b-terminal.icns "$APP/Contents/Resources/"
+# AppleScript 사전(#634): Info.plist의 OSAScriptingDefinition이 이 파일을 가리킨다
+cp assets/macos/b-terminal.sdef "$APP/Contents/Resources/"
 
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -55,6 +57,9 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>LSApplicationCategoryType</key><string>public.app-category.developer-tools</string>
   <key>NSHighResolutionCapable</key><true/>
   <key>NSSupportsAutomaticGraphicsSwitching</key><true/>
+  <!-- AppleScript 사전(#634). 끄려면 설정 macos-applescript = false (사전은 남고 명령이 오류를 돌려준다) -->
+  <key>NSAppleScriptEnabled</key><true/>
+  <key>OSAScriptingDefinition</key><string>b-terminal.sdef</string>
   <!-- Dock 아이콘에 끌어놓기와 Finder의 "다음으로 열기"(#279). Ghostty의 Info.plist와 같은 세 유형: 스크립트, 폴더, 실행 파일 -->
   <key>CFBundleDocumentTypes</key>
   <array>

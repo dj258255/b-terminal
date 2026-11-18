@@ -742,6 +742,8 @@ pub struct Config {
     pub selection_word_chars: String,
     /// 암호 입력을 알아채면 그 칸이 초점일 때 보안 키보드 입력을 켠다(Ghostty `macos-auto-secure-input`, 기본 켬, #258)
     pub macos_auto_secure_input: bool,
+    /// AppleScript 사전을 켠다(Ghostty `macos-applescript`, 기본 켬, #634). 끄면 모든 스크립팅 명령과 객체 조회가 오류를 돌려준다
+    pub macos_applescript: bool,
     /// 보안 입력이 켜져 있는 동안 창 오른쪽 위에 자물쇠를 보인다(Ghostty `macos-secure-input-indication`, 기본 켬, #258)
     pub macos_secure_input_indication: bool,
     pub warnings: Vec<String>,
@@ -1710,6 +1712,7 @@ impl Default for Config {
             scroll_multiplier: (3.0, 1.0),
             selection_word_chars: DEFAULT_WORD_CHARS.into(),
             macos_auto_secure_input: true,
+            macos_applescript: true,
             macos_secure_input_indication: true,
             warnings: Vec::new(),
             sources: Vec::new(),
@@ -3559,6 +3562,10 @@ impl Config {
                     })
                 }
             }
+            "macos-applescript" => match parse_bool(v) {
+                Some(b) => self.macos_applescript = b,
+                None => bad(warnings),
+            },
             "macos-auto-secure-input" => match parse_bool(v) {
                 Some(b) => self.macos_auto_secure_input = b,
                 None => bad(warnings),
@@ -3816,6 +3823,7 @@ impl Config {
                 },
             );
         }
+        push("macos-applescript", self.macos_applescript.to_string());
         push("macos-auto-secure-input", self.macos_auto_secure_input.to_string());
         push(
             "macos-secure-input-indication",
@@ -4049,8 +4057,7 @@ const KNOWN_IGNORED: &[&str] = &[
     // 그리기·엔진 쪽(b-terminal의 그리기와 VT 엔진이 다르다)
     "freetype-load-flags",
     "scrollback-compression",
-    // unsafe나 시스템 연동(AppleScript·단축어·보안 입력)이 필요하다
-    "macos-applescript",
+    // 단축어(App Intents)는 시스템 연동이 필요하다
     "macos-shortcuts",
 ];
 
@@ -5659,7 +5666,6 @@ mod tests {
             "window-title-font-family = Menlo",
             "quick-terminal-keyboard-interactivity = none",
             "scrollback-compression = false",
-            "macos-applescript = false",
             "macos-shortcuts = deny",
             "background-blur = 20",
         ] {
@@ -6240,6 +6246,20 @@ mod tests {
             !LinkPreviews::Osc8.shows(false),
             "화면 글의 URL은 글 자체가 주소라 띠를 보이지 않는다"
         );
+    }
+
+    #[test]
+    fn applescript_key_is_read_and_defaults_on() {
+        assert!(Config::default().macos_applescript, "Ghostty 기본은 켬");
+        let c = Config::from_text("macos-applescript = false\n", true);
+        assert!(c.warnings.is_empty(), "{:?}", c.warnings);
+        assert!(!c.macos_applescript);
+        assert!(c.render().contains("macos-applescript = false"));
+        let c = Config::from_text("macos-applescript = true\n", true);
+        assert!(c.macos_applescript);
+        let bad = Config::from_text("macos-applescript = maybe\n", true);
+        assert_eq!(bad.warnings.len(), 1);
+        assert!(bad.macos_applescript, "잘못된 값은 기본을 둔다");
     }
 
     #[test]
