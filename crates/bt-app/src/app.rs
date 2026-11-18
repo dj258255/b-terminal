@@ -84,6 +84,9 @@ pub enum UserEvent {
     /// Dock·Finder가 열라고 한 경로(#279). macOS에만 온다
     #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     OpenFile(std::path::PathBuf),
+    /// Finder 서비스 "여기서 새 탭/창"이 넘긴 경로(#631). macOS에만 온다
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    OpenFolders(bool, Vec<std::path::PathBuf>),
     /// 사용자 셰이더 컴파일이 끝났다(컴파일 스레드가 보낸다, ADR-042)
     ShaderCompiled,
     /// 접근성 클라이언트(VoiceOver)의 요청(창, 요청, #560)
@@ -2804,6 +2807,28 @@ impl App {
             if let Some(i) = self.pane_index(id) {
                 self.panes[i].wait_after_exit = true;
             }
+        }
+    }
+
+    /// Finder 서비스가 넘긴 경로(#631). 폴더(파일이면 부모 폴더)마다 새 탭이나 새 창을 띄운다. 실행하지 않는다
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    fn on_open_folders(&mut self, event_loop: &ActiveEventLoop, want_tab: bool, paths: Vec<std::path::PathBuf>) {
+        use crate::dock_open::{Placement, kind_of, service_dirs, service_placement};
+        let dirs = service_dirs(paths, kind_of);
+        if dirs.is_empty() {
+            log::warn!("Finder 서비스가 넘긴 경로 중 열 폴더가 없습니다");
+            return;
+        }
+        if let Some(w) = self.last_focused {
+            self.switch_to(w);
+        }
+        for cwd in dirs {
+            let mut opts = self.default_spawn();
+            opts.cwd = Some(cwd);
+            match service_placement(want_tab, self.windowless()) {
+                Placement::NewTab => self.open_tab(opts),
+                Placement::NewWindow => self.open_window(event_loop, opts),
+            };
         }
     }
 
@@ -6755,6 +6780,7 @@ impl ApplicationHandler<UserEvent> for App {
                 None => {}
             },
             UserEvent::OpenFile(path) => self.on_open_file(event_loop, path),
+            UserEvent::OpenFolders(want_tab, paths) => self.on_open_folders(event_loop, want_tab, paths),
             UserEvent::NoteClicked(pane) => self.on_note_clicked(event_loop, pane),
             UserEvent::Control(req, reply) => {
                 let req_id = req.id;

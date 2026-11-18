@@ -618,6 +618,20 @@ pub fn set_user_notification_handler(handler: Box<dyn Fn(UserNotificationRespons
     crate::platform_impl::user_notify::set_handler(handler)
 }
 
+/// Which Finder Service the user picked: "New ... Tab Here" or "New ... Window Here". b-terminal(#631)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ServiceTarget {
+    Tab,
+    Window,
+}
+
+/// Registers the function that receives the paths a Finder Service hands over (the paths are as the sender gave them:
+/// absolute, not checked for existence). Requests that arrived earlier are passed first. The function runs on the main
+/// thread. Does nothing without a bundle identifier (the system cannot offer the services then). b-terminal(#631)
+pub fn set_services_handler(handler: Box<dyn Fn(ServiceTarget, Vec<std::path::PathBuf>) + Send + Sync>) {
+    crate::platform_impl::services::set_handler(handler)
+}
+
 /// Writes `text` to the pasteboard called `name` (an app-private pasteboard, never a system one: names starting with
 /// `Apple ` are refused) and returns its change count afterwards, `None` if refused or the write failed. b-terminal(#629)
 pub fn set_named_pasteboard_string(name: &str, text: &str) -> Option<isize> {
