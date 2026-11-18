@@ -185,6 +185,21 @@ pub fn parse_script_action(action: &str) -> Result<crate::keymap::Action, String
     }
 }
 
+/// `perform action`이 실행할 동작. 읽지 못한 글(모르는 동작, 인자 오류, `unbind`, `all:` 같은 접두사)은 `None`이고
+/// 스크립트는 오류가 아니라 거짓을 받는다(Ghostty `ghostty_surface_binding_action`이 해석 실패에 `false`를 돌려주는 것과 같다)
+pub fn resolve_script_action(action: &str) -> Option<crate::keymap::Action> {
+    match parse_script_action(action) {
+        Ok(a) => Some(a),
+        Err(why) => {
+            log::debug!(
+                "AppleScript perform action: 읽지 못한 동작({} 바이트): {why}",
+                action.len()
+            );
+            None
+        }
+    }
+}
+
 impl App {
     /// vendor가 넘긴 명령 하나를 처리하고 답을 보낸다
     pub(super) fn on_script(
@@ -402,8 +417,10 @@ impl App {
                 if self.panes[i].session.readonly() {
                     return Err(super::READONLY_REFUSAL.into());
                 }
-                // 모르는 동작은 칸이나 창을 건드리기 전에 알린다
-                let action = parse_script_action(&action)?;
+                // 읽지 못한 동작은 칸이나 창을 건드리기 전에 거짓으로 답한다(Ghostty처럼 오류가 아니다)
+                let Some(action) = resolve_script_action(&action) else {
+                    return Ok(Some(ScriptTarget::Performed(false)));
+                };
                 self.switch_to_pane(pane);
                 let other_bar = self.w.search.is_some() || self.w.palette.is_some() || self.w.title_prompt.is_some();
                 if let Some(why) = overlay_refusal_for("동작을 실행하지", self.w.confirm.is_some(), other_bar) {
@@ -549,6 +566,18 @@ mod tests {
     }
 
     /// 동작 글은 키 묶음과 같은 해석기(`keymap::parse_action`)로 읽는다. 모르는 동작·인자 오류·`unbind`·접두사는 오류다
+    #[test]
+    fn unreadable_actions_answer_false_like_ghostty() {
+        for bad in ["no_such_action", "all:text:x", "unbind", "", "new_split:sideways"] {
+            assert_eq!(resolve_script_action(bad), None, "{bad}은 오류가 아니라 거짓");
+        }
+        assert_eq!(resolve_script_action("new_tab"), Some(crate::keymap::Action::NewTab));
+        assert_eq!(
+            resolve_script_action("text:a\\nb"),
+            Some(crate::keymap::Action::Text("a\nb".into()))
+        );
+    }
+
     #[test]
     fn perform_action_is_read_by_the_keybind_parser() {
         for ok in [
