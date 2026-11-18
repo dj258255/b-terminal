@@ -999,7 +999,8 @@ pub struct KeyOutcome {
     pub all: bool,
 }
 
-fn is_table_action(a: &Action) -> bool {
+/// 키 테이블·키 순서 동작인가(사람의 키 순서 상태를 바꾼다)
+pub(crate) fn is_table_action(a: &Action) -> bool {
     matches!(
         a,
         Action::ActivateKeyTable(_)

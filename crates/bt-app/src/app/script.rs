@@ -185,16 +185,20 @@ pub fn parse_script_action(action: &str) -> Result<crate::keymap::Action, String
     }
 }
 
-/// `perform action`이 실행할 동작. 읽지 못한 글(모르는 동작, 인자 오류, `unbind`, `all:` 같은 접두사)은 `None`이고
+/// `perform action`이 실행할 동작. 읽지 못한 글(모르는 동작, 인자 오류, `unbind`, `all:` 같은 접두사)과 키 테이블·순서 동작은 `None`이고
 /// 스크립트는 오류가 아니라 거짓을 받는다(Ghostty `ghostty_surface_binding_action`이 해석 실패에 `false`를 돌려주는 것과 같다)
 pub fn resolve_script_action(action: &str) -> Option<crate::keymap::Action> {
     match parse_script_action(action) {
+        // 키 테이블·키 순서 동작은 사람의 순서 상태(`Win::keyseq`)를 바꾸고 사람이 쌓은 앞 키를 대상 칸에 쏟아낸다.
+        // 스크립트의 키는 사람이 켠 키 테이블을 쓰지 않으므로(`send key`) 스크립트에는 열지 않는다
+        Ok(a) if crate::keymap::is_table_action(&a) => {
+            log::debug!("AppleScript perform action: 키 테이블·순서 동작은 스크립트에 열지 않습니다");
+            None
+        }
         Ok(a) => Some(a),
-        Err(why) => {
-            log::debug!(
-                "AppleScript perform action: 읽지 못한 동작({} 바이트): {why}",
-                action.len()
-            );
+        // 해석 오류 글에는 스크립트가 보낸 글이 들어 있어 로그에 남기지 않는다(길이만)
+        Err(_) => {
+            log::debug!("AppleScript perform action: 읽지 못한 동작({} 바이트)", action.len());
             None
         }
     }
@@ -568,7 +572,19 @@ mod tests {
     /// 동작 글은 키 묶음과 같은 해석기(`keymap::parse_action`)로 읽는다. 모르는 동작·인자 오류·`unbind`·접두사는 오류다
     #[test]
     fn unreadable_actions_answer_false_like_ghostty() {
-        for bad in ["no_such_action", "all:text:x", "unbind", "", "new_split:sideways"] {
+        for bad in [
+            "no_such_action",
+            "all:text:x",
+            "unbind",
+            "",
+            "new_split:sideways",
+            // 키 테이블·키 순서 동작은 사람의 순서 상태를 바꾸고 쌓인 앞 키를 쏟아내므로 스크립트에는 열지 않는다
+            "end_key_sequence",
+            "activate_key_table:vim",
+            "activate_key_table_once:vim",
+            "deactivate_key_table",
+            "deactivate_all_key_tables",
+        ] {
             assert_eq!(resolve_script_action(bad), None, "{bad}은 오류가 아니라 거짓");
         }
         assert_eq!(resolve_script_action("new_tab"), Some(crate::keymap::Action::NewTab));
