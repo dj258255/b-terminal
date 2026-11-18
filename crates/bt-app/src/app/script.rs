@@ -48,6 +48,15 @@ pub struct WinView {
     pub tabs: Vec<TabView>,
 }
 
+/// 스냅숏의 앞 창: 마지막으로 포커스를 받은 창이 아직 있으면 그 창, 없으면 지금 창(명령이 향하는 창)
+///
+/// 앱이 뒤에 있을 때 스크립트로 앞 창을 닫으면 남은 창이 포커스를 받지 못해 마지막 포커스가 닫힌 창을 가리킨다.
+/// 그래도 창이 남아 있으면 Ghostty(`NSApp.orderedWindows`의 첫 창)처럼 `front window`가 있어야 한다
+pub fn front_window_id(last_focused: Option<u64>, current: Option<u64>, ids: &[u64]) -> Option<u64> {
+    let alive = |id: &u64| ids.contains(id);
+    last_focused.filter(alive).or(current.filter(alive))
+}
+
 /// 앞 창을 먼저, 나머지 창은 만든 차례로, 탭 줄 순서로, 탭 안에서는 왼쪽·위부터 스냅숏을 만든다. `front`는 마지막으로 보던 창
 pub fn build_snapshot(windows: &[WinView], front: Option<u64>) -> ScriptSnapshot {
     // Ghostty처럼 앞에서 뒤 차례: 앞 창이 먼저(`window 1`), 나머지는 만든 차례(#645). 앞뒤 전체 순서는 기록하지 않는다
@@ -217,7 +226,9 @@ impl App {
                 })
             })
             .collect();
-        build_snapshot(&windows, self.last_focused.map(u64::from))
+        let ids: Vec<u64> = windows.iter().map(|w| w.id).collect();
+        let front = front_window_id(self.last_focused.map(u64::from), self.w.id().map(u64::from), &ids);
+        build_snapshot(&windows, front)
     }
 
     /// 창 번호로 창을 찾아 그 창의 아무 칸(없으면 오류)을 돌려준다
@@ -724,6 +735,28 @@ mod tests {
             }
             assert!(declared.contains(&name), "sdef의 {name}을 vendor가 선언하지 않는다");
         }
+    }
+
+    #[test]
+    fn front_window_falls_back_to_the_current_window_when_the_focused_one_closed() {
+        // 마지막 포커스 창(11)이 스크립트의 close window로 닫혔다. 남은 창 12가 지금 창이다
+        assert_eq!(front_window_id(Some(11), Some(12), &[12, 13]), Some(12));
+        assert_eq!(
+            front_window_id(None, Some(13), &[12, 13]),
+            Some(13),
+            "포커스를 받은 적 없는 창만 있어도 앞 창이 있다"
+        );
+        assert_eq!(
+            front_window_id(Some(12), Some(13), &[12, 13]),
+            Some(12),
+            "포커스 받은 창이 남아 있으면 그 창"
+        );
+        assert_eq!(front_window_id(Some(11), None, &[]), None, "창이 없으면 앞 창도 없다");
+        assert_eq!(
+            front_window_id(Some(11), Some(99), &[12]),
+            None,
+            "지금 창이 목록에 없으면 앞 창이 아니다"
+        );
     }
 
     #[test]

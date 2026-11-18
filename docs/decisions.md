@@ -90,7 +90,8 @@
 | [ADR-058](#adr-058-macos-앱-묶음의-데스크톱-알림은-unusernotificationcenter로-내고-누르면-그-칸으로-간다-프레임워크-호출은-vendor-winit-안에만-둔다) | macOS 앱 묶음의 데스크톱 알림은 UNUserNotificationCenter로 내고, 누르면 그 칸으로 간다. 프레임워크 호출은 vendor winit 안에만 둔다 | 유효 |
 | [ADR-059](#adr-059-finder-서비스는-경로만-받아-그-폴더에서-새-탭이나-창을-열고-아무것도-실행하지-않는다) | Finder 서비스는 경로만 받아 그 폴더에서 새 탭이나 창을 열고, 아무것도 실행하지 않는다 | 유효 |
 | [ADR-060](#adr-060-선택-클립보드는-이름-붙은-pasteboard로-b-terminal끼리-나누되-암호-입력-칸의-글은-내보내지-않고-스크롤-막대는-시스템-설정을-읽기만-한다) | 선택 클립보드는 이름 붙은 pasteboard로 b-terminal끼리 나누되 암호 입력 칸의 글은 내보내지 않고, 스크롤 막대는 시스템 설정을 읽기만 한다 | 유효 |
-| [ADR-062](#adr-062-applescript-사전은-macos-자동화-허락에-기대고-글-넣기는-사람의-붙여넣기와-같은-길로만-보내며-macos-applescript로-끈다) | AppleScript 사전은 macOS 자동화 허락에 기대고, 글 넣기는 사람의 붙여넣기와 같은 길로만 보내며, macos-applescript로 끈다 | 유효 |
+| [ADR-062](#adr-062-applescript-사전은-macos-자동화-허락에-기대고-글-넣기는-사람의-붙여넣기와-같은-길로만-보내며-macos-applescript로-끈다) | AppleScript 사전은 macOS 자동화 허락에 기대고, 글 넣기는 사람의 붙여넣기와 같은 길로만 보내며, macos-applescript로 끈다 | 일부 바뀜(send key·split·close가 더해짐, ADR-063) |
+| [ADR-063](#adr-063-applescript-send-key는-사람이-누른-키와-같은-인코더키-묶음-길로-보내고-close-계열은-확인-없이-닫는다) | AppleScript `send key`는 사람이 누른 키와 같은 인코더·키 묶음 길로 보내고, `close` 계열은 확인 없이 닫는다 | 유효 |
 
 ### 설정 기본값
 
@@ -1939,7 +1940,7 @@ E8의 실제 창 로그에서 10ms 넘는 GPU 프레임은 세 가지였다. (1)
 
 ## ADR-062 AppleScript 사전은 macOS 자동화 허락에 기대고, 글 넣기는 사람의 붙여넣기와 같은 길로만 보내며, macos-applescript로 끈다
 
-상태: 채택
+상태: 일부 바뀜(`send key`·`split`·`close`·`close tab`·`close window`가 더해짐, `send key`는 붙여넣기 보호를 거치지 않음, ADR-063)
 관련: [#634](https://github.com/dj258255/b-terminal/issues/634), ADR-058(vendor winit 길), ADR-018(읽기 전용 칸)
 
 ### 맥락
@@ -1970,3 +1971,43 @@ E8의 실제 창 로그에서 10ms 넘는 GPU 프레임은 세 가지였다. (1)
 
 ### 보안
 다른 앱이 칸에 글을 넣는 입력 길이 늘었다. 막는 것은 macOS 자동화 허락, 붙여넣기와 같은 틀, 읽기 전용 칸 거절, 1MiB 상한, `macos-applescript = false`다.
+
+## ADR-063 AppleScript `send key`는 사람이 누른 키와 같은 인코더·키 묶음 길로 보내고, `close` 계열은 확인 없이 닫는다
+
+상태: 채택
+관련: [#650](https://github.com/dj258255/b-terminal/issues/650), ADR-062(AppleScript 사전), ADR-018(읽기 전용 칸), ADR-020(보안 키보드 입력), ADR-019(확인 막대)
+
+### 맥락
+- 0.81 실제 창 확인에서 `input text`로 글은 편집 줄에 들어갔지만 실행(Enter)할 길이 없었다. 괄호 붙여넣기를 켠 셸은 줄바꿈을 실행하지 않고, 끈 셸(bash 3.2)은 붙여넣기 보호가 줄바꿈 든 글을 막는다.
+- Ghostty 사전에는 `send key`·`split`·`close`·`close tab`·`close window`가 있다. 같은 스크립트가 그대로 돌아야 한다(Ghostty 소스: `ScriptKeyEventCommand.swift`, `ScriptTerminal.swift`의 `handleSplit`·`handleClose`, `ScriptTab.swift`의 `handleCloseTab`, `ScriptWindow.swift`의 `handleCloseWindow`).
+- `send key`는 다른 앱이 칸에 키를 넣는 새 입력 길이다. 붙여넣기 틀(`ESC[200~`…`ESC[201~`)이 없어 붙여넣기 보호가 막던 줄바꿈 실행이 가능해진다.
+
+### 결정
+1. `send key "키" [modifiers "shift,control,option,command"] [action press|release] to 터미널`. 키 이름은 Ghostty `Ghostty.Input.Key`의 rawValue 175개 그대로(대소문자를 가린다), 수식 키는 쉼표로 가른 `shift`·`control`·`option`·`command`(`Ghostty.Input.Mods+AppleScript.swift`와 같은 규칙: 이름은 앞뒤 공백을 지우고 소문자로 보고, 빈 조각은 건너뛰고, 모르는 이름이 있으면 오류).
+2. 키는 사람이 누른 키가 지나는 길을 그대로 지난다. 키 이름을 winit 물리 키로 바꾸고, 그 키를 사람이 눌렀다면 winit이 올렸을 `KeyInput`(미국 자판 배열)을 만들어 사람의 키와 같은 인코더 `keys::encode_input`(kitty 키보드 플래그, 옛 길, DECCKM, 키패드 응용 모드, modifyOtherKeys, `macos-option-as-alt`)에 넣는다. 앱이나 스크립트 쪽이 따로 바이트를 만들지 않는다. winit 이벤트를 흉내 내지 않고(밖에서 만들 수 없다) 인코더의 입력을 `KeyInput`으로 떼어, 사람의 키(`KeyInput::from_event`)와 스크립트의 키가 한 함수를 지난다.
+3. 키 묶음을 거친다. Ghostty `surface.sendKeyEvent`는 `ghostty_surface_key`(`Ghostty.Surface.swift` 90줄 → `src/apprt/embedded.zig` 2073줄)를 거쳐 `surface.app.keyEvent`(같은 파일 202줄)의 `.surface` 가지에서 코어 `Surface.keyCallback`(`src/Surface.zig` 2792줄)으로 가고, 그 함수는 `key_remaps`를 적용하고(2801줄) 인코딩 전에 키 묶음을 먼저 본다(2834~2837줄 `maybeHandleBinding`). 그래서 스크립트의 ⌘T도 Ghostty에서는 묶음 동작이다. b-terminal도 같게 `keymap`의 키 순서 처리(`feed_key`, 사람의 키와 같은 함수)와 `key-remap`을 거친다. 묶음이 키를 먹으면 바이트는 나가지 않고 그 동작을 한다. 동작은 "고른 칸"에 하므로 동작이 나올 때만 대상 칸을 고른 칸으로 만든 뒤 한다. 묶음이 먹지 않는 키(Enter, Ctrl-C, 방향 키 등 기본 묶음에 없는 키)는 그 칸에 바로 쓴다(칸을 고르지 않는다).
+4. 붙여넣기 보호는 거치지 않는다(Enter를 보낼 수 있어야 한다). 막는 것은 `input text`와 같은 두 가지: 읽기 전용 칸(ADR-018)과 확인 막대가 떠 있는 창. 검색·팔레트·제목 입력 막대가 열린 창에도 보내지 않는다(사람의 키는 그 막대로 가므로). 읽기 전용 칸에는 키 묶음 동작도 보내지 않는다. 사람의 키는 읽기 전용 칸에서도 묶음 동작을 하지만(ADR-018), 스크립트가 `toggle_readonly`에 걸린 키로 읽기 전용을 풀 수 있으면 사람이 건 보호를 다른 앱이 걷는 셈이라 막는다(거는 것은 된다). 확인 막대가 떠 있으면 Enter·Esc도 막대에 보내지 않는다: 스크립트가 붙여넣기 확인을 허용할 수 없다.
+5. 보안 키보드 입력(ADR-020)과의 관계: 보안 키보드 입력은 OS 키보드 이벤트가 다른 앱에 보이지 않게 하는 것이다. Apple Event로 오는 `send key`는 그 길(HID·이벤트 탭)을 거치지 않으므로 보안 입력이 켜져 있어도 들어가고, 이 경로가 입력 내용을 다른 앱에 보이지도 않는다. 암호 입력으로 보이는 칸(자물쇠 커서)에도 막지 않는다(`input text`도 막지 않고, 막는 것은 macOS 자동화 허락이다). `send key`의 키 이름은 로그에 남지 않는다(`ScriptCommand`의 `Debug`가 길이만 보인다).
+6. IME 조합 중인 글은 PTY에 보내지 않는다는 규칙과 부딪히지 않는다: 스크립트 키는 조합 상태(`preedit`)를 건드리지도 읽지도 않고 PTY에 바이트만 쓴다. 조합 중인 글은 그대로 그려질 뿐이다. 사람의 키가 IME 조합 중에 하던 `modifyOtherKeys` 끄기는 스크립트 키에 적용하지 않는다.
+7. `action release`는 사람이 키를 뗄 때와 같다: 프로그램이 kitty 키보드 프로토콜의 이벤트 종류 보고(플래그 2)를 켰고 같은 키의 누름을 프로그램에 보냈을 때만 나간다. 누름만 보내는 스크립트는 뗌을 보내지 않는다(Ghostty처럼).
+8. `split 터미널 direction right|left|down|up`은 `btctl new --split 방향 --tab 칸`과 같은 요청(`handle_call`)으로 처리하고 새 칸을 `terminal` 객체로 돌려준다. `with configuration`은 두지 않는다(사전에 없어 Cocoa가 인자를 거절한다).
+9. `close 터미널`·`close tab 탭`·`close window 창`은 Ghostty처럼 확인 막대 없이 바로 닫는다(Ghostty: `closeSurface(withConfirmation: false)` `ScriptTerminal.swift` 189줄, `closeTabImmediately(registerRedo: false)` `ScriptTab.swift` 160줄, `closeWindowImmediately()` `ScriptWindow.swift` 199줄). 되살리기 목록(`undo-timeout`)에도 넣지 않는다. 마지막 칸·창을 닫으면 앱이 끝나는지는 평소 닫기와 같이 `quit-after-last-window-closed`가 정한다.
+10. `macos-applescript = false`면 새 명령도 모두 -1743이다. 시간 초과·취소 표(`ScriptTicket`)도 같이 따른다: 시간 초과로 버려진 `send key`는 나중에 앱에 닿아도 실행하지 않는다.
+11. 키 이름이 틀리면(`알 수 없는 키 이름`) 칸·창 상태를 바꾸기 전에 오류를 낸다. 오류 번호는 -10000이다(Ghostty는 -1700 `errAECoercionFail`).
+12. 스냅숏의 앞 창은 마지막으로 포커스를 받은 창이 남아 있으면 그 창, 없으면 지금 창(명령이 향하는 창)이다. 앱이 뒤에 있을 때 `close window`로 앞 창을 닫으면 남은 창이 포커스를 받지 못해, 전에는 `front window`가 없어졌다(실제 창에서 찾음). Ghostty의 `front window`(`NSApp.orderedWindows`의 첫 창)는 창이 있으면 늘 있다.
+
+### 감수한 트레이드오프
+- 이미 자동화 허락을 받은 앱은 `input text`와 `send key "enter"`로 그 사용자 권한의 명령을 칸에서 실행할 수 있다. 막는 것은 macOS 자동화 허락(TCC)과 `macos-applescript = false`뿐이다. 붙여넣기 보호를 거치지 않는 것이 `send key`의 목적이라 줄바꿈 확인은 없다.
+- `close` 계열은 실행 중인 프로그램이 묻지 않고 끝난다(셸은 SIGHUP을 받는다). Ghostty의 스크립트 닫기와 같다. 확인을 거치면 스크립트가 확인 막대에 막힌다. 되살리기도 없다.
+- 자판 배열을 미국으로 본다. Ghostty는 지금 입력 소스로 한 번 번역하므로(`KeyboardLayout.character`) 다른 배열에서는 `a`가 다른 글자일 수 있다. 이 구현에서 `a`는 항상 A 자리의 키고 글자는 `a`다. 죽은 키는 쓰지 않는다. Option이 글자를 바꾸는 번역(Option-E의 ´)도 하지 않는다(`macos-option-as-alt`가 꺼져 있어도 `option`은 글자를 바꾸지 않고 Alt 해석만 한다).
+- 스크립트의 `option`은 왼쪽 Option이다. `macos-option-as-alt = right`이면 Alt가 아니다.
+- 키 묶음에 걸린 키를 보내면 그 동작이 일어난다(Ghostty와 같다). 키 순서 묶음의 앞 키가 대기 중이면 그 상태가 창에 있고 스크립트 키가 이어 먹는다. 동작이 될 수 있는지(`performable`) 판단은 지금 고른 칸 기준이다.
+- 키 이름은 있어도 이 앱에 대응하는 키가 없는 것(키패드의 방향·Home 같은 위치 키 11개와 `numpadSeparator`)은 오류 없이 아무것도 보내지 않는다. 미디어 키 같은 것도 보낼 바이트가 없다.
+- `macos-applescript = false`일 때 `send key ... to terminal id N`은 -1743이 아니라 -1728이다(`input text`와 같다. 꺼지면 terminal 객체를 먼저 찾지 못한다). `split`·`close` 계열은 -1743.
+- 2026-11-18 주 세션이 격리한 실제 창(release 묶음, 격리 HOME·TMPDIR, `SHELL=/bin/sh`)에서 `osascript`로 확인했다: `input text` 뒤 `send key "enter"`로 실행, `arrowUp`, `c`+control(Ctrl-C로 `sleep` 중단), `a`+shift, ⌘T가 새 탭(키 묶음), 네 방향 `split`이 새 terminal을 돌려줌(enumeration이 네 글자 코드로 옴), `close`·`close tab`·`close window`, 읽기 전용·확인 막대 거절, 키 이름·수식 키 오류, 꺼짐. 이때 닫은 칸의 셸이 끝나지 않는 것을 찾았다. 이 ADR 전부터 있던 결함이라 #651로 따로 고친다. 단위 시험은 키 이름 175개, 수식 키, 사람의 키와 같은 인코더가 낸 바이트(Enter, Ctrl-C, 방향 키, DECCKM, Option-as-Alt, kitty 플래그 1·2·8, 키패드), 사전의 이름·코드가 Ghostty와 같은 것, 새 선택자가 `NSObject`와 겹치지 않는 것까지다.
+
+### 하지 않은 것
+- `send mouse button·position·scroll`, `perform action`, `new surface configuration`·`with configuration`, `name override`, `pid`, `tty`.
+
+### 보안
+다른 앱이 칸에 키를 넣을 수 있고 닫기까지 시킬 수 있게 됐다. 막는 것은 macOS 자동화 허락, 읽기 전용 칸과 확인·검색·팔레트·제목 막대 거절, 키 이름·수식 키 256바이트 상한(복사 전에 봄), `macos-applescript = false`, 시간 초과 뒤 늦은 실행 방지다.

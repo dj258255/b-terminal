@@ -227,4 +227,4 @@
 - 증상: `send key "Enter" to t`나 `send key "return" to t`가 `알 수 없는 키 이름: Enter` 오류(-10000)를 낸다
 - 까닭: 키 이름은 Ghostty `Ghostty.Input.Key`의 rawValue(`enter`, `arrowUp`, `digit1`, `bracketLeft`)라 대소문자를 가리고 다른 표기(`Return`, `arrow_up`, `ctrl`)는 모른다. 수식 키는 `modifiers "shift,control,option,command"` 인자로 따로 준다(`send key "c" modifiers "control" to t`). `send key "ctrl-c"`는 되지 않는다
 - 풀기: 이름은 소문자 시작 camelCase로 쓴다(`enter`, `tab`, `escape`, `space`, `backspace`, `arrowUp`, `pageDown`, `f5`). 뒤에 키 묶음(keybind)에 걸린 키를 보냈다면(예: `modifiers "command"`와 `t`) 그 동작이 일어난다
-- 이 환경에서 실제 Apple Event로 오류를 내 보지는 않았다. 이름 해석은 단위 시험(`script_key`)으로 확인했다
+- 2026-11-18 주 세션이 격리한 실제 창에서 `send key "Enter"`와 `modifiers "hyper"`가 이 오류(-10000)를 내는 것을 확인했다. `modifiers " shift , "`처럼 공백만 남는 조각이 있어도 오류다(Ghostty `split(separator:)`와 같다). `"shift,"`처럼 빈 조각은 건너뛴다
