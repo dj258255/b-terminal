@@ -886,6 +886,8 @@ struct Win {
     quick_anim: Option<QuickAnim>,
     /// 키 순서(`ctrl+a>n`)의 기다리는 앞 키들(#106)
     keyseq: crate::keymap::Sequencer,
+    /// AppleScript `send key`의 키 순서와 그 칸(#650). 사람의 `keyseq`와 섞이지 않게 따로 둔다
+    script_keyseq: Option<(u64, crate::keymap::Sequencer)>,
     /// 닫기·끝내기 확인 막대(#108)
     confirm: Option<Confirm>,
     /// 칸 제목 입력 막대(#124): 그 칸과 친 글
@@ -966,6 +968,7 @@ impl Win {
             quick_place: None,
             quick_anim: None,
             keyseq: Default::default(),
+            script_keyseq: None,
             confirm: None,
             title_prompt: None,
             window_title: None,
@@ -3313,14 +3316,89 @@ impl App {
     }
 
     fn write_active(&mut self, bytes: &[u8]) {
+        if let Some(id) = self.focused_id() {
+            self.write_pane(id, bytes);
+        }
+    }
+
+    /// 칸 하나에 키 바이트를 쓴다(고른 글 지우기·맨 아래로 돌리기는 `write_active`와 같다)
+    fn write_pane(&mut self, id: u64, bytes: &[u8]) {
         let scroll = self.config.scroll_to_bottom.keystroke;
         let clear = clears_selection_on_write(self.config.selection_clear_on_typing, bytes);
         // 읽기 전용 칸: 쓰지 않으므로 고른 글도 지우지 않는다(복사할 수 있게, #209)
-        if let Some(t) = self.active_pane().filter(|t| !t.session.readonly()) {
+        if let Some(t) = self
+            .pane_index(id)
+            .map(|i| &self.panes[i])
+            .filter(|t| !t.session.readonly())
+        {
             if clear {
                 t.session.select_clear();
             }
             t.session.write_input(bytes, scroll);
+        }
+    }
+
+    /// 인코딩한 키 하나를 키 묶음에 먹이고, 묶음이 먹지 않은 바이트를 칸에 쓰고, 묶음이 고른 동작을 한다.
+    /// 사람이 누른 키(`script_pane`이 없다: 고른 칸에 쓴다)와 스크립트의 `send key`(그 칸에 쓴다, #650)가 같은 길을 지난다.
+    /// 스크립트의 키는 동작이 나올 때만 그 칸을 고른 칸으로 만든 뒤 한다(동작은 고른 칸에 한다)
+    fn feed_key(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        trigger: Option<crate::keymap::Trigger>,
+        bytes: Vec<u8>,
+        physical: winit::keyboard::PhysicalKey,
+        report_release: bool,
+        script_pane: Option<u64>,
+    ) {
+        // performable: 묶음은 동작을 지금 할 수 있을 때만 키를 먹는다
+        // 사람의 키 순서와 스크립트의 키 순서는 나눈다: 한쪽이 쌓은 앞 키가 다른 쪽 칸으로 새지 않게(#650)
+        let mut seq = match script_pane {
+            None => std::mem::take(&mut self.w.keyseq),
+            Some(pane) => {
+                let (seq, flush) = crate::keymap::script_sequencer(&mut self.w.script_keyseq, pane);
+                if let Some((left_pane, left)) = flush {
+                    self.write_pane(left_pane, &left);
+                }
+                seq
+            }
+        };
+        let keymap = std::mem::take(&mut self.keymap);
+        let out = seq.feed_with(&keymap, trigger, bytes, &mut |a| self.can_perform(a));
+        self.keymap = keymap;
+        match script_pane {
+            None => self.w.keyseq = seq,
+            Some(pane) => self.w.script_keyseq = Some((pane, seq)),
+        }
+        if out.action.is_none() && script_pane.is_none() && self.config.mouse_hide_while_typing {
+            if let Some(g) = &self.w.gfx {
+                g.window.set_cursor_visible(false);
+            }
+            self.w.pointer_hidden = true;
+        }
+        if !out.send.is_empty() {
+            match script_pane {
+                Some(pane) => self.write_pane(pane, &out.send),
+                None => self.write_active(&out.send),
+            }
+            let down = script_pane.or_else(|| self.active_pane().map(|t| t.id));
+            if let (true, Some(id)) = (report_release, down) {
+                self.w.kitty_down.insert(physical, id);
+            }
+        }
+        if let Some(action) = out.action {
+            if let Some(pane) = script_pane {
+                self.focus_pane(pane);
+            }
+            match action {
+                // all:은 글 보내기를 모든 칸에 한다. 다른 동작은 칸 하나의 일이 아니라 지금 칸·창에만 한다
+                Action::Text(text) if out.all => {
+                    for p in &self.panes {
+                        p.session.write(text.as_bytes());
+                    }
+                    self.request_redraw();
+                }
+                action => self.handle_action(action, event_loop),
+            }
         }
     }
 
@@ -4333,6 +4411,7 @@ impl App {
         // 기다리던 키 순서는 옛 키 묶음의 것이라 버린다
         for w in std::iter::once(&mut self.w).chain(&mut self.others) {
             w.keyseq = Default::default();
+            w.script_keyseq = None;
         }
         // 설정의 `font-size`가 바뀌었으면 모든 칸(과 창의 기준 크기)을 새 값으로, 아니면 칸마다 고른 크기를 둔다(#416·#422)
         let (old_size, new_size) = (self.config.font_size, next.font_size);
@@ -7111,36 +7190,7 @@ impl ApplicationHandler<UserEvent> for App {
                 let meta = keys::option_counts_as_alt(self.config.option_as_alt, self.raw_mods);
                 let report_release = modes.kitty.report_events;
                 let bytes = keys::encode(&event, self.mods, keys::to_state(self.raw_mods), modes, meta);
-                // performable: 묶음은 동작을 지금 할 수 있을 때만 키를 먹는다
-                let mut seq = std::mem::take(&mut self.w.keyseq);
-                let keymap = std::mem::take(&mut self.keymap);
-                let out = seq.feed_with(&keymap, trigger, bytes, &mut |a| self.can_perform(a));
-                self.keymap = keymap;
-                self.w.keyseq = seq;
-                if out.action.is_none() && self.config.mouse_hide_while_typing {
-                    if let Some(g) = &self.w.gfx {
-                        g.window.set_cursor_visible(false);
-                    }
-                    self.w.pointer_hidden = true;
-                }
-                if !out.send.is_empty() {
-                    self.write_active(&out.send);
-                    if let (true, Some(id)) = (report_release, self.active_pane().map(|t| t.id)) {
-                        self.w.kitty_down.insert(event.physical_key, id);
-                    }
-                }
-                if let Some(action) = out.action {
-                    match action {
-                        // all:은 글 보내기를 모든 칸에 한다. 다른 동작은 칸 하나의 일이 아니라 지금 칸·창에만 한다
-                        Action::Text(text) if out.all => {
-                            for p in &self.panes {
-                                p.session.write(text.as_bytes());
-                            }
-                            self.request_redraw();
-                        }
-                        action => self.handle_action(action, event_loop),
-                    }
-                }
+                self.feed_key(event_loop, trigger, bytes, event.physical_key, report_release, None);
             }
             WindowEvent::CursorMoved { position, .. } => {
                 self.w.cursor_pos = position;

@@ -17,6 +17,11 @@
 //!   Events are delivered there) but the app's state lives behind its event loop, so the handler only queues the
 //!   request; this module spins the run loop until the app answers (or a timeout passes).
 //!
+//! - `send key`, `split`, `close`, `close tab` and `close window` (#650) follow the same pattern: `send key` is a command
+//!   class (`BTScriptSendKeyCommand`, it names its terminal in an argument); the others are `handle...Command:` methods
+//!   of the object they act on. This module only parses the Apple Event; the key names, the key encoding and the close
+//!   policy belong to the app.
+//!
 //! Nothing here is installed in a process without a bundle identifier (a plain `cargo run`): there is no sdef to read.
 //! When the app turns scripting off (`macos-applescript = false`), every command and every object lookup sets a
 //! script error on the current command.
@@ -32,7 +37,7 @@ use objc2::runtime::{AnyClass, AnyObject, Bool, Imp, Sel};
 use objc2::{declare_class, msg_send_id, mutability, sel, ClassType, DeclaredClass};
 use objc2_app_kit::NSApplication;
 use objc2_foundation::{
-    NSArray, NSBundle, NSDate, NSDefaultRunLoopMode, NSInteger, NSObject, NSRunLoop, NSScriptClassDescription,
+    NSArray, NSBundle, NSDate, NSDefaultRunLoopMode, NSInteger, NSNumber, NSObject, NSRunLoop, NSScriptClassDescription,
     NSScriptCommand, NSScriptObjectSpecifier, NSString, NSUniqueIDSpecifier,
 };
 
@@ -50,6 +55,51 @@ const SNAPSHOT_FRESH: Duration = Duration::from_millis(100);
 const SNAPSHOT_RETRY: Duration = Duration::from_secs(2);
 /// `input text` is refused above this many UTF-8 bytes (checked before the text is copied into a Rust string).
 const MAX_TEXT_BYTES: usize = 1 << 20;
+/// `send key` refuses a key name or a modifier list above this many UTF-8 bytes (the longest key name is 20 bytes).
+const MAX_KEY_BYTES: usize = 256;
+
+/// The four-character codes of the `split direction` and `input action` enumerations in the sdef (the same as Ghostty's).
+const fn fourcc(code: &[u8; 4]) -> u32 {
+    u32::from_be_bytes(*code)
+}
+
+/// The side a `split` puts the new terminal on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScriptSplit {
+    Right,
+    Left,
+    Down,
+    Up,
+}
+
+impl ScriptSplit {
+    /// The enumerator of the `split direction` enumeration for this four-character code (`GSrt`, `GSlf`, `GSdn`, `GSup`).
+    pub fn from_code(code: u32) -> Option<Self> {
+        match code {
+            c if c == fourcc(b"GSrt") => Some(Self::Right),
+            c if c == fourcc(b"GSlf") => Some(Self::Left),
+            c if c == fourcc(b"GSdn") => Some(Self::Down),
+            c if c == fourcc(b"GSup") => Some(Self::Up),
+            _ => None,
+        }
+    }
+
+    /// The word `btctl new --split` takes.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Right => "right",
+            Self::Left => "left",
+            Self::Down => "down",
+            Self::Up => "up",
+        }
+    }
+}
+
+/// Whether the `input action` enumerator (`GIpr` press, `GIrl` release) is a release. Anything else is a press, as in
+/// Ghostty's `send key`.
+pub fn input_action_is_release(code: u32) -> bool {
+    code == fourcc(b"GIrl")
+}
 
 /// One terminal pane as the app reports it.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -85,8 +135,8 @@ pub struct ScriptSnapshot {
     pub front_window: Option<String>,
 }
 
-/// A command that changes the app. Ids are the strings from the snapshot. `Debug` leaves out the text of `InputText`
-/// (it may hold a password or a secret and commands end up in logs).
+/// A command that changes the app. Ids are the strings from the snapshot. `Debug` leaves out the text of `InputText` and
+/// the keys of `SendKey` (they may spell a password or a secret and commands end up in logs).
 #[derive(Clone, PartialEq, Eq)]
 pub enum ScriptCommand {
     /// Asks the app to call `set_snapshot` with its current state and then answer `Ok(None)`.
@@ -97,6 +147,12 @@ pub enum ScriptCommand {
     ActivateWindow { window: String },
     SelectTab { tab: String },
     InputText { terminal: String, text: String },
+    /// `send key`: the key name (Ghostty's raw values), whether it is a release, the comma-separated modifiers.
+    SendKey { terminal: String, key: String, release: bool, modifiers: Option<String> },
+    Split { terminal: String, direction: ScriptSplit },
+    Close { terminal: String },
+    CloseTab { tab: String },
+    CloseWindow { window: String },
 }
 
 impl std::fmt::Debug for ScriptCommand {
@@ -113,6 +169,19 @@ impl std::fmt::Debug for ScriptCommand {
                 .field("terminal", terminal)
                 .field("text_bytes", &text.len())
                 .finish(),
+            Self::SendKey { terminal, key, release, modifiers } => f
+                .debug_struct("SendKey")
+                .field("terminal", terminal)
+                .field("key_bytes", &key.len())
+                .field("release", release)
+                .field("modifier_bytes", &modifiers.as_ref().map(|m| m.len()))
+                .finish(),
+            Self::Split { terminal, direction } => {
+                f.debug_struct("Split").field("terminal", terminal).field("direction", direction).finish()
+            }
+            Self::Close { terminal } => f.debug_struct("Close").field("terminal", terminal).finish(),
+            Self::CloseTab { tab } => f.debug_struct("CloseTab").field("tab", tab).finish(),
+            Self::CloseWindow { window } => f.debug_struct("CloseWindow").field("window", window).finish(),
         }
     }
 }
@@ -122,6 +191,7 @@ impl std::fmt::Debug for ScriptCommand {
 pub enum ScriptTarget {
     Window(String),
     Tab(String),
+    Terminal(String),
 }
 
 /// The app's answer to a command: the new object, or a message for the script error.
@@ -322,6 +392,7 @@ fn perform(cmd: ScriptCommand) -> *mut AnyObject {
         Ok(None) => std::ptr::null_mut(),
         Ok(Some(ScriptTarget::Window(id))) => Retained::autorelease_return(ScriptWindowObj::new(&id)).cast(),
         Ok(Some(ScriptTarget::Tab(id))) => Retained::autorelease_return(ScriptTabObj::new(&id)).cast(),
+        Ok(Some(ScriptTarget::Terminal(id))) => Retained::autorelease_return(ScriptTerminalObj::new(&id)).cast(),
         Err(message) => {
             set_script_error(ERR_FAILED, &message);
             std::ptr::null_mut()
@@ -424,6 +495,24 @@ fn argument_id<T: ClassType + 'static>(command: &NSScriptCommand, key: &str, id_
     downcast::<T>(value).map(|o| id_of(&o))
 }
 
+/// A number argument (an enumerator arrives as the number of its four-character code).
+fn argument_u32(command: &NSScriptCommand, key: &str) -> Option<u32> {
+    // SAFETY: a property read on the live command; the value is checked for its class before `unsignedIntValue`.
+    let value = unsafe { command.evaluatedArguments() }.and_then(|d| unsafe { d.objectForKey(&ns(key)) })?;
+    if !kind_of::<NSNumber>(&value) {
+        return None;
+    }
+    // SAFETY: `value` is an `NSNumber`.
+    Some(unsafe { objc2::msg_send![&*value, unsignedIntValue] })
+}
+
+/// A text argument; `None` when it is absent or not text.
+fn argument_string(command: &NSScriptCommand, key: &str) -> Option<Retained<NSString>> {
+    // SAFETY: as `argument_u32`.
+    let value = unsafe { command.evaluatedArguments() }.and_then(|d| unsafe { d.objectForKey(&ns(key)) })?;
+    downcast::<NSString>(value)
+}
+
 // ---------------------------------------------------------------------------------------------------------------
 // Object specifiers
 
@@ -521,6 +610,14 @@ declare_class!(
             }
             perform(ScriptCommand::ActivateWindow { window: self.ivars().0.clone() })
         }
+
+        #[method(handleCloseWindowCommand:)]
+        fn handle_close_window(&self, _command: &NSScriptCommand) -> *mut AnyObject {
+            if !gate() {
+                return std::ptr::null_mut();
+            }
+            perform(ScriptCommand::CloseWindow { window: self.ivars().0.clone() })
+        }
     }
 );
 
@@ -601,6 +698,14 @@ declare_class!(
             }
             perform(ScriptCommand::SelectTab { tab: self.ivars().0.clone() })
         }
+
+        #[method(handleCloseTabCommand:)]
+        fn handle_close_tab(&self, _command: &NSScriptCommand) -> *mut AnyObject {
+            if !gate() {
+                return std::ptr::null_mut();
+            }
+            perform(ScriptCommand::CloseTab { tab: self.ivars().0.clone() })
+        }
     }
 );
 
@@ -658,6 +763,26 @@ declare_class!(
             }
             perform(ScriptCommand::Focus { terminal: self.ivars().0.clone() })
         }
+
+        #[method(handleSplitCommand:)]
+        fn handle_split(&self, command: &NSScriptCommand) -> *mut AnyObject {
+            if !gate() {
+                return std::ptr::null_mut();
+            }
+            let Some(direction) = argument_u32(command, "direction").and_then(ScriptSplit::from_code) else {
+                set_script_error(ERR_PARAM, "분할 방향(right, left, down, up)이 없거나 모르는 값입니다");
+                return std::ptr::null_mut();
+            };
+            perform(ScriptCommand::Split { terminal: self.ivars().0.clone(), direction })
+        }
+
+        #[method(handleCloseCommand:)]
+        fn handle_close(&self, _command: &NSScriptCommand) -> *mut AnyObject {
+            if !gate() {
+                return std::ptr::null_mut();
+            }
+            perform(ScriptCommand::Close { terminal: self.ivars().0.clone() })
+        }
     }
 );
 
@@ -700,6 +825,52 @@ declare_class!(
                 return std::ptr::null_mut();
             };
             if let Err(message) = run_command(ScriptCommand::InputText { terminal, text }) {
+                set_script_error(ERR_FAILED, &message);
+            }
+            std::ptr::null_mut()
+        }
+    }
+);
+
+declare_class!(
+    /// `send key "enter" modifiers "control" action release to terminal`: the key name is the direct parameter.
+    struct ScriptSendKeyCommand;
+
+    unsafe impl ClassType for ScriptSendKeyCommand {
+        type Super = NSScriptCommand;
+        type Mutability = mutability::InteriorMutable;
+        const NAME: &'static str = "BTScriptSendKeyCommand";
+    }
+
+    impl DeclaredClass for ScriptSendKeyCommand {}
+
+    unsafe impl ScriptSendKeyCommand {
+        #[method(performDefaultImplementation)]
+        fn perform_default(&self) -> *mut AnyObject {
+            if !gate() {
+                return std::ptr::null_mut();
+            }
+            // SAFETY: a property read on the live command; the value is checked for its class.
+            let key = unsafe { self.directParameter() }.and_then(downcast::<NSString>);
+            let modifiers = argument_string(self, "modifiers");
+            // Sizes first, before anything is copied into a Rust string.
+            if key.iter().chain(modifiers.iter()).any(|s| utf8_len(s) > MAX_KEY_BYTES) {
+                set_script_error(ERR_PARAM, "키 이름이나 수식 키가 너무 깁니다");
+                return std::ptr::null_mut();
+            }
+            let terminal = argument_id::<ScriptTerminalObj>(self, "terminal", |o| o.ivars().0.clone());
+            let (Some(key), Some(terminal)) = (key, terminal) else {
+                set_script_error(ERR_PARAM, "send key에는 키 이름과 터미널이 필요합니다");
+                return std::ptr::null_mut();
+            };
+            let release = argument_u32(self, "action").is_some_and(input_action_is_release);
+            let command = ScriptCommand::SendKey {
+                terminal,
+                key: key.to_string(),
+                release,
+                modifiers: modifiers.map(|m| m.to_string()),
+            };
+            if let Err(message) = run_command(command) {
                 set_script_error(ERR_FAILED, &message);
             }
             std::ptr::null_mut()
@@ -776,6 +947,28 @@ unsafe extern "C-unwind" fn app_new_tab(_this: &AnyObject, _sel: Sel, command: &
     perform(ScriptCommand::NewTab { window })
 }
 
+/// Selectors the scripting object classes (`BTScriptWindow`, `BTScriptTab`, `BTScriptTerminal`) answer for the sdef's
+/// commands. The classes are subclasses of `NSObject`, so a name `NSObject` already has would be overridden for every
+/// object; `object_key_conflicts` checks that none is (#650).
+pub(crate) const OBJECT_KEYS: [&str; 7] = [
+    "handleActivateWindowCommand:",
+    "handleCloseWindowCommand:",
+    "handleSelectTabCommand:",
+    "handleCloseTabCommand:",
+    "handleFocusCommand:",
+    "handleSplitCommand:",
+    "handleCloseCommand:",
+];
+
+/// The `OBJECT_KEYS` that `NSObject` already implements (empty when the names are chosen well).
+pub(crate) fn object_key_conflicts() -> Vec<&'static str> {
+    let object = NSObject::class();
+    OBJECT_KEYS
+        .into_iter()
+        .filter(|name| object.instance_method(Sel::register(name)).is_some())
+        .collect()
+}
+
 /// Selectors this module adds to `NSApplication` (the application-level keys and command handlers the sdef names).
 /// `install` adds exactly these; `app_key_conflicts` checks them against what AppKit already has.
 pub(crate) const APP_KEYS: [&str; 7] = [
@@ -824,6 +1017,7 @@ fn install() {
         ScriptTabObj::class(),
         ScriptTerminalObj::class(),
         ScriptInputTextCommand::class(),
+        ScriptSendKeyCommand::class(),
     );
     let app = NSApplication::class();
     // SAFETY (all `transmute`s below): each function has the C signature of its type alias, which is the shape the

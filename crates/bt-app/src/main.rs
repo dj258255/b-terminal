@@ -27,6 +27,7 @@ mod pane_font;
 mod pointer;
 mod quick;
 mod render_path;
+mod script_key;
 mod secure_input;
 mod shellint;
 mod split;
