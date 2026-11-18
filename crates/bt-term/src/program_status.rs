@@ -237,15 +237,20 @@ pub fn safe_text(s: &str, max: usize) -> String {
     crate::notify::clean(&kept, max)
 }
 
-/// 양방향 덮어쓰기·표지, 폭 없는 글자, 단어 붙임·보이지 않는 연산자 같은 서식 글자
+/// 양방향 덮어쓰기·표지, 폭 없는 글자, 단어 붙임·보이지 않는 연산자 같은 서식 글자, 줄·문단 구분자, 한글 채움 글자
 fn is_invisible_format(c: char) -> bool {
     matches!(c,
-        '\u{00AD}' | '\u{061C}' | '\u{180E}'
+        '\u{00AD}' | '\u{034F}' | '\u{061C}' | '\u{180E}'
+        // 한글 채움 글자: 빈 칸처럼 보인다
+        | '\u{115F}' | '\u{1160}' | '\u{3164}' | '\u{FFA0}'
         | '\u{200B}'..='\u{200F}'
+        // 줄·문단 구분자: 알림 제목이 줄바꿈된 것처럼 보인다
+        | '\u{2028}' | '\u{2029}'
         | '\u{202A}'..='\u{202E}'
         | '\u{2060}'..='\u{206F}'
         | '\u{FEFF}'
         | '\u{FFF9}'..='\u{FFFB}'
+        | '\u{1D173}'..='\u{1D17A}'
         | '\u{E0000}'..='\u{E007F}')
 }
 
@@ -602,6 +607,15 @@ mod tests {
     #[test]
     fn invisible_and_bidi_characters_are_removed_for_display() {
         assert_eq!(safe_text("a\u{202E}b\u{200B}c\u{2066}d\u{FEFF}", 50), "abcd");
+        // 줄·문단 구분자와 빈 칸처럼 보이는 채움 글자도 지운다(보안 검토 Low, #618). 이모지 변이 선택자는 남긴다
+        assert_eq!(
+            safe_text(
+                "a\u{2028}b\u{2029}c\u{3164}d\u{115F}\u{1160}e\u{FFA0}f\u{034F}g\u{1D173}h",
+                50
+            ),
+            "abcdefgh"
+        );
+        assert_eq!(safe_text("\u{2764}\u{FE0F}", 50), "\u{2764}\u{FE0F}");
         assert_eq!(safe_text("줄\u{1}바꿈", 50), "줄 바꿈");
         assert_eq!(safe_text("가나다라마", 3), "가나…");
     }
