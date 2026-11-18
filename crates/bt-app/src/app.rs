@@ -999,6 +999,8 @@ pub struct App {
     clipboard: Option<arboard::Clipboard>,
     /// 선택 클립보드(`copy-on-select = primary`·`both`). 앱 안 저장소라 창·탭·칸이 나눠 쓰고 다른 프로세스와는 나누지 않는다
     selection_clipboard: Option<String>,
+    /// 이 앱이 마지막으로 선택 클립보드에 쓸 때 본 이름 붙은 pasteboard의 바뀜 번호(macOS, #629)
+    selection_seen: Option<isize>,
     /// 시스템 설정의 스크롤 막대(앱이 앞으로 올 때마다 다시 읽는다, #630)
     system_scroller: SystemScroller,
     first: Option<SpawnOptions>,
@@ -1087,6 +1089,7 @@ impl App {
             raw_mods: Default::default(),
             clipboard: arboard::Clipboard::new().ok(),
             selection_clipboard: None,
+            selection_seen: None,
             system_scroller: SystemScroller::read(),
             first: Some(first),
             next_poll: Instant::now(),
@@ -2306,29 +2309,42 @@ impl App {
         }
     }
 
-    /// 선택 클립보드에 쓴다. macOS는 이름 붙은 pasteboard에도 써서 다른 b-terminal과 나눈다(실패해도 앱 안 저장소는 남는다)
+    /// 선택 클립보드에 쓴다. macOS는 이름 붙은 pasteboard에도 써서 다른 b-terminal과 나눈다(실패해도 앱 안 저장소는 남는다).
+    /// 암호 입력 중인 칸(붙여넣기처럼 termios를 다시 읽음)이나 보안 입력이 켜져 있으면 나누지 않는다. 어느 쪽이든 그때의
+    /// 바뀜 번호를 적어 두어, 읽을 때 그 뒤에 바뀐 경우에만 공유된 글을 쓴다(`pick_selection`)
     fn set_selection_clipboard(&mut self, text: String) {
         #[cfg(target_os = "macos")]
         {
+            use winit::platform::macos::{named_pasteboard_change_count, set_named_pasteboard_string};
             let id = self.focused_id();
-            let password = id
-                .and_then(|i| self.pane_index(i))
-                .is_some_and(|i| self.panes[i].password);
-            let scoped = id.is_some_and(|i| self.secure.has_scoped(i));
-            if share_selection(password, scoped) {
-                winit::platform::macos::set_named_pasteboard_string(SELECTION_PASTEBOARD, &text);
-            }
+            let password = id.and_then(|i| self.pane_index(i)).is_some_and(|i| {
+                let p = &self.panes[i];
+                paste_hidden(p.password, p.session.password_input())
+            });
+            let secure = self.secure.global() || id.is_some_and(|i| self.secure.has_scoped(i));
+            let written = if share_selection(password, secure) {
+                set_named_pasteboard_string(SELECTION_PASTEBOARD, &text)
+            } else {
+                None
+            };
+            self.selection_seen = written.or_else(|| named_pasteboard_change_count(SELECTION_PASTEBOARD));
         }
         self.selection_clipboard = Some(text);
     }
 
-    /// 선택 클립보드의 글(macOS는 다른 b-terminal이 쓴 것 포함)
+    /// 선택 클립보드의 글(macOS는 다른 b-terminal이 나중에 고른 것 포함)
     fn selection_clipboard_text(&self) -> Option<String> {
         #[cfg(target_os = "macos")]
-        let shared = winit::platform::macos::named_pasteboard_string(SELECTION_PASTEBOARD);
+        let (shared, count) = {
+            use winit::platform::macos::{named_pasteboard_change_count, named_pasteboard_string};
+            (
+                named_pasteboard_string(SELECTION_PASTEBOARD, SELECTION_MAX_LEN),
+                named_pasteboard_change_count(SELECTION_PASTEBOARD),
+            )
+        };
         #[cfg(not(target_os = "macos"))]
-        let shared = None;
-        pick_selection(shared, self.selection_clipboard.as_deref())
+        let (shared, count) = (None, None);
+        pick_selection(shared, count, self.selection_seen, self.selection_clipboard.as_deref())
     }
 
     /// `copy-on-select`: 고르기를 마칠 때 값에 따라 선택 클립보드·시스템 클립보드로 보낸다.
@@ -6471,18 +6487,33 @@ fn ime_commits_on_focus_loss(source: Option<&str>) -> bool {
 #[cfg(target_os = "macos")]
 const SELECTION_PASTEBOARD: &str = "com.dj258255.b-terminal.selection";
 
+/// 다른 프로세스가 쓴 선택 클립보드 글을 읽는 상한(UTF-16 단위, OSC 52와 같은 1MiB 꼴). 넘으면 없다고 본다
+#[cfg(target_os = "macos")]
+const SELECTION_MAX_LEN: usize = 1 << 20;
+
 /// 고른 글을 이름 붙은 pasteboard(같은 사용자의 다른 프로세스가 읽을 수 있다)에 써도 되는가. 암호 입력 중인 칸(`password`)이나
-/// 보안 입력이 칸 단위로 켜진 칸(`secure_scoped`)에서 나온 글은 앱 안 저장소에만 둔다
-fn share_selection(password: bool, secure_scoped: bool) -> bool {
-    !password && !secure_scoped
+/// 보안 입력이 켜진 때(`secure`: 전역이거나 그 칸)의 글은 앱 안 저장소에만 둔다
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn share_selection(password: bool, secure: bool) -> bool {
+    !password && !secure
 }
 
-/// 선택 클립보드에서 읽을 글: 시스템의 이름 붙은 pasteboard(다른 b-terminal이 나중에 골랐을 수 있다)가 먼저이고,
-/// 없거나 비었으면 앱 안 저장소. 둘 다 없으면 없다
-fn pick_selection(shared: Option<String>, local: Option<&str>) -> Option<String> {
-    shared
-        .filter(|t| !t.is_empty())
-        .or_else(|| local.filter(|t| !t.is_empty()).map(str::to_owned))
+/// 선택 클립보드에서 읽을 글. 이름 붙은 pasteboard의 바뀜 번호(`count`)가 이 앱이 마지막으로 고를 때 적어 둔 번호(`seen`)와
+/// 다르면 다른 b-terminal이 나중에 고른 것이니 그 글이 먼저다. 같으면(그 뒤 아무도 쓰지 않음) 앱 안 저장소가 먼저다. 그래서
+/// 공유하지 않은 글(암호 칸)을 고른 뒤에도 예전 공유 글이 붙지 않는다. 먼저 고른 쪽이 비었으면 다른 쪽, 둘 다 없으면 없다
+fn pick_selection(
+    shared: Option<String>,
+    count: Option<isize>,
+    seen: Option<isize>,
+    local: Option<&str>,
+) -> Option<String> {
+    let shared = shared.filter(|t| !t.is_empty());
+    let local = local.filter(|t| !t.is_empty()).map(str::to_owned);
+    if count.is_some() && count != seen {
+        shared.or(local)
+    } else {
+        local.or(shared)
+    }
 }
 
 /// 시스템 설정의 스크롤 막대 두 가지(#630). 읽지 못하면(macOS가 아니거나 앱 스레드가 아니면) 기본: 스크롤할 때만 보이고 한 쪽씩
@@ -7647,16 +7678,25 @@ mod tests {
     #[cfg(target_os = "macos")]
     #[test]
     fn named_pasteboard_round_trips_and_refuses_system_names() {
-        use winit::platform::macos::{named_pasteboard_string, release_named_pasteboard, set_named_pasteboard_string};
+        use winit::platform::macos::{
+            named_pasteboard_change_count, named_pasteboard_string, release_named_pasteboard,
+            set_named_pasteboard_string,
+        };
         let name = format!("com.dj258255.b-terminal.test-{}", std::process::id());
-        assert!(set_named_pasteboard_string(&name, "고른 글 abc"));
-        assert_eq!(named_pasteboard_string(&name).as_deref(), Some("고른 글 abc"));
-        assert!(set_named_pasteboard_string(&name, "둘째"));
-        assert_eq!(named_pasteboard_string(&name).as_deref(), Some("둘째"));
+        let c1 = set_named_pasteboard_string(&name, "고른 글 abc");
+        assert!(c1.is_some());
+        assert_eq!(named_pasteboard_string(&name, 1024).as_deref(), Some("고른 글 abc"));
+        assert_eq!(named_pasteboard_change_count(&name), c1);
+        let c2 = set_named_pasteboard_string(&name, "둘째");
+        assert!(c2.is_some() && c2 != c1);
+        assert_eq!(named_pasteboard_string(&name, 1024).as_deref(), Some("둘째"));
+        // 상한(UTF-16 단위)을 넘는 글은 복사하지 않고 없다고 본다
+        assert_eq!(named_pasteboard_string(&name, 1), None);
         release_named_pasteboard(&name);
-        assert!(!set_named_pasteboard_string("Apple CFPasteboard general", "x"));
-        assert_eq!(named_pasteboard_string("Apple CFPasteboard general"), None);
-        assert!(!set_named_pasteboard_string("", "x"));
+        assert_eq!(set_named_pasteboard_string("Apple CFPasteboard general", "x"), None);
+        assert_eq!(named_pasteboard_string("Apple CFPasteboard general", 1024), None);
+        assert_eq!(named_pasteboard_change_count("Apple CFPasteboard general"), None);
+        assert_eq!(set_named_pasteboard_string("", "x"), None);
     }
 
     /// 암호 입력 중이거나 보안 입력이 켜진 칸에서 고른 글은 다른 프로세스가 읽을 수 있는 pasteboard에 쓰지 않는다
@@ -7666,23 +7706,38 @@ mod tests {
         assert!(!share_selection(true, false));
         assert!(!share_selection(false, true));
         assert!(!share_selection(true, true));
+        // 붙여넣기처럼 칸의 마지막 살핀 값이 거짓이어도 termios를 다시 읽어 암호 입력이면 공유하지 않는다(살핌 주기 200ms 사이)
+        assert!(!share_selection(paste_hidden(false, Some(true)), false));
+        assert!(share_selection(paste_hidden(false, None), false));
     }
 
-    /// 선택 클립보드(#629): 시스템의 이름 붙은 pasteboard가 비었으면 앱 안 저장소를 쓴다. 있으면 그쪽이 먼저다
-    /// (다른 b-terminal이 나중에 골랐을 수 있다)
+    /// 선택 클립보드(#629): 이 앱이 마지막으로 고른 뒤 pasteboard가 바뀌었으면(다른 b-terminal이 나중에 골랐다) 그 글,
+    /// 아니면 앱 안 저장소. 암호 칸에서 방금 고른 글(공유하지 않음)이 예전에 공유된 글에 밀리지 않는다(PR #637 보안 검토)
     #[test]
-    fn selection_prefers_shared_pasteboard_over_local_store() {
+    fn selection_prefers_what_changed_last() {
+        let other = || Some("other".to_string());
+        // 다른 쪽이 그 뒤에 썼다(바뀜 번호가 내가 적어 둔 것과 다르다)
+        assert_eq!(pick_selection(other(), Some(8), Some(7), Some("mine")), other());
+        // 내가 고른 뒤 아무도 쓰지 않았다: 앱 안 저장소(암호 칸에서 고른 글이면 공유되지 않은 그 글)
         assert_eq!(
-            pick_selection(Some("other".into()), Some("mine")),
-            Some("other".to_string())
-        );
-        assert_eq!(pick_selection(None, Some("mine")), Some("mine".to_string()));
-        assert_eq!(
-            pick_selection(Some(String::new()), Some("mine")),
+            pick_selection(other(), Some(7), Some(7), Some("mine")),
             Some("mine".to_string())
         );
-        assert_eq!(pick_selection(None, None), None);
-        assert_eq!(pick_selection(Some(String::new()), Some("")), None);
+        // 이 앱에서 아직 고른 적이 없다: 공유된 글
+        assert_eq!(pick_selection(other(), Some(3), None, None), other());
+        // 공유된 글이 없거나 비었다
+        assert_eq!(
+            pick_selection(None, Some(8), Some(7), Some("mine")),
+            Some("mine".to_string())
+        );
+        assert_eq!(
+            pick_selection(Some(String::new()), Some(8), Some(7), Some("mine")),
+            Some("mine".to_string())
+        );
+        // 앱 안 저장소가 비었으면 바뀌지 않았어도 공유된 글
+        assert_eq!(pick_selection(other(), Some(7), Some(7), None), other());
+        assert_eq!(pick_selection(None, None, None, None), None);
+        assert_eq!(pick_selection(Some(String::new()), None, None, Some("")), None);
     }
 
     #[test]

@@ -618,16 +618,22 @@ pub fn set_user_notification_handler(handler: Box<dyn Fn(UserNotificationRespons
     crate::platform_impl::user_notify::set_handler(handler)
 }
 
-/// Writes `text` as the only content of the pasteboard called `name` (replacing what it held). Only the app's own
-/// named pasteboards are allowed: the system's pasteboards (general, find, ...) are refused with `false`. Needs no app
-/// bundle. b-terminal(#629)
-pub fn set_named_pasteboard_string(name: &str, text: &str) -> bool {
+/// Writes `text` to the pasteboard called `name` (an app-private pasteboard, never a system one: names starting with
+/// `Apple ` are refused) and returns its change count afterwards, `None` if refused or the write failed. b-terminal(#629)
+pub fn set_named_pasteboard_string(name: &str, text: &str) -> Option<isize> {
     crate::platform_impl::system_prefs::set_named_pasteboard_string(name, text)
 }
 
-/// The text on the pasteboard called `name`, `None` if it holds none (or `name` is a system pasteboard). b-terminal(#629)
-pub fn named_pasteboard_string(name: &str) -> Option<String> {
-    crate::platform_impl::system_prefs::named_pasteboard_string(name)
+/// The text on the pasteboard called `name`, `None` if it holds none, holds more than `max_len` UTF-16 units (checked
+/// before copying), or `name` is a system pasteboard. b-terminal(#629)
+pub fn named_pasteboard_string(name: &str, max_len: usize) -> Option<String> {
+    crate::platform_impl::system_prefs::named_pasteboard_string(name, max_len)
+}
+
+/// The change count of the pasteboard called `name` (any process writing to it raises it), `None` for a system name.
+/// b-terminal(#629)
+pub fn named_pasteboard_change_count(name: &str) -> Option<isize> {
+    crate::platform_impl::system_prefs::named_pasteboard_change_count(name)
 }
 
 /// Frees the named pasteboard and what it holds for every process (`releaseGlobally`). b-terminal(#629)

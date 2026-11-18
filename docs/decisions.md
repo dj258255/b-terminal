@@ -1857,15 +1857,16 @@ E8의 실제 창 로그에서 10ms 넘는 GPU 프레임은 세 가지였다. (1)
 - 둘 다 `unsafe`가 필요해 뺐다. 작업 공간 규칙은 두고 AppKit 호출을 vendor winit(`platform_impl/macos/system_prefs.rs`)에만 둔다.
 
 ### 결정
-1. 앱은 macOS에서 선택 클립보드를 `com.dj258255.b-terminal.selection`에 쓰고, 읽을 때 그 pasteboard가 먼저, 비었으면 앱 안 저장소를 쓴다. 쓰기에 실패해도 앱 안 저장소는 남는다. 앱 묶음이 없어도 된다.
+1. 앱은 macOS에서 선택 클립보드를 `com.dj258255.b-terminal.selection`에 쓴다. 고를 때마다 그 pasteboard의 바뀜 번호(`changeCount`)를 적어 두고, 읽을 때 그 뒤에 바뀌었으면(다른 b-terminal이 나중에 골랐다) 그 글을, 아니면 앱 안 저장소를 쓴다. 다른 프로세스가 쓴 글은 1M자(UTF-16 단위)를 넘으면 복사하기 전에 버린다. 쓰기에 실패해도 앱 안 저장소는 남는다. 앱 묶음이 없어도 된다.
 2. vendor 함수는 `Apple `로 시작하는 이름(시스템의 일반·찾기·글꼴·끌기 pasteboard)과 빈 이름을 거절한다. 사용자의 일반 클립보드는 이 길로 닿지 않는다.
-3. 고른 글이 나온 칸이 암호 입력 중(termios 추측, #258)이거나 그 칸에 보안 입력이 켜져 있으면 이름 붙은 pasteboard에 쓰지 않고 앱 안 저장소에만 둔다(`share_selection`).
+3. 고른 글이 나온 칸이 암호 입력 중이거나(termios 추측, #258. 붙여넣기처럼 고르기를 마칠 때 termios를 다시 읽는다) 보안 입력이 켜져 있으면(전역이거나 그 칸) 이름 붙은 pasteboard에 쓰지 않고 앱 안 저장소에만 둔다(`share_selection`). 그 뒤 붙여넣기는 앱 안 저장소의 그 글이다.
 4. 앱이 끝날 때 그 pasteboard를 비운다(`releaseGlobally`).
 5. 스크롤 막대: `NSScroller.preferredScrollerStyle`이 Legacy면 스크롤백이 있는 동안 막대를 늘 그린다. `AppleScrollerPagingBehavior`가 참이면 빈 곳 누르기가 손잡이 가운데를 그 자리로 옮긴다. 시작할 때와 창이 초점을 얻을 때 다시 읽고, 읽지 못하면 지금 동작(스크롤할 때, 한 쪽씩)이다. 시스템 설정은 읽기만 한다.
 
 ### 감수한 트레이드오프
 - 이름 붙은 pasteboard는 같은 사용자의 다른 프로세스가 이름으로 읽을 수 있다. 고른 글이 프로세스 밖에 보인다(Ghostty와 같은 성질, 일반 클립보드와 같은 범위). 끄는 설정 키는 두지 않았다.
 - 암호 입력 판단은 termios 추측이라 놓칠 수 있다(예: 원격 셸 안의 암호 입력).
+- 같은 사용자의 다른 프로세스가 그 pasteboard에 글을 써 두면, 다른 b-terminal이 고른 것과 구별하지 못해 ⌘⇧V가 그 글을 붙인다. 붙여넣기 확인(`clipboard-paste-protection`)과 괄호 붙여넣기 처리는 그대로 거친다. 일반 클립보드도 같은 성질이다.
 - 한 인스턴스가 끝나며 비우면 떠 있는 다른 b-terminal의 공유 선택도 사라진다(그쪽 앱 안 저장소는 남는다).
 - 두 프로세스 사이 붙여넣기, Legacy 스타일과 "누른 자리로" 설정의 실제 화면은 재지 않았다(이 기기는 Overlay이고 시스템 설정은 바꾸지 않았다).
 

@@ -22,20 +22,34 @@ fn board(name: &str) -> Option<Retained<NSPasteboard>> {
     Some(unsafe { NSPasteboard::pasteboardWithName(&name) })
 }
 
-pub fn set_named_pasteboard_string(name: &str, text: &str) -> bool {
-    let Some(pb) = board(name) else { return false };
+/// Writes `text` and returns the pasteboard's change count afterwards (`None` for a refused name or a failed write).
+pub fn set_named_pasteboard_string(name: &str, text: &str) -> Option<isize> {
+    let pb = board(name)?;
     let text = NSString::from_str(text);
     // SAFETY: plain message sends on a live pasteboard; `NSPasteboardTypeString` is a framework constant.
     unsafe {
         pb.clearContents();
-        pb.setString_forType(&text, NSPasteboardTypeString)
+        if !pb.setString_forType(&text, NSPasteboardTypeString) {
+            return None;
+        }
+        Some(pb.changeCount())
     }
 }
 
-pub fn named_pasteboard_string(name: &str) -> Option<String> {
+/// The text on the pasteboard, `None` when it holds none or more than `max_len` UTF-16 units (checked before copying,
+/// since another process may have put anything there).
+pub fn named_pasteboard_string(name: &str, max_len: usize) -> Option<String> {
     let pb = board(name)?;
     // SAFETY: as above; `stringForType:` returns nil when the pasteboard holds no string.
-    unsafe { pb.stringForType(NSPasteboardTypeString) }.map(|s| s.to_string())
+    let s = unsafe { pb.stringForType(NSPasteboardTypeString) }?;
+    (s.length() <= max_len).then(|| s.to_string())
+}
+
+/// The pasteboard's change count (it goes up whenever any process writes to it).
+pub fn named_pasteboard_change_count(name: &str) -> Option<isize> {
+    let pb = board(name)?;
+    // SAFETY: plain property read on a live pasteboard.
+    Some(unsafe { pb.changeCount() })
 }
 
 pub fn release_named_pasteboard(name: &str) {
