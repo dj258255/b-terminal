@@ -87,6 +87,23 @@ btctl last --tab 2 --json                # 2번 탭에서 마지막으로 끝난
 
 제어 소켓은 같은 사용자만 닿는 폴더(0700)의 소켓(0600)입니다. 자세한 경계는 [SECURITY.md](SECURITY.md)에 있습니다.
 
+## AI 코딩 에이전트 CLI와 쓰기
+
+Claude Code·Codex·Gemini CLI 같은 에이전트 CLI는 보통 터미널 프로그램이라 그대로 돕니다. b-terminal이 이런 프로그램에 주는 것은 다음과 같습니다.
+
+- 깜빡임 없는 다시 그리기(동기화 출력, 모드 2026), Shift+Enter 줄바꿈(kitty 키보드 프로토콜), 밝은·어두운 테마 따라가기(모드 2031·OSC 11), 괄호 붙여넣기
+- 상태 표시(OSC 7501, Program Status Protocol): 프로그램이 "일하는 중·사용자를 기다림·끝남·실패"를 알리면 탭에 표시합니다. 보고 있지 않은 탭이 기다리거나 끝나면 데스크톱 알림도 냅니다. Claude Code 2.1.295 이상은 설정 없이 보냅니다(tmux 안에서는 보내지 않습니다)
+
+Claude Code는 자기가 아는 터미널(iTerm2·kitty·Ghostty)에서만 스스로 데스크톱 알림을 보내고 링크를 씁니다(2.1.327에서 확인). b-terminal은 그 신호(OSC 777·99·8)를 모두 받으므로, 필요하면 직접 켭니다.
+
+```bash
+# Claude Code 자신의 알림을 OSC 777로(~/.claude/settings.json). OSC 7501 알림과 겹칠 수 있습니다
+#   { "preferredNotifChannel": "ghostty" }
+export FORCE_HYPERLINK=1   # 파일·주소를 OSC 8 링크로 씁니다(Cmd+클릭으로 엶)
+```
+
+b-terminal은 다른 터미널인 척하지 않습니다(`TERM_PROGRAM=b-terminal`). 에이전트 목록이나 상태 모아 보기 같은 작업 화면은 터미널이 아닌 별도 도구의 일로 둡니다.
+
 ## 문서
 
 처음 보는 분

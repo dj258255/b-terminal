@@ -106,6 +106,12 @@ pub enum Signal {
     KittyNotifyReply(Vec<u8>),
     /// OSC 133의 명령 하나를 옵션까지 읽은 것(#329). 같은 OSC에서 `Prompt`보다 먼저 나온다. 세션이 엔진 줄 표시·fresh-line에 적용한다
     Semantic(crate::osc133::SemanticPrompt),
+    /// 프로그램 상태 보고(OSC 7501)의 지원 질의. `bel`은 질의가 BEL로 끝났는가(답도 같은 끝맺음으로 한다)(#618)
+    ProgramStatusQuery {
+        bel: bool,
+    },
+    /// 검증을 통과한 프로그램 상태 보고(OSC 7501). 세션이 칸의 기록에 적용한다(#618)
+    ProgramStatus(Box<crate::program_status::Report>),
 }
 
 /// OSC 22 이름의 길이 상한(바이트). 가장 긴 이름("bottom_right_corner")보다 넉넉하다
@@ -632,6 +638,16 @@ impl Scanner {
             }
             return;
         }
+        // 프로그램 상태(OSC 7501, #618): 본문은 글자 범위가 정해진 바이트라 lossy로 바꾸지 않고 그대로 읽는다.
+        // 틀린 보고는 파서가 통째로 버리고, 모르는 OSC처럼 조용하다
+        if let Some(body) = raw.strip_prefix(b"7501;") {
+            match crate::program_status::parse(body) {
+                Some(crate::program_status::Command::Query) => out.push((at, Signal::ProgramStatusQuery { bel })),
+                Some(crate::program_status::Command::Report(r)) => out.push((at, Signal::ProgramStatus(Box::new(r)))),
+                None => {}
+            }
+            return;
+        }
         let text = String::from_utf8_lossy(&raw);
         // OSC 133(#329): 옵션까지 읽은 신호를 먼저 낸다. 엔진이 fresh-line으로 커서를 옮긴 뒤에 `Prompt`가 그 줄을 적는다
         if let Some(sp) = text.strip_prefix("133;").and_then(crate::osc133::parse) {
@@ -1148,6 +1164,35 @@ mod tests {
         assert_eq!(notes(b"\x1b]99;i=1;Build done\x1b\\"), vec![n("Build done", "")]);
         assert_eq!(notes(b"\x1b]99;;Build done\x1b\\"), vec![n("Build done", "")]);
         assert_eq!(notes(b"\x1b]99;i=1:p=body;all green\x07"), vec![n("", "all green")]);
+    }
+
+    #[test]
+    fn osc7501_makes_a_query_or_a_checked_report_signal() {
+        use crate::program_status::State;
+        assert_eq!(
+            notes(b"\x1b]7501;?\x1b\\"),
+            vec![Signal::ProgramStatusQuery { bel: false }]
+        );
+        assert_eq!(
+            notes(b"\x1b]7501;?\x07"),
+            vec![Signal::ProgramStatusQuery { bel: true }]
+        );
+        let got = notes(b"\x1b]7501;state=working:progress=40\x07");
+        assert!(matches!(&got[..], [Signal::ProgramStatus(r)] if r.state == State::Working && r.progress == Some(40)));
+        // 틀린 보고, 번호만 있는 문자열, 모르는 번호는 조용하다
+        for bad in [
+            &b"\x1b]7501;state=sleeping\x07"[..],
+            b"\x1b]7501\x07",
+            b"\x1b]7502;state=idle\x07",
+        ] {
+            assert!(notes(bad).is_empty(), "{bad:?}");
+        }
+        // 조각으로 와도 하나로 모인다
+        let mut s = Scanner::default();
+        assert!(s.feed(b"\x1b]7501;state=do").is_empty());
+        assert_eq!(s.feed(b"ne\x1b\\").len(), 1);
+        // tmux 패스스루 안쪽은 조용하다(ADR-053)
+        assert!(notes(b"\x1bPtmux;\x1b\x1b]7501;?\x07\x1b\\").is_empty());
     }
 
     #[test]

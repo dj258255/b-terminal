@@ -32,6 +32,7 @@ mod shellint;
 mod split;
 mod startup;
 mod state;
+mod status_note;
 mod tabbar;
 mod toggles;
 mod undo;

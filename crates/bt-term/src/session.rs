@@ -206,6 +206,8 @@ pub enum SessionEvent {
     KittyClipboardRead(crate::kitty_clip::ReadRequest),
     /// 프로그램이 kitty 클립보드 프로토콜로 쓰기 거래를 끝냈다(#325). 상한은 이미 지났고 정책은 앱이 본다
     KittyClipboardWrite(crate::kitty_clip::WriteRequest),
+    /// 칸의 프로그램 상태 기록(OSC 7501)이 바뀌었다(#618). 기록이 새로 `blocked`·`done`·`error`가 되었으면 그 값이 함께 온다
+    ProgramStatus(Option<crate::program_status::Alert>),
 }
 
 pub type EventSink = Arc<dyn Fn(SessionEvent) + Send + Sync>;
@@ -469,6 +471,8 @@ pub struct Session {
     scheme_light: Arc<std::sync::atomic::AtomicBool>,
     /// 프로그램이 OSC 22로 정한 마우스 포인터 모양의 번호(`MouseShape::to_code`, 0은 정한 것 없음)(#239)
     mouse_shape: Arc<std::sync::atomic::AtomicU8>,
+    /// 프로그램이 OSC 7501로 알린 상태 기록(#618). 읽기 스레드가 쓰고 앱이 읽는다
+    program_status: Arc<Mutex<crate::program_status::Records>>,
     /// 프로그램이 크기 알림(모드 2048)을 켜 두었는가(#264)
     in_band_size: Arc<std::sync::atomic::AtomicBool>,
     /// 이 칸이 보이는가. 앱이 알리기 전에는 보인다고 본다(Ghostty `Surface.visible` 기본값 true)(#303)
@@ -743,6 +747,8 @@ impl Session {
 
         let mouse_shape = Arc::new(std::sync::atomic::AtomicU8::new(0));
         let thread_mouse_shape = mouse_shape.clone();
+        let program_status = Arc::new(Mutex::new(crate::program_status::Records::default()));
+        let thread_status = program_status.clone();
         let thread_scheme_updates = scheme_updates.clone();
         let thread_scheme_light = scheme_light.clone();
         let in_band_size = Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -839,6 +845,10 @@ impl Session {
                                     // OSC 133 확장(#329): 줄 표시·fresh-line·지우기 규칙을 엔진에 넣는다
                                     Signal::Semantic(sp) => sp.apply(&mut g.term),
                                     Signal::Prompt(PromptMark::PromptStart) => {
+                                        // 새 셸 프롬프트: 일하던 프로그램은 끝났다(OSC 7501). done·error는 남는다
+                                        if thread_status.lock().drop_live() {
+                                            events.push(SessionEvent::ProgramStatus(None));
+                                        }
                                         thread_integrated.store(true, std::sync::atomic::Ordering::Release);
                                         let line = g.cursor_abs();
                                         if g.prompts.back() != Some(&line) {
@@ -895,6 +905,9 @@ impl Session {
                                             thread_mouse_shape.store(0, std::sync::atomic::Ordering::Release);
                                             // 진행 막대도 지운다(Ghostty `fullReset` 처리, stream_terminal.zig 751줄)(#548)
                                             events.push(SessionEvent::Progress { state: 0, percent: 0 });
+                                            // 프로그램 상태 기록도 모두 지운다(DECSTR은 지우지 않는다)(#618)
+                                            thread_status.lock().clear_all();
+                                            events.push(SessionEvent::ProgramStatus(None));
                                         }
                                     }
                                     // 마우스 포인터 모양(OSC 22): 칸이 들고 있고, 보여 주는 일은 앱이 한다. 빈 이름은 되돌린다(#239)
@@ -1071,6 +1084,15 @@ impl Session {
                                     }
                                     // kitty 알림(OSC 99)의 지원 질의 답(#561)
                                     Signal::KittyNotifyReply(reply) => write_reply(&thread_writer, &reply),
+                                    // 프로그램 상태(OSC 7501): 지원 질의의 답은 터미널의 답이라 읽기 전용 칸에서도 쓴다(ADR-018 결정 4).
+                                    // 답에는 기록의 내용이 들어가지 않는다(#618)
+                                    Signal::ProgramStatusQuery { bel } => {
+                                        write_reply(&thread_writer, &crate::program_status::query_reply(bel))
+                                    }
+                                    Signal::ProgramStatus(report) => {
+                                        let alert = thread_status.lock().apply(*report);
+                                        events.push(SessionEvent::ProgramStatus(alert));
+                                    }
                                     other => events.push(signal_event(other)),
                                 }
                             }
@@ -1100,6 +1122,10 @@ impl Session {
                 }
             }
             let code = child.wait().ok().map(|s| s.exit_code());
+            // 붙어 있던 프로세스가 끝났다: 일하던 상태는 사라지고 done·error는 남는다(OSC 7501)
+            if thread_status.lock().drop_live() {
+                sink(SessionEvent::ProgramStatus(None));
+            }
             *thread_exited.lock() = Some(code);
             sink(SessionEvent::Exited(code));
         })?;
@@ -1120,6 +1146,7 @@ impl Session {
             scheme_updates,
             scheme_light,
             mouse_shape,
+            program_status,
             in_band_size,
             visible,
             visibility_reports,
@@ -1288,6 +1315,16 @@ impl Session {
         self.inner.lock().term.scroll_display(Scroll::Bottom);
     }
 
+    /// 탭에 보일 가장 급한 프로그램 상태(OSC 7501, #618). 없으면 `None`
+    pub fn program_status(&self) -> Option<crate::program_status::Summary> {
+        self.program_status.lock().summary()
+    }
+
+    /// 사용자가 본 `done`·`error` 기록을 지운다(#618). 지운 것이 있으면 참
+    pub fn clear_seen_program_status(&self) -> bool {
+        self.program_status.lock().clear_seen()
+    }
+
     /// 터미널을 초기화한다(Ghostty `reset`): VT의 RIS(`ESC c`)를 엔진에 먹인다. PTY에는 아무것도 보내지 않는다.
     /// 읽기 스레드가 RIS를 볼 때 하는 일(그림 지우기, 키보드 잠금 풀기)과 프롬프트 기억·고른 끝점도 함께 비운다
     pub fn reset(&self) {
@@ -1299,6 +1336,7 @@ impl Session {
             g.prompts.clear();
             g.sel_end = None;
         }
+        self.program_status.lock().clear_all();
         self.kam_locked.store(false, std::sync::atomic::Ordering::Release);
         self.scheme_updates.store(false, std::sync::atomic::Ordering::Release);
         self.in_band_size.store(false, std::sync::atomic::Ordering::Release);
@@ -1594,6 +1632,8 @@ fn signal_event(sig: Signal) -> SessionEvent {
         | Signal::DcsQuery(_)
         | Signal::KittyColor { .. }
         | Signal::KittyNotifyReply(_)
+        | Signal::ProgramStatusQuery { .. }
+        | Signal::ProgramStatus(_)
         | Signal::WindowResize { .. } => SessionEvent::Output,
     }
 }
@@ -2236,6 +2276,7 @@ impl Emulator {
                 }
                 Signal::Semantic(sp) => sp.apply(&mut self.term), // #329
                 Signal::KittyNotifyReply(r) => self.replies.extend(r), // #561
+                Signal::ProgramStatusQuery { bel } => self.replies.extend(crate::program_status::query_reply(*bel)), // #618
                 _ => {}
             }
             notes.push(sig);

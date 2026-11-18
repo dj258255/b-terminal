@@ -171,6 +171,8 @@ pub struct Pane {
     pub cwd_reset: bool,
     /// 마지막으로 데스크톱 알림을 띄운 때(탭마다 묶는다)
     last_desktop: Option<Instant>,
+    /// 프로그램 상태(OSC 7501)로 마지막 데스크톱 알림을 띄운 때(칸마다 5초에 한 번, #618)
+    last_status_note: Option<Instant>,
     /// 셸 통합: 지금 도는 명령(글, 시작한 때)과 마지막으로 끝난 명령
     pub running: Option<(Option<String>, Instant)>,
     pub last_command: Option<bt_term::CommandRecord>,
@@ -199,6 +201,11 @@ impl Pane {
         self.progress
             .filter(|(_, _, at)| at.elapsed() < Duration::from_secs(15))
             .map(|(s, p, _)| (s, p))
+    }
+
+    /// 이 칸의 프로그램 상태(OSC 7501) 요약. 막대로 그릴 때는 OSC 9;4 진행 표시보다 앞선다
+    fn status_summary(&self) -> Option<bt_term::program_status::Summary> {
+        self.session.program_status()
     }
 
     /// 탭 줄·창 제목에 쓸 이름: 사람이 붙인 제목 → 셸이 보낸 제목 → 전경 프로세스 이름. 보지 않은 벨이 있으면 앞에 🔔
@@ -1495,13 +1502,36 @@ impl App {
         }
     }
 
-    /// 보이는 칸들의 안 읽음과 벨 표시를 지운다
+    /// 보이는 칸들의 안 읽음과 벨 표시를 지운다. 창이 앞이면 고른 칸의 끝남·오류 상태(OSC 7501)도 본 것으로 지운다
     fn clear_visible_unread(&mut self) {
         for i in 0..self.panes.len() {
             if self.is_visible(i) {
                 self.panes[i].unread = false;
                 self.panes[i].bell = false;
             }
+            if self.w.focused && self.is_focused(i) {
+                self.panes[i].session.clear_seen_program_status();
+            }
+        }
+    }
+
+    /// 칸의 프로그램 상태 기록(OSC 7501)이 바뀌었다(#618). 사용자가 보고 있는 칸(창이 앞이고 고른 칸)이면 끝남·오류를 본 것으로 지우고,
+    /// 아니면 사용자를 부르는 바뀜(기다림·끝남·오류가 새로 됨)에 데스크톱 알림을 하나 띄운다(`desktop-notifications`, 칸마다 5초에 한 번)
+    fn on_program_status(&mut self, idx: usize, alert: Option<bt_term::program_status::Alert>) {
+        let watching = self.w.focused && self.is_focused(idx);
+        if watching {
+            self.panes[idx].session.clear_seen_program_status();
+        }
+        let Some(alert) = alert else { return };
+        if watching || !self.config.desktop_notifications {
+            return;
+        }
+        let title = self.panes[idx].display_title();
+        let t = &mut self.panes[idx];
+        if crate::status_note::due(t.last_status_note.map(|at| at.elapsed())) {
+            t.last_status_note = Some(Instant::now());
+            let (title, body) = crate::status_note::text(&alert, &title);
+            crate::desktop::notify(&title, &body);
         }
     }
 
@@ -1756,6 +1786,7 @@ impl App {
                 cwd: None,
                 cwd_reset: false,
                 last_desktop: None,
+                last_status_note: None,
                 progress: None,
                 scroll_seen: 0,
                 scrollbar_until: None,
@@ -5541,7 +5572,10 @@ impl App {
                         screen
                     },
                     focused: Some(*id) == focus,
-                    progress: p.live_progress().filter(|_| self.config.progress_style),
+                    progress: p
+                        .status_summary()
+                        .and_then(|s| tabbar::status_bar(s, self.config.progress_style))
+                        .or(p.live_progress().filter(|_| self.config.progress_style)),
                 })
             })
             .collect();
@@ -5640,11 +5674,15 @@ impl App {
                             .unwrap_or_default(),
                         active: gi == self.w.active,
                         unread: panes.iter().any(|p| p.unread),
-                        // 고른 칸의 진행 표시, 없으면 다른 칸의 것
-                        progress: focused
-                            .and_then(|p| p.live_progress())
-                            .or_else(|| panes.iter().find_map(|p| p.live_progress()))
-                            .filter(|_| self.config.progress_style),
+                        // 칸들의 프로그램 상태(OSC 7501) 가운데 가장 급한 것, 없으면 고른 칸의 진행 표시, 없으면 다른 칸의 것
+                        progress: tabbar::most_urgent(panes.iter().filter_map(|p| p.status_summary()))
+                            .and_then(|s| tabbar::status_bar(s, self.config.progress_style))
+                            .or_else(|| {
+                                focused
+                                    .and_then(|p| p.live_progress())
+                                    .or_else(|| panes.iter().find_map(|p| p.live_progress()))
+                                    .filter(|_| self.config.progress_style)
+                            }),
                     }
                 })
                 .collect()
@@ -6664,6 +6702,7 @@ impl ApplicationHandler<UserEvent> for App {
                     SessionEvent::CommandFinished(rec) => self.on_command_finished(idx, rec),
                     SessionEvent::Bell => self.on_bell(idx),
                     SessionEvent::WindowResize { rows, cols } => self.on_window_resize_request(idx, rows, cols),
+                    SessionEvent::ProgramStatus(alert) => self.on_program_status(idx, alert),
                     SessionEvent::Output => {}
                 }
                 self.request_redraw();
