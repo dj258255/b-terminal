@@ -96,6 +96,7 @@
 | [ADR-064](#adr-064-applescript-perform-action은-키-묶음과-같은-해석기로-동작-글을-읽어-그-칸에서-실행하고-send-key와-같은-거절을-따른다) | AppleScript `perform action`은 키 묶음과 같은 해석기로 동작 글을 읽어 그 칸에서 실행하고, `send key`와 같은 거절을 따른다 | 유효 |
 | [ADR-065](#adr-065-applescript-마우스-명령은-사람의-마우스와-같은-처리를-지나되-상태는-칸마다-따로-두고-클립보드를-읽는-동작과-모달-메뉴는-스크립트에-하지-않는다) | AppleScript 마우스 명령은 사람의 마우스와 같은 처리를 지나되 상태는 칸마다 따로 두고, 클립보드를 읽는 동작과 모달 메뉴는 스크립트에 하지 않는다 | 유효 |
 | [ADR-066](#adr-066-applescript-surface-configuration은-새-칸-하나에만-덮어쓰고-btctl-소켓-규약을-넓히지-않으며-값은-복사-전에-크기를-보고-로그에-남기지-않는다) | AppleScript `surface configuration`은 새 칸 하나에만 덮어쓰고 `btctl` 소켓 규약을 넓히지 않으며, 값은 복사 전에 크기를 보고 로그에 남기지 않는다 | 유효 |
+| [ADR-068](#adr-068-applescript-name-override는-스크립트가-쓰는-제목을-믿지-않는-글로-거르고-사람의-제목-덮어쓰기와-같은-상태를-쓰며-읽기-전용-칸에도-허용한다) | AppleScript `name override`는 스크립트가 쓰는 제목을 믿지 않는 글로 거르고, 사람의 제목 덮어쓰기와 같은 상태를 쓰며, 읽기 전용 칸에도 허용한다 | 유효 |
 
 ### 설정 기본값
 
@@ -1971,7 +1972,7 @@ E8의 실제 창 로그에서 10ms 넘는 GPU 프레임은 세 가지였다. (1)
 ### 하지 않은 것
 - `send key`·`send mouse ...`: 키·마우스 이벤트를 합성해 입력 길에 넣는 일이라 IME·키 묶음·보안 입력과 얽히고 붙여넣기 틀이 없다. → `send key`는 0.82(ADR-063), `send mouse`는 0.84(ADR-065)에서 넣음.
 - `perform action`: 동작 문자열 전체를 스크립트에 연다. → 0.83에서 넣음(ADR-064, `send key`와 같은 거절).
-- `split`, `new surface configuration`, `close*`, `name override`, `pid`, `tty`: 따로 큰 일이거나 닫기 확인·되돌리기 정책을 맞춰야 한다.
+- `split`, `new surface configuration`, `close*`, `name override`, `pid`, `tty`(0.86에서 넣음, ADR-068): 따로 큰 일이거나 닫기 확인·되돌리기 정책을 맞춰야 한다.
 
 ### 보안
 다른 앱이 칸에 글을 넣는 입력 길이 늘었다. 막는 것은 macOS 자동화 허락, 붙여넣기와 같은 틀, 읽기 전용 칸 거절, 1MiB 상한, `macos-applescript = false`다.
@@ -2011,7 +2012,7 @@ E8의 실제 창 로그에서 10ms 넘는 GPU 프레임은 세 가지였다. (1)
 - 2026-11-18 주 세션이 격리한 실제 창(release 묶음, 격리 HOME·TMPDIR, `SHELL=/bin/sh`)에서 `osascript`로 확인했다: `input text` 뒤 `send key "enter"`로 실행, `arrowUp`, `c`+control(Ctrl-C로 `sleep` 중단), `a`+shift, ⌘T가 새 탭(키 묶음), 네 방향 `split`이 새 terminal을 돌려줌(enumeration이 네 글자 코드로 옴), `close`·`close tab`·`close window`, 읽기 전용·확인 막대 거절, 키 이름·수식 키 오류, 꺼짐. 이때 닫은 칸의 셸이 끝나지 않는 것을 찾았다. 이 ADR 전부터 있던 결함이라 #651로 따로 고친다. 단위 시험은 키 이름 175개, 수식 키, 사람의 키와 같은 인코더가 낸 바이트(Enter, Ctrl-C, 방향 키, DECCKM, Option-as-Alt, kitty 플래그 1·2·8, 키패드), 사전의 이름·코드가 Ghostty와 같은 것, 새 선택자가 `NSObject`와 겹치지 않는 것까지다.
 
 ### 하지 않은 것
-- `send mouse button·position·scroll`(0.84에서 넣음, ADR-065), `perform action`(0.83에서 넣음, ADR-064), `new surface configuration`·`with configuration`(0.85에서 넣음, ADR-066), `name override`, `pid`, `tty`.
+- `send mouse button·position·scroll`(0.84에서 넣음, ADR-065), `perform action`(0.83에서 넣음, ADR-064), `new surface configuration`·`with configuration`(0.85에서 넣음, ADR-066), `name override`, `pid`, `tty`(0.86에서 넣음, ADR-068).
 
 ### 보안
 다른 앱이 칸에 키를 넣을 수 있고 닫기까지 시킬 수 있게 됐다. 막는 것은 macOS 자동화 허락, 읽기 전용 칸과 확인·검색·팔레트·제목 막대 거절, 키 이름·수식 키 256바이트 상한(복사 전에 봄), `macos-applescript = false`, 시간 초과 뒤 늦은 실행 방지다.
@@ -2045,7 +2046,7 @@ E8의 실제 창 로그에서 10ms 넘는 GPU 프레임은 세 가지였다. (1)
 - 2026-11-19 주 세션이 격리한 실제 창(release 묶음)에서 `osascript`로 확인했다: `new_split:right`·`goto_split:left`·`new_tab`·`goto_tab:1`이 참, `text:echo …\n`이 실행됨, `copy_to_clipboard`(고른 글 없음)·`navigate_search:next`(찾는 중 아님)·`no_such_action`·`all:text:x`·`unbind`가 거짓, `toggle_readonly`로 걸기는 참이고 다시 풀기는 읽기 전용 오류, 확인 막대 중 오류, 꺼짐 -1728, 4097바이트 -1715. 단위 시험에는 `can_perform`과 `handle_action` 실행이 없다.
 
 ### 하지 않은 것
-- `send mouse button·position·scroll`(0.84에서 넣음, ADR-065), `new surface configuration`·`with configuration`(0.85에서 넣음, ADR-066), `name override`, `pid`, `tty`.
+- `send mouse button·position·scroll`(0.84에서 넣음, ADR-065), `new surface configuration`·`with configuration`(0.85에서 넣음, ADR-066), `name override`, `pid`, `tty`(0.86에서 넣음, ADR-068).
 
 ### 보안
 다른 앱이 키 묶음의 모든 동작을 칸에서 실행할 수 있게 됐다. 막는 것은 macOS 자동화 허락, 읽기 전용 칸과 확인·검색·팔레트·제목 막대 거절, 동작 글 4096바이트 상한(복사 전에 봄), `macos-applescript = false`, 시간 초과 뒤 늦은 실행 방지다.
@@ -2089,7 +2090,7 @@ Ghostty와 다른 점이다.
 - 클립보드를 읽는 동작과 모달 메뉴의 스크립트 실행.
 - 스크립트 위치에 따른 호버·링크 밑줄·마우스 모양.
 - 사람 마우스 상태의 공유(고르는 중, 누름 횟수 등을 사람과 나누는 것).
-- `new surface configuration`·`with configuration`(0.85에서 넣음, ADR-066), `name override`, `pid`, `tty`.
+- `new surface configuration`·`with configuration`(0.85에서 넣음, ADR-066), `name override`, `pid`, `tty`(0.86에서 넣음, ADR-068).
 
 ### 보안
 다른 앱이 칸 위에서 마우스를 쓸 수 있게 됐다. 이미 `send key`로 키를 보낼 수 있는 앱에는 새 힘이 아니지만(프로그램의 마우스 보고를 켠 칸에는 클릭·휠 바이트가 가고, 보고가 꺼진 칸에서는 글을 고르고 `copy-on-select`·오른쪽 단추 복사로 사용자의 클립보드를 쓸 수 있으며, Cmd-누르기로 링크를 열 수 있다), 막는 것은 macOS 자동화 허락과 `macos-applescript = false`뿐이다. 클립보드를 읽는 동작은 스크립트에 하지 않는다. 다만 이것은 굳은 경계가 아니다: 허락받은 앱은 이미 `input text "pbpaste"`와 `send key "enter"`로 칸에서 클립보드를 읽힐 수 있다. 사용자가 모르는 사이 클립보드 글이 칸에 들어가는 일을 줄이려는 선택이다: 가운데 단추 붙여넣기·`right-click-action = paste`·`copy-or-paste`의 붙여넣기 쪽·kitty 붙여넣기 이벤트(모드 5522가 프로그램에 클립보드를 읽을 일회용 암호를 준다)가 스크립트에는 가지 않는다. 모달 메뉴도 스크립트에는 뜨지 않으므로 스크립트가 메뉴에 막혀 시간 초과되지 않는다. 사람의 상태를 함께 쓰는 길은 만들지 않았다(칸마다 따로 둔 상태, 명령이 준 수식 키, 시험이 공유 처리의 소스를 지킨다). 읽기 전용 칸과 확인·검색·팔레트·제목 막대가 열린 창에는 보내지 않고, 수식 키 글은 256바이트 상한을 복사 전에 보며, 좌표와 휠 값은 유한해야 하고 휠은 한 번에 최대 10번·1000줄까지다.
@@ -2132,7 +2133,7 @@ Ghostty와 다른 점이다.
 - 2026-11-19 주 세션이 격리한 실제 창(release 묶음)에서 `osascript`로 확인했다: 레코드가 cocoa key의 사전으로 온다(`command`·`initial working directory`가 새 탭에 적용), 환경 변수가 그 칸에만 보이고 다음 `new tab`에는 남지 않는다, 환경 변수 한 항목을 글로 줘도 된다, `initial input`의 `\n`은 풀리지 않고 글 그대로 간다, `split … with configuration {font size:20}`은 새 칸만 크다(화면으로 봄), `new surface configuration`(`from` 포함)이 레코드를 돌려준다, `KEY`만 있는 환경·음수 글자 크기는 칸을 만들지 않고 오류, 상대 폴더는 무시되고 로그에는 길이만, `macos-applescript = false`는 -1743, `RUST_LOG=debug` 로그에 명령·환경 값이 없다. `command:42` 같은 수는 Cocoa가 sdef의 text 형으로 바꿔 넘기므로 오류가 아니다(Ghostty도 같은 사전).
 
 ### 하지 않은 것
-- `name override`, `pid`, `tty`.
+- `name override`, `pid`, `tty`(0.86에서 넣음, ADR-068).
 - 제어 소켓(`btctl new`)으로 명령·환경·처음 입력을 덮어쓰는 길(소켓 입력 길을 넓히지 않는다).
 - 레코드를 설정 파일이나 다음 칸에 남기는 일.
 - 값의 로그(길이와 개수만).
@@ -2161,3 +2162,40 @@ Ghostty와 다른 점이다.
 - 끄는 동안 놓을 자리 표시가 없다. 놓은 뒤에야 옮겨진다.
 - 다른 창으로 끌어 옮기기, 끌어서 새 창 만들기는 없다.
 - 실제 창에서 눈으로 확인하지 않았다.
+
+## ADR-068 AppleScript `name override`는 스크립트가 쓰는 제목을 믿지 않는 글로 거르고, 사람의 제목 덮어쓰기와 같은 상태를 쓰며, 읽기 전용 칸에도 허용한다
+
+상태: 채택
+관련: [#672](https://github.com/dj258255/b-terminal/issues/672), ADR-062(AppleScript 사전), ADR-066(값의 크기와 로그), ADR-018(읽기 전용 칸)
+
+### 맥락
+- Ghostty 1.4.0 사전에는 `tab`과 `terminal`에 `name override`(`GTno`, text, 읽기·쓰기, cocoa key `titleOverride`)가 있다. 읽으면 덮어쓴 제목(없으면 빈 글)이고, 쓰면 덮어쓰며, 빈 글을 쓰면 지운다(`ScriptTab.swift`·`ScriptTerminal.swift`). `terminal`에는 읽기 전용 속성 `pid`(`Gpid`, integer, 전경 프로세스, 없으면 0)와 `tty`(`Gtty`, text, 장치 경로, 없으면 빈 글)도 있다.
+- 0.85까지 사전의 속성은 앱이 만든 스냅숏을 읽기만 했다. 쓰기 속성은 이것이 처음이다. Cocoa는 쓰기를 `setValue:forKey:`로 해서 `setTitleOverride:`를 부른다.
+- b-terminal에는 같은 상태가 이미 있다: 탭의 덮어쓴 제목(`Action::SetTabTitle`·`prompt_tab_title`, 탭의 `title`)과 칸에 사람이 붙인 제목(`set_surface_title`·`prompt_surface_title`, `Pane::user_title`). 둘 다 `clean_user_title`(제어 문자를 지우고 200자로 자르며 빈 글은 지움)을 지난다.
+- 스크립트가 쓰는 글은 믿지 않는 글이다(프로그램이 OSC 0/2로 정하는 제목과 같다). 제목에는 다른 프로그램이 보낸 글이 들어가고 탭 줄·창 제목·알림에 그려진다.
+
+### 결정
+1. 사전은 Ghostty와 같은 이름·코드·형·접근·cocoa key다. `tab`과 `terminal`의 `name override`는 읽기·쓰기, `terminal`의 `pid`(정수)와 `tty`(글)는 읽기 전용이다. `window`에는 더하지 않는다(Ghostty도 없다).
+2. 읽기는 다른 속성처럼 스냅숏에서 한다. 스냅숏에 `title_override`(탭·칸), `pid`, `tty`(칸)를 더했다. `pid`는 `Session::foreground_pid`이고 없으면 0, `tty`는 `Session::tty_name`(portable-pty의 `MasterPty::tty_name`을 `bt-term` 안에서 감싼 작은 함수라 엔진 타입이 밖으로 나가지 않는다. ADR-001)이고 없으면 빈 글이다.
+3. 쓰기는 처음이라 명령을 둘 더했다: `SetTabTitleOverride`·`SetTerminalTitleOverride`. vendor의 `setTitleOverride:`가 `set_handler`로 가는 같은 길(`run_command`)로 앱에 보내고 답을 기다린다. 앱은 탭이면 탭의 `title`(`Action::SetTabTitle`과 같은 상태), 칸이면 `Pane::user_title`(`set_surface_title`과 같은 상태)에 쓴다. 탭은 id(첫 칸 번호)로 모든 창에서 찾는다.
+4. 쓰는 글은 `clean_user_title`을 지난다(제어 문자는 공백이 되고 200자로 자르며, 빈 글이나 공백뿐인 글은 덮어쓰기를 지운다). 사람이 정한 제목, 프로그램이 정한 제목(`title_of`)과 같은 거르기다.
+5. 크기 상한은 복사 전에 본다. vendor가 `NSString`의 UTF-8 바이트 수를 먼저 보고 4096바이트를 넘으면 `-10000`과 글을 내며(`utf8_len` 패턴, ADR-066과 같다), 앱 `admit`이 같은 값을 한 번 더 본다(두 상수가 같음을 시험이 지킨다). 문자열이 아닌 값(`missing value` 포함)은 오류다.
+6. `macos-applescript = false`면 다른 명령처럼 막는다(vendor `gate()`와 앱 `admit`). 사라진 탭·칸에 쓰면 "탭/터미널 N이 없습니다" 오류를 돌려준다.
+7. 읽기 전용 칸(ADR-018)에도 제목 쓰기를 허용한다. 읽기 전용은 사람이 칸에 입력(PTY 쓰기)을 넣는 것을 막는 표시이고, 제목은 PTY에 아무것도 쓰지 않는다. 사람도 읽기 전용 칸의 제목을 바꿀 수 있다(`set_surface_title`). 그래서 `input text`·`send key`·`perform action`·마우스 명령과 달리 거절하지 않는다. 확인·검색·팔레트·제목 막대가 열린 창에도 거절하지 않는다(키·마우스가 아니고 막대의 입력을 가로채지 않는다).
+8. 쓴 뒤 읽기가 옛 값을 돌려주지 않는다: 앱은 모든 명령의 답보다 먼저 새 스냅숏을 vendor에 넘기고(`on_script`), vendor는 넘겨받은 스냅숏을 100ms 동안 그대로 쓴다.
+9. 글은 로그에 남기지 않는다. 명령의 `Debug`는 길이만 낸다(`title_bytes`). 시험이 비밀 문자열이 나오지 않음을 지킨다.
+
+### 감수한 트레이드오프
+- **`name`은 덮어쓴 제목을 따르지만 한 칸 제목은 그대로다.** 탭의 `name`은 덮어쓴 제목이 있으면 그것이고 없으면 고른 칸의 제목이다(이미 그랬다). 칸의 `name`은 `display_title`이라 벨·읽기 전용 표시(`🔔`, `🔒`)가 붙는다(Ghostty `surfaceView.title`이 같은 표시를 붙이는지는 확인하지 않았다).
+- **제목이 200자로 잘린다.** Ghostty는 자르지 않는다. 사람이 정하는 제목과 같은 상한을 썼다.
+- **제어 문자는 공백이 된다.** 오류가 아니라 바꿔 쓴다(OSC 제목과 같다). 읽어 보면 쓴 글과 다를 수 있다.
+- **칸의 `name override`는 사람의 `set_surface_title`을 덮어쓴다(같은 상태).** 사람이 붙인 제목과 스크립트가 붙인 제목을 구분하지 않는다. Ghostty도 한 값이다.
+- **`pid`는 전경 프로세스 그룹의 리더다.** `tcgetpgrp`가 주는 값이라 셸에서 파이프라인을 돌리면 그 그룹의 첫 프로세스일 수 있다. Ghostty의 `foregroundPID`와 같은 뜻으로 보았지만 값이 같은지 비교하지는 않았다.
+
+### 하지 않은 것
+- `window`의 `name override`(Ghostty에도 없다).
+- 제목을 제어 소켓(`btctl`)으로 쓰는 새 길(소켓 규약을 넓히지 않았다. 사람의 `set_tab_title`은 이미 키 묶음 동작으로 있다).
+- 실제 창에서의 확인은 이 변경만으로는 하지 않았다(주 세션이 `osascript`로 확인한다).
+
+### 보안
+제목 쓰기는 PTY에 바이트를 쓰지 않으므로 `input text`나 `send key`보다 힘이 작다. 새로 생기는 것은 허락받은 앱이 탭 줄·창 제목에 보일 글을 정하는 힘이다(다른 앱이 사용자를 속일 만한 제목, 예를 들어 중요한 프로그램인 척하는 글을 넣을 수 있다). 이미 `input text`로 칸에 명령을 넣을 수 있는 앱에는 새 힘이 아니다. 글은 믿지 않는 글로 취급한다: 제어 문자를 지우고 200자로 자르며 크기를 복사 전에 보고 로그에 남기지 않는다. 막는 것은 macOS 자동화 허락과 `macos-applescript = false`다.

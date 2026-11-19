@@ -692,6 +692,9 @@ pub const SCRIPT_CONFIG_LIMITS: (usize, usize, usize) = (
     crate::platform_impl::scripting::MAX_CONFIG_ENV_COUNT,
 );
 
+/// The most UTF-8 bytes of a `name override` the scripting layer copies (#672); a longer text is refused.
+pub const SCRIPT_TITLE_MAX_BYTES: usize = crate::platform_impl::scripting::MAX_TITLE_BYTES;
+
 /// The selectors of the scripting object classes (window, tab, terminal) that `NSObject` already implements. Empty when
 /// the names are chosen well (a name `NSObject` has would be overridden for every object). b-terminal(#650)
 pub fn scripting_object_key_conflicts() -> Vec<&'static str> {
