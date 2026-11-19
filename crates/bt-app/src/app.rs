@@ -4062,13 +4062,13 @@ impl App {
     /// 명령 팔레트가 열려 있으면 키를 받는다(Cmd·Ctrl 조합은 키 묶음에 맡긴다). 받았으면 참
     fn palette_key(&mut self, event: &winit::event::KeyEvent, event_loop: &ActiveEventLoop) -> bool {
         use winit::keyboard::{Key, NamedKey};
+        if self.w.palette.is_none() || self.mods.super_key() || self.mods.control_key() {
+            return false;
+        }
+        let entries = self.palette_entries();
         let Some((query, selected)) = self.w.palette.as_mut() else {
             return false;
         };
-        if self.mods.super_key() || self.mods.control_key() {
-            return false;
-        }
-        let entries = crate::palette::entries(&self.config.palette_entries, !self.config.palette_defaults_cleared);
         let shown = crate::palette::filter(&entries, query);
         match &event.logical_key {
             Key::Named(NamedKey::Escape) => self.w.palette = None,
@@ -4084,6 +4084,7 @@ impl App {
                 match pick {
                     Some(crate::palette::Command::Action(a)) => self.handle_action(a, event_loop),
                     Some(crate::palette::Command::OpenSettings) => self.open_settings(),
+                    Some(crate::palette::Command::Focus(pane)) => self.on_note_clicked(event_loop, pane),
                     None => {}
                 }
             }
@@ -5719,6 +5720,47 @@ impl App {
         }
     }
 
+    /// 명령 팔레트의 항목: 기본·사용자 항목과 열린 모든 창의 칸마다 `Focus: 제목` 항목(Ghostty `jumpOptions`, #690)을
+    /// 함께 이름순으로 고른다
+    fn palette_entries(&self) -> Vec<crate::palette::Entry> {
+        let home = std::env::var("HOME").ok();
+        let mut v = crate::palette::entries(&self.config.palette_entries, !self.config.palette_defaults_cleared);
+        v.extend(crate::palette::focus_entries(&self.focus_panes(), home.as_deref()));
+        crate::palette::sort_entries(&mut v);
+        v
+    }
+
+    /// 모든 창(지금 창, 다른 창)의 칸을 창·탭 차례로. 항목 상한만큼만 모은다
+    fn focus_panes(&self) -> Vec<crate::palette::FocusPane> {
+        let mut out = Vec::new();
+        for w in std::iter::once(&self.w).chain(&self.others) {
+            // 칸 제목이 비었을 때 쓰는 창 제목: 설정 `title` → 덮어쓴 창 제목. 없으면 빈 글(그러면 "Untitled")
+            let window_title = window_title_of(self.config.title.as_deref(), w.window_title.as_deref(), "");
+            for g in &w.tabs {
+                for id in g.layout.leaves() {
+                    if out.len() >= crate::palette::MAX_FOCUS {
+                        return out;
+                    }
+                    let Some(p) = self.panes.iter().find(|p| p.id == id) else {
+                        continue;
+                    };
+                    out.push(crate::palette::FocusPane {
+                        id,
+                        title_override: g.title.clone().or_else(|| w.window_title.clone()),
+                        pane_title: p
+                            .user_title
+                            .clone()
+                            .filter(|t| !t.is_empty())
+                            .unwrap_or_else(|| p.title.clone()),
+                        window_title: window_title.clone(),
+                        cwd: p.cwd.as_ref().map(|c| c.to_string_lossy().into_owned()),
+                    });
+                }
+            }
+        }
+        out
+    }
+
     /// 칸이 든 창을 지금 창으로
     fn switch_to_pane(&mut self, pane: u64) -> bool {
         if self.w.holds(pane) {
@@ -6089,14 +6131,18 @@ impl App {
         let preedit = self.w.preedit.clone();
         let hover = self.w.hover.clone();
         let link_previews = self.config.link_previews;
-        // 명령 팔레트: (친 글, 보일 줄들(이름, 단축키), 고른 줄)
+        // 명령 팔레트: (친 글, 보일 줄들(이름, 부제, 단축키), 고른 줄)
         let palette = self.w.palette.as_ref().map(|(q, sel)| {
-            let entries = crate::palette::entries(&self.config.palette_entries, !self.config.palette_defaults_cleared);
-            let rows: Vec<(String, String)> = crate::palette::filter(&entries, q)
+            let entries = self.palette_entries();
+            let rows: Vec<(String, String, String)> = crate::palette::filter(&entries, q)
                 .into_iter()
                 .map(|i| {
                     let e = &entries[i];
-                    (e.label.to_string(), crate::palette::shortcut(&self.keymap, &e.command))
+                    (
+                        e.label.to_string(),
+                        e.subtitle.to_string(),
+                        crate::palette::shortcut(&self.keymap, &e.command),
+                    )
                 })
                 .collect();
             (q.clone(), rows, *sel)
