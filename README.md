@@ -2,11 +2,11 @@
 
 <img src="docs/images/icon.png" width="96" alt="b-terminal 아이콘: 어두운 둥근 사각형 위 초록 프롬프트 기호와 밑줄 커서, 왼쪽 위 파란 b">
 
-> Ghostty 같은 순수 Rust 터미널. Ghostty와 같은 설정 문법과 키를 쓰되 Ghostty 없이 혼자 서고, 한글 입력을 고쳐 씁니다. Claude Code·Codex 같은 AI CLI가 쓰는 신호(Shift+Enter, 알림, 진행 표시, 클립보드, 셸 통합)도 빠짐없이 받고, 스크립트가 터미널을 조종하는 `btctl`이 있습니다.
+> Ghostty 같은 순수 Rust 터미널. Ghostty와 같은 설정 문법과 키를 쓰되 Ghostty 없이 혼자 서고, 한글 입력을 고쳐 씁니다. Claude Code·Codex 같은 AI CLI가 쓰는 신호(Shift+Enter, 알림, 진행 표시, 클립보드, 셸 통합, 프로그램 상태)도 빠짐없이 받고, 스크립트가 터미널을 조종하는 `btctl`과 Ghostty와 같은 AppleScript 사전이 있습니다.
 
 아직 만드는 중입니다. 처음 보신다면 [docs/overview.md](docs/overview.md)부터 읽으세요. 계획과 진행은 [ROADMAP.md](ROADMAP.md)에 있습니다.
 
-<img src="docs/images/window-demo.png" width="760" alt="b-terminal 창. 위쪽 가로 탭 줄에 탭 셋, 그 아래 굵은 글자, 한글 문장, 16색·256색·24비트 색, 기울임·밑줄·반전·취소선 글자, 둥근 상자 선, 반칸 블록과 8단계 막대">
+<img src="docs/images/window-demo.png" width="760" alt="b-terminal 창. 위쪽 탭 줄에 탭 셋이 있고 가운데 cargo build 탭 아래에 일하는 중을 알리는 파란 막대가 있다. 왼쪽 칸에는 한글 문장, 16색·256색·24비트 색, 굵게·기울임·밑줄·물결 밑줄·겹밑줄·반전·취소선 글자, 둥근 상자 선과 막대, 색 이모지와 링크가 있고, 오른쪽으로 나눈 칸에는 cargo test 출력이 있다">
 
 - 터미널이 할 일에 집중합니다: PTY, VT 해석, 렌더링, 탭, 한글 IME, 복사·붙여넣기, 설정, 그리고 AI CLI가 쓰는 표준 신호([조사 기록](docs/research/2026-11-06-agentic-terminal.md)).
 - AI 에이전트를 다루는 화면(에이전트 목록·상태·사용량)은 [b-studio](https://github.com/dj258255/b-studio)의 일입니다. b-studio는 b-terminal 안에서 도는 프로그램 중 하나입니다(herdr가 Ghostty 안에서 돌듯이). 경계는 [ADR-005](docs/decisions.md#adr-005-b-terminal은-순수-터미널이고-ai-작업-화면은-b-studio가-맡는다)에 적었습니다.
@@ -30,7 +30,7 @@ Finder에서 폴더(나 파일)를 오른쪽 눌러 "서비스" → "New b-termi
 |---|---|
 | Cmd-C / Cmd-V | 시스템 클립보드로 복사 / 붙여넣기(괄호 붙여넣기 모드면 감싸서) |
 | Cmd-Shift-V(편집 메뉴 "선택 붙여넣기") | 고른 글 붙여넣기. 글을 고르기만 하면 앱 안 선택 클립보드에 담기고(`copy-on-select = primary`, 기본) Cmd-V의 시스템 클립보드는 그대로입니다. 고르면 시스템 클립보드로 복사하려면 `copy-on-select = clipboard` |
-| Cmd-= / Cmd-- / Cmd-0 | 지금 창의 글자 크기 |
+| Cmd-= / Cmd-- / Cmd-0 | 고른 칸의 글자 크기(Ghostty처럼 칸마다 따로) |
 | Cmd-N / Cmd-T / Cmd-W / Cmd-Opt-W | 새 창 / 새 탭 / 칸 닫기(칸이 하나면 탭) / 탭 닫기 |
 | Cmd-1~8, Cmd-9, Cmd-Shift-[ / Cmd-Shift-] | 탭 옮기기(탭 줄을 눌러도 됩니다) |
 | Cmd-D / Cmd-Shift-D | 화면을 오른쪽 / 아래로 나누기 |
@@ -62,7 +62,7 @@ cursor-style = bar
 window-padding-x = 12
 ```
 
-<img src="docs/images/config-dracula-d2coding.png" width="760" alt="Dracula 테마와 D2Coding 글꼴, 막대 커서, 넓은 여백으로 띄운 b-terminal. 한글이 고정폭으로 고르게 놓였다">
+<img src="docs/images/config-dracula-d2coding.png" width="760" alt="위 설정으로 띄운 b-terminal. Dracula 색, D2Coding 글꼴로 한글이 두 칸에 꼭 맞게 놓이고, 맨 아래 줄에 막대 커서가 있다">
 
 지원하는 키와 읽는 순서는 [docs/configuration.md](docs/configuration.md)에 있습니다. `b-terminal --show-config`가 지금 적용된 값을 보입니다.
 
@@ -88,6 +88,23 @@ btctl last --tab 2 --json                # 2번 탭에서 마지막으로 끝난
 ```
 
 제어 소켓은 같은 사용자만 닿는 폴더(0700)의 소켓(0600)입니다. 자세한 경계는 [SECURITY.md](SECURITY.md)에 있습니다.
+
+## AppleScript
+
+macOS 앱 묶음에는 Ghostty 1.4와 같은 AppleScript 사전이 있습니다. 창·탭·터미널 객체를 읽고, 새 창·탭·분할을 만들고, 글·키·마우스를 보내고, 키 묶음과 같은 동작을 부릅니다. Ghostty용으로 쓴 스크립트를 앱 이름만 바꿔 돌릴 수 있습니다.
+
+```applescript
+tell application "b-terminal"
+    set t to focused terminal of selected tab of front window
+    input text "make test" to t
+    send key "enter" to t
+    set r to split t direction right
+    perform action "goto_tab:1" on r
+    new tab in front window with configuration {initial working directory:"/tmp", command:"htop"}
+end tell
+```
+
+macOS는 스크립트를 보내는 앱마다 처음에 자동화 허락을 묻습니다. 끄려면 `macos-applescript = false`. 명령과 경계(읽기 전용 칸, 붙여넣기 보호, 크기 상한)는 [docs/configuration.md](docs/configuration.md)의 `macos-applescript`에 있습니다.
 
 ## AI 코딩 에이전트 CLI와 쓰기
 
