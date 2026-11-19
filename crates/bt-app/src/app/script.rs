@@ -10,6 +10,10 @@
 //! `perform action`(#658)은 동작 글을 키 묶음과 같은 해석기(`parse_script_action`)로 읽어 그 칸을 고른 칸으로 만든 뒤 `handle_action`으로 하고,
 //! 지금 할 수 없는 동작(`can_perform`)은 거짓을 돌려준다. 거절은 `send key`와 같다.
 //!
+//! `send mouse button`·`send mouse position`·`send mouse scroll`(#662)은 사람의 마우스와 같은 처리(`app/mouse_core.rs`)를 지나되, 상태는 칸마다 둔
+//! 스크립트 마우스 상태(`script_mouse::ScriptMouse`)로 따로 쓴다. 사람의 포인터·누름 횟수·고르는 중·휠 누적과 사람의 수식 키는 건드리지 않는다.
+//! 창 장식(제목 막대·탭 줄·손잡이·막대 띠)과 초점 누름 삼키기는 지나지 않고, 클립보드를 읽는 동작(붙여넣기)과 모달 메뉴는 하지 않는다.
+//!
 //! ids: 칸은 `btctl list`의 번호 그대로, 탭은 그 탭의 첫 칸 번호(칸이 닫히거나 탭 첫 칸이 바뀌면 바뀐다),
 //! 창은 창 번호(winit `WindowId`)다. 모두 10진수 글이다.
 
@@ -136,6 +140,17 @@ pub fn admit(enabled: bool, cmd: ScriptCommand) -> Result<ScriptCommand, String>
             if key.len() > MAX_KEY || modifiers.as_ref().is_some_and(|m| m.len() > MAX_KEY) =>
         {
             return Err(format!("키 이름이나 수식 키가 너무 깁니다(상한 {MAX_KEY} 바이트)"));
+        }
+        // 마우스 명령: 수식 키 글은 `send key`와 같은 상한으로, 좌표와 휠 값은 유한해야 한다
+        ScriptCommand::SendMouseButton { modifiers, .. } | ScriptCommand::SendMousePosition { modifiers, .. }
+            if modifiers.as_ref().is_some_and(|m| m.len() > MAX_KEY) =>
+        {
+            return Err(format!("수식 키가 너무 깁니다(상한 {MAX_KEY} 바이트)"));
+        }
+        ScriptCommand::SendMousePosition { x, y, .. } | ScriptCommand::SendMouseScroll { x, y, .. }
+            if !x.is_finite() || !y.is_finite() =>
+        {
+            return Err("좌표와 스크롤 값은 유한한 수여야 합니다".into());
         }
         ScriptCommand::PerformAction { action, .. } if action.len() > MAX_ACTION => {
             return Err(format!(
@@ -438,6 +453,38 @@ impl App {
                 self.handle_action(action, event_loop);
                 Ok(Some(ScriptTarget::Performed(true)))
             }
+            ScriptCommand::SendMouseButton {
+                terminal,
+                button,
+                release,
+                modifiers,
+            } => {
+                let (idx, mods) = self.script_mouse_target(&terminal, modifiers.as_deref())?;
+                self.script_mouse_button(idx, mods, button, !release);
+                Ok(None)
+            }
+            ScriptCommand::SendMousePosition {
+                terminal,
+                x,
+                y,
+                modifiers,
+            } => {
+                let (idx, mods) = self.script_mouse_target(&terminal, modifiers.as_deref())?;
+                self.script_mouse_position(idx, mods, (x, y));
+                Ok(None)
+            }
+            // `momentum`은 Ghostty 코어가 읽지 않아(Surface.zig `scrollCallback`) 읽고 버린다
+            ScriptCommand::SendMouseScroll {
+                terminal,
+                x,
+                y,
+                precision,
+                momentum: _,
+            } => {
+                let (idx, mods) = self.script_mouse_target(&terminal, None)?;
+                self.script_mouse_scroll(idx, mods, (x, y), precision);
+                Ok(None)
+            }
             ScriptCommand::Split { terminal, direction } => {
                 let pane = parse_id(&terminal)?;
                 self.pane_index(pane)
@@ -512,6 +559,129 @@ impl App {
         }
     }
 }
+
+// 마우스 명령의 시작
+// 이 구간은 사람의 마우스 상태(포인터·누름 횟수·고르는 중·휠 누적·링크 누름·칸의 눌린 단추)와 사람의 수식 키를 읽거나 쓰지 않는다.
+// 스크립트 마우스는 칸마다 둔 `ScriptMouse`(위치·누름 기록·눌린 단추·고르는 중·마지막 칸·휠 누적·링크 누름)와 명령이 준 수식 키로만 일한다.
+// 시험(`script_mouse::tests::shared_mouse_code_never_touches_the_human_state`)이 지킨다.
+impl App {
+    /// 마우스 명령의 공통 앞부분. 칸이 있는지, 읽기 전용이 아닌지, 수식 키 글이 맞는지를 칸이나 창을 건드리기 전에 보고, 칸이 든 창을
+    /// 지금 창으로 만든 뒤 막대(확인·검색·팔레트·제목)가 열려 있으면 거절하고, 칸을 고른 칸으로 만든다(`perform action`과 같은 순서).
+    /// 이미 고른 칸이면 `focus_pane`을 부르지 않는다(고르는 중이던 사람의 고르기를 끊지 않게). 돌려주는 값은 칸의 자리와 수식 키
+    fn script_mouse_target(
+        &mut self,
+        terminal: &str,
+        modifiers: Option<&str>,
+    ) -> Result<(usize, crate::script_mouse::PtrMods), String> {
+        let pane = parse_id(terminal)?;
+        let i = self
+            .pane_index(pane)
+            .ok_or_else(|| format!("터미널 {terminal}이 없습니다"))?;
+        // `send key`와 같은 거절: 읽기 전용 칸에는 마우스도 보내지 않는다(고르기·붙여넣기 길도 막는다)
+        if self.panes[i].session.readonly() {
+            return Err(super::READONLY_REFUSAL.into());
+        }
+        // 수식 키 이름이 틀렸으면 칸이나 창을 건드리기 전에 알린다
+        let remap = self.config.key_remap.clone();
+        let mods = crate::script_mouse::parse_mods(modifiers, |m| {
+            crate::keys::remapped_state(&remap, crate::keys::sided_from_state(m))
+        })?;
+        self.switch_to_pane(pane);
+        let other_bar = self.w.search.is_some() || self.w.palette.is_some() || self.w.title_prompt.is_some();
+        if let Some(why) = overlay_refusal_for("마우스를 보내지", self.w.confirm.is_some(), other_bar) {
+            return Err(why);
+        }
+        if self.focused_id() != Some(pane) {
+            self.focus_pane(pane);
+        }
+        let idx = self
+            .pane_index(pane)
+            .ok_or_else(|| format!("터미널 {terminal}이 없습니다"))?;
+        Ok((idx, mods))
+    }
+
+    /// 칸 `idx`에서 스크립트 마우스 상태를 꺼내 `run`에 넘기고 돌려놓는다. `run`은 위치(창 실제 픽셀)를 담은 입력과 상태를 받는다.
+    /// 칸이 보이지 않으면 아무것도 하지 않는다(고른 칸이라 보통은 보인다)
+    fn with_script_mouse(
+        &mut self,
+        idx: usize,
+        mods: crate::script_mouse::PtrMods,
+        pos: Option<(f64, f64)>,
+        run: impl FnOnce(&mut Self, &super::mouse_core::PtrIn, &mut crate::script_mouse::ScriptMouse),
+    ) {
+        let Some(rect) = self.pane_rect(self.panes[idx].id) else {
+            return;
+        };
+        let mut sm = std::mem::take(&mut self.panes[idx].script_mouse);
+        if let Some(p) = pos {
+            sm.pos_pt = p;
+        }
+        let rel = crate::script_mouse::rel_px((rect.w as f64, rect.h as f64), sm.pos_pt.0, sm.pos_pt.1, self.scale);
+        let input = super::mouse_core::PtrIn {
+            pos: winit::dpi::PhysicalPosition::new(rect.x as f64 + rel.0, rect.y as f64 + rel.1),
+            mods,
+            script: true,
+        };
+        run(self, &input, &mut sm);
+        self.panes[idx].script_mouse = sm;
+    }
+
+    /// `send mouse position`: 위치를 옮긴다. 앞 위치에서 1픽셀 미만이면 움직임을 처리하지 않는다(Ghostty처럼)
+    fn script_mouse_position(&mut self, idx: usize, mods: crate::script_mouse::PtrMods, pos: (f64, f64)) {
+        self.with_script_mouse(idx, mods, Some(pos), |app, input, sm| {
+            let Some(rect) = app.pane_rect(app.panes[idx].id) else {
+                return;
+            };
+            let rel = (input.pos.x - rect.x as f64, input.pos.y - rect.y as f64);
+            if crate::script_mouse::moved_enough(sm.sent_rel, rel) {
+                sm.sent_rel = Some(rel);
+                app.pointer_moved(idx, input, &mut sm.state, true);
+            }
+        });
+    }
+
+    /// `send mouse button`: 스크립트가 마지막으로 보낸 위치에서 단추를 누르거나 뗀다
+    fn script_mouse_button(
+        &mut self,
+        idx: usize,
+        mods: crate::script_mouse::PtrMods,
+        button: winit::platform::macos::ScriptMouseButton,
+        pressed: bool,
+    ) {
+        use winit::platform::macos::ScriptMouseButton as B;
+        let mb = match button {
+            B::Left => crate::mouse::Button::Left,
+            B::Right => crate::mouse::Button::Right,
+            B::Middle => crate::mouse::Button::Middle,
+        };
+        self.with_script_mouse(idx, mods, None, |app, input, sm| {
+            // 링크 수식 키 + 왼쪽 누름은 링크를 연다(Ghostty처럼). 사람과 같은 처리다
+            if !app.link_click_step(mb, pressed, input, &mut sm.link_click) {
+                app.pointer_button(idx, mb, pressed, input, &mut sm.state);
+            }
+        });
+    }
+
+    /// `send mouse scroll`: 값을 줄 수로 바꿔(`script_mouse::scroll_lines`, Ghostty `scrollCallback`) 사람의 휠과 같은 처리로 보낸다
+    fn script_mouse_scroll(
+        &mut self,
+        idx: usize,
+        mods: crate::script_mouse::PtrMods,
+        delta: (f64, f64),
+        precision: bool,
+    ) {
+        let (discrete, precise) = self.config.scroll_multiplier;
+        // 그 칸의 칸 크기(#422). 재지 못하면 사람의 휠과 같은 기본값을 쓴다
+        let cell = self
+            .metrics_at(self.panes[idx].font_size)
+            .map_or((8.0, 16.0), |m| (m.width as f64, m.height as f64));
+        let (xlines, ylines) = crate::script_mouse::scroll_lines(precision, delta.0, delta.1, cell, discrete, precise);
+        self.with_script_mouse(idx, mods, None, |app, input, sm| {
+            app.pointer_wheel(Some(idx), ylines, xlines, input, &mut sm.state);
+        });
+    }
+}
+// 마우스 명령의 끝
 
 /// vendor에 명령 처리 함수를 등록한다. 함수는 주 스레드에서 불리므로 이벤트 루프에 일을 넘기기만 한다
 pub fn install(proxy: winit::event_loop::EventLoopProxy<UserEvent>, enabled: bool) {
@@ -1015,6 +1185,25 @@ mod tests {
             C::Close { terminal: "1".into() },
             C::CloseTab { tab: "1".into() },
             C::CloseWindow { window: "1".into() },
+            C::SendMouseButton {
+                terminal: "1".into(),
+                button: winit::platform::macos::ScriptMouseButton::Left,
+                release: false,
+                modifiers: None,
+            },
+            C::SendMousePosition {
+                terminal: "1".into(),
+                x: 1.0,
+                y: 2.0,
+                modifiers: None,
+            },
+            C::SendMouseScroll {
+                terminal: "1".into(),
+                x: 0.0,
+                y: 1.0,
+                precision: false,
+                momentum: winit::platform::macos::ScriptMomentum::None,
+            },
         ];
         for c in &cmds {
             assert!(admit(false, c.clone()).is_err(), "{c:?}");
@@ -1062,5 +1251,174 @@ mod tests {
         r.record_ok(t0 + ms(2500));
         assert!(!r.due(t0 + ms(2550)), "성공하면 실패 기록은 지워진다");
         assert!(r.due(t0 + ms(2700)));
+    }
+
+    /// 마우스 명령 셋의 Debug에는 수식 키 글이 나오지 않는다(길이만)
+    #[test]
+    fn command_debug_hides_mouse_modifiers() {
+        use winit::platform::macos::{ScriptCommand as C, ScriptMouseButton};
+        let cmds = [
+            C::SendMouseButton {
+                terminal: "3".into(),
+                button: ScriptMouseButton::Left,
+                release: false,
+                modifiers: Some("secretmod".into()),
+            },
+            C::SendMousePosition {
+                terminal: "3".into(),
+                x: 1.0,
+                y: 2.0,
+                modifiers: Some("secretmod".into()),
+            },
+        ];
+        for cmd in &cmds {
+            let shown = format!("{cmd:?}");
+            assert!(!shown.contains("secretmod"), "{shown}");
+            assert!(
+                shown.contains("modifier_bytes") && shown.contains("terminal"),
+                "{shown}"
+            );
+        }
+    }
+
+    /// 수식 키 글은 `send key`와 같은 상한으로 복사하기 전에 거른다. 좌표와 휠 값은 유한해야 한다
+    #[test]
+    fn mouse_commands_are_checked_before_they_are_used() {
+        use winit::platform::macos::{ScriptCommand as C, ScriptMomentum, ScriptMouseButton};
+        let button = |m: Option<String>| C::SendMouseButton {
+            terminal: "1".into(),
+            button: ScriptMouseButton::Right,
+            release: true,
+            modifiers: m,
+        };
+        assert!(admit(true, button(Some("shift,control".into()))).is_ok());
+        assert!(admit(true, button(Some("x".repeat(MAX_KEY)))).is_ok());
+        assert!(admit(true, button(Some("x".repeat(MAX_KEY + 1)))).is_err());
+        let pos = |x: f64, y: f64, m: Option<String>| C::SendMousePosition {
+            terminal: "1".into(),
+            x,
+            y,
+            modifiers: m,
+        };
+        assert!(admit(true, pos(10.0, 20.5, None)).is_ok());
+        assert!(
+            admit(true, pos(-3.0, 1e300, None)).is_ok(),
+            "칸 밖 값은 칸 안으로 자른다"
+        );
+        assert!(admit(true, pos(0.0, 0.0, Some("y".repeat(MAX_KEY + 1)))).is_err());
+        for bad in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            assert!(admit(true, pos(bad, 0.0, None)).is_err(), "x {bad}");
+            assert!(admit(true, pos(0.0, bad, None)).is_err(), "y {bad}");
+        }
+        let scroll = |x: f64, y: f64| C::SendMouseScroll {
+            terminal: "1".into(),
+            x,
+            y,
+            precision: true,
+            momentum: ScriptMomentum::Changed,
+        };
+        assert!(admit(true, scroll(0.0, -4.5)).is_ok());
+        for bad in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            assert!(admit(true, scroll(bad, 0.0)).is_err(), "x {bad}");
+            assert!(admit(true, scroll(0.0, bad)).is_err(), "y {bad}");
+        }
+    }
+
+    /// 새 열거형의 네 글자 코드는 Ghostty와 같고 vendor가 같은 코드를 읽는다
+    #[test]
+    fn mouse_enumerations_match_ghostty() {
+        use winit::platform::macos::{ScriptMomentum as M, ScriptMouseButton as B};
+        let code = |s: &[u8; 4]| u32::from_be_bytes(*s);
+        assert_eq!(B::from_code(code(b"GMlf")), Some(B::Left));
+        assert_eq!(B::from_code(code(b"GMrt")), Some(B::Right));
+        assert_eq!(B::from_code(code(b"GMmd")), Some(B::Middle));
+        assert_eq!(B::from_code(code(b"GIpr")), None);
+        assert_eq!(B::from_code(0), None);
+        for (word, want) in [
+            (b"SMno", M::None),
+            (b"SMbg", M::Began),
+            (b"SMch", M::Changed),
+            (b"SMen", M::Ended),
+            (b"SMcn", M::Cancelled),
+            (b"SMmb", M::MayBegin),
+            (b"SMst", M::Stationary),
+        ] {
+            assert_eq!(M::from_code(code(word)), want);
+        }
+        // 모르는 값은 none이다(Ghostty `ScriptMouseScrollCommand`의 default)
+        assert_eq!(M::from_code(0), M::None);
+        for needle in [
+            "<enumeration name=\"mouse button\" code=\"GMBt\"",
+            "<enumerator name=\"left button\" code=\"GMlf\"",
+            "<enumerator name=\"right button\" code=\"GMrt\"",
+            "<enumerator name=\"middle button\" code=\"GMmd\"",
+            "<enumeration name=\"scroll momentum\" code=\"GSMo\"",
+            "<enumerator name=\"none\" code=\"SMno\"",
+            "<enumerator name=\"began\" code=\"SMbg\"",
+            "<enumerator name=\"changed\" code=\"SMch\"",
+            "<enumerator name=\"ended\" code=\"SMen\"",
+            "<enumerator name=\"cancelled\" code=\"SMcn\"",
+            "<enumerator name=\"may begin\" code=\"SMmb\"",
+            "<enumerator name=\"stationary\" code=\"SMst\"",
+        ] {
+            assert!(SDEF.contains(needle), "sdef에 없다: {needle}");
+        }
+    }
+
+    /// 마우스 명령의 이름·네 글자 코드·인자 코드는 Ghostty 사전과 같다. 결과는 없다. 클래스는 `BTScript…Command`다
+    #[test]
+    fn mouse_commands_match_the_ghostty_dictionary() {
+        let command = |name: &str| -> &str {
+            let start = SDEF.find(&format!("<command name=\"{name}\"")).expect(name);
+            let len = SDEF[start..].find("</command>").expect(name);
+            &SDEF[start..start + len]
+        };
+        let button = command("send mouse button");
+        for needle in [
+            "<command name=\"send mouse button\" code=\"GhstSMBt\"",
+            "<cocoa class=\"BTScriptMouseButtonCommand\"/>",
+            "<direct-parameter type=\"mouse button\"",
+            "<parameter name=\"action\" code=\"GMbA\" type=\"input action\" optional=\"yes\"",
+            "<parameter name=\"modifiers\" code=\"GMbM\" type=\"text\" optional=\"yes\"",
+            "<parameter name=\"to\" code=\"GMbT\" type=\"terminal\"",
+        ] {
+            assert!(button.contains(needle), "send mouse button에 없다: {needle}");
+        }
+        let position = command("send mouse position");
+        for needle in [
+            "<command name=\"send mouse position\" code=\"GhstSMPs\"",
+            "<cocoa class=\"BTScriptMousePosCommand\"/>",
+            "<parameter name=\"x\" code=\"GMpX\" type=\"real\"",
+            "<parameter name=\"y\" code=\"GMpY\" type=\"real\"",
+            "<parameter name=\"modifiers\" code=\"GMpM\" type=\"text\" optional=\"yes\"",
+            "<parameter name=\"to\" code=\"GMpT\" type=\"terminal\"",
+        ] {
+            assert!(position.contains(needle), "send mouse position에 없다: {needle}");
+        }
+        let scroll = command("send mouse scroll");
+        for needle in [
+            "<command name=\"send mouse scroll\" code=\"GhstSMSc\"",
+            "<cocoa class=\"BTScriptMouseScrollCommand\"/>",
+            "<parameter name=\"x\" code=\"GMsX\" type=\"real\"",
+            "<parameter name=\"y\" code=\"GMsY\" type=\"real\"",
+            "<parameter name=\"precision\" code=\"GMsP\" type=\"boolean\" optional=\"yes\"",
+            "<parameter name=\"momentum\" code=\"GMsM\" type=\"scroll momentum\" optional=\"yes\"",
+            "<parameter name=\"to\" code=\"GMsT\" type=\"terminal\"",
+        ] {
+            assert!(scroll.contains(needle), "send mouse scroll에 없다: {needle}");
+        }
+        // Ghostty는 이 명령들이 결과를 돌려주지 않는다
+        for c in [button, position, scroll] {
+            assert!(!c.contains("<result"), "마우스 명령에는 결과가 없다");
+        }
+    }
+
+    /// 마우스 명령의 거절 까닭 글은 한 일에 맞다
+    #[test]
+    fn mouse_is_refused_while_a_bar_is_open() {
+        let why = overlay_refusal_for("마우스를 보내지", true, false).expect("확인 막대");
+        assert!(why.contains("확인") && why.contains("마우스를 보내지"), "{why}");
+        assert!(overlay_refusal_for("마우스를 보내지", false, true).is_some_and(|m| m.contains("검색")));
+        assert_eq!(overlay_refusal_for("마우스를 보내지", false, false), None);
     }
 }

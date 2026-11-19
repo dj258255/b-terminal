@@ -5,7 +5,8 @@
   b-terminal(#634): AppleScript 사전. Ghostty의 macos/Ghostty.sdef(MIT 라이선스, Copyright (c) 2024 Mitchell Hashimoto,
   Ghostty contributors)를 줄여 옮겼습니다. 클래스·명령·속성 이름과 4글자 코드는 Ghostty와 같게 두었습니다(스크립트가
   그대로 돌게). 뺀 것: new surface configuration(과 surface configuration 레코드), split의
-  with configuration 인자, send mouse button·position·scroll, name override, pid, tty.
+  with configuration 인자, name override, pid, tty. 마우스 명령 셋(send mouse button·position·scroll)은 Ghostty처럼 있다
+  (위치는 칸 왼쪽 위에서 잰 점 좌표).
   이유와 남은 일은 docs/decisions.md ADR-062를 보십시오.
   Ghostty 원본의 Standard Suite는 Apple의 /System/Library/ScriptingDefinitions/CocoaStandard.sdef를 줄인 것이라 그 부분도 같습니다.
 -->
@@ -115,6 +116,22 @@
       <enumerator name="release" code="GIrl" description="Release."/>
     </enumeration>
 
+    <enumeration name="mouse button" code="GMBt" description="A mouse button.">
+      <enumerator name="left button" code="GMlf" description="Left mouse button."/>
+      <enumerator name="right button" code="GMrt" description="Right mouse button."/>
+      <enumerator name="middle button" code="GMmd" description="Middle mouse button."/>
+    </enumeration>
+
+    <enumeration name="scroll momentum" code="GSMo" description="Momentum phase for inertial scrolling.">
+      <enumerator name="none" code="SMno" description="No momentum."/>
+      <enumerator name="began" code="SMbg" description="Momentum began."/>
+      <enumerator name="changed" code="SMch" description="Momentum changed."/>
+      <enumerator name="ended" code="SMen" description="Momentum ended."/>
+      <enumerator name="cancelled" code="SMcn" description="Momentum cancelled."/>
+      <enumerator name="may begin" code="SMmb" description="Momentum may begin."/>
+      <enumerator name="stationary" code="SMst" description="Stationary."/>
+    </enumeration>
+
     <command name="new window" code="GhstNWin" description="Create a new b-terminal window.">
       <result type="window" description="The newly created window."/>
     </command>
@@ -187,6 +204,54 @@
         <cocoa key="terminal"/>
       </parameter>
       <result type="boolean" description="True when the action was performed."/>
+    </command>
+    <command name="send mouse button" code="GhstSMBt" description="Send a mouse button event to a terminal.">
+      <cocoa class="BTScriptMouseButtonCommand"/>
+      <direct-parameter type="mouse button" description="The mouse button."/>
+      <parameter name="action" code="GMbA" type="input action" optional="yes" description="Press or release (default: press).">
+        <cocoa key="action"/>
+      </parameter>
+      <parameter name="modifiers" code="GMbM" type="text" optional="yes" description="Comma-separated modifier keys: shift, control, option, command.">
+        <cocoa key="modifiers"/>
+      </parameter>
+      <parameter name="to" code="GMbT" type="terminal" description="The terminal to send the event to.">
+        <cocoa key="terminal"/>
+      </parameter>
+    </command>
+
+    <command name="send mouse position" code="GhstSMPs" description="Send a mouse position event to a terminal. The position is in points from the terminal's top left corner (scaled to pixels by the display scale); a value outside the terminal is moved inside.">
+      <cocoa class="BTScriptMousePosCommand"/>
+      <parameter name="x" code="GMpX" type="real" description="Horizontal position in points.">
+        <cocoa key="x"/>
+      </parameter>
+      <parameter name="y" code="GMpY" type="real" description="Vertical position in points.">
+        <cocoa key="y"/>
+      </parameter>
+      <parameter name="modifiers" code="GMpM" type="text" optional="yes" description="Comma-separated modifier keys: shift, control, option, command.">
+        <cocoa key="modifiers"/>
+      </parameter>
+      <parameter name="to" code="GMpT" type="terminal" description="The terminal to send the event to.">
+        <cocoa key="terminal"/>
+      </parameter>
+    </command>
+
+    <command name="send mouse scroll" code="GhstSMSc" description="Send a mouse scroll event to a terminal.">
+      <cocoa class="BTScriptMouseScrollCommand"/>
+      <parameter name="x" code="GMsX" type="real" description="Horizontal scroll delta.">
+        <cocoa key="x"/>
+      </parameter>
+      <parameter name="y" code="GMsY" type="real" description="Vertical scroll delta.">
+        <cocoa key="y"/>
+      </parameter>
+      <parameter name="precision" code="GMsP" type="boolean" optional="yes" description="High-precision scroll (e.g. trackpad). Default: false.">
+        <cocoa key="precision"/>
+      </parameter>
+      <parameter name="momentum" code="GMsM" type="scroll momentum" optional="yes" description="Momentum phase for inertial scrolling. Default: none.">
+        <cocoa key="momentum"/>
+      </parameter>
+      <parameter name="to" code="GMsT" type="terminal" description="The terminal to send the event to.">
+        <cocoa key="terminal"/>
+      </parameter>
     </command>
   </suite>
 

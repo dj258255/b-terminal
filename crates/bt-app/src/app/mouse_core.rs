@@ -1,0 +1,338 @@
+//! 마우스 처리의 공유 부분(#662): 사람의 마우스(`App::window_event`)와 스크립트 마우스(`send mouse ...`)가 함께 지나는 길.
+//!
+//! 이 파일의 함수는 사람의 상태(`Win::cursor_pos`, `selecting`, `last_click`, `scroll_accum`, `link_click`, 칸의 `mouse_down` 따위)와
+//! 사람의 수식 키(`App::mods`)를 읽거나 쓰지 않는다. 위치와 수식 키는 `PtrIn`으로, 바뀌는 상태는 `PtrState`로만 받는다.
+//! 사람 쪽은 흩어진 상태를 모아 넘기고 돌아오면 바뀐 것만 돌려놓는다(`App::human_ptr`·`store_human_ptr`). 스크립트 쪽은 칸마다 둔
+//! `ScriptMouse`의 상태를 넘긴다. 시험(`script_mouse::tests::shared_mouse_code_never_touches_the_human_state`)이 이 파일에 사람 상태 이름이
+//! 없음을 지킨다.
+//!
+//! `PtrIn::script`가 참이면 클립보드를 읽는 동작(붙여넣기)과 모달 메뉴는 하지 않는다. 클립보드를 읽는 길은 다른 앱이 이 터미널을 거쳐
+//! 클립보드를 읽어 가는 길이고, kitty 붙여넣기 이벤트(모드 5522)는 프로그램에 클립보드를 읽을 일회용 암호를 준다. 메뉴는 스크립트가 시간 초과로
+//! 막힌다. 복사(`right-click-action = copy`, `copy-or-paste`의 복사 쪽, `copy-on-select`)는 한다.
+
+use winit::dpi::PhysicalPosition;
+use winit::event::MouseButton;
+
+use super::{App, Instant};
+use crate::mouse;
+use crate::script_mouse::{PtrMods, PtrState, next_click};
+
+/// 마우스 사건의 입력: 위치(창 실제 픽셀)와 수식 키, 그리고 스크립트가 보낸 것인가
+#[derive(Debug, Clone, Copy)]
+pub(super) struct PtrIn {
+    pub pos: PhysicalPosition<f64>,
+    pub mods: PtrMods,
+    pub script: bool,
+}
+
+impl PtrIn {
+    /// 링크를 짚는 수식 키: macOS는 Cmd, 그 밖에는 Ctrl(Ghostty와 같다)
+    fn link_mod(&self) -> bool {
+        if cfg!(target_os = "macos") {
+            self.mods.sup
+        } else {
+            self.mods.ctrl
+        }
+    }
+
+    /// 사각 고르기 키인가(#433). macOS는 Option, 그 밖에는 Ctrl(또는 Super)+Alt
+    fn rectangle_select(&self) -> bool {
+        mouse::is_rectangle_select(cfg!(target_os = "macos"), self.mods.alt, self.mods.ctrl, self.mods.sup)
+    }
+}
+
+/// winit의 단추를 마우스 보고의 단추로. 모르는 단추는 `None`
+pub(super) fn report_button(button: MouseButton) -> Option<mouse::Button> {
+    match button {
+        MouseButton::Left => Some(mouse::Button::Left),
+        MouseButton::Middle => Some(mouse::Button::Middle),
+        MouseButton::Right => Some(mouse::Button::Right),
+        MouseButton::Back => Some(mouse::Button::Back),
+        MouseButton::Forward => Some(mouse::Button::Forward),
+        _ => None,
+    }
+}
+
+impl App {
+    /// 칸 idx의 프로그램이 마우스 보고를 켰으면 그 모드. `shift`는 이 사건의 Shift다(mouse-shift-capture가 정한다)
+    pub(super) fn mouse_reporting_with(&self, idx: usize, shift: bool) -> Option<bt_term::Modes> {
+        let pane = self.panes.get(idx)?;
+        // 읽기 전용 칸은 프로그램에 마우스를 보내지 않는다. 마우스는 고르기·스크롤에 쓴다(#209, ADR-018)
+        if pane.session.readonly() {
+            return None;
+        }
+        let m = pane.session.modes();
+        // mouse-reporting을 끄면 보내지 않는다. Shift를 누르면 mouse-shift-capture가 true·always일 때만
+        // 프로그램이 받고, 아니면 고르기를 한다(xterm 관례)
+        Self::mouse_mode_on(m).then_some(m).filter(|_| {
+            mouse::reports_to_program(
+                crate::toggles::mouse_reporting_on(self.config.mouse_reporting, pane.mouse_reporting_over),
+                self.config.mouse_shift_capture,
+                pane.session.mouse_shift_capture(),
+                shift,
+            )
+        })
+    }
+
+    /// 마우스 사건 하나를 칸 idx의 프로그램에 보고한다(보고를 켜지 않았으면 눌린 단추만 기억한다)
+    pub(super) fn report_mouse(
+        &mut self,
+        idx: usize,
+        button: mouse::Button,
+        action: mouse::Action,
+        input: &PtrIn,
+        st: &mut PtrState,
+    ) {
+        // 눌린 단추를 기억한다(보고하지 않을 때도: 놓음을 놓치면 눌린 채로 남는다)
+        if let Some(bit) = mouse::button_bit(button) {
+            match action {
+                mouse::Action::Press => st.down |= bit,
+                mouse::Action::Release => st.down &= !bit,
+                mouse::Action::Motion => {}
+            }
+        }
+        let Some(m) = self.mouse_reporting_with(idx, input.mods.shift) else {
+            return;
+        };
+        let Some(event) = mouse::EventMode::from_modes(&m) else {
+            return;
+        };
+        let Some(rect) = self.pane_rect(self.panes[idx].id) else {
+            return;
+        };
+        let Some(cm) = self.metrics_at(self.panes[idx].font_size) else {
+            return;
+        };
+        let (cw, ch) = (cm.width as f64, cm.height as f64);
+        let inner = self.inner_rect(rect, self.panes[idx].font_size);
+        let (grid_cols, grid_rows) = super::pane_cells(&self.panes[idx].session);
+        // 좌표는 칸(창) 왼쪽 위에서 잰 실제 픽셀이다(배율을 곱한 픽셀. Ghostty도 표면 픽셀을 그대로 쓴다).
+        // 1016은 거기서 격자 원점(여백을 뺀 자리)까지 뺀 값을 보낸다
+        let geometry = mouse::Geometry {
+            screen_w: rect.w as f64,
+            screen_h: rect.h as f64,
+            cell_w: cw,
+            cell_h: ch,
+            pad_left: (inner.x - rect.x) as f64,
+            pad_top: (inner.y - rect.y) as f64,
+            cols: grid_cols,
+            rows: grid_rows,
+        };
+        let opts = mouse::Options {
+            event,
+            format: m.mouse_format,
+            geometry,
+            any_button_pressed: st.down != 0,
+        };
+        let pos = (input.pos.x - rect.x as f64, input.pos.y - rect.y as f64);
+        let mods = mouse::Mods {
+            shift: input.mods.shift,
+            alt: input.mods.alt,
+            ctrl: input.mods.ctrl,
+        };
+        let bytes = mouse::encode(button, action, mods, pos, &opts, &mut st.last_cell);
+        if !bytes.is_empty() {
+            self.panes[idx].session.write(&bytes);
+        }
+    }
+
+    /// 마우스가 움직였다(칸 idx가 받는다). 고르는 중이면 고르기를 늘리고, 아니면 프로그램이 마우스 보고를 켰을 때 움직임을 보고한다.
+    /// `over`는 마우스가 그 칸 위에 있는가(칸 밖 움직임은 보고하지 않는다)
+    pub(super) fn pointer_moved(&mut self, idx: usize, input: &PtrIn, st: &mut PtrState, over: bool) {
+        if st.selecting {
+            // 끌 때마다 그 순간의 수식 키로 사각 여부를 정한다(Ghostty Surface.zig 4838줄)
+            let rectangle = input.rectangle_select();
+            if let Some((c, r)) = self.cell_in(idx, input.pos) {
+                self.panes[idx].session.select_set_block(rectangle);
+                let side = self.cell_side_in(idx, input.pos);
+                self.panes[idx].session.select_update_at(c, r, side);
+                self.request_redraw();
+            }
+        } else if self.mouse_reporting_with(idx, input.mods.shift).is_some() {
+            // 움직임 보고는 고른 칸 위에서만. 단추를 누른 채면 그 단추로 보낸다(1002는 이것만 받는다).
+            // 어떤 움직임을 보낼지는 이벤트 모드가 정한다(mouse::encode)
+            if over {
+                let held = mouse::held_button(st.down);
+                self.report_mouse(idx, held, mouse::Action::Motion, input, st);
+            }
+        }
+    }
+
+    /// Cmd-클릭(링크 수식 키 + 왼쪽 누름)으로 링크를 연다. 누름과 놓기 모두 프로그램(마우스 보고)·고르기에 보내지 않으므로
+    /// 처리했으면 `true`(호출한 쪽은 더 하지 않는다). `link_click`은 짝 놓기를 삼키려고 기억하는 값이다
+    pub(super) fn link_click_step(
+        &mut self,
+        button: mouse::Button,
+        pressed: bool,
+        input: &PtrIn,
+        link_click: &mut bool,
+    ) -> bool {
+        if button != mouse::Button::Left {
+            return false;
+        }
+        if !pressed && *link_click {
+            *link_click = false;
+            return true;
+        }
+        if pressed && input.link_mod() {
+            if let Some((_, hit)) = self.link_under(input.pos) {
+                *link_click = true;
+                self.open_link(&hit.url);
+                return true;
+            }
+        }
+        false
+    }
+
+    /// 마우스 단추 하나(칸 idx가 받는다). 마우스 보고 중이면 프로그램에 보고하고, 아니면 오른쪽 단추 동작·메뉴·가운데 붙여넣기·왼쪽 고르기를 한다.
+    /// 창 장식(제목 막대·탭 줄·손잡이·막대 띠)과 초점 누름 삼키기는 사람 쪽이 앞서 걸러 내므로 여기에 없다
+    pub(super) fn pointer_button(
+        &mut self,
+        idx: usize,
+        mb: mouse::Button,
+        pressed: bool,
+        input: &PtrIn,
+        st: &mut PtrState,
+    ) {
+        if self.mouse_reporting_with(idx, input.mods.shift).is_some() {
+            let action = if pressed {
+                mouse::Action::Press
+            } else {
+                mouse::Action::Release
+            };
+            self.report_mouse(idx, mb, action, input, st);
+            return;
+        }
+        if mb == mouse::Button::Right {
+            if pressed {
+                self.right_click(input.script);
+            }
+            return;
+        }
+        // Ctrl+왼쪽 클릭도 메뉴(마우스 보고 중이 아닐 때만, 위에서 이미 걸렀다). `context-menu`일 때만 띄운다(#278).
+        // 스크립트에는 메뉴를 띄우지 않는다(모달이라 스크립트가 막힌다)
+        if cfg!(target_os = "macos")
+            && mb == mouse::Button::Left
+            && input.mods.ctrl
+            && !input.mods.sup
+            && self.config.right_click_action == bt_core::config::RightClickAction::ContextMenu
+        {
+            if pressed && !input.script {
+                self.context_menu_press();
+            }
+            return;
+        }
+        if mb == mouse::Button::Middle {
+            // 가운데 단추 붙여넣기는 클립보드를 읽는다: 스크립트에는 하지 않는다
+            if pressed && !input.script && mouse::middle_click_pastes(self.config.middle_click_action) {
+                let text = self.clipboard.as_mut().and_then(|cb| cb.get_text().ok());
+                if let Some(text) = text.filter(|t| !t.is_empty()) {
+                    self.paste(text);
+                }
+            }
+            return;
+        }
+        if mb != mouse::Button::Left {
+            return;
+        }
+        if pressed {
+            let Some((c, r)) = self.cell_in(idx, input.pos) else {
+                return;
+            };
+            let now = Instant::now();
+            let interval = mouse::repeat_interval(self.config.click_repeat_interval, mouse::platform_repeat_interval());
+            let clicks = next_click(st.last_click, now, (c, r), interval);
+            st.last_click = Some((now, c, r, clicks));
+            let kind = mouse::select_kind(clicks, input.rectangle_select());
+            let side = self.cell_side_in(idx, input.pos);
+            let session = &self.panes[idx].session;
+            if clicks == 1 {
+                session.select_clear();
+            }
+            session.select_start_at(c, r, kind, side);
+            if clicks > 1 {
+                session.select_update(c, r);
+            }
+            st.selecting = true;
+            self.request_redraw();
+        } else {
+            st.selecting = false;
+            // 프롬프트 줄을 끌지 않고 한 번 누르면 그 자리로 커서를 옮긴다(cursor-click-to-move, #137)
+            let released = self.cell_in(idx, input.pos);
+            let plain_click = matches!(
+                (st.last_click, released),
+                (Some((_, c, r, 1)), Some((rc, rr))) if (c, r) == (rc, rr)
+            ) && !(input.mods.sup || input.mods.ctrl || input.mods.alt || input.mods.shift);
+            if plain_click && self.config.cursor_click_to_move {
+                if let Some((col, row)) = released {
+                    self.click_to_move(idx, col, row);
+                }
+            }
+            // copy-on-select: 고르기를 마치면 값에 따라 선택 클립보드·시스템 클립보드로
+            self.copy_on_select_now();
+        }
+    }
+
+    /// 마우스 휠. `idx`는 휠이 향하는 칸(없으면 없다), `lines`·`xlines`는 이미 배율을 곱한 세로·가로 줄 수(양수가 위·왼쪽)다.
+    /// 마우스 보고 중이면 단추 4·5(세로)·6·7(가로)로 보고하고, 대체 화면이면 화살표로, 아니면 스크롤백을 굴린다. 한 번에 최대 10번 보낸다
+    pub(super) fn pointer_wheel(
+        &mut self,
+        idx: Option<usize>,
+        lines: f64,
+        xlines: f64,
+        input: &PtrIn,
+        st: &mut PtrState,
+    ) {
+        // 가로 휠(트랙패드 옆으로 밀기, 기울이는 휠): 마우스 보고 중일 때만 단추 6·7로 보낸다(#300).
+        // 양수가 왼쪽이다(Ghostty `up_right` → `six`)
+        let xpane = idx.filter(|&i| self.mouse_reporting_with(i, input.mods.shift).is_some());
+        if let Some(xi) = xpane {
+            st.accum_x += xlines;
+            let xwhole = st.accum_x.trunc() as i32;
+            if xwhole != 0 {
+                st.accum_x -= xwhole as f64;
+                let b = if xwhole > 0 {
+                    mouse::Button::WheelLeft
+                } else {
+                    mouse::Button::WheelRight
+                };
+                for _ in 0..xwhole.unsigned_abs().min(10) {
+                    self.report_mouse(xi, b, mouse::Action::Press, input, st);
+                }
+            }
+        } else {
+            st.accum_x = 0.0;
+        }
+        st.accum += lines;
+        let whole = st.accum.trunc() as i32;
+        if whole == 0 {
+            return;
+        }
+        st.accum -= whole as f64;
+        let Some(idx) = idx else { return };
+        let modes = self.panes[idx].session.modes();
+        if self.mouse_reporting_with(idx, input.mods.shift).is_some() {
+            let b = if whole > 0 {
+                mouse::Button::WheelUp
+            } else {
+                mouse::Button::WheelDown
+            };
+            for _ in 0..whole.unsigned_abs().min(10) {
+                self.report_mouse(idx, b, mouse::Action::Press, input, st);
+            }
+        } else if modes.alt_screen && modes.alternate_scroll && !self.panes[idx].session.readonly() {
+            // 대체 화면(less·vim)에서는 휠을 위·아래 화살표로 보낸다
+            let key = if whole > 0 {
+                bt_term::NamedKey::Up
+            } else {
+                bt_term::NamedKey::Down
+            };
+            let one = bt_term::encode_named(key, bt_term::Mods::default(), modes.app_cursor);
+            let bytes = one.repeat(whole.unsigned_abs().min(10) as usize);
+            self.panes[idx].session.write(&bytes);
+        } else {
+            self.panes[idx].session.scroll(whole);
+            self.request_redraw();
+        }
+    }
+}
