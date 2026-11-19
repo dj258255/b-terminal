@@ -4,7 +4,7 @@
 
 ## [아직 릴리스하지 않음]
 
-- AppleScript에 Ghostty의 `new surface configuration [from 레코드]`(명령 코드 `GhstNSCf`)와 `new window`·`new tab`·`split`의 `with configuration` 인자(`GNwS`·`GNtS`·`GSpS`)를 더했습니다. `surface configuration` 레코드(`GScf`)는 `font size`·`initial working directory`·`command`·`initial input`·`wait after command`·`environment variables`(`GScF`·`GScD`·`GScC`·`GScI`·`GScW`·`GScE`)이고, 만들 새 칸 하나에만 값을 덮어씁니다(설정 파일의 값은 바꾸지 않고 `btctl` 소켓 규약도 그대로입니다). `command`는 셸 명령으로 띄우고 끝나도 칸을 남기며, 폴더는 절대 경로이면서 실제 폴더일 때만 쓰고, 환경 변수는 설정 `env` 위에 덮어쓰고, `initial input`은 `input` 목록을 그 글 하나로 바꿔 바이트 그대로 보내고, 글자 크기는 그 칸에만 적용합니다. 값의 형이나 글자 크기, `KEY=VALUE`(키가 비었거나 NUL이 있어도 오류, Ghostty보다 엄격)가 틀리면 창이나 칸을 만들기 전에 오류입니다. 크기 상한(`command`·폴더·환경 변수 한 항목 64KiB, `initial input` 1MiB, 환경 변수 256개)은 복사 전에 보고, 값은 로그에 남기지 않습니다. 실제 Apple Event로는 아직 확인하지 않았습니다 (#666)
+- AppleScript에 Ghostty의 `new surface configuration [from 레코드]`(명령 코드 `GhstNSCf`)와 `new window`·`new tab`·`split`의 `with configuration` 인자(`GNwS`·`GNtS`·`GSpS`)를 더했습니다. `surface configuration` 레코드(`GScf`)는 `font size`·`initial working directory`·`command`·`initial input`·`wait after command`·`environment variables`(`GScF`·`GScD`·`GScC`·`GScI`·`GScW`·`GScE`)이고, 만들 새 칸 하나에만 값을 덮어씁니다(설정 파일의 값은 바꾸지 않고 `btctl` 소켓 규약도 그대로입니다). `command`는 셸 명령으로 띄우고 끝나도 칸을 남기며, 폴더는 절대 경로이면서 실제 폴더일 때만 쓰고, 환경 변수는 설정 `env` 위에 덮어쓰고, `initial input`은 `input` 목록을 그 글 하나로 바꿔 바이트 그대로 보내고, 글자 크기는 그 칸에만 적용합니다. 값의 형이나 글자 크기, `KEY=VALUE`(키가 비었거나 NUL이 있어도 오류, Ghostty보다 엄격)가 틀리면 창이나 칸을 만들기 전에 오류입니다. 크기 상한(`command`·폴더·환경 변수 한 항목 64KiB, `initial input` 1MiB, 환경 변수 256개)은 복사 전에 보고, 값은 로그에 남기지 않습니다. 격리한 실제 창에서 Apple Event로 확인했습니다(명령·폴더·환경 변수·처음 입력·글자 크기 적용, 다음 칸에 남지 않음, 레코드 반환, 틀린 값 거절, 로그에 값이 남지 않음) (#666)
 
 ## [0.84.0] - 2026-11-19
 
