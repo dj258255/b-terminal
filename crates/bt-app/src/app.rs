@@ -209,6 +209,8 @@ pub struct Pane {
     mouse_down: u8,
     mouse_last_cell: Option<(usize, usize)>,
     /// 스크립트 마우스(`send mouse ...`, #662)의 상태. 사람의 마우스 상태와 아무것도 나누지 않는다
+    // AppleScript(macOS)만 읽는다
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     script_mouse: crate::script_mouse::ScriptMouse,
     /// PTY의 termios로 알아챈 암호 입력(#258). 자물쇠 커서를 그린다
     password: bool,
