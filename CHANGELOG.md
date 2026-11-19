@@ -4,7 +4,6 @@
 
 ## [아직 릴리스하지 않음]
 
-- **macOS에서 글을 드래그해 고르면 시스템 클립보드로 복사되어 ⌘V로 바로 붙습니다**(`copy-on-select` macOS 기본 `primary` → `clipboard`). `true`도 macOS에서 `clipboard`입니다(Ghostty 1.4와 같음, 전에는 `primary`). 고른 칸이 암호 입력 중이거나 보안 입력이 켜져 있으면 자동 복사는 시스템 클립보드에 쓰지 않습니다. 전처럼 고르기만으로는 ⌘V 내용을 바꾸지 않으려면 `copy-on-select = primary` (#683)
 ## [0.86.0] - 2026-11-19
 
 Ghostty 1.4에서 가져온 마우스 동작(분할 경계선 끌기, 탭 줄), AppleScript `name override`·`pid`·`tty`, Ghostty 1.4 작은 값. 마일스톤 0.86.

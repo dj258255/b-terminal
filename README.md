@@ -29,7 +29,7 @@ Finder에서 폴더(나 파일)를 오른쪽 눌러 "서비스" → "New b-termi
 | 키(macOS 기본) | 하는 일 |
 |---|---|
 | Cmd-C / Cmd-V | 시스템 클립보드로 복사 / 붙여넣기(괄호 붙여넣기 모드면 감싸서) |
-| Cmd-Shift-V(편집 메뉴 "선택 붙여넣기") | 선택 클립보드 붙여넣기(`copy-on-select = primary`·`both`일 때 고른 글). 기본(`clipboard`)은 글을 드래그해 고르기만 하면 시스템 클립보드로 복사되어 Cmd-V로 붙습니다. 고르기만 해서는 Cmd-V 내용을 바꾸지 않으려면 `copy-on-select = primary` |
+| Cmd-Shift-V(편집 메뉴 "선택 붙여넣기") | 고른 글 붙여넣기. 글을 고르기만 하면 앱 안 선택 클립보드에 담기고(`copy-on-select = primary`, 기본) Cmd-V의 시스템 클립보드는 그대로입니다. 고르면 시스템 클립보드로 복사하려면 `copy-on-select = clipboard` |
 | Cmd-= / Cmd-- / Cmd-0 | 고른 칸의 글자 크기(Ghostty처럼 칸마다 따로) |
 | Cmd-N / Cmd-T / Cmd-W / Cmd-Opt-W | 새 창 / 새 탭 / 칸 닫기(칸이 하나면 탭) / 탭 닫기 |
 | Cmd-1~8, Cmd-9, Cmd-Shift-[ / Cmd-Shift-] | 탭 옮기기(탭 줄을 눌러도 됩니다. 탭 줄에서 가운데 클릭은 탭 닫기, 두 번 누르기는 탭 제목 바꾸기, 누른 채 끌면 탭 순서 바꾸기) |
@@ -46,7 +46,7 @@ Finder에서 폴더(나 파일)를 오른쪽 눌러 "서비스" → "New b-termi
 | Cmd-Shift-, | 설정 다시 읽기 |
 | (전역, 직접 묶음) | 퀵 터미널: `keybind = global:ctrl+backquote=toggle_quick_terminal`이면 어느 앱에서든 Ctrl-` 로 화면 가장자리에서 미끄러져 나오는 창을 보였다 숨김(`quick-terminal-position` 등) |
 | Cmd-클릭 | 링크 열기(Cmd를 누르면 URL·OSC 8 링크에 밑줄과 실제 주소가 보입니다. 이미 밑줄 친 글은 이중 밑줄) |
-| 마우스 끌기, 두 번·세 번 누르기 | 글자·단어·줄 고르기(앱이 마우스를 쓰면 Shift를 누른 채로). 고른 글은 시스템 클립보드로 복사되어 Cmd-V로 붙습니다(`copy-on-select`) |
+| 마우스 끌기, 두 번·세 번 누르기 | 글자·단어·줄 고르기(앱이 마우스를 쓰면 Shift를 누른 채로). 고른 글은 선택 클립보드에 담깁니다 |
 | Option을 누른 채 끌기(Linux는 Ctrl+Alt) | 사각 고르기(누르는 동안 포인터가 십자) |
 
 모든 키는 설정의 `keybind`로 바꿀 수 있습니다([docs/configuration.md](docs/configuration.md#키-묶음)).

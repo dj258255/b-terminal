@@ -2360,7 +2360,12 @@ impl App {
         #[cfg(target_os = "macos")]
         {
             use winit::platform::macos::{named_pasteboard_change_count, set_named_pasteboard_string};
-            let (password, secure) = self.focused_private();
+            let id = self.focused_id();
+            let password = id.and_then(|i| self.pane_index(i)).is_some_and(|i| {
+                let p = &self.panes[i];
+                paste_hidden(p.password, p.session.password_input())
+            });
+            let secure = self.secure.global() || id.is_some_and(|i| self.secure.has_scoped(i));
             let written = if share_selection(password, secure) {
                 set_named_pasteboard_string(SELECTION_PASTEBOARD, &text)
             } else {
@@ -2369,17 +2374,6 @@ impl App {
             self.selection_seen = written.or_else(|| named_pasteboard_change_count(SELECTION_PASTEBOARD));
         }
         self.selection_clipboard = Some(text);
-    }
-
-    /// 고른 칸이 암호 입력 중인가(붙여넣기처럼 termios를 다시 읽음), 보안 입력이 켜져 있는가(전역이거나 그 칸)
-    fn focused_private(&self) -> (bool, bool) {
-        let id = self.focused_id();
-        let password = id.and_then(|i| self.pane_index(i)).is_some_and(|i| {
-            let p = &self.panes[i];
-            paste_hidden(p.password, p.session.password_input())
-        });
-        let secure = self.secure.global() || id.is_some_and(|i| self.secure.has_scoped(i));
-        (password, secure)
     }
 
     /// 선택 클립보드의 글(macOS는 다른 b-terminal이 나중에 고른 것 포함)
@@ -2400,8 +2394,7 @@ impl App {
     /// `copy-on-select`: 고르기를 마칠 때 값에 따라 선택 클립보드·시스템 클립보드로 보낸다.
     /// 시스템 클립보드는 Ghostty처럼 mixed(글 + HTML)다
     fn copy_on_select_now(&mut self) {
-        let (password, secure) = self.focused_private();
-        let (selection, system) = auto_copy_targets(self.config.copy_on_select, password || secure);
+        let (selection, system) = self.config.copy_on_select.targets();
         if selection {
             if let Some(text) = self.selection_for_copy() {
                 self.set_selection_clipboard(text);
@@ -6754,13 +6747,6 @@ const SELECTION_MAX_LEN: usize = 1 << 20;
 
 /// 고른 글을 이름 붙은 pasteboard(같은 사용자의 다른 프로세스가 읽을 수 있다)에 써도 되는가. 암호 입력 중인 칸(`password`)이나
 /// 보안 입력이 켜진 때(`secure`: 전역이거나 그 칸)의 글은 앱 안 저장소에만 둔다
-/// `copy-on-select`의 자동 복사가 보낼 곳(선택 클립보드, 시스템 클립보드). 고른 칸이 암호 입력 중이거나 보안 입력이면(`private`)
-/// 시스템 클립보드(다른 앱과 클립보드 기록 앱이 읽음)로는 보내지 않는다. 사람이 누르는 복사(⌘C)는 막지 않는다
-fn auto_copy_targets(mode: bt_core::config::CopyOnSelect, private: bool) -> (bool, bool) {
-    let (selection, system) = mode.targets();
-    (selection, system && !private)
-}
-
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 fn share_selection(password: bool, secure: bool) -> bool {
     !password && !secure
@@ -7844,18 +7830,6 @@ mod tests {
     }
 
     /// 암호 입력 중이거나 보안 입력이 켜진 칸에서 고른 글은 다른 프로세스가 읽을 수 있는 pasteboard에 쓰지 않는다
-    /// `copy-on-select`의 자동 복사: 암호 입력 중이거나 보안 입력이면 시스템 클립보드로 보내지 않는다(선택 클립보드는 앱 안에 둔다)
-    #[test]
-    fn auto_copy_skips_system_clipboard_when_private() {
-        use bt_core::config::CopyOnSelect;
-        assert_eq!(auto_copy_targets(CopyOnSelect::Clipboard, false), (false, true));
-        assert_eq!(auto_copy_targets(CopyOnSelect::Clipboard, true), (false, false));
-        assert_eq!(auto_copy_targets(CopyOnSelect::Both, true), (true, false));
-        assert_eq!(auto_copy_targets(CopyOnSelect::Both, false), (true, true));
-        assert_eq!(auto_copy_targets(CopyOnSelect::Primary, true), (true, false));
-        assert_eq!(auto_copy_targets(CopyOnSelect::None, false), (false, false));
-    }
-
     #[test]
     fn password_pane_selection_is_not_shared() {
         assert!(share_selection(false, false));
