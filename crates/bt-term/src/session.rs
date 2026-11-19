@@ -1069,6 +1069,15 @@ impl Session {
                                         let on = thread_visibility_reports.load(std::sync::atomic::Ordering::Acquire);
                                         write_reply(&thread_writer, crate::csi_query::mode_2033_report(on).as_bytes());
                                     }
+                                    // 보이는지 묻기(`CSI ? 998 n`): 모드 2033이 꺼져 있어도 답한다(Ghostty stream_terminal.zig
+                                    // `sendVisibilityReport`). 터미널의 답이라 읽기 전용 칸에서도 쓴다(#675)
+                                    Signal::VisibilityStatusQuery => {
+                                        let now = thread_visible.load(std::sync::atomic::Ordering::Acquire);
+                                        write_reply(
+                                            &thread_writer,
+                                            crate::csi_query::visibility_report(now).as_bytes(),
+                                        );
+                                    }
                                     Signal::InBandSizeQuery => {
                                         let on = thread_in_band_size.load(std::sync::atomic::Ordering::Acquire);
                                         write_reply(&thread_writer, crate::csi_query::mode_2048_report(on).as_bytes());
@@ -1646,6 +1655,7 @@ fn signal_event(sig: Signal) -> SessionEvent {
         | Signal::ColorSchemeModeQuery
         | Signal::VisibilityReports(_)
         | Signal::VisibilityQuery
+        | Signal::VisibilityStatusQuery
         | Signal::KittyClipboard { .. }
         | Signal::KittyPasteEvents(_)
         | Signal::KittyPasteQuery

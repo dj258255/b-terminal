@@ -76,7 +76,7 @@ config-file = ?~/.config/b-terminal/local   # ?가 붙으면 없어도 된다
 | `window-title-font-family` | 글꼴 이름 | 비움(macOS: 시스템 UI 글꼴, 그 밖: 터미널 글꼴) | 탭 줄 제목을 그릴 글꼴입니다. 고정폭이 아니어도 되고, 글자마다 글꼴이 정한 폭으로 자리를 잡아 탭 너비·잘림(`…`)도 그 실제 폭으로 셉니다. 글꼴 크기는 13pt(Ghostty처럼 시스템 기본 크기)이고 터미널 글꼴 크기(`font-size`, 확대·축소)를 따르지 않습니다. 탭 줄의 높이·구분선·안 읽음 점·진행 막대도 이 글꼴 기준이라 터미널 글꼴을 키워도 같습니다(탭 폭에는 상한이 없고 창 폭을 탭 수로 고르게 나눕니다). 제목 글꼴에 없는 글자(한글·기호·이모지)는 터미널 기본 글꼴 다음 터미널과 같은 대체 순서로 찾고, 제목 글꼴이 비례폭이면 한글은 그 대체 글꼴의 폭, 색 이모지는 그려지는 글리프 폭만큼 나아갑니다(고정폭이면 터미널처럼 두 칸). 없는 이름이면 경고하고 터미널 글꼴로 그립니다. 비우면 macOS에서는 시스템 UI 글꼴(SF, `.SF NS`·`System Font` 이름으로 찾습니다)로 그리고, 찾지 못하면 경고 없이 터미널 글꼴로 그립니다. 시스템 글꼴 이름은 `unsafe` 없이 시스템에 물을 수 없어 이름 목록으로 찾습니다. 설정을 다시 읽으면 바뀝니다. macOS 창 제목 막대(AppKit이 그리는 제목)와 확인 막대·팔레트 같은 다른 화면 글은 바뀌지 않습니다. 제목 글꼴을 읽지 못해 터미널 글꼴로 그릴 때는 탭 줄도 터미널 글꼴 기준으로 셉니다 |
 | `font-shaping-break` | `cursor`, `no-cursor`, `true`, `false` | `cursor` | 합자를 끊는 자리. `cursor`는 커서 칸에서 합자를 풀어 보입니다. `no-cursor`면 커서 밑에서도 합자를 유지합니다 |
 | `adjust-icon-height` | `10%` 또는 포인트 | 없음 | Nerd Font 아이콘(사설 영역 글자, 파워라인 도형 U+E0B0~U+E0D7 제외)이 넘지 않을 높이를 셀 높이 기준으로 바꿉니다. 양수는 키우고 음수는 줄이며 원래 자리의 가운데에 둡니다. 키울 때는 칸 폭에서 멈추고, 이미 칸보다 넓은 아이콘은 더 키우지 않습니다(Ghostty의 아이콘 맞춤 표를 그대로 옮기지는 않았습니다) |
-| `theme` | 테마 이름, 절대 경로, `light:…,dark:…` | 없음 | 찾는 곳: `~/.config/b-terminal/themes`, 그다음 앱에 넣어 둔 907개([assets/themes-README.md](../assets/themes-README.md), `b-terminal --list-themes`). 이름은 띄어쓰기·대소문자를 무시합니다(`Tokyo Night` = `TokyoNight`)`light:…,dark:…`는 시스템이 밝음·어두움을 바꾸면 열려 있는 모든 창·칸에서 바로 다시 골라집니다(설정 파일은 다시 읽지 않고, 테마 파일만 다시 읽음). 테마가 하나뿐이면 색은 그대로입니다(모드 2031을 켠 칸에는 시스템 모양이 바뀌었다고 알립니다, 아래 "색 구성표 보고") |
+| `theme` | 테마 이름, 절대 경로(`~/`로 시작하면 홈 기준, Ghostty 1.4), `light:…,dark:…` | 없음 | 찾는 곳: `~/.config/b-terminal/themes`, 그다음 앱에 넣어 둔 907개([assets/themes-README.md](../assets/themes-README.md), `b-terminal --list-themes`). 이름은 띄어쓰기·대소문자를 무시합니다(`Tokyo Night` = `TokyoNight`)`light:…,dark:…`는 시스템이 밝음·어두움을 바꾸면 열려 있는 모든 창·칸에서 바로 다시 골라집니다(설정 파일은 다시 읽지 않고, 테마 파일만 다시 읽음). 테마가 하나뿐이면 색은 그대로입니다(모드 2031을 켠 칸에는 시스템 모양이 바뀌었다고 알립니다, 아래 "색 구성표 보고") |
 | `background` / `foreground` | `#rrggbb` | Ghostty 기본 | 테마 위에 덮습니다 |
 | `palette` | `N=#rrggbb`(0~255) | Ghostty 기본 | 16~255번은 xterm 표이고, `palette-generate`를 켜면 만든 색입니다. 직접 정한 번호가 늘 이깁니다 |
 | `cursor-color` / `cursor-text` | `#rrggbb`, `cell-foreground`, `cell-background` | 글자색 / 바탕색 | `cell-*`는 커서 칸의 글자색·바탕색을 씁니다(예: `cursor-color = cell-foreground`, `cursor-text = cell-background`면 칸을 뒤집은 모양) |
@@ -113,7 +113,7 @@ config-file = ?~/.config/b-terminal/local   # ?가 붙으면 없어도 된다
 | `cursor-style` | `block` `bar` `underline` `block_hollow` | `block` | 프로그램이 바꾸면 그쪽이 이깁니다. 암호 입력 중에는 자물쇠입니다 |
 | `cursor-style-blink` | `true` / `false` | 끔 | 0.6초마다 깜빡입니다. 프로그램이 DECSCUSR(`ESC[1 q` 등)로 바꾸면 그쪽을 따르고, 키를 치는 동안과 창을 보지 않을 때는 깜빡이지 않습니다 |
 | `window-padding-x` / `window-padding-y` | `2` 또는 `왼,오른`(`위,아래`) | `2` | 포인트 |
-| `window-padding-balance` | `true` `false` | `false` | 창 크기가 칸 크기로 나누어떨어지지 않아 남는 자리를 네 변에 고르게 나눕니다(끄면 오른쪽·아래에 몰림) |
+| `window-padding-balance` | `false` `true` `equal` | `false` | 칸의 크기가 글자 칸 크기로 나누어떨어지지 않아 남는 자리를 네 변에 나눕니다(끄면 오른쪽·아래에 몰림). `true`는 Ghostty처럼 위 여백을 (왼쪽 + 오른쪽 여백 + 칸 너비) / 2까지로 묶고 넘는 것은 아래로 보내고, `equal`(Ghostty 1.4)은 위아래를 똑같이 나눕니다. 나눌 때는 `window-padding-x`·`-y`까지 합친 남는 자리를 반씩 나누므로 두 값이 좌우·위아래로 다르면 그 차이는 남지 않습니다(Ghostty와 같음) |
 | `window-padding-color` | `background` `extend` `extend-always` | `background` | 여백 색. `extend`는 가장 가까운 칸의 바탕색으로 늘이되, 주 화면에서 가장 가까운 줄에 기본 바탕색 칸·프롬프트·powerline 꼭 맞춤 글자가 있으면 위아래로는 늘이지 않습니다(Ghostty와 같은 규칙). `extend-always`는 따지지 않고 늘입니다 |
 | `window-width` / `window-height` | 셀 수 | 없음 | 둘 다 있을 때 처음 창 크기 |
 | `maximize` | `true` `false` | `false` | 새 창을 최대화로 띄웁니다(Ghostty처럼 첫 창만이 아니라 새 창 모두. 탭·분할·퀵 터미널 창은 해당 없음). 창 상태 복원으로 되살린 창은 복원한 크기가 이깁니다 |
@@ -162,7 +162,7 @@ config-file = ?~/.config/b-terminal/local   # ?가 붙으면 없어도 된다
 | `working-directory` | `home` `inherit` 경로 | `inherit` | 첫 창의 폴더. 새 창·탭·분할은 위의 `*-inherit-working-directory`가 켜져 있으면 지금 칸의 폴더를 이어받음 |
 | `title` | 글 | 셸이 보낸 제목 | 창 제목을 고정 |
 | `keybind` | `트리거=동작` | 아래 표 | 아래 "키 묶음" |
-| `command-palette-entry` | `title:…,action:…,description:…` | 기본 항목 | 명령 팔레트(Ghostty 1.2)에 항목을 더합니다. 여러 줄이 쌓이고, 빈 값(`command-palette-entry =`)은 기본 항목과 그 앞에 쓴 항목을 지웁니다. 아래 "팔레트 항목" |
+| `command-palette-entry` | `title:…,action:…,description:…` | 기본 항목 | 명령 팔레트(Ghostty 1.2)에 항목을 더합니다. 여러 줄이 쌓이고, `command-palette-entry = clear`는 기본 항목과 그 앞에 쓴 항목을 모두 지우고, 빈 값(`command-palette-entry =`)은 그 앞에 쓴 항목을 지우고 기본 항목으로 되돌립니다(Ghostty 1.4). 아래 "팔레트 항목" |
 | `config-file` | 경로(`?` 붙이면 선택) | | 그 자리에서 읽어 넣음. 8단계까지 |
 | `import-ghostty` | `true` / `false` | `false` | b-terminal 키. Ghostty 설정을 옮겨 올 때 |
 | `clipboard-write` | `allow` / `deny` / `ask` | `allow` | 프로그램이 OSC 52로 클립보드에 쓰기(AI CLI의 `/copy`). kitty 클립보드 프로토콜(OSC 5522)의 쓰기도 같은 정책입니다(`deny`는 `EPERM`, 글 종류(`text/plain`)만 쓰고 다른 종류만 있으면 `ENOSYS`). 보고 있는 창의 고른 칸(화면을 나눴으면 키 입력을 받는 칸)에서 온 것만 받습니다. `ask`는 쓸 글 앞부분을 창 안 막대로 보이고 묻습니다(`y` 허용, `n`·Esc 거절, Enter는 허용 아님). 터미널이 DA1(`CSI c`)에 답하는 `?62;22;52c`의 52(클립보드 접근)는 `deny`일 때만 빠집니다 |
@@ -242,7 +242,7 @@ config-file = ?~/.config/b-terminal/local   # ?가 붙으면 없어도 된다
 ```
 command-palette-entry = title:Reset Font Style, action:reset_font_size
 command-palette-entry = title:"Git, 상태", action:"text:git status\r", description:셸에 보내기
-command-palette-entry =                # 기본 항목을 모두 지우기(이 줄 뒤에 쓴 항목만 남음)
+command-palette-entry = clear          # 기본 항목을 모두 지우기(이 줄 뒤에 쓴 항목만 남음)
 ```
 
 - 사용자 항목은 기본 항목 뒤에 붙습니다. 팔레트에서는 `title`로 찾고, 동작 이름과 `description`으로도 찾습니다. 기본 항목의 이름은 바꾸지 않습니다.
@@ -378,6 +378,7 @@ Ghostty 설정에 흔한 아래 동작은 `keybind`에 써도 경고가 나지 �
 - `CSI ? 996 n`으로 지금 구성표를 묻습니다. 답은 `CSI ? 997 ; 1 n`(어두움) 또는 `CSI ? 997 ; 2 n`(밝음)입니다. 읽기 전용 칸에서도 답합니다.
 - DEC 모드 2031(`CSI ? 2031 h`로 켜고 `l`로 끔)을 켜 두면 구성표가 바뀔 때 같은 `CSI ? 997 ; 1|2 n`을 알립니다. 켠 직후에는 알리지 않고(물어서 알아야 함), 같은 값이 또 오면 다시 보내지 않으며, 초기화(RIS)는 모드를 끕니다.
 - DEC 모드 2033(`CSI ? 2033 h`로 켜고 `l`로 끔)을 켜 두면 켠 직후에 지금 보이는지(`CSI ? 999 ; 1|2 n`, 1은 보임, 2는 안 보임)를 한 번 알리고, 그 뒤로는 창이 가려지거나 다시 보일 때와 보던 탭이 바뀔 때 바뀐 칸에 알립니다. 같은 상태가 또 오면 보내지 않고, 초기화(RIS)는 모드를 끕니다.
+- `CSI ? 998 n`으로 지금 보이는지를 묻습니다(Ghostty 1.4). 답은 위와 같은 `CSI ? 999 ; 1|2 n`이고, 모드 2033을 켜지 않아도 답합니다. 읽기 전용 칸에서도 답합니다.
 - 구성표는 테마 바탕색이 아니라 시스템 모양입니다(`theme = light:…,dark:…`가 없어도, 테마가 하나뿐이어도 시스템이 바뀌면 알립니다). `window-theme = light|dark`로 고정한 창은 그 값이 구성표이고 시스템 모양이 바뀌어도 알리지 않습니다. 새 칸은 지금 구성표로 시작합니다.
 - 알림은 열린 모든 칸 가운데 모드를 켠 칸에만 갑니다.
 

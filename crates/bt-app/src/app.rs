@@ -1264,17 +1264,12 @@ impl App {
         let px = |pt: f32| (pt as f64 * self.scale).round() as i32;
         let (left, right) = (px(self.config.padding_x.0), px(self.config.padding_x.1));
         let (top, bottom) = (px(self.config.padding_y.0), px(self.config.padding_y.1));
-        let inner = Rect::new(
-            r.x + left,
-            r.y + top,
-            (r.w as i32 - left - right).max(0) as u32,
-            (r.h as i32 - top - bottom).max(0) as u32,
-        );
-        // 남는 자리를 네 변에 고르게(window-padding-balance, #136)
-        match (self.metrics_at(font_size), self.config.padding_balance) {
-            (Some(m), true) => crate::padding::balance(inner, m.width, m.height),
-            _ => inner,
-        }
+        // 남는 자리 나누기(window-padding-balance, #136·#675)
+        let (cw, ch) = self
+            .metrics_at(font_size)
+            .map(|m| (m.width, m.height))
+            .unwrap_or((0, 0));
+        crate::padding::balance_in(r, (left, right, top, bottom), cw, ch, self.config.padding_balance)
     }
 
     /// 칸 사이 경계선 두께(픽셀)

@@ -2,23 +2,33 @@
 //! 여백 색(Ghostty `window-padding-color`). 창과 상관없는 순수 함수라 여기서 테스트한다
 
 use bt_core::Rgb;
-use bt_core::config::PaddingColor;
+use bt_core::config::{PaddingBalance, PaddingColor};
 use bt_render::DrawCell;
 
 use crate::split::Rect;
 
-/// 칸 크기로 나누어떨어지지 않아 남는 자리를 네 변에 고르게 나눈다: 격자가 차지하는 사각형
-pub fn balance(inner: Rect, cw: u32, ch: u32) -> Rect {
-    if cw == 0 || ch == 0 {
+/// 칸의 바깥 사각형 `r`에서 여백 `(왼쪽, 오른쪽, 위, 아래)`(픽셀)를 빼고 남는 자리를 나눈 격자 사각형
+/// (Ghostty renderer/size.zig `Size.balancePadding`). 격자 칸 수는 여백을 뺀 자리로 정하고, 나눌 때는 여백까지 합친
+/// 바깥 사각형 전체의 남는 자리를 반씩 나눈다. `True`는 위를 (왼쪽 + 오른쪽 + 칸 너비) / 2까지로 묶고 넘는 것을 아래로 보낸다
+pub fn balance_in(r: Rect, pad: (i32, i32, i32, i32), cw: u32, ch: u32, mode: PaddingBalance) -> Rect {
+    let (left, right, top, bottom) = pad;
+    let inner = Rect::new(
+        r.x + left,
+        r.y + top,
+        (r.w as i32 - left - right).max(0) as u32,
+        (r.h as i32 - top - bottom).max(0) as u32,
+    );
+    if mode == PaddingBalance::False || cw == 0 || ch == 0 {
         return inner;
     }
-    let (w, h) = ((inner.w / cw) * cw, (inner.h / ch) * ch);
-    Rect::new(
-        inner.x + ((inner.w - w) / 2) as i32,
-        inner.y + ((inner.h - h) / 2) as i32,
-        w,
-        h,
-    )
+    let (gw, gh) = ((inner.w / cw) * cw, (inner.h / ch) * ch);
+    let pad_x = r.w.saturating_sub(gw) / 2;
+    let mut pad_top = r.h.saturating_sub(gh) / 2;
+    if mode == PaddingBalance::True {
+        let max_top = (left.max(0) as u32 + right.max(0) as u32 + cw) / 2;
+        pad_top = pad_top.min(max_top);
+    }
+    Rect::new(r.x + pad_x as i32, r.y + pad_top as i32, gw, gh)
 }
 
 /// 여백을 칠할 색들. 없는 쪽(`None`)은 기본 바탕색
@@ -144,12 +154,38 @@ mod tests {
     }
 
     #[test]
-    fn balance_splits_the_leftover_evenly() {
-        let inner = Rect::new(10, 20, 105, 53);
-        // 칸 10×16: 10열(남는 5) 3줄(남는 5)
-        assert_eq!(balance(inner, 10, 16), Rect::new(12, 22, 100, 48));
-        // 딱 맞으면 그대로
-        assert_eq!(balance(Rect::new(0, 0, 100, 48), 10, 16), Rect::new(0, 0, 100, 48));
+    fn balance_modes_match_ghostty_size_zig() {
+        use bt_core::config::PaddingBalance;
+        // Ghostty size.zig "equal distributes whitespace equally": 화면 1050×850, 칸 10×20, 여백 4씩
+        // 격자 104열 42줄(1040×840), 남는 10·10 → 네 변 5
+        let r = Rect::new(0, 0, 1050, 850);
+        assert_eq!(
+            balance_in(r, (4, 4, 4, 4), 10, 20, PaddingBalance::Equal),
+            Rect::new(5, 5, 1040, 840)
+        );
+        // "true shifts excess top to bottom": 화면 1090×1070, 칸 20×40, 여백 0
+        // 남는 10·30 → 왼쪽 5, 위는 (0+0+20)/2=10으로 묶고 나머지는 아래(20)
+        let r = Rect::new(0, 0, 1090, 1070);
+        assert_eq!(
+            balance_in(r, (0, 0, 0, 0), 20, 40, PaddingBalance::True),
+            Rect::new(5, 10, 1080, 1040)
+        );
+        // 같은 화면을 equal로: 위아래 15씩
+        assert_eq!(
+            balance_in(r, (0, 0, 0, 0), 20, 40, PaddingBalance::Equal),
+            Rect::new(5, 15, 1080, 1040)
+        );
+        // false: 여백만 뺀 자리(격자에 맞추지 않음)
+        assert_eq!(
+            balance_in(r, (3, 5, 7, 9), 20, 40, PaddingBalance::False),
+            Rect::new(3, 7, 1082, 1054)
+        );
+        // 칸 밖으로 옮긴 사각형도 같은 계산
+        let r = Rect::new(100, 30, 1090, 1070);
+        assert_eq!(
+            balance_in(r, (0, 0, 0, 0), 20, 40, PaddingBalance::True),
+            Rect::new(105, 40, 1080, 1040)
+        );
     }
 
     #[test]

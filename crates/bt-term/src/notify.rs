@@ -82,6 +82,8 @@ pub enum Signal {
     VisibilityReports(bool),
     /// 모드 2033의 DECRQM(`CSI ? 2033 $ p`)(#303)
     VisibilityQuery,
+    /// 보이는지 묻기(`CSI ? 998 n`, Ghostty 1.4). 모드 2033과 상관없이 지금 상태를 답한다(#675)
+    VisibilityStatusQuery,
     /// XTSAVE(`CSI ? Pm s`)가 스캐너가 쥔 모드(2031·2033·2048) 하나를 저장하라고 한다(#313). 엔진은 이 모드를 모른다
     ModeSave(u16),
     /// XTRESTORE(`CSI ? Pm r`)가 스캐너가 쥔 모드 하나를 복원하라고 한다. 값은 세션이 쥔다(#313)
@@ -709,6 +711,8 @@ fn csi_signal(fin: u8, params: &[u8]) -> Option<Signal> {
         return match fin {
             // 색 구성표 질문: `CSI ? 996 n`만(다른 매개변수가 붙으면 다른 질문이다)
             b'n' if text == "996" => Some(Signal::ColorSchemeQuery),
+            // 보이는지 묻기(Ghostty 1.4 device_status.zig): 답은 모드 2033 알림과 같은 `CSI ? 999 ; 1|2 n`(#675)
+            b'n' if text == "998" => Some(Signal::VisibilityStatusQuery),
             // DEC 모드 2031(색 구성표 변경 알림). 여러 모드 중 하나여도 읽는다
             b'h' | b'l' if text.split(';').any(|p| p == "2031") => Some(Signal::ColorSchemeUpdates(fin == b'h')),
             _ => None,
@@ -906,6 +910,9 @@ mod apc_tests {
     fn color_scheme_query_and_mode_2031_are_parsed() {
         let mut sc = Scanner::default();
         assert_eq!(sc.feed(b"\x1b[?996n"), vec![Signal::ColorSchemeQuery]);
+        // 보이는지 묻기(Ghostty 1.4 `CSI ? 998 n`, #675). 다른 매개변수가 붙으면 다른 질문이다
+        assert_eq!(sc.feed(b"\x1b[?998n"), vec![Signal::VisibilityStatusQuery]);
+        assert!(sc.feed(b"\x1b[?998;1n\x1b[998n\x1b[?9980n").is_empty());
         assert_eq!(sc.feed(b"\x1b[?2031h"), vec![Signal::ColorSchemeUpdates(true)]);
         assert_eq!(sc.feed(b"\x1b[?2031l"), vec![Signal::ColorSchemeUpdates(false)]);
         assert_eq!(

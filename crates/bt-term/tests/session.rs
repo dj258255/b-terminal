@@ -971,6 +971,18 @@ fn color_scheme_query_is_answered_each_time() {
     );
 }
 
+// ---- 보이는지 묻기(#675): CSI ? 998 n(Ghostty 1.4) ----
+
+#[test]
+fn visibility_status_query_answers_visible_without_mode_2033() {
+    // 모드 2033을 켜지 않아도 답한다. 앱이 알리기 전에는 보인다고 본다(Ghostty `Surface.visible` 기본값)
+    assert_eq!(reply_to("\\033[?998n", |_| {}), hex_of("\x1b[?999;1n"));
+    assert_eq!(
+        reply_to("\\033[?998n\\033[?998n", |_| {}),
+        hex_of("\x1b[?999;1n\x1b[?999;1n")
+    );
+}
+
 // ---- DEC 장치 상태 질의의 고정 답(#513): CSI ? Ps n ----
 
 #[test]
