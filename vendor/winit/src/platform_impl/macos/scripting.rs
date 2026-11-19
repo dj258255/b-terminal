@@ -1038,7 +1038,7 @@ declare_class!(
             find_tab(&snapshot(), &self.ivars().0).map(|(_, t)| ns(&t.title))
         }
 
-        /// 1-based position in the window.
+        /// `name override of tab ...`: the title a person or script set (empty when none).
         #[method_id(titleOverride)]
         fn title_override(&self) -> Option<Retained<NSString>> {
             find_tab(&snapshot(), &self.ivars().0).map(|(_, t)| ns(&t.title_override))
@@ -1051,6 +1051,7 @@ declare_class!(
             write_title(value, |title| ScriptCommand::SetTabTitleOverride { tab, title });
         }
 
+        /// 1-based position in the window.
         #[method(index)]
         fn index(&self) -> NSInteger {
             let snap = snapshot();
