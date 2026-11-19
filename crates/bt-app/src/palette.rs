@@ -293,6 +293,31 @@ fn format_trigger(t: &Trigger) -> String {
     s
 }
 
+/// 친 글이 바뀐 뒤 고른 줄(Ghostty `CommandPalette.onChange(of: query)`): 글이 있으면 첫 줄, 다 지우면 고르지 않음
+pub fn selection_after_edit(query: &str, _sel: Option<usize>) -> Option<usize> {
+    (!query.is_empty()).then_some(0)
+}
+
+/// 위·아래 화살표(Ghostty `.move`): 고르지 않았으면 아래는 첫 줄, 위는 끝 줄. 끝에서 넘으면 반대쪽 끝으로 돈다
+pub fn move_selection(sel: Option<usize>, len: usize, down: bool) -> Option<usize> {
+    if len == 0 {
+        return None;
+    }
+    Some(match (sel, down) {
+        (None, true) => 0,
+        (None, false) => len - 1,
+        (Some(i), true) if i + 1 >= len => 0,
+        (Some(i), true) => i + 1,
+        (Some(0), false) => len - 1,
+        (Some(i), false) => (i - 1).min(len - 1),
+    })
+}
+
+/// Enter로 실행할 줄. 고르지 않았으면 없다. 고른 줄이 목록보다 뒤면 끝 줄(Ghostty `selectedOption`)
+pub fn picked(sel: Option<usize>, len: usize) -> Option<usize> {
+    sel.filter(|_| len > 0).map(|i| i.min(len - 1))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -500,5 +525,24 @@ mod tests {
         sort_entries(&mut v);
         let ids: Vec<Command> = v.into_iter().map(|e| e.command).collect();
         assert_eq!(ids, vec![Command::Focus(3), Command::Focus(1), Command::Focus(2)]);
+    }
+
+    /// Ghostty처럼 처음에는 고르지 않고(Enter가 아무 일도 하지 않음), 글을 치면 첫 줄, 다 지우면 다시 고르지 않는다
+    #[test]
+    fn selection_follows_ghostty_palette() {
+        assert_eq!(selection_after_edit("f", None), Some(0));
+        assert_eq!(selection_after_edit("fo", Some(3)), Some(0));
+        assert_eq!(selection_after_edit("", Some(0)), None);
+        assert_eq!(selection_after_edit("", Some(2)), None);
+        assert_eq!(move_selection(None, 5, true), Some(0));
+        assert_eq!(move_selection(None, 5, false), Some(4));
+        assert_eq!(move_selection(Some(4), 5, true), Some(0));
+        assert_eq!(move_selection(Some(0), 5, false), Some(4));
+        assert_eq!(move_selection(Some(1), 5, true), Some(2));
+        assert_eq!(move_selection(Some(1), 0, true), None);
+        assert_eq!(picked(None, 5), None);
+        assert_eq!(picked(Some(2), 5), Some(2));
+        assert_eq!(picked(Some(9), 5), Some(4));
+        assert_eq!(picked(Some(0), 0), None);
     }
 }

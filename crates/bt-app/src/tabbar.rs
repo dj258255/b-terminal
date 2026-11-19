@@ -432,7 +432,7 @@ pub fn draw_palette(
     theme: &Theme,
     query: &str,
     rows: &[(String, String, String)],
-    selected: usize,
+    selected: Option<usize>,
 ) {
     let m = fonts.metrics();
     let cw = m.width as i32;
@@ -445,6 +445,7 @@ pub fn draw_palette(
     let shown = rows.len().min(max_rows);
     // 고른 줄이 보이게 목록을 민다
     let first = selected
+        .unwrap_or(0)
         .saturating_sub(max_rows - 1)
         .min(rows.len().saturating_sub(shown));
     let h = line_h * (1 + shown.max(1) as u32) + m.height / 2;
@@ -482,10 +483,10 @@ pub fn draw_palette(
     }
     for (n, (label, subtitle, keys)) in rows.iter().enumerate().skip(first).take(shown) {
         let ry = y + line_h as i32 * (1 + (n - first) as i32) + m.height as i32 / 4;
-        if n == selected {
+        if Some(n) == selected {
             canvas.fill_rect(x + 1, ry, w - 2, line_h, theme.selection_background);
         }
-        let fg = if n == selected {
+        let fg = if Some(n) == selected {
             theme.selection_foreground.unwrap_or(theme.foreground)
         } else {
             theme.foreground

@@ -897,7 +897,7 @@ struct Win {
     /// 열린 찾기 막대(칸 하나에 붙는다)
     search: Option<SearchBar>,
     /// 열린 명령 팔레트(#77): 친 글, 고른 줄
-    palette: Option<(String, usize)>,
+    palette: Option<(String, Option<usize>)>,
     /// 창에 마지막으로 적용한 마우스 포인터 모양(#239). 같으면 다시 적용하지 않는다
     pointer_icon: CursorIcon,
     /// 입력 중 마우스 포인터를 숨긴 상태(#250). 숨긴 동안은 Shift가 모양을 바꾸지 않는다
@@ -1480,7 +1480,7 @@ impl App {
             self.request_redraw();
         } else if let Some((q, sel)) = self.w.palette.as_mut() {
             q.push_str(text);
-            *sel = 0;
+            *sel = crate::palette::selection_after_edit(q, *sel);
             self.request_redraw();
         } else if self.w.search.is_some() {
             self.search_push(text);
@@ -4072,14 +4072,16 @@ impl App {
         let shown = crate::palette::filter(&entries, query);
         match &event.logical_key {
             Key::Named(NamedKey::Escape) => self.w.palette = None,
-            Key::Named(NamedKey::ArrowDown) => *selected = (*selected + 1).min(shown.len().saturating_sub(1)),
-            Key::Named(NamedKey::ArrowUp) => *selected = selected.saturating_sub(1),
+            Key::Named(NamedKey::ArrowDown) => *selected = crate::palette::move_selection(*selected, shown.len(), true),
+            Key::Named(NamedKey::ArrowUp) => *selected = crate::palette::move_selection(*selected, shown.len(), false),
             Key::Named(NamedKey::Backspace) => {
                 query.pop();
-                *selected = 0;
+                *selected = crate::palette::selection_after_edit(query, *selected);
             }
             Key::Named(NamedKey::Enter) => {
-                let pick = shown.get(*selected).map(|&i| entries[i].command.clone());
+                let pick = crate::palette::picked(*selected, shown.len())
+                    .and_then(|k| shown.get(k))
+                    .map(|&i| entries[i].command.clone());
                 self.w.palette = None;
                 match pick {
                     Some(crate::palette::Command::Action(a)) => self.handle_action(a, event_loop),
@@ -4092,7 +4094,7 @@ impl App {
                 if let Some(text) = event.text.as_ref().filter(|t| !t.chars().any(char::is_control)) {
                     if query.chars().count() < 64 {
                         query.push_str(text);
-                        *selected = 0;
+                        *selected = crate::palette::selection_after_edit(query, *selected);
                     }
                 }
             }
@@ -4174,7 +4176,8 @@ impl App {
             Action::TogglePalette => {
                 self.w.palette = match self.w.palette {
                     Some(_) => None,
-                    None => Some((String::new(), 0)),
+                    // Ghostty처럼 처음에는 아무것도 고르지 않는다(Enter가 아무 일도 하지 않음)
+                    None => Some((String::new(), None)),
                 };
             }
             Action::EndSearch => self.end_search(),
@@ -5747,11 +5750,9 @@ impl App {
                     out.push(crate::palette::FocusPane {
                         id,
                         title_override: g.title.clone().or_else(|| w.window_title.clone()),
-                        pane_title: p
-                            .user_title
-                            .clone()
-                            .filter(|t| !t.is_empty())
-                            .unwrap_or_else(|| p.title.clone()),
+                        // 탭 줄에 보이는 이름(사람 제목 → 프로그램 제목 → 전경 프로세스 이름)과 같게. 🔔·🔒는 붙이지 않는다.
+                        // Ghostty는 칸 제목이 비면 창 제목인데, 우리 창 제목도 이 이름에서 오므로 같은 것을 보인다
+                        pane_title: title_of(p.user_title.as_deref(), &p.title, p.fg_name.as_deref(), false, false),
                         window_title: window_title.clone(),
                         cwd: p.cwd.as_ref().map(|c| c.to_string_lossy().into_owned()),
                     });
