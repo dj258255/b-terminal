@@ -4,9 +4,9 @@
 <!--
   b-terminal(#634): AppleScript 사전. Ghostty의 macos/Ghostty.sdef(MIT 라이선스, Copyright (c) 2024 Mitchell Hashimoto,
   Ghostty contributors)를 줄여 옮겼습니다. 클래스·명령·속성 이름과 4글자 코드는 Ghostty와 같게 두었습니다(스크립트가
-  그대로 돌게). 뺀 것: new surface configuration(과 surface configuration 레코드), split의
-  with configuration 인자, name override, pid, tty. 마우스 명령 셋(send mouse button·position·scroll)은 Ghostty처럼 있다
-  (위치는 칸 왼쪽 위에서 잰 점 좌표).
+  그대로 돌게). 뺀 것: name override, pid, tty. 마우스 명령 셋(send mouse button·position·scroll)은 Ghostty처럼 있다
+  (위치는 칸 왼쪽 위에서 잰 점 좌표). surface configuration 레코드, new surface configuration 명령, new window·new tab·split의
+  with configuration 인자도 Ghostty처럼 있다(새 칸 하나에만 쓰는 값).
   이유와 남은 일은 docs/decisions.md ADR-062를 보십시오.
   Ghostty 원본의 Standard Suite는 Apple의 /System/Library/ScriptingDefinitions/CocoaStandard.sdef를 줄인 것이라 그 부분도 같습니다.
 -->
@@ -104,6 +104,28 @@
       </responds-to>
     </class>
 
+    <record-type name="surface configuration" code="GScf" description="Reusable settings applied when creating a terminal surface.">
+      <property name="font size" code="GScF" type="real" description="Font size in points.">
+        <cocoa key="fontSize"/>
+      </property>
+      <property name="initial working directory" code="GScD" type="text" description="Initial working directory for the terminal process.">
+        <cocoa key="workingDirectory"/>
+      </property>
+      <property name="command" code="GScC" type="text" description="Command to execute instead of the configured shell.">
+        <cocoa key="command"/>
+      </property>
+      <property name="initial input" code="GScI" type="text" description="Input sent to the terminal after launch.">
+        <cocoa key="initialInput"/>
+      </property>
+      <property name="wait after command" code="GScW" type="boolean" description="Keep the terminal open after command exit.">
+        <cocoa key="waitAfterCommand"/>
+      </property>
+      <property name="environment variables" code="GScE" description="Environment variables in KEY=VALUE format.">
+        <cocoa key="environmentVariables"/>
+        <type type="text" list="yes"/>
+      </property>
+    </record-type>
+
     <enumeration name="split direction" code="GSpD" description="Direction for a new split.">
       <enumerator name="right" code="GSrt" description="Split to the right."/>
       <enumerator name="left" code="GSlf" description="Split to the left."/>
@@ -132,13 +154,27 @@
       <enumerator name="stationary" code="SMst" description="Stationary."/>
     </enumeration>
 
+    <command name="new surface configuration" code="GhstNSCf" description="Create a reusable surface configuration object.">
+      <cocoa class="BTScriptNewSurfaceConfigurationCommand"/>
+      <parameter name="from" code="GScS" type="surface configuration" optional="yes" description="Surface configuration to copy.">
+        <cocoa key="configuration"/>
+      </parameter>
+      <result type="surface configuration" description="The newly created surface configuration."/>
+    </command>
+
     <command name="new window" code="GhstNWin" description="Create a new b-terminal window.">
+      <parameter name="with configuration" code="GNwS" type="surface configuration" optional="yes" description="Base surface configuration for the initial terminal.">
+        <cocoa key="configuration"/>
+      </parameter>
       <result type="window" description="The newly created window."/>
     </command>
 
     <command name="new tab" code="GhstNTab" description="Create a new b-terminal tab.">
       <parameter name="in" code="GNtW" type="window" optional="yes" description="Target window for the new tab.">
         <cocoa key="window"/>
+      </parameter>
+      <parameter name="with configuration" code="GNtS" type="surface configuration" optional="yes" description="Base surface configuration for the initial terminal.">
+        <cocoa key="configuration"/>
       </parameter>
       <result type="tab" description="The newly created tab."/>
     </command>
@@ -147,6 +183,9 @@
       <direct-parameter type="specifier" description="The terminal to split."/>
       <parameter name="direction" code="GSpd" type="split direction" description="The direction to split.">
         <cocoa key="direction"/>
+      </parameter>
+      <parameter name="with configuration" code="GSpS" type="surface configuration" optional="yes" description="Base surface configuration for the new split terminal.">
+        <cocoa key="configuration"/>
       </parameter>
       <result type="terminal" description="The newly created terminal."/>
     </command>
