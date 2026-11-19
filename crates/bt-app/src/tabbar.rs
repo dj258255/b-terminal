@@ -431,8 +431,8 @@ pub fn draw_palette(
     fonts: &mut Fonts,
     theme: &Theme,
     query: &str,
-    rows: &[(String, String)],
-    selected: usize,
+    rows: &[(String, String, String)],
+    selected: Option<usize>,
 ) {
     let m = fonts.metrics();
     let cw = m.width as i32;
@@ -445,6 +445,7 @@ pub fn draw_palette(
     let shown = rows.len().min(max_rows);
     // 고른 줄이 보이게 목록을 민다
     let first = selected
+        .unwrap_or(0)
         .saturating_sub(max_rows - 1)
         .min(rows.len().saturating_sub(shown));
     let h = line_h * (1 + shown.max(1) as u32) + m.height / 2;
@@ -480,12 +481,12 @@ pub fn draw_palette(
         );
         return;
     }
-    for (n, (label, keys)) in rows.iter().enumerate().skip(first).take(shown) {
+    for (n, (label, subtitle, keys)) in rows.iter().enumerate().skip(first).take(shown) {
         let ry = y + line_h as i32 * (1 + (n - first) as i32) + m.height as i32 / 4;
-        if n == selected {
+        if Some(n) == selected {
             canvas.fill_rect(x + 1, ry, w - 2, line_h, theme.selection_background);
         }
-        let fg = if n == selected {
+        let fg = if Some(n) == selected {
             theme.selection_foreground.unwrap_or(theme.foreground)
         } else {
             theme.foreground
@@ -493,6 +494,13 @@ pub fn draw_palette(
         let keys_cells = text_cells(keys);
         let label = truncate(label, width_cells.saturating_sub(keys_cells + 4));
         draw_text(canvas, fonts, x + cw, ry + pad, &label, fg, false);
+        // 부제(칸 이동 항목의 현재 폴더)는 이름 뒤에 흐리게, 남는 자리만큼
+        let left = text_cells(&label) + 2;
+        let room = width_cells.saturating_sub(left + keys_cells + 3);
+        if !subtitle.is_empty() && room >= 6 {
+            let sub = truncate(subtitle, room);
+            draw_text(canvas, fonts, x + cw * (1 + left as i32), ry + pad, &sub, dim, false);
+        }
         draw_text(
             canvas,
             fonts,

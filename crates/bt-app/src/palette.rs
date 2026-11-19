@@ -13,6 +13,8 @@ pub struct Entry {
     pub name: String,
     /// 사용자 항목의 설명(`description:`). 이것으로도 찾는다. 기본 항목은 빈 글
     pub description: String,
+    /// 이름 뒤에 흐리게 보이는 글(칸 이동 항목의 현재 폴더). 이것으로도 찾는다. 없으면 빈 글
+    pub subtitle: String,
     pub command: Command,
 }
 
@@ -21,6 +23,83 @@ pub enum Command {
     Action(Action),
     /// 설정 파일 열기(메뉴의 "설정…")
     OpenSettings,
+    /// 그 칸(id)으로 간다(Ghostty `Focus: 제목` 항목, #690)
+    Focus(u64),
+}
+
+/// 칸 이동 항목 수 상한. 칸이 수백 개여도 팔레트를 열고 글자를 칠 때마다 항목을 새로 만들고 거르므로 줄인다.
+/// 100은 어림값이고 잰 값이 아니다(Ghostty는 상한이 없다). 넘으면 창·탭 차례로 앞의 칸만 남긴다
+pub const MAX_FOCUS: usize = 100;
+
+/// 칸 이동 항목을 만들 재료: 칸 하나의 제목들과 현재 폴더
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct FocusPane {
+    pub id: u64,
+    /// 탭 제목 덮어쓰기(`set_tab_title`)나 창 제목 덮어쓰기. 없으면 None
+    pub title_override: Option<String>,
+    /// 칸의 제목(사람이 붙인 것 → 프로그램이 보낸 것). 비면 창 제목을 쓴다
+    pub pane_title: String,
+    pub window_title: String,
+    /// 칸의 현재 폴더(OSC 7)
+    pub cwd: Option<String>,
+}
+
+/// 칸 이동 항목의 제목(Ghostty `jumpOptions`): 덮어쓴 제목 → 칸 제목(비면 창 제목) → "Untitled". 앞에 "Focus: ".
+/// 제목은 터미널 출력에서 온 글이라 `printable`을 지난다
+pub fn focus_title(title_override: Option<&str>, pane_title: &str, window_title: &str) -> String {
+    let clean = |t: &str| bt_core::proto::printable(t).trim().to_string();
+    let over = title_override.map(clean).unwrap_or_default();
+    let pane = clean(pane_title);
+    let shown = if !over.is_empty() {
+        over
+    } else if !pane.is_empty() {
+        pane
+    } else {
+        let win = clean(window_title);
+        if win.is_empty() { "Untitled".to_string() } else { win }
+    };
+    format!("Focus: {shown}")
+}
+
+/// 부제: 줄인 현재 폴더(홈은 `~`). 제목에 이미 들어 있거나 폴더가 없으면 빈 글
+pub fn focus_subtitle(title: &str, cwd: Option<&str>, home: Option<&str>) -> String {
+    let Some(cwd) = cwd.map(bt_core::proto::printable).filter(|c| !c.trim().is_empty()) else {
+        return String::new();
+    };
+    let short = match home.filter(|h| !h.is_empty() && *h != "/") {
+        Some(h) if cwd == h => "~".to_string(),
+        Some(h) => match cwd.strip_prefix(h) {
+            Some(rest) if rest.starts_with('/') => format!("~{rest}"),
+            _ => cwd,
+        },
+        None => cwd,
+    };
+    if title.contains(&short) { String::new() } else { short }
+}
+
+/// 칸마다 항목 하나(최대 `MAX_FOCUS`)
+pub fn focus_entries(panes: &[FocusPane], home: Option<&str>) -> Vec<Entry> {
+    panes
+        .iter()
+        .take(MAX_FOCUS)
+        .map(|p| {
+            let label = focus_title(p.title_override.as_deref(), &p.pane_title, &p.window_title);
+            let subtitle = focus_subtitle(&label, p.cwd.as_deref(), home);
+            Entry {
+                label,
+                name: "focus_pane".to_string(),
+                description: String::new(),
+                subtitle,
+                command: Command::Focus(p.id),
+            }
+        })
+        .collect()
+}
+
+/// 이름순으로 고른다(Ghostty `sortedTerminalPaletteOptions`): 대소문자를 가리지 않고 ":"를 탭 문자로 바꿔 견주어
+/// "Foo:"가 "Foo Bar"보다 앞에 오게 한다. 같으면 들어온 차례를 지킨다
+pub fn sort_entries(entries: &mut [Entry]) {
+    entries.sort_by_cached_key(|e| e.label.to_lowercase().replace(':', "\t"));
 }
 
 /// (이름, Ghostty 동작) 목록. 동작 글은 키 묶음과 같은 해석기로 푼다
@@ -84,6 +163,7 @@ pub fn entries(user: &[PaletteEntryConf], keep_defaults: bool) -> Vec<Entry> {
                 label: label.to_string(),
                 name: name.to_string(),
                 description: String::new(),
+                subtitle: String::new(),
                 command: Command::Action(action),
             })
         }));
@@ -91,6 +171,7 @@ pub fn entries(user: &[PaletteEntryConf], keep_defaults: bool) -> Vec<Entry> {
             label: "설정 파일 열기".to_string(),
             name: "open_config".to_string(),
             description: String::new(),
+            subtitle: String::new(),
             command: Command::OpenSettings,
         });
     }
@@ -100,6 +181,7 @@ pub fn entries(user: &[PaletteEntryConf], keep_defaults: bool) -> Vec<Entry> {
             label: u.title.clone(),
             name: u.action.clone(),
             description: u.description.clone(),
+            subtitle: String::new(),
             command: Command::Action(action),
         })
     }));
@@ -141,7 +223,10 @@ pub fn filter(entries: &[Entry], query: &str) -> Vec<usize> {
                 4
             } else if label.contains(&q) || compact.contains(&qn) {
                 3
-            } else if e.name.contains(&q) || e.description.to_lowercase().contains(&q) {
+            } else if e.name.contains(&q)
+                || e.description.to_lowercase().contains(&q)
+                || e.subtitle.to_lowercase().contains(&q)
+            {
                 2
             } else if subsequence(&compact, &qn) {
                 1
@@ -206,6 +291,31 @@ fn format_trigger(t: &Trigger) -> String {
     };
     s.push_str(&key);
     s
+}
+
+/// 친 글이 바뀐 뒤 고른 줄(Ghostty `CommandPalette.onChange(of: query)`): 글이 있으면 첫 줄, 다 지우면 고르지 않음
+pub fn selection_after_edit(query: &str, _sel: Option<usize>) -> Option<usize> {
+    (!query.is_empty()).then_some(0)
+}
+
+/// 위·아래 화살표(Ghostty `.move`): 고르지 않았으면 아래는 첫 줄, 위는 끝 줄. 끝에서 넘으면 반대쪽 끝으로 돈다
+pub fn move_selection(sel: Option<usize>, len: usize, down: bool) -> Option<usize> {
+    if len == 0 {
+        return None;
+    }
+    Some(match (sel, down) {
+        (None, true) => 0,
+        (None, false) => len - 1,
+        (Some(i), true) if i + 1 >= len => 0,
+        (Some(i), true) => i + 1,
+        (Some(0), false) => len - 1,
+        (Some(i), false) => (i - 1).min(len - 1),
+    })
+}
+
+/// Enter로 실행할 줄. 고르지 않았으면 없다. 고른 줄이 목록보다 뒤면 끝 줄(Ghostty `selectedOption`)
+pub fn picked(sel: Option<usize>, len: usize) -> Option<usize> {
+    sel.filter(|_| len > 0).map(|i| i.min(len - 1))
 }
 
 #[cfg(test)]
@@ -302,11 +412,137 @@ mod tests {
     }
 
     #[test]
+    fn focus_subtitle_is_searchable() {
+        let e = focus_entries(&[fp(1, None, "vim", "", Some("/work/app"))], None);
+        assert_eq!(filter(&e, "work"), vec![0]);
+        assert!(filter(&e, "nothing").is_empty());
+    }
+
+    #[test]
     fn description_is_searchable() {
         let user = [conf("Reset Font Style", "reset_font_size", "Restore Defaults")];
         let e = entries(&user, false);
         assert_eq!(filter(&e, "defaults"), vec![0]);
         assert_eq!(filter(&e, "reset"), vec![0]);
         assert!(filter(&e, "nothing").is_empty());
+    }
+
+    fn fp(id: u64, over: Option<&str>, pane: &str, win: &str, cwd: Option<&str>) -> FocusPane {
+        FocusPane {
+            id,
+            title_override: over.map(str::to_string),
+            pane_title: pane.into(),
+            window_title: win.into(),
+            cwd: cwd.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn focus_title_override_wins() {
+        assert_eq!(focus_title(Some("내 탭"), "vim", "창"), "Focus: 내 탭");
+        // 덮어쓴 제목이 비면 없는 것과 같다
+        assert_eq!(focus_title(Some(""), "vim", "창"), "Focus: vim");
+    }
+
+    #[test]
+    fn focus_title_falls_back_to_window_then_untitled() {
+        assert_eq!(focus_title(None, "", "창 제목"), "Focus: 창 제목");
+        assert_eq!(focus_title(None, "   ", "창 제목"), "Focus: 창 제목");
+        assert_eq!(focus_title(None, "", ""), "Focus: Untitled");
+    }
+
+    #[test]
+    fn focus_title_strips_untrusted_text() {
+        // U+202E는 글 순서를 뒤집으니 지우고 제어 문자는 공백이 된다
+        assert_eq!(focus_title(None, "ok\u{202e}gnp\x1b[31m", ""), "Focus: okgnp [31m");
+        // 지우고 나서 비면 비어 있는 것으로 본다
+        assert_eq!(focus_title(None, "\u{202e}", ""), "Focus: Untitled");
+    }
+
+    #[test]
+    fn focus_subtitle_hidden_when_title_has_path() {
+        let home = Some("/Users/me");
+        assert_eq!(focus_subtitle("Focus: x", Some("/Users/me/src/app"), home), "~/src/app");
+        assert_eq!(
+            focus_subtitle("Focus: ~/src/app 안", Some("/Users/me/src/app"), home),
+            ""
+        );
+        assert_eq!(focus_subtitle("Focus: x", None, home), "");
+        assert_eq!(focus_subtitle("Focus: x", Some("/Users/me"), home), "~");
+        // 홈 밖은 그대로, 홈과 앞부분만 같은 다른 폴더는 줄이지 않는다
+        assert_eq!(focus_subtitle("Focus: x", Some("/Users/meow/a"), home), "/Users/meow/a");
+        assert_eq!(focus_subtitle("Focus: x", Some("/etc"), home), "/etc");
+    }
+
+    #[test]
+    fn focus_entries_one_per_pane_with_command() {
+        let panes = [
+            fp(7, None, "vim", "", Some("/Users/me/a")),
+            fp(9, Some("빌드"), "zsh", "", None),
+        ];
+        let e = focus_entries(&panes, Some("/Users/me"));
+        assert_eq!(e.len(), 2);
+        assert_eq!(e[0].label, "Focus: vim");
+        assert_eq!(e[0].subtitle, "~/a");
+        assert_eq!(e[0].command, Command::Focus(7));
+        assert_eq!(e[1].label, "Focus: 빌드");
+        assert_eq!(e[1].command, Command::Focus(9));
+    }
+
+    #[test]
+    fn focus_entries_are_capped() {
+        let panes: Vec<FocusPane> = (0..MAX_FOCUS as u64 + 50).map(|i| fp(i, None, "t", "", None)).collect();
+        let e = focus_entries(&panes, None);
+        assert_eq!(e.len(), MAX_FOCUS);
+        assert_eq!(e[MAX_FOCUS - 1].command, Command::Focus(MAX_FOCUS as u64 - 1));
+    }
+
+    #[test]
+    fn sort_puts_colon_before_space_and_mixes_commands() {
+        let mk = |label: &str| Entry {
+            label: label.into(),
+            name: String::new(),
+            description: String::new(),
+            subtitle: String::new(),
+            command: Command::OpenSettings,
+        };
+        let mut v = vec![mk("Foo Bar"), mk("foo:"), mk("Focus: b"), mk("새 탭"), mk("Focus: A")];
+        sort_entries(&mut v);
+        let l: Vec<&str> = v.iter().map(|e| e.label.as_str()).collect();
+        assert_eq!(l, vec!["Focus: A", "Focus: b", "foo:", "Foo Bar", "새 탭"]);
+    }
+
+    #[test]
+    fn sort_is_stable_for_equal_titles() {
+        let mk = |id: u64| Entry {
+            label: "Focus: x".into(),
+            name: String::new(),
+            description: String::new(),
+            subtitle: String::new(),
+            command: Command::Focus(id),
+        };
+        let mut v = vec![mk(3), mk(1), mk(2)];
+        sort_entries(&mut v);
+        let ids: Vec<Command> = v.into_iter().map(|e| e.command).collect();
+        assert_eq!(ids, vec![Command::Focus(3), Command::Focus(1), Command::Focus(2)]);
+    }
+
+    /// Ghostty처럼 처음에는 고르지 않고(Enter가 아무 일도 하지 않음), 글을 치면 첫 줄, 다 지우면 다시 고르지 않는다
+    #[test]
+    fn selection_follows_ghostty_palette() {
+        assert_eq!(selection_after_edit("f", None), Some(0));
+        assert_eq!(selection_after_edit("fo", Some(3)), Some(0));
+        assert_eq!(selection_after_edit("", Some(0)), None);
+        assert_eq!(selection_after_edit("", Some(2)), None);
+        assert_eq!(move_selection(None, 5, true), Some(0));
+        assert_eq!(move_selection(None, 5, false), Some(4));
+        assert_eq!(move_selection(Some(4), 5, true), Some(0));
+        assert_eq!(move_selection(Some(0), 5, false), Some(4));
+        assert_eq!(move_selection(Some(1), 5, true), Some(2));
+        assert_eq!(move_selection(Some(1), 0, true), None);
+        assert_eq!(picked(None, 5), None);
+        assert_eq!(picked(Some(2), 5), Some(2));
+        assert_eq!(picked(Some(9), 5), Some(4));
+        assert_eq!(picked(Some(0), 0), None);
     }
 }

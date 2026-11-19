@@ -12,7 +12,7 @@ use super::gpu_pace::{self, FramePlan, LayerInputs, ViewLayer};
 use super::*;
 
 /// 명령 팔레트: 친 글, 보일 줄들(이름, 단축키), 고른 줄
-type PaletteState = (String, Vec<(String, String)>, usize);
+type PaletteState = (String, Vec<(String, String, String)>, Option<usize>);
 
 /// `redraw`가 모아 둔, 이번 프레임을 그리는 데 필요한 것
 pub(super) struct GpuFrame<'a> {
