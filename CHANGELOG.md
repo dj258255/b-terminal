@@ -4,7 +4,18 @@
 
 ## [아직 릴리스하지 않음]
 
+## [0.85.0] - 2026-11-19
+
+AppleScript 새 칸 설정, README 그림과 문서 최신화. 마일스톤 0.85.
+
 - AppleScript에 Ghostty의 `new surface configuration [from 레코드]`(명령 코드 `GhstNSCf`)와 `new window`·`new tab`·`split`의 `with configuration` 인자(`GNwS`·`GNtS`·`GSpS`)를 더했습니다. `surface configuration` 레코드(`GScf`)는 `font size`·`initial working directory`·`command`·`initial input`·`wait after command`·`environment variables`(`GScF`·`GScD`·`GScC`·`GScI`·`GScW`·`GScE`)이고, 만들 새 칸 하나에만 값을 덮어씁니다(설정 파일의 값은 바꾸지 않고 `btctl` 소켓 규약도 그대로입니다). `command`는 셸 명령으로 띄우고 끝나도 칸을 남기며, 폴더는 절대 경로이면서 실제 폴더일 때만 쓰고, 환경 변수는 설정 `env` 위에 덮어쓰고, `initial input`은 `input` 목록을 그 글 하나로 바꿔 바이트 그대로 보내고, 글자 크기는 그 칸에만 적용합니다. 값의 형이나 글자 크기, `KEY=VALUE`(키가 비었거나 NUL이 있어도 오류, Ghostty보다 엄격)가 틀리면 창이나 칸을 만들기 전에 오류입니다. 크기 상한(`command`·폴더·환경 변수 한 항목 64KiB, `initial input` 1MiB, 환경 변수 256개)은 복사 전에 보고, 값은 로그에 남기지 않습니다. 격리한 실제 창에서 Apple Event로 확인했습니다(명령·폴더·환경 변수·처음 입력·글자 크기 적용, 다음 칸에 남지 않음, 레코드 반환, 틀린 값 거절, 로그에 값이 남지 않음) (#666)
+- 문서: README 그림 두 장을 0.85 화면으로 다시 찍고(탭 상태 막대, 분할, 색 이모지, D2Coding), 다시 찍는 대본 `scripts/demo-screen.sh`와 방법(`docs/images/README.md`)을 더했습니다. README에 AppleScript 절을 더하고, 글자 크기 키 설명을 지금 동작(고른 칸만)으로 고쳤습니다. overview의 AI CLI 신호에 프로그램 상태(OSC 7501)를 더했습니다 (#668)
+
+### 알려진 한계
+
+- `surface configuration`의 `name override`는 아직 없습니다.
+- README 그림은 한 기기(Apple M2 Pro, 레티나, GPU 길)에서만 찍었습니다.
+- 한글 입력기에서 새 창의 첫 음절이 조합되는지(Ghostty #13235와 같은 결함 여부)는 여전히 확인하지 못했습니다.
 
 ## [0.84.0] - 2026-11-19
 
