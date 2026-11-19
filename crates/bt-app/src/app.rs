@@ -180,6 +180,9 @@ pub struct Pane {
     pub unread: bool,
     /// 보지 않은 벨이 있다(`bell-features = title`, #107): 제목 앞에 🔔
     pub bell: bool,
+    /// 벨이 울려 테두리를 두르고 있다(`bell-features = border`, #687). 🔔와 달리 보고 있어도 켜고,
+    /// 그 칸이 키를 받는 칸이 되거나 키를 받으면 뗀다
+    pub bell_border: bool,
     /// 사람이 붙인 제목(`prompt_surface_title`·`set_surface_title`, #124). 프로그램이 정한 제목보다 먼저
     pub user_title: Option<String>,
     /// 칸을 만든 때와 크기 표시를 지울 때(#122)
@@ -516,6 +519,8 @@ fn ctl_spawn(base: SpawnOptions, cwd: Option<std::path::PathBuf>, command: &[Str
 struct BellResponse {
     /// 칸 제목 앞에 🔔
     title: bool,
+    /// 칸 둘레에 노란 테두리(보고 있어도 켠다, #687)
+    border: bool,
     /// Dock 아이콘 튀기기
     attention: bool,
     /// 시스템 경고음
@@ -534,10 +539,17 @@ fn bell_response(
 ) -> BellResponse {
     BellResponse {
         title: f.title && !watching,
+        border: f.border,
         attention: f.attention && !window_focused,
         beep: f.system,
         audio: f.audio && has_audio_file,
     }
+}
+
+/// 벨 테두리를 지울지(#687): 창이 앞이고 그 칸이 키를 받는 칸이 될 때(Ghostty `focusDidChange`).
+/// 키가 그 칸에 갈 때 지우는 것은 따로 `write_pane`이 한다(`keyDown`)
+fn bell_border_cleared_on_focus(window_focused: bool, pane_is_focused: bool) -> bool {
+    window_focused && pane_is_focused
 }
 
 /// 벨 소리(경고음·소리 파일)를 지금 낼지: 앞 소리에서 `since_last`가 지났고(`None`은 처음),
@@ -714,6 +726,8 @@ struct PaneView {
     screen: Screen,
     focused: bool,
     progress: Option<(u8, u8)>,
+    /// 벨 테두리를 두르는가(`bell-features = border`, #687)
+    bell_border: bool,
     /// 이 칸의 글자 크기(pt)와 그 크기의 칸 크기: 격자·커서·그림·스크롤 막대가 이 칸 크기를 쓴다(#422)
     font_size: f32,
     metrics: bt_render::font::CellMetrics,
@@ -1562,6 +1576,9 @@ impl App {
                 self.panes[i].unread = false;
                 self.panes[i].bell = false;
             }
+            if bell_border_cleared_on_focus(self.w.focused, self.is_focused(i)) {
+                self.panes[i].bell_border = false;
+            }
             if self.w.focused && self.is_focused(i) {
                 self.panes[i].session.clear_seen_program_status();
                 // 그 칸을 봤으니 알림 센터의 그 칸 알림도 지운다(Ghostty `focusDidChange`, #625)
@@ -1683,6 +1700,10 @@ impl App {
         );
         if r.title && !self.panes[idx].bell {
             self.panes[idx].bell = true;
+            self.request_redraw();
+        }
+        if r.border && !self.panes[idx].bell_border {
+            self.panes[idx].bell_border = true;
             self.request_redraw();
         }
         if r.attention {
@@ -1871,6 +1892,7 @@ impl App {
                 fg_pid: None,
                 unread: false,
                 bell: false,
+                bell_border: false,
                 user_title: None,
                 created: Instant::now(),
                 overlay_until: None,
@@ -3364,6 +3386,11 @@ impl App {
 
     /// 칸 하나에 키 바이트를 쓴다(고른 글 지우기·맨 아래로 돌리기는 `write_active`와 같다)
     fn write_pane(&mut self, id: u64, bytes: &[u8]) {
+        // 그 칸에 키가 간다: 벨 테두리를 뗀다(Ghostty `keyDown`, #687)
+        if let Some(i) = self.pane_index(id).filter(|&i| self.panes[i].bell_border) {
+            self.panes[i].bell_border = false;
+            self.request_redraw();
+        }
         let scroll = self.config.scroll_to_bottom.keystroke;
         let clear = clears_selection_on_write(self.config.selection_clear_on_typing, bytes);
         // 읽기 전용 칸: 쓰지 않으므로 고른 글도 지우지 않는다(복사할 수 있게, #209)
@@ -5929,6 +5956,7 @@ impl App {
                         screen
                     },
                     focused: Some(*id) == focus,
+                    bell_border: p.bell_border,
                     progress: p
                         .status_summary()
                         .and_then(|s| tabbar::status_bar(s, self.config.progress_style))
@@ -6198,6 +6226,8 @@ impl App {
                 || confirm.is_some()
                 || title_prompt.is_some()
                 || views.iter().any(|v| resize_overlays.contains(&v.id))
+                // 벨 테두리는 칸 위에 겹쳐 그린다(#687)
+                || views.iter().any(|v| v.bell_border)
                 // kitty 그림은 칸 위에 겹쳐 그린다(#76)
                 || views.iter().any(|v| !v.screen.images.is_empty())
                 || bars.iter().any(|b| b.0)
@@ -6468,6 +6498,9 @@ impl App {
                 }
                 if let Some((rect, dir)) = drop_preview {
                     crate::pane_drag::draw_drop(&mut canvas, rect, dir, theme.cursor);
+                }
+                for v in views.iter().filter(|v| v.bell_border) {
+                    crate::bell_border::draw(&mut canvas, v.outer, self.scale);
                 }
                 // 실제 주소를 창 왼쪽 아래에 보인다(OSC 8 링크는 보이는 글과 주소가 다를 수 있다)
                 // `link-previews`가 끈 링크는 띠 없이 밑줄만 보인다
@@ -8430,6 +8463,7 @@ mod tests {
             r(d, false, true, true),
             BellResponse {
                 title: false,
+                border: false,
                 attention: false,
                 beep: false,
                 audio: false
@@ -8440,6 +8474,7 @@ mod tests {
             r(d, false, false, true),
             BellResponse {
                 title: true,
+                border: false,
                 attention: false,
                 beep: false,
                 audio: false
@@ -8450,6 +8485,7 @@ mod tests {
             r(d, false, false, false),
             BellResponse {
                 title: true,
+                border: false,
                 attention: true,
                 beep: false,
                 audio: false
@@ -8461,17 +8497,38 @@ mod tests {
             attention: false,
             title: false,
             audio: false,
+            border: false,
         };
         assert_eq!(
             r(f, false, true, true),
             BellResponse {
                 title: false,
+                border: false,
                 attention: false,
                 beep: true,
                 audio: false
             }
         );
         assert!(!r(f, false, false, false).attention);
+    }
+
+    #[test]
+    fn bell_border_lights_even_when_watching_and_only_when_enabled() {
+        use bt_core::config::BellFeatures;
+        let on = BellFeatures {
+            border: true,
+            ..BellFeatures::default()
+        };
+        // 테두리는 보고 있어도(창이 앞, 칸이 보임) 켠다. 🔔 제목과 다르다(#687)
+        assert!(bell_response(on, false, true, true).border);
+        assert!(bell_response(on, false, false, false).border);
+        assert!(!bell_response(on, false, true, true).title);
+        // 끄면(기본) 켜지 않는다
+        assert!(!bell_response(BellFeatures::default(), false, false, false).border);
+        // 지우는 때: 창이 앞이고 그 칸이 키를 받는 칸일 때만
+        assert!(bell_border_cleared_on_focus(true, true));
+        assert!(!bell_border_cleared_on_focus(true, false));
+        assert!(!bell_border_cleared_on_focus(false, true));
     }
 
     #[test]

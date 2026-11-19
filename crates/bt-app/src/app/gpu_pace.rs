@@ -51,6 +51,8 @@ pub(super) struct ViewLayer {
     pub display_offset: usize,
     /// 진행 막대 값(종류, 퍼센트)
     pub progress: Option<(u8, u8)>,
+    /// 벨 테두리를 두르는가(#687)
+    pub bell_border: bool,
 }
 
 /// 층을 그리는 입력 가운데 `Chrome`에 들지 않은 모두. `layer_key`가 빠짐없이 쓰도록 필드를 하나도 `..`로 넘기지 않는다
@@ -144,6 +146,7 @@ pub(super) fn layer_key(i: &LayerInputs<'_>) -> Option<LayerKey> {
                 history: if v.bar_shown { v.history } else { 0 },
                 display_offset: if v.bar_shown { v.display_offset } else { 0 },
                 progress: v.progress.filter(|_| *single_tab),
+                bell_border: v.bell_border,
             })
             .collect(),
     })
@@ -187,6 +190,7 @@ mod tests {
             history: 0,
             display_offset: 0,
             progress: Some((1, 40)),
+            bell_border: false,
         }
     }
 

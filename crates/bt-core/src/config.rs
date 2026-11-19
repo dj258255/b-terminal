@@ -920,14 +920,14 @@ impl BellFeatures {
                         attention: all,
                         title: all,
                         audio: all,
+                        border: all,
                     };
                 }
                 "system" => next.system = on,
                 "attention" => next.attention = on,
                 "title" => next.title = on,
                 "audio" => next.audio = on,
-                // Ghostty에 있지만 b-terminal은 하지 않는다(테두리 깜빡임)
-                "border" => {}
+                "border" => next.border = on,
                 _ => return false,
             }
         }
@@ -1540,6 +1540,8 @@ pub struct BellFeatures {
     pub title: bool,
     /// `bell-audio-path`의 소리 파일을 재생한다(#165)
     pub audio: bool,
+    /// 벨이 울린 칸 둘레에 노란 테두리를 두르고, 그 칸이 키를 받으면 뗀다(#687)
+    pub border: bool,
 }
 
 impl Default for BellFeatures {
@@ -1549,6 +1551,7 @@ impl Default for BellFeatures {
             attention: true,
             title: true,
             audio: false,
+            border: false,
         }
     }
 }
@@ -3863,6 +3866,7 @@ impl Config {
             (b.attention, "attention"),
             (b.title, "title"),
             (b.audio, "audio"),
+            (b.border, "border"),
         ]
         .into_iter()
         .map(|(on, name)| if on { name } else { "" })
@@ -6005,7 +6009,8 @@ mod tests {
                 system: true,
                 attention: true,
                 title: false,
-                audio: false
+                audio: false,
+                border: false
             },
             "적지 않은 것은 그대로"
         );
@@ -6017,10 +6022,11 @@ mod tests {
                 system: false,
                 attention: false,
                 title: true,
-                audio: false
+                audio: false,
+                border: false
             }
         );
-        // audio는 소리 파일 재생(#165), border는 받지만 하는 일이 없다
+        // audio는 소리 파일 재생(#165)
         let c = Config::from_text("bell-features = audio, no-border\n", true);
         assert!(c.warnings.is_empty(), "{:?}", c.warnings);
         assert_eq!(
@@ -6035,9 +6041,28 @@ mod tests {
             "{}",
             c.render()
         );
-        // true는 audio까지 모두 켠다, false는 모두 끈다
+        // true는 audio·border까지 모두 켠다, false는 모두 끈다
         let all = Config::from_text("bell-features = true\n", true).bell_features;
-        assert!(all.system && all.audio && all.attention && all.title);
+        assert!(all.system && all.audio && all.attention && all.title && all.border);
+        let none = Config::from_text("bell-features = true\nbell-features = false\n", true).bell_features;
+        assert!(!(none.system || none.audio || none.attention || none.title || none.border));
+        // border는 기본이 꺼짐(Ghostty 기본은 attention·title). 켜고 끄고 설정 출력에 나온다(#687)
+        assert!(!Config::default().bell_features.border);
+        let c = Config::from_text("bell-features = border\n", true);
+        assert!(c.warnings.is_empty(), "{:?}", c.warnings);
+        assert!(c.bell_features.border && c.bell_features.attention && c.bell_features.title);
+        assert!(
+            c.render().contains("bell-features = attention,title,border"),
+            "{}",
+            c.render()
+        );
+        let c = Config::from_text("bell-features = border\nbell-features = no-border\n", true);
+        assert!(!c.bell_features.border);
+        assert!(
+            c.render().contains("bell-features = attention,title\n"),
+            "{}",
+            c.render()
+        );
         let c = Config::from_text("bell-features = audio\nbell-features = no-audio\n", true);
         assert!(!c.bell_features.audio);
         // 모르는 이름이 섞이면 줄 전체를 버리고 경고
