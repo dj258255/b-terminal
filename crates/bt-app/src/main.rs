@@ -28,6 +28,7 @@ mod pointer;
 mod quick;
 mod render_path;
 mod script_key;
+mod script_mouse;
 mod secure_input;
 mod shellint;
 mod split;

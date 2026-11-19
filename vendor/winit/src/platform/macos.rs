@@ -680,8 +680,8 @@ pub fn set_metal_layer_srgb(window: &crate::window::Window) -> bool {
 }
 
 pub use crate::platform_impl::scripting::{
-    input_action_is_release as script_input_action_is_release, ScriptCommand, ScriptRefresh, ScriptReply, ScriptSnapshot,
-    ScriptSplit, ScriptTab, ScriptTarget, ScriptTerminal, ScriptTicket, ScriptWindow,
+    input_action_is_release as script_input_action_is_release, ScriptCommand, ScriptMomentum, ScriptMouseButton,
+    ScriptRefresh, ScriptReply, ScriptSnapshot, ScriptSplit, ScriptTab, ScriptTarget, ScriptTerminal, ScriptTicket, ScriptWindow,
 };
 
 /// The selectors of the scripting object classes (window, tab, terminal) that `NSObject` already implements. Empty when

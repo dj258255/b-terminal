@@ -4,6 +4,8 @@
 
 ## [아직 릴리스하지 않음]
 
+- AppleScript 사전에 Ghostty의 마우스 명령 셋을 더했습니다: `send mouse button 단추 [action press|release] [modifiers "..."] to 터미널`(단추는 `left button`·`right button`·`middle button`), `send mouse position x X y Y [modifiers "..."] to 터미널`, `send mouse scroll x X y Y [precision true|false] [momentum ...] to 터미널`(명령 코드 `GhstSMBt`·`GhstSMPs`·`GhstSMSc`, 결과 없음). 위치는 칸 왼쪽 위에서 잰 점 좌표이고 배율을 곱한 픽셀로 바뀌며 칸 밖 값은 칸 안으로 잘립니다. 사람의 마우스와 같은 처리(마우스 보고, 고르기, 한·두·세 번 누르기, `copy-on-select`, `cursor-click-to-move`, Cmd-클릭 링크 열기, 휠·대체 화면 화살표·스크롤백)를 지나지만 상태는 칸마다 따로 둡니다(사람의 포인터·누름 횟수·고르는 중·휠 누적을 건드리지 않습니다). 창 장식(제목 막대·탭 줄·칸 끌기 손잡이·스크롤 막대 띠)과 초점 누름 삼키기는 거치지 않고, 클립보드를 읽는 동작(가운데 단추·`right-click-action = paste`·`copy-or-paste`의 붙여넣기)과 메뉴(오른쪽 단추·Ctrl-누르기)는 스크립트에는 하지 않습니다. 읽기 전용 칸과 확인·검색·팔레트·제목 막대가 열린 창에는 오류를 돌려줍니다. 실제 Apple Event로는 아직 확인하지 않았습니다 (#662)
+
 ## [0.83.0] - 2026-11-19
 
 AppleScript `perform action`과 실험 E27 마무리. 마일스톤 0.83.

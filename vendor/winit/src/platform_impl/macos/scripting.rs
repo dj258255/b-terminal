@@ -26,6 +26,11 @@
 //!   parameter, the terminal is the `on` argument) so no selector is added to `NSApplication` or `NSObject`. Its answer is
 //!   a boolean (`ScriptTarget::Performed`, returned as an `NSNumber`); the action string is read by the app.
 //!
+//! - `send mouse button`, `send mouse position` and `send mouse scroll` (#662) are command classes too
+//!   (`BTScriptMouseButtonCommand`, `BTScriptMousePosCommand`, `BTScriptMouseScrollCommand`); they answer nothing (as in
+//!   Ghostty). The mouse button is the direct parameter (an enumerator); positions and scroll deltas are `real` arguments.
+//!   This module only parses the Apple Event. Where the point lands, what it does and what the mouse state is belong to the app.
+//!
 //! Nothing here is installed in a process without a bundle identifier (a plain `cargo run`): there is no sdef to read.
 //! When the app turns scripting off (`macos-applescript = false`), every command and every object lookup sets a
 //! script error on the current command.
@@ -107,6 +112,54 @@ pub fn input_action_is_release(code: u32) -> bool {
     code == fourcc(b"GIrl")
 }
 
+/// The `mouse button` enumeration (`GMBt`): `GMlf`, `GMrt`, `GMmd`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScriptMouseButton {
+    Left,
+    Right,
+    Middle,
+}
+
+impl ScriptMouseButton {
+    /// The enumerator for this four-character code. Anything else is `None` (an error for the command, as in Ghostty).
+    pub fn from_code(code: u32) -> Option<Self> {
+        match code {
+            c if c == fourcc(b"GMlf") => Some(Self::Left),
+            c if c == fourcc(b"GMrt") => Some(Self::Right),
+            c if c == fourcc(b"GMmd") => Some(Self::Middle),
+            _ => None,
+        }
+    }
+}
+
+/// The `scroll momentum` enumeration (`GSMo`). Ghostty reads it and passes it to its core, whose scroll callback does not
+/// look at it (Surface.zig `scrollCallback`, v1.4.0); the app does the same.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScriptMomentum {
+    None,
+    Began,
+    Changed,
+    Ended,
+    Cancelled,
+    MayBegin,
+    Stationary,
+}
+
+impl ScriptMomentum {
+    /// The enumerator for this four-character code. An unknown value is `None` (Ghostty's default).
+    pub fn from_code(code: u32) -> Self {
+        match code {
+            c if c == fourcc(b"SMbg") => Self::Began,
+            c if c == fourcc(b"SMch") => Self::Changed,
+            c if c == fourcc(b"SMen") => Self::Ended,
+            c if c == fourcc(b"SMcn") => Self::Cancelled,
+            c if c == fourcc(b"SMmb") => Self::MayBegin,
+            c if c == fourcc(b"SMst") => Self::Stationary,
+            _ => Self::None,
+        }
+    }
+}
+
 /// One terminal pane as the app reports it.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ScriptTerminal {
@@ -142,8 +195,9 @@ pub struct ScriptSnapshot {
 }
 
 /// A command that changes the app. Ids are the strings from the snapshot. `Debug` leaves out the text of `InputText` and
-/// the keys of `SendKey` (they may spell a password or a secret and commands end up in logs).
-#[derive(Clone, PartialEq, Eq)]
+/// the keys of `SendKey` (they may spell a password or a secret and commands end up in logs) and shows only the length of
+/// the modifier text of the mouse commands. (Not `Eq`: the mouse commands carry real numbers.)
+#[derive(Clone, PartialEq)]
 pub enum ScriptCommand {
     /// Asks the app to call `set_snapshot` with its current state and then answer `Ok(None)`.
     Snapshot,
@@ -161,6 +215,12 @@ pub enum ScriptCommand {
     Close { terminal: String },
     CloseTab { tab: String },
     CloseWindow { window: String },
+    /// `send mouse button` (#662): the button, whether it is a release, the comma-separated modifiers.
+    SendMouseButton { terminal: String, button: ScriptMouseButton, release: bool, modifiers: Option<String> },
+    /// `send mouse position` (#662): the position in points from the terminal's top left corner.
+    SendMousePosition { terminal: String, x: f64, y: f64, modifiers: Option<String> },
+    /// `send mouse scroll` (#662): the deltas, whether the event is a precise (pixel) one and the momentum phase.
+    SendMouseScroll { terminal: String, x: f64, y: f64, precision: bool, momentum: ScriptMomentum },
 }
 
 impl std::fmt::Debug for ScriptCommand {
@@ -195,6 +255,28 @@ impl std::fmt::Debug for ScriptCommand {
             Self::Close { terminal } => f.debug_struct("Close").field("terminal", terminal).finish(),
             Self::CloseTab { tab } => f.debug_struct("CloseTab").field("tab", tab).finish(),
             Self::CloseWindow { window } => f.debug_struct("CloseWindow").field("window", window).finish(),
+            Self::SendMouseButton { terminal, button, release, modifiers } => f
+                .debug_struct("SendMouseButton")
+                .field("terminal", terminal)
+                .field("button", button)
+                .field("release", release)
+                .field("modifier_bytes", &modifiers.as_ref().map(|m| m.len()))
+                .finish(),
+            Self::SendMousePosition { terminal, x, y, modifiers } => f
+                .debug_struct("SendMousePosition")
+                .field("terminal", terminal)
+                .field("x", x)
+                .field("y", y)
+                .field("modifier_bytes", &modifiers.as_ref().map(|m| m.len()))
+                .finish(),
+            Self::SendMouseScroll { terminal, x, y, precision, momentum } => f
+                .debug_struct("SendMouseScroll")
+                .field("terminal", terminal)
+                .field("x", x)
+                .field("y", y)
+                .field("precision", precision)
+                .field("momentum", momentum)
+                .finish(),
         }
     }
 }
@@ -520,6 +602,40 @@ fn argument_u32(command: &NSScriptCommand, key: &str) -> Option<u32> {
     }
     // SAFETY: `value` is an `NSNumber`.
     Some(unsafe { objc2::msg_send![&*value, unsignedIntValue] })
+}
+
+/// The enumerator in the command's direct parameter (it arrives as the number of its four-character code).
+fn direct_u32(command: &NSScriptCommand) -> Option<u32> {
+    // SAFETY: a property read on the live command; the value is checked for its class before `unsignedIntValue`.
+    let value = unsafe { command.directParameter() }?;
+    if !kind_of::<NSNumber>(&value) {
+        return None;
+    }
+    // SAFETY: `value` is an `NSNumber`.
+    Some(unsafe { objc2::msg_send![&*value, unsignedIntValue] })
+}
+
+/// A real-number argument; `None` when it is absent or not a number.
+fn argument_f64(command: &NSScriptCommand, key: &str) -> Option<f64> {
+    // SAFETY: a property read on the live command; the value is checked for its class before `doubleValue`.
+    let value = unsafe { command.evaluatedArguments() }.and_then(|d| unsafe { d.objectForKey(&ns(key)) })?;
+    if !kind_of::<NSNumber>(&value) {
+        return None;
+    }
+    // SAFETY: `value` is an `NSNumber`.
+    Some(unsafe { objc2::msg_send![&*value, doubleValue] })
+}
+
+/// A boolean argument; `None` when it is absent or not a number.
+fn argument_bool(command: &NSScriptCommand, key: &str) -> Option<bool> {
+    // SAFETY: as `argument_f64`, with `boolValue`.
+    let value = unsafe { command.evaluatedArguments() }.and_then(|d| unsafe { d.objectForKey(&ns(key)) })?;
+    if !kind_of::<NSNumber>(&value) {
+        return None;
+    }
+    // SAFETY: `value` is an `NSNumber`.
+    let yes: Bool = unsafe { objc2::msg_send![&*value, boolValue] };
+    Some(yes.as_bool())
 }
 
 /// A text argument; `None` when it is absent or not text.
@@ -930,6 +1046,135 @@ declare_class!(
     }
 );
 
+/// The text of an optional `modifiers` argument, checked for its size before it is copied into a Rust string.
+/// `Err` is set as the script error by the caller.
+fn modifiers_argument(command: &NSScriptCommand) -> Result<Option<String>, &'static str> {
+    let modifiers = argument_string(command, "modifiers");
+    if modifiers.as_ref().is_some_and(|s| utf8_len(s) > MAX_KEY_BYTES) {
+        return Err("수식 키가 너무 깁니다");
+    }
+    Ok(modifiers.map(|m| m.to_string()))
+}
+
+declare_class!(
+    /// `send mouse button left button action release modifiers "shift" to terminal`: the button is the direct parameter.
+    struct ScriptMouseButtonCommand;
+
+    unsafe impl ClassType for ScriptMouseButtonCommand {
+        type Super = NSScriptCommand;
+        type Mutability = mutability::InteriorMutable;
+        const NAME: &'static str = "BTScriptMouseButtonCommand";
+    }
+
+    impl DeclaredClass for ScriptMouseButtonCommand {}
+
+    unsafe impl ScriptMouseButtonCommand {
+        #[method(performDefaultImplementation)]
+        fn perform_default(&self) -> *mut AnyObject {
+            if !gate() {
+                return std::ptr::null_mut();
+            }
+            let Some(button) = direct_u32(self).and_then(ScriptMouseButton::from_code) else {
+                set_script_error(ERR_PARAM, "마우스 단추(left button, right button, middle button)가 없거나 모르는 값입니다");
+                return std::ptr::null_mut();
+            };
+            let modifiers = match modifiers_argument(self) {
+                Ok(m) => m,
+                Err(message) => {
+                    set_script_error(ERR_PARAM, message);
+                    return std::ptr::null_mut();
+                }
+            };
+            let Some(terminal) = argument_id::<ScriptTerminalObj>(self, "terminal", |o| o.ivars().0.clone()) else {
+                set_script_error(ERR_PARAM, "send mouse button에는 터미널(to)이 필요합니다");
+                return std::ptr::null_mut();
+            };
+            let release = argument_u32(self, "action").is_some_and(input_action_is_release);
+            if let Err(message) = run_command(ScriptCommand::SendMouseButton { terminal, button, release, modifiers }) {
+                set_script_error(ERR_FAILED, &message);
+            }
+            std::ptr::null_mut()
+        }
+    }
+);
+
+declare_class!(
+    /// `send mouse position x 10 y 20 modifiers "shift" to terminal`.
+    struct ScriptMousePosCommand;
+
+    unsafe impl ClassType for ScriptMousePosCommand {
+        type Super = NSScriptCommand;
+        type Mutability = mutability::InteriorMutable;
+        const NAME: &'static str = "BTScriptMousePosCommand";
+    }
+
+    impl DeclaredClass for ScriptMousePosCommand {}
+
+    unsafe impl ScriptMousePosCommand {
+        #[method(performDefaultImplementation)]
+        fn perform_default(&self) -> *mut AnyObject {
+            if !gate() {
+                return std::ptr::null_mut();
+            }
+            let (Some(x), Some(y)) = (argument_f64(self, "x"), argument_f64(self, "y")) else {
+                set_script_error(ERR_PARAM, "send mouse position에는 x와 y가 필요합니다");
+                return std::ptr::null_mut();
+            };
+            let modifiers = match modifiers_argument(self) {
+                Ok(m) => m,
+                Err(message) => {
+                    set_script_error(ERR_PARAM, message);
+                    return std::ptr::null_mut();
+                }
+            };
+            let Some(terminal) = argument_id::<ScriptTerminalObj>(self, "terminal", |o| o.ivars().0.clone()) else {
+                set_script_error(ERR_PARAM, "send mouse position에는 터미널(to)이 필요합니다");
+                return std::ptr::null_mut();
+            };
+            if let Err(message) = run_command(ScriptCommand::SendMousePosition { terminal, x, y, modifiers }) {
+                set_script_error(ERR_FAILED, &message);
+            }
+            std::ptr::null_mut()
+        }
+    }
+);
+
+declare_class!(
+    /// `send mouse scroll x 0 y -3 precision true momentum began to terminal`.
+    struct ScriptMouseScrollCommand;
+
+    unsafe impl ClassType for ScriptMouseScrollCommand {
+        type Super = NSScriptCommand;
+        type Mutability = mutability::InteriorMutable;
+        const NAME: &'static str = "BTScriptMouseScrollCommand";
+    }
+
+    impl DeclaredClass for ScriptMouseScrollCommand {}
+
+    unsafe impl ScriptMouseScrollCommand {
+        #[method(performDefaultImplementation)]
+        fn perform_default(&self) -> *mut AnyObject {
+            if !gate() {
+                return std::ptr::null_mut();
+            }
+            let (Some(x), Some(y)) = (argument_f64(self, "x"), argument_f64(self, "y")) else {
+                set_script_error(ERR_PARAM, "send mouse scroll에는 x와 y가 필요합니다");
+                return std::ptr::null_mut();
+            };
+            let Some(terminal) = argument_id::<ScriptTerminalObj>(self, "terminal", |o| o.ivars().0.clone()) else {
+                set_script_error(ERR_PARAM, "send mouse scroll에는 터미널(to)이 필요합니다");
+                return std::ptr::null_mut();
+            };
+            let precision = argument_bool(self, "precision").unwrap_or(false);
+            let momentum = argument_u32(self, "momentum").map_or(ScriptMomentum::None, ScriptMomentum::from_code);
+            if let Err(message) = run_command(ScriptCommand::SendMouseScroll { terminal, x, y, precision, momentum }) {
+                set_script_error(ERR_FAILED, &message);
+            }
+            std::ptr::null_mut()
+        }
+    }
+);
+
 // ---------------------------------------------------------------------------------------------------------------
 // NSApplication additions
 
@@ -1071,6 +1316,9 @@ fn install() {
         ScriptInputTextCommand::class(),
         ScriptSendKeyCommand::class(),
         ScriptPerformActionCommand::class(),
+        ScriptMouseButtonCommand::class(),
+        ScriptMousePosCommand::class(),
+        ScriptMouseScrollCommand::class(),
     );
     let app = NSApplication::class();
     // SAFETY (all `transmute`s below): each function has the C signature of its type alias, which is the shape the
