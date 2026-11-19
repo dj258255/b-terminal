@@ -198,6 +198,99 @@ pub fn hit(width: u32, x: f64, count: usize) -> Option<usize> {
         .position(|&(sx, w)| x >= sx as f64 && x < (sx + w as i32) as f64)
 }
 
+/// 탭을 끌기로 보는 가로 거리(물리 픽셀). 누른 자리에서 이만큼 안 움직인 누름은 고르기다(손 떨림으로 탭이 옮겨지지 않게)
+pub const DRAG_START_PX: f64 = 6.0;
+
+/// 탭 줄에서 왼쪽 단추를 누른 뒤의 끌기 상태. 창 없이 시험할 수 있게 좌표와 숫자만 안다
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct TabDrag {
+    press: Option<(usize, f64)>,
+    dragging: bool,
+}
+
+/// 단추를 놓았을 때 할 일
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TabDrop {
+    /// 짧은 누름: 이미 골랐으니 더 할 것이 없다
+    None,
+    /// `from` 탭을 `to` 자리로 옮긴다
+    Move { from: usize, to: usize },
+}
+
+impl TabDrag {
+    /// 탭 `from`을 `x`에서 눌렀다
+    pub fn press(&mut self, from: usize, x: f64) {
+        self.press = Some((from, x));
+        self.dragging = false;
+    }
+    /// 누르는 중인가(끌기 시작 전 포함). 이 동안 다른 누름은 아무 데도 가지 않는다
+    pub fn is_pressed(&self) -> bool {
+        self.press.is_some()
+    }
+    /// 끌기가 시작됐는가(시험용)
+    #[cfg(test)]
+    pub fn is_dragging(&self) -> bool {
+        self.dragging
+    }
+    /// 마우스가 `x`로 움직였다. 이번에 끌기가 새로 시작됐으면 참
+    pub fn moved(&mut self, x: f64) -> bool {
+        match self.press {
+            Some((_, x0)) if !self.dragging && (x - x0).abs() >= DRAG_START_PX => {
+                self.dragging = true;
+                true
+            }
+            _ => false,
+        }
+    }
+    /// 단추를 `x`에서 놓았다. 상태는 지워진다
+    pub fn release(&mut self, x: f64, width: u32, count: usize) -> TabDrop {
+        let (press, dragging) = (self.press.take(), std::mem::take(&mut self.dragging));
+        match press {
+            Some((from, _)) if dragging && count > 1 => match drop_index(width, x, count) {
+                Some(to) if to != from => TabDrop::Move { from, to },
+                _ => TabDrop::None,
+            },
+            _ => TabDrop::None,
+        }
+    }
+    /// 누름을 버린다(창이 초점을 잃었을 때 등)
+    pub fn cancel(&mut self) {
+        *self = Self::default();
+    }
+}
+
+/// 끌어서 놓은 자리(`x`)의 탭 번호. 탭 줄 밖(왼쪽·오른쪽)이면 처음·끝 탭으로 자른다
+pub fn drop_index(width: u32, x: f64, count: usize) -> Option<usize> {
+    if count == 0 {
+        return None;
+    }
+    let x = x.clamp(0.0, (width as f64 - 1.0).max(0.0));
+    hit(width, x, count).or(Some(count - 1))
+}
+
+/// `from` 탭을 `to` 자리로 옮긴 뒤 `active` 탭의 새 번호
+pub fn active_after_move(active: usize, from: usize, to: usize) -> usize {
+    if active == from {
+        to
+    } else if from < active && to >= active {
+        active - 1
+    } else if from > active && to <= active {
+        active + 1
+    } else {
+        active
+    }
+}
+
+/// 두 번 누르기: 앞 누름이 같은 탭이고 `interval` 안이면 참
+pub fn is_double_click(
+    last: Option<(std::time::Instant, usize)>,
+    now: std::time::Instant,
+    index: usize,
+    interval: std::time::Duration,
+) -> bool {
+    matches!(last, Some((t, i)) if i == index && now.saturating_duration_since(t) < interval)
+}
+
 fn dot(canvas: &mut Canvas, cx: i32, cy: i32, r: i32, color: Rgb) {
     for dy in -r..=r {
         for dx in -r..=r {
@@ -530,6 +623,68 @@ pub fn draw_resize_overlay(
 
 #[cfg(test)]
 mod tests {
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn short_press_is_a_click_not_a_drag() {
+        let mut d = TabDrag::default();
+        d.press(1, 100.0);
+        assert!(d.is_pressed());
+        assert!(!d.moved(103.0), "문턱 안");
+        assert!(!d.is_dragging());
+        assert_eq!(d.release(103.0, 400, 4), TabDrop::None);
+        assert!(!d.is_pressed());
+    }
+
+    #[test]
+    fn moving_past_threshold_starts_drag_and_release_moves() {
+        let mut d = TabDrag::default();
+        d.press(0, 50.0);
+        assert!(d.moved(50.0 + DRAG_START_PX));
+        assert!(d.is_dragging());
+        assert!(!d.moved(300.0), "이미 시작했으면 또 새로 시작하지 않는다");
+        assert_eq!(d.release(250.0, 400, 4), TabDrop::Move { from: 0, to: 2 });
+        assert!(!d.is_dragging());
+    }
+
+    #[test]
+    fn drag_back_to_same_tab_does_nothing_and_single_tab_never_moves() {
+        let mut d = TabDrag::default();
+        d.press(1, 150.0);
+        d.moved(190.0);
+        assert_eq!(d.release(120.0, 400, 4), TabDrop::None);
+        d.press(0, 10.0);
+        d.moved(300.0);
+        assert_eq!(d.release(300.0, 400, 1), TabDrop::None);
+    }
+
+    #[test]
+    fn drop_outside_bar_clamps_to_ends() {
+        assert_eq!(drop_index(400, -30.0, 4), Some(0));
+        assert_eq!(drop_index(400, 900.0, 4), Some(3));
+        assert_eq!(drop_index(400, 150.0, 4), Some(1));
+        assert_eq!(drop_index(400, 10.0, 0), None);
+    }
+
+    #[test]
+    fn active_follows_the_move() {
+        assert_eq!(active_after_move(1, 1, 3), 3);
+        assert_eq!(active_after_move(2, 1, 3), 1);
+        assert_eq!(active_after_move(2, 3, 0), 3);
+        assert_eq!(active_after_move(0, 3, 1), 0);
+        assert_eq!(active_after_move(0, 1, 3), 0);
+    }
+
+    #[test]
+    fn double_click_needs_same_tab_within_interval() {
+        let t = Instant::now();
+        let iv = Duration::from_millis(500);
+        assert!(is_double_click(Some((t, 2)), t + Duration::from_millis(200), 2, iv));
+        assert!(!is_double_click(Some((t, 2)), t + Duration::from_millis(200), 1, iv));
+        assert!(!is_double_click(Some((t, 2)), t + Duration::from_millis(600), 2, iv));
+        assert!(!is_double_click(None, t, 0, iv));
+    }
+
     use super::*;
 
     /// 가짜 비례폭: i·l 3, W·M 12, 한글 16, `…` 10, 나머지 8

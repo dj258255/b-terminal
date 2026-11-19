@@ -32,7 +32,7 @@ Finder에서 폴더(나 파일)를 오른쪽 눌러 "서비스" → "New b-termi
 | Cmd-Shift-V(편집 메뉴 "선택 붙여넣기") | 고른 글 붙여넣기. 글을 고르기만 하면 앱 안 선택 클립보드에 담기고(`copy-on-select = primary`, 기본) Cmd-V의 시스템 클립보드는 그대로입니다. 고르면 시스템 클립보드로 복사하려면 `copy-on-select = clipboard` |
 | Cmd-= / Cmd-- / Cmd-0 | 고른 칸의 글자 크기(Ghostty처럼 칸마다 따로) |
 | Cmd-N / Cmd-T / Cmd-W / Cmd-Opt-W | 새 창 / 새 탭 / 칸 닫기(칸이 하나면 탭) / 탭 닫기 |
-| Cmd-1~8, Cmd-9, Cmd-Shift-[ / Cmd-Shift-] | 탭 옮기기(탭 줄을 눌러도 됩니다) |
+| Cmd-1~8, Cmd-9, Cmd-Shift-[ / Cmd-Shift-] | 탭 옮기기(탭 줄을 눌러도 됩니다. 탭 줄에서 가운데 클릭은 탭 닫기, 두 번 누르기는 탭 제목 바꾸기, 누른 채 끌면 탭 순서 바꾸기) |
 | Cmd-D / Cmd-Shift-D | 화면을 오른쪽 / 아래로 나누기 |
 | Cmd-[ / Cmd-], Cmd-Opt-방향키 | 앞·다음 칸, 그쪽 칸으로(칸을 눌러도 됩니다. 고르지 않은 칸을 누르면 그 칸만 고르고 누름은 프로그램에 보내지 않습니다) |
 | Cmd-Ctrl-방향키 / Cmd-Ctrl-= / Cmd-Shift-Enter | 경계 밀기 / 칸 크기 고르게 / 칸 크게 보기 |
