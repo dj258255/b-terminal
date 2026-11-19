@@ -857,6 +857,10 @@ struct Win {
     pane_drag: crate::pane_drag::PaneDrag,
     /// 분할 경계선을 끄는 중과 지난 누름(두 번 누르면 칸 크기를 고르게). 끄는 동안 마우스는 프로그램에 보고하지 않고 글도 고르지 않는다
     divider: crate::divider_drag::DividerState,
+    /// 탭 줄에서 왼쪽 단추를 누른 뒤 끄는 중(탭 순서 바꾸기). 끄는 동안 다른 누름은 아무 데도 가지 않는다
+    tab_drag: tabbar::TabDrag,
+    /// 앞 탭 줄 왼쪽 누름(시각, 탭 번호). 같은 탭을 시스템 두 번 누르기 간격 안에 또 누르면 제목 입력 막대를 연다
+    tab_click: Option<(Instant, usize)>,
     /// 마우스가 위쪽 띠 안에 있는 칸과 마우스가 손잡이 위인지(`drag-handle`)
     handle_hover: Option<(u64, bool)>,
     selecting: bool,
@@ -955,6 +959,8 @@ impl Win {
             scrollbar_press: None,
             pane_drag: crate::pane_drag::PaneDrag::default(),
             divider: crate::divider_drag::DividerState::default(),
+            tab_drag: tabbar::TabDrag::default(),
+            tab_click: None,
             handle_hover: None,
             selecting: false,
             last_click: None,
@@ -5044,12 +5050,19 @@ impl App {
         let len = self.w.tabs.len();
         let from = self.w.active;
         let to = crate::winact::wrap_index(from, len, delta);
-        if len < 2 || from >= len || to == from {
+        self.reorder_tab(from, to);
+    }
+
+    /// `from` 탭을 `to` 자리로 옮긴다(`move_tab`과 탭 줄 끌기가 같이 쓴다). 고른 탭은 따라간다
+    fn reorder_tab(&mut self, from: usize, to: usize) {
+        let len = self.w.tabs.len();
+        if len < 2 || from >= len || to >= len || to == from {
             return;
         }
+        let active = tabbar::active_after_move(self.w.active, from, to);
         let tab = self.w.tabs.remove(from);
         self.w.tabs.insert(to, tab);
-        self.w.active = to;
+        self.w.active = active;
         self.request_redraw();
     }
 
@@ -7170,6 +7183,7 @@ impl ApplicationHandler<UserEvent> for App {
                 let was_focused = self.w.focused;
                 self.w.focused = focused;
                 if !focused {
+                    self.w.tab_drag.cancel();
                     self.w.focus_click.clear();
                     self.w.kitty_down.clear();
                 }
@@ -7306,6 +7320,14 @@ impl ApplicationHandler<UserEvent> for App {
                     self.w.gutter_hot = hot;
                     self.request_redraw();
                 }
+                // 탭을 누르고 있으면 끌기 시작만 살핀다(프로그램에 보고하지 않고 글도 고르지 않는다)
+                if self.w.tab_drag.is_pressed() {
+                    if self.w.tab_drag.moved(position.x) {
+                        self.w.tab_click = None;
+                        self.request_redraw();
+                    }
+                    return;
+                }
                 // 칸을 끄는 중이면 놓을 자리만 따라간다(프로그램에 보고하지 않고 글도 고르지 않고 고른 칸도 바꾸지 않는다)
                 if self.w.pane_drag.is_active() {
                     let target = self.drop_target_at_cursor();
@@ -7364,6 +7386,22 @@ impl ApplicationHandler<UserEvent> for App {
                     }
                     return;
                 }
+                // 탭을 누르던(끌던) 중이면 왼쪽 단추를 놓을 때 끝내고, 놓은 자리로 옮긴다. 그동안 다른 누름은 아무 데도 가지 않는다.
+                // 놓기를 놓친 채 새 왼쪽 누름이 오면 옛 누름을 버리고 새 누름을 처리한다
+                if self.w.tab_drag.is_pressed() {
+                    if button == MouseButton::Left && state == ElementState::Released {
+                        let width = self.w.gfx.as_ref().map(|g| g.window.inner_size().width).unwrap_or(0);
+                        let drop = self.w.tab_drag.release(self.w.cursor_pos.x, width, self.w.tabs.len());
+                        if let tabbar::TabDrop::Move { from, to } = drop {
+                            self.reorder_tab(from, to);
+                        }
+                        return;
+                    }
+                    if !(button == MouseButton::Left && state == ElementState::Pressed) {
+                        return;
+                    }
+                    self.w.tab_drag.cancel();
+                }
                 // 막대를 누르던 중 왼쪽 단추를 놓으면 끝낸다. 놓은 뒤 평소처럼 사라지는 시간을 다시 센다
                 if let Some(press) = self.w.scrollbar_press {
                     if button == MouseButton::Left && state == ElementState::Released {
@@ -7382,11 +7420,30 @@ impl ApplicationHandler<UserEvent> for App {
                 }
                 // 탭 줄을 누르면 그 탭으로
                 if (self.w.cursor_pos.y as u32) < top_inset + self.tabbar_height() {
-                    if state == ElementState::Pressed && button == MouseButton::Left {
+                    if state == ElementState::Pressed && matches!(button, MouseButton::Left | MouseButton::Middle) {
                         let width = self.w.gfx.as_ref().map(|g| g.window.inner_size().width).unwrap_or(0);
                         let hit = tabbar::hit(width, self.w.cursor_pos.x, self.w.tabs.len());
-                        if let Some(i) = hit {
+                        if let (Some(i), MouseButton::Middle) = (hit, button) {
+                            // 가운데 클릭은 그 탭을 닫는다(Ghostty). `close_tab` 키와 같은 길이라 프로그램이 돌면 확인을 지난다
+                            if let Some(id) = self.w.tabs.get(i).map(|g| g.focus) {
+                                drop(self.redo.clear());
+                                self.request(Pending::CloseTab(id), event_loop);
+                            }
+                        } else if let (Some(i), MouseButton::Left) = (hit, button) {
                             self.activate(i);
+                            let now = Instant::now();
+                            let interval = mouse::repeat_interval(
+                                self.config.click_repeat_interval,
+                                mouse::platform_repeat_interval(),
+                            );
+                            if tabbar::is_double_click(self.w.tab_click, now, i, interval) {
+                                // 두 번 누르면 그 탭의 제목 입력 막대를 연다(Ghostty는 그 자리에서 고치지만 여기는 입력 막대)
+                                self.w.tab_click = None;
+                                self.handle_action(Action::PromptTabTitle, event_loop);
+                            } else {
+                                self.w.tab_click = Some((now, i));
+                                self.w.tab_drag.press(i, self.w.cursor_pos.x);
+                            }
                         }
                     }
                     return;
