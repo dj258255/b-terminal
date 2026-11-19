@@ -309,6 +309,7 @@ HTML은 `<div style="font-family: monospace; white-space: pre;">` 안에 칸의 
 | `goto_split:previous` `next` `left` `right` `up` `down` | 앞·다음 칸, 그쪽에 붙은 칸으로(`top`·`bottom`도 받음) | `super+[` / `super+]` / `super+alt+방향키` |
 | `resize_split:방향,포인트` | 고른 칸을 감싼 경계를 그쪽으로 민다 | `super+ctrl+방향키`(10) |
 | `equalize_splits` | 같은 줄에 선 칸들을 같은 크기로 | `super+ctrl+equal` |
+| (마우스) 칸 사이 경계선을 끌기 / 두 번 누르기 | 경계선 위(선 양쪽 3pt까지)에서 포인터가 크기 조절 모양이 되고, 왼쪽 단추로 끌면 그 경계선의 비율만 바뀝니다(양쪽 칸 최소 10pt, Ghostty와 같음). 두 번 누르면 그 탭의 모든 칸을 고르게(`equalize_splits`와 같음). 누른 것은 프로그램(마우스 보고)·글 고르기에 가지 않고, 끄는 동안 다른 누름도 가지 않습니다. 칸 하나를 크게 보는 중에는 경계선이 없습니다. 칸 끌기 손잡이보다 경계선이 먼저 맞습니다. 실제 창에서 확인하지 않았고, 두 번 누르기 간격은 `click-repeat-interval`을 따릅니다 | 마우스 |
 | `toggle_split_zoom` | 고른 칸만 탭 전체로 크게 보기 / 되돌리기 | `super+shift+enter` |
 | `undo` / `redo` | 닫은 칸·탭을 원래 자리에 되살리기(`undo-timeout` 안에서) / 되살린 것을 다시 닫기. 되살릴 것이 없으면 키는 프로그램으로 갑니다(Ghostty의 `performable`과 같다) | `super+z` `super+shift+t` / `super+shift+z`(macOS만) |
 | `increase_font_size:N` / `decrease_font_size:N` / `reset_font_size` | 고른 칸의 글자 크기(같은 창의 다른 칸과 다른 창은 그대로). `reset_font_size`는 `font-size`로 | `super+=` / `super+-` / `super+0` |

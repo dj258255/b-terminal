@@ -65,6 +65,17 @@ pub struct PointerInput {
     pub hidden: bool,
     /// 칸 끌기 손잡이와 마우스의 관계(`drag-handle`)
     pub handle: HandleCursor,
+    /// 분할 경계선과 마우스의 관계. 경계선 위나 끄는 중이면 그 방향의 크기 조절 모양
+    pub divider: DividerCursor,
+}
+
+/// 분할 경계선 위의 포인터 상태. 좌우로 나란한 칸 사이의 선은 `Col`(좌우 화살표), 위아래 칸 사이의 선은 `Row`
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum DividerCursor {
+    #[default]
+    None,
+    Col,
+    Row,
 }
 
 /// 칸 끌기 손잡이 위의 포인터 상태
@@ -86,6 +97,14 @@ pub enum HandleCursor {
 /// `OSC 22` 지움은 모드에 따라 `.default`·`.text`). 마우스를 숨겼으면 키가 모양을 바꾸지 않는다.
 /// 마우스 보고 중에는 Shift가 보고를 끊을 때(`reports_to_program`이 거짓)만 십자·I자가 된다(Ghostty `keyToMouseShape`와 같다)
 pub fn decide(input: PointerInput) -> CursorIcon {
+    // 경계선 위(또는 끄는 중)는 칸의 글이 아니라 창의 것이다: 칸을 끄는 중이 아니면 모든 것에 앞선다
+    if input.handle != HandleCursor::Dragging {
+        match input.divider {
+            DividerCursor::Col => return CursorIcon::ColResize,
+            DividerCursor::Row => return CursorIcon::RowResize,
+            DividerCursor::None => {}
+        }
+    }
     // 칸을 끌어 옮기는 중이나 손잡이 위에서는 잡는 손이 모든 것에 앞선다(손잡이 위는 칸의 글이 아니다)
     match input.handle {
         HandleCursor::Dragging => return CursorIcon::Grabbing,
@@ -167,6 +186,42 @@ mod tests {
             }),
             CursorIcon::Pointer
         );
+    }
+
+    #[test]
+    fn divider_shows_a_resize_pointer_over_the_program_shape_and_links() {
+        let base = PointerInput {
+            over_link: true,
+            program: Some(MouseShape::Crosshair),
+            shift: true,
+            hidden: true,
+            ..input()
+        };
+        assert_eq!(
+            decide(PointerInput {
+                divider: DividerCursor::Col,
+                ..base
+            }),
+            CursorIcon::ColResize
+        );
+        assert_eq!(
+            decide(PointerInput {
+                divider: DividerCursor::Row,
+                handle: HandleCursor::Over,
+                ..base
+            }),
+            CursorIcon::RowResize
+        );
+        // 칸을 끄는 중이면 잡는 손이 앞선다
+        assert_eq!(
+            decide(PointerInput {
+                divider: DividerCursor::Col,
+                handle: HandleCursor::Dragging,
+                ..base
+            }),
+            CursorIcon::Grabbing
+        );
+        assert_eq!(decide(base), CursorIcon::Pointer);
     }
 
     #[test]

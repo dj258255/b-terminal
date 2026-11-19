@@ -11,6 +11,7 @@ mod context_menu;
 mod control;
 mod copy;
 mod desktop;
+mod divider_drag;
 mod dock_open;
 mod dump;
 mod file_drop;

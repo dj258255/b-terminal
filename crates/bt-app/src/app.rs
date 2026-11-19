@@ -855,6 +855,8 @@ struct Win {
     scrollbar_press: Option<ScrollbarPress>,
     /// 칸 끌기 손잡이를 누르고 끄는 중(`drag-handle`). 끄는 동안 마우스는 프로그램에 보고하지 않고 글도 고르지 않는다
     pane_drag: crate::pane_drag::PaneDrag,
+    /// 분할 경계선을 끄는 중과 지난 누름(두 번 누르면 칸 크기를 고르게). 끄는 동안 마우스는 프로그램에 보고하지 않고 글도 고르지 않는다
+    divider: crate::divider_drag::DividerState,
     /// 마우스가 위쪽 띠 안에 있는 칸과 마우스가 손잡이 위인지(`drag-handle`)
     handle_hover: Option<(u64, bool)>,
     selecting: bool,
@@ -952,6 +954,7 @@ impl Win {
             gutter_hot: None,
             scrollbar_press: None,
             pane_drag: crate::pane_drag::PaneDrag::default(),
+            divider: crate::divider_drag::DividerState::default(),
             handle_hover: None,
             selecting: false,
             last_click: None,
@@ -3559,6 +3562,94 @@ impl App {
         crate::pane_drag::drop_at(&self.group_layout(self.w.active), from, pos.x, pos.y)
     }
 
+    /// 경계선 맞히는 띠가 경계선 밖으로 나가는 폭(픽셀). Ghostty는 선 1pt에 보이지 않는 6pt를 더해 가운데에 둔다(양쪽 3pt)
+    fn divider_reach_px(&self) -> u32 {
+        (3.0 * self.scale).round() as u32
+    }
+
+    /// 마우스가 올라간 분할 경계선. 크게 보는 중이면 경계선이 없다
+    fn divider_under_cursor(&self) -> Option<crate::split::DividerInfo> {
+        let g = self.w.tabs.get(self.w.active).filter(|g| !g.zoomed)?;
+        let infos = g.layout.divider_infos(self.content_rect(), self.divider_px());
+        let pos = self.w.cursor_pos;
+        crate::split::hit_divider(&infos, pos.x, pos.y, self.divider_reach_px()).cloned()
+    }
+
+    /// 포인터 모양에 알릴 경계선 상태: 끄는 중이면 그 경계선의 방향, 아니면 마우스가 올라간 경계선의 방향
+    fn divider_cursor(&self) -> crate::pointer::DividerCursor {
+        use crate::pointer::DividerCursor;
+        let axis = match self.w.divider.drag() {
+            Some(d) => Some(d.axis),
+            None if self.w.pane_drag.is_active() => None,
+            None => self.divider_under_cursor().map(|d| d.axis),
+        };
+        match axis {
+            Some(crate::split::Axis::Horizontal) => DividerCursor::Col,
+            Some(crate::split::Axis::Vertical) => DividerCursor::Row,
+            None => DividerCursor::None,
+        }
+    }
+
+    /// 경계선을 눌렀다: 끌기를 시작하고, 두 번째 누름이면 칸 크기를 고르게 한다(Ghostty `onEqualize`는 그 탭의 분할 트리 전체)
+    fn divider_press(&mut self, d: crate::split::DividerInfo) {
+        let interval = mouse::repeat_interval(self.config.click_repeat_interval, mouse::platform_repeat_interval());
+        let drag = crate::divider_drag::Drag {
+            group: self.w.active,
+            path: d.path,
+            axis: d.axis,
+        };
+        if self.w.divider.press(drag, Instant::now(), interval) {
+            if let Some(g) = self.w.tabs.get_mut(self.w.active) {
+                g.layout.equalize();
+            }
+            self.resize_all();
+        }
+        self.refresh_pointer();
+        self.request_redraw();
+    }
+
+    /// 경계선을 끄는 중 마우스가 움직였다: 그 경계선의 비율만 바꾸고 칸 크기를 맞춘다(키로 바꿀 때와 같은 `resize_all`).
+    /// 탭이 바뀌었거나 크게 보는 중이거나 트리가 바뀌어 경계선이 없으면 끌기를 멈춘다. 단추만 누르고 움직이지 않으면 바꾸지 않는다
+    fn divider_drag_to(&mut self, pos: PhysicalPosition<f64>) {
+        let Some(drag) = self.w.divider.drag().cloned() else {
+            return;
+        };
+        let area = self.content_rect();
+        let divider = self.divider_px();
+        let min_px = (10.0 * self.scale).round() as u32;
+        let changed = self
+            .w
+            .tabs
+            .get_mut(drag.group)
+            .filter(|g| drag.group == self.w.active && !g.zoomed)
+            .and_then(|g| {
+                let info = g
+                    .layout
+                    .divider_infos(area, divider)
+                    .into_iter()
+                    .find(|i| i.path == drag.path)?;
+                let ratio = crate::split::ratio_for_pointer(&info, divider, pos.x, pos.y, min_px)?;
+                g.layout.set_ratio_at(&drag.path, ratio).then_some(())
+            });
+        match changed {
+            Some(()) => self.resize_all(),
+            None => {
+                let alive = self.w.tabs.get(drag.group).is_some_and(|g| {
+                    drag.group == self.w.active
+                        && !g.zoomed
+                        && g.layout
+                            .divider_infos(area, divider)
+                            .iter()
+                            .any(|i| i.path == drag.path)
+                });
+                if !alive {
+                    self.w.divider.end();
+                    self.refresh_pointer();
+                }
+            }
+        }
+    }
+
     /// 끌기를 마쳤다. 옮기기면 트리를 바꾸고 PTY 크기를 맞추고 옮긴 칸을 고른다
     fn finish_pane_drag(&mut self, outcome: Option<crate::pane_drag::Outcome>) {
         if let Some(crate::pane_drag::Outcome::Move { from, to, dir }) = outcome {
@@ -3679,6 +3770,7 @@ impl App {
                     .is_some_and(|p| Self::mouse_mode_on(p.session.modes()))
             }),
             hidden: self.w.pointer_hidden,
+            divider: self.divider_cursor(),
             handle: if self.w.pane_drag.is_active() {
                 crate::pointer::HandleCursor::Dragging
             } else if self.handle_under_cursor().is_some() {
@@ -7222,6 +7314,11 @@ impl ApplicationHandler<UserEvent> for App {
                     }
                     return;
                 }
+                // 경계선을 끄는 중이면 비율만 따라간다(프로그램에 보고하지 않고 글도 고르지 않고 고른 칸도 바꾸지 않는다)
+                if self.w.divider.is_dragging() {
+                    self.divider_drag_to(position);
+                    return;
+                }
                 // 마우스가 올라간 칸을 고른다(focus-follows-mouse, #126). 고르는 중에는 바꾸지 않는다
                 if self.config.focus_follows_mouse && !self.w.selecting {
                     if let Some(id) = self.pane_at(position).filter(|id| Some(*id) != self.focused_id()) {
@@ -7259,6 +7356,14 @@ impl ApplicationHandler<UserEvent> for App {
                     }
                     return;
                 }
+                // 경계선을 끌던 중이면 왼쪽 단추를 놓을 때 끝낸다. 끄는 동안 다른 누름은 아무 데도 가지 않는다
+                if self.w.divider.is_dragging() {
+                    if button == MouseButton::Left && state == ElementState::Released {
+                        self.w.divider.end();
+                        self.refresh_pointer();
+                    }
+                    return;
+                }
                 // 막대를 누르던 중 왼쪽 단추를 놓으면 끝낸다. 놓은 뒤 평소처럼 사라지는 시간을 다시 센다
                 if let Some(press) = self.w.scrollbar_press {
                     if button == MouseButton::Left && state == ElementState::Released {
@@ -7285,6 +7390,13 @@ impl ApplicationHandler<UserEvent> for App {
                         }
                     }
                     return;
+                }
+                // 경계선을 누르면 끌기를 시작한다(두 번 누르면 칸 크기를 고르게). 프로그램(마우스 보고)·고르기에는 보내지 않는다
+                if state == ElementState::Pressed && button == MouseButton::Left {
+                    if let Some(d) = self.divider_under_cursor() {
+                        self.divider_press(d);
+                        return;
+                    }
                 }
                 // 칸 끌기 손잡이를 누르면 끌기를 시작한다. 프로그램(마우스 보고)·고르기에는 보내지 않는다
                 if state == ElementState::Pressed && button == MouseButton::Left {

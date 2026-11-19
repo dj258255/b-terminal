@@ -392,6 +392,55 @@ impl Node {
         }
     }
 
+    /// 경계선마다 정보(그리는 순서와 같다)
+    pub fn divider_infos(&self, rect: Rect, divider: u32) -> Vec<DividerInfo> {
+        let mut out = Vec::new();
+        self.collect_dividers(rect, divider, &mut Vec::new(), &mut out);
+        out
+    }
+
+    fn collect_dividers(&self, rect: Rect, divider: u32, path: &mut Vec<bool>, out: &mut Vec<DividerInfo>) {
+        if let Node::Split {
+            axis,
+            ratio,
+            first,
+            second,
+        } = self
+        {
+            let (a, line, b) = divide(rect, *axis, *ratio, divider);
+            out.push(DividerInfo {
+                path: path.clone(),
+                axis: *axis,
+                parent: rect,
+                line,
+            });
+            path.push(false);
+            first.collect_dividers(a, divider, path, out);
+            path.pop();
+            path.push(true);
+            second.collect_dividers(b, divider, path, out);
+            path.pop();
+        }
+    }
+
+    /// `path`가 가리키는 분할의 비율을 바꾼다. 길이 없으면(트리가 바뀜) `false`
+    pub fn set_ratio_at(&mut self, path: &[bool], new: f32) -> bool {
+        match (self, path.split_first()) {
+            (Node::Split { ratio, .. }, None) => {
+                *ratio = new;
+                true
+            }
+            (Node::Split { first, second, .. }, Some((&to_second, rest))) => {
+                if to_second {
+                    second.set_ratio_at(rest, new)
+                } else {
+                    first.set_ratio_at(rest, new)
+                }
+            }
+            _ => false,
+        }
+    }
+
     /// 같은 축으로 이어진 칸들이 같은 폭(높이)을 갖게 비율을 맞춘다(Ghostty의 equalize_splits)
     pub fn equalize(&mut self) {
         if let Node::Split {
@@ -417,6 +466,69 @@ impl Node {
             _ => 1,
         }
     }
+}
+
+/// 경계선 하나(마우스로 맞히고 끌 때 쓴다). `path`는 루트에서 그 분할까지 가는 길(앞 칸 쪽이 `false`, 뒤 칸 쪽이 `true`)이라
+/// 끄는 동안 트리가 그대로면 같은 노드를 다시 찾는다
+#[derive(Debug, Clone, PartialEq)]
+pub struct DividerInfo {
+    pub path: Vec<bool>,
+    pub axis: Axis,
+    /// 이 분할이 차지한 사각형(경계선 자리 포함)
+    pub parent: Rect,
+    /// 경계선 사각형(그리는 자리)
+    pub line: Rect,
+}
+
+/// 마우스가 경계선 띠 위인가. 띠는 경계선을 나눈 방향으로 양쪽 `reach` 픽셀 넓힌 것이다. 여러 개가 걸리면 가운데가 가장 가까운 것
+pub fn hit_divider(infos: &[DividerInfo], x: f64, y: f64, reach: u32) -> Option<&DividerInfo> {
+    let reach = reach as f64;
+    infos
+        .iter()
+        .filter_map(|d| {
+            let l = d.line;
+            // 나눈 방향의 폭만 넓힌다. 선의 길이 쪽은 그대로
+            let (inside, off) = match d.axis {
+                Axis::Horizontal => {
+                    let c = l.x as f64 + l.w as f64 / 2.0;
+                    (
+                        x >= l.x as f64 - reach
+                            && x < l.right() as f64 + reach
+                            && y >= l.y as f64
+                            && y < l.bottom() as f64,
+                        (x - c).abs(),
+                    )
+                }
+                Axis::Vertical => {
+                    let c = l.y as f64 + l.h as f64 / 2.0;
+                    (
+                        y >= l.y as f64 - reach
+                            && y < l.bottom() as f64 + reach
+                            && x >= l.x as f64
+                            && x < l.right() as f64,
+                        (y - c).abs(),
+                    )
+                }
+            };
+            inside.then_some((off, d))
+        })
+        .min_by(|a, b| a.0.total_cmp(&b.0))
+        .map(|(_, d)| d)
+}
+
+/// 마우스를 `x`·`y`로 끌 때 경계선 `info`의 새 비율. 양쪽 칸이 각각 `min_px`보다 작아지지 않게 자른다. 둘을 못 담으면 `None`
+pub fn ratio_for_pointer(info: &DividerInfo, divider: u32, x: f64, y: f64, min_px: u32) -> Option<f32> {
+    let (origin, span, pos) = match info.axis {
+        Axis::Horizontal => (info.parent.x, info.parent.w, x),
+        Axis::Vertical => (info.parent.y, info.parent.h, y),
+    };
+    let room = span.saturating_sub(divider);
+    if room < min_px.saturating_mul(2) || room == 0 {
+        return None;
+    }
+    // 앞 칸의 몫 = 마우스까지의 거리에서 경계선 두께의 절반을 뺀 것(Ghostty는 마우스 자리를 그대로 비율로 쓴다)
+    let front = (pos - origin as f64 - divider as f64 / 2.0).clamp(min_px as f64, (room - min_px) as f64);
+    Some((front / room as f64) as f32)
 }
 
 /// 칸을 끌어다 놓을 때 칸 안의 한 점이 가리키는 쪽. 가장 가까운 변이다(변까지의 거리를 칸 크기로 나눠 견준다: 대각선이 칸을 네 삼각형으로 나눈다).
@@ -458,6 +570,82 @@ mod tests {
         w: 801,
         h: 601,
     };
+
+    #[test]
+    fn divider_band_is_wider_than_the_line_and_picks_the_nearest() {
+        let mut t = Node::Leaf(1);
+        t.split(1, 2, Direction::Right);
+        let infos = t.divider_infos(WIN, 1);
+        assert_eq!(infos.len(), 1);
+        assert_eq!(infos[0].line, Rect::new(400, 0, 1, 601));
+        assert_eq!(infos[0].axis, Axis::Horizontal);
+        // 선 자리와 양쪽 3픽셀까지는 맞는다
+        assert!(hit_divider(&infos, 400.5, 10.0, 3).is_some());
+        assert!(hit_divider(&infos, 397.0, 10.0, 3).is_some());
+        assert!(hit_divider(&infos, 403.9, 10.0, 3).is_some());
+        assert!(hit_divider(&infos, 396.9, 10.0, 3).is_none());
+        assert!(hit_divider(&infos, 404.0, 10.0, 3).is_none());
+        // 선의 길이 밖은 아니다
+        assert!(hit_divider(&infos, 400.5, 602.0, 3).is_none());
+    }
+
+    #[test]
+    fn nested_dividers_are_found_by_path_and_the_closest_wins() {
+        // [1 | (2 / 3)]: 가운데 세로 경계선과 오른쪽 가로 경계선
+        let mut t = Node::Leaf(1);
+        t.split(1, 2, Direction::Right);
+        t.split(2, 3, Direction::Down);
+        let infos = t.divider_infos(WIN, 1);
+        assert_eq!(infos.len(), 2);
+        assert_eq!(infos[0].path, Vec::<bool>::new());
+        assert_eq!(infos[1].path, vec![true]);
+        assert_eq!(infos[1].axis, Axis::Vertical);
+        let h = infos[1].line;
+        // 가로 경계선의 한가운데에서 가까운 위쪽은 가로 경계선이 맞는다
+        let hit = hit_divider(&infos, 600.0, h.y as f64 + 0.5, 3).unwrap();
+        assert_eq!(hit.path, vec![true]);
+        // 세로 경계선과 가로 경계선의 이음매: 가운데가 더 가까운 쪽
+        let hit = hit_divider(&infos, 401.0, h.y as f64 + 2.0, 3).unwrap();
+        assert_eq!(hit.path, Vec::<bool>::new());
+    }
+
+    #[test]
+    fn dragging_sets_the_ratio_of_only_that_node_and_keeps_the_minimum() {
+        let mut t = Node::Leaf(1);
+        t.split(1, 2, Direction::Right);
+        t.split(2, 3, Direction::Down);
+        let infos = t.divider_infos(WIN, 1);
+        let outer = &infos[0];
+        // 800 중 200에 놓는다
+        let r = ratio_for_pointer(outer, 1, 200.5, 10.0, 10).unwrap();
+        assert!((r - 0.25).abs() < 0.01, "{r}");
+        // 끝으로 끌어도 각 칸 10픽셀은 남는다
+        let lo = ratio_for_pointer(outer, 1, -50.0, 10.0, 10).unwrap();
+        let hi = ratio_for_pointer(outer, 1, 5000.0, 10.0, 10).unwrap();
+        assert!((lo - 10.0 / 800.0).abs() < 1e-4, "{lo}");
+        assert!((hi - 790.0 / 800.0).abs() < 1e-4, "{hi}");
+        // 안쪽(가로) 경계선은 오른쪽 사각형 안의 세로 위치로 잰다
+        let inner = &infos[1];
+        let r = ratio_for_pointer(inner, 1, 600.0, 150.0, 10).unwrap();
+        assert!((r - 150.0 / 600.0).abs() < 0.01, "{r}");
+        // 두 칸이 최소를 못 담으면 바꾸지 않는다
+        let tiny = DividerInfo {
+            path: vec![],
+            axis: Axis::Horizontal,
+            parent: Rect::new(0, 0, 15, 10),
+            line: Rect::new(7, 0, 1, 10),
+        };
+        assert_eq!(ratio_for_pointer(&tiny, 1, 7.0, 5.0, 10), None);
+        // 길을 따라 그 노드의 비율만 바꾼다
+        let before = t.layout(WIN, 1);
+        assert!(t.set_ratio_at(&[true], 0.25));
+        let after = t.layout(WIN, 1);
+        assert_eq!(before[0], after[0]);
+        assert_ne!(before[1], after[1]);
+        assert!(!t.set_ratio_at(&[true, false], 0.5));
+        assert!(t.set_ratio_at(&[], 0.3));
+        assert!(!Node::Leaf(1).set_ratio_at(&[], 0.5));
+    }
 
     #[test]
     fn split_right_puts_new_pane_after_and_splits_width() {
