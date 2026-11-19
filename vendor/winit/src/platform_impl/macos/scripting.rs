@@ -86,6 +86,9 @@ pub const MAX_CONFIG_TEXT_BYTES: usize = 64 << 10;
 pub const MAX_CONFIG_INPUT_BYTES: usize = 1 << 20;
 /// How many environment variables a `surface configuration` may hold (checked before any of them is copied).
 pub const MAX_CONFIG_ENV_COUNT: usize = 256;
+/// A `name override` a script writes is refused above this many UTF-8 bytes (checked before the text is copied into a Rust
+/// string, #672). The app cuts a title to 200 characters (at most 800 bytes), so this only keeps a huge text from being copied.
+pub const MAX_TITLE_BYTES: usize = 4096;
 
 /// The four-character codes of the `split direction` and `input action` enumerations in the sdef (the same as Ghostty's).
 const fn fourcc(code: &[u8; 4]) -> u32 {
@@ -210,7 +213,13 @@ impl std::fmt::Debug for ScriptConfig {
 pub struct ScriptTerminal {
     pub id: String,
     pub title: String,
+    /// The title a person or a script put on the terminal (`name override`, #672); empty when there is none.
+    pub title_override: String,
     pub working_directory: Option<String>,
+    /// The foreground process group of the terminal; 0 when unknown (`pid`, #672).
+    pub pid: i32,
+    /// The PTY device path (`tty`, #672); empty when unknown.
+    pub tty: String,
 }
 
 /// One tab (a layout of panes).
@@ -218,6 +227,8 @@ pub struct ScriptTerminal {
 pub struct ScriptTab {
     pub id: String,
     pub title: String,
+    /// The title put on the tab (`name override`, #672); empty when there is none.
+    pub title_override: String,
     pub selected: bool,
     pub focused_terminal: Option<String>,
     pub terminals: Vec<ScriptTerminal>,
@@ -264,6 +275,10 @@ pub enum ScriptCommand {
     Close { terminal: String },
     CloseTab { tab: String },
     CloseWindow { window: String },
+    /// `set name override of tab` (#672): the text as the script wrote it (the app cleans it; empty clears the override).
+    SetTabTitleOverride { tab: String, title: String },
+    /// `set name override of terminal` (#672): as above, for the title a person put on the pane.
+    SetTerminalTitleOverride { terminal: String, title: String },
     /// `send mouse button` (#662): the button, whether it is a release, the comma-separated modifiers.
     SendMouseButton { terminal: String, button: ScriptMouseButton, release: bool, modifiers: Option<String> },
     /// `send mouse position` (#662): the position in points from the terminal's top left corner.
@@ -312,6 +327,17 @@ impl std::fmt::Debug for ScriptCommand {
             Self::Close { terminal } => f.debug_struct("Close").field("terminal", terminal).finish(),
             Self::CloseTab { tab } => f.debug_struct("CloseTab").field("tab", tab).finish(),
             Self::CloseWindow { window } => f.debug_struct("CloseWindow").field("window", window).finish(),
+            // a title may spell something private: only its size is shown
+            Self::SetTabTitleOverride { tab, title } => f
+                .debug_struct("SetTabTitleOverride")
+                .field("tab", tab)
+                .field("title_bytes", &title.len())
+                .finish(),
+            Self::SetTerminalTitleOverride { terminal, title } => f
+                .debug_struct("SetTerminalTitleOverride")
+                .field("terminal", terminal)
+                .field("title_bytes", &title.len())
+                .finish(),
             Self::SendMouseButton { terminal, button, release, modifiers } => f
                 .debug_struct("SendMouseButton")
                 .field("terminal", terminal)
@@ -643,6 +669,31 @@ fn terminal_specifier(id: &str) -> Option<Retained<NSScriptObjectSpecifier>> {
         // A terminal that has closed since: name it from the application so the reference still resolves (to
         // nothing) instead of failing to build.
         None => specifier(NSApplication::class(), None, "terminals", id),
+    }
+}
+
+/// The text a script wrote to `name override`, with its size checked before it is copied into a Rust string (#672).
+fn title_value(value: Option<&AnyObject>) -> Result<String, String> {
+    let Some(value) = value.filter(|v| kind_of::<NSString>(v)) else {
+        return Err("name override에는 텍스트가 필요합니다".into());
+    };
+    // SAFETY: the class was just checked.
+    let text: &NSString = unsafe { &*(value as *const AnyObject).cast::<NSString>() };
+    if utf8_len(text) > MAX_TITLE_BYTES {
+        return Err(format!("제목이 너무 깁니다(상한 {MAX_TITLE_BYTES} 바이트)"));
+    }
+    Ok(text.to_string())
+}
+
+/// What Cocoa's setter of `name override` does: checks the switch and the text, asks the app, and sets a script error when
+/// any of them fails (the setter itself returns nothing). The value is never logged.
+fn write_title(value: Option<&AnyObject>, command: impl FnOnce(String) -> ScriptCommand) {
+    if !gate() {
+        return;
+    }
+    let result = title_value(value).and_then(|title| run_command(command(title)).map(|_| ()));
+    if let Err(message) = result {
+        set_script_error(ERR_FAILED, &message);
     }
 }
 
@@ -987,6 +1038,19 @@ declare_class!(
             find_tab(&snapshot(), &self.ivars().0).map(|(_, t)| ns(&t.title))
         }
 
+        /// `name override of tab ...`: the title a person or script set (empty when none).
+        #[method_id(titleOverride)]
+        fn title_override(&self) -> Option<Retained<NSString>> {
+            find_tab(&snapshot(), &self.ivars().0).map(|(_, t)| ns(&t.title_override))
+        }
+
+        /// `set name override of tab ... to "..."` (an empty text clears it).
+        #[method(setTitleOverride:)]
+        fn set_title_override(&self, value: Option<&AnyObject>) {
+            let tab = self.ivars().0.clone();
+            write_title(value, |title| ScriptCommand::SetTabTitleOverride { tab, title });
+        }
+
         /// 1-based position in the window.
         #[method(index)]
         fn index(&self) -> NSInteger {
@@ -1075,9 +1139,32 @@ declare_class!(
             find_terminal(&snapshot(), &self.ivars().0).map(|(_, x)| ns(&x.title))
         }
 
+        #[method_id(titleOverride)]
+        fn title_override(&self) -> Option<Retained<NSString>> {
+            find_terminal(&snapshot(), &self.ivars().0).map(|(_, x)| ns(&x.title_override))
+        }
+
+        /// `set name override of terminal ... to "..."` (an empty text clears it).
+        #[method(setTitleOverride:)]
+        fn set_title_override(&self, value: Option<&AnyObject>) {
+            let terminal = self.ivars().0.clone();
+            write_title(value, |title| ScriptCommand::SetTerminalTitleOverride { terminal, title });
+        }
+
         #[method_id(workingDirectory)]
         fn working_directory(&self) -> Option<Retained<NSString>> {
             terminal_working_directory(&self.ivars().0)
+        }
+
+        /// The foreground process of the terminal (0 when unknown, as Ghostty).
+        #[method(pid)]
+        fn pid(&self) -> NSInteger {
+            find_terminal(&snapshot(), &self.ivars().0).map_or(0, |(_, x)| x.pid as NSInteger)
+        }
+
+        #[method_id(tty)]
+        fn tty(&self) -> Option<Retained<NSString>> {
+            find_terminal(&snapshot(), &self.ivars().0).map(|(_, x)| ns(&x.tty))
         }
 
         #[method_id(objectSpecifier)]

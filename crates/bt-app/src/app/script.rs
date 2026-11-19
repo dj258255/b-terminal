@@ -31,13 +31,17 @@ use winit::platform::macos::{
 
 use crate::script_config::{self, RawConfig, SpawnOverrides, SurfaceConfig};
 
-use super::{App, UserEvent};
+use super::{App, UserEvent, clean_user_title};
 
 /// 한 번에 넣을 글의 상한(바이트). 제어 소켓 요청 한 줄의 상한(1MiB)과 같다
 const MAX_TEXT: usize = 1 << 20;
 
 /// `send key`의 키 이름·수식 키 글의 상한(바이트). 가장 긴 키 이름은 20바이트다
 const MAX_KEY: usize = 256;
+
+/// `name override`로 쓰는 제목 글의 상한(바이트). 제목은 `clean_user_title`이 200자로 자르므로(최대 800바이트) 넉넉하다.
+/// vendor가 복사 전에 같은 값으로 먼저 본다(시험이 두 값이 같음을 지킨다)
+const MAX_TITLE: usize = 4096;
 
 /// `perform action`의 동작 글의 상한(바이트). 가장 긴 보통 동작(`text:`로 몇 줄)도 이보다 짧다. 더 긴 글은 `input text`로 넣는다
 const MAX_ACTION: usize = 4096;
@@ -46,12 +50,20 @@ const MAX_ACTION: usize = 4096;
 pub struct PaneView {
     pub id: u64,
     pub title: String,
+    /// 사람이나 스크립트가 붙인 제목(`Pane::user_title`). 없으면 빈 글
+    pub title_override: String,
+    /// 전경 프로세스 그룹의 pid. 모르면 0
+    pub pid: i32,
+    /// PTY 장치 경로. 모르면 빈 글
+    pub tty: String,
     pub cwd: Option<String>,
 }
 
 /// 스냅숏을 만들 재료: 탭(칸은 왼쪽·위부터). `title`은 덮어쓴 제목이나 초점 칸 제목
 pub struct TabView {
     pub title: String,
+    /// 탭에 덮어쓴 제목(`Action::SetTabTitle`과 같은 상태). 없으면 빈 글
+    pub title_override: String,
     pub focus: u64,
     pub panes: Vec<PaneView>,
 }
@@ -90,6 +102,7 @@ pub fn build_snapshot(windows: &[WinView], front: Option<u64>) -> ScriptSnapshot
                     Some(ScriptTab {
                         id: first.id.to_string(),
                         title: t.title.clone(),
+                        title_override: t.title_override.clone(),
                         selected: i == w.active,
                         focused_terminal: Some(t.focus.to_string()),
                         terminals: t
@@ -98,7 +111,10 @@ pub fn build_snapshot(windows: &[WinView], front: Option<u64>) -> ScriptSnapshot
                             .map(|p| ScriptTerminal {
                                 id: p.id.to_string(),
                                 title: p.title.clone(),
+                                title_override: p.title_override.clone(),
                                 working_directory: p.cwd.clone(),
+                                pid: p.pid,
+                                tty: p.tty.clone(),
                             })
                             .collect(),
                     })
@@ -161,6 +177,12 @@ pub fn admit(enabled: bool, cmd: ScriptCommand) -> Result<ScriptCommand, String>
             if !x.is_finite() || !y.is_finite() =>
         {
             return Err("좌표와 스크롤 값은 유한한 수여야 합니다".into());
+        }
+        // 스크립트가 쓰는 제목도 믿지 않는 글이다: 크기는 읽기 전에 건다(내용은 `clean_user_title`이 거른다)
+        ScriptCommand::SetTabTitleOverride { title, .. } | ScriptCommand::SetTerminalTitleOverride { title, .. }
+            if title.len() > MAX_TITLE =>
+        {
+            return Err(format!("제목이 너무 깁니다({} 바이트, 상한 {MAX_TITLE})", title.len()));
         }
         ScriptCommand::PerformAction { action, .. } if action.len() > MAX_ACTION => {
             return Err(format!(
@@ -307,6 +329,13 @@ impl App {
                             .map(|p| PaneView {
                                 id: p.id,
                                 title: p.display_title(),
+                                title_override: p.user_title.clone().unwrap_or_default(),
+                                pid: p.session.foreground_pid().unwrap_or(0),
+                                tty: p
+                                    .session
+                                    .tty_name()
+                                    .map(|t| t.to_string_lossy().into_owned())
+                                    .unwrap_or_default(),
                                 cwd: p.cwd.as_ref().map(|c| c.to_string_lossy().into_owned()),
                             })
                             .collect();
@@ -319,6 +348,7 @@ impl App {
                         });
                         TabView {
                             title,
+                            title_override: g.title.clone().unwrap_or_default(),
                             focus: g.focus,
                             panes,
                         }
@@ -622,6 +652,26 @@ impl App {
                 self.switch_to_pane(pane);
                 drop(self.redo.clear());
                 self.close_current_window(event_loop);
+                Ok(None)
+            }
+            // 제목 덮어쓰기는 PTY에 아무것도 쓰지 않으므로 읽기 전용 칸도 막지 않는다. 사람이 `set_tab_title`·`set_surface_title`로 하는 것과 같은
+            // 상태(탭의 `title`, 칸의 `user_title`)를 같은 거르기(`clean_user_title`)로 쓴다. 빈 글은 지운다. 글은 로그에 남기지 않는다
+            ScriptCommand::SetTabTitleOverride { tab, title } => {
+                let first = parse_id(&tab)?;
+                let group = std::iter::once(&mut self.w)
+                    .chain(self.others.iter_mut())
+                    .flat_map(|w| w.tabs.iter_mut())
+                    .find(|g| g.layout.leaves().first() == Some(&first))
+                    .ok_or_else(|| format!("탭 {tab}이 없습니다"))?;
+                group.title = clean_user_title(&title);
+                self.request_redraw_all();
+                Ok(None)
+            }
+            ScriptCommand::SetTerminalTitleOverride { terminal, title } => {
+                let pane = parse_id(&terminal)?;
+                self.pane_index(pane)
+                    .ok_or_else(|| format!("터미널 {terminal}이 없습니다"))?;
+                self.set_user_title(pane, &title);
                 Ok(None)
             }
             ScriptCommand::InputText { terminal, text } => {
@@ -1056,10 +1106,110 @@ mod tests {
                 "{cls} 클래스가 {command}에 응답하지 않는다"
             );
         }
-        // 뺀 것: name override, pid, tty
-        for name in ["name=\"name override\"", "name=\"pid\"", "name=\"tty\""] {
-            assert!(!SDEF.contains(name), "{name}");
+    }
+
+    /// `name override`·`pid`·`tty`는 Ghostty 1.4.0의 사전과 같은 이름·코드·형·접근(#672)
+    #[test]
+    fn name_override_pid_tty_match_the_ghostty_dictionary() {
+        let class = |name: &str| -> &str {
+            let start = SDEF.find(&format!("<class name=\"{name}\"")).expect(name);
+            let len = SDEF[start..].find("</class>").expect(name);
+            &SDEF[start..start + len]
+        };
+        for cls in ["tab", "terminal"] {
+            let c = class(cls);
+            let at = c
+                .find("<property name=\"name override\" code=\"GTno\" type=\"text\" access=\"rw\"")
+                .unwrap_or_else(|| panic!("{cls}의 name override"));
+            assert!(c[at..].contains("<cocoa key=\"titleOverride\"/>"), "{cls}");
         }
+        let t = class("terminal");
+        assert!(t.contains("<property name=\"pid\" code=\"Gpid\" type=\"integer\" access=\"r\""));
+        assert!(t.contains("<property name=\"tty\" code=\"Gtty\" type=\"text\" access=\"r\""));
+        // 창에는 없다
+        assert!(!class("window").contains("name override"));
+    }
+
+    /// 스크립트가 쓰는 제목은 크기를 읽기 전에 건다. vendor와 앱의 상한이 같고, 상한 안의 글은 지나간다(#672)
+    #[test]
+    fn title_override_is_capped_before_it_is_used() {
+        use winit::platform::macos::ScriptCommand as C;
+        assert_eq!(winit::platform::macos::SCRIPT_TITLE_MAX_BYTES, MAX_TITLE);
+        let tab = |t: String| C::SetTabTitleOverride {
+            tab: "1".into(),
+            title: t,
+        };
+        let term = |t: String| C::SetTerminalTitleOverride {
+            terminal: "1".into(),
+            title: t,
+        };
+        for make in [tab, term] {
+            assert!(
+                admit(true, make("가".repeat(MAX_TITLE / 3 + 1))).is_err(),
+                "바이트로 센다"
+            );
+            assert!(admit(true, make("x".repeat(MAX_TITLE))).is_ok());
+            assert!(admit(false, make(String::new())).is_err(), "꺼져 있으면 빈 글도 거절");
+        }
+    }
+
+    /// 제목을 로그에 찍어도 글은 나오지 않는다(길이만)
+    #[test]
+    fn command_debug_hides_title_override() {
+        use winit::platform::macos::ScriptCommand as C;
+        let secret = "hunter2-비밀제목";
+        for cmd in [
+            C::SetTabTitleOverride {
+                tab: "3".into(),
+                title: secret.into(),
+            },
+            C::SetTerminalTitleOverride {
+                terminal: "3".into(),
+                title: secret.into(),
+            },
+        ] {
+            let shown = format!("{cmd:?}");
+            assert!(!shown.contains("hunter2") && !shown.contains("비밀제목"), "{shown}");
+            assert!(shown.contains("title_bytes"), "{shown}");
+        }
+    }
+
+    /// 스냅숏이 탭·칸의 덮어쓴 제목과 칸의 pid·tty를 그대로 싣는다(#672)
+    #[test]
+    fn snapshot_carries_overrides_pid_and_tty() {
+        let mut wins = two_windows();
+        wins[1].tabs[1].title_override = "빌드 서버".into();
+        wins[1].tabs[1].panes[1].title_override = "로그".into();
+        wins[1].tabs[1].panes[1].pid = 4242;
+        wins[1].tabs[1].panes[1].tty = "/dev/ttys016".into();
+        let s = build_snapshot(&wins, Some(11));
+        let tab = &s.windows[0].tabs[1];
+        assert_eq!(tab.title_override, "빌드 서버");
+        let t = &tab.terminals[1];
+        assert_eq!(
+            (t.title_override.as_str(), t.pid, t.tty.as_str()),
+            ("로그", 4242, "/dev/ttys016")
+        );
+        // 덮어쓰지 않은 것은 빈 글, 모르는 pid는 0
+        assert_eq!(s.windows[0].tabs[0].title_override, "");
+        assert_eq!(
+            (
+                s.windows[0].tabs[0].terminals[0].pid,
+                s.windows[0].tabs[0].terminals[0].tty.as_str()
+            ),
+            (0, "")
+        );
+    }
+
+    /// 쓴 제목은 사람이 정하는 것과 같은 거르기를 지난다: 제어 문자를 지우고 200자로 자르며 빈 글은 지운다
+    #[test]
+    fn script_titles_are_cleaned_like_human_titles() {
+        assert_eq!(clean_user_title("빌드\x1b[31m 서버\n"), Some("빌드 [31m 서버".into()));
+        assert_eq!(
+            clean_user_title(&"가".repeat(300)).map(|t| t.chars().count()),
+            Some(200)
+        );
+        assert_eq!(clean_user_title(""), None, "빈 글은 덮어쓴 제목을 지운다");
     }
 
     /// `surface configuration` 레코드와 명령 인자의 이름·네 글자 코드·cocoa key는 Ghostty 사전과 같다(#666, 스크립트가 그대로 돌게)
@@ -1283,6 +1433,9 @@ mod tests {
         PaneView {
             id,
             title: title.into(),
+            title_override: String::new(),
+            pid: 0,
+            tty: String::new(),
             cwd: Some(format!("/work/{id}")),
         }
     }
@@ -1296,6 +1449,7 @@ mod tests {
                 active: 0,
                 tabs: vec![TabView {
                     title: "b".into(),
+                    title_override: String::new(),
                     focus: 5,
                     panes: vec![pane(5, "sh")],
                 }],
@@ -1307,11 +1461,13 @@ mod tests {
                 tabs: vec![
                     TabView {
                         title: "a".into(),
+                        title_override: String::new(),
                         focus: 1,
                         panes: vec![pane(1, "vim")],
                     },
                     TabView {
                         title: "split".into(),
+                        title_override: String::new(),
                         focus: 4,
                         panes: vec![pane(3, "top"), pane(4, "zsh")],
                     },
@@ -1503,6 +1659,14 @@ mod tests {
             C::Close { terminal: "1".into() },
             C::CloseTab { tab: "1".into() },
             C::CloseWindow { window: "1".into() },
+            C::SetTabTitleOverride {
+                tab: "1".into(),
+                title: "빌드".into(),
+            },
+            C::SetTerminalTitleOverride {
+                terminal: "1".into(),
+                title: String::new(),
+            },
             C::SendMouseButton {
                 terminal: "1".into(),
                 button: winit::platform::macos::ScriptMouseButton::Left,

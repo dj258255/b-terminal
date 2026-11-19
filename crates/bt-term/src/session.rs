@@ -1195,6 +1195,11 @@ impl Session {
         self.master.lock().process_group_leader()
     }
 
+    /// PTY 장치 경로(예: `/dev/ttys016`). 모르면 `None`(AppleScript `tty`, #672)
+    pub fn tty_name(&self) -> Option<PathBuf> {
+        self.master.lock().tty_name()
+    }
+
     /// 암호를 치는 중인가(#258). PTY의 termios가 줄 단위 입력(`ICANON`)이고 되울림(`ECHO`)이 꺼졌으면 그렇다고 본다
     /// (Ghostty termio/Exec.zig의 같은 추측). 읽지 못하면 `None`
     pub fn password_input(&self) -> Option<bool> {
