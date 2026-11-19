@@ -717,8 +717,8 @@ pub struct Config {
     pub clipboard_codepoint_map: Vec<CodepointRule>,
     /// 글자 묶음의 폭을 세는 방식(Ghostty `grapheme-width-method`, #180). 새로 연 칸부터 적용
     pub grapheme_width_method: GraphemeWidthMethod,
-    /// 남는 자리를 네 변에 고르게(Ghostty `window-padding-balance`, #136)
-    pub padding_balance: bool,
+    /// 남는 자리를 네 변에 고르게(Ghostty `window-padding-balance`, #136·#675)
+    pub padding_balance: PaddingBalance,
     /// 여백 색(Ghostty `window-padding-color`)
     pub padding_color: PaddingColor,
     /// 커서 불투명도(0~1, Ghostty `cursor-opacity`, #135)
@@ -1122,6 +1122,17 @@ pub enum BgPosition {
     BottomLeft,
     BottomCenter,
     BottomRight,
+}
+
+/// 남는 자리 나누기(Ghostty `window-padding-balance`, renderer/size.zig `PaddingBalance`)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PaddingBalance {
+    /// 나누지 않는다. 격자는 왼쪽 위 여백에 붙는다
+    False,
+    /// 네 변에 나누되 위 여백은 (왼쪽 + 오른쪽 여백 + 칸 너비) / 2까지로 묶고 넘는 것은 아래로 보낸다
+    True,
+    /// 네 변에 똑같이 나눈다(Ghostty 1.4)
+    Equal,
 }
 
 /// 여백 색(Ghostty `window-padding-color`)
@@ -1698,7 +1709,7 @@ impl Default for Config {
             clipboard_write_limit_bytes: Some(64 * 1024 * 1024),
             clipboard_codepoint_map: Vec::new(),
             grapheme_width_method: GraphemeWidthMethod::Unicode,
-            padding_balance: false,
+            padding_balance: PaddingBalance::False,
             padding_color: PaddingColor::Background,
             cursor_opacity: 1.0,
             cursor_color_cell: None,
@@ -3180,8 +3191,12 @@ impl Config {
                 self.macos_custom_icon =
                     (!v.is_empty()).then(|| expand_home(v, e.file.parent().unwrap_or(Path::new("."))));
             }
+            // Ghostty 1.4: 빈 값은 쌓인 것을 지우고 기본 항목으로 되돌리고, `clear`는 기본 항목까지 모두 지운다(#675)
             "command-palette-entry" => {
                 if v.is_empty() {
+                    self.palette_entries.clear();
+                    self.palette_defaults_cleared = false;
+                } else if v == "clear" {
                     self.palette_entries.clear();
                     self.palette_defaults_cleared = true;
                 } else {
@@ -3398,9 +3413,13 @@ impl Config {
                 Some(b) => self.cursor_click_to_move = b,
                 None => bad(warnings),
             },
-            "window-padding-balance" => match parse_bool(v) {
-                Some(b) => self.padding_balance = b,
-                None => bad(warnings),
+            "window-padding-balance" => match v {
+                "equal" => self.padding_balance = PaddingBalance::Equal,
+                _ => match parse_bool(v) {
+                    Some(true) => self.padding_balance = PaddingBalance::True,
+                    Some(false) => self.padding_balance = PaddingBalance::False,
+                    None => bad(warnings),
+                },
             },
             "window-padding-color" => match v {
                 "background" => self.padding_color = PaddingColor::Background,
@@ -3833,7 +3852,7 @@ impl Config {
             push("keybind", k.clone());
         }
         if self.palette_defaults_cleared {
-            push("command-palette-entry", String::new());
+            push("command-palette-entry", "clear".to_string());
         }
         for p in &self.palette_entries {
             push("command-palette-entry", render_palette_entry(p));
@@ -4112,7 +4131,19 @@ fn pick_theme_name(v: &str, dark: bool) -> String {
 
 /// 테마 이름이나 경로로 테마 파일을 읽는다
 fn load_theme(name: &str) -> Option<Vec<Entry>> {
-    let direct = PathBuf::from(name);
+    load_theme_in(name, &home())
+}
+
+/// 테마 값의 파일 경로 후보: `~/`로 시작하면 홈으로 푼다(Ghostty 1.4 `Theme.finalize`, #675). 그 밖은 그대로
+fn theme_path(name: &str, home: &Path) -> PathBuf {
+    match name.strip_prefix("~/") {
+        Some(rest) => home.join(rest),
+        None => PathBuf::from(name),
+    }
+}
+
+fn load_theme_in(name: &str, home: &Path) -> Option<Vec<Entry>> {
+    let direct = theme_path(name, home);
     let path = if direct.is_absolute() && direct.is_file() {
         Some(direct)
     } else {
@@ -5315,13 +5346,33 @@ mod tests {
     #[test]
     fn padding_keys_like_ghostty() {
         let d = Config::default();
-        assert_eq!((d.padding_balance, d.padding_color), (false, PaddingColor::Background));
+        assert_eq!(
+            (d.padding_balance, d.padding_color),
+            (PaddingBalance::False, PaddingColor::Background)
+        );
         let c = Config::from_text(
             "window-padding-balance = true\nwindow-padding-color = extend-always\n",
             true,
         );
         assert!(c.warnings.is_empty(), "{:?}", c.warnings);
-        assert_eq!((c.padding_balance, c.padding_color), (true, PaddingColor::ExtendAlways));
+        assert_eq!(
+            (c.padding_balance, c.padding_color),
+            (PaddingBalance::True, PaddingColor::ExtendAlways)
+        );
+        // Ghostty 1.4: `equal`은 위 여백을 묶지 않고 네 변에 똑같이 나눈다(#675)
+        let e = Config::from_text("window-padding-balance = equal\n", true);
+        assert!(e.warnings.is_empty(), "{:?}", e.warnings);
+        assert_eq!(e.padding_balance, PaddingBalance::Equal);
+        assert_eq!(
+            Config::from_text("window-padding-balance = false\n", true).padding_balance,
+            PaddingBalance::False
+        );
+        assert_eq!(
+            Config::from_text("window-padding-balance = Equal\n", true)
+                .warnings
+                .len(),
+            1
+        );
         assert_eq!(
             Config::from_text("window-padding-color = red\n", true).warnings.len(),
             1
@@ -6551,17 +6602,47 @@ mod tests {
             c.render()
                 .contains("command-palette-entry = title:\"A\",action:\"new_tab\",description:\"\"")
         );
-        // 빈 값: 기본 항목과 그 앞에 쌓인 것을 지운다. 뒤에 쓴 것은 남는다
+        // `clear`(Ghostty 1.4): 기본 항목과 그 앞에 쌓인 것을 지운다. 뒤에 쓴 것은 남는다(#675)
         let c = Config::from_text(
-            "command-palette-entry = title:A,action:new_tab\ncommand-palette-entry =\ncommand-palette-entry = title:B,action:quit\n",
+            "command-palette-entry = title:A,action:new_tab\ncommand-palette-entry = clear\ncommand-palette-entry = title:B,action:quit\n",
             false,
         );
+        assert!(c.warnings.is_empty(), "{:?}", c.warnings);
         assert!(c.palette_defaults_cleared);
         assert_eq!(c.palette_entries.len(), 1);
         assert_eq!(c.palette_entries[0].title, "B");
         let again = Config::from_text(&c.render(), false);
         assert_eq!(again.palette_entries, c.palette_entries);
         assert!(again.palette_defaults_cleared);
+        // 빈 값(Ghostty 1.4): 쌓인 것을 지우고 기본 항목으로 되돌린다. 앞의 `clear`도 되돌린다
+        let c = Config::from_text(
+            "command-palette-entry = clear\ncommand-palette-entry = title:A,action:new_tab\ncommand-palette-entry =\ncommand-palette-entry = title:B,action:quit\n",
+            false,
+        );
+        assert!(!c.palette_defaults_cleared);
+        assert_eq!(c.palette_entries.len(), 1);
+        assert_eq!(c.palette_entries[0].title, "B");
+    }
+
+    #[test]
+    fn theme_path_expands_home_like_ghostty() {
+        // Ghostty 1.4(#13840): `~/`는 홈으로 푼다. 이름 테마와 상대 경로는 그대로
+        let home = Path::new("/home/u");
+        assert_eq!(theme_path("~/t/mine", home), PathBuf::from("/home/u/t/mine"));
+        assert_eq!(theme_path("/abs/mine", home), PathBuf::from("/abs/mine"));
+        assert_eq!(theme_path("Dracula", home), PathBuf::from("Dracula"));
+        assert_eq!(theme_path("~user/x", home), PathBuf::from("~user/x"), "~/만 푼다");
+    }
+
+    #[test]
+    fn theme_with_home_path_loads_the_file() {
+        let dir = std::env::temp_dir().join(format!("bt-theme-home-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("mine"), "background = #102030\n").unwrap();
+        let entries = load_theme_in("~/mine", &dir).expect("~/ 경로 테마를 읽는다");
+        assert!(entries.iter().any(|e| e.key == "background" && e.value == "#102030"));
+        assert!(load_theme_in("~/없음", &dir).is_none());
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     /// #96: font-feature(Ghostty 문법). 쌓이고, 같은 태그는 나중 값, 빈 값은 지움, 쉼표로 여럿
