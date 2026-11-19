@@ -680,9 +680,17 @@ pub fn set_metal_layer_srgb(window: &crate::window::Window) -> bool {
 }
 
 pub use crate::platform_impl::scripting::{
-    input_action_is_release as script_input_action_is_release, ScriptCommand, ScriptMomentum, ScriptMouseButton,
+    input_action_is_release as script_input_action_is_release, ScriptCommand, ScriptConfig, ScriptMomentum, ScriptMouseButton,
     ScriptRefresh, ScriptReply, ScriptSnapshot, ScriptSplit, ScriptTab, ScriptTarget, ScriptTerminal, ScriptTicket, ScriptWindow,
 };
+
+/// The size limits of a `surface configuration` record the scripting layer checks before copying a value (#666): the most
+/// bytes of a text value (`command`, folder, one environment variable), of `initial input`, and the most environment variables.
+pub const SCRIPT_CONFIG_LIMITS: (usize, usize, usize) = (
+    crate::platform_impl::scripting::MAX_CONFIG_TEXT_BYTES,
+    crate::platform_impl::scripting::MAX_CONFIG_INPUT_BYTES,
+    crate::platform_impl::scripting::MAX_CONFIG_ENV_COUNT,
+);
 
 /// The selectors of the scripting object classes (window, tab, terminal) that `NSObject` already implements. Empty when
 /// the names are chosen well (a name `NSObject` has would be overridden for every object). b-terminal(#650)

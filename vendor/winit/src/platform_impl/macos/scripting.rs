@@ -31,6 +31,15 @@
 //!   Ghostty). The mouse button is the direct parameter (an enumerator); positions and scroll deltas are `real` arguments.
 //!   This module only parses the Apple Event. Where the point lands, what it does and what the mouse state is belong to the app.
 //!
+//! - `new surface configuration` and the `with configuration` argument of `new window`, `new tab` and `split` (#666) carry the
+//!   `surface configuration` record (`GScf`). `new surface configuration` is a command class
+//!   (`BTScriptNewSurfaceConfigurationCommand`), so no selector is added to `NSApplication` or `NSObject`; the other three read
+//!   the `configuration` argument in the handlers they already have. This module reads the record by the sdef's cocoa keys
+//!   (`fontSize`, `workingDirectory`, `command`, `initialInput`, `waitAfterCommand`, `environmentVariables`) into a
+//!   `ScriptConfig`, checking the kind and the size of every value before it is copied, and builds the answer record. What the values
+//!   mean (finite font size, `KEY=VALUE`, which folder is usable) and how they are applied is the app's. A bad record sets
+//!   `errAECoercionFail` before any command is queued. The values may be secrets, so `Debug` shows only lengths and counts.
+//!
 //! Nothing here is installed in a process without a bundle identifier (a plain `cargo run`): there is no sdef to read.
 //! When the app turns scripting off (`macos-applescript = false`), every command and every object lookup sets a
 //! script error on the current command.
@@ -46,8 +55,8 @@ use objc2::runtime::{AnyClass, AnyObject, Bool, Imp, Sel};
 use objc2::{declare_class, msg_send_id, mutability, sel, ClassType, DeclaredClass};
 use objc2_app_kit::NSApplication;
 use objc2_foundation::{
-    NSArray, NSBundle, NSDate, NSDefaultRunLoopMode, NSInteger, NSNumber, NSObject, NSRunLoop, NSScriptClassDescription,
-    NSScriptCommand, NSScriptObjectSpecifier, NSString, NSUniqueIDSpecifier,
+    NSArray, NSBundle, NSDate, NSDefaultRunLoopMode, NSDictionary, NSInteger, NSNumber, NSObject, NSRunLoop,
+    NSScriptClassDescription, NSScriptCommand, NSScriptObjectSpecifier, NSString, NSUniqueIDSpecifier,
 };
 
 /// `errAEEventNotPermitted`: scripting is switched off.
@@ -56,6 +65,8 @@ const ERR_NOT_PERMITTED: NSInteger = -1743;
 const ERR_FAILED: NSInteger = -10000;
 /// `errAEParamMissed`: a required parameter is missing or of the wrong kind.
 const ERR_PARAM: NSInteger = -1715;
+/// `errAECoercionFail`: a `surface configuration` record is wrong (Ghostty answers a bad record with this too).
+const ERR_COERCE: NSInteger = -1700;
 /// How long a command waits for the app to answer.
 const REPLY_TIMEOUT: Duration = Duration::from_secs(5);
 /// A snapshot younger than this is used as it is.
@@ -68,6 +79,13 @@ const MAX_TEXT_BYTES: usize = 1 << 20;
 const MAX_KEY_BYTES: usize = 256;
 /// `perform action` refuses an action string above this many UTF-8 bytes (checked before the text is copied into a Rust string).
 const MAX_ACTION_BYTES: usize = 4096;
+/// A `surface configuration` text value (`command`, `initial working directory`, one environment variable) is refused above
+/// this many UTF-8 bytes (checked before the text is copied into a Rust string, #666).
+pub const MAX_CONFIG_TEXT_BYTES: usize = 64 << 10;
+/// `initial input` of a `surface configuration` (the same as `input text`).
+pub const MAX_CONFIG_INPUT_BYTES: usize = 1 << 20;
+/// How many environment variables a `surface configuration` may hold (checked before any of them is copied).
+pub const MAX_CONFIG_ENV_COUNT: usize = 256;
 
 /// The four-character codes of the `split direction` and `input action` enumerations in the sdef (the same as Ghostty's).
 const fn fourcc(code: &[u8; 4]) -> u32 {
@@ -160,6 +178,33 @@ impl ScriptMomentum {
     }
 }
 
+/// The `surface configuration` record (`GScf`) as it was read from the script, before the app checks its meaning (#666).
+/// `None` is a key the record does not have. The values (a command, a folder, input text, environment variables) may hold
+/// secrets, so `Debug` shows only lengths and counts.
+#[derive(Clone, Default, PartialEq)]
+pub struct ScriptConfig {
+    pub font_size: Option<f64>,
+    pub working_directory: Option<String>,
+    pub command: Option<String>,
+    pub initial_input: Option<String>,
+    pub wait_after_command: Option<bool>,
+    /// `KEY=VALUE` items, in the order the script gave them.
+    pub environment: Option<Vec<String>>,
+}
+
+impl std::fmt::Debug for ScriptConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ScriptConfig")
+            .field("font_size", &self.font_size)
+            .field("working_directory_bytes", &self.working_directory.as_ref().map(|s| s.len()))
+            .field("command_bytes", &self.command.as_ref().map(|s| s.len()))
+            .field("initial_input_bytes", &self.initial_input.as_ref().map(|s| s.len()))
+            .field("wait_after_command", &self.wait_after_command)
+            .field("environment_count", &self.environment.as_ref().map(|e| e.len()))
+            .finish()
+    }
+}
+
 /// One terminal pane as the app reports it.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ScriptTerminal {
@@ -201,8 +246,12 @@ pub struct ScriptSnapshot {
 pub enum ScriptCommand {
     /// Asks the app to call `set_snapshot` with its current state and then answer `Ok(None)`.
     Snapshot,
-    NewWindow,
-    NewTab { window: Option<String> },
+    /// `new window [with configuration RECORD]` (#666).
+    NewWindow { config: Option<ScriptConfig> },
+    /// `new tab [in WINDOW] [with configuration RECORD]` (#666).
+    NewTab { window: Option<String>, config: Option<ScriptConfig> },
+    /// `new surface configuration [from RECORD]` (#666): the app checks the record and answers `ScriptTarget::Configuration`.
+    NewSurfaceConfiguration { from: Option<ScriptConfig> },
     Focus { terminal: String },
     ActivateWindow { window: String },
     SelectTab { tab: String },
@@ -211,7 +260,7 @@ pub enum ScriptCommand {
     SendKey { terminal: String, key: String, release: bool, modifiers: Option<String> },
     /// `perform action "..." on terminal` (#658): the action string, which the app reads as a keybind action.
     PerformAction { terminal: String, action: String },
-    Split { terminal: String, direction: ScriptSplit },
+    Split { terminal: String, direction: ScriptSplit, config: Option<ScriptConfig> },
     Close { terminal: String },
     CloseTab { tab: String },
     CloseWindow { window: String },
@@ -227,8 +276,13 @@ impl std::fmt::Debug for ScriptCommand {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Snapshot => f.write_str("Snapshot"),
-            Self::NewWindow => f.write_str("NewWindow"),
-            Self::NewTab { window } => f.debug_struct("NewTab").field("window", window).finish(),
+            Self::NewWindow { config } => f.debug_struct("NewWindow").field("config", config).finish(),
+            Self::NewTab { window, config } => {
+                f.debug_struct("NewTab").field("window", window).field("config", config).finish()
+            }
+            Self::NewSurfaceConfiguration { from } => {
+                f.debug_struct("NewSurfaceConfiguration").field("from", from).finish()
+            }
             Self::Focus { terminal } => f.debug_struct("Focus").field("terminal", terminal).finish(),
             Self::ActivateWindow { window } => f.debug_struct("ActivateWindow").field("window", window).finish(),
             Self::SelectTab { tab } => f.debug_struct("SelectTab").field("tab", tab).finish(),
@@ -249,9 +303,12 @@ impl std::fmt::Debug for ScriptCommand {
                 .field("terminal", terminal)
                 .field("action_bytes", &action.len())
                 .finish(),
-            Self::Split { terminal, direction } => {
-                f.debug_struct("Split").field("terminal", terminal).field("direction", direction).finish()
-            }
+            Self::Split { terminal, direction, config } => f
+                .debug_struct("Split")
+                .field("terminal", terminal)
+                .field("direction", direction)
+                .field("config", config)
+                .finish(),
             Self::Close { terminal } => f.debug_struct("Close").field("terminal", terminal).finish(),
             Self::CloseTab { tab } => f.debug_struct("CloseTab").field("tab", tab).finish(),
             Self::CloseWindow { window } => f.debug_struct("CloseWindow").field("window", window).finish(),
@@ -282,11 +339,13 @@ impl std::fmt::Debug for ScriptCommand {
 }
 
 /// What a command returns to the script: the object it created, if any.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum ScriptTarget {
     Window(String),
     Tab(String),
     Terminal(String),
+    /// The result of `new surface configuration`: a record with every key set (a missing key reads as its default).
+    Configuration(ScriptConfig),
     /// The result of `perform action`: whether the action was performed.
     Performed(bool),
 }
@@ -491,6 +550,7 @@ fn perform(cmd: ScriptCommand) -> *mut AnyObject {
         Ok(Some(ScriptTarget::Tab(id))) => Retained::autorelease_return(ScriptTabObj::new(&id)).cast(),
         Ok(Some(ScriptTarget::Terminal(id))) => Retained::autorelease_return(ScriptTerminalObj::new(&id)).cast(),
         Ok(Some(ScriptTarget::Performed(done))) => Retained::autorelease_return(NSNumber::numberWithBool(done)).cast(),
+        Ok(Some(ScriptTarget::Configuration(config))) => Retained::autorelease_return(config_dictionary(&config)).cast(),
         Err(message) => {
             set_script_error(ERR_FAILED, &message);
             std::ptr::null_mut()
@@ -643,6 +703,143 @@ fn argument_string(command: &NSScriptCommand, key: &str) -> Option<Retained<NSSt
     // SAFETY: as `argument_u32`.
     let value = unsafe { command.evaluatedArguments() }.and_then(|d| unsafe { d.objectForKey(&ns(key)) })?;
     downcast::<NSString>(value)
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// `surface configuration` records (#666)
+
+/// The value of `key` in a record, if it has one.
+fn record_value(record: &NSDictionary<NSString, AnyObject>, key: &str) -> Option<Retained<AnyObject>> {
+    // SAFETY: a read on a live dictionary with a string key.
+    unsafe { record.objectForKey(&ns(key)) }
+}
+
+/// A text value of a record: `Ok(None)` when the key is absent, an error for another kind or a text above `limit`
+/// (the size is read from the `NSString` before it is copied into a Rust string).
+fn record_text(
+    record: &NSDictionary<NSString, AnyObject>,
+    key: &str,
+    label: &str,
+    limit: usize,
+) -> Result<Option<String>, String> {
+    let Some(value) = record_value(record, key) else {
+        return Ok(None);
+    };
+    let Some(text) = downcast::<NSString>(value) else {
+        return Err(format!("{label}은 텍스트여야 합니다"));
+    };
+    if utf8_len(&text) > limit {
+        return Err(format!("{label}이 너무 깁니다(상한 {limit} 바이트)"));
+    }
+    Ok(Some(text.to_string()))
+}
+
+/// The environment variables of a record: a list of text (one text alone counts as a list of one). The count and every
+/// item's size are checked before anything is copied.
+fn record_environment(record: &NSDictionary<NSString, AnyObject>) -> Result<Option<Vec<String>>, String> {
+    let label = "environment variables";
+    let Some(value) = record_value(record, "environmentVariables") else {
+        return Ok(None);
+    };
+    let one = |text: Retained<NSString>| -> Result<String, String> {
+        if utf8_len(&text) > MAX_CONFIG_TEXT_BYTES {
+            return Err(format!("{label}의 한 항목이 너무 깁니다(상한 {MAX_CONFIG_TEXT_BYTES} 바이트)"));
+        }
+        Ok(text.to_string())
+    };
+    if kind_of::<NSString>(&value) {
+        // SAFETY: the class was just checked.
+        return one(unsafe { Retained::cast::<NSString>(value) }).map(|s| Some(vec![s]));
+    }
+    let Some(list) = downcast::<NSArray<AnyObject>>(value) else {
+        return Err(format!("{label}는 텍스트 목록이어야 합니다"));
+    };
+    let count = list.len();
+    if count > MAX_CONFIG_ENV_COUNT {
+        return Err(format!("{label}가 너무 많습니다({count}개, 상한 {MAX_CONFIG_ENV_COUNT})"));
+    }
+    let mut items = Vec::with_capacity(count);
+    for i in 0..count {
+        // SAFETY: `i` is below the array's count; the item is checked for its class.
+        let item: Option<Retained<AnyObject>> = unsafe { msg_send_id![&*list, objectAtIndex: i] };
+        let Some(text) = item.and_then(downcast::<NSString>) else {
+            return Err(format!("{label}는 텍스트 목록이어야 합니다"));
+        };
+        items.push(one(text)?);
+    }
+    Ok(Some(items))
+}
+
+/// Reads a `surface configuration` record (Ghostty reads it by the cocoa keys of the sdef). Unknown keys are ignored. A value of
+/// the wrong kind or above a size limit is an error. What the values mean (finite, negative, `KEY=VALUE`) is the app's check.
+fn config_from_record(record: &NSDictionary<NSString, AnyObject>) -> Result<ScriptConfig, String> {
+    let mut config = ScriptConfig::default();
+    if let Some(value) = record_value(record, "fontSize") {
+        if !kind_of::<NSNumber>(&value) {
+            return Err("font size는 숫자여야 합니다".into());
+        }
+        // SAFETY: `value` is an `NSNumber`.
+        config.font_size = Some(unsafe { objc2::msg_send![&*value, doubleValue] });
+    }
+    config.working_directory =
+        record_text(record, "workingDirectory", "initial working directory", MAX_CONFIG_TEXT_BYTES)?;
+    config.command = record_text(record, "command", "command", MAX_CONFIG_TEXT_BYTES)?;
+    config.initial_input = record_text(record, "initialInput", "initial input", MAX_CONFIG_INPUT_BYTES)?;
+    if let Some(value) = record_value(record, "waitAfterCommand") {
+        if !kind_of::<NSNumber>(&value) {
+            return Err("wait after command는 true나 false여야 합니다".into());
+        }
+        // SAFETY: `value` is an `NSNumber`.
+        let yes: Bool = unsafe { objc2::msg_send![&*value, boolValue] };
+        config.wait_after_command = Some(yes.as_bool());
+    }
+    config.environment = record_environment(record)?;
+    Ok(config)
+}
+
+/// The record argument `configuration` of a command (`with configuration` or `from`): `Ok(None)` when the script gave none.
+fn configuration_argument(command: &NSScriptCommand) -> Result<Option<ScriptConfig>, String> {
+    // SAFETY: a property read on the live command; the value is checked for its class.
+    let Some(value) = unsafe { command.evaluatedArguments() }.and_then(|d| unsafe { d.objectForKey(&ns("configuration")) })
+    else {
+        return Ok(None);
+    };
+    let Some(record) = downcast::<NSDictionary<NSString, AnyObject>>(value) else {
+        return Err("configuration에는 surface configuration 레코드가 필요합니다".into());
+    };
+    config_from_record(&record).map(Some)
+}
+
+/// `configuration_argument`, with the script error set on failure (Ghostty answers a bad record with `errAECoercionFail`).
+/// `Err(())` means the command must stop: nothing is created.
+fn configuration_or_error(command: &NSScriptCommand) -> Result<Option<ScriptConfig>, ()> {
+    configuration_argument(command).map_err(|message| set_script_error(ERR_COERCE, &message))
+}
+
+/// The record a script gets back from `new surface configuration`: every key is set, a missing value reads as Ghostty's default.
+fn config_dictionary(config: &ScriptConfig) -> Retained<NSDictionary<NSString, NSObject>> {
+    let font = NSNumber::numberWithDouble(config.font_size.unwrap_or(0.0));
+    let wait = NSNumber::numberWithBool(config.wait_after_command.unwrap_or(false));
+    let env: Vec<Retained<NSString>> = config.environment.iter().flatten().map(|e| ns(e)).collect();
+    let text = |v: &Option<String>| ns(v.as_deref().unwrap_or(""));
+    let keys = [
+        ns("fontSize"),
+        ns("workingDirectory"),
+        ns("command"),
+        ns("initialInput"),
+        ns("waitAfterCommand"),
+        ns("environmentVariables"),
+    ];
+    let values: Vec<Retained<NSObject>> = vec![
+        Retained::into_super(Retained::into_super(font)),
+        Retained::into_super(text(&config.working_directory)),
+        Retained::into_super(text(&config.command)),
+        Retained::into_super(text(&config.initial_input)),
+        Retained::into_super(Retained::into_super(wait)),
+        Retained::into_super(NSArray::from_vec(env)),
+    ];
+    let key_refs: Vec<&NSString> = keys.iter().map(|k| &**k).collect();
+    NSDictionary::from_vec(&key_refs, values)
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -905,7 +1102,10 @@ declare_class!(
                 set_script_error(ERR_PARAM, "분할 방향(right, left, down, up)이 없거나 모르는 값입니다");
                 return std::ptr::null_mut();
             };
-            perform(ScriptCommand::Split { terminal: self.ivars().0.clone(), direction })
+            let Ok(config) = configuration_or_error(command) else {
+                return std::ptr::null_mut();
+            };
+            perform(ScriptCommand::Split { terminal: self.ivars().0.clone(), direction, config })
         }
 
         #[method(handleCloseCommand:)]
@@ -1042,6 +1242,32 @@ declare_class!(
             };
             // `perform` turns the app's `Performed` answer into an `NSNumber`; a failure sets the script error.
             perform(ScriptCommand::PerformAction { terminal, action: action.to_string() })
+        }
+    }
+);
+
+declare_class!(
+    /// `new surface configuration [from RECORD]` (#666): answers a record. The app checks the record's values.
+    struct ScriptNewSurfaceConfigurationCommand;
+
+    unsafe impl ClassType for ScriptNewSurfaceConfigurationCommand {
+        type Super = NSScriptCommand;
+        type Mutability = mutability::InteriorMutable;
+        const NAME: &'static str = "BTScriptNewSurfaceConfigurationCommand";
+    }
+
+    impl DeclaredClass for ScriptNewSurfaceConfigurationCommand {}
+
+    unsafe impl ScriptNewSurfaceConfigurationCommand {
+        #[method(performDefaultImplementation)]
+        fn perform_default(&self) -> *mut AnyObject {
+            if !gate() {
+                return std::ptr::null_mut();
+            }
+            let Ok(from) = configuration_or_error(self) else {
+                return std::ptr::null_mut();
+            };
+            perform(ScriptCommand::NewSurfaceConfiguration { from })
         }
     }
 );
@@ -1229,11 +1455,14 @@ unsafe extern "C-unwind" fn app_version(_this: &AnyObject, _sel: Sel) -> *mut An
     Retained::autorelease_return(version).cast()
 }
 
-unsafe extern "C-unwind" fn app_new_window(_this: &AnyObject, _sel: Sel, _command: &NSScriptCommand) -> *mut AnyObject {
+unsafe extern "C-unwind" fn app_new_window(_this: &AnyObject, _sel: Sel, command: &NSScriptCommand) -> *mut AnyObject {
     if !gate() {
         return std::ptr::null_mut();
     }
-    perform(ScriptCommand::NewWindow)
+    let Ok(config) = configuration_or_error(command) else {
+        return std::ptr::null_mut();
+    };
+    perform(ScriptCommand::NewWindow { config })
 }
 
 unsafe extern "C-unwind" fn app_new_tab(_this: &AnyObject, _sel: Sel, command: &NSScriptCommand) -> *mut AnyObject {
@@ -1241,7 +1470,10 @@ unsafe extern "C-unwind" fn app_new_tab(_this: &AnyObject, _sel: Sel, command: &
         return std::ptr::null_mut();
     }
     let window = argument_id::<ScriptWindowObj>(command, "window", |o| o.ivars().0.clone());
-    perform(ScriptCommand::NewTab { window })
+    let Ok(config) = configuration_or_error(command) else {
+        return std::ptr::null_mut();
+    };
+    perform(ScriptCommand::NewTab { window, config })
 }
 
 /// Selectors the scripting object classes (`BTScriptWindow`, `BTScriptTab`, `BTScriptTerminal`) answer for the sdef's
@@ -1316,6 +1548,7 @@ fn install() {
         ScriptInputTextCommand::class(),
         ScriptSendKeyCommand::class(),
         ScriptPerformActionCommand::class(),
+        ScriptNewSurfaceConfigurationCommand::class(),
         ScriptMouseButtonCommand::class(),
         ScriptMousePosCommand::class(),
         ScriptMouseScrollCommand::class(),
@@ -1335,4 +1568,128 @@ fn install() {
     add_method(app, sel!(version), getter(app_version), g);
     add_method(app, sel!(handleNewWindowScriptCommand:), handler(app_new_window), h);
     add_method(app, sel!(handleNewTabScriptCommand:), handler(app_new_tab), h);
+}
+
+#[cfg(test)]
+mod config_tests {
+    //! `surface configuration` record reading and writing against real Foundation objects (#666). The vendor crate is
+    //! outside the workspace, so run these with `cargo test --manifest-path vendor/winit/Cargo.toml --lib config_tests`.
+    use super::*;
+
+    fn record(entries: Vec<(&str, Retained<NSObject>)>) -> Retained<NSDictionary<NSString, AnyObject>> {
+        let keys: Vec<Retained<NSString>> = entries.iter().map(|(k, _)| ns(k)).collect();
+        let key_refs: Vec<&NSString> = keys.iter().map(|k| &**k).collect();
+        let values: Vec<Retained<NSObject>> = entries.into_iter().map(|(_, v)| v).collect();
+        let dict: Retained<NSDictionary<NSString, NSObject>> = NSDictionary::from_vec(&key_refs, values);
+        // SAFETY: the values are `NSObject`s, which is what `AnyObject` stands for here; only reads follow.
+        unsafe { Retained::cast::<NSDictionary<NSString, AnyObject>>(dict) }
+    }
+
+    fn text(s: &str) -> Retained<NSObject> {
+        Retained::into_super(ns(s))
+    }
+
+    fn number(n: f64) -> Retained<NSObject> {
+        Retained::into_super(Retained::into_super(NSNumber::numberWithDouble(n)))
+    }
+
+    fn boolean(b: bool) -> Retained<NSObject> {
+        Retained::into_super(Retained::into_super(NSNumber::numberWithBool(b)))
+    }
+
+    fn list(items: &[&str]) -> Retained<NSObject> {
+        Retained::into_super(NSArray::from_vec(items.iter().map(|s| ns(s)).collect()))
+    }
+
+    #[test]
+    fn a_full_record_is_read_by_the_cocoa_keys() {
+        let r = record(vec![
+            ("fontSize", number(14.5)),
+            ("workingDirectory", text("/tmp")),
+            ("command", text("echo hi")),
+            ("initialInput", text("ls\n")),
+            ("waitAfterCommand", boolean(true)),
+            ("environmentVariables", list(&["A=1", "B=two=2"])),
+            ("somethingElse", text("ignored")),
+        ]);
+        let c = config_from_record(&r).unwrap();
+        assert_eq!(c.font_size, Some(14.5));
+        assert_eq!(c.working_directory.as_deref(), Some("/tmp"));
+        assert_eq!(c.command.as_deref(), Some("echo hi"));
+        assert_eq!(c.initial_input.as_deref(), Some("ls\n"));
+        assert_eq!(c.wait_after_command, Some(true));
+        assert_eq!(c.environment, Some(vec!["A=1".to_string(), "B=two=2".to_string()]));
+        // A record with no keys reads as nothing chosen
+        assert_eq!(config_from_record(&record(vec![])).unwrap(), ScriptConfig::default());
+    }
+
+    #[test]
+    fn wrong_kinds_are_errors() {
+        let bad = |key: &str, value: Retained<NSObject>| config_from_record(&record(vec![(key, value)])).is_err();
+        assert!(bad("fontSize", text("12")));
+        assert!(bad("workingDirectory", number(1.0)));
+        assert!(bad("command", boolean(true)));
+        assert!(bad("initialInput", number(1.0)));
+        assert!(bad("waitAfterCommand", text("yes")));
+        assert!(bad("environmentVariables", number(1.0)));
+        // An item that is not text
+        let with_number: Retained<NSObject> =
+            Retained::into_super(NSArray::from_vec(vec![NSNumber::numberWithDouble(1.0)]));
+        assert!(bad("environmentVariables", with_number));
+    }
+
+    #[test]
+    fn sizes_are_checked_before_copying() {
+        let ok = |key: &str, n: usize| config_from_record(&record(vec![(key, text(&"x".repeat(n)))])).is_ok();
+        assert!(ok("command", MAX_CONFIG_TEXT_BYTES));
+        assert!(!ok("command", MAX_CONFIG_TEXT_BYTES + 1));
+        assert!(ok("workingDirectory", MAX_CONFIG_TEXT_BYTES));
+        assert!(!ok("workingDirectory", MAX_CONFIG_TEXT_BYTES + 1));
+        assert!(ok("initialInput", MAX_CONFIG_INPUT_BYTES));
+        assert!(!ok("initialInput", MAX_CONFIG_INPUT_BYTES + 1));
+        // The limit is on UTF-8 bytes: 3 bytes per Hangul syllable
+        let hangul = "가".repeat(MAX_CONFIG_TEXT_BYTES / 3 + 1);
+        assert!(config_from_record(&record(vec![("command", text(&hangul))])).is_err());
+        let many = |n: usize| {
+            let items: Vec<String> = (0..n).map(|i| format!("K{i}=v")).collect();
+            let refs: Vec<&str> = items.iter().map(|s| s.as_str()).collect();
+            config_from_record(&record(vec![("environmentVariables", list(&refs))]))
+        };
+        assert!(many(MAX_CONFIG_ENV_COUNT).is_ok());
+        assert!(many(MAX_CONFIG_ENV_COUNT + 1).is_err());
+        let long = format!("K={}", "x".repeat(MAX_CONFIG_TEXT_BYTES));
+        assert!(config_from_record(&record(vec![("environmentVariables", list(&[&long]))])).is_err());
+    }
+
+    #[test]
+    fn one_text_counts_as_a_list_of_one() {
+        let c = config_from_record(&record(vec![("environmentVariables", text("A=1"))])).unwrap();
+        assert_eq!(c.environment, Some(vec!["A=1".to_string()]));
+    }
+
+    #[test]
+    fn the_answer_record_has_every_key_and_reads_back() {
+        let d = config_dictionary(&ScriptConfig::default());
+        // SAFETY: only reads follow; every value is an `NSObject`.
+        let d = unsafe { Retained::cast::<NSDictionary<NSString, AnyObject>>(d) };
+        let c = config_from_record(&d).unwrap();
+        assert_eq!(c.font_size, Some(0.0));
+        assert_eq!(c.working_directory.as_deref(), Some(""));
+        assert_eq!(c.command.as_deref(), Some(""));
+        assert_eq!(c.initial_input.as_deref(), Some(""));
+        assert_eq!(c.wait_after_command, Some(false));
+        assert_eq!(c.environment, Some(vec![]));
+        let full = ScriptConfig {
+            font_size: Some(18.0),
+            working_directory: Some("/tmp".into()),
+            command: Some("ls".into()),
+            initial_input: Some("x".into()),
+            wait_after_command: Some(true),
+            environment: Some(vec!["A=b".into()]),
+        };
+        let d = config_dictionary(&full);
+        // SAFETY: as above.
+        let d = unsafe { Retained::cast::<NSDictionary<NSString, AnyObject>>(d) };
+        assert_eq!(config_from_record(&d).unwrap(), full);
+    }
 }

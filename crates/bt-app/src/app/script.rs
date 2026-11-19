@@ -14,6 +14,10 @@
 //! 스크립트 마우스 상태(`script_mouse::ScriptMouse`)로 따로 쓴다. 사람의 포인터·누름 횟수·고르는 중·휠 누적과 사람의 수식 키는 건드리지 않는다.
 //! 창 장식(제목 막대·탭 줄·손잡이·막대 띠)과 초점 누름 삼키기는 지나지 않고, 클립보드를 읽는 동작(붙여넣기)과 모달 메뉴는 하지 않는다.
 //!
+//! `new surface configuration`과 `new window`·`new tab`·`split`의 `with configuration`(#666)은 레코드를 vendor가 읽어(크기 상한을 복사 전에) 넘기면
+//! `script_config`가 검사하고, 만들 칸 하나에만 덮어쓴다(`run_new`가 `App::spawn_overrides`에 넣고 호출이 끝나면 비운다). 레코드 오류는 창이나 칸을
+//! 만들기 전에 낸다. 설정 파일과 `btctl` 소켓 규약(`Call::New`)은 건드리지 않는다.
+//!
 //! ids: 칸은 `btctl list`의 번호 그대로, 탭은 그 탭의 첫 칸 번호(칸이 닫히거나 탭 첫 칸이 바뀌면 바뀐다),
 //! 창은 창 번호(winit `WindowId`)다. 모두 10진수 글이다.
 
@@ -21,9 +25,11 @@ use std::sync::mpsc::Sender;
 
 use winit::event_loop::ActiveEventLoop;
 use winit::platform::macos::{
-    ScriptCommand, ScriptReply, ScriptSnapshot, ScriptSplit, ScriptTab, ScriptTarget, ScriptTerminal, ScriptTicket,
-    ScriptWindow,
+    ScriptCommand, ScriptConfig, ScriptReply, ScriptSnapshot, ScriptSplit, ScriptTab, ScriptTarget, ScriptTerminal,
+    ScriptTicket, ScriptWindow,
 };
+
+use crate::script_config::{self, RawConfig, SpawnOverrides, SurfaceConfig};
 
 use super::{App, UserEvent};
 
@@ -134,6 +140,10 @@ pub fn admit(enabled: bool, cmd: ScriptCommand) -> Result<ScriptCommand, String>
     if !enabled {
         return Err("AppleScript는 설정 macos-applescript = false로 꺼져 있습니다".into());
     }
+    // `surface configuration` 레코드의 크기 상한(vendor가 복사 전에 먼저 본다. 여기서 한 번 더)
+    if let Some(c) = config_of(&cmd) {
+        script_config::check_raw_sizes(&raw_config(c))?;
+    }
     match &cmd {
         ScriptCommand::InputText { text, .. } => check_text(text)?,
         ScriptCommand::SendKey { key, modifiers, .. }
@@ -161,6 +171,41 @@ pub fn admit(enabled: bool, cmd: ScriptCommand) -> Result<ScriptCommand, String>
         _ => {}
     }
     Ok(cmd)
+}
+
+/// 명령이 들고 온 `surface configuration` 레코드
+fn config_of(cmd: &ScriptCommand) -> Option<&ScriptConfig> {
+    match cmd {
+        ScriptCommand::NewWindow { config }
+        | ScriptCommand::NewTab { config, .. }
+        | ScriptCommand::Split { config, .. } => config.as_ref(),
+        ScriptCommand::NewSurfaceConfiguration { from } => from.as_ref(),
+        _ => None,
+    }
+}
+
+/// vendor의 레코드를 `script_config`의 것으로(같은 여섯 칸이다. vendor는 앱 크레이트를 모른다)
+fn raw_config(c: &ScriptConfig) -> RawConfig {
+    RawConfig {
+        font_size: c.font_size,
+        working_directory: c.working_directory.clone(),
+        command: c.command.clone(),
+        initial_input: c.initial_input.clone(),
+        wait_after_command: c.wait_after_command,
+        environment: c.environment.clone(),
+    }
+}
+
+/// `script_config`의 레코드를 vendor의 것으로
+fn script_config_of(r: RawConfig) -> ScriptConfig {
+    ScriptConfig {
+        font_size: r.font_size,
+        working_directory: r.working_directory,
+        command: r.command,
+        initial_input: r.initial_input,
+        wait_after_command: r.wait_after_command,
+        environment: r.environment,
+    }
 }
 
 /// 칸을 나누는 요청(`btctl new --split 방향 --tab 칸`과 같다)
@@ -338,42 +383,86 @@ impl App {
         self.feed_key(event_loop, trigger, bytes, input.physical, report_release, Some(pane));
     }
 
+    /// 레코드(`with configuration`)를 검사해 새 칸 하나용 덮어쓰기로 만든다. 레코드가 없으면 `None`.
+    /// 오류는 창이나 칸을 만들기 전에 알리려고 호출하는 쪽이 맨 앞에서 부른다
+    fn script_overrides(config: Option<ScriptConfig>) -> Result<Option<SpawnOverrides>, String> {
+        let Some(c) = config else { return Ok(None) };
+        let cfg = script_config::validate(raw_config(&c))?;
+        Ok(Some(script_config::overrides(&cfg, |p| p.is_dir())))
+    }
+
+    /// 만든 칸에 칸 단위 값을 마저 적용한다: 끝나도 칸을 남기기(`wait after command`)와 이 칸만의 글자 크기.
+    /// 글자 크기는 창의 기준 크기와 다른 칸을 바꾸지 않고(`window-inherit-font-size`보다 이긴다), 격자는 이 칸의 크기로 다시 맞춘다
+    fn finish_script_pane(&mut self, pane: u64, ov: &SpawnOverrides) {
+        let Some(i) = self.pane_index(pane) else { return };
+        if ov.wait_after {
+            self.panes[i].wait_after_exit = true;
+        }
+        if let Some(size) = ov.font_size {
+            self.panes[i].font_size = size;
+            // resize_all이 글꼴 묶음을 맞추고 칸마다 격자를 다시 잰다
+            self.resize_all();
+        }
+    }
+
     fn run_script(&mut self, event_loop: &ActiveEventLoop, cmd: ScriptCommand) -> ScriptReply {
         use bt_core::proto::{Call, Request};
-        // btctl `new`와 같은 길: 만든 칸의 번호가 답에 들어 있다
-        let run_new = |app: &mut App, call: Call| -> Result<u64, String> {
+        // btctl `new`와 같은 길: 만든 칸의 번호가 답에 들어 있다. `ov`는 이 칸 하나에만 덮어쓸 값이다.
+        // 호출이 끝나면 쓰였든 아니든 비운다(다음 칸에 남지 않게)
+        let run_new = |app: &mut App, call: Call, ov: Option<SpawnOverrides>| -> Result<u64, String> {
+            app.spawn_overrides = ov.clone();
             let resp = app.handle_call(Request { id: 0, call }, event_loop);
+            app.spawn_overrides = None;
             if !resp.ok {
                 return Err(resp.error.unwrap_or_else(|| "열지 못했습니다".into()));
             }
-            resp.result
+            let pane = resp
+                .result
                 .get("tab")
                 .and_then(|v| v.as_u64())
-                .ok_or_else(|| "열린 칸을 알 수 없습니다".to_string())
+                .ok_or_else(|| "열린 칸을 알 수 없습니다".to_string())?;
+            if let Some(ov) = &ov {
+                app.finish_script_pane(pane, ov);
+            }
+            Ok(pane)
         };
-        let new_pane = |app: &mut App, tab: Option<u64>, window: bool| -> Result<u64, String> {
-            let call = Call::New {
-                cwd: None,
-                command: Vec::new(),
-                split: None,
-                tab,
-                window,
+        let new_pane =
+            |app: &mut App, tab: Option<u64>, window: bool, ov: Option<SpawnOverrides>| -> Result<u64, String> {
+                let call = Call::New {
+                    cwd: None,
+                    command: Vec::new(),
+                    split: None,
+                    tab,
+                    window,
+                };
+                run_new(app, call, ov)
             };
-            run_new(app, call)
-        };
         match cmd {
             ScriptCommand::Snapshot => Ok(None),
-            ScriptCommand::NewWindow => {
-                let pane = new_pane(self, None, true)?;
+            ScriptCommand::NewSurfaceConfiguration { from } => {
+                // 검사한 레코드를 모든 키가 있는 레코드로 돌려준다(없으면 기본값 레코드)
+                let cfg = match from {
+                    Some(c) => script_config::validate(raw_config(&c))?,
+                    None => SurfaceConfig::default(),
+                };
+                Ok(Some(ScriptTarget::Configuration(script_config_of(
+                    script_config::to_record(&cfg),
+                ))))
+            }
+            ScriptCommand::NewWindow { config } => {
+                let ov = Self::script_overrides(config)?;
+                let pane = new_pane(self, None, true, ov)?;
                 let window = self.script_window_of(pane).ok_or("새 창을 찾지 못했습니다")?;
                 Ok(Some(ScriptTarget::Window(window.to_string())))
             }
-            ScriptCommand::NewTab { window } => {
+            ScriptCommand::NewTab { window, config } => {
+                // 레코드가 틀렸으면 창을 찾기 전에, 아무것도 만들기 전에 알린다
+                let ov = Self::script_overrides(config)?;
                 let at = match window {
                     Some(w) => Some(self.script_window_pane(&w)?),
                     None => None,
                 };
-                let pane = new_pane(self, at, false)?;
+                let pane = new_pane(self, at, false, ov)?;
                 // 새 탭의 첫 칸이 그 탭의 id다
                 Ok(Some(ScriptTarget::Tab(pane.to_string())))
             }
@@ -485,11 +574,16 @@ impl App {
                 self.script_mouse_scroll(idx, mods, (x, y), precision);
                 Ok(None)
             }
-            ScriptCommand::Split { terminal, direction } => {
+            ScriptCommand::Split {
+                terminal,
+                direction,
+                config,
+            } => {
+                let ov = Self::script_overrides(config)?;
                 let pane = parse_id(&terminal)?;
                 self.pane_index(pane)
                     .ok_or_else(|| format!("터미널 {terminal}이 없습니다"))?;
-                let new = run_new(self, split_call(pane, direction))?;
+                let new = run_new(self, split_call(pane, direction), ov)?;
                 Ok(Some(ScriptTarget::Terminal(new.to_string())))
             }
             // 닫기는 Ghostty처럼 확인 막대 없이 한다(`closeSurface(withConfirmation: false)`). 되살리기 목록에도 넣지 않는다(`registerRedo: false`)
@@ -962,8 +1056,227 @@ mod tests {
                 "{cls} 클래스가 {command}에 응답하지 않는다"
             );
         }
-        // 뺀 것: split의 with configuration
-        assert!(!SDEF.contains("name=\"with configuration\""));
+        // 뺀 것: name override, pid, tty
+        for name in ["name=\"name override\"", "name=\"pid\"", "name=\"tty\""] {
+            assert!(!SDEF.contains(name), "{name}");
+        }
+    }
+
+    /// `surface configuration` 레코드와 명령 인자의 이름·네 글자 코드·cocoa key는 Ghostty 사전과 같다(#666, 스크립트가 그대로 돌게)
+    #[test]
+    fn surface_configuration_matches_the_ghostty_dictionary() {
+        for needle in [
+            "<record-type name=\"surface configuration\" code=\"GScf\"",
+            "<property name=\"font size\" code=\"GScF\" type=\"real\"",
+            "<cocoa key=\"fontSize\"/>",
+            "<property name=\"initial working directory\" code=\"GScD\" type=\"text\"",
+            "<cocoa key=\"workingDirectory\"/>",
+            "<property name=\"command\" code=\"GScC\" type=\"text\"",
+            "<cocoa key=\"command\"/>",
+            "<property name=\"initial input\" code=\"GScI\" type=\"text\"",
+            "<cocoa key=\"initialInput\"/>",
+            "<property name=\"wait after command\" code=\"GScW\" type=\"boolean\"",
+            "<cocoa key=\"waitAfterCommand\"/>",
+            "<property name=\"environment variables\" code=\"GScE\"",
+            "<type type=\"text\" list=\"yes\"/>",
+            "<cocoa key=\"environmentVariables\"/>",
+            "<command name=\"new surface configuration\" code=\"GhstNSCf\"",
+            "<cocoa class=\"BTScriptNewSurfaceConfigurationCommand\"/>",
+            "<parameter name=\"from\" code=\"GScS\" type=\"surface configuration\" optional=\"yes\"",
+            "<result type=\"surface configuration\"",
+            "<parameter name=\"with configuration\" code=\"GNwS\" type=\"surface configuration\" optional=\"yes\"",
+            "<parameter name=\"with configuration\" code=\"GNtS\" type=\"surface configuration\" optional=\"yes\"",
+            "<parameter name=\"with configuration\" code=\"GSpS\" type=\"surface configuration\" optional=\"yes\"",
+        ] {
+            assert!(SDEF.contains(needle), "sdef에 없다: {needle}");
+        }
+        // 세 명령의 인자는 모두 cocoa key `configuration`이다(vendor가 한 키로 읽는다)
+        let command = |name: &str| -> &str {
+            let start = SDEF.find(&format!("<command name=\"{name}\"")).expect(name);
+            let len = SDEF[start..].find("</command>").expect(name);
+            &SDEF[start..start + len]
+        };
+        for (name, code) in [("new window", "GNwS"), ("new tab", "GNtS"), ("split", "GSpS")] {
+            let c = command(name);
+            let at = c.find(&format!("code=\"{code}\"")).expect(name);
+            assert!(c[at..].contains("<cocoa key=\"configuration\"/>"), "{name}");
+        }
+        assert!(command("new surface configuration").contains("<cocoa key=\"configuration\"/>"));
+    }
+
+    /// 레코드의 크기 상한은 vendor(복사 전)와 앱이 같은 값이다(#666)
+    #[test]
+    fn config_limits_are_the_same_in_vendor_and_app() {
+        assert_eq!(
+            winit::platform::macos::SCRIPT_CONFIG_LIMITS,
+            (
+                script_config::MAX_TEXT_BYTES,
+                script_config::MAX_INPUT_BYTES,
+                script_config::MAX_ENV_COUNT
+            )
+        );
+        // 처음 입력의 상한은 `input text`와 같다
+        assert_eq!(script_config::MAX_INPUT_BYTES, MAX_TEXT);
+    }
+
+    /// 명령을 로그에 찍어도 레코드의 값(명령·폴더·처음 입력·환경 변수)은 나오지 않는다. 길이와 개수만 나온다
+    #[test]
+    fn command_debug_hides_configuration_values() {
+        use winit::platform::macos::ScriptCommand as C;
+        let secret = "hunter2-토큰";
+        let config = || {
+            Some(ScriptConfig {
+                font_size: Some(12.0),
+                working_directory: Some(format!("/{secret}")),
+                command: Some(format!("echo {secret}")),
+                initial_input: Some(secret.into()),
+                wait_after_command: Some(true),
+                environment: Some(vec![format!("API_TOKEN={secret}")]),
+            })
+        };
+        let cmds = [
+            C::NewWindow { config: config() },
+            C::NewTab {
+                window: Some("1".into()),
+                config: config(),
+            },
+            C::Split {
+                terminal: "3".into(),
+                direction: ScriptSplit::Down,
+                config: config(),
+            },
+            C::NewSurfaceConfiguration { from: config() },
+        ];
+        for cmd in cmds {
+            let shown = format!("{cmd:?}");
+            for hidden in ["hunter2", "토큰", "API_TOKEN", "echo"] {
+                assert!(!shown.contains(hidden), "{shown}");
+            }
+            assert!(
+                shown.contains("command_bytes") && shown.contains("environment_count"),
+                "{shown}"
+            );
+        }
+    }
+
+    /// 레코드의 크기 상한은 `admit`이 한 번 더 본다. 세 명령과 `new surface configuration` 모두
+    #[test]
+    fn configuration_sizes_are_capped_before_anything_is_created() {
+        use winit::platform::macos::ScriptCommand as C;
+        let config = |command: usize, input: usize, env: usize| {
+            Some(ScriptConfig {
+                command: Some("x".repeat(command)),
+                initial_input: Some("y".repeat(input)),
+                environment: Some((0..env).map(|i| format!("K{i}=v")).collect()),
+                ..Default::default()
+            })
+        };
+        let all = |c: Option<ScriptConfig>| {
+            [
+                C::NewWindow { config: c.clone() },
+                C::NewTab {
+                    window: None,
+                    config: c.clone(),
+                },
+                C::Split {
+                    terminal: "1".into(),
+                    direction: ScriptSplit::Right,
+                    config: c.clone(),
+                },
+                C::NewSurfaceConfiguration { from: c },
+            ]
+        };
+        let (t, i, e) = (
+            script_config::MAX_TEXT_BYTES,
+            script_config::MAX_INPUT_BYTES,
+            script_config::MAX_ENV_COUNT,
+        );
+        for cmd in all(config(t, i, e)) {
+            assert!(admit(true, cmd).is_ok());
+        }
+        for over in [config(t + 1, 0, 0), config(0, i + 1, 0), config(0, 0, e + 1)] {
+            for cmd in all(over) {
+                assert!(admit(true, cmd).is_err());
+            }
+        }
+        // 꺼져 있으면 레코드가 맞아도 거절한다
+        for cmd in all(config(1, 1, 1)) {
+            assert!(admit(false, cmd).is_err());
+        }
+    }
+
+    /// vendor의 레코드와 앱의 레코드는 값이 그대로 오간다
+    #[test]
+    fn config_records_convert_both_ways() {
+        let c = ScriptConfig {
+            font_size: Some(14.0),
+            working_directory: Some("/tmp".into()),
+            command: Some("ls".into()),
+            initial_input: Some("x".into()),
+            wait_after_command: Some(true),
+            environment: Some(vec!["A=b".into()]),
+        };
+        assert_eq!(script_config_of(raw_config(&c)), c);
+        assert_eq!(
+            config_of(&ScriptCommand::NewSurfaceConfiguration { from: Some(c.clone()) }),
+            Some(&c)
+        );
+        assert_eq!(config_of(&ScriptCommand::NewWindow { config: None }), None);
+        assert_eq!(config_of(&ScriptCommand::Snapshot), None);
+    }
+
+    /// 레코드가 틀리면 창이나 칸을 만들기 전에 오류다(`script_overrides`는 `run_script`의 맨 앞에서 불린다)
+    #[test]
+    fn a_bad_record_is_an_error_before_anything_is_created() {
+        let bad = |c: ScriptConfig| App::script_overrides(Some(c));
+        assert!(
+            bad(ScriptConfig {
+                environment: Some(vec!["NOEQUALS".into()]),
+                ..Default::default()
+            })
+            .is_err()
+        );
+        assert!(
+            bad(ScriptConfig {
+                font_size: Some(f64::NAN),
+                ..Default::default()
+            })
+            .is_err()
+        );
+        assert!(
+            bad(ScriptConfig {
+                font_size: Some(-1.0),
+                ..Default::default()
+            })
+            .is_err()
+        );
+        // 레코드가 없으면 덮어쓰기도 없다(사람의 새 칸·btctl new와 같다)
+        assert_eq!(App::script_overrides(None), Ok(None));
+        // 맞는 레코드는 덮어쓰기가 된다
+        let ok = App::script_overrides(Some(ScriptConfig {
+            command: Some("echo hi".into()),
+            ..Default::default()
+        }))
+        .unwrap()
+        .unwrap();
+        assert!(ok.wait_after && ok.program.as_deref() == Some("/bin/sh"));
+    }
+
+    /// 레코드는 `btctl` 소켓 규약을 넓히지 않는다: 세 명령의 `Call::New`는 그대로이고 덮어쓰기는 앱 안에서만 쓴다
+    #[test]
+    fn configuration_does_not_widen_the_btctl_call() {
+        use bt_core::proto::Call;
+        // 분할은 레코드가 있어도 같은 호출이다(`split_is_the_same_call_as_btctl_new_split`)
+        assert_eq!(
+            split_call(7, ScriptSplit::Right),
+            Call::New {
+                cwd: None,
+                command: Vec::new(),
+                split: Some("right".into()),
+                tab: Some(7),
+                window: false,
+            }
+        );
     }
 
     fn pane(id: u64, title: &str) -> PaneView {
@@ -1159,8 +1472,12 @@ mod tests {
         use winit::platform::macos::ScriptCommand as C;
         let cmds = [
             C::Snapshot,
-            C::NewWindow,
-            C::NewTab { window: None },
+            C::NewWindow { config: None },
+            C::NewTab {
+                window: None,
+                config: None,
+            },
+            C::NewSurfaceConfiguration { from: None },
             C::Focus { terminal: "1".into() },
             C::ActivateWindow { window: "1".into() },
             C::SelectTab { tab: "1".into() },
@@ -1181,6 +1498,7 @@ mod tests {
             C::Split {
                 terminal: "1".into(),
                 direction: ScriptSplit::Right,
+                config: None,
             },
             C::Close { terminal: "1".into() },
             C::CloseTab { tab: "1".into() },

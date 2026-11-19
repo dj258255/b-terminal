@@ -94,6 +94,7 @@
 | [ADR-063](#adr-063-applescript-send-key는-사람이-누른-키와-같은-인코더키-묶음-길로-보내고-close-계열은-확인-없이-닫는다) | AppleScript `send key`는 사람이 누른 키와 같은 인코더·키 묶음 길로 보내고, `close` 계열은 확인 없이 닫는다 | 유효 |
 | [ADR-064](#adr-064-applescript-perform-action은-키-묶음과-같은-해석기로-동작-글을-읽어-그-칸에서-실행하고-send-key와-같은-거절을-따른다) | AppleScript `perform action`은 키 묶음과 같은 해석기로 동작 글을 읽어 그 칸에서 실행하고, `send key`와 같은 거절을 따른다 | 유효 |
 | [ADR-065](#adr-065-applescript-마우스-명령은-사람의-마우스와-같은-처리를-지나되-상태는-칸마다-따로-두고-클립보드를-읽는-동작과-모달-메뉴는-스크립트에-하지-않는다) | AppleScript 마우스 명령은 사람의 마우스와 같은 처리를 지나되 상태는 칸마다 따로 두고, 클립보드를 읽는 동작과 모달 메뉴는 스크립트에 하지 않는다 | 유효 |
+| [ADR-066](#adr-066-applescript-surface-configuration은-새-칸-하나에만-덮어쓰고-btctl-소켓-규약을-넓히지-않으며-값은-복사-전에-크기를-보고-로그에-남기지-않는다) | AppleScript `surface configuration`은 새 칸 하나에만 덮어쓰고 `btctl` 소켓 규약을 넓히지 않으며, 값은 복사 전에 크기를 보고 로그에 남기지 않는다 | 유효 |
 
 ### 설정 기본값
 
@@ -2009,7 +2010,7 @@ E8의 실제 창 로그에서 10ms 넘는 GPU 프레임은 세 가지였다. (1)
 - 2026-11-18 주 세션이 격리한 실제 창(release 묶음, 격리 HOME·TMPDIR, `SHELL=/bin/sh`)에서 `osascript`로 확인했다: `input text` 뒤 `send key "enter"`로 실행, `arrowUp`, `c`+control(Ctrl-C로 `sleep` 중단), `a`+shift, ⌘T가 새 탭(키 묶음), 네 방향 `split`이 새 terminal을 돌려줌(enumeration이 네 글자 코드로 옴), `close`·`close tab`·`close window`, 읽기 전용·확인 막대 거절, 키 이름·수식 키 오류, 꺼짐. 이때 닫은 칸의 셸이 끝나지 않는 것을 찾았다. 이 ADR 전부터 있던 결함이라 #651로 따로 고친다. 단위 시험은 키 이름 175개, 수식 키, 사람의 키와 같은 인코더가 낸 바이트(Enter, Ctrl-C, 방향 키, DECCKM, Option-as-Alt, kitty 플래그 1·2·8, 키패드), 사전의 이름·코드가 Ghostty와 같은 것, 새 선택자가 `NSObject`와 겹치지 않는 것까지다.
 
 ### 하지 않은 것
-- `send mouse button·position·scroll`(0.84에서 넣음, ADR-065), `perform action`(0.83에서 넣음, ADR-064), `new surface configuration`·`with configuration`, `name override`, `pid`, `tty`.
+- `send mouse button·position·scroll`(0.84에서 넣음, ADR-065), `perform action`(0.83에서 넣음, ADR-064), `new surface configuration`·`with configuration`(0.85에서 넣음, ADR-066), `name override`, `pid`, `tty`.
 
 ### 보안
 다른 앱이 칸에 키를 넣을 수 있고 닫기까지 시킬 수 있게 됐다. 막는 것은 macOS 자동화 허락, 읽기 전용 칸과 확인·검색·팔레트·제목 막대 거절, 키 이름·수식 키 256바이트 상한(복사 전에 봄), `macos-applescript = false`, 시간 초과 뒤 늦은 실행 방지다.
@@ -2043,7 +2044,7 @@ E8의 실제 창 로그에서 10ms 넘는 GPU 프레임은 세 가지였다. (1)
 - 2026-11-19 주 세션이 격리한 실제 창(release 묶음)에서 `osascript`로 확인했다: `new_split:right`·`goto_split:left`·`new_tab`·`goto_tab:1`이 참, `text:echo …\n`이 실행됨, `copy_to_clipboard`(고른 글 없음)·`navigate_search:next`(찾는 중 아님)·`no_such_action`·`all:text:x`·`unbind`가 거짓, `toggle_readonly`로 걸기는 참이고 다시 풀기는 읽기 전용 오류, 확인 막대 중 오류, 꺼짐 -1728, 4097바이트 -1715. 단위 시험에는 `can_perform`과 `handle_action` 실행이 없다.
 
 ### 하지 않은 것
-- `send mouse button·position·scroll`(0.84에서 넣음, ADR-065), `new surface configuration`·`with configuration`, `name override`, `pid`, `tty`.
+- `send mouse button·position·scroll`(0.84에서 넣음, ADR-065), `new surface configuration`·`with configuration`(0.85에서 넣음, ADR-066), `name override`, `pid`, `tty`.
 
 ### 보안
 다른 앱이 키 묶음의 모든 동작을 칸에서 실행할 수 있게 됐다. 막는 것은 macOS 자동화 허락, 읽기 전용 칸과 확인·검색·팔레트·제목 막대 거절, 동작 글 4096바이트 상한(복사 전에 봄), `macos-applescript = false`, 시간 초과 뒤 늦은 실행 방지다.
@@ -2087,7 +2088,53 @@ Ghostty와 다른 점이다.
 - 클립보드를 읽는 동작과 모달 메뉴의 스크립트 실행.
 - 스크립트 위치에 따른 호버·링크 밑줄·마우스 모양.
 - 사람 마우스 상태의 공유(고르는 중, 누름 횟수 등을 사람과 나누는 것).
-- `new surface configuration`·`with configuration`, `name override`, `pid`, `tty`.
+- `new surface configuration`·`with configuration`(0.85에서 넣음, ADR-066), `name override`, `pid`, `tty`.
 
 ### 보안
 다른 앱이 칸 위에서 마우스를 쓸 수 있게 됐다. 이미 `send key`로 키를 보낼 수 있는 앱에는 새 힘이 아니지만(프로그램의 마우스 보고를 켠 칸에는 클릭·휠 바이트가 가고, 보고가 꺼진 칸에서는 글을 고르고 `copy-on-select`·오른쪽 단추 복사로 사용자의 클립보드를 쓸 수 있으며, Cmd-누르기로 링크를 열 수 있다), 막는 것은 macOS 자동화 허락과 `macos-applescript = false`뿐이다. 클립보드를 읽는 동작은 스크립트에 하지 않는다. 다만 이것은 굳은 경계가 아니다: 허락받은 앱은 이미 `input text "pbpaste"`와 `send key "enter"`로 칸에서 클립보드를 읽힐 수 있다. 사용자가 모르는 사이 클립보드 글이 칸에 들어가는 일을 줄이려는 선택이다: 가운데 단추 붙여넣기·`right-click-action = paste`·`copy-or-paste`의 붙여넣기 쪽·kitty 붙여넣기 이벤트(모드 5522가 프로그램에 클립보드를 읽을 일회용 암호를 준다)가 스크립트에는 가지 않는다. 모달 메뉴도 스크립트에는 뜨지 않으므로 스크립트가 메뉴에 막혀 시간 초과되지 않는다. 사람의 상태를 함께 쓰는 길은 만들지 않았다(칸마다 따로 둔 상태, 명령이 준 수식 키, 시험이 공유 처리의 소스를 지킨다). 읽기 전용 칸과 확인·검색·팔레트·제목 막대가 열린 창에는 보내지 않고, 수식 키 글은 256바이트 상한을 복사 전에 보며, 좌표와 휠 값은 유한해야 하고 휠은 한 번에 최대 10번·1000줄까지다.
+
+## ADR-066 AppleScript `surface configuration`은 새 칸 하나에만 덮어쓰고 `btctl` 소켓 규약을 넓히지 않으며, 값은 복사 전에 크기를 보고 로그에 남기지 않는다
+
+상태: 채택
+관련: [#666](https://github.com/dj258255/b-terminal/issues/666), ADR-062(AppleScript 사전), ADR-063(`send key`), ADR-065(마우스 명령), ADR-016(설정 `env`의 순서)
+
+### 맥락
+- Ghostty 사전에는 레코드 `surface configuration`(`GScf`)이 있다. 속성은 `font size`(`GScF`, real), `initial working directory`(`GScD`, text), `command`(`GScC`, text), `initial input`(`GScI`, text), `wait after command`(`GScW`, boolean), `environment variables`(`GScE`, text 목록)이고, cocoa key는 `fontSize`·`workingDirectory`·`command`·`initialInput`·`waitAfterCommand`·`environmentVariables`다(`Ghostty.sdef` 112~133줄). 명령 `new surface configuration`(`GhstNSCf`)은 인자 `from`(`GScS`)을 받아 레코드를 돌려주고, `new window`(`GNwS`)·`new tab`(`GNtS`)·`split`(`GSpS`)은 `with configuration` 인자를 받는다(같은 파일 168~200줄). 모두 cocoa key는 `configuration`이다.
+- Ghostty는 레코드를 `ScriptSurfaceConfiguration.swift`로 읽는다: 레코드가 `[String: Any]`가 아니면 오류, 글자 크기는 `NSNumber`이고 유한해야 하며 음수면 오류, 0은 정하지 않음, 빈 글은 정하지 않음, `wait after command`는 `Bool`이나 `NSNumber`, 환경 변수는 `[String]`이면 읽고 항목에 `=`가 없으면 오류(`=`가 첫 자리면 키가 빈 채로 들어가고 NUL 검사는 없다), 모르는 키는 무시한다. `new surface configuration`은 읽은 값을 `dictionaryRepresentation`(모든 키가 있고 정하지 않은 값은 글자 크기 0, 빈 글, `false`, 빈 목록)으로 돌려준다. 오류는 `errAECoercionFail`(-1700)이다.
+- 적용은 `embedded.zig` 527~631줄이 한다: 작업 폴더는 열어 보고 폴더일 때만 쓰며 아니면 경고만 남기고 무시한다. `command`가 있으면 셸 명령으로 두고 `wait-after-command`도 켠다. 환경 변수는 설정의 `env` 맵에 덮어쓴다. `initial input`은 `input` 목록을 그 글 하나(Zig 이스케이프를 한 `raw`, 보낼 때 풀리므로 바이트는 그대로)로 바꾼다. 글자 크기는 칸을 만든 뒤 `setFontSize`로 정한다.
+- b-terminal의 설정 키 `font-size`·`working-directory`·`command`·`input`·`wait-after-command`·`env`와 뜻이 같다. 새 칸을 띄우는 길은 `btctl new`와 같은 `handle_call`의 `Call::New`이고 칸은 `spawn_pane`이 만든다. `Call::New`의 `command`는 셸을 거치지 않는 인자 배열이고 설정 `command`는 `/bin/sh -c "exec …"`로 푼다.
+- 이 값들은 비밀이 되기 쉽다: 환경 변수에는 토큰이, 처음 입력에는 암호가, 명령 줄에는 인자로 준 비밀이 들어간다.
+
+### 결정
+1. 사전은 Ghostty와 같은 이름·코드·cocoa key다(위 맥락). 명령 `new surface configuration`은 명령 클래스(`BTScriptNewSurfaceConfigurationCommand`)로 받아 `NSApplication`·`NSObject`에 새 선택자를 달지 않는다(겹침 시험 `APP_KEYS`·`OBJECT_KEYS`는 그대로). `new window`·`new tab`·`split`은 기존 처리기(`handleNewWindowScriptCommand:`·`handleNewTabScriptCommand:`·`handleSplitCommand:`)가 인자 `configuration`을 읽는다. 사전 파일(`b-terminal.sdef`)의 `environment variables` 속성은 DTD 순서(`cocoa` 다음 `type`)로 적었다(Ghostty 원본은 반대 순서이고 같은 뜻이다).
+2. 레코드는 vendor가 읽는다(`config_from_record`). 값의 형이 틀리면 오류이고(`-1700`), 크기 상한을 `NSString`에서 UTF-8 바이트 수로 먼저 보고 Rust 문자열로 복사한다: `command`·폴더·환경 변수 한 항목은 각 64KiB, `initial input`은 `input text`와 같은 1MiB, 환경 변수는 256개(개수를 먼저 본다). 앱 `admit`이 같은 상한을 한 번 더 본다(vendor와 앱의 상수가 같음을 시험이 지킨다). 상한 숫자는 이 코드 안에 더 나은 근거가 있어 고른 것이 아니라(`input text` 1MiB, 소켓 요청 한 줄 1MiB를 따른 것을 빼고) 한 명령 줄·한 환경 변수가 64KiB를 넘을 일이 없다고 본 값이다. 재지 않았다.
+3. 검사는 앱의 `script_config::validate`가 한다: 글자 크기는 유한하고 0 이상이어야 하며(0은 정하지 않음, `f32`로 줄여 무한이 되면 오류) 빈 글은 정하지 않음이고, 환경 변수는 `KEY=VALUE`를 첫 `=`에서 가르며 `=`가 없거나 키가 비었거나 NUL이 있으면 오류다. `command`·폴더에 NUL이 있어도 오류다. 같은 키는 뒤의 것이 이긴다(자리는 처음 나온 자리). 모르는 키는 무시한다. 레코드 오류는 창이나 칸을 만들기 전에(`run_script` 맨 앞에서) 낸다.
+4. 적용은 "새 칸 하나용 덮어쓰기"(`SpawnOverrides`)다. `run_script`가 칸을 만드는 호출(`run_new`) 직전에 `App::spawn_overrides`에 넣고, 호출이 끝나면 쓰였든 아니든 비운다. `handle_call`의 `Call::New`가 프로그램·인자·폴더를 덮고(`apply_launch`, 설정 `command`·`working-directory`와 `btctl` 인자보다 이긴다), `spawn_pane`이 `take()`해서 환경 변수를 설정 `env` 뒤에 덧붙이고(`apply_env`, b-terminal이 넣는 변수와의 순서는 설정 `env`와 같다) 처음 입력을 설정 `input` 목록 대신 그 글 하나로 정한다(`startup_input`, 바이트 그대로이고 이스케이프를 풀지 않으며 덮어썼을 때는 설정의 `input` 파일을 읽지도 않는다). 만든 칸에는 `wait after command`(`wait_after_exit`)와 글자 크기를 마저 적용한다(`finish_script_pane`). 글자 크기는 그 칸의 `font_size`만 바꾸고 창의 기준 크기는 바꾸지 않으며 `window-inherit-font-size`보다 이긴다. 6~72(`clamp_font_size`)로 자른다.
+5. `command`는 설정 `command`처럼 `/bin/sh -c "exec 명령"`(`lifecycle::shell_command`)으로 띄우고 `wait after command`도 켠다. 그래서 여러 문장은 `/bin/sh -c '…'`로 감싸야 한다(`exec`가 앞 문장만 실행하므로. 이슈의 완료 조건 예와 같다).
+6. 작업 폴더는 절대 경로이면서 실제 폴더일 때만 쓴다. 아니면 무시하고 로그에는 길이만 남긴다(경로를 남기지 않는다).
+7. `btctl` 소켓 규약(`bt_core::proto::Call::New`)은 넓히지 않았다. 덮어쓰기는 앱 안(`App` 필드)에만 있고, 제어 소켓으로는 할 수 없다. 설정 파일의 값은 바꾸지 않고 다음 칸에 남지도 않는다(`spawn_pane`이 `take()`하고 `run_new`가 비운다). 사람이 여는 새 칸과 `btctl new`는 레코드가 없으면 덮어쓰기가 `None`이라 이전과 같은 값·같은 길을 지난다.
+8. `new surface configuration`은 `from`이 없으면 기본값 레코드를, 있으면 검사한 뒤 그 값을 모든 키가 있는 레코드로 돌려준다(Ghostty `dictionaryRepresentation`과 같은 키·기본값. 환경 변수는 받은 차례대로이고 Ghostty는 사전 순서를 보장하지 않는다).
+9. 거절은 다른 명령과 같다: `macos-applescript = false`면 거절하고(`admit`), `ScriptTicket` 시간 초과를 따른다.
+10. `Debug`와 로그에는 명령·폴더·처음 입력·환경 변수의 값을 내지 않고 길이와 개수만 낸다(vendor `ScriptConfig`, 앱 `RawConfig`·`SurfaceConfig`·`SpawnOverrides`, 명령 `Debug`). 시험이 비밀 문자열이 나오지 않음을 지킨다.
+
+### 감수한 트레이드오프
+Ghostty와 다른 점이다.
+- **환경 변수 검사가 더 엄격하다.** `=`가 없을 때만 오류인 Ghostty와 달리 키가 빈 항목(`=값`)과 키·값의 NUL도 오류다. 빈 키나 NUL은 환경에 넣을 수 없는 값이고 PTY 자식을 띄울 때 실패하거나 잘리기 때문이다. `command`·폴더의 NUL도 오류다(Ghostty는 C 문자열이라 거기서 잘린다).
+- **환경 변수 값의 형도 더 엄격하다.** Ghostty는 `[String]`이 아니면 조용히 무시한다. 여기서는 텍스트 목록이 아니면 오류이고, 글 하나만 오면 한 개짜리 목록으로 받는다(AppleScript가 한 항목을 목록으로 보내는지 Cocoa가 풀어 주는지 실제 Apple Event로 확인하지 않았다).
+- **크기 상한이 있다.** Ghostty에는 없다. 값마다 복사 전에 본다.
+- **글자 크기를 6~72로 자른다.** Ghostty 코어가 자르는 범위는 따로 확인하지 않았다. 이 앱의 `font-size` 범위를 쓴다. `f32`로 줄이면 무한이 되는 값은 오류다.
+- **폴더가 상대 경로여도 오류가 아니라 무시한다.** Ghostty는 `openDirAbsolute`로 열어 보고 실패하면 경고하고 무시한다(상대 경로를 같은 방법으로 처리하는지 확인하지 않았다). 여기서는 절대 경로가 아니면 열어 보지 않고 무시하며, 로그에 경로 대신 길이만 남긴다(Ghostty는 경로를 경고에 남긴다).
+- **오류 번호가 둘이다.** vendor가 읽는 중 낸 오류(형·크기)는 Ghostty처럼 `-1700`이고, 앱이 값의 뜻을 검사해 낸 오류(글자 크기, `KEY=VALUE`, NUL)는 다른 앱 쪽 오류처럼 `-10000`(`errAEEventFailed`)이다. Ghostty는 모두 `-1700`이다.
+- **`split`은 부모 칸의 폴더를 이어받지 않는다.** 스크립트 `split`은 처음부터 `btctl new --split`과 같은 길이라(ADR-062) 레코드에 폴더가 없으면 설정 `working-directory`를 따른다. Ghostty의 `split with configuration`이 부모 surface의 폴더를 바탕으로 쓰는지는 확인하지 않았다.
+- **글자 크기는 `window-inherit-font-size`가 켜져 있으면 다음 새 탭이 이어받는다.** 그 칸이 고른 칸일 때 새 탭을 열면 그 크기로 뜬다(사람이 ⌘+로 키운 칸과 같다). 레코드의 글자 크기는 그 칸에만 쓴다는 뜻은 설정 파일과 다른 칸에 남지 않는다는 것이다.
+- **덮어쓰기를 `App` 필드로 넘긴다.** 호출 인자로 `handle_call`·`open_window`·`open_tab`·`spawn_pane`에 모두 넘기면 칸을 만드는 모든 길의 시그니처가 바뀐다. 한 스레드에서 호출 직전에 넣고 직후에 비우는 필드로 두었다. 칸을 만드는 `spawn_pane`이 `take()`하므로 한 번 쓰이면 사라지고, `run_new`가 어느 길에서든 호출 뒤에 비운다.
+- 2026-11-19 주 세션이 격리한 실제 창(release 묶음)에서 `osascript`로 확인했다: 레코드가 cocoa key의 사전으로 온다(`command`·`initial working directory`가 새 탭에 적용), 환경 변수가 그 칸에만 보이고 다음 `new tab`에는 남지 않는다, 환경 변수 한 항목을 글로 줘도 된다, `initial input`의 `\n`은 풀리지 않고 글 그대로 간다, `split … with configuration {font size:20}`은 새 칸만 크다(화면으로 봄), `new surface configuration`(`from` 포함)이 레코드를 돌려준다, `KEY`만 있는 환경·음수 글자 크기는 칸을 만들지 않고 오류, 상대 폴더는 무시되고 로그에는 길이만, `macos-applescript = false`는 -1743, `RUST_LOG=debug` 로그에 명령·환경 값이 없다. `command:42` 같은 수는 Cocoa가 sdef의 text 형으로 바꿔 넘기므로 오류가 아니다(Ghostty도 같은 사전).
+
+### 하지 않은 것
+- `name override`, `pid`, `tty`.
+- 제어 소켓(`btctl new`)으로 명령·환경·처음 입력을 덮어쓰는 길(소켓 입력 길을 넓히지 않는다).
+- 레코드를 설정 파일이나 다음 칸에 남기는 일.
+- 값의 로그(길이와 개수만).
+
+### 보안
+`with configuration`은 허락받은 앱이 새 칸을 원하는 명령(`command`)·환경 변수·작업 폴더·처음 입력으로 띄우게 한다. 이미 `input text`와 `send key`로 칸에서 명령을 실행할 수 있는 앱에는 새 힘이 아니지만(새 칸에서 곧바로 임의 프로그램이 돈다. 환경 변수는 그 칸의 모든 자식에 상속되므로 `PATH` 같은 값도 바꿀 수 있고, `initial input`은 붙여넣기 보호를 거치지 않고 PTY에 바이트로 간다), 막는 것은 macOS 자동화 허락과 `macos-applescript = false`뿐이다. 새 길을 열지는 않았다: `btctl` 소켓 규약은 그대로이므로 제어 소켓으로는 이 덮어쓰기를 할 수 없고, 설정 파일의 값은 바뀌지 않으며, 다음 칸에 남지 않는다. 값은 `Debug`와 로그에 길이와 개수만 남고(환경 변수의 토큰·처음 입력의 암호가 로그에 들어가지 않는다), 크기 상한(`command`·폴더·환경 변수 한 항목 64KiB, `initial input` 1MiB, 환경 변수 256개)은 복사 전에 보며 레코드 오류는 창이나 칸을 만들기 전에 낸다.

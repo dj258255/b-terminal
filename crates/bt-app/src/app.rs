@@ -1055,6 +1055,9 @@ pub struct App {
     others: Vec<Win>,
     /// 마지막으로 보던 창(창 밖에서 온 btctl 요청이 쓴다)
     last_focused: Option<WindowId>,
+    /// 스크립트 `with configuration`(#666)이 새 칸 하나에만 덮어쓸 값. `run_script`가 칸을 만드는 호출 직전에 넣고, `handle_call`의
+    /// New(프로그램·폴더)와 `spawn_pane`(환경 변수·처음 입력)이 쓰며, 호출이 끝나면 쓰였든 아니든 비운다. 설정 파일의 값은 바꾸지 않는다
+    spawn_overrides: Option<crate::script_config::SpawnOverrides>,
     /// 전역 단축키(#95): 등록한 관리자와 단축키 번호 → 동작
     hotkeys: Option<global_hotkey::GlobalHotKeyManager>,
     /// 마지막 경고음(벨이 몰려도 0.1초에 한 번만, #107)
@@ -1129,6 +1132,7 @@ impl App {
             w: Win::new(font_size),
             others: Vec::new(),
             last_focused: None,
+            spawn_overrides: None,
             hotkeys: None,
             last_beep: None,
             bell_sound: None,
@@ -1788,6 +1792,8 @@ impl App {
     fn spawn_pane(&mut self, options: SpawnOptions, size: GridSize, font_size: f32) -> Option<Pane> {
         let id = self.next_id;
         self.next_id += 1;
+        // 스크립트가 이 칸 하나에만 덮어쓸 값(#666). 여기서 꺼내므로 다음 칸에는 남지 않는다
+        let script_overrides = self.spawn_overrides.take();
         let mut options = SpawnOptions {
             scrollback: self.config.scrollback_lines,
             cursor_shape: Some(match self.config.cursor_style {
@@ -1836,8 +1842,13 @@ impl App {
         options.term = self.config.term.clone();
         // 설정의 env는 b-terminal이 넣은 변수(BT_SOCKET·BT_TAB_ID·셸 통합) 뒤에 붙여 이긴다(Ghostty처럼, ADR-016)
         options.env.extend(self.config.env.iter().cloned());
-        // 시작 입력: 읽지 못하거나 상한을 넘으면 경고하고 하나도 보내지 않는다. 모든 새 칸에 보낸다
-        match bt_core::config::resolve_input(&self.config.input) {
+        // 스크립트의 환경 변수는 설정 env 뒤에 붙여 그 위에 덮어쓴다(#666)
+        if let Some(ov) = &script_overrides {
+            ov.apply_env(&mut options);
+        }
+        // 시작 입력: 읽지 못하거나 상한을 넘으면 경고하고 하나도 보내지 않는다. 모든 새 칸에 보낸다.
+        // 스크립트의 `initial input`이 있으면 설정 input 목록 대신 그 글 하나다(#666)
+        match crate::script_config::startup_input(script_overrides.as_ref(), &self.config.input) {
             // 부른 쪽이 정한 시작 입력(Dock에 놓은 파일, #279)은 설정의 input 뒤에 보낸다
             Ok(mut bytes) => {
                 bytes.append(&mut options.input);
@@ -2068,7 +2079,11 @@ impl App {
                 tab,
                 window,
             } => {
-                let opts = ctl_spawn(self.default_spawn(), cwd.filter(|c| c.is_dir()), &command);
+                let mut opts = ctl_spawn(self.default_spawn(), cwd.filter(|c| c.is_dir()), &command);
+                // 스크립트 `with configuration`의 명령·폴더(#666)는 설정과 btctl 인자보다 이긴다. 소켓 규약은 그대로다
+                if let Some(ov) = &self.spawn_overrides {
+                    ov.apply_launch(&mut opts);
+                }
                 // 창이 하나도 없으면 탭·분할 대신 새 창을 연다(#178)
                 if window || self.windowless() {
                     return match self.open_window(event_loop, opts) {
