@@ -93,6 +93,7 @@
 | [ADR-062](#adr-062-applescript-사전은-macos-자동화-허락에-기대고-글-넣기는-사람의-붙여넣기와-같은-길로만-보내며-macos-applescript로-끈다) | AppleScript 사전은 macOS 자동화 허락에 기대고, 글 넣기는 사람의 붙여넣기와 같은 길로만 보내며, macos-applescript로 끈다 | 일부 바뀜(send key·split·close가 더해짐, ADR-063) |
 | [ADR-063](#adr-063-applescript-send-key는-사람이-누른-키와-같은-인코더키-묶음-길로-보내고-close-계열은-확인-없이-닫는다) | AppleScript `send key`는 사람이 누른 키와 같은 인코더·키 묶음 길로 보내고, `close` 계열은 확인 없이 닫는다 | 유효 |
 | [ADR-064](#adr-064-applescript-perform-action은-키-묶음과-같은-해석기로-동작-글을-읽어-그-칸에서-실행하고-send-key와-같은-거절을-따른다) | AppleScript `perform action`은 키 묶음과 같은 해석기로 동작 글을 읽어 그 칸에서 실행하고, `send key`와 같은 거절을 따른다 | 유효 |
+| [ADR-065](#adr-065-applescript-마우스-명령은-사람의-마우스와-같은-처리를-지나되-상태는-칸마다-따로-두고-클립보드를-읽는-동작과-모달-메뉴는-스크립트에-하지-않는다) | AppleScript 마우스 명령은 사람의 마우스와 같은 처리를 지나되 상태는 칸마다 따로 두고, 클립보드를 읽는 동작과 모달 메뉴는 스크립트에 하지 않는다 | 유효 |
 
 ### 설정 기본값
 
@@ -1966,7 +1967,7 @@ E8의 실제 창 로그에서 10ms 넘는 GPU 프레임은 세 가지였다. (1)
 - 실제 Apple Event로 명령을 보내 보지 않았다. 사전이 읽히는 것(`sdef`), `plutil -lint`, 앱 묶음이 뜨고 `btctl list`가 되는 것, 코드 검토(재진입 경로를 읽어 보통 경로는 시간 초과가 아님을 확인)까지다.
 
 ### 하지 않은 것
-- `send key`·`send mouse ...`: 키·마우스 이벤트를 합성해 입력 길에 넣는 일이라 IME·키 묶음·보안 입력과 얽히고 붙여넣기 틀이 없다.
+- `send key`·`send mouse ...`: 키·마우스 이벤트를 합성해 입력 길에 넣는 일이라 IME·키 묶음·보안 입력과 얽히고 붙여넣기 틀이 없다. → `send key`는 0.82(ADR-063), `send mouse`는 0.84(ADR-065)에서 넣음.
 - `perform action`: 동작 문자열 전체를 스크립트에 연다. → 0.83에서 넣음(ADR-064, `send key`와 같은 거절).
 - `split`, `new surface configuration`, `close*`, `name override`, `pid`, `tty`: 따로 큰 일이거나 닫기 확인·되돌리기 정책을 맞춰야 한다.
 
@@ -2008,7 +2009,7 @@ E8의 실제 창 로그에서 10ms 넘는 GPU 프레임은 세 가지였다. (1)
 - 2026-11-18 주 세션이 격리한 실제 창(release 묶음, 격리 HOME·TMPDIR, `SHELL=/bin/sh`)에서 `osascript`로 확인했다: `input text` 뒤 `send key "enter"`로 실행, `arrowUp`, `c`+control(Ctrl-C로 `sleep` 중단), `a`+shift, ⌘T가 새 탭(키 묶음), 네 방향 `split`이 새 terminal을 돌려줌(enumeration이 네 글자 코드로 옴), `close`·`close tab`·`close window`, 읽기 전용·확인 막대 거절, 키 이름·수식 키 오류, 꺼짐. 이때 닫은 칸의 셸이 끝나지 않는 것을 찾았다. 이 ADR 전부터 있던 결함이라 #651로 따로 고친다. 단위 시험은 키 이름 175개, 수식 키, 사람의 키와 같은 인코더가 낸 바이트(Enter, Ctrl-C, 방향 키, DECCKM, Option-as-Alt, kitty 플래그 1·2·8, 키패드), 사전의 이름·코드가 Ghostty와 같은 것, 새 선택자가 `NSObject`와 겹치지 않는 것까지다.
 
 ### 하지 않은 것
-- `send mouse button·position·scroll`, `perform action`(0.83에서 넣음, ADR-064), `new surface configuration`·`with configuration`, `name override`, `pid`, `tty`.
+- `send mouse button·position·scroll`(0.84에서 넣음, ADR-065), `perform action`(0.83에서 넣음, ADR-064), `new surface configuration`·`with configuration`, `name override`, `pid`, `tty`.
 
 ### 보안
 다른 앱이 칸에 키를 넣을 수 있고 닫기까지 시킬 수 있게 됐다. 막는 것은 macOS 자동화 허락, 읽기 전용 칸과 확인·검색·팔레트·제목 막대 거절, 키 이름·수식 키 256바이트 상한(복사 전에 봄), `macos-applescript = false`, 시간 초과 뒤 늦은 실행 방지다.
@@ -2042,7 +2043,51 @@ E8의 실제 창 로그에서 10ms 넘는 GPU 프레임은 세 가지였다. (1)
 - 2026-11-19 주 세션이 격리한 실제 창(release 묶음)에서 `osascript`로 확인했다: `new_split:right`·`goto_split:left`·`new_tab`·`goto_tab:1`이 참, `text:echo …\n`이 실행됨, `copy_to_clipboard`(고른 글 없음)·`navigate_search:next`(찾는 중 아님)·`no_such_action`·`all:text:x`·`unbind`가 거짓, `toggle_readonly`로 걸기는 참이고 다시 풀기는 읽기 전용 오류, 확인 막대 중 오류, 꺼짐 -1728, 4097바이트 -1715. 단위 시험에는 `can_perform`과 `handle_action` 실행이 없다.
 
 ### 하지 않은 것
-- `send mouse button·position·scroll`, `new surface configuration`·`with configuration`, `name override`, `pid`, `tty`.
+- `send mouse button·position·scroll`(0.84에서 넣음, ADR-065), `new surface configuration`·`with configuration`, `name override`, `pid`, `tty`.
 
 ### 보안
 다른 앱이 키 묶음의 모든 동작을 칸에서 실행할 수 있게 됐다. 막는 것은 macOS 자동화 허락, 읽기 전용 칸과 확인·검색·팔레트·제목 막대 거절, 동작 글 4096바이트 상한(복사 전에 봄), `macos-applescript = false`, 시간 초과 뒤 늦은 실행 방지다.
+
+## ADR-065 AppleScript 마우스 명령은 사람의 마우스와 같은 처리를 지나되 상태는 칸마다 따로 두고, 클립보드를 읽는 동작과 모달 메뉴는 스크립트에 하지 않는다
+
+상태: 채택
+관련: [#662](https://github.com/dj258255/b-terminal/issues/662), ADR-062(AppleScript 사전), ADR-063(`send key`), ADR-064(`perform action`), ADR-018(읽기 전용 칸), ADR-019(확인 막대)
+
+### 맥락
+- Ghostty 사전에는 마우스 명령 셋이 있다: `send mouse button`(`GhstSMBt`, 직접 인자 `mouse button` 열거형 `GMBt`: `GMlf`·`GMrt`·`GMmd`, `action` `GMbA`, `modifiers` `GMbM`, `to` `GMbT`), `send mouse position`(`GhstSMPs`, `x` `GMpX`, `y` `GMpY`, `modifiers` `GMpM`, `to` `GMpT`), `send mouse scroll`(`GhstSMSc`, `x` `GMsX`, `y` `GMsY`, `precision` `GMsP`, `momentum` `GMsM`(열거형 `GSMo` 일곱 값), `to` `GMsT`). 셋 다 결과가 없다(`ScriptMouse*Command.swift`가 nil을 돌려준다).
+- Ghostty는 이 이벤트를 코어로 바로 보낸다(`ghostty_surface_mouse_button`·`_mouse_pos`·`_mouse_scroll`). 위치는 칸 왼쪽 위 기준 배율 전 점 좌표이고 `cursorPosToPixels`가 배율을 곱한다(`src/apprt/embedded.zig` 1087~1120줄, 1248줄). 앞 위치에서 가로·세로 모두 1픽셀 미만이면 움직임을 처리하지 않는다(`cursorPosCallback` 1087줄, 비교는 1113줄). sdef는 위치를 "픽셀"이라 적었지만 실제는 점이다.
+- 휠은 `Surface.zig` `scrollCallback`(3584줄 이하)이 계산한다: 세로 3599~3653줄(정밀이면 `yoff × precision 배율`을 픽셀로 보고 줄 높이로 나눈다. 정밀이 아니면 macOS는 크기를 1 이상으로 올리고 `× 줄 높이 × discrete 배율`), 가로 3657~3675줄(정밀 아님은 반올림한 눈금 수, 정밀이면 픽셀 / 칸 너비, 둘 다 배율 없음), 마우스 보고 중이면 단추 4·5·6·7(3687줄 이하), 대체 화면이면 화살표, 아니면 뷰포트. `momentum`은 `ScrollMods`에 실려 오지만 `scrollCallback`은 `precision`만 읽는다(이 파일과 `embedded.zig`에 `momentum` 쓰임이 없다).
+- 0.82·0.83 보안 검토가 두 번 찾은 결함은 "스크립트가 사람의 상태를 함께 쓴다"였다(ADR-063의 키 순서 상태, ADR-064의 키 테이블). 마우스는 사람의 상태가 가장 많이 얽힌 곳이다: 창의 포인터 위치·호버, 고르는 중, 누름 횟수, 링크 누름, 초점 누름 삼키기, 휠 누적, 칸 끌기·막대 누름, 칸의 눌린 단추와 마지막 보고 칸, 그리고 사람이 누르고 있는 수식 키.
+
+### 결정
+1. 사전은 Ghostty와 같은 이름·코드이고(위 맥락), 명령 클래스(`BTScriptMouseButtonCommand`·`BTScriptMousePosCommand`·`BTScriptMouseScrollCommand`)로 받는다. 새 선택자를 `NSApplication`·`NSObject`에 달지 않는다(겹침 시험 `APP_KEYS`·`OBJECT_KEYS`가 그대로 통과한다). 열거형 `input action`(`GIAc`)은 `send key`의 것을 다시 쓴다. 모르는 단추 코드, 없는 좌표 인자, 없는 터미널 인자는 `errAEParamMissed`로 vendor에서 막는다. `momentum`의 모르는 값은 none이다(Ghostty 기본값). 수식 키 글은 `send key`와 같은 규칙(`script_key::parse_modifiers`, 쉼표·소문자·모르는 이름은 오류)과 같은 상한(256바이트, vendor가 복사하기 전에, 앱 `admit`이 한 번 더)이다. `Debug`에는 수식 키 글의 길이만 낸다.
+2. 사람의 마우스 처리를 함수로 떼어(`app/mouse_core.rs`: `pointer_moved`·`pointer_button`·`pointer_wheel`·`link_click_step`·`report_mouse`) 사람과 스크립트가 같은 처리를 지나게 한다. 이 함수들은 사람의 상태와 `App::mods`를 읽거나 쓰지 않는다. 위치와 수식 키는 `PtrIn`으로, 바뀌는 상태(고르는 중, 마지막 누름, 눌린 단추, 마지막 보고 칸, 세로·가로 휠 누적)는 `PtrState`로만 받는다. 사람 쪽은 창과 칸에 흩어진 값을 한 `PtrState`로 모아 넘기고(`human_ptr`), 돌아오면 처리가 바꾼 값만 돌려놓는다(`store_human_ptr`). 사람의 동작은 바이트 하나 바뀌지 않는다(떼기 전후로 기존 시험이 모두 통과하고, 떼어 낸 코드는 같은 순서·같은 값으로 옮겼다).
+3. 스크립트 마우스 상태는 칸마다 따로 둔다(`Pane::script_mouse`): 위치(점 좌표), 마지막으로 움직임을 처리한 위치, 누름 기록(`last_click`), 눌린 단추, 고르는 중, 마지막 보고 칸, 세로·가로 휠 누적, 링크 누름. 사람의 `Win::cursor_pos`·`selecting`·`last_click`·`link_click`·`focus_click`·`scroll_accum(_x)`·`pane_drag`·`scrollbar_press`·`hover`와 칸의 `mouse_down`·`mouse_last_cell`은 스크립트가 읽지도 쓰지도 않는다. 시험(`shared_mouse_code_never_touches_the_human_state`)이 공유 처리와 스크립트 갈래의 소스에 이 이름들이 없음을 지킨다. 스크립트가 사람의 포인터를 옮기지 않으므로 호버·마우스 모양·`focus-follows-mouse`도 스크립트 위치로는 움직이지 않는다. 칸마다 상태를 두었으므로 다른 칸으로 옮겨 가는 상태가 없다: 어떤 칸에서 단추를 누른 채 끝내지 않은 상태는 그 칸의 스크립트 상태로 남고(그 칸에 스크립트가 떼기를 보낼 때까지 눌린 것으로 보고 고르는 중이다), 칸이 닫히면 함께 사라진다.
+4. 수식 키는 사람의 `App::mods` 대신 명령이 준 것을 쓴다(`PtrIn::mods`). 쓰는 곳은 모두 `PtrIn`을 통한다: 마우스 보고의 Shift 판단(`mouse_reporting_with`)과 보고 바이트의 수식 키, 링크 수식 키(macOS Cmd), 사각 고르기(macOS Option), 평범한 누름 판단(`cursor-click-to-move`), Ctrl 메뉴 판단. `send key`처럼 `key-remap`을 거친다.
+5. 위치 (x, y)는 대상 칸 왼쪽 위 기준 점 좌표다. 칸 안 실제 픽셀은 `점 × 배율`이고 칸 밖 값은 칸(바깥 사각형) 안으로 자른다(`script_mouse::rel_px`, 마지막 픽셀은 크기 - 1). 창 실제 픽셀은 칸 원점 + 그 값이다. 위치를 한 번도 보내지 않았으면 칸 왼쪽 위 (0, 0)이다. 앞 위치에서 1픽셀 미만의 움직임은 처리하지 않는다(Ghostty처럼). 좌표와 휠 값은 유한해야 한다(NaN·무한은 `admit`이 오류로 돌려준다).
+6. 대상은 `perform action`과 같은 순서로 정한다: 칸·읽기 전용·수식 키 글을 칸이나 창을 건드리기 전에 보고, `switch_to_pane` → 확인·검색·팔레트·제목 막대 거절 → `focus_pane`(이미 고른 칸이면 부르지 않는다. `focus_pane`은 사람의 고르는 중을 끊기 때문이다). 창 장식의 판정은 하지 않는다: 제목 막대 자리, 탭 줄, 칸 끌기 손잡이, 스크롤 막대 띠, 초점 누름 삼키기(Ghostty 스크립트는 코어로 바로 가므로).
+7. 하는 것: 마우스 보고(사람과 같은 `mouse::encode` 바이트), 보고가 꺼졌을 때 고르기(한 번·두 번·세 번 누르기, 끌기, 사각 고르기), `copy-on-select`, `cursor-click-to-move`, 링크 수식 키 누르기로 링크 열기(`open_link`는 http·https와 이 컴퓨터의 파일만 연다), 오른쪽 단추의 복사(`right-click-action = copy`, `copy-or-paste`에서 고른 글이 있을 때), 휠(마우스 보고 중이면 단추 4·5·6·7, 대체 화면이면 화살표, 아니면 스크롤백. 사람처럼 한 번에 최대 10번).
+8. 휠 값은 Ghostty `scrollCallback`과 같다(`script_mouse::scroll_lines`, 위 맥락의 줄 번호): `precision`이 참이면 값은 픽셀, 아니면 눈금 수. `momentum`은 읽고 버린다(Ghostty 코어가 읽지 않는다).
+9. 스크립트 이벤트일 때는 아무것도 하지 않고 오류도 내지 않는 것: 클립보드를 읽는 동작(가운데 단추 붙여넣기, `right-click-action = paste`, `copy-or-paste`의 붙여넣기 쪽)과 모달 메뉴(오른쪽 단추 메뉴, Ctrl-누르기 메뉴).
+10. 거절은 `send key`·`perform action`과 같다: 읽기 전용 칸, 확인·검색·팔레트·제목 막대가 열린 창은 오류, `macos-applescript = false`는 거절, `ScriptTicket` 시간 초과도 따른다, 터미널을 못 찾으면 오류.
+
+### 감수한 트레이드오프
+Ghostty와 다른 점이다.
+- **위치를 칸 안으로 자른다.** Ghostty는 칸 밖 위치도 코어에 그대로 보낸다(칸 밖에서 끌기 등). 이 구현은 칸 안 가장자리로 붙인다. 그래서 스크립트로 칸 밖으로 끌어내는 동작(1002·1003의 칸 밖 움직임 보고)은 만들 수 없다.
+- **초점 이동이 있다.** Ghostty에는 고른 칸이라는 개념이 없어 대상 surface에 바로 한다. 이 구현은 대상 칸을 고른 칸으로 만든 뒤 한다(`perform action`과 같다). 고르지 않은 칸에 보내도 그 칸이 고른 칸이 되고, 다른 탭의 칸이면 그 탭으로 옮겨 가며 크게 보기 중이면 풀린다. `focus_pane`이 칸을 바꾸면 사람의 고르는 중이 끊긴다(고른 칸이 바뀌면 늘 그렇다).
+- **창 장식 판정을 하지 않는다.** 그래서 스크립트의 왼쪽 누름은 "다른 칸을 눌러 고르는 누름은 삼킨다"는 규칙(#500)을 받지 않고, 고르지 않은 칸을 눌러도 그 누름이 칸에 간다.
+- **사람의 링크 호버·포인터 모양·`focus-follows-mouse`가 스크립트 위치를 따르지 않는다.** 스크립트는 창의 포인터를 옮기지 않는다. Ghostty는 스크립트 위치가 칸의 마우스 위치가 되어 호버·링크 밑줄이 따라 움직인다.
+- **클립보드를 읽는 동작과 메뉴를 하지 않는다.** Ghostty 스크립트의 가운데 단추는 붙여넣기를 하고 오른쪽 단추는 메뉴·붙여넣기를 한다. 여기서는 조용히 아무것도 하지 않는다.
+- **`momentum`은 읽고 버린다.** Ghostty 코어도 읽지 않지만 앱이 읽는 버전에서는 달라질 수 있다.
+- **정밀 스크롤의 곱.** 사람의 트랙패드 휠은 가로 값에도 `mouse-scroll-multiplier`를 곱하지만(b-terminal 기존 동작), 스크립트의 가로 값은 Ghostty처럼 배율 없이 쓴다. 세로의 최소 1눈금 올림(macOS)도 스크립트에만 있다(사람 휠은 winit이 준 값을 그대로 쓴다).
+- **한 칸의 수식 키를 `key-remap`을 거쳐 쓴다.** Ghostty는 마우스 이벤트의 수식 키에 `key-remap`을 적용하지 않는 것으로 읽었지만(Swift 쪽이 이벤트의 수식 키를 그대로 넘긴다. 이 부분은 코드를 끝까지 따라가 확인하지 않았다), `send key`와 사람의 마우스(b-terminal)가 거치므로 같게 했다.
+- 2026-11-19 주 세션이 격리한 실제 창(release 묶음)에서 `osascript`로 확인했다: 끌어 고르기·두 번 누르기(단어), 1002·1006 보고(누름 `<0;3;3M`, 쥔 채 움직임 `<32;…`, 놓음 `…m`, Ctrl+오른쪽 `<18;…`, 가운데 `<1;…`), 휠(한 눈금 = 기본 배율 3번, `y 100`은 10번, 가로 `<66`), 대체 화면 화살표, 보고가 꺼진 칸에서 오른쪽 단추 메뉴·가운데 단추 붙여넣기가 일어나지 않음, 읽기 전용·검색 막대·꺼짐(-1728)·틀린 수식 키·없는 칸 오류. 링크 열기(사용자 브라우저가 뜸)와 사람·스크립트가 섞이는 경우(합성 마우스를 쓰지 않음)는 실제 창에서 돌리지 않았다. 유한하지 않은 값은 AppleScript가 만들지 못해(-2702) 단위 시험으로만 본다.
+
+### 하지 않은 것
+- 클립보드를 읽는 동작과 모달 메뉴의 스크립트 실행.
+- 스크립트 위치에 따른 호버·링크 밑줄·마우스 모양.
+- 사람 마우스 상태의 공유(고르는 중, 누름 횟수 등을 사람과 나누는 것).
+- `new surface configuration`·`with configuration`, `name override`, `pid`, `tty`.
+
+### 보안
+다른 앱이 칸 위에서 마우스를 쓸 수 있게 됐다. 이미 `send key`로 키를 보낼 수 있는 앱에는 새 힘이 아니지만(프로그램의 마우스 보고를 켠 칸에는 클릭·휠 바이트가 가고, 보고가 꺼진 칸에서는 글을 고르고 `copy-on-select`·오른쪽 단추 복사로 사용자의 클립보드를 쓸 수 있으며, Cmd-누르기로 링크를 열 수 있다), 막는 것은 macOS 자동화 허락과 `macos-applescript = false`뿐이다. 클립보드를 읽는 동작은 스크립트에 하지 않는다. 다만 이것은 굳은 경계가 아니다: 허락받은 앱은 이미 `input text "pbpaste"`와 `send key "enter"`로 칸에서 클립보드를 읽힐 수 있다. 사용자가 모르는 사이 클립보드 글이 칸에 들어가는 일을 줄이려는 선택이다: 가운데 단추 붙여넣기·`right-click-action = paste`·`copy-or-paste`의 붙여넣기 쪽·kitty 붙여넣기 이벤트(모드 5522가 프로그램에 클립보드를 읽을 일회용 암호를 준다)가 스크립트에는 가지 않는다. 모달 메뉴도 스크립트에는 뜨지 않으므로 스크립트가 메뉴에 막혀 시간 초과되지 않는다. 사람의 상태를 함께 쓰는 길은 만들지 않았다(칸마다 따로 둔 상태, 명령이 준 수식 키, 시험이 공유 처리의 소스를 지킨다). 읽기 전용 칸과 확인·검색·팔레트·제목 막대가 열린 창에는 보내지 않고, 수식 키 글은 256바이트 상한을 복사 전에 보며, 좌표와 휠 값은 유한해야 하고 휠은 한 번에 최대 10번·1000줄까지다.

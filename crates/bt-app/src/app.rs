@@ -19,9 +19,10 @@ mod gpu_frame;
 mod gpu_pace;
 mod input_latency;
 mod kitty_images;
+/// 사람과 AppleScript가 함께 쓰는 마우스 처리(#662). 모든 플랫폼
+mod mouse_core;
 /// AppleScript 명령과 상태 스냅숏(#634). macOS에만 있다
 #[cfg(target_os = "macos")]
-mod mouse_core;
 mod script;
 #[cfg(target_os = "macos")]
 pub use script::install as install_scripting;
