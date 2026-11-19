@@ -216,9 +216,30 @@ pub fn check_own_socket(path: &Path, uid: u32) -> std::io::Result<()> {
     Ok(())
 }
 
-/// 터미널에 찍을 글에서 제어 문자(C0·C1·DEL)를 지운다. 탭 제목·알림처럼 터미널 출력에서 온 글을 다른 터미널에 다시 찍을 때 쓴다
+/// 터미널 출력·스크립트에서 온 글을 화면(탭·창 제목, 확인 막대, 다른 터미널)에 보일 때 다듬는다(#680).
+/// 제어 문자(C0·C1·DEL)와 줄·문단 구분자는 공백으로, 글 순서를 뒤집거나 글을 숨기는 서식 문자는 지운다.
+/// 서식 문자 목록은 Ghostty `UntrustedURL.isUnsafeCharacter`와 같되, 이모지·글자를 잇는 ZWJ(U+200D)·ZWNJ(U+200C)는 남긴다
 pub fn printable(s: &str) -> String {
-    s.chars().map(|c| if c.is_control() { ' ' } else { c }).collect()
+    s.chars()
+        .filter(|&c| !hides_or_reorders(c))
+        .map(|c| {
+            if c.is_control() || matches!(c, '\u{2028}' | '\u{2029}') {
+                ' '
+            } else {
+                c
+            }
+        })
+        .collect()
+}
+
+/// 보이는 글의 순서를 바꾸거나(양방향 표지·덮어쓰기·격리) 폭 없이 숨는 서식 문자
+fn hides_or_reorders(c: char) -> bool {
+    matches!(c,
+        '\u{061C}' | '\u{200B}' | '\u{200E}' | '\u{200F}'
+        | '\u{202A}'..='\u{202E}'
+        | '\u{2060}'
+        | '\u{2066}'..='\u{2069}'
+        | '\u{FEFF}')
 }
 
 /// 앱 프로세스 하나의 소켓 경로
@@ -259,6 +280,20 @@ mod tests {
     fn printable_strips_c0_c1_and_del() {
         assert_eq!(printable("a\x1b[2Jb\u{9b}31mc\x7fd"), "a [2Jb 31mc d");
         assert_eq!(printable("한글 ok"), "한글 ok");
+    }
+
+    /// 방향 바꾸기·폭 없는 서식 문자는 지우고 줄·문단 구분자는 공백으로(#680). 목록은 Ghostty `UntrustedURL.isUnsafeCharacter`와
+    /// 같고, 이모지·글자 잇기에 쓰는 ZWJ(U+200D)·ZWNJ(U+200C)는 남긴다
+    #[test]
+    fn printable_drops_bidi_and_invisible_format() {
+        assert_eq!(printable("ok\u{202E}gnp.sh"), "okgnp.sh");
+        assert_eq!(printable("a\u{061C}b\u{200B}c\u{200E}d\u{200F}e"), "abcde");
+        assert_eq!(printable("a\u{202A}b\u{202D}c\u{2066}d\u{2069}e"), "abcde");
+        assert_eq!(printable("a\u{2060}b\u{FEFF}c"), "abc");
+        assert_eq!(printable("a\u{2028}b\u{2029}c"), "a b c");
+        // 가족 이모지(ZWJ로 이음)와 ZWNJ는 그대로
+        assert_eq!(printable("👨\u{200D}👩\u{200D}👧"), "👨\u{200D}👩\u{200D}👧");
+        assert_eq!(printable("می\u{200C}خواهم"), "می\u{200C}خواهم");
     }
 
     #[test]
