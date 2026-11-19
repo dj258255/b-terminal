@@ -1622,7 +1622,10 @@ impl Default for Config {
             link_url: true,
             link_osc8: true,
             link_previews: LinkPreviews::True,
-            copy_on_select: if cfg!(any(target_os = "macos", target_os = "linux")) {
+            // macOS는 드래그하면 ⌘V로 붙게 시스템 클립보드(범수 님이 고름, Ghostty 1.4 macOS 기본 none과 다름), Linux는 primary
+            copy_on_select: if cfg!(target_os = "macos") {
+                CopyOnSelect::Clipboard
+            } else if cfg!(target_os = "linux") {
                 CopyOnSelect::Primary
             } else {
                 CopyOnSelect::None
@@ -3052,9 +3055,9 @@ impl Config {
                 Some(b) => self.background_opacity_cells = b,
                 None => bad(warnings),
             },
-            // `true`는 macOS·Linux·FreeBSD에서 primary, 그 밖에서 clipboard. `false`는 none의 별칭(Ghostty)
+            // `true`는 Linux·FreeBSD에서 primary, macOS와 그 밖에서 clipboard. `false`는 none의 별칭(Ghostty 1.4)
             "copy-on-select" => match v {
-                "true" if cfg!(any(target_os = "macos", target_os = "linux", target_os = "freebsd")) => {
+                "true" if cfg!(any(target_os = "linux", target_os = "freebsd")) => {
                     self.copy_on_select = CopyOnSelect::Primary
                 }
                 "true" | "clipboard" => self.copy_on_select = CopyOnSelect::Clipboard,
@@ -4498,13 +4501,22 @@ mod tests {
         assert_eq!(parse("primary"), CopyOnSelect::Primary);
         assert_eq!(parse("clipboard"), CopyOnSelect::Clipboard);
         assert_eq!(parse("both"), CopyOnSelect::Both);
-        // true는 macOS·Linux·FreeBSD에서 primary, 그 밖에서 clipboard
-        let want = if cfg!(any(target_os = "macos", target_os = "linux", target_os = "freebsd")) {
+        // true는 Linux·FreeBSD에서 primary, macOS와 그 밖에서 clipboard(Ghostty 1.4 Config.zig)
+        let want = if cfg!(any(target_os = "linux", target_os = "freebsd")) {
             CopyOnSelect::Primary
         } else {
             CopyOnSelect::Clipboard
         };
         assert_eq!(parse("true"), want);
+        // 기본: macOS는 시스템 클립보드(드래그하면 ⌘V로 붙음), Linux는 primary, 그 밖은 none
+        let default = if cfg!(target_os = "macos") {
+            CopyOnSelect::Clipboard
+        } else if cfg!(target_os = "linux") {
+            CopyOnSelect::Primary
+        } else {
+            CopyOnSelect::None
+        };
+        assert_eq!(Config::default().copy_on_select, default);
         assert_eq!(Config::from_text("copy-on-select = maybe\n", true).warnings.len(), 1);
         for (v, name) in [
             (CopyOnSelect::None, "none"),
@@ -4537,14 +4549,7 @@ mod tests {
     fn clipboard_keys() {
         let d = Config::default();
         assert!(d.clipboard_trim_trailing_spaces);
-        assert_eq!(
-            d.copy_on_select,
-            if cfg!(any(target_os = "macos", target_os = "linux")) {
-                CopyOnSelect::Primary
-            } else {
-                CopyOnSelect::None
-            }
-        );
+        // copy-on-select 기본은 copy_on_select_values_and_dump에서 본다(macOS clipboard, Linux primary)
         assert_eq!(d.right_click_action, RightClickAction::ContextMenu);
         let c = Config::from_text(
             "clipboard-trim-trailing-spaces = false\ncopy-on-select = clipboard\nright-click-action = copy-or-paste\n",
