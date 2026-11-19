@@ -3638,7 +3638,8 @@ impl App {
             path: d.path,
             axis: d.axis,
         };
-        if self.w.divider.press(drag, Instant::now(), interval) {
+        let at = (self.w.cursor_pos.x, self.w.cursor_pos.y);
+        if self.w.divider.press(drag, at, Instant::now(), interval) {
             if let Some(g) = self.w.tabs.get_mut(self.w.active) {
                 g.layout.equalize();
             }
@@ -3654,6 +3655,10 @@ impl App {
         let Some(drag) = self.w.divider.drag().cloned() else {
             return;
         };
+        // Ghostty `DragGesture()` 기본 문턱 10pt. 제자리 누름·놓기는 비율을 바꾸지 않는다(두 번 눌러 고르게 한 것이 남게)
+        if !self.w.divider.follows(pos.x, pos.y, 10.0 * self.scale) {
+            return;
+        }
         let area = self.content_rect();
         let divider = self.divider_px();
         let min_px = (10.0 * self.scale).round() as u32;
