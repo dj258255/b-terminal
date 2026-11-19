@@ -169,6 +169,7 @@ impl App {
                     history: v.screen.history,
                     display_offset: v.screen.display_offset,
                     progress: v.progress,
+                    bell_border: v.bell_border,
                 })
                 .collect::<Vec<_>>(),
             toast: toast.is_some(),
@@ -400,6 +401,9 @@ impl App {
                 }
                 if let Some((rect, dir)) = drop_preview {
                     crate::pane_drag::draw_drop(ui!(), rect, dir, theme.cursor);
+                }
+                for v in views.iter().filter(|v| v.bell_border) {
+                    crate::bell_border::draw(ui!(), v.outer, scale);
                 }
                 if let Some((_, hit)) = hover.as_ref().filter(|(_, h)| link_previews.shows(h.explicit)) {
                     tabbar::draw_link_hint(ui!(), fonts.chrome(), &theme, &bt_core::proto::printable(&hit.url));

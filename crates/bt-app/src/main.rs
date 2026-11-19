@@ -3,6 +3,7 @@
 mod a11y;
 mod app;
 mod appearance;
+mod bell_border;
 mod bell_sound;
 mod blur;
 mod cliact;
