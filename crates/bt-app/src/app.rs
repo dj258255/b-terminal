@@ -7423,7 +7423,10 @@ impl ApplicationHandler<UserEvent> for App {
                     if state == ElementState::Pressed && matches!(button, MouseButton::Left | MouseButton::Middle) {
                         let width = self.w.gfx.as_ref().map(|g| g.window.inner_size().width).unwrap_or(0);
                         let hit = tabbar::hit(width, self.w.cursor_pos.x, self.w.tabs.len());
-                        if let (Some(i), MouseButton::Middle) = (hit, button) {
+                        // 확인 막대가 떠 있으면 탭 줄의 새 동작(가운데 클릭 닫기, 두 번 눌러 제목)은 하지 않는다.
+                        // 키는 확인 막대가 모두 가로채지만 마우스는 여기로 오므로, 열린 확인을 덮거나 확인 없이 닫지 않게 한다
+                        let modal = self.w.confirm.is_some();
+                        if let (Some(i), MouseButton::Middle, false) = (hit, button, modal) {
                             // 가운데 클릭은 그 탭을 닫는다(Ghostty). `close_tab` 키와 같은 길이라 프로그램이 돌면 확인을 지난다
                             if let Some(id) = self.w.tabs.get(i).map(|g| g.focus) {
                                 drop(self.redo.clear());
@@ -7436,7 +7439,7 @@ impl ApplicationHandler<UserEvent> for App {
                                 self.config.click_repeat_interval,
                                 mouse::platform_repeat_interval(),
                             );
-                            if tabbar::is_double_click(self.w.tab_click, now, i, interval) {
+                            if !modal && tabbar::is_double_click(self.w.tab_click, now, i, interval) {
                                 // 두 번 누르면 그 탭의 제목 입력 막대를 연다(Ghostty는 그 자리에서 고치지만 여기는 입력 막대)
                                 self.w.tab_click = None;
                                 self.handle_action(Action::PromptTabTitle, event_loop);
