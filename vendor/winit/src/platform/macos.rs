@@ -539,6 +539,15 @@ pub enum OptionAsAlt {
     None,
 }
 
+/// The character the current keyboard layout gives `key` with only Command held: the character macOS matches menu key
+/// equivalents with. On layouts whose letter keys are not Latin (2-Set Korean, Russian) this is the Latin letter, while
+/// `KeyEventExtKeyboard::key_without_modifiers` gives the layout's own letter (`ㅅ` for T on 2-Set Korean). `None` when
+/// the key has no scancode, the layout cannot be read, or the key gives nothing. Call it on the main thread.
+/// b-terminal(#709)
+pub fn command_layer_char(key: crate::keyboard::PhysicalKey) -> Option<String> {
+    crate::platform_impl::command_layer_char(key)
+}
+
 /// Turns Secure Event Input (Carbon `EnableSecureEventInput` / `DisableSecureEventInput`) on or off for the whole
 /// process. The calls are global and counted, so the caller keeps them balanced. Returns whether the call succeeded
 /// (`noErr`). b-terminal(#258)

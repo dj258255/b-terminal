@@ -269,6 +269,7 @@ keybind = nav/escape=deactivate_key_table
 ```
 
 - 수식 키: `super`(cmd) `ctrl` `alt`(opt) `shift`. 키 이름은 Ghostty 이름: `a`~`z`, `digit_1`(또는 `1`), `equal`, `minus`, `comma`, `bracket_left`, `bracket_right`, `arrow_up`, `page_up`, `home`, `enter`, `f1` …
+- 한글처럼 글자 키가 라틴 글자가 아닌 입력 소스(macOS): `ctrl`이나 `super`가 붙은 글자 키는 macOS 자판의 ⌘ 층 글자로 맞춥니다(macOS 메뉴 단축키가 쓰는 글자). 그래서 한글 2벌식에서도 ⌘T는 `super+t`, ⌃A는 `ctrl+a`입니다. `ctrl`·`super` 없이 누른 글자 키는 입력기가 조합으로 가져가므로 키 묶음에 오지 않습니다(키 순서 `ctrl+a>n`의 `n`은 영문 입력 소스에서만 듣고, `ctrl+a>ctrl+n`은 한글에서도 듣습니다). 자판의 글자 그대로(`super+ㅅ`) 묶을 수는 없습니다.
 - 키 순서(`ctrl+a>n`, Ghostty와 같은 문법): 앞 키를 누르면 다음 키를 기다립니다. 시간 제한은 없습니다. 순서에 묶이지 않은 키를 누르면 그때까지 누른 키를 모두 프로그램에 그대로 보냅니다(`ctrl+a` `x` → `^A` `x`). 겹치는 묶음은 나중 것이 이깁니다(`ctrl+a=…` 뒤에 `ctrl+a>n=…`을 쓰면 `ctrl+a`는 앞 키가 됩니다). 명령 팔레트에는 키 순서를 보이지 않습니다.
 - 접두사(Ghostty와 같은 문법, 겹쳐 쓸 수 있고 순서는 상관없음: `unconsumed:performable:ctrl+c=copy_to_clipboard`):
   - `unconsumed:` 동작을 하고 그 키도 프로그램에 보냅니다(기본은 키를 먹음). 키 순서의 마지막 키에서는 그 키만 보내고, 앞 키는 이미 순서에 먹힌 것으로 봅니다.

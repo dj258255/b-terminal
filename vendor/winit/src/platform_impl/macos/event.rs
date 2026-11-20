@@ -22,6 +22,26 @@ pub struct KeyEventExtra {
 
 /// Ignores ALL modifiers.
 pub fn get_modifierless_char(scancode: u16) -> Key {
+    // b-terminal(#709): the lookup moved to `layout_chars` so that `command_layer_char` can share it.
+    match layout_chars(scancode, 0, ffi::kUCKeyActionDisplay) {
+        Some(chars) if !chars.is_empty() => Key::Character(SmolStr::new(chars)),
+        _ => Key::Unidentified(NativeKey::MacOS(scancode)),
+    }
+}
+
+/// b-terminal(#709): what the current keyboard layout gives `scancode` with only Command held, the character macOS
+/// matches menu key equivalents with. Layouts whose letter keys are not Latin (2-Set Korean, Russian) give the Latin
+/// letter here. `None` when the layout cannot be read or the key gives nothing.
+pub fn command_layer_char(scancode: u16) -> Option<String> {
+    // `cmdKey` (0x0100) shifted right by 8, as `UCKeyTranslate` takes modifier key state.
+    const CMD_KEY_STATE: u32 = 0x01;
+    const KEY_ACTION_DOWN: u16 = 0;
+    layout_chars(scancode, CMD_KEY_STATE, KEY_ACTION_DOWN).filter(|s| !s.is_empty())
+}
+
+/// b-terminal(#709): `UCKeyTranslate` on the current keyboard layout. `None` when the layout cannot be read or the
+/// translation fails, `Some("")` when the key has no text.
+fn layout_chars(scancode: u16, modifiers: u32, action: u16) -> Option<String> {
     let mut string = [0; 16];
     let input_source;
     let layout;
@@ -29,14 +49,14 @@ pub fn get_modifierless_char(scancode: u16) -> Key {
         input_source = ffi::TISCopyCurrentKeyboardLayoutInputSource();
         if input_source.is_null() {
             tracing::error!("`TISCopyCurrentKeyboardLayoutInputSource` returned null ptr");
-            return Key::Unidentified(NativeKey::MacOS(scancode));
+            return None;
         }
         let layout_data =
             ffi::TISGetInputSourceProperty(input_source, ffi::kTISPropertyUnicodeKeyLayoutData);
         if layout_data.is_null() {
             CFRelease(input_source as *mut c_void);
             tracing::error!("`TISGetInputSourceProperty` returned null ptr");
-            return Key::Unidentified(NativeKey::MacOS(scancode));
+            return None;
         }
         layout = CFDataGetBytePtr(layout_data as CFDataRef) as *const ffi::UCKeyboardLayout;
     }
@@ -44,12 +64,11 @@ pub fn get_modifierless_char(scancode: u16) -> Key {
 
     let mut result_len = 0;
     let mut dead_keys = 0;
-    let modifiers = 0;
     let translate_result = unsafe {
         ffi::UCKeyTranslate(
             layout,
             scancode,
-            ffi::kUCKeyActionDisplay,
+            action,
             modifiers,
             keyboard_type as u32,
             ffi::kUCKeyTranslateNoDeadKeysMask,
@@ -64,16 +83,12 @@ pub fn get_modifierless_char(scancode: u16) -> Key {
     }
     if translate_result != 0 {
         tracing::error!("`UCKeyTranslate` returned with the non-zero value: {}", translate_result);
-        return Key::Unidentified(NativeKey::MacOS(scancode));
+        return None;
     }
-    if result_len == 0 {
-        // This is fine - not all keys have text representation.
-        // For instance, users that have mapped the `Fn` key to toggle
-        // keyboard layouts will hit this code path.
-        return Key::Unidentified(NativeKey::MacOS(scancode));
-    }
-    let chars = String::from_utf16_lossy(&string[0..result_len as usize]);
-    Key::Character(SmolStr::new(chars))
+    // An empty result is fine - not all keys have text representation.
+    // For instance, users that have mapped the `Fn` key to toggle
+    // keyboard layouts will hit this code path.
+    Some(String::from_utf16_lossy(&string[0..result_len as usize]))
 }
 
 // Ignores all modifiers except for SHIFT (yes, even ALT is ignored).
