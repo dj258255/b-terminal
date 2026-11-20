@@ -1467,6 +1467,18 @@ impl App {
             .map_or(0, |term| tabbar::bar_height(term, self.w.title_fonts.as_ref()))
     }
 
+    /// 고른 칸이 명령이 끝나 남겨 둔 칸이면 닫고 참(wait-after-command, #178·#715)
+    fn close_held_pane(&mut self, event_loop: &ActiveEventLoop) -> bool {
+        let held = self
+            .focused_id()
+            .and_then(|id| self.pane_index(id))
+            .filter(|&i| self.panes[i].held_after_exit);
+        let Some(i) = held else { return false };
+        self.close_pane(i, event_loop, false);
+        self.request_redraw();
+        true
+    }
+
     /// 확정 글을 알맞은 곳에 보낸다: 확인 막대면 버리고, 제목 입력·팔레트·찾기 막대가 열려 있으면 거기로, 아니면 고른 칸으로.
     /// `Ime::Commit`과 포커스를 잃을 때 확정하는 조합 글자(#502)가 같은 길을 쓴다
     fn commit_text(&mut self, text: &str) {
@@ -7357,7 +7369,12 @@ impl ApplicationHandler<UserEvent> for App {
                     self.w.preedit = text;
                     self.request_redraw();
                 }
-                Ime::Commit(text) => self.commit_text(&text),
+                // 입력기가 확정한 글도 남은 칸을 닫는 키다(#715. 한국어 입력기의 스페이스는 여기로 온다)
+                Ime::Commit(text) => {
+                    if !(crate::lifecycle::is_dismiss_commit(&text) && self.close_held_pane(event_loop)) {
+                        self.commit_text(&text);
+                    }
+                }
                 Ime::Enabled | Ime::Disabled => {
                     self.w.preedit.clear();
                     self.request_redraw();
@@ -7380,16 +7397,8 @@ impl ApplicationHandler<UserEvent> for App {
                     return;
                 }
                 // 명령이 끝나 남겨 둔 칸은 아무 키나 누르면 닫는다(wait-after-command, #178)
-                if crate::lifecycle::is_dismiss_key(&event.logical_key) {
-                    let held = self
-                        .focused_id()
-                        .and_then(|id| self.pane_index(id))
-                        .filter(|&i| self.panes[i].held_after_exit);
-                    if let Some(i) = held {
-                        self.close_pane(i, event_loop, false);
-                        self.request_redraw();
-                        return;
-                    }
+                if crate::lifecycle::is_dismiss_key(&event.logical_key) && self.close_held_pane(event_loop) {
+                    return;
                 }
                 self.reset_blink();
                 if self.confirm_key(&event, event_loop)
