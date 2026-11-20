@@ -5043,6 +5043,7 @@ impl App {
                 px(self.config.padding_x.0) + px(self.config.padding_x.1),
                 px(self.config.padding_y.0) + px(self.config.padding_y.1),
             ),
+            self.top_inset() + self.tabbar_height(),
             self.scale,
             DEFAULT_WINDOW_LOGICAL,
         )

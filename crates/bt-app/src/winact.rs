@@ -31,17 +31,19 @@ pub fn pick_window(serials: &[u64], current: u64, delta: isize) -> Option<u64> {
     }
 }
 
-/// `reset_window_size`가 만들 안쪽 크기(물리 픽셀). 설정의 `window-width`·`window-height`(칸)가 둘 다 있으면
-/// 칸 크기와 여백으로 구하고, 없으면 새 창의 기본 안쪽 크기(논리 `default_logical`)
+/// 처음 창·`reset_window_size`가 만들 안쪽 크기(물리 픽셀). 설정의 `window-width`·`window-height`(칸)가 둘 다 있으면
+/// 칸 크기와 여백, 격자 위의 창 덧그림 높이(`chrome_h`: 제목 막대 아래 비움과 탭 줄, #713)로 구하고,
+/// 없으면 새 창의 기본 안쪽 크기(논리 `default_logical`)
 pub fn window_inner_px(
     cells: Option<(u32, u32)>,
     cell: (u32, u32),
     pad: (u32, u32),
+    chrome_h: u32,
     scale: f64,
     default_logical: (f64, f64),
 ) -> (u32, u32) {
     match cells {
-        Some((cols, rows)) => (cell.0 * cols + pad.0, cell.1 * rows + pad.1),
+        Some((cols, rows)) => (cell.0 * cols + pad.0, cell.1 * rows + pad.1 + chrome_h),
         None => (
             (default_logical.0 * scale).round() as u32,
             (default_logical.1 * scale).round() as u32,
@@ -137,16 +139,30 @@ mod tests {
     #[test]
     fn window_inner_size_uses_cells_or_default() {
         assert_eq!(
-            window_inner_px(Some((80, 24)), (10, 20), (8, 6), 2.0, (1000.0, 680.0)),
+            window_inner_px(Some((80, 24)), (10, 20), (8, 6), 0, 2.0, (1000.0, 680.0)),
             (808, 486)
         );
         assert_eq!(
-            window_inner_px(None, (10, 20), (8, 6), 2.0, (1000.0, 680.0)),
+            window_inner_px(None, (10, 20), (8, 6), 0, 2.0, (1000.0, 680.0)),
             (2000, 1360)
         );
         assert_eq!(
-            window_inner_px(None, (10, 20), (8, 6), 1.0, (1000.0, 680.0)),
+            window_inner_px(None, (10, 20), (8, 6), 0, 1.0, (1000.0, 680.0)),
             (1000, 680)
+        );
+    }
+
+    #[test]
+    fn window_height_rows_sit_below_title_inset_and_tab_bar() {
+        // #713: 격자가 제목 막대 아래 비움(56px)부터 시작하므로 24줄이 다 보이려면 그만큼 더 높아야 한다
+        assert_eq!(
+            window_inner_px(Some((80, 24)), (10, 20), (8, 6), 56, 2.0, (1000.0, 680.0)),
+            (808, 542)
+        );
+        // 기본 크기(칸 수를 정하지 않음)는 창 크기 자체라 덧그림을 더하지 않는다
+        assert_eq!(
+            window_inner_px(None, (10, 20), (8, 6), 56, 2.0, (1000.0, 680.0)),
+            (2000, 1360)
         );
     }
 
