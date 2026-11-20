@@ -115,7 +115,7 @@ config-file = ?~/.config/b-terminal/local   # ?가 붙으면 없어도 된다
 | `window-padding-x` / `window-padding-y` | `2` 또는 `왼,오른`(`위,아래`) | `2` | 포인트 |
 | `window-padding-balance` | `false` `true` `equal` | `false` | 칸의 크기가 글자 칸 크기로 나누어떨어지지 않아 남는 자리를 네 변에 나눕니다(끄면 오른쪽·아래에 몰림). `true`는 Ghostty처럼 위 여백을 (왼쪽 + 오른쪽 여백 + 칸 너비) / 2까지로 묶고 넘는 것은 아래로 보내고, `equal`(Ghostty 1.4)은 위아래를 똑같이 나눕니다. 나눌 때는 `window-padding-x`·`-y`까지 합친 남는 자리를 반씩 나누므로 두 값이 좌우·위아래로 다르면 그 차이는 남지 않습니다(Ghostty와 같음) |
 | `window-padding-color` | `background` `extend` `extend-always` | `background` | 여백 색. `extend`는 가장 가까운 칸의 바탕색으로 늘이되, 주 화면에서 가장 가까운 줄에 기본 바탕색 칸·프롬프트·powerline 꼭 맞춤 글자가 있으면 위아래로는 늘이지 않습니다(Ghostty와 같은 규칙). `extend-always`는 따지지 않고 늘입니다 |
-| `window-width` / `window-height` | 셀 수 | 없음 | 둘 다 있을 때 처음 창 크기 |
+| `window-width` / `window-height` | 셀 수 | 없음 | 둘 다 있을 때 처음 창 크기. 격자의 칸·줄 수이고, 제목 막대 아래 비움·탭 줄·`window-padding-*`은 따로 더합니다(Ghostty와 같음) |
 | `maximize` | `true` `false` | `false` | 새 창을 최대화로 띄웁니다(Ghostty처럼 첫 창만이 아니라 새 창 모두. 탭·분할·퀵 터미널 창은 해당 없음). 창 상태 복원으로 되살린 창은 복원한 크기가 이깁니다 |
 | `fullscreen` | `true` `false` `non-native` `non-native-visible-menu` `non-native-padded-notch` | `false` | 새 창을 전체 화면으로 띄웁니다. `maximize`와 같이 켜면 전체 화면이 이깁니다. `non-native*` 값은 전체 화면을 켜면서 `macos-non-native-fullscreen`을 그 값으로 정합니다. 퀵 터미널 창과 되살린 창에는 적용하지 않습니다 |
 | `macos-non-native-fullscreen` | `false` `true` `visible-menu` `padded-notch` | `false` | macOS에서 전체 화면을 새 Space 없이 합니다(winit simple fullscreen). 켜면 `toggle_fullscreen`과 `fullscreen`이 이 방식을 씁니다. 메뉴 막대와 Dock은 마우스를 대면 나타나는 자동 숨김입니다. `visible-menu`와 `padded-notch`는 `true`와 구분하지 못합니다(메뉴 막대를 늘 보이게 하거나 노치를 피하는 일은 안전한 API만으로는 못 합니다). 이미 전체 화면인 창은 끌 때까지 들어간 방식을 따릅니다. macOS 밖에서는 하는 일이 없습니다 |
