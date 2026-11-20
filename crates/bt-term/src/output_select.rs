@@ -40,6 +40,11 @@ fn cell<T>(term: &Term<T>, p: Point) -> &Cell {
     &term.grid()[p.line][p.column]
 }
 
+/// 보고 있는 격자 안의 칸인가
+pub fn inside<T>(term: &Term<T>, p: Point) -> bool {
+    p.line >= term.topmost_line() && p.line <= term.bottommost_line() && p.column.0 < term.columns()
+}
+
 fn last_col<T>(term: &Term<T>) -> Column {
     Column(term.columns().saturating_sub(1))
 }
@@ -150,6 +155,10 @@ fn output_of_prompt<T>(term: &Term<T>, prompt: Line) -> Option<(Point, Point)> {
 
 /// `at` 칸이 출력이면 그 명령의 출력 구간(첫 칸, 끝 칸, 둘 다 포함). 출력이 아니거나 고를 것이 없으면 None
 pub fn select_output<T>(term: &Term<T>, at: Point) -> Option<(Point, Point)> {
+    // 끄는 사이 스크롤백이 지워지거나 크기가 줄어 남은 옛 좌표는 고르지 않는다(격자 밖을 읽으면 죽는다)
+    if !inside(term, at) {
+        return None;
+    }
     if kind(cell(term, at)) != Kind::Output {
         return None;
     }

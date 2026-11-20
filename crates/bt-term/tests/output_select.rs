@@ -170,3 +170,15 @@ fn a_trailing_wide_character_ends_at_its_first_cell() {
     t.osc("A").feed("$ ");
     assert_eq!(t.sel(1, 0), Some((p(1, 0), p(1, 2))));
 }
+
+/// 격자 밖 좌표(끄는 사이 스크롤백이 지워지거나 크기가 줄어 남은 옛 좌표)는 고르지 않는다. 죽지 않는다
+#[test]
+fn points_outside_the_grid_select_nothing() {
+    let mut t = T::new(20, 6);
+    t.command("ls").feed("a\r\n").osc("D;0");
+    assert_eq!(t.sel(-3, 0), None, "없는 스크롤백 줄");
+    assert_eq!(t.sel(6, 0), None, "화면 아래");
+    assert_eq!(t.sel(1, 20), None, "오른쪽 밖");
+    assert_eq!(drag_output(&t.term, p(-5, 0), p(1, 0)), None);
+    assert_eq!(drag_output(&t.term, p(1, 0), p(1, 40)), Some((p(1, 0), p(1, 0))));
+}

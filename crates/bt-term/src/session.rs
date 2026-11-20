@@ -382,8 +382,22 @@ struct Inner {
     cell: (u32, u32),
     /// 고르기의 움직이는 끝점(#138 adjust_selection). 고르기를 시작·늘이면 바뀐다
     sel_end: Option<Point>,
-    /// 명령 출력 고르기(#700)를 시작한 칸. 있으면 끌기가 출력 구간 단위로 늘린다. 다른 고르기를 시작하거나 지우면 없어진다
-    output_click: Option<Point>,
+    /// 명령 출력 고르기(#700)를 시작한 칸: (스크롤백 맨 위에서 센 줄, 칸). 출력이 흘러 줄이 밀려도 같은 줄을 가리킨다.
+    /// 있으면 끌기가 출력 구간 단위로 늘린다. 다른 고르기를 시작하거나 지우면 없어진다
+    output_click: Option<(usize, usize)>,
+}
+
+/// 격자 좌표를 스크롤백 맨 위에서 센 (줄, 칸)으로(출력이 흘러 스크롤백이 늘어도 같은 줄)
+fn absolute_cell(term: &Term<Listener>, p: Point) -> (usize, usize) {
+    let history = term.grid().history_size() as i32;
+    ((p.line.0 + history).max(0) as usize, p.column.0)
+}
+
+/// `absolute_cell`의 반대. 지금 격자 밖이면 None
+fn from_absolute_cell(term: &Term<Listener>, (row, col): (usize, usize)) -> Option<Point> {
+    let history = term.grid().history_size() as i32;
+    let p = Point::new(Line(row as i32 - history), Column(col));
+    crate::output_select::inside(term, p).then_some(p)
 }
 
 /// 두 칸(둘 다 포함)을 글자 고르기로 고르고 끝점을 `end`로 둔다
@@ -1528,7 +1542,7 @@ impl Session {
             return false;
         };
         set_range(&mut g, start, end);
-        g.output_click = Some(point);
+        g.output_click = Some(absolute_cell(&g.term, point));
         true
     }
 
@@ -1566,7 +1580,9 @@ impl Session {
         let point = viewport_point(&g.term, col, row);
         // 출력 고르기를 끄는 중이면 누른 구간에서 끈 구간까지(#700)
         if let Some(click) = g.output_click.filter(|_| g.term.selection.is_some()) {
-            if let Some((start, end)) = crate::output_select::drag_output(&g.term, click, point) {
+            // 스크롤백이 지워졌거나 크기가 바뀌어 시작 칸이 격자 밖이면 `drag_output`이 None이고 고른 것을 그대로 둔다
+            let click = from_absolute_cell(&g.term, click);
+            if let Some((start, end)) = click.and_then(|c| crate::output_select::drag_output(&g.term, c, point)) {
                 set_range(&mut g, start, end);
             }
             return;
