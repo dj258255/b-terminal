@@ -330,7 +330,7 @@ HTML은 `<div style="font-family: monospace; white-space: pre;">` 안에 칸의 
 | `move_tab_to_new_window` | 지금 탭을 새 창으로 떼어 냄. 탭이 하나뿐이면 아무것도 하지 않습니다 | (없음) |
 | `reset_window_size` | 창을 새 창이 만들어질 크기(`window-width`·`window-height`, 없으면 기본)로 되돌림. 전체 화면에서는 하지 않고, 최대화는 풀고 되돌립니다 | (없음) |
 | `toggle_window_decorations` | 지금 창의 제목 막대·테두리 켜고 끄기(Ghostty는 Linux만 구현). 설정을 다시 읽으면 `window-decoration`으로 돌아갑니다 | (없음) |
-| `toggle_visibility` | 모든 창 숨기기 / 다시 보이기(macOS만). 보고 있는 칸이 전체 화면이면 아무것도 하지 않습니다 | (없음, 전역 단축키 `global:`와 함께 쓰는 동작) |
+| `toggle_visibility` | 모든 창 숨기기 / 다시 보이기(macOS만). Ghostty처럼 b-terminal이 맨 앞 앱이면 숨기고(보고 있는 칸이 전체 화면이면 아무것도 하지 않습니다), 아니면 숨긴 창을 되살려 맨 앞으로 가져옵니다. 다른 앱 뒤에 보이는 창도 숨기지 않고 앞으로 가져옵니다 | (없음, 전역 단축키 `global:`와 함께 쓰는 동작) |
 | `start_search` / `end_search` | 찾기 막대 열기 / 닫기. 막대에서 글을 치면 바로 찾고, Enter는 위로·Shift-Enter는 아래로, Esc로 닫습니다. 기본 묶음은 `performable`이라 막대가 닫혀 있으면 Esc는 프로그램으로 갑니다 | `super+f` / `escape` `super+shift+f`(macOS) |
 | `navigate_search:next` / `navigate_search:previous` | 위(오래된 쪽) / 아래 맞은 곳으로 | `super+g` / `super+shift+g` |
 | `toggle_command_palette` | 명령 팔레트 열기·닫기 | `super+shift+p` |
