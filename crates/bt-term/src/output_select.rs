@@ -29,7 +29,7 @@ fn kind(cell: &Cell) -> Kind {
 }
 
 /// Ghostty `cell.hasText()`: 글자를 찍은 칸(찍은 빈칸 포함). 넓은 글자의 뒤 칸·줄 끝 자리 칸은 아니다(`xt_checksum`과 같은 판정)
-fn has_text(cell: &Cell) -> bool {
+pub(crate) fn cell_has_text(cell: &Cell) -> bool {
     cell.flags.contains(Flags::WRITTEN)
         && !cell
             .flags
@@ -138,12 +138,12 @@ fn output_of_prompt<T>(term: &Term<T>, prompt: Line) -> Option<(Point, Point)> {
             (Kind::Prompt | Kind::Input, None) => {}
             (Kind::Prompt | Kind::Input, Some(_)) => break,
             (Kind::Output, None) => {
-                if has_text(c) {
+                if cell_has_text(c) {
                     found = Some((p, p));
                 }
             }
             (Kind::Output, Some(range)) => {
-                if has_text(c) {
+                if cell_has_text(c) {
                     range.1 = p;
                 }
             }
@@ -174,7 +174,7 @@ pub fn select_output<T>(term: &Term<T>, at: Point) -> Option<(Point, Point)> {
     let start = Point::new(term.topmost_line(), Column(0));
     let mut end = Point::new(next - 1, last_col(term));
     loop {
-        if has_text(cell(term, end)) {
+        if cell_has_text(cell(term, end)) {
             break;
         }
         match step_back(term, end) {
