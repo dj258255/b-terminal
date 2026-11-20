@@ -5194,8 +5194,8 @@ impl App {
         self.clear_visible_unread();
     }
 
-    /// `toggle_visibility`(macOS): 앱의 모든 창을 숨기고 보인다. 보고 있는 칸이 전체 화면이면 하지 않는다.
-    /// 다시 보일 때 앱을 앞으로 가져온다(`unhide:`가 한다고 문서에 있으나 실제 창에서는 아직 확인하지 않았다)
+    /// `toggle_visibility`(macOS): 앱이 활성이면 모든 창을 숨기고(보고 있는 칸이 전체 화면이면 하지 않음),
+    /// 아니면 숨긴 창을 되살리고 앱을 활성화한다(#718). `unhide`만으로는 앞으로 오지 않는다(실제 창에서 잼)
     fn toggle_visibility(&mut self) {
         #[cfg(target_os = "macos")]
         {
@@ -5205,9 +5205,14 @@ impl App {
             };
             let app = objc2_app_kit::NSApplication::sharedApplication(mtm);
             let fullscreen = self.w.gfx.as_ref().is_some_and(|g| window_is_fullscreen(&g.window));
-            match crate::winact::visibility_plan(app.isHidden(), fullscreen) {
+            match crate::winact::visibility_plan(app.isActive(), fullscreen) {
                 Some(Visibility::Hide) => app.hide(None),
-                Some(Visibility::Show) => app.unhide(None),
+                Some(Visibility::Show) => {
+                    app.unhide(None);
+                    // Ghostty `NSApp.activate(ignoringOtherApps: true)`. winit `focus_window`도 같은 호출을 쓴다
+                    #[allow(deprecated)]
+                    app.activateIgnoringOtherApps(true);
+                }
                 None => {}
             }
         }

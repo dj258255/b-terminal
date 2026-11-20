@@ -59,14 +59,14 @@ pub enum Visibility {
     Show,
 }
 
-/// 숨겨져 있으면 보이고, 보이면 숨긴다. 보고 있는 칸이 전체 화면이면 아무것도 하지 않는다(Ghostty 주석).
-/// 숨은 동안에는 보던 칸을 알 수 없으므로 전체 화면 검사는 숨기기 전에만 한다
+/// 앱이 활성이면 숨기고, 아니면(숨었거나 다른 앱 뒤) 활성화하며 보인다. 활성인데 보고 있는 칸이 전체 화면이면
+/// 아무것도 하지 않는다. Ghostty `AppDelegate.toggleVisibility`와 같다(#718)
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
-pub fn visibility_plan(app_hidden: bool, focused_fullscreen: bool) -> Option<Visibility> {
-    match (app_hidden, focused_fullscreen) {
-        (true, _) => Some(Visibility::Show),
-        (false, true) => None,
-        (false, false) => Some(Visibility::Hide),
+pub fn visibility_plan(app_active: bool, focused_fullscreen: bool) -> Option<Visibility> {
+    match (app_active, focused_fullscreen) {
+        (false, _) => Some(Visibility::Show),
+        (true, true) => None,
+        (true, false) => Some(Visibility::Hide),
     }
 }
 
@@ -166,19 +166,29 @@ mod tests {
         );
     }
 
+    /// Ghostty `AppDelegate.toggleVisibility`: 활성이면 숨기고(전체 화면이면 그대로), 아니면 활성화하며 보인다(#718).
+    /// 다른 앱 뒤에 보이는 창도 "활성 아님"이라 숨기지 않고 앞으로 가져온다
     #[test]
-    fn visibility_toggles_and_skips_fullscreen() {
-        assert_eq!(visibility_plan(false, false), Some(Visibility::Hide));
-        assert_eq!(visibility_plan(true, false), Some(Visibility::Show));
+    fn visibility_follows_app_activeness_like_ghostty() {
         assert_eq!(
-            visibility_plan(false, true),
+            visibility_plan(true, false),
+            Some(Visibility::Hide),
+            "앞에 있으면 숨긴다"
+        );
+        assert_eq!(
+            visibility_plan(true, true),
             None,
             "전체 화면인 칸에서는 아무것도 하지 않는다"
         );
         assert_eq!(
-            visibility_plan(true, true),
+            visibility_plan(false, false),
             Some(Visibility::Show),
-            "숨은 뒤에는 되살린다"
+            "숨었거나 다른 앱 뒤에 있으면 앞으로 가져온다"
+        );
+        assert_eq!(
+            visibility_plan(false, true),
+            Some(Visibility::Show),
+            "활성이 아니면 전체 화면 검사를 하지 않는다"
         );
     }
 
