@@ -878,6 +878,8 @@ struct Win {
     /// 마우스가 위쪽 띠 안에 있는 칸과 마우스가 손잡이 위인지(`drag-handle`)
     handle_hover: Option<(u64, bool)>,
     selecting: bool,
+    /// 두 번 누르기로 링크 전체를 고른 칸(#701, `PtrState::link_word`)
+    link_word: Option<(usize, usize)>,
     last_click: Option<(Instant, usize, usize, u8)>,
     scroll_accum: f64,
     /// 가로 휠 누적(마우스 보고용, #300)
@@ -977,6 +979,7 @@ impl Win {
             tab_click: None,
             handle_hover: None,
             selecting: false,
+            link_word: None,
             last_click: None,
             scroll_accum: 0.0,
             scroll_accum_x: 0.0,
@@ -4706,6 +4709,7 @@ impl App {
         let pane = idx.and_then(|i| self.panes.get(i));
         let st = crate::script_mouse::PtrState {
             selecting: self.w.selecting,
+            link_word: self.w.link_word,
             last_click: self.w.last_click,
             down: pane.map_or(0, |p| p.mouse_down),
             last_cell: pane.and_then(|p| p.mouse_last_cell),
@@ -4727,6 +4731,9 @@ impl App {
         }
         if after.last_click != before.last_click {
             self.w.last_click = after.last_click;
+        }
+        if after.link_word != before.link_word {
+            self.w.link_word = after.link_word;
         }
         if after.accum != before.accum {
             self.w.scroll_accum = after.accum;

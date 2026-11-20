@@ -143,6 +143,20 @@ impl App {
             // 끌 때마다 그 순간의 수식 키로 사각 여부를 정한다(Ghostty Surface.zig 4838줄)
             let rectangle = input.rectangle_select();
             if let Some((c, r)) = self.cell_in(idx, input.pos) {
+                match mouse::link_drag(st.link_word, (c, r)) {
+                    mouse::LinkDrag::Keep => return,
+                    mouse::LinkDrag::ToWord => {
+                        if let Some((lc, lr)) = st.link_word.take() {
+                            self.panes[idx].session.select_start_at(
+                                lc,
+                                lr,
+                                bt_term::SelectKind::Word,
+                                bt_term::CellSide::Left,
+                            );
+                        }
+                    }
+                    mouse::LinkDrag::Normal => {}
+                }
                 self.panes[idx].session.select_set_block(rectangle);
                 let side = self.cell_side_in(idx, input.pos);
                 self.panes[idx].session.select_update_at(c, r, side);
@@ -243,6 +257,7 @@ impl App {
             let interval = mouse::repeat_interval(self.config.click_repeat_interval, mouse::platform_repeat_interval());
             let clicks = next_click(st.last_click, now, (c, r), interval);
             st.last_click = Some((now, c, r, clicks));
+            st.link_word = None;
             // ⌘(macOS)·Ctrl+세 번 누르기는 줄 대신 그 명령의 출력 구간(#700, Ghostty `SelectionGesture`의 `.output`).
             // 출력이 아닌 칸(프롬프트·입력)이면 아무것도 새로 고르지 않는다(Ghostty도 앞서 고른 것을 그대로 둔다)
             if clicks == 3
@@ -262,6 +277,7 @@ impl App {
                     session.select_start(c0, r0, bt_term::SelectKind::Simple);
                     session.select_update(c1, r1);
                     st.selecting = true;
+                    st.link_word = Some((c, r));
                     self.request_redraw();
                     return;
                 }
