@@ -86,6 +86,12 @@ pub fn start_without_window(initial_window: bool, cli_command: bool) -> bool {
     !initial_window && !cli_command
 }
 
+/// 입력기가 확정한 글(`Ime::Commit`)이 남은 칸을 닫는가: 보낼 바이트가 있으면 닫는다(#715).
+/// 한국어 입력기는 스페이스를 `KeyboardInput`이 아니라 확정으로 보낸다. 조합 중인 글자는 확정이 아니라 닫지 않는다(Ghostty와 같음)
+pub fn is_dismiss_commit(text: &str) -> bool {
+    !text.is_empty()
+}
+
 /// 남은 칸을 닫는 "아무 키"인가: 수정 키만 누른 것은 세지 않는다
 pub fn is_dismiss_key(key: &winit::keyboard::Key) -> bool {
     use winit::keyboard::{Key, NamedKey};
@@ -228,5 +234,14 @@ mod tests {
         assert!(!is_dismiss_key(&Key::Named(NamedKey::CapsLock)));
         assert!(is_dismiss_key(&Key::Named(NamedKey::Enter)));
         assert!(is_dismiss_key(&Key::Character("a".into())));
+    }
+
+    /// 입력기가 확정한 글(한국어 입력 소스의 스페이스 등, `Ime::Commit`)도 보낼 바이트라 남은 칸을 닫는다(#715).
+    /// Ghostty는 `insertText`로 온 글도 `keyCallback`의 `encodeKey`를 지나 바이트가 생기면 닫는다
+    #[test]
+    fn committed_text_dismisses_held_pane() {
+        assert!(is_dismiss_commit(" "), "한국어 입력기의 스페이스");
+        assert!(is_dismiss_commit("가"), "조합을 마친 글자");
+        assert!(!is_dismiss_commit(""), "빈 확정은 바이트가 없다");
     }
 }
