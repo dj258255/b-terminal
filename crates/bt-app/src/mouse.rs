@@ -28,6 +28,36 @@ pub fn select_kind(clicks: u8, rectangle: bool) -> SelectKind {
     }
 }
 
+/// 세 번 누르기가 줄 대신 명령 출력을 고르는가(#700, Ghostty `Surface.zig` 4133줄 `mods.ctrlOrSuper()`): macOS는 ⌘, 그 밖에는 Ctrl
+pub fn triple_click_selects_output(macos: bool, ctrl: bool, super_key: bool) -> bool {
+    if macos { super_key } else { ctrl }
+}
+
+/// 두 번 누르기가 링크 전체를 고를 때 찾을 링크(#701, Ghostty `linkAtPin(pin, null)`): `link` 규칙(화면 글의 URL)만 보고 OSC 8은 보지 않는다.
+/// `link-url = false`면 규칙이 없어 낱말 고르기다
+pub fn double_click_link_options(link_url: bool) -> Option<bt_term::links::LinkOptions> {
+    link_url.then_some(bt_term::links::LinkOptions { url: true, osc8: false })
+}
+
+/// 링크를 두 번 눌러 고른 뒤 끌 때 할 일(#701)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LinkDrag {
+    /// 링크 고르기가 아니다: 보통 끌기
+    Normal,
+    /// 아직 누른 칸 안이다: 링크 고르기를 그대로 둔다(winit은 떼기 직전에 같은 자리 움직임을 보낸다. AppKit은 움직여야 끌기를 보낸다)
+    Keep,
+    /// 누른 칸을 벗어났다: 누른 칸의 낱말부터 낱말 단위로 끈다(Ghostty는 두 번 누르기 끌기가 늘 `dragSelectionWord`)
+    ToWord,
+}
+
+pub fn link_drag(link_cell: Option<(usize, usize)>, cell: (usize, usize)) -> LinkDrag {
+    match link_cell {
+        None => LinkDrag::Normal,
+        Some(at) if at == cell => LinkDrag::Keep,
+        Some(_) => LinkDrag::ToWord,
+    }
+}
+
 /// 두 번·세 번 누르기 간격. 설정이 0이면 플랫폼 값(macOS는 OS 설정, 그 밖에는 500ms)
 pub fn repeat_interval(config_ms: u32, platform: Option<Duration>) -> Duration {
     if config_ms > 0 {
@@ -427,6 +457,35 @@ mod tests {
     }
 
     /// #433: 누르기 횟수가 낱말·줄을 정하고, 한 번 누르기만 사각 여부를 따른다(낱말·줄 고르기는 사각을 보지 않는다)
+    #[test]
+    fn link_selection_survives_same_cell_motion_and_becomes_word_drag() {
+        assert_eq!(link_drag(None, (3, 1)), LinkDrag::Normal);
+        assert_eq!(link_drag(Some((3, 1)), (3, 1)), LinkDrag::Keep);
+        assert_eq!(link_drag(Some((3, 1)), (4, 1)), LinkDrag::ToWord);
+        assert_eq!(link_drag(Some((3, 1)), (3, 2)), LinkDrag::ToWord);
+    }
+
+    #[test]
+    fn double_click_link_looks_only_at_url_rules() {
+        assert_eq!(
+            double_click_link_options(true),
+            Some(bt_term::links::LinkOptions { url: true, osc8: false })
+        );
+        assert_eq!(double_click_link_options(false), None);
+    }
+
+    #[test]
+    fn triple_click_output_needs_cmd_on_macos_and_ctrl_elsewhere() {
+        assert!(triple_click_selects_output(true, false, true));
+        assert!(
+            !triple_click_selects_output(true, true, false),
+            "macOS의 Ctrl은 아니다(Ctrl+누르기는 메뉴)"
+        );
+        assert!(triple_click_selects_output(false, true, false));
+        assert!(!triple_click_selects_output(false, false, true));
+        assert!(!triple_click_selects_output(true, false, false));
+    }
+
     #[test]
     fn select_kind_follows_clicks_and_only_single_click_takes_the_rectangle() {
         use bt_term::SelectKind::*;

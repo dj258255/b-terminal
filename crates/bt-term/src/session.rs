@@ -382,6 +382,30 @@ struct Inner {
     cell: (u32, u32),
     /// 고르기의 움직이는 끝점(#138 adjust_selection). 고르기를 시작·늘이면 바뀐다
     sel_end: Option<Point>,
+    /// 명령 출력 고르기(#700)를 시작한 칸: (스크롤백 맨 위에서 센 줄, 칸). 출력이 흘러 줄이 밀려도 같은 줄을 가리킨다.
+    /// 있으면 끌기가 출력 구간 단위로 늘린다. 다른 고르기를 시작하거나 지우면 없어진다
+    output_click: Option<(usize, usize)>,
+}
+
+/// 격자 좌표를 스크롤백 맨 위에서 센 (줄, 칸)으로(출력이 흘러 스크롤백이 늘어도 같은 줄)
+fn absolute_cell(term: &Term<Listener>, p: Point) -> (usize, usize) {
+    let history = term.grid().history_size() as i32;
+    ((p.line.0 + history).max(0) as usize, p.column.0)
+}
+
+/// `absolute_cell`의 반대. 지금 격자 밖이면 None
+fn from_absolute_cell(term: &Term<Listener>, (row, col): (usize, usize)) -> Option<Point> {
+    let history = term.grid().history_size() as i32;
+    let p = Point::new(Line(row as i32 - history), Column(col));
+    crate::output_select::inside(term, p).then_some(p)
+}
+
+/// 두 칸(둘 다 포함)을 글자 고르기로 고르고 끝점을 `end`로 둔다
+fn set_range(g: &mut Inner, start: Point, end: Point) {
+    let mut sel = Selection::new(SelectionType::Simple, start, alacritty_terminal::index::Side::Left);
+    sel.update(end, alacritty_terminal::index::Side::Right);
+    g.term.selection = Some(sel);
+    g.sel_end = Some(end);
 }
 
 /// 절대 줄(스크롤백 맨 위가 0) `row`가 화면 맨 위에 오게 한다. 범위를 넘으면 맨 아래
@@ -737,6 +761,7 @@ impl Session {
             ),
             cell: (size.cell_width.max(1) as u32, size.cell_height.max(1) as u32),
             sel_end: None,
+            output_click: None,
         }));
         let integrated = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let thread_integrated = integrated.clone();
@@ -1505,12 +1530,30 @@ impl Session {
         };
         g.term.selection = Some(Selection::new(ty, point, side.to_engine()));
         g.sel_end = Some(point);
+        g.output_click = None;
+    }
+
+    /// ⌘(macOS)·Ctrl+세 번 누르기(#700, Ghostty `SelectionGesture`의 `.output`): 화면 좌표 칸의 명령 출력 구간을 고른다.
+    /// 그 칸이 출력이 아니거나 고를 것이 없으면 아무것도 바꾸지 않고 거짓(Ghostty도 앞서 고른 것을 그대로 둔다)
+    pub fn select_output_at(&self, col: usize, row: usize) -> bool {
+        let mut g = self.inner.lock();
+        let point = viewport_point(&g.term, col, row);
+        let Some((start, end)) = crate::output_select::select_output(&g.term, point) else {
+            return false;
+        };
+        set_range(&mut g, start, end);
+        g.output_click = Some(absolute_cell(&g.term, point));
+        true
     }
 
     /// 끄는 중인 글자 고르기를 사각으로 바꾸거나 되돌린다(Ghostty는 끌 때마다 그 순간의 수식 키로 사각 여부를 정한다).
     /// 낱말·줄 고르기는 바꾸지 않는다(Ghostty도 낱말·줄 끌기는 사각을 보지 않는다). 고른 것이 없으면 아무것도 안 한다
     pub fn select_set_block(&self, block: bool) {
         let mut g = self.inner.lock();
+        // 출력 고르기는 사각을 보지 않는다(Ghostty `dragSelectionOutput`)
+        if g.output_click.is_some() {
+            return;
+        }
         if let Some(sel) = g.term.selection.as_mut() {
             match (sel.ty, block) {
                 (SelectionType::Simple, true) => sel.ty = SelectionType::Block,
@@ -1535,6 +1578,15 @@ impl Session {
     pub fn select_update_at(&self, col: usize, row: usize, side: CellSide) {
         let mut g = self.inner.lock();
         let point = viewport_point(&g.term, col, row);
+        // 출력 고르기를 끄는 중이면 누른 구간에서 끈 구간까지(#700)
+        if let Some(click) = g.output_click.filter(|_| g.term.selection.is_some()) {
+            // 스크롤백이 지워졌거나 크기가 바뀌어 시작 칸이 격자 밖이면 `drag_output`이 None이고 고른 것을 그대로 둔다
+            let click = from_absolute_cell(&g.term, click);
+            if let Some((start, end)) = click.and_then(|c| crate::output_select::drag_output(&g.term, c, point)) {
+                set_range(&mut g, start, end);
+            }
+            return;
+        }
         if let Some(sel) = g.term.selection.as_mut() {
             sel.update(point, side.to_engine());
         }
@@ -1563,6 +1615,7 @@ impl Session {
         let mut g = self.inner.lock();
         g.term.selection = None;
         g.sel_end = None;
+        g.output_click = None;
     }
 
     pub fn selection_text(&self) -> Option<String> {

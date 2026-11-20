@@ -59,6 +59,8 @@ pub struct PtrState {
     pub down: u8,
     /// 마지막에 보고한 칸(움직임 중복 제거)
     pub last_cell: Option<(usize, usize)>,
+    /// 두 번 누르기로 링크 전체를 고른 칸(#701). 끌어서 이 칸을 벗어나면 그 칸 낱말부터 낱말 단위로 끈다
+    pub link_word: Option<(usize, usize)>,
     /// 세로·가로 휠 누적(줄)
     pub accum: f64,
     pub accum_x: f64,

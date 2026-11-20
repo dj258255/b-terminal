@@ -1799,6 +1799,7 @@ impl<T> Term<T> {
         let extra = self.grid.cursor.template.extra.clone();
 
         let input_content = self.semantic.content == semantic::SemanticContent::Input; // b-terminal(#338)
+        let prompt_content = self.semantic.content == semantic::SemanticContent::Prompt; // b-terminal(#700)
         let mut cursor_cell = self.grid.cursor_cell();
 
         // Clear all related cells when overwriting a fullwidth cell.
@@ -1836,6 +1837,10 @@ impl<T> Term<T> {
         // b-terminal(#338): 커서의 글 종류가 입력이면 입력 칸으로 쓴다(Ghostty `printCell`의 `semantic_content`)
         if input_content {
             cursor_cell.flags.insert(Flags::SEMANTIC_INPUT);
+        }
+        // b-terminal(#700): 프롬프트 글이면 프롬프트 칸으로 쓴다(Ghostty `printCell`의 `semantic_content`)
+        if prompt_content {
+            cursor_cell.flags.insert(Flags::SEMANTIC_PROMPT);
         }
         cursor_cell.extra = extra;
     }

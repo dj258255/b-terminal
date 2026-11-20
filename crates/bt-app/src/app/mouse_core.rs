@@ -143,6 +143,20 @@ impl App {
             // 끌 때마다 그 순간의 수식 키로 사각 여부를 정한다(Ghostty Surface.zig 4838줄)
             let rectangle = input.rectangle_select();
             if let Some((c, r)) = self.cell_in(idx, input.pos) {
+                match mouse::link_drag(st.link_word, (c, r)) {
+                    mouse::LinkDrag::Keep => return,
+                    mouse::LinkDrag::ToWord => {
+                        if let Some((lc, lr)) = st.link_word.take() {
+                            self.panes[idx].session.select_start_at(
+                                lc,
+                                lr,
+                                bt_term::SelectKind::Word,
+                                bt_term::CellSide::Left,
+                            );
+                        }
+                    }
+                    mouse::LinkDrag::Normal => {}
+                }
                 self.panes[idx].session.select_set_block(rectangle);
                 let side = self.cell_side_in(idx, input.pos);
                 self.panes[idx].session.select_update_at(c, r, side);
@@ -243,6 +257,31 @@ impl App {
             let interval = mouse::repeat_interval(self.config.click_repeat_interval, mouse::platform_repeat_interval());
             let clicks = next_click(st.last_click, now, (c, r), interval);
             st.last_click = Some((now, c, r, clicks));
+            st.link_word = None;
+            // ⌘(macOS)·Ctrl+세 번 누르기는 줄 대신 그 명령의 출력 구간(#700, Ghostty `SelectionGesture`의 `.output`).
+            // 출력이 아닌 칸(프롬프트·입력)이면 아무것도 새로 고르지 않는다(Ghostty도 앞서 고른 것을 그대로 둔다)
+            if clicks == 3
+                && mouse::triple_click_selects_output(cfg!(target_os = "macos"), input.mods.ctrl, input.mods.sup)
+            {
+                if self.panes[idx].session.select_output_at(c, r) {
+                    st.selecting = true;
+                    self.request_redraw();
+                }
+                return;
+            }
+            // 두 번 누르기가 화면 글의 URL 위면 낱말 대신 링크 전체(#701, Ghostty `Surface.zig` 4143~4156줄 `linkAtPin(pin, null)`).
+            // Ghostty는 이때 수식 키를 보지 않고 `link` 규칙(URL)만 본다. OSC 8 링크는 보지 않는다
+            if clicks == 2 {
+                if let Some(((r0, c0), (r1, c1))) = self.double_click_link(idx, c, r) {
+                    let session = &self.panes[idx].session;
+                    session.select_start(c0, r0, bt_term::SelectKind::Simple);
+                    session.select_update(c1, r1);
+                    st.selecting = true;
+                    st.link_word = Some((c, r));
+                    self.request_redraw();
+                    return;
+                }
+            }
             let kind = mouse::select_kind(clicks, input.rectangle_select());
             let side = self.cell_side_in(idx, input.pos);
             let session = &self.panes[idx].session;
@@ -271,6 +310,13 @@ impl App {
             // copy-on-select: 고르기를 마치면 값에 따라 선택 클립보드·시스템 클립보드로
             self.copy_on_select_now();
         }
+    }
+
+    /// 두 번 누른 칸의 URL 범위((줄, 첫 칸), (줄, 끝 칸)). `link-url = false`면 없다(Ghostty는 `link` 규칙이 없으면 낱말 고르기)
+    fn double_click_link(&self, idx: usize, c: usize, r: usize) -> Option<((usize, usize), (usize, usize))> {
+        let opts = mouse::double_click_link_options(self.config.link_url)?;
+        let hit = bt_term::links::link_at_with(&self.panes[idx].session.snapshot(), c, r, opts)?;
+        crate::context_menu::link_ends(&hit.spans)
     }
 
     /// 마우스 휠. `idx`는 휠이 향하는 칸(없으면 없다), `lines`·`xlines`는 이미 배율을 곱한 세로·가로 줄 수(양수가 위·왼쪽)다.
