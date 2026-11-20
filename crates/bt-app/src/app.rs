@@ -889,8 +889,8 @@ struct Win {
     toast: Option<(String, Instant)>,
     /// Cmd를 누른 채 마우스가 올라간 링크(칸 id, 링크)
     hover: Option<(u64, bt_term::links::LinkHit)>,
-    /// Cmd-클릭으로 링크를 열었다: 뒤따르는 놓기를 프로그램에 보내지 않는다
-    link_click: bool,
+    /// 링크 수식 키 누르기의 진행(#705, `mouse::LinkPress`)
+    link_click: crate::mouse::LinkPress,
     /// 고르지 않은 칸을 누른 왼쪽 누름을 삼켰다: 짝 떼기도 삼킨다(#500)
     focus_click: mouse::FocusClickGuard,
     /// 누름을 프로그램(PTY)에 보낸 물리 키와 그 칸. 프로그램이 kitty 키보드 프로토콜 2(키 뗌 보고)를 켰을 때, 같은 칸에 짝 뗌만 보낸다.
@@ -988,7 +988,7 @@ impl Win {
             focused: false,
             toast: None,
             hover: None,
-            link_click: false,
+            link_click: crate::mouse::LinkPress::Idle,
             focus_click: mouse::FocusClickGuard::default(),
             kitty_down: std::collections::HashMap::new(),
             search: None,
@@ -7574,11 +7574,13 @@ impl ApplicationHandler<UserEvent> for App {
                         }
                     }
                 }
-                // Cmd-클릭: 링크를 연다. 누름과 놓기 모두 프로그램(마우스 보고)·고르기에 보내지 않는다
+                // Cmd-클릭: 링크를 연다(#705, 마우스 보고가 꺼져 있으면 같은 칸에서 뗄 때. 누름은 고르기로 간다)
                 if let Some(mb) = mouse_core::report_button(button) {
                     let (input, _) = self.human_ptr(None);
                     let mut link_click = self.w.link_click;
-                    let handled = self.link_click_step(mb, state == ElementState::Pressed, &input, &mut link_click);
+                    let clicks = self.w.last_click.map_or(0, |l| l.3);
+                    let handled =
+                        self.link_click_step(mb, state == ElementState::Pressed, &input, &mut link_click, clicks);
                     self.w.link_click = link_click;
                     if handled {
                         return;

@@ -172,30 +172,38 @@ impl App {
         }
     }
 
-    /// Cmd-클릭(링크 수식 키 + 왼쪽 누름)으로 링크를 연다. 누름과 놓기 모두 프로그램(마우스 보고)·고르기에 보내지 않으므로
-    /// 처리했으면 `true`(호출한 쪽은 더 하지 않는다). `link_click`은 짝 놓기를 삼키려고 기억하는 값이다
+    /// 링크 수식 키(macOS ⌘, 그 밖에는 Ctrl) + 왼쪽 단추(#705, `mouse::link_step`). 참이면 삼킨다(평소 처리를 하지 않는다).
+    /// 마우스 보고가 꺼져 있으면 누름은 고르기로 가고, 같은 칸에서 떼면 연다(연속 누르기의 첫 번째만). 보고 중이면 누를 때 열고 누름·뗌을 삼킨다.
+    /// `clicks`는 이 단추 사건 앞의 마지막 누름 횟수(없으면 0)
     pub(super) fn link_click_step(
         &mut self,
         button: mouse::Button,
         pressed: bool,
         input: &PtrIn,
-        link_click: &mut bool,
+        link: &mut mouse::LinkPress,
+        clicks: u8,
     ) -> bool {
         if button != mouse::Button::Left {
             return false;
         }
-        if !pressed && *link_click {
-            *link_click = false;
-            return true;
-        }
-        if pressed && input.link_mod() {
-            if let Some((_, hit)) = self.link_under(input.pos) {
-                *link_click = true;
-                self.open_link(&hit.url);
-                return true;
+        let hit = if input.link_mod() {
+            self.link_under(input.pos)
+        } else {
+            None
+        };
+        let place = hit.as_ref().and_then(|(id, _)| {
+            let i = self.pane_index(*id)?;
+            let (c, r) = self.cell_in(i, input.pos)?;
+            Some((i, (*id, c, r)))
+        });
+        let reporting = place.is_some_and(|(i, _)| self.mouse_reporting_with(i, input.mods.shift).is_some());
+        let step = mouse::link_step(link, pressed, place.map(|(_, at)| at), reporting, clicks);
+        if matches!(step, mouse::LinkStep::OpenPass | mouse::LinkStep::OpenSwallow) {
+            if let Some((_, h)) = &hit {
+                self.open_link(&h.url);
             }
         }
-        false
+        matches!(step, mouse::LinkStep::Swallow | mouse::LinkStep::OpenSwallow)
     }
 
     /// 마우스 단추 하나(칸 idx가 받는다). 마우스 보고 중이면 프로그램에 보고하고, 아니면 오른쪽 단추 동작·메뉴·가운데 붙여넣기·왼쪽 고르기를 한다.
