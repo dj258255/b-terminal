@@ -74,8 +74,8 @@ pub struct ScriptMouse {
     pub pos_pt: (f64, f64),
     /// 마지막으로 움직임을 처리한 위치(칸 왼쪽 위에서 잰 실제 픽셀). 1픽셀 미만의 움직임을 거르는 데 쓴다
     pub sent_rel: Option<(f64, f64)>,
-    /// Cmd(링크 수식 키)를 누르고 링크를 열었다: 뒤따르는 놓기를 처리하지 않는다
-    pub link_click: bool,
+    /// 링크 수식 키 누르기의 진행(#705, `mouse::LinkPress`)
+    pub link_click: crate::mouse::LinkPress,
 }
 
 /// 칸 왼쪽 위에서 잰 실제 픽셀: 점 좌표 × 배율을 칸(크기 `size`, 실제 픽셀) 안으로 자른다(마지막 픽셀은 크기 - 1)

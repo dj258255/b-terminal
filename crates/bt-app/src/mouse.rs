@@ -39,6 +39,63 @@ pub fn double_click_link_options(link_url: bool) -> Option<bt_term::links::LinkO
     link_url.then_some(bt_term::links::LinkOptions { url: true, osc8: false })
 }
 
+/// 링크 수식 키(⌘, 그 밖에는 Ctrl) 누르기의 진행(#705)
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum LinkPress {
+    #[default]
+    Idle,
+    /// 마우스 보고 중에 링크를 누를 때 열었다: 짝 뗌을 삼킨다
+    Swallow,
+    /// 링크 위를 눌렀다(칸 id, 칸, 줄): 같은 칸에서 떼면 연다
+    Pending(u64, usize, usize),
+}
+
+/// 링크 수식 키 누르기에서 할 일(#705)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LinkStep {
+    /// 링크와 상관없다: 평소처럼 고르기·보고로
+    Pass,
+    /// 삼킨다(아무 데도 보내지 않는다)
+    Swallow,
+    /// 링크를 열고 평소 처리도 한다(뗌: 고르기를 마치고 `copy-on-select`)
+    OpenPass,
+    /// 링크를 열고 삼킨다
+    OpenSwallow,
+}
+
+/// Ghostty `Surface.zig` 4036줄: 누름은 고르기로 보내고, 뗄 때 다른 칸으로 끌지 않았고 링크 위면 연다.
+/// 다른 점 둘: 연속 누르기의 첫 번째(`clicks` 0·1, 0은 횟수에 세지 않은 누름)에서만 연다(Ghostty는 떼는 때마다 열어 ⌘+세 번 누르기에 세 번 연다).
+/// 마우스 보고 중이면 지금처럼 누를 때 열고 누름·뗌을 삼킨다(프로그램에 짝 없는 누름이 가지 않게. Ghostty는 보고 중이면 링크를 보지 않는다).
+/// `over`는 수식 키를 누른 채 마우스 아래 있는 링크의 (칸 id, 칸, 줄)이고 수식 키가 없으면 None
+pub fn link_step(
+    state: &mut LinkPress,
+    pressed: bool,
+    over: Option<(u64, usize, usize)>,
+    reporting: bool,
+    clicks: u8,
+) -> LinkStep {
+    let before = std::mem::take(state);
+    if !pressed {
+        return match before {
+            LinkPress::Idle => LinkStep::Pass,
+            LinkPress::Swallow => LinkStep::Swallow,
+            LinkPress::Pending(id, c, r) if over == Some((id, c, r)) && clicks <= 1 => LinkStep::OpenPass,
+            LinkPress::Pending(..) => LinkStep::Pass,
+        };
+    }
+    match over {
+        None => LinkStep::Pass,
+        Some(_) if reporting => {
+            *state = LinkPress::Swallow;
+            LinkStep::OpenSwallow
+        }
+        Some((id, c, r)) => {
+            *state = LinkPress::Pending(id, c, r);
+            LinkStep::Pass
+        }
+    }
+}
+
 /// 링크를 두 번 눌러 고른 뒤 끌 때 할 일(#701)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LinkDrag {
@@ -457,6 +514,66 @@ mod tests {
     }
 
     /// #433: 누르기 횟수가 낱말·줄을 정하고, 한 번 누르기만 사각 여부를 따른다(낱말·줄 고르기는 사각을 보지 않는다)
+    #[test]
+    fn link_opens_on_release_in_the_same_cell_and_only_on_the_first_click() {
+        let at = Some((7, 3, 1));
+        // 누름은 고르기로 가고, 같은 칸에서 떼면 연다
+        let mut st = LinkPress::Idle;
+        assert_eq!(link_step(&mut st, true, at, false, 0), LinkStep::Pass);
+        assert_eq!(st, LinkPress::Pending(7, 3, 1));
+        assert_eq!(link_step(&mut st, false, at, false, 1), LinkStep::OpenPass);
+        assert_eq!(st, LinkPress::Idle);
+        // 두 번째·세 번째 누름의 뗌은 열지 않는다(고르기만)
+        assert_eq!(link_step(&mut st, true, at, false, 1), LinkStep::Pass);
+        assert_eq!(link_step(&mut st, false, at, false, 2), LinkStep::Pass);
+        assert_eq!(link_step(&mut st, true, at, false, 2), LinkStep::Pass);
+        assert_eq!(link_step(&mut st, false, at, false, 3), LinkStep::Pass);
+        // 횟수에 세지 않은 누름(칸 고르기로 삼킨 누름)의 뗌은 연다
+        assert_eq!(link_step(&mut st, true, at, false, 0), LinkStep::Pass);
+        assert_eq!(link_step(&mut st, false, at, false, 0), LinkStep::OpenPass);
+    }
+
+    #[test]
+    fn link_does_not_open_after_dragging_away_or_releasing_the_modifier() {
+        let mut st = LinkPress::Idle;
+        link_step(&mut st, true, Some((7, 3, 1)), false, 0);
+        assert_eq!(
+            link_step(&mut st, false, Some((7, 9, 1)), false, 1),
+            LinkStep::Pass,
+            "다른 칸에서 뗌"
+        );
+        link_step(&mut st, true, Some((7, 3, 1)), false, 0);
+        assert_eq!(
+            link_step(&mut st, false, None, false, 1),
+            LinkStep::Pass,
+            "수식 키를 떼고 뗌"
+        );
+        link_step(&mut st, true, Some((7, 3, 1)), false, 0);
+        assert_eq!(
+            link_step(&mut st, false, Some((8, 3, 1)), false, 1),
+            LinkStep::Pass,
+            "다른 칸(분할)"
+        );
+        assert_eq!(link_step(&mut st, true, None, false, 0), LinkStep::Pass, "링크 밖 누름");
+        assert_eq!(st, LinkPress::Idle);
+    }
+
+    #[test]
+    fn mouse_reporting_keeps_opening_on_press_and_swallows_both() {
+        let mut st = LinkPress::Idle;
+        assert_eq!(
+            link_step(&mut st, true, Some((7, 3, 1)), true, 0),
+            LinkStep::OpenSwallow
+        );
+        assert_eq!(link_step(&mut st, false, None, true, 0), LinkStep::Swallow);
+        assert_eq!(st, LinkPress::Idle);
+        assert_eq!(
+            link_step(&mut st, false, None, true, 0),
+            LinkStep::Pass,
+            "짝 없는 뗌은 그대로"
+        );
+    }
+
     #[test]
     fn link_selection_survives_same_cell_motion_and_becomes_word_drag() {
         assert_eq!(link_drag(None, (3, 1)), LinkDrag::Normal);
