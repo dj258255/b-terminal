@@ -107,12 +107,34 @@ pub(crate) fn layout_trigger_key(
     if !(mods.control_key() || mods.super_key()) || s.is_ascii() {
         return without_modifiers.clone();
     }
-    match command_layer() {
-        Some(c) if c.chars().count() == 1 && c.chars().all(|ch| ch.is_ascii_graphic()) => {
-            Key::Character(c.to_ascii_lowercase().into())
-        }
-        _ => without_modifiers.clone(),
+    match command_layer().and_then(|c| latin_of(&c)) {
+        Some(c) => Key::Character(c.to_string().into()),
+        None => without_modifiers.clone(),
     }
+}
+
+/// ⌘ 층 글자를 쓸 수 있으면 소문자 한 글자로. ASCII 그림 글자 한 개가 아니면(없음, 제어 문자, 비ASCII, 두 글자) None
+fn latin_of(command_layer: &str) -> Option<char> {
+    let mut chars = command_layer.chars();
+    match (chars.next(), chars.next()) {
+        (Some(c), None) if c.is_ascii_graphic() => Some(c.to_ascii_lowercase()),
+        _ => None,
+    }
+}
+
+/// 확인 막대에서 친 글자 키의 답 글자(#721). 막대가 떠 있는 동안은 입력기를 꺼 글자 키도 `KeyboardInput`으로 온다
+pub fn answer_char(event: &KeyEvent) -> Option<char> {
+    answer_char_of(&event.logical_key, || command_layer(event.physical_key))
+}
+
+/// `answer_char`의 판단. 자판 글자가 ASCII면 그대로 쓰고, 아니면(한글 2벌식 Y 자리는 `ㅛ`) 키 묶음과 같은 ⌘ 층 글자로 읽는다(ADR-070)
+pub(crate) fn answer_char_of(logical: &Key, command_layer: impl FnOnce() -> Option<String>) -> Option<char> {
+    let Key::Character(s) = logical else { return None };
+    let c = s.chars().next()?;
+    if c.is_ascii() {
+        return Some(c);
+    }
+    Some(command_layer().and_then(|l| latin_of(&l)).unwrap_or(c))
 }
 
 /// 수식 키를 뺀 키로 키 묶음 트리거를 만든다(`trigger`와 스크립트의 `send key`가 같이 쓴다)
@@ -714,6 +736,28 @@ mod tests {
         assert_eq!(
             layout_trigger_key(&hangul, ModifiersState::SUPER, upper),
             Key::Character("t".into())
+        );
+    }
+
+    /// 한글 2벌식에서 확인 막대의 Y·N 자리 키는 자판 글자가 `ㅛ`·`ㅜ`라, ⌘ 층 글자 `y`·`n`으로 읽는다(#721)
+    #[test]
+    fn answer_char_reads_command_layer_on_non_latin_layouts() {
+        let y = || Some("y".to_string());
+        assert_eq!(answer_char_of(&Key::Character("ㅛ".into()), y), Some('y'));
+        assert_eq!(
+            answer_char_of(&Key::Character("ㅜ".into()), || Some("N".to_string())),
+            Some('n'),
+            "Shift가 붙어 대문자가 와도 소문자로"
+        );
+        // 라틴 글자 자판(Dvorak 등)은 자판 글자 그대로이고 ⌘ 층을 묻지 않는다
+        let never = || -> Option<String> { panic!("⌘ 층을 묻지 않아야 한다") };
+        assert_eq!(answer_char_of(&Key::Character("y".into()), never), Some('y'));
+        assert_eq!(answer_char_of(&Key::Named(WKey::Enter), never), None);
+        // ⌘ 층을 읽지 못하거나 쓸 수 없는 글자면 자판 글자를 그대로 둔다(y·n이 아니라 답이 되지 않는다)
+        assert_eq!(answer_char_of(&Key::Character("ㅛ".into()), || None), Some('ㅛ'));
+        assert_eq!(
+            answer_char_of(&Key::Character("ㅛ".into()), || Some("\u{1b}".to_string())),
+            Some('ㅛ')
         );
     }
 
