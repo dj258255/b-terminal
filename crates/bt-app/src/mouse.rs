@@ -79,7 +79,15 @@ pub fn link_step(
         return match before {
             LinkPress::Idle => LinkStep::Pass,
             LinkPress::Swallow => LinkStep::Swallow,
-            LinkPress::Pending(id, c, r) if over == Some((id, c, r)) && clicks <= 1 => LinkStep::OpenPass,
+            // 누름은 고르기로 갔으니, 그사이 마우스 보고가 켜졌으면 프로그램에 뗌만 가지 않게 삼킨다
+            LinkPress::Pending(id, c, r) if over == Some((id, c, r)) && clicks <= 1 => {
+                if reporting {
+                    LinkStep::OpenSwallow
+                } else {
+                    LinkStep::OpenPass
+                }
+            }
+            LinkPress::Pending(..) if reporting => LinkStep::Swallow,
             LinkPress::Pending(..) => LinkStep::Pass,
         };
     }
@@ -571,6 +579,18 @@ mod tests {
             link_step(&mut st, false, None, true, 0),
             LinkStep::Pass,
             "짝 없는 뗌은 그대로"
+        );
+        // 누를 때는 보고가 꺼져 있었고(누름은 고르기로 감) 뗄 때 켜져 있으면, 프로그램은 누름을 받지 않았으므로 뗌도 보내지 않는다
+        link_step(&mut st, true, Some((7, 3, 1)), false, 0);
+        assert_eq!(
+            link_step(&mut st, false, Some((7, 3, 1)), true, 1),
+            LinkStep::OpenSwallow
+        );
+        link_step(&mut st, true, Some((7, 3, 1)), false, 0);
+        assert_eq!(
+            link_step(&mut st, false, Some((7, 9, 1)), true, 1),
+            LinkStep::Swallow,
+            "다른 칸이면 열지 않고 삼킨다"
         );
     }
 
