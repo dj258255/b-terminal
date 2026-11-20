@@ -526,6 +526,16 @@ fn gate() -> bool {
     false
 }
 
+/// Puts an empty application-defined event in the queue. The wait loop below spins only the run loop, never AppKit's
+/// event queue, so work AppKit defers to its next event (`NSApp hide:` from `perform action "toggle_visibility"`) would
+/// otherwise wait for the user's next key or mouse event. b-terminal(#718)
+fn wake_event_queue() {
+    let Some(mtm) = objc2_foundation::MainThreadMarker::new() else { return };
+    if let Some(event) = super::event::dummy_event() {
+        NSApplication::sharedApplication(mtm).postEvent_atStart(&event, false);
+    }
+}
+
 /// Sends the command to the app and waits for the answer, spinning the run loop so the app's event loop can run.
 fn run_command(cmd: ScriptCommand) -> ScriptReply {
     if !enabled() {
@@ -543,7 +553,10 @@ fn run_command(cmd: ScriptCommand) -> ScriptReply {
     let mut taken = false;
     loop {
         match rx.try_recv() {
-            Ok(reply) => return reply,
+            Ok(reply) => {
+                wake_event_queue();
+                return reply;
+            }
             Err(mpsc::TryRecvError::Disconnected) => return Err("터미널이 끝나는 중입니다".into()),
             Err(mpsc::TryRecvError::Empty) => {}
         }
