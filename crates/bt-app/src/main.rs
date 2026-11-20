@@ -159,7 +159,15 @@ fn main() -> anyhow::Result<()> {
     if cli.first.program.is_some() {
         config.apply_cli_command();
     }
-    let event_loop = EventLoop::<app::UserEvent>::with_user_event().build()?;
+    #[cfg_attr(not(target_os = "macos"), allow(unused_mut))]
+    let mut builder = EventLoop::<app::UserEvent>::with_user_event();
+    // Finder·`open`으로 뜨면 활성화는 macOS에 맡긴다(`open -g`가 뒤에 남게, #717). winit 기본은 언제나 스스로 활성화
+    #[cfg(target_os = "macos")]
+    {
+        use winit::platform::macos::EventLoopBuilderExtMacOS;
+        builder.with_activate_ignoring_other_apps(lifecycle::activate_on_launch(std::os::unix::process::parent_id()));
+    }
+    let event_loop = builder.build()?;
     // Dock·Finder가 열라고 한 경로를 받는다(#279). 명령줄 인자로 온 경로가 되돌아온 것은 거른다
     #[cfg(target_os = "macos")]
     {

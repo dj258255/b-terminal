@@ -86,6 +86,14 @@ pub fn start_without_window(initial_window: bool, cli_command: bool) -> bool {
     !initial_window && !cli_command
 }
 
+/// 앱이 뜰 때 스스로 활성화할까: LaunchServices(Finder·Dock·`open`)로 떠 부모가 launchd(1)면 macOS에 맡긴다(#717).
+/// 그래야 `open -g`·로그인 항목이 뒤에 남는다. 명령줄에서 바로 띄우면 LaunchServices가 활성화하지 않으므로 스스로 한다.
+/// Ghostty `src/os/desktop.zig`의 `launchedFromDesktop`과 같은 판단이다
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub fn activate_on_launch(parent_pid: u32) -> bool {
+    parent_pid != 1
+}
+
 /// 입력기가 확정한 글(`Ime::Commit`)이 남은 칸을 닫는가: 보낼 바이트가 있으면 닫는다(#715).
 /// 한국어 입력기는 스페이스를 `KeyboardInput`이 아니라 확정으로 보낸다. 조합 중인 글자는 확정이 아니라 닫지 않는다(Ghostty와 같음)
 pub fn is_dismiss_commit(text: &str) -> bool {
@@ -234,6 +242,14 @@ mod tests {
         assert!(!is_dismiss_key(&Key::Named(NamedKey::CapsLock)));
         assert!(is_dismiss_key(&Key::Named(NamedKey::Enter)));
         assert!(is_dismiss_key(&Key::Character("a".into())));
+    }
+
+    /// Finder·Dock·`open`(부모가 launchd)으로 뜨면 활성화는 macOS에 맡기고, 명령줄에서 바로 띄우면 스스로 활성화한다(#717).
+    /// Ghostty `launchedFromDesktop`(macOS는 `getppid() == 1`)과 `AppDelegate`의 `launchSource` 분기와 같다
+    #[test]
+    fn activates_itself_only_when_not_launched_by_launch_services() {
+        assert!(!activate_on_launch(1), "launchd가 띄움(open -g면 뒤에 남아야 한다)");
+        assert!(activate_on_launch(4242), "셸에서 바이너리를 바로 띄움");
     }
 
     /// 입력기가 확정한 글(한국어 입력 소스의 스페이스 등, `Ime::Commit`)도 보낼 바이트라 남은 칸을 닫는다(#715).
