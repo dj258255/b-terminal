@@ -76,7 +76,43 @@ pub fn remapped_state(remaps: &[KeyRemap], pressed: SidedMods) -> ModifiersState
 /// 키 이벤트를 키 묶음 트리거로(Ghostty 키 이름). 수식 키를 뺀 글자를 쓴다(Shift+]도 bracket_right)
 pub fn trigger(event: &KeyEvent, mods: ModifiersState) -> Option<Trigger> {
     use winit::platform::modifier_supplement::KeyEventExtModifierSupplement;
-    trigger_of(&event.key_without_modifiers(), mods)
+    let key = layout_trigger_key(&event.key_without_modifiers(), mods, || {
+        command_layer(event.physical_key)
+    });
+    trigger_of(&key, mods)
+}
+
+/// 지금 자판의 ⌘ 층 글자(#709). macOS만 읽을 수 있다
+#[cfg(target_os = "macos")]
+fn command_layer(key: PhysicalKey) -> Option<String> {
+    winit::platform::macos::command_layer_char(key)
+}
+
+#[cfg(not(target_os = "macos"))]
+fn command_layer(_key: PhysicalKey) -> Option<String> {
+    None
+}
+
+/// 한글처럼 글자 키가 라틴 글자가 아닌 자판에서 ⌃·⌘ 단축키를 맞추려고, 트리거에 쓸 키를 고른다(#709).
+/// `command_layer`는 지금 자판의 ⌘ 층 글자를 돌려준다(macOS 메뉴 단축키가 쓰는 글자, 한글 2벌식 T 자리면 `t`)
+pub(crate) fn layout_trigger_key(
+    without_modifiers: &Key,
+    mods: ModifiersState,
+    command_layer: impl FnOnce() -> Option<String>,
+) -> Key {
+    let Key::Character(s) = without_modifiers else {
+        return without_modifiers.clone();
+    };
+    // ⌃·⌘ 없는 키는 입력기가 받을 글자이고, 라틴 글자 자판이면 이미 맞는다
+    if !(mods.control_key() || mods.super_key()) || s.is_ascii() {
+        return without_modifiers.clone();
+    }
+    match command_layer() {
+        Some(c) if c.chars().count() == 1 && c.chars().all(|ch| ch.is_ascii_graphic()) => {
+            Key::Character(c.to_ascii_lowercase().into())
+        }
+        _ => without_modifiers.clone(),
+    }
 }
 
 /// 수식 키를 뺀 키로 키 묶음 트리거를 만든다(`trigger`와 스크립트의 `send key`가 같이 쓴다)
@@ -657,6 +693,55 @@ pub(crate) fn encode_legacy(k: &LegacyKey, modes: bt_term::Modes, option_as_alt:
 mod tests {
     use super::*;
     use bt_term::{encode_text, encode_text_with};
+
+    #[test]
+    fn non_latin_letter_with_cmd_or_ctrl_uses_command_layer() {
+        let hangul = Key::Character("ㅅ".into());
+        let t = || Some("t".to_string());
+        // 한글 2벌식 T 자리: ⌘·⌃가 있으면 ⌘ 층 글자 t로 맞춘다
+        assert_eq!(
+            layout_trigger_key(&hangul, ModifiersState::SUPER, t),
+            Key::Character("t".into())
+        );
+        assert_eq!(
+            layout_trigger_key(&hangul, ModifiersState::CONTROL, t),
+            Key::Character("t".into())
+        );
+        let both = ModifiersState::SUPER | ModifiersState::SHIFT;
+        assert_eq!(layout_trigger_key(&hangul, both, t), Key::Character("t".into()));
+        // ⌘ 층이 대문자를 주어도 트리거는 소문자로(Shift는 수식 키로 따로 센다)
+        let upper = || Some("T".to_string());
+        assert_eq!(
+            layout_trigger_key(&hangul, ModifiersState::SUPER, upper),
+            Key::Character("t".into())
+        );
+    }
+
+    #[test]
+    fn layout_fallback_keeps_latin_plain_and_unusable_keys() {
+        let never = || -> Option<String> { panic!("⌘ 층을 묻지 않아야 한다") };
+        // 라틴 글자·숫자·이름 있는 키는 그대로(⌘ 층을 묻지도 않는다)
+        for k in [
+            Key::Character("t".into()),
+            Key::Character("1".into()),
+            Key::Named(WKey::Enter),
+        ] {
+            assert_eq!(layout_trigger_key(&k, ModifiersState::SUPER, never), k);
+        }
+        let hangul = Key::Character("ㅅ".into());
+        // ⌃·⌘ 없이(Shift·Option만) 누른 한글은 그대로: 입력기가 받을 글자다
+        assert_eq!(layout_trigger_key(&hangul, ModifiersState::empty(), never), hangul);
+        assert_eq!(layout_trigger_key(&hangul, ModifiersState::ALT, never), hangul);
+        // ⌘ 층도 라틴 한 글자가 아니면(없음, 제어 문자, 두 글자) 그대로
+        for got in [
+            None,
+            Some("\u{14}".to_string()),
+            Some("ㅅ".to_string()),
+            Some("tt".to_string()),
+        ] {
+            assert_eq!(layout_trigger_key(&hangul, ModifiersState::SUPER, || got), hangul);
+        }
+    }
 
     #[test]
     fn sided_from_uses_reported_sides_and_falls_back_to_left() {

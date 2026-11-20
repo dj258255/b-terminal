@@ -15,6 +15,8 @@
 
 - 더한 곳(#632): `src/platform_impl/macos/layer_colorspace.rs`(새 파일)와 `src/platform/macos.rs` 끝의 `set_metal_layer_srgb(&Window) -> bool`, `src/platform_impl/macos/mod.rs`의 `mod layer_colorspace` 한 줄. `b-terminal(#632)`로 찾을 수 있습니다. 창 뷰의 레이어 트리(최대 깊이 4, wgpu/raw-window-metal이 만든 `CAMetalLayer`는 루트 레이어의 하위 레이어일 수 있음)에서 모든 `CAMetalLayer`를 찾아 `colorspace`를 `kCGColorSpaceSRGB`로 답니다. 하나도 못 찾거나 주 스레드가 아니면 아무것도 하지 않고 거짓을 돌려줍니다. 이유: `window-colorspace = srgb`를 중간 텍스처 없이 맞추려고(wgpu 30은 Bgra8에 nil과 Display P3만 줌). 작업 공간이 `unsafe_code = "deny"`라 레이어 호출을 앱에 둘 수 없습니다. 새 크레이트 없음(`core-graphics`의 `kCGColorSpaceSRGB` 상수와 직접 선언한 `CGColorSpaceCreateWithName`·`CFRelease`). 되돌릴 조건: wgpu가 Bgra8에 sRGB 레이어 색 공간을 주거나 winit이 레이어 색 공간 API를 내면 지우고 그것을 씁니다.
 
+- 더한 곳(#709): `src/platform_impl/macos/event.rs`의 `command_layer_char`·`layout_chars`(원래 `get_modifierless_char`의 자판 읽기를 옮기고 수식 키 상태와 동작을 인자로 받게 함, `get_modifierless_char`의 결과는 그대로), `src/platform_impl/macos/mod.rs`의 `command_layer_char`, `src/platform/macos.rs`의 공개 함수 `command_layer_char(PhysicalKey) -> Option<String>`. `b-terminal(#709)`로 찾을 수 있습니다. 지금 자판에서 ⌘만 누른 채 그 키가 내는 글자(macOS 메뉴 단축키가 맞추는 글자)를 `UCKeyTranslate`로 읽습니다. 이유: 한글 2벌식처럼 글자 키가 라틴 글자가 아닌 자판에서 `key_without_modifiers()`는 `ㅅ`을 주어 `super+t` 같은 키 묶음이 맞지 않았습니다. 작업 공간이 `unsafe_code = "deny"`라 앱 코드는 이 호출을 못 합니다. 새 크레이트 없음. 되돌릴 조건: winit이 ⌘ 층 글자나 ASCII 자판 글자를 키 이벤트에 담으면 지우고 그것을 씁니다.
+
 ### 왜
 
 macOS 한글 IME는 "안" 조합 중에 스페이스나 Enter를 누르면 한 번의 keyDown 안에서 확정(`insertText:"안"`)을 먼저 부르고, 이어서 스페이스(`insertText:" "`)나 줄 넘김(`doCommandBySelector:insertNewline:`)을 부릅니다. 원본 winit은 확정 직후의 이 두 번째 호출을 버리고, 그 키의 `KeyboardInput`도 보내지 않습니다. 그래서 터미널에서

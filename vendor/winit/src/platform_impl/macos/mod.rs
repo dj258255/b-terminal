@@ -27,6 +27,12 @@ mod window_delegate;
 use std::fmt;
 
 pub(crate) use self::event::{physicalkey_to_scancode, scancode_to_physicalkey, KeyEventExtra};
+
+/// b-terminal(#709): see `platform::macos::command_layer_char`.
+pub fn command_layer_char(key: crate::keyboard::PhysicalKey) -> Option<String> {
+    let scancode = u16::try_from(physicalkey_to_scancode(key)?).ok()?;
+    self::event::command_layer_char(scancode)
+}
 pub(crate) use self::event_loop::{
     ActiveEventLoop, EventLoop, EventLoopProxy, OwnedDisplayHandle,
     PlatformSpecificEventLoopAttributes,
