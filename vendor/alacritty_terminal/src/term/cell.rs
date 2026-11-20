@@ -45,6 +45,9 @@ bitflags! {
         const ROW_PROMPT_CONTINUATION   = 0b1_0000_0000_0000_0000_0000;
         /// b-terminal(#338): 입력 칸이다(OSC 133;B·I 뒤에 쓴 칸. Ghostty 셀의 `semantic_content == input`). 프롬프트 클릭이 센다. 그리지 않고 `is_empty`에도 넣지 않는다
         const SEMANTIC_INPUT            = 0b10_0000_0000_0000_0000_0000;
+        /// b-terminal(#700): 프롬프트 칸이다(OSC 133;A·N·P 뒤, B·I 앞에 쓴 칸. Ghostty 셀의 `semantic_content == prompt`).
+        /// 명령 출력 고르기가 출력이 아닌 칸으로 센다. 그리지 않고 `is_empty`에도 넣지 않는다
+        const SEMANTIC_PROMPT           = 0b100_0000_0000_0000_0000_0000;
         const ALL_UNDERLINES           = Self::UNDERLINE.bits() | Self::DOUBLE_UNDERLINE.bits()
                                         | Self::UNDERCURL.bits() | Self::DOTTED_UNDERLINE.bits()
                                         | Self::DASHED_UNDERLINE.bits();
