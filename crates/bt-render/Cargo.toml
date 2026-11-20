@@ -10,7 +10,7 @@ repository.workspace = true
 png = "0.17"
 zune-core = "0.4.12"
 zune-jpeg = "0.4.21"
-bt-core = { version = "0.88.0", path = "../bt-core" }
+bt-core = { version = "0.89.0", path = "../bt-core" }
 fontdb = "0.24"
 log.workspace = true
 swash = "0.2"
