@@ -2347,13 +2347,25 @@ impl App {
     /// 확인 막대를 띄운다. 묻는 동안 팔레트는 닫는다
     fn ask(&mut self, pending: Pending, message: String, yes: &'static str) {
         self.w.palette = None;
+        // 쓰던 조합 글자는 막대가 뜨기 전에 칸에 확정한다(막대가 떠 있는 동안 확정 글은 버린다)
+        self.settle_preedit();
         self.w.confirm = Some(Confirm {
             pending,
             message,
             yes,
             shown: Instant::now(),
         });
+        self.sync_confirm_ime();
         self.request_redraw();
+    }
+
+    /// 확인 막대가 떠 있는 동안 지금 창의 입력기를 끈다(#721). 한국어 입력기는 Y·N 키를 조합으로 가져가 winit이
+    /// `KeyboardInput`을 주지 않으므로, 끄면 그 키가 키로 와 `confirm_key`가 ⌘ 층 글자로 읽는다
+    fn sync_confirm_ime(&mut self) {
+        let allowed = self.w.confirm.is_none();
+        if let Some(g) = self.w.gfx.as_ref() {
+            g.window.set_ime_allowed(allowed);
+        }
     }
 
     /// 복사할 고른 글. `clipboard-trim-trailing-spaces`가 켜져 있으면 줄 끝 공백을 지우고,
@@ -3106,7 +3118,7 @@ impl App {
             let key = match &event.logical_key {
                 Key::Named(NamedKey::Enter) => Some(bt_core::clipboard::AnswerKey::Enter),
                 Key::Named(NamedKey::Escape) => Some(bt_core::clipboard::AnswerKey::Escape),
-                Key::Character(c) => c.chars().next().map(bt_core::clipboard::AnswerKey::Char),
+                Key::Character(_) => keys::answer_char(event).map(bt_core::clipboard::AnswerKey::Char),
                 _ => None,
             };
             key.and_then(|k| bt_core::clipboard::clipboard_answer(k, plain, event.repeat, shown_for))
@@ -3114,13 +3126,17 @@ impl App {
             match &event.logical_key {
                 Key::Named(NamedKey::Enter) => Some(true),
                 Key::Named(NamedKey::Escape) => Some(false),
-                Key::Character(c) if plain && c.eq_ignore_ascii_case("y") => Some(true),
-                Key::Character(c) if plain && c.eq_ignore_ascii_case("n") => Some(false),
+                Key::Character(_) if plain => match keys::answer_char(event).map(|c| c.to_ascii_lowercase()) {
+                    Some('y') => Some(true),
+                    Some('n') => Some(false),
+                    _ => None,
+                },
                 _ => None,
             }
         };
         if let Some(yes) = yes {
             let c = self.w.confirm.take();
+            self.sync_confirm_ime();
             self.request_redraw();
             match (yes, c) {
                 (true, Some(c)) => self.perform(c.pending, event_loop),
@@ -4067,6 +4083,7 @@ impl App {
             if matches!(&self.w.confirm, Some(c) if matches!(&c.pending, Pending::Paste { pane, .. } | Pending::ClipboardRead { pane, .. } | Pending::KittyRead { pane, .. } | Pending::KittyWrite { pane, .. } if *pane == self.panes[i].id))
             {
                 self.w.confirm = None;
+                self.sync_confirm_ime();
             }
         }
         self.toast(
@@ -5158,6 +5175,7 @@ impl App {
         // 옮긴 칸을 가리키는 확인 막대(칸 닫기·탭 닫기·붙여넣기)도 남는 창에서 닫는다(#223)
         if self.w.confirm.as_ref().is_some_and(|c| c.pending.binds_to(&leaves)) {
             self.w.confirm = None;
+            self.sync_confirm_ime();
         }
         let id = gfx.window.id();
         let old_focused = self.w.focused;
