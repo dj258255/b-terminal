@@ -1602,7 +1602,9 @@ impl Session {
         };
         let (cols, page) = (g.term.columns(), g.term.screen_lines());
         let (top, bottom) = (g.term.topmost_line(), g.term.bottommost_line());
-        let next = adjusted_point(end, adj, cols, top, bottom, page);
+        let grid = g.term.grid();
+        let has_text = |p: Point| crate::output_select::cell_has_text(&grid[p.line][p.column]);
+        let next = adjusted_point(end, adj, cols, top, bottom, page, &has_text);
         if let Some(sel) = g.term.selection.as_mut() {
             update_inclusive(sel, next);
         }
@@ -1870,23 +1872,57 @@ pub enum SelectionAdjust {
 
 /// 끝점 `p`를 옮긴 자리. `top`·`bottom`은 스크롤백 맨 위·화면 맨 아래 줄, `page`는 화면 줄 수.
 /// 왼쪽·오른쪽은 줄 끝에서 앞·뒤 줄로 넘어가고, 모든 결과는 범위 안으로 붙인다
-fn adjusted_point(p: Point, adj: SelectionAdjust, cols: usize, top: Line, bottom: Line, page: usize) -> Point {
+fn adjusted_point(
+    p: Point,
+    adj: SelectionAdjust,
+    cols: usize,
+    top: Line,
+    bottom: Line,
+    page: usize,
+    has_text: &dyn Fn(Point) -> bool,
+) -> Point {
     use SelectionAdjust::*;
     let last = Column(cols.saturating_sub(1));
-    let line = |l: i32| Line(l.clamp(top.0, bottom.0));
+    let row_has_text = |l: Line| (0..cols).any(|c| has_text(Point::new(l, Column(c))));
+    // 글 있는 마지막 줄의 끝(Ghostty `.end`). 글이 없으면 그대로
+    let end = || {
+        (top.0..=bottom.0)
+            .rev()
+            .map(Line)
+            .find(|&l| row_has_text(l))
+            .map_or(p, |l| Point::new(l, last))
+    };
     match adj {
-        Left if p.column.0 > 0 => Point::new(p.line, p.column - 1),
-        Left if p.line > top => Point::new(p.line - 1, last),
-        Left => p,
-        Right if p.column < last => Point::new(p.line, p.column + 1),
-        Right if p.line < bottom => Point::new(p.line + 1, Column(0)),
-        Right => p,
-        Up => Point::new(line(p.line.0 - 1), p.column),
-        Down => Point::new(line(p.line.0 + 1), p.column),
-        PageUp => Point::new(line(p.line.0 - page as i32), p.column),
-        PageDown => Point::new(line(p.line.0 + page as i32), p.column),
+        // Ghostty: 글이 있는 앞·다음 칸까지 건너뛴다(줄을 넘어감). 없으면 그대로
+        Left => {
+            let before = (top.0..=p.line.0).rev().flat_map(|l| {
+                let from = if l == p.line.0 { p.column.0 } else { cols };
+                (0..from).rev().map(move |c| Point::new(Line(l), Column(c)))
+            });
+            before.into_iter().find(|&q| has_text(q)).unwrap_or(p)
+        }
+        Right => {
+            let after = (p.line.0..=bottom.0).flat_map(|l| {
+                let from = if l == p.line.0 { p.column.0 + 1 } else { 0 };
+                (from..cols).map(move |c| Point::new(Line(l), Column(c)))
+            });
+            after.into_iter().find(|&q| has_text(q)).unwrap_or(p)
+        }
+        // 맨 윗줄이면 줄 처음으로
+        Up if p.line > top => Point::new(p.line - 1, p.column),
+        Up => Point::new(p.line, Column(0)),
+        // 글이 있는 다음 줄로. 없으면 그 줄 끝으로
+        Down => ((p.line.0 + 1)..=bottom.0)
+            .map(Line)
+            .find(|&l| row_has_text(l))
+            .map_or(Point::new(p.line, last), |l| Point::new(l, p.column)),
+        // 한 화면만큼 옮길 수 없으면 home·end
+        PageUp if p.line.0 - page as i32 >= top.0 => Point::new(p.line - page, p.column),
+        PageUp => Point::new(top, Column(0)),
+        PageDown if p.line.0 + page as i32 <= bottom.0 => Point::new(p.line + page, p.column),
+        PageDown => end(),
         Home => Point::new(top, Column(0)),
-        End => Point::new(bottom, last),
+        End => end(),
         BeginningOfLine => Point::new(p.line, Column(0)),
         EndOfLine => Point::new(p.line, last),
     }
@@ -2610,25 +2646,98 @@ mod tests {
         assert!(got2.lock().is_empty());
     }
 
+    /// Ghostty `Screen.testWriteString`처럼 줄마다 글을 찍은 10×10 화면(스크롤백 없음)에서 끝점을 옮긴다
+    fn adjust_on(rows: &[&str], from: (usize, usize), a: SelectionAdjust) -> (usize, usize) {
+        let grid: Vec<Vec<bool>> = (0..10)
+            .map(|y| {
+                let line = rows.get(y).copied().unwrap_or("");
+                (0..10)
+                    .map(|x| line.chars().nth(x).is_some_and(|c| c != '\0'))
+                    .collect()
+            })
+            .collect();
+        let has_text = |p: Point| grid[p.line.0 as usize][p.column.0];
+        let at = Point::new(Line(from.1 as i32), Column(from.0));
+        let got = adjusted_point(at, a, 10, Line(0), Line(9), 10, &has_text);
+        (got.column.0, got.line.0 as usize)
+    }
+
+    // 아래 시험은 Ghostty v1.4.0 `src/terminal/Selection.zig`의 "Selection: adjust …" 시험을 옮겼다. 좌표는 (x, y)
     #[test]
-    fn adjusted_point_moves_and_wraps_like_ghostty() {
+    fn adjust_right_like_ghostty() {
         use SelectionAdjust::*;
-        let (top, bottom) = (Line(-5), Line(9));
+        let s = ["A1234", "B5678", "C1234", "D5678"];
+        assert_eq!(adjust_on(&s, (3, 3), Right), (4, 3), "간단히 오른쪽");
+        assert_eq!(
+            adjust_on(&s, (4, 2), Right),
+            (0, 3),
+            "줄 끝이면 다음 줄 첫 글자로(빈 칸을 건너뜀)"
+        );
+        assert_eq!(adjust_on(&s, (4, 3), Right), (4, 3), "화면 끝이면 그대로");
+    }
+
+    #[test]
+    fn adjust_left_like_ghostty() {
+        use SelectionAdjust::*;
+        let s = ["A1234", "B5678", "C1234", "D5678"];
+        assert_eq!(adjust_on(&s, (3, 3), Left), (2, 3));
+        assert_eq!(adjust_on(&s, (0, 3), Left), (4, 2), "줄 처음이면 앞 줄의 마지막 글자로");
+        let s = ["A1234", "B5678", "C12", "D56"];
+        assert_eq!(adjust_on(&s, (4, 3), Left), (2, 3), "같은 줄의 빈 칸을 건너뜀");
+        assert_eq!(adjust_on(&s, (0, 3), Left), (2, 2), "앞 줄 끝의 빈 칸을 건너뜀");
+    }
+
+    #[test]
+    fn adjust_up_down_like_ghostty() {
+        use SelectionAdjust::*;
+        let s = ["A", "B", "C", "D", "E"];
+        assert_eq!(adjust_on(&s, (3, 3), Up), (3, 2));
+        assert_eq!(adjust_on(&s, (3, 0), Up), (0, 0), "맨 윗줄이면 줄 처음으로");
+        assert_eq!(adjust_on(&s, (3, 3), Down), (3, 4));
+        assert_eq!(
+            adjust_on(&s, (3, 4), Down),
+            (9, 4),
+            "아래에 글 있는 줄이 없으면 줄 끝으로"
+        );
+        let s = ["A", "B", "C"];
+        assert_eq!(
+            adjust_on(&s, (3, 2), Down),
+            (9, 2),
+            "화면이 다 차지 않아도 빈 줄로 내려가지 않음"
+        );
+    }
+
+    #[test]
+    fn adjust_home_end_and_line_like_ghostty() {
+        use SelectionAdjust::*;
+        let s = ["A", "B", "C"];
+        assert_eq!(adjust_on(&s, (1, 2), Home), (0, 0));
+        assert_eq!(adjust_on(&s, (1, 1), End), (9, 2), "글 있는 마지막 줄의 끝");
+        let s = ["A12 B34", "C12 D34"];
+        assert_eq!(adjust_on(&s, (5, 1), BeginningOfLine), (0, 1));
+        assert_eq!(adjust_on(&s, (0, 1), BeginningOfLine), (0, 1));
+        assert_eq!(adjust_on(&s, (1, 1), EndOfLine), (9, 1));
+        assert_eq!(adjust_on(&s, (9, 1), EndOfLine), (9, 1));
+    }
+
+    #[test]
+    fn adjust_page_moves_or_falls_back_to_home_end() {
+        use SelectionAdjust::*;
+        // Ghostty: 한 화면만큼 옮길 수 없으면 home·end
+        let s = ["A", "B", "C"];
+        assert_eq!(adjust_on(&s, (3, 2), PageUp), (0, 0));
+        assert_eq!(adjust_on(&s, (3, 2), PageDown), (9, 2));
+        // 옮길 수 있으면 열은 그대로 한 화면만큼(스크롤백 5줄 + 화면 10줄)
+        let all = |_: Point| true;
         let at = |l: i32, c: usize| Point::new(Line(l), Column(c));
-        let adj = |p, a| adjusted_point(p, a, 10, top, bottom, 10);
-        assert_eq!(adj(at(2, 3), Right), at(2, 4));
-        assert_eq!(adj(at(2, 9), Right), at(3, 0), "줄 끝에서 다음 줄로");
-        assert_eq!(adj(at(2, 0), Left), at(1, 9), "줄 처음에서 앞 줄 끝으로");
-        assert_eq!(adj(at(9, 9), Right), at(9, 9), "맨 끝에서는 그대로");
-        assert_eq!(adj(at(-5, 0), Left), at(-5, 0));
-        assert_eq!(adj(at(2, 3), Up), at(1, 3));
-        assert_eq!(adj(at(9, 3), Down), at(9, 3));
-        assert_eq!(adj(at(2, 3), PageUp), at(-5, 3), "스크롤백 맨 위에서 멈춤");
-        assert_eq!(adj(at(-4, 3), PageDown), at(6, 3));
-        assert_eq!(adj(at(2, 3), Home), at(-5, 0));
-        assert_eq!(adj(at(2, 3), End), at(9, 9));
-        assert_eq!(adj(at(2, 3), BeginningOfLine), at(2, 0));
-        assert_eq!(adj(at(2, 3), EndOfLine), at(2, 9));
+        assert_eq!(
+            adjusted_point(at(6, 3), PageUp, 10, Line(-5), Line(9), 10, &all),
+            at(-4, 3)
+        );
+        assert_eq!(
+            adjusted_point(at(-4, 3), PageDown, 10, Line(-5), Line(9), 10, &all),
+            at(6, 3)
+        );
     }
 }
 
