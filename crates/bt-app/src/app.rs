@@ -2514,6 +2514,11 @@ impl App {
                 self.request_redraw();
             }
         }
+        self.context_menu_popup();
+    }
+
+    /// 고른 칸의 메뉴를 띄운다(macOS, 모달). 항목은 고른 글이 있는지와 읽기 전용인지로 정한다
+    fn context_menu_popup(&mut self) {
         #[cfg(target_os = "macos")]
         {
             let (has_selection, readonly) = match self.active_pane() {
@@ -2521,6 +2526,15 @@ impl App {
                 None => return,
             };
             crate::context_menu::popup(&crate::context_menu::entries(has_selection, readonly));
+        }
+    }
+
+    /// macOS Ctrl+왼쪽 누름(#725): Ghostty `SurfaceView_AppKit.menu(for:)`처럼 오른쪽 누름을 코어에 보내(`right-click-action`대로)
+    /// 그 뒤 메뉴를 띄운다. `context-menu`면 오른쪽 누름이 이미 띄웠다. Ghostty는 다른 동작(복사·붙여넣기·무시)이어도 메뉴를 띄운다
+    fn ctrl_click_menu(&mut self) {
+        self.right_click(false);
+        if self.config.right_click_action != bt_core::config::RightClickAction::ContextMenu {
+            self.context_menu_popup();
         }
     }
 
@@ -3851,7 +3865,6 @@ impl App {
             program,
             shift: over.is_some() && self.mods.shift_key(),
             rectangle: over.is_some() && self.rectangle_select_mods(),
-            reports_to_program: over.is_some_and(|i| self.mouse_reporting(i).is_some()),
             mouse_mode: over.is_some_and(|i| {
                 self.panes
                     .get(i)
@@ -4732,11 +4745,6 @@ impl App {
     /// 칸의 마우스 보고 모드(X10·누름·버튼·움직임)가 켜져 있는가. Shift·`mouse-reporting`·읽기 전용과 상관없이 모드만 본다(#459)
     fn mouse_mode_on(m: bt_term::Modes) -> bool {
         m.mouse_x10 || m.mouse_report || m.mouse_drag || m.mouse_motion
-    }
-
-    /// 칸 idx의 프로그램이 마우스 보고를 켰으면 그 모드(사람의 Shift로 가린다)
-    fn mouse_reporting(&self, idx: usize) -> Option<bt_term::Modes> {
-        self.mouse_reporting_with(idx, self.mods.shift_key())
     }
 
     /// 사람의 마우스 처리에 넘길 입력과 상태. 창(`selecting`·`last_click`·휠 누적)과 칸 `idx`(`mouse_down`·`mouse_last_cell`)에 흩어진

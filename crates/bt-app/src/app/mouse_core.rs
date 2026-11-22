@@ -216,6 +216,25 @@ impl App {
         input: &PtrIn,
         st: &mut PtrState,
     ) {
+        // macOS Ctrl+왼쪽 클릭은 칸의 프로그램이 마우스 모드를 켜지 않았으면 메뉴다(Ghostty `menu(for:)`, #725). AppKit이 마우스
+        // 사건보다 먼저 묻는 자리라 보고 판단보다 앞서고, 켰으면(Shift·읽기 전용·`mouse-reporting`과 상관없이) 보통 왼쪽 클릭이다.
+        // 스크립트에는 메뉴를 띄우지 않는다(모달이라 스크립트가 막힌다)
+        let program_mouse_mode = self
+            .panes
+            .get(idx)
+            .is_some_and(|p| Self::mouse_mode_on(p.session.modes()));
+        if mb == mouse::Button::Left
+            && crate::context_menu::ctrl_click_opens_menu(
+                cfg!(target_os = "macos"),
+                input.mods.ctrl,
+                program_mouse_mode,
+            )
+        {
+            if pressed && !input.script {
+                self.ctrl_click_menu();
+            }
+            return;
+        }
         if self.mouse_reporting_with(idx, input.mods.shift).is_some() {
             let action = if pressed {
                 mouse::Action::Press
@@ -228,19 +247,6 @@ impl App {
         if mb == mouse::Button::Right {
             if pressed {
                 self.right_click(input.script);
-            }
-            return;
-        }
-        // Ctrl+왼쪽 클릭도 메뉴(마우스 보고 중이 아닐 때만, 위에서 이미 걸렀다). `context-menu`일 때만 띄운다(#278).
-        // 스크립트에는 메뉴를 띄우지 않는다(모달이라 스크립트가 막힌다)
-        if cfg!(target_os = "macos")
-            && mb == mouse::Button::Left
-            && input.mods.ctrl
-            && !input.mods.sup
-            && self.config.right_click_action == bt_core::config::RightClickAction::ContextMenu
-        {
-            if pressed && !input.script {
-                self.context_menu_press();
             }
             return;
         }
