@@ -11,7 +11,7 @@ name = "btctl"
 path = "src/main.rs"
 
 [dependencies]
-bt-core = { version = "0.90.0", path = "../bt-core" }
+bt-core = { version = "0.91.0", path = "../bt-core" }
 rustix = { version = "1", features = ["process"] }
 serde_json.workspace = true
 
