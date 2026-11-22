@@ -406,11 +406,11 @@ fn paste_prompt(text: &str, password: bool) -> String {
     format!("붙여넣을 글({n}줄)의 줄바꿈이 바로 실행될 수 있습니다: {first}")
 }
 
-/// 붙여넣기를 요청한 때 암호 입력으로 볼지(Ghostty #15114): 칸에 적어 둔 마지막 살핀 값과 요청 직전에 termios를 다시
-/// 읽은 값 중 하나라도 참이면 참. 살핌 주기(200ms) 사이에 켜진 암호 프롬프트를 놓치지 않으려는 것이고, 못 읽으면(`None`)
-/// 마지막 살핀 값만 본다
+/// 붙여넣기를 요청한 때 암호 입력으로 볼지(Ghostty #15114): 요청 직전에 termios를 다시 읽은 값을 따르고, 못 읽으면(`None`)
+/// 칸에 적어 둔 마지막 살핀 값을 본다. 살핌은 창에 초점이 있을 때만 하므로 적어 둔 값은 옛 값일 수 있다(#737).
+/// Ghostty는 IO 스레드가 초점과 상관없이 살펴 표시가 늘 새 값이고, 다시 읽은 값이 그와 같다
 fn paste_hidden(flag: bool, rechecked: Option<bool>) -> bool {
-    flag || rechecked == Some(true)
+    rechecked.unwrap_or(flag)
 }
 
 /// 퀵 창 움직임의 한 프레임(약 120Hz)
@@ -8464,11 +8464,14 @@ mod tests {
     }
 
     #[test]
-    fn paste_hidden_when_either_reading_says_password() {
+    fn paste_hidden_follows_the_fresh_reading_first() {
         assert!(!paste_hidden(false, None));
         assert!(!paste_hidden(false, Some(false)));
         assert!(paste_hidden(true, None), "읽지 못해도 마지막 살핀 값이 참이면 숨긴다");
-        assert!(paste_hidden(true, Some(false)));
+        assert!(
+            !paste_hidden(true, Some(false)),
+            "초점이 없는 동안 끝난 암호 입력(옛 살핀 값)은 지금 읽은 값을 이기지 않는다(#737)"
+        );
         assert!(
             paste_hidden(false, Some(true)),
             "200ms 사이에 켜진 것은 다시 읽은 값으로 잡는다"
