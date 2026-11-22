@@ -4,6 +4,8 @@
 
 ## [아직 릴리스하지 않음]
 
+- 셸 통합 프롬프트를 누를 때 커서 옮기기(`cursor-click-to-move`)가 Ghostty처럼 수식 키를 보지 않습니다. Option·Cmd를 누른 채 한 번 눌러도 커서가 옮겨 가고, 놓은 뒤 고른 글이 남았으면(Shift 클릭으로 넓힌 고르기 등) 옮기지 않습니다. 전에는 수식 키가 하나라도 있으면 옮기지 않았습니다. 격리한 실제 창(zsh 셸 통합)에서 0.90.0과 견줘 확인했습니다 (#729)
+
 - 퀵 터미널(`quick-terminal-space-behavior = move`, 기본)을 띄운 채 다른 Space로 옮기면 숨지 않고 새 Space에 다시 뜹니다. 같은 Space에서 다른 앱으로 가면 전처럼 숨습니다(Ghostty `windowDidResignKey`와 같게). 지금 Space는 Ghostty처럼 비공개 CoreGraphics 함수 `CGSGetActiveSpace`로 읽습니다. 판단은 단위 시험으로 확인했고, 이 기기에서 그 함수가 Space 번호를 돌려주는 것만 봤습니다. Space를 실제로 옮기는 확인은 하지 않았습니다 (#727)
 
 - Ctrl+왼쪽 클릭 메뉴와 십자·I자 포인터를 Ghostty 1.4.0과 같게 했습니다. Ctrl+왼쪽 클릭(macOS)은 칸의 프로그램이 마우스 모드를 켜지 않았을 때만 메뉴이고, 그때 `right-click-action`이 `context-menu`가 아니면 그 동작(복사·붙여넣기 등)을 한 뒤 메뉴를 띄웁니다. 전에는 vim 안에서도 Shift를 함께 누르면 메뉴가 떴고, `context-menu`가 아니면 보통 클릭이었습니다. 마우스 모드를 켠 칸에서 Shift를 누르면 Shift 잡기 설정과 상관없이 I자(Option도 누르면 십자)가 됩니다. Ghostty 원본과 대조해 고쳤고 단위 시험으로 확인했습니다. 실제 창에서 메뉴와 포인터를 눈으로 보지는 않았습니다 (#725)

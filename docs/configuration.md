@@ -421,7 +421,7 @@ Ghostty 설정에 흔한 아래 동작은 `keybind`에 써도 경고가 나지 �
 - 사각 가장자리에 넓은 글자(한글·이모지)가 걸치면 그 글자를 통째로 가져옵니다. 줄마다 줄 끝 공백을 지우고, 공백뿐인 줄은 빈 줄로 복사합니다(`clipboard-trim-trailing-spaces`는 복사하는 글에 한 번 더 적용됩니다).
 - 마우스 보고 중인 프로그램에서는 지금처럼 Shift로 보고를 끊어야 고르기가 됩니다. 사각으로 고르려면 Option+Shift입니다.
 - `macos-option-as-alt`와 상관없습니다. 마우스를 누르거나 끌 때의 Option은 늘 사각 수식 키이고, 그 설정은 키 입력에서 Option이 Alt로 가는지만 정합니다.
-- 클릭으로 커서 옮기기(`cursor-click-to-move`)는 Option을 누르고 있으면 하지 않습니다(전과 같습니다).
+- 클릭으로 커서 옮기기(`cursor-click-to-move`)는 Ghostty처럼 수식 키를 보지 않습니다. Option을 누른 채 끌지 않고 한 번 누르면 고른 것이 없어 커서를 옮깁니다.
 - 한계: 키보드로 사각 고르기를 늘리는 동작은 없습니다. 복사 글의 줄 끝 공백은 VT 엔진이 먼저 지우므로 `clipboard-trim-trailing-spaces = false`여도 줄 끝 공백이 남지 않습니다(사각 고르기만 쟀고, 글자 고르기는 재지 않았습니다).
 
 ## kitty 색 프로토콜(OSC 21)
