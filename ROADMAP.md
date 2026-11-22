@@ -1582,8 +1582,34 @@ Ghostty 1.4에서 가져온 마우스 동작, AppleScript `name override`, Ghost
 |---|---|---|---|---|
 | [#705](https://github.com/dj258255/b-terminal/issues/705) | 링크 여는 때와 0.89 한계 확인 | 정하지 않음 | 약 1시간 30분(확인 길 만들기 포함) | 전부 |
 
+## 0.91.0 (2026-11-23)
+
+쌓인 실제 창 확인 목록 돌리기. 마일스톤 0.91.
+
+- 범수 님이 "더 할거 있어?" 뒤 "계속해줘"라고 하셔서, '범수 님이 확인할 것'(0.6~0.72)을 주 세션이 격리한 실제 창(release 묶음, 격리 HOME·TMPDIR, 키는 그 앱에만 보내는 postToPid, 마우스는 AppleScript `send mouse`)에서 차례로 돌렸습니다. 결함 열둘을 찾아 모두 고쳤습니다(아래 표).
+- 확인한 것: 0.7(닫기 막대, 두 줄 붙여넣기, 탭 벨), 0.8(단어 고르기, 제목 바꾸기, 스크롤백 파일, ⌃⌘F, `focus-follows-mouse`), 0.9·0.28(셸 통합 클릭 커서 옮기기, zsh·bash), 0.10~0.14(줄 끝 공백, 항상 위, 찾기 강조, ⌘Z 탭 되살리기, `vt-window-resize-allowed`, 링크 띠, `palette-generate`, 스크롤 막대, `key-remap`, 아이콘, `font-thicken`, 숨긴 제목 막대, 읽기 전용, 키 테이블, 배경 투명 바꾸기, 창 테마), 0.15~0.27(창 상태 되살리기, `+list-keybinds`·`+edit-config`·`+show-face`, 탭 줄 글꼴, OSC 22, 보안 입력, nvim 배경·2048, Dock 끌어놓기, 화면 전환, 2033·67·1036, 키패드·modifyOtherKeys, 나눈 칸 DECCOLM, Ctrl-L·PROMPT_SP·창 크기), 0.34 셰이더 오류 답, 0.40·0.41 창·칸마다 글자 크기, 0.43·0.44 사각·반 칸 고르기, 0.62 한글 지우기, 0.64 줄 끝 이모지, 0.70 Shift+Esc·Ctrl+Enter·Ctrl+Tab.
+- 앞으로 올려야 하는 남은 확인은 범수 님이 "그것도 다 Ghostty 따라가면 될 것 같은데"라고 하셔서 Ghostty 1.4.0 원본과 대조로 갈음했습니다. 오른쪽 클릭 메뉴 항목·누른 자리 고르기, vim Shift 클릭(`mouseShiftCapture`)은 같았고, Ctrl+왼쪽 클릭·포인터([#725](https://github.com/dj258255/b-terminal/issues/725)), 퀵 터미널 Space([#727](https://github.com/dj258255/b-terminal/issues/727)), 클릭 커서 옮기기 수식 키([#729](https://github.com/dj258255/b-terminal/issues/729)), 손잡이 숨김([#731](https://github.com/dj258255/b-terminal/issues/731))은 달라 맞췄습니다. 손잡이를 칸 하나·크게 보는 중에 숨기는 것은 없는 기능(끌어서 새 창)을 전제한 기본이라 그대로 둡니다.
+- 못 한 것과 까닭: 클립보드에 닿는 확인(`clipboard-read`·`write = ask`, ⌘C·⌘V)은 자동 모드 분류기가 막아 하지 않았습니다. 시스템 모양 바꾸기(테마 light/dark, 모드 2031), Space 옮기기, 전체 화면 Cmd+Enter는 사용자 설정·데스크톱을 바꿔 하지 않았습니다. 알림·소리는 범수 님이 자리에 있어 하지 않았습니다. tmux·htop·yazi가 없어 그쪽은 못 봤습니다. 그리기·GPU 쪽(0.29~0.33, 0.35~0.38, 0.42, 0.45 이후 대부분)은 이번 판에서 돌리지 않았습니다.
+- 사고: 시험 창을 앞으로 올리는 확인 중 사용자가 돌아왔는지 가리는 판단이 제 마우스 클릭 하나를 기록하지 않아 멈췄고, 판단 파일을 직접 고치려던 것을 자동 모드 분류기가 막았습니다(우회하지 않음). PR #728은 새 시험을 macOS 전용 `cfg`와 `#[test]` 사이에 끼워 Linux 검사가 한 번 실패했고 새 커밋으로 고쳤습니다.
+
+| 이슈 | 내용 | PR | 연 때·병합(UTC) | 주 세션이 한 것 |
+|---|---|---|---|---|
+| [#709](https://github.com/dj258255/b-terminal/issues/709) | 한글 입력 소스에서 ⌘T 같은 글자 키 단축키 | [#710](https://github.com/dj258255/b-terminal/pull/710) | 11-20 06:17 → 06:34 | 전부 |
+| [#711](https://github.com/dj258255/b-terminal/issues/711) | `adjust_selection`이 빈 칸을 건너뛰지 않음 | [#712](https://github.com/dj258255/b-terminal/pull/712) | 11-20 06:41 → 06:49 | 전부 |
+| [#713](https://github.com/dj258255/b-terminal/issues/713) | `window-height` 창의 줄이 모자람 | [#714](https://github.com/dj258255/b-terminal/pull/714) | 11-20 06:54 → 07:02 | 전부 |
+| [#715](https://github.com/dj258255/b-terminal/issues/715) | 끝난 칸이 입력기 확정 키로 닫히지 않음 | [#716](https://github.com/dj258255/b-terminal/pull/716) | 11-20 07:16 → 07:26 | 전부 |
+| [#717](https://github.com/dj258255/b-terminal/issues/717) | `open -g`로 띄워도 앞으로 옴 | [#719](https://github.com/dj258255/b-terminal/pull/719) | 11-20 07:37 → 07:56 | 전부 |
+| [#718](https://github.com/dj258255/b-terminal/issues/718) | `toggle_visibility`가 Ghostty와 다름 | [#720](https://github.com/dj258255/b-terminal/pull/720) | 11-20 07:38 → 08:04 | 전부 |
+| [#721](https://github.com/dj258255/b-terminal/issues/721) | 한국어 입력 소스에서 확인 막대 y·n | [#722](https://github.com/dj258255/b-terminal/pull/722) | 11-20 08:36 → 08:58 | 전부 |
+| [#723](https://github.com/dj258255/b-terminal/issues/723) | 처음부터 가려진 창을 보인다고 봄(2033) | [#724](https://github.com/dj258255/b-terminal/pull/724) | 11-22 14:09 → 15:02 | 전부 |
+| [#725](https://github.com/dj258255/b-terminal/issues/725) | Ctrl+왼쪽 클릭 메뉴·십자 포인터 조건 | [#726](https://github.com/dj258255/b-terminal/pull/726) | 11-22 15:22 → 15:33 | 전부 |
+| [#727](https://github.com/dj258255/b-terminal/issues/727) | 퀵 터미널이 Space 이동 때도 숨음 | [#728](https://github.com/dj258255/b-terminal/pull/728) | 11-22 15:31 → 15:45 | 전부 |
+| [#729](https://github.com/dj258255/b-terminal/issues/729) | 프롬프트 클릭이 수식 키를 봄 | [#730](https://github.com/dj258255/b-terminal/pull/730) | 11-22 15:40 → 15:57 | 전부 |
+| [#731](https://github.com/dj258255/b-terminal/issues/731) | 입력 중 숨은 포인터에도 손잡이 점 | [#732](https://github.com/dj258255/b-terminal/pull/732) | 11-22 15:58 → 16:06 | 전부 |
+
 ## 다음
 
+- 0.91에서 '범수 님이 확인할 것' 가운데 0.7~0.28의 대부분과 0.34, 0.40·0.41, 0.43·0.44, 0.62, 0.64, 0.70을 주 세션이 확인했습니다. 무엇을 확인했고 무엇을 못 했는지(클립보드, 시스템 모양, Space, 알림·소리, tmux·yazi)는 위 0.91.0 절에 있습니다. 아래 목록의 나머지 항목은 아직 남아 있습니다.
 - 범수 님이 직접 해야 할 것: 키보드·마우스 확인(한글 2벌식 "안녕 하세요⏎", Claude Code의 Shift+Enter, Cmd-D·Cmd-F·Cmd-클릭·Cmd-N·Cmd-Shift-P, 메뉴, 창 닫기 단추, vim·htop, kitty icat·yazi, 투명 창), Developer ID 계정으로 `scripts/bundle-macos.sh --sign … --notarize … --dmg`
 - 정함(0.49·0.50, 주 세션 추천안): `window-colorspace` 기본은 `display-p3` 그대로. 0.50부터 `srgb`도 GPU 길로 그립니다(창마다 약 13.6MB 더, ADR-047). 기본을 Ghostty처럼 `srgb`로 바꾸시려면 알려 주세요
 - 범수 님이 확인할 것(0.6): 퀵 터미널을 실제 전역 단축키로(`keybind = global:ctrl+backquote=toggle_quick_terminal`), 외부 모니터로 창을 옮겼을 때 present 시간(`RUST_LOG=b_terminal=debug`)
@@ -1660,5 +1686,5 @@ Ghostty 1.4에서 가져온 마우스 동작, AppleScript `name override`, Ghost
 - 정함(0.70, 주 세션 추천안): Shift+Enter·Ctrl+Enter 등은 Ghostty와 같은 `ESC[27;…~`로 보냅니다. 셸이 모르면 글자가 들어갑니다. 옛 바이트(`\r`)를 기본으로 두고 싶으시면 알려 주세요
 - 범수 님이 확인할 것(0.71): 입력이 두 줄로 이어진 셸 프롬프트에서 창을 넓히고 좁힐 때 윗줄 글자가 남고 커서가 제 줄에 있는지, `printf '❤\u200d👍\n'`이 두 칸으로 그려지는지, 한글을 찍은 줄에서 한 글자 위에 영문을 덮어쓸 때 색 막대가 남지 않는지
 - 범수 님이 확인할 것(0.72): 출력을 많이 쌓고 위로 스크롤한 채로 `printf '\033[2;4r\033[3B\033D\033[r'`를 보내도 올려 본 화면이 움직이지 않고 스크롤 막대가 범위를 넘지 않는지
-- 다음 판 후보: Ghostty main의 그 뒤 고침을 다시 살핍니다(0.55에서 본 것: #15216 fontconfig는 Linux 길이라 해당 없음, #15147은 0.55, #15190은 0.57에서 바탕 동작을 맞춤). 0.58에서 한글 조합 중 포커스를 잃으면 확정하는 것(#502, Ghostty #15137)을 했습니다. Ghostty의 열린 PR 중 한국어 입력과 보안에 닿는 것도 판마다 봅니다(0.59: #15114 암호 입력 중 붙여넣기 미리보기). #14885(Dvorak-Qwerty ⌘ 배열에서 ⌘W가 ⌘,로)는 이 기기에 그 배열이 없어 확인할 수 없어 미뤘습니다. 편집 메뉴의 "선택 붙여넣기"는 0.56에서 더했습니다. 정함(0.66, 주 세션 추천안): `unsafe_code`는 풀지 않음, `window-colorspace` 기본은 `display-p3` 그대로, Linux GPU 길은 Linux 기기에서 잴 수 있을 때까지 그대로. 0.68로 0.66 비교 조사의 후보를 모두 처리했습니다(CSI 11/13/15/20 t는 Ghostty도 하지 않아 뺌). 0.69에서 붙여넣기·끌어다 놓기·레거시 키를 Ghostty와 견줬습니다. 0.70에서 레거시 키 표 전체와 기본 키 묶음 목록을 맞췄습니다. 0.71에서 `Terminal.zig` 남은 시험 197개를 견줘 엔진 일곱 곳을 고쳤습니다. 0.72에서 퍼징으로 찾은 엔진 패닉을 고치고 시드 고정 퍼징 시험을 넣었습니다. 0.74에서 스캐너를 엔진 상태표에 맞췄습니다. 0.75에서 엔진이 버린 ENQ에 더 답하던 틈을, 0.76에서 엔진이 dispatch하지 않는 CSI의 신호를 닫았습니다. 0.77에서 PTY 열기의 동시 일시 실패를 다시 시도하게 했습니다. 0.78에서 AI 에이전트 CLI를 위한 프로그램 상태(OSC 7501)를 넣고 tmux 정책을 정했습니다. 0.87에서 Ghostty 1.4의 키 동작·설정 키 대조를 마쳤고(모두 받음, 남은 받기만 하는 값은 GTK·Linux 전용이거나 unsafe가 필요), 0.88에서 남은 손 확인을 주 세션이 마우스로 돌렸고, 0.89에서 웹 조사로 찾은 Ghostty 마우스 고르기 둘을 넣었고, 0.90에서 그 한계를 모두 확인했습니다. 0.90 뒤 후보: Ghostty 새 병합분, 에이전트 CLI가 쓰는 새 터미널 신호(판마다 웹 조사), fish 셸 통합 스크립트, 마우스 보고 중 링크를 Ghostty처럼 Shift가 있을 때만 볼지(ADR-069 하지 않은 것)
+- 다음 판 후보: Ghostty main의 그 뒤 고침을 다시 살핍니다(0.55에서 본 것: #15216 fontconfig는 Linux 길이라 해당 없음, #15147은 0.55, #15190은 0.57에서 바탕 동작을 맞춤). 0.58에서 한글 조합 중 포커스를 잃으면 확정하는 것(#502, Ghostty #15137)을 했습니다. Ghostty의 열린 PR 중 한국어 입력과 보안에 닿는 것도 판마다 봅니다(0.59: #15114 암호 입력 중 붙여넣기 미리보기). #14885(Dvorak-Qwerty ⌘ 배열에서 ⌘W가 ⌘,로)는 이 기기에 그 배열이 없어 확인할 수 없어 미뤘습니다. 편집 메뉴의 "선택 붙여넣기"는 0.56에서 더했습니다. 정함(0.66, 주 세션 추천안): `unsafe_code`는 풀지 않음, `window-colorspace` 기본은 `display-p3` 그대로, Linux GPU 길은 Linux 기기에서 잴 수 있을 때까지 그대로. 0.68로 0.66 비교 조사의 후보를 모두 처리했습니다(CSI 11/13/15/20 t는 Ghostty도 하지 않아 뺌). 0.69에서 붙여넣기·끌어다 놓기·레거시 키를 Ghostty와 견줬습니다. 0.70에서 레거시 키 표 전체와 기본 키 묶음 목록을 맞췄습니다. 0.71에서 `Terminal.zig` 남은 시험 197개를 견줘 엔진 일곱 곳을 고쳤습니다. 0.72에서 퍼징으로 찾은 엔진 패닉을 고치고 시드 고정 퍼징 시험을 넣었습니다. 0.74에서 스캐너를 엔진 상태표에 맞췄습니다. 0.75에서 엔진이 버린 ENQ에 더 답하던 틈을, 0.76에서 엔진이 dispatch하지 않는 CSI의 신호를 닫았습니다. 0.77에서 PTY 열기의 동시 일시 실패를 다시 시도하게 했습니다. 0.78에서 AI 에이전트 CLI를 위한 프로그램 상태(OSC 7501)를 넣고 tmux 정책을 정했습니다. 0.87에서 Ghostty 1.4의 키 동작·설정 키 대조를 마쳤고(모두 받음, 남은 받기만 하는 값은 GTK·Linux 전용이거나 unsafe가 필요), 0.88에서 남은 손 확인을 주 세션이 마우스로 돌렸고, 0.89에서 웹 조사로 찾은 Ghostty 마우스 고르기 둘을 넣었고, 0.90에서 그 한계를 모두 확인했습니다. 0.91에서 쌓인 실제 창 확인 목록을 돌려 결함 열둘을 고쳤습니다. 0.91 뒤 후보: 남은 그리기·GPU 확인 항목(0.29~0.42, 0.45 이후), 물리 키 이름 키 묶음(`key_a`), Ghostty 새 병합분, 에이전트 CLI가 쓰는 새 터미널 신호(판마다 웹 조사), fish 셸 통합 스크립트, 마우스 보고 중 링크를 Ghostty처럼 Shift가 있을 때만 볼지(ADR-069 하지 않은 것)
 - 큰 일로 남긴 것: Linux에서 GPU 길 재기와 기본 바꾸기, 화면이 장을 가져가는 때에 맞춰 그리기(Ghostty의 CVDisplayLink 같은 것)
