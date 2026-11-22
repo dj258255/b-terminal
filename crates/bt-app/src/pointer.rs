@@ -53,11 +53,9 @@ pub struct PointerInput {
     pub program: Option<MouseShape>,
     /// Shift를 누르고 있다
     pub shift: bool,
-    /// 지금 누른 수식 키 그대로 마우스를 프로그램이 받는다(마우스 보고 모드가 켜져 있고 Shift가 그것을 막지 않는다).
-    /// 프로그램이 받으면 마우스는 프로그램의 것이라 Shift 모양을 보이지 않는다
-    pub reports_to_program: bool,
-    /// 칸의 마우스 보고 모드(X10·버튼·움직임)가 켜져 있다. `reports_to_program`과 달리 Shift나 `mouse-reporting`과 상관없이
-    /// 모드 자체만 본다(Ghostty `terminal.flags.mouse_event != .none`). 정한 모양이 없을 때의 기본이 이것으로 갈린다
+    /// 칸의 마우스 보고 모드(X10·버튼·움직임)가 켜져 있다. Shift 잡기나 `mouse-reporting`, 읽기 전용과 상관없이
+    /// 모드 자체만 본다(Ghostty `terminal.flags.mouse_event != .none`). 정한 모양이 없을 때의 기본과, 십자·I자에
+    /// Shift가 필요한지가 이것으로 갈린다
     pub mouse_mode: bool,
     /// 사각 고르기 수식 키를 누르고 있다(macOS Option, 그 밖에는 Ctrl+Alt. `mouse::is_rectangle_select`)
     pub rectangle: bool,
@@ -95,7 +93,8 @@ pub enum HandleCursor {
 /// 모양, 정한 것이 없으면(OSC 22를 받은 적 없거나 되돌렸으면) 마우스 보고 모드가 꺼져 있을 때 I자(`text`), 켜져 있을 때
 /// 화살표를 쓴다(Ghostty `Terminal.mouse_shape` 기본값 `.text`, `stream_handler.zig`가 모드를 켜면 `.default`·끄면 `.text`,
 /// `OSC 22` 지움은 모드에 따라 `.default`·`.text`). 마우스를 숨겼으면 키가 모양을 바꾸지 않는다.
-/// 마우스 보고 중에는 Shift가 보고를 끊을 때(`reports_to_program`이 거짓)만 십자·I자가 된다(Ghostty `keyToMouseShape`와 같다)
+/// 마우스 보고 모드가 켜진 칸에서는 Shift를 누를 때만 십자(Shift+사각 수식 키)·I자가 된다. Shift 잡기 설정은 보지 않는다
+/// (Ghostty 1.4.0 `surface_mouse.zig keyToMouseShape`의 `isMouseModeOverrideState`가 `mods.shift`만 본다, #725)
 pub fn decide(input: PointerInput) -> CursorIcon {
     // 경계선 위(또는 끄는 중)는 칸의 글이 아니라 창의 것이다: 칸을 끄는 중이 아니면 모든 것에 앞선다
     if input.handle != HandleCursor::Dragging {
@@ -114,10 +113,12 @@ pub fn decide(input: PointerInput) -> CursorIcon {
     if input.over_link {
         return CursorIcon::Pointer;
     }
-    if input.rectangle && !input.reports_to_program && !input.hidden {
+    // 마우스 모드가 켜졌으면 Shift가 있어야 고르기 모양을 보인다(isMouseModeOverrideState)
+    let selecting = !input.hidden && (!input.mouse_mode || input.shift);
+    if selecting && input.rectangle {
         return CursorIcon::Crosshair;
     }
-    if input.shift && !input.reports_to_program && !input.hidden {
+    if selecting && input.shift {
         return CursorIcon::Text;
     }
     let base = if input.mouse_mode {
@@ -256,7 +257,6 @@ mod tests {
         // 마우스 보고 모드가 켜져 있으면 정한 모양이 없을 때 화살표다(Ghostty는 모드를 켜면 default, 끄면 text)
         let on = PointerInput {
             mouse_mode: true,
-            reports_to_program: true,
             ..input()
         };
         assert_eq!(decide(on), CursorIcon::Default);
@@ -275,23 +275,8 @@ mod tests {
             }),
             CursorIcon::Text
         );
-        // 모드는 켜져 있지만 보고하지 않는 때(mouse-reporting 끔·읽기 전용 칸)도 Ghostty처럼 모드만 본다
-        assert_eq!(
-            decide(PointerInput {
-                reports_to_program: false,
-                ..on
-            }),
-            CursorIcon::Default
-        );
-        // Shift가 보고를 끊으면 고르기라 I자
-        assert_eq!(
-            decide(PointerInput {
-                shift: true,
-                reports_to_program: false,
-                ..on
-            }),
-            CursorIcon::Text
-        );
+        // Shift를 누르면 I자
+        assert_eq!(decide(PointerInput { shift: true, ..on }), CursorIcon::Text);
         // 링크 손가락과 칸 끌기 손잡이는 그대로 앞선다
         assert_eq!(decide(PointerInput { over_link: true, ..on }), CursorIcon::Pointer);
         assert_eq!(
@@ -333,19 +318,13 @@ mod tests {
         );
         // 마우스를 숨겼으면 모양을 바꾸지 않는다
         assert_eq!(decide(PointerInput { hidden: true, ..i }), CursorIcon::Progress);
-        // 프로그램이 마우스를 받는 동안(고르기가 아니다)은 바꾸지 않는다
-        assert_eq!(
-            decide(PointerInput {
-                reports_to_program: true,
-                ..i
-            }),
-            CursorIcon::Progress
-        );
+        // 마우스 모드가 켜진 칸에서는 Shift 없이 바꾸지 않는다
+        assert_eq!(decide(PointerInput { mouse_mode: true, ..i }), CursorIcon::Progress);
     }
 
     #[test]
     fn shift_shows_the_text_beam_over_the_program_shape_when_the_mouse_selects() {
-        // 마우스 보고가 없으면(또는 Shift가 보고를 끊으면) Shift는 고르기라 I자다. 기본 화살표 위에서도 그렇다(Ghostty와 같다)
+        // Shift는 I자다(마우스 모드가 켜진 칸에서도). 기본 화살표 위에서도 그렇다(Ghostty와 같다)
         let i = PointerInput {
             shift: true,
             program: Some(MouseShape::Progress),
@@ -357,24 +336,35 @@ mod tests {
         assert_eq!(decide(PointerInput { shift: false, ..i }), CursorIcon::Progress);
     }
 
+    /// Ghostty 1.4.0 `surface_mouse.zig keyToMouseShape`(#725): 프로그램이 마우스 모드를 켰으면 Shift만 본다.
+    /// Shift 잡기 설정도, 칸이 실제로 보고하는지(읽기 전용·`mouse-reporting`)도 보지 않는다
     #[test]
-    fn shift_is_ignored_while_the_program_keeps_the_mouse() {
-        // mouse-shift-capture로 Shift까지 프로그램이 받으면 고르기가 아니다
-        let i = PointerInput {
-            shift: true,
-            reports_to_program: true,
+    fn mouse_mode_overrides_follow_shift_only_like_ghostty() {
+        let vim = PointerInput {
+            mouse_mode: true,
             program: Some(MouseShape::Pointer),
             ..input()
         };
-        assert_eq!(decide(i), CursorIcon::Pointer);
-        // 프로그램이 마우스를 받고 있으니 모드가 켜져 있고, 정한 모양이 없으면 화살표
+        // Shift 잡기로 Shift 클릭도 프로그램이 받는 때도
+        assert_eq!(
+            decide(PointerInput { shift: true, ..vim }),
+            CursorIcon::Text,
+            "Shift는 I자"
+        );
         assert_eq!(
             decide(PointerInput {
-                program: None,
-                mouse_mode: true,
-                ..i
+                shift: true,
+                rectangle: true,
+                ..vim
             }),
-            CursorIcon::Default
+            CursorIcon::Crosshair,
+            "Shift+Option은 십자"
+        );
+        // 모드는 켜졌지만 보고하지 않는 칸(읽기 전용·mouse-reporting 끔)에서 Option만
+        assert_eq!(
+            decide(PointerInput { rectangle: true, ..vim }),
+            CursorIcon::Pointer,
+            "Shift 없는 Option은 모양을 바꾸지 않는다"
         );
     }
 

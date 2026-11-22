@@ -313,3 +313,11 @@
 - 고침: 창을 만들 때 `NSWindow.occlusionState`를 읽어 그 값으로 시작한다(Ghostty `syncSurfaceTreeOcclusionState`와 같다). 보이게 되면 바뀜 알림이 와 곧 그린다
 - 0.90.0에서 풀기: 창을 한 번 앞으로 가져왔다가 다른 창으로 가리면 그 뒤로는 맞다
 
+## 38. Ctrl+왼쪽 클릭 메뉴와 십자·I자 포인터가 Ghostty와 다르다
+
+- 언제: 2026-11-23, #725. 실제 창 확인 목록(0.21 오른쪽 클릭 메뉴, 0.43 사각 고르기 포인터)을 Ghostty 1.4.0 원본과 견주다 찾았다. 0.90.0까지의 동작이다
+- 증상: vim(`set mouse=a`) 안에서 Ctrl+Shift+왼쪽 클릭에 메뉴가 뜬다. `right-click-action`이 `context-menu`가 아니면 셸에서 Ctrl+왼쪽 클릭이 메뉴도 오른쪽 클릭 동작도 하지 않는다. Shift 잡기를 켠 프로그램 안에서 Shift(+Option)를 눌러도 I자(십자)가 되지 않는다
+- 까닭: 둘 다 "이 클릭을 지금 프로그램에 보고하는가"로 갈랐다. Ghostty는 프로그램이 마우스 모드를 켰는가만 본다
+- 고침: Ghostty `menu(for:)`·`keyToMouseShape`처럼 프로그램의 마우스 모드만 본다. Ctrl+왼쪽은 오른쪽 클릭 동작 뒤 메뉴를 띄운다
+- 0.90.0에서 풀기: 메뉴는 오른쪽 클릭으로 띄운다
+

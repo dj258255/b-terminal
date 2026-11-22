@@ -26,6 +26,13 @@ pub fn pick(selection_contains_click: bool, link_here: bool) -> Pick {
     }
 }
 
+/// 왼쪽 누름을 오른쪽 누름 + 메뉴로 볼까(macOS의 Ctrl+왼쪽 클릭, #725). Ghostty 1.4.0 `SurfaceView_AppKit.menu(for:)`처럼
+/// 칸의 프로그램이 마우스 모드를 켜지 않았을 때만(`mouseCaptured`는 `terminal.flags.mouse_event != .none`).
+/// Shift·읽기 전용·`mouse-reporting`은 보지 않는다. 모드가 켜졌으면 보통 왼쪽 클릭이라 보고하거나 고른다
+pub fn ctrl_click_opens_menu(macos: bool, ctrl: bool, program_mouse_mode: bool) -> bool {
+    macos && ctrl && !program_mouse_mode
+}
+
 /// 링크가 차지한 칸들의 처음 `(줄, 칸)`과 마지막 `(줄, 칸)`(마지막 칸 포함). 비었으면 없다
 pub fn link_ends(spans: &[LinkSpan]) -> Option<((usize, usize), (usize, usize))> {
     let mut cells = spans.iter().filter(|s| s.end > s.start);
@@ -141,6 +148,19 @@ mod tests {
     fn pick_keeps_selection_under_click() {
         assert_eq!(pick(true, false), Pick::Keep);
         assert_eq!(pick(true, true), Pick::Keep);
+    }
+
+    /// Ghostty 1.4.0 `SurfaceView_AppKit.menu(for:)`(#725): Ctrl+왼쪽 누름은 칸의 프로그램이 마우스 모드를 켰으면
+    /// (`mouseCaptured`, Shift·읽기 전용·`mouse-reporting`과 상관없이) 메뉴 없이 보통 왼쪽 클릭이다. macOS만
+    #[test]
+    fn ctrl_click_menu_only_when_the_program_has_no_mouse_mode() {
+        assert!(ctrl_click_opens_menu(true, true, false), "셸");
+        assert!(
+            !ctrl_click_opens_menu(true, true, true),
+            "vim set mouse=a: Ctrl+Shift·읽기 전용이어도"
+        );
+        assert!(!ctrl_click_opens_menu(true, false, false), "Ctrl 없음");
+        assert!(!ctrl_click_opens_menu(false, true, false), "macOS 밖");
     }
 
     #[test]
