@@ -17,6 +17,13 @@ pub fn is_rectangle_select(macos: bool, alt: bool, ctrl: bool, super_key: bool) 
     if macos { alt } else { (ctrl || super_key) && alt }
 }
 
+/// 왼쪽 단추를 놓았을 때 프롬프트 클릭으로 커서를 옮길까(#729). `single_same_cell`은 한 번 눌러 끌지 않고 같은 칸에서 놓았는가,
+/// `selection_left`는 놓은 뒤 고른 글이 남았는가. Ghostty 1.4.0 `Surface.maybePromptClick`처럼 수식 키는 보지 않는다
+/// (Shift 클릭으로 넓힌 고르기는 고른 글이 남아 걸러진다. macOS Ctrl+클릭은 그 전에 메뉴로 빠진다)
+pub fn prompt_click_moves(single_same_cell: bool, selection_left: bool) -> bool {
+    single_same_cell && !selection_left
+}
+
 /// 왼쪽 단추를 누른 횟수로 정하는 고르기 종류. 두 번은 낱말, 세 번은 줄, 한 번은 글자이고 사각 수식 키가 있으면 사각이다.
 /// 낱말·줄 고르기는 사각을 보지 않는다(Ghostty `SelectionGesture.drag`는 한 번 누르기(cell)에서만 `rectangle`을 쓴다)
 pub fn select_kind(clicks: u8, rectangle: bool) -> SelectKind {
@@ -440,6 +447,15 @@ impl FocusClickGuard {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Ghostty 1.4.0 `Surface.maybePromptClick`(#729): 수식 키는 보지 않는다. 끌지 않은 한 번 누르기이고 놓은 뒤 고른 글이
+    /// 없으면 옮긴다. Shift 클릭으로 고르기를 넓혔으면 고른 글이 남아 옮기지 않는다
+    #[test]
+    fn prompt_click_ignores_modifiers_like_ghostty() {
+        assert!(prompt_click_moves(true, false), "그냥 누름");
+        assert!(!prompt_click_moves(true, true), "Shift 클릭으로 넓힌 고르기가 남음");
+        assert!(!prompt_click_moves(false, false), "끌었거나 두 번 누름");
+    }
 
     #[test]
     fn swallow_only_left_press_on_unfocused_pane() {

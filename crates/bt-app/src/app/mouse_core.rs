@@ -310,13 +310,15 @@ impl App {
             self.request_redraw();
         } else {
             st.selecting = false;
-            // 프롬프트 줄을 끌지 않고 한 번 누르면 그 자리로 커서를 옮긴다(cursor-click-to-move, #137)
+            // 프롬프트 줄을 끌지 않고 한 번 누르면 그 자리로 커서를 옮긴다(cursor-click-to-move, #137). 수식 키는 보지 않고
+            // 고른 글이 남았으면 옮기지 않는다(Ghostty maybePromptClick, #729)
             let released = self.cell_in(idx, input.pos);
-            let plain_click = matches!(
+            let single_same_cell = matches!(
                 (st.last_click, released),
                 (Some((_, c, r, 1)), Some((rc, rr))) if (c, r) == (rc, rr)
-            ) && !(input.mods.sup || input.mods.ctrl || input.mods.alt || input.mods.shift);
-            if plain_click && self.config.cursor_click_to_move {
+            );
+            let selection_left = self.panes[idx].session.selection_text().is_some();
+            if mouse::prompt_click_moves(single_same_cell, selection_left) && self.config.cursor_click_to_move {
                 if let Some((col, row)) = released {
                     self.click_to_move(idx, col, row);
                 }
