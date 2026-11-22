@@ -321,6 +321,18 @@ fn title_of(user: Option<&str>, program: &str, fg: Option<&str>, bell: bool, rea
 }
 
 /// 사람이 친 제목을 다듬는다: 제어 문자를 지우고 앞뒤 공백을 떼고 200자까지. 비면 없다
+/// 창이 지금 가려졌는가(#723). winit은 가림 상태가 바뀔 때만 알리므로 창을 넣을 때 실제 상태로 시작한다(Ghostty `syncSurfaceTreeOcclusionState`)
+fn window_occluded(window: &Window) -> bool {
+    #[cfg(target_os = "macos")]
+    let visible = Some(winit::platform::macos::occlusion_visible(window));
+    #[cfg(not(target_os = "macos"))]
+    let visible = {
+        let _ = window;
+        None
+    };
+    crate::lifecycle::starts_occluded(visible)
+}
+
 fn clean_user_title(text: &str) -> Option<String> {
     let t: String = bt_core::proto::printable(text).trim().chars().take(200).collect();
     let t = t.trim_end().to_string();
@@ -5185,6 +5197,7 @@ impl App {
         // 새 창의 기준 크기는 옮긴 탭에서 고른 칸의 크기다
         let mut win = Win::new(self.pane_font_size(moved.focus).unwrap_or(self.w.font_size));
         win.focused = new_focused;
+        win.occluded = window_occluded(&gfx.window);
         win.gfx = Some(gfx);
         win.tabs.push(moved);
         let mut old = std::mem::replace(&mut self.w, win);
@@ -5520,6 +5533,7 @@ impl App {
                 let Some(gfx) = self.create_gfx(event_loop) else { break };
                 let mut win = Win::new(self.new_window_font_size(false));
                 win.focused = gfx.window.has_focus();
+                win.occluded = window_occluded(&gfx.window);
                 win.gfx = Some(gfx);
                 let old = std::mem::replace(&mut self.w, win);
                 self.others.push(old);
@@ -5604,6 +5618,7 @@ impl App {
         let id = gfx.window.id();
         let mut win = Win::new(self.new_window_font_size(quick));
         win.focused = gfx.window.has_focus();
+        win.occluded = window_occluded(&gfx.window);
         win.gfx = Some(gfx);
         let mut old = std::mem::replace(&mut self.w, win);
         // 새 창이 앞으로 온다. 앞 창의 포커스 잃음 사건을 기다리지 않고 바로 보고 있지 않은 창으로.
@@ -7025,6 +7040,7 @@ impl ApplicationHandler<UserEvent> for App {
         };
         self.last_focused = Some(gfx.window.id());
         self.w.focused = gfx.window.has_focus();
+        self.w.occluded = window_occluded(&gfx.window);
         self.w.gfx = Some(gfx);
         #[cfg(target_os = "macos")]
         if self.menu.is_none() {

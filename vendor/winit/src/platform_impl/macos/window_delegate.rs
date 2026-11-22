@@ -1924,6 +1924,11 @@ impl WindowDelegate {
         self.view().selected_keyboard_input_source()
     }
 
+    // b-terminal(#723): see `winit::platform::macos::occlusion_visible`.
+    pub(crate) fn occlusion_visible(&self) -> bool {
+        self.window().occlusionState().contains(NSWindowOcclusionState::Visible)
+    }
+
     // b-terminal(#502): see `winit::platform::macos::discard_marked_text`.
     pub(crate) fn discard_marked_text(&self) {
         self.view().discard_marked_text()

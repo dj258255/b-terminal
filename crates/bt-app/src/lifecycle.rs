@@ -94,6 +94,12 @@ pub fn activate_on_launch(parent_pid: u32) -> bool {
     parent_pid != 1
 }
 
+/// 창을 만들 때의 가림 상태(#723). `visible`은 macOS `NSWindow.occlusionState`에 `.visible`이 있는가이고, 읽지 못하면(다른 OS) `None`.
+/// winit은 가림 상태가 바뀔 때만 `Occluded`를 보내므로 처음부터 가려진 창은 알림이 없다. 읽지 못하면 보인다고 본다(그리기를 멈추지 않게)
+pub fn starts_occluded(visible: Option<bool>) -> bool {
+    visible == Some(false)
+}
+
 /// 입력기가 확정한 글(`Ime::Commit`)이 남은 칸을 닫는가: 보낼 바이트가 있으면 닫는다(#715).
 /// 한국어 입력기는 스페이스를 `KeyboardInput`이 아니라 확정으로 보낸다. 조합 중인 글자는 확정이 아니라 닫지 않는다(Ghostty와 같음)
 pub fn is_dismiss_commit(text: &str) -> bool {
@@ -250,6 +256,14 @@ mod tests {
     fn activates_itself_only_when_not_launched_by_launch_services() {
         assert!(!activate_on_launch(1), "launchd가 띄움(open -g면 뒤에 남아야 한다)");
         assert!(activate_on_launch(4242), "셸에서 바이너리를 바로 띄움");
+    }
+
+    /// 처음부터 다른 창 밑에서 뜬 창은 가려진 채 시작한다. Ghostty `syncSurfaceTreeOcclusionState`처럼 창의 실제 상태를 읽는다(#723)
+    #[test]
+    fn window_starts_with_its_real_occlusion_state() {
+        assert!(starts_occluded(Some(false)), "다른 앱 창이 다 덮었다");
+        assert!(!starts_occluded(Some(true)), "보인다");
+        assert!(!starts_occluded(None), "읽지 못하면 보인다고 본다");
     }
 
     /// 입력기가 확정한 글(한국어 입력 소스의 스페이스 등, `Ime::Commit`)도 보낼 바이트라 남은 칸을 닫는다(#715).
