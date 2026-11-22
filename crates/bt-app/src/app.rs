@@ -920,6 +920,8 @@ struct Win {
     quick: bool,
     /// 퀵 터미널을 보인 때. 직후의 포커스 잃음(앱이 앞으로 오기 전)은 숨기지 않는다
     quick_shown: Option<Instant>,
+    /// 퀵 터미널을 보인 Space(macOS, #727). 초점을 잃었을 때 Space를 옮긴 것인지 가른다
+    quick_space: Option<u64>,
     /// 퀵 창이 놓인 자리와 숨을 때 나가는 자리(#110)
     quick_place: Option<(crate::quick::Rect, (f64, f64))>,
     /// 퀵 창의 들어오고 나가는 움직임(#110)
@@ -1009,6 +1011,7 @@ impl Win {
             pointer_hidden: false,
             quick: false,
             quick_shown: None,
+            quick_space: None,
             quick_place: None,
             quick_anim: None,
             keyseq: Default::default(),
@@ -1077,6 +1080,8 @@ pub struct App {
     last_bell_audio: Option<Instant>,
     /// 같은 이벤트 고리 차례에 온 `DroppedFile`을 모은다. `about_to_wait`에서 한 번에 붙여넣는다(#566)
     drop_batch: crate::file_drop::DropBatch<WindowId>,
+    /// Space를 옮겨 초점을 잃은 퀵 터미널 창. `about_to_wait`에서 다시 앞으로 띄운다(Ghostty처럼 초점 처리 밖으로 미룬다, #727)
+    quick_reshow: Option<Arc<Window>>,
     /// btctl wait가 기다리는 글(#66)
     text_waiters: Vec<TextWaiter>,
     /// 메뉴 막대(살려 두어야 메뉴가 남는다)
@@ -1176,6 +1181,7 @@ impl App {
             bell_sound: None,
             last_bell_audio: None,
             drop_batch: Default::default(),
+            quick_reshow: None,
             written_files: Vec::new(),
             bg_image: None,
             shaders: Vec::new(),
@@ -5439,6 +5445,7 @@ impl App {
         g.window.focus_window();
         log::debug!("퀵 터미널: 화면 {screen:?}, 자리 {frame:?}, 움직임 {animate}");
         self.w.quick_shown = Some(Instant::now());
+        self.w.quick_space = crate::quick::active_space();
         self.w.quick_place = Some((frame, hidden));
         self.w.quick_anim = animate.then(|| QuickAnim {
             from: start,
@@ -7361,15 +7368,32 @@ impl ApplicationHandler<UserEvent> for App {
                     self.system_scroller = SystemScroller::read();
                     self.request_redraw();
                 }
-                // 퀵 터미널은 포커스를 잃으면 숨는다(Ghostty quick-terminal-autohide 기본과 같다)
+                // 퀵 터미널은 포커스를 잃으면 숨는다(Ghostty quick-terminal-autohide 기본과 같다). `move`에서 Space를 옮겨
+                // 잃었으면 숨기지 않고 새 Space에 다시 띄운다(Ghostty windowDidResignKey, #727).
                 // 보인 직후(0.5초 안)의 포커스 잃음은 앱이 앞으로 오는 중일 수 있어 무시한다
                 let just_shown = self
                     .w
                     .quick_shown
                     .is_some_and(|t| t.elapsed() < Duration::from_millis(500));
-                if !focused && self.w.quick && self.config.quick.autohide && !just_shown {
-                    log::debug!("퀵 터미널이 포커스를 잃어 숨깁니다");
-                    self.hide_quick();
+                if !focused && self.w.quick && !just_shown {
+                    let now = crate::quick::active_space();
+                    match crate::quick::on_focus_lost(
+                        self.config.quick.autohide,
+                        self.config.quick.space,
+                        self.w.quick_space,
+                        now,
+                    ) {
+                        crate::quick::FocusLost::Keep => {}
+                        crate::quick::FocusLost::Hide => {
+                            log::debug!("퀵 터미널이 포커스를 잃어 숨깁니다");
+                            self.hide_quick();
+                        }
+                        crate::quick::FocusLost::ReshowHere => {
+                            log::debug!("Space를 옮겨 퀵 터미널을 새 Space에 다시 띄웁니다");
+                            self.w.quick_space = now;
+                            self.quick_reshow = self.w.gfx.as_ref().map(|g| g.window.clone());
+                        }
+                    }
                 }
                 if focused {
                     self.last_focused = Some(id);
@@ -7717,6 +7741,9 @@ impl ApplicationHandler<UserEvent> for App {
         if self.quit_deadline.is_some_and(|d| Instant::now() >= d) {
             event_loop.exit();
             return;
+        }
+        if let Some(w) = self.quick_reshow.take() {
+            w.focus_window();
         }
         if let Some((window, text)) = self.drop_batch.take() {
             // 놓은 창으로 바꿔 넣고, 아래 일들이 보던 지금 창으로 되돌린다(DroppedFile 갈래와 같게)
