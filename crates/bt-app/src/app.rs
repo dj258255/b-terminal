@@ -6140,6 +6140,7 @@ impl App {
                     in_band: hover.is_some(),
                     over_handle: hover.is_some_and(|h| h.1),
                     dragging: self.w.pane_drag.from() == Some(v.id),
+                    pointer_hidden: self.w.pointer_hidden,
                 })
             })
             .collect();

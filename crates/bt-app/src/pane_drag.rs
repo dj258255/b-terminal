@@ -62,6 +62,8 @@ pub struct HandleInput {
     pub over_handle: bool,
     /// 이 칸을 끄는 중이다
     pub dragging: bool,
+    /// 입력 중 마우스 숨김으로 포인터가 숨었다(`mouse-hide-while-typing`)
+    pub pointer_hidden: bool,
 }
 
 /// 손잡이를 보일지, 얼마나 진하게 보일지. `auto`는 칸이 둘 이상일 때만 보인다(끌어서 새 창 만들기가 없어서).
@@ -80,8 +82,9 @@ pub fn look(i: HandleInput) -> Look {
         DragHandle::Auto => {
             // Ghostty macOS는 칸 하나여도 보인다(끌어서 새 창을 만든다). b-terminal은 그 기능이 없어
             // 칸 하나의 손잡이는 눌러도 하는 일이 없으므로 모든 OS에서 칸이 둘 이상일 때만 보인다
+            // 포인터가 숨었으면(입력 중) 손잡이 위·끄는 중이어도 보이지 않는다(Ghostty `ellipsisVisible`의 `cursorVisible`, #731)
             let allowed = i.panes > 1;
-            if !allowed || i.zoomed || !(i.in_band || strong) {
+            if !allowed || i.zoomed || i.pointer_hidden || !(i.in_band || strong) {
                 Look::Hidden
             } else if strong {
                 Look::Bright
@@ -239,7 +242,44 @@ mod tests {
             in_band: false,
             over_handle: false,
             dragging: false,
+            pointer_hidden: false,
         }
+    }
+
+    /// Ghostty 1.4.0 `SurfaceGrabHandle.ellipsisVisible`(#731): `auto`는 포인터가 숨었으면 손잡이 위·끄는 중이어도 점을
+    /// 보이지 않는다. `always`는 이 조건을 보지 않는다
+    #[test]
+    fn auto_hides_the_dots_while_the_pointer_is_hidden() {
+        let hidden = HandleInput {
+            pointer_hidden: true,
+            ..input()
+        };
+        assert_eq!(
+            look(HandleInput {
+                in_band: true,
+                ..hidden
+            }),
+            Look::Hidden,
+            "띠 안"
+        );
+        assert_eq!(
+            look(HandleInput {
+                in_band: true,
+                over_handle: true,
+                dragging: true,
+                ..hidden
+            }),
+            Look::Hidden,
+            "손잡이 위·끄는 중"
+        );
+        assert_eq!(
+            look(HandleInput {
+                mode: DragHandle::Always,
+                ..hidden
+            }),
+            Look::Dim,
+            "always는 그대로"
+        );
     }
 
     #[test]
