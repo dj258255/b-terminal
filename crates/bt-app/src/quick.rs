@@ -305,7 +305,6 @@ mod tests {
         assert_eq!(screen_at((-5.0, 0.0), &screens), None);
     }
 
-    #[cfg(target_os = "macos")]
     /// Ghostty 1.4.0 `QuickTerminalController.windowDidResignKey`(#727): `move`이면 띄울 때의 Space와 견줘 같으면 숨기고,
     /// 다르면(Space를 옮김) 숨기지 않고 새 Space에 다시 띄운다. `remain`은 늘 숨기고, `autohide`를 끄면 그대로 둔다
     #[test]
@@ -330,6 +329,7 @@ mod tests {
         );
     }
 
+    #[cfg(target_os = "macos")]
     #[test]
     fn space_behavior_maps_to_collection_behavior() {
         use bt_core::config::QuickSpace;
