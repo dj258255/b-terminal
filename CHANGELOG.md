@@ -4,6 +4,8 @@
 
 ## [아직 릴리스하지 않음]
 
+- `drag-handle = auto`(기본)의 칸 끌기 손잡이가 입력 중 마우스 숨김(`mouse-hide-while-typing`)으로 포인터가 숨은 동안 보이지 않습니다(Ghostty `SurfaceGrabHandle`과 같게). `always`는 그대로입니다. Ghostty 원본과 대조해 고쳤고 단위 시험으로 확인했습니다 (#731)
+
 - 셸 통합 프롬프트를 누를 때 커서 옮기기(`cursor-click-to-move`)가 Ghostty처럼 수식 키를 보지 않습니다. Option·Cmd를 누른 채 한 번 눌러도 커서가 옮겨 가고, 놓은 뒤 고른 글이 남았으면(Shift 클릭으로 넓힌 고르기 등) 옮기지 않습니다. 전에는 수식 키가 하나라도 있으면 옮기지 않았습니다. 격리한 실제 창(zsh 셸 통합)에서 0.90.0과 견줘 확인했습니다 (#729)
 
 - 퀵 터미널(`quick-terminal-space-behavior = move`, 기본)을 띄운 채 다른 Space로 옮기면 숨지 않고 새 Space에 다시 뜹니다. 같은 Space에서 다른 앱으로 가면 전처럼 숨습니다(Ghostty `windowDidResignKey`와 같게). 지금 Space는 Ghostty처럼 비공개 CoreGraphics 함수 `CGSGetActiveSpace`로 읽습니다. 판단은 단위 시험으로 확인했고, 이 기기에서 그 함수가 Space 번호를 돌려주는 것만 봤습니다. Space를 실제로 옮기는 확인은 하지 않았습니다 (#727)
