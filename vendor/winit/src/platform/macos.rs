@@ -555,6 +555,12 @@ pub fn set_secure_event_input(enable: bool) -> bool {
     crate::platform_impl::set_secure_event_input(enable)
 }
 
+/// Returns the id of the active Space (private `CGSGetActiveSpace` on the main connection), or `None` when it reads 0.
+/// Ghostty's quick terminal compares it to tell a Space switch from losing focus to another app. b-terminal(#727)
+pub fn active_space() -> Option<u64> {
+    crate::platform_impl::active_space()
+}
+
 /// Shows an `NSMenu` (for example `muda::ContextMenu::ns_menu()`) at the mouse pointer. The call blocks until the menu is
 /// dismissed. `ns_menu` must point to a live `NSMenu` that outlives the call. Call it on the main thread (otherwise it
 /// returns `false`). b-terminal(#278)

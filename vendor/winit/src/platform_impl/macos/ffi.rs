@@ -74,6 +74,11 @@ extern "C" {
 
 #[link(name = "CoreGraphics", kind = "framework")]
 extern "C" {
+    // b-terminal(#727): private CoreGraphics (SkyLight) call Ghostty uses for the quick terminal (`CGS.swift`).
+    // The connection comes from `CGSMainConnectionID` below.
+    #[allow(non_snake_case)]
+    pub fn CGSGetActiveSpace(cid: *mut AnyObject) -> u64;
+
     pub fn CGRestorePermanentDisplayConfiguration();
     pub fn CGDisplayCapture(display: CGDirectDisplayID) -> CGError;
     pub fn CGDisplayRelease(display: CGDirectDisplayID) -> CGError;

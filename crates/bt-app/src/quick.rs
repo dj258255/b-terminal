@@ -166,6 +166,48 @@ pub fn apply_space_behavior(space: bt_core::config::QuickSpace) {
 #[cfg(not(target_os = "macos"))]
 pub fn apply_space_behavior(_space: bt_core::config::QuickSpace) {}
 
+/// 퀵 터미널이 초점을 잃었을 때 할 일(#727)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FocusLost {
+    /// 그대로 둔다
+    Keep,
+    /// 숨긴다
+    Hide,
+    /// 숨기지 않고 지금 Space에서 다시 앞으로 띄운다
+    ReshowHere,
+}
+
+/// Ghostty 1.4.0 `QuickTerminalController.windowDidResignKey`와 같다. `autohide`를 끄면 그대로 두고, `remain`이면 숨긴다.
+/// `move`이면 `shown_space`(퀵 터미널을 띄울 때의 Space)와 `now_space`(지금 Space)를 견줘 같으면(같은 Space에서 다른 앱으로 감)
+/// 숨기고, 다르면(Space를 옮김) 새 Space에 다시 띄운다. Space를 읽지 못하면(다른 OS) 숨긴다
+pub fn on_focus_lost(
+    autohide: bool,
+    space: bt_core::config::QuickSpace,
+    shown_space: Option<u64>,
+    now_space: Option<u64>,
+) -> FocusLost {
+    use bt_core::config::QuickSpace;
+    if !autohide {
+        return FocusLost::Keep;
+    }
+    match (space, shown_space, now_space) {
+        (QuickSpace::Move, Some(shown), Some(now)) if shown != now => FocusLost::ReshowHere,
+        _ => FocusLost::Hide,
+    }
+}
+
+/// 지금 Space 번호(macOS). Ghostty `CGSSpace.active()`처럼 비공개 CoreGraphics 함수 `CGSGetActiveSpace`를 벤더 winit에서
+/// 부른다(앱 코드는 unsafe를 쓰지 않는다). 0은 읽지 못한 것으로 본다
+#[cfg(target_os = "macos")]
+pub fn active_space() -> Option<u64> {
+    winit::platform::macos::active_space()
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn active_space() -> Option<u64> {
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -264,6 +306,30 @@ mod tests {
     }
 
     #[cfg(target_os = "macos")]
+    /// Ghostty 1.4.0 `QuickTerminalController.windowDidResignKey`(#727): `move`이면 띄울 때의 Space와 견줘 같으면 숨기고,
+    /// 다르면(Space를 옮김) 숨기지 않고 새 Space에 다시 띄운다. `remain`은 늘 숨기고, `autohide`를 끄면 그대로 둔다
+    #[test]
+    fn focus_loss_hides_unless_the_user_moved_spaces() {
+        use bt_core::config::QuickSpace::{Move, Remain};
+        assert_eq!(
+            on_focus_lost(true, Move, Some(3), Some(3)),
+            FocusLost::Hide,
+            "같은 Space에서 다른 앱"
+        );
+        assert_eq!(
+            on_focus_lost(true, Move, Some(3), Some(7)),
+            FocusLost::ReshowHere,
+            "Space를 옮김"
+        );
+        assert_eq!(on_focus_lost(true, Remain, Some(3), Some(7)), FocusLost::Hide);
+        assert_eq!(on_focus_lost(false, Move, Some(3), Some(7)), FocusLost::Keep);
+        assert_eq!(
+            on_focus_lost(true, Move, None, Some(7)),
+            FocusLost::Hide,
+            "읽지 못하면 숨긴다"
+        );
+    }
+
     #[test]
     fn space_behavior_maps_to_collection_behavior() {
         use bt_core::config::QuickSpace;

@@ -321,3 +321,11 @@
 - 고침: Ghostty `menu(for:)`·`keyToMouseShape`처럼 프로그램의 마우스 모드만 본다. Ctrl+왼쪽은 오른쪽 클릭 동작 뒤 메뉴를 띄운다
 - 0.90.0에서 풀기: 메뉴는 오른쪽 클릭으로 띄운다
 
+## 39. 퀵 터미널이 Space를 옮길 때도 숨는다
+
+- 언제: 2026-11-23, #727. 실제 창 확인 목록(0.17 퀵 터미널 blur)을 Ghostty 1.4.0 원본과 견주다 찾았다. 0.90.0까지의 동작이다
+- 증상: 기본 설정(`quick-terminal-autohide = true`, `quick-terminal-space-behavior = move`)에서 퀵 터미널을 띄운 채 다른 Space로 옮기면 퀵 터미널이 숨는다
+- 까닭: 포커스를 잃으면 Space를 보지 않고 늘 숨겼다
+- 고침: Ghostty `windowDidResignKey`처럼 띄울 때의 Space(`CGSGetActiveSpace`)를 적어 두고, `move`에서 Space가 바뀌었으면 숨기지 않고 새 Space에 다시 띄운다
+- 0.90.0에서 풀기: 옮긴 Space에서 퀵 터미널 단축키를 다시 누른다
+

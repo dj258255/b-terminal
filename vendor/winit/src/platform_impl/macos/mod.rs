@@ -49,6 +49,13 @@ pub(crate) use crate::icon::NoIcon as PlatformIcon;
 pub(crate) use crate::platform_impl::Fullscreen;
 
 /// b-terminal(#258): Carbon secure event input is process-global, so it is a free function rather than a window method.
+/// b-terminal(#727): the active Space id, or `None` when CoreGraphics returns 0.
+pub fn active_space() -> Option<u64> {
+    // SAFETY: both functions are read-only queries without pointer arguments or preconditions.
+    let id = unsafe { ffi::CGSGetActiveSpace(ffi::CGSMainConnectionID()) };
+    (id != 0).then_some(id)
+}
+
 pub fn set_secure_event_input(enable: bool) -> bool {
     // SAFETY: both functions take no arguments and have no preconditions.
     let status = unsafe {
