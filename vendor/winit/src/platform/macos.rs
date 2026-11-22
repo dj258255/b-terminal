@@ -582,6 +582,13 @@ pub fn discard_marked_text(window: &Window) {
     window.window.maybe_wait_on_main(|w| w.discard_marked_text())
 }
 
+/// Whether the window is at least partly visible on screen now (`NSWindow.occlusionState` contains `.visible`).
+/// winit sends `WindowEvent::Occluded` only when this changes, so a window that starts covered by other windows never
+/// gets an event. Read it once when the window is made. b-terminal(#723)
+pub fn occlusion_visible(window: &Window) -> bool {
+    window.window.maybe_wait_on_main(|w| w.occlusion_visible())
+}
+
 /// Registers the function that receives the paths macOS asks the app to open (Dock drops, Finder "Open With",
 /// `open -a`). Paths that arrived before the call (a drop that launched the app) are passed first. The function runs
 /// on the main thread. b-terminal(#279)
