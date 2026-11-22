@@ -345,3 +345,11 @@
 - 고침: `auto`이면 포인터가 숨은 동안 손잡이를 보이지 않는다. `always`는 그대로다
 - 0.90.0에서 풀기: 마우스를 조금 움직이면 포인터와 함께 점이 다시 정상으로 보인다(보이는 것만의 차이)
 
+
+## 42. kitty 키보드를 켠 프로그램에서 Shift+Tab·Shift+Enter가 Shift 없이 간다
+
+- 언제: 2026-11-23, #735. 실제 창 확인 목록(0.66 kitty 키보드)을 격리한 실제 창에서 재다 찾았다. 0.91.0까지의 동작이다
+- 증상: 프로그램이 kitty 키보드 프로토콜을 플래그 1(모호한 키 구분)이나 3으로 켜면 Shift+Tab·Shift+Enter·Shift+Backspace가 `\t`·`\r`·`0x7f`로 간다. Shift+Enter로 줄을 바꾸는 TUI에서 그냥 Enter가 된다. 플래그 8(모든 키를 이스케이프로)을 켠 프로그램은 맞다
+- 까닭: winit은 Tab·Enter·Backspace·Esc 키의 글에 제어 문자(`\t`·`\r` 등)를 넣는다. 이것을 그대로 인코더에 넘겨, 인코더가 "글이 있으니 Shift는 글을 만드는 데 쓰였다"고 보고 Shift를 뺐다. Ghostty 1.4.0 macOS는 제어 문자로 시작하는 글을 키 글로 넘기지 않는다(`keyEventText`)
+- 고침: 제어 문자로 시작하는 글은 kitty 인코더에 넘기지 않는다. Shift+Tab은 `ESC[9;2u`, Shift+Enter는 `ESC[13;2u`, Shift+Backspace는 `ESC[127;2u`이고 수식 키 없는 Tab·Enter·Backspace는 그대로 옛 바이트다. kitty를 켜지 않은 프로그램의 바이트는 바뀌지 않는다
+- 0.91.0에서 풀기: 그 프로그램의 키 설정에서 Shift+Enter 대신 다른 키(예: Ctrl+j, Option+Enter)를 쓴다
