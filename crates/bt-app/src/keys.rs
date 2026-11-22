@@ -491,6 +491,13 @@ fn encode_kitty(
         KeyAction::Release => input.logical.to_text().unwrap_or(""),
         _ => input.text.as_deref().unwrap_or(""),
     };
+    // 제어 문자로 시작하는 글(winit이 Tab·Enter·Backspace·Esc에 넣는 `\t`·`\r`·`\u{8}`·`\u{1b}`)은 글로 넘기지 않는다.
+    // 넘기면 인코더가 Shift를 글에 쓰인 것으로 보고 빼서 Shift+Tab이 `\t`가 된다(#735, Ghostty `String.keyEventText`)
+    let utf8 = if utf8.starts_with(|c: char| c < ' ' || c == '\u{7f}') {
+        ""
+    } else {
+        utf8
+    };
     // 글을 만드는 데 Shift가 쓰인다. Option도 Alt로 쓰지 않으면 글자를 바꾸는 데 쓰인다
     let consumed = TermMods {
         shift: true,
@@ -970,6 +977,38 @@ mod tests {
         assert_eq!(base_layout_codepoint(C::Enter), None);
         assert_eq!(base_layout_codepoint(C::ArrowUp), None);
         assert_eq!(base_layout_codepoint(C::IntlBackslash), None);
+    }
+
+    #[test]
+    fn kitty_shift_with_tab_enter_backspace_keeps_shift_like_ghostty() {
+        // winit은 이름 키의 `text`에 제어 문자를 넣는다(Tab `\t`, Enter `\r`, Backspace `\u{8}`).
+        // Ghostty macOS는 제어 문자로 시작하는 글을 키 글로 넘기지 않아(`keyEventText`) Shift가 남는다
+        let named = |k: WKey, code: KeyCode, text: &str| KeyInput {
+            pressed: true,
+            repeat: false,
+            logical: Key::Named(k),
+            without_modifiers: Key::Named(k),
+            location: KeyLocation::Standard,
+            physical: PhysicalKey::Code(code),
+            text: Some(text.into()),
+        };
+        let f1 = bt_term::KittyFlags {
+            disambiguate: true,
+            ..Default::default()
+        };
+        let shift = ModifiersState::SHIFT;
+        let none = ModifiersState::empty();
+        let enc = |i: &KeyInput, m| String::from_utf8(encode_kitty(i, m, m, f1, false)).unwrap();
+        let tab = named(WKey::Tab, KeyCode::Tab, "\t");
+        let enter = named(WKey::Enter, KeyCode::Enter, "\r");
+        let bs = named(WKey::Backspace, KeyCode::Backspace, "\u{8}");
+        assert_eq!(enc(&tab, shift), "\x1b[9;2u", "Shift+Tab");
+        assert_eq!(enc(&enter, shift), "\x1b[13;2u", "Shift+Enter");
+        assert_eq!(enc(&bs, shift), "\x1b[127;2u", "Shift+Backspace");
+        // 수식 키가 없으면 옛 바이트 그대로(셸에서 reset을 칠 수 있게)
+        assert_eq!(enc(&tab, none), "\t");
+        assert_eq!(enc(&enter, none), "\r");
+        assert_eq!(enc(&bs, none), "\x7f");
     }
 
     #[test]
