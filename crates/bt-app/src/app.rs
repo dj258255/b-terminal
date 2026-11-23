@@ -892,12 +892,14 @@ struct Win {
     selecting: bool,
     /// 두 번 누르기로 링크 전체를 고른 칸(#701, `PtrState::link_word`)
     link_word: Option<(usize, usize)>,
-    last_click: Option<(Instant, usize, usize, u8)>,
+    last_click: Option<crate::script_mouse::Click>,
     /// 끌어 고르는 중 자동 스크롤할 방향과 다음 틱의 때(#806, `PtrState`의 같은 이름 값). 방향이 없으면 이벤트 루프가 이것 때문에 깨지 않는다
     autoscroll: mouse::Autoscroll,
     autoscroll_next: Option<Instant>,
     /// 누를 때 대체 화면이었는가(`PtrState::press_alt`)
     press_alt: bool,
+    /// 트랙패드 누름 단계(0 안 누름, 1 보통, 2 강하게). 강하게로 바뀔 때 낱말을 고른다(#807, Ghostty `mouse.pressure_stage`)
+    pressure_stage: i64,
     scroll_accum: f64,
     /// 가로 휠 누적(마우스 보고용, #300)
     scroll_accum_x: f64,
@@ -1003,6 +1005,7 @@ impl Win {
             autoscroll: mouse::Autoscroll::None,
             autoscroll_next: None,
             press_alt: false,
+            pressure_stage: 0,
             scroll_accum: 0.0,
             scroll_accum_x: 0.0,
             // 포커스 사건이 오기 전에는 보고 있지 않은 창으로 둔다. 보고 있다고 잘못 알면
@@ -7763,7 +7766,7 @@ impl ApplicationHandler<UserEvent> for App {
                 if let Some(mb) = mouse_core::report_button(button) {
                     let (input, _) = self.human_ptr(None);
                     let mut link_click = self.w.link_click;
-                    let clicks = self.w.last_click.map_or(0, |l| l.3);
+                    let clicks = self.w.last_click.map_or(0, |l| l.count);
                     let handled =
                         self.link_click_step(mb, state == ElementState::Pressed, &input, &mut link_click, clicks);
                     self.w.link_click = link_click;
@@ -7807,6 +7810,19 @@ impl ApplicationHandler<UserEvent> for App {
                 let mut st = before.clone();
                 self.pointer_button(idx, mb, state == ElementState::Pressed, &input, &mut st);
                 self.store_human_ptr(Some(idx), &before, &st);
+            }
+            // macOS 트랙패드를 강하게 누르면(force click) 왼쪽 단추를 누른 채일 때 처음 누른 낱말을 고른다(#807, Ghostty `mousePressureCallback`).
+            // 단계가 같으면 아무것도 하지 않고, 강한 단계(2)로 바뀔 때만 한다. 압력 값은 쓰지 않는다
+            WindowEvent::TouchpadPressure { stage, .. } => {
+                let before = std::mem::replace(&mut self.w.pressure_stage, stage);
+                if stage == before || stage != 2 {
+                    return;
+                }
+                let Some(idx) = self.active_index() else { return };
+                let (_, state) = self.human_ptr(Some(idx));
+                let mut st = state.clone();
+                self.pointer_deep_press(idx, &mut st);
+                self.store_human_ptr(Some(idx), &state, &st);
             }
             WindowEvent::MouseWheel { delta, .. } => {
                 // 휠 배율(mouse-scroll-multiplier, #126): 줄 단위 기기(마우스 휠)와 픽셀 단위 기기(트랙패드)

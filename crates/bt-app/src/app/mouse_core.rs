@@ -15,7 +15,7 @@ use winit::event::MouseButton;
 
 use super::{App, Instant};
 use crate::mouse;
-use crate::script_mouse::{PtrMods, PtrState, next_click};
+use crate::script_mouse::{Click, PtrMods, PtrState, next_click};
 
 /// 마우스 사건의 입력: 위치(창 실제 픽셀)와 수식 키, 그리고 스크립트가 보낸 것인가
 #[derive(Debug, Clone, Copy)]
@@ -221,6 +221,27 @@ impl App {
         self.drag_selection_to(idx, input, st);
     }
 
+    /// 트랙패드를 강하게 눌렀다(macOS force click, Ghostty `Surface.mousePressureCallback` 4614줄·`SelectionGesture.deepPress`).
+    /// 왼쪽 단추를 누른 채일 때(고르는 중) 처음 누른 칸의 낱말을 고르고 끌기를 끝낸다: 누름 횟수 기록을 지우고 자동 스크롤을 멈추며
+    /// 이어 움직여도 더는 끌어 고르지 않는다. 낱말 고르기는 두 번 누르기와 같은 함수를 쓴다
+    pub(super) fn pointer_deep_press(&mut self, idx: usize, st: &mut PtrState) {
+        if !st.selecting || self.selection_screen_changed(idx, st) {
+            return;
+        }
+        let Some(click) = st.last_click else {
+            return;
+        };
+        let session = &self.panes[idx].session;
+        session.select_start(click.col, click.row, bt_term::SelectKind::Word);
+        session.select_update(click.col, click.row);
+        st.selecting = false;
+        st.last_click = None;
+        st.link_word = None;
+        st.autoscroll = mouse::Autoscroll::None;
+        st.autoscroll_next = None;
+        self.request_redraw();
+    }
+
     /// 링크 수식 키(macOS ⌘, 그 밖에는 Ctrl) + 왼쪽 단추(#705, `mouse::link_step`). 참이면 삼킨다(평소 처리를 하지 않는다).
     /// 마우스 보고가 꺼져 있으면 누름은 고르기로 가고, 같은 칸에서 떼면 연다(연속 누르기의 첫 번째만). 보고 중이면 누를 때 열고 누름·뗌을 삼킨다.
     /// `clicks`는 이 단추 사건 앞의 마지막 누름 횟수(없으면 0)
@@ -246,7 +267,9 @@ impl App {
             Some((i, (*id, c, r)))
         });
         let reporting = place.is_some_and(|(i, _)| self.mouse_reporting_with(i, input.mods.shift).is_some());
-        let step = mouse::link_step(link, pressed, place.map(|(_, at)| at), reporting, clicks);
+        // 한 칸 안에서 끌어도 그 칸이 골라졌으면 끈 것이다: 링크를 열지 않는다(Ghostty `left_click_dragged`, 시험 1646)
+        let dragged = !pressed && place.is_some_and(|(i, (_, c, r))| self.panes[i].session.selection_contains(c, r));
+        let step = mouse::link_step(link, pressed, place.map(|(_, at)| at), reporting, clicks, dragged);
         if matches!(step, mouse::LinkStep::OpenPass | mouse::LinkStep::OpenSwallow) {
             if let Some((_, h)) = &hit {
                 self.open_link(&h.url);
@@ -318,8 +341,13 @@ impl App {
             };
             let now = Instant::now();
             let interval = mouse::repeat_interval(self.config.click_repeat_interval, mouse::platform_repeat_interval());
-            let clicks = next_click(st.last_click, now, (c, r), interval);
-            st.last_click = Some((now, c, r, clicks));
+            // 이어지는 누름인지는 처음 누른 자리에서 픽셀 거리가 칸 너비 이하인지로 본다(Ghostty `Surface.zig` 4129줄 `max_distance`)
+            let cell_w = self
+                .metrics_at(self.panes[idx].font_size)
+                .map_or(0.0, |m| m.width as f64);
+            let click = next_click(st.last_click, now, (c, r), (input.pos.x, input.pos.y), cell_w, interval);
+            let clicks = click.count;
+            st.last_click = Some(click);
             st.link_word = None;
             st.autoscroll = mouse::Autoscroll::None;
             st.autoscroll_next = None;
@@ -369,7 +397,7 @@ impl App {
             let released = self.cell_in(idx, input.pos);
             let single_same_cell = matches!(
                 (st.last_click, released),
-                (Some((_, c, r, 1)), Some((rc, rr))) if (c, r) == (rc, rr)
+                (Some(Click { col: c, row: r, count: 1, .. }), Some((rc, rr))) if (c, r) == (rc, rr)
             );
             let selection_left = self.panes[idx].session.selection_text().is_some();
             if mouse::prompt_click_moves(single_same_cell, selection_left) && self.config.cursor_click_to_move {

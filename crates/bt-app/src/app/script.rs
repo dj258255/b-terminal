@@ -801,7 +801,7 @@ impl App {
         };
         self.with_script_mouse(idx, mods, None, |app, input, sm| {
             // 링크 수식 키 + 왼쪽 단추는 링크를 연다(#705, 사람과 같은 처리)
-            let clicks = sm.state.last_click.map_or(0, |l| l.3);
+            let clicks = sm.state.last_click.map_or(0, |l| l.count);
             if !app.link_click_step(mb, pressed, input, &mut sm.link_click, clicks) {
                 app.pointer_button(idx, mb, pressed, input, &mut sm.state);
             }

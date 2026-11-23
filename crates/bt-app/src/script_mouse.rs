@@ -53,8 +53,8 @@ pub fn parse_mods(text: Option<&str>, remap: impl FnOnce(ModifiersState) -> Modi
 pub struct PtrState {
     /// 글을 고르는 중(왼쪽 단추를 누르고 아직 떼지 않았다)
     pub selecting: bool,
-    /// 마지막 누름: 때, 칸, 누름 횟수(1~3)
-    pub last_click: Option<(Instant, usize, usize, u8)>,
+    /// 마지막 누름(이어지는 누름이면 처음 누른 자리를 쥔다, `Click`)
+    pub last_click: Option<Click>,
     /// 끌어 고르는 중 포인터가 위·아래 가장자리 밖에 있어 자동 스크롤할 방향(#806, `mouse::autoscroll_dir`)
     pub autoscroll: crate::mouse::Autoscroll,
     /// 다음 자동 스크롤 틱의 때. 방향이 없으면 없다(이 값이 없으면 이벤트 루프는 자동 스크롤 때문에 깨지 않는다)
@@ -129,16 +129,49 @@ pub fn scroll_lines(precision: bool, x: f64, y: f64, cell: (f64, f64), discrete:
     (cap(lines_x), cap(lines_y))
 }
 
-/// 이번 왼쪽 누름의 누름 횟수(1~3). 앞 누름이 `interval` 안이고 같은 칸이면 앞 횟수 + 1(3 다음은 1), 아니면 1
+/// 왼쪽 누름 한 번의 기록. 이어지는 누름이면 `time`만 새로 하고 나머지는 처음 누른 자리를 그대로 쥔다
+/// (Ghostty `SelectionGesture`의 `left_click_xpos`·`left_click_pin`은 처음 누름에서만 정한다)
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Click {
+    /// 가장 최근 누른 때
+    pub time: Instant,
+    /// 처음 누른 칸(열, 줄)
+    pub col: usize,
+    pub row: usize,
+    /// 누름 횟수(1~3)
+    pub count: u8,
+    /// 처음 누른 자리(창 실제 픽셀). 이어지는 누름인지 거리로 가른다
+    pub origin: (f64, f64),
+}
+
+/// 이번 왼쪽 누름의 기록. 앞 누름과의 간격이 `interval` 이하이고 처음 누른 자리에서 픽셀 거리가 `cell_width` 이하이면
+/// 이어지는 누름이라 횟수가 `min(앞 횟수 + 1, 3)`이다(Ghostty `SelectionGesture.pressRepeat`: 네 번째도 3, 거리는 칸 단위가 아니라 픽셀).
+/// 아니면 새 한 번이다. 앞 누름보다 이른 때(시계가 거꾸로 감)도 새 한 번이다
 pub fn next_click(
-    last: Option<(Instant, usize, usize, u8)>,
+    last: Option<Click>,
     now: Instant,
     cell: (usize, usize),
+    pos: (f64, f64),
+    cell_width: f64,
     interval: Duration,
-) -> u8 {
-    match last {
-        Some((t, lc, lr, n)) if now - t < interval && lc == cell.0 && lr == cell.1 => n % 3 + 1,
-        _ => 1,
+) -> Click {
+    if let Some(l) = last {
+        let within = now.checked_duration_since(l.time).is_some_and(|d| d <= interval);
+        let dist = ((pos.0 - l.origin.0).powi(2) + (pos.1 - l.origin.1).powi(2)).sqrt();
+        if within && dist <= cell_width {
+            return Click {
+                time: now,
+                count: (l.count + 1).min(3),
+                ..l
+            };
+        }
+    }
+    Click {
+        time: now,
+        col: cell.0,
+        row: cell.1,
+        count: 1,
+        origin: pos,
     }
 }
 
@@ -218,30 +251,93 @@ mod tests {
     fn a_script_press_after_a_human_press_is_not_a_double_click() {
         let now = Instant::now();
         let every = Duration::from_millis(500);
+        let at = (35.0, 80.0);
         let human = PtrState::default();
         let script = ScriptMouse::default();
         // 사람이 (3, 4)를 눌렀다
-        let human_clicks = next_click(human.last_click, now, (3, 4), every);
+        let human_click = next_click(human.last_click, now, (3, 4), at, 10.0, every);
         let human = PtrState {
-            last_click: Some((now, 3, 4, human_clicks)),
+            last_click: Some(human_click),
             ..human
         };
-        assert_eq!(human_clicks, 1);
+        assert_eq!(human_click.count, 1);
         // 스크립트가 바로 같은 칸을 누른다: 스크립트 상태에는 앞 누름이 없다
-        let script_clicks = next_click(script.state.last_click, now, (3, 4), every);
-        assert_eq!(script_clicks, 1);
+        let script_click = next_click(script.state.last_click, now, (3, 4), at, 10.0, every);
+        assert_eq!(script_click.count, 1);
         // 사람 쪽 기록은 그대로다
-        assert_eq!(human.last_click, Some((now, 3, 4, 1)));
-        // 스크립트끼리는 센다: 2, 3, 다시 1
+        assert_eq!(human.last_click, Some(human_click));
+        // 스크립트끼리는 센다: 1, 2, 3, 3(네 번째도 3, Ghostty `pressRepeat`)
         let mut st = script.state;
-        for want in [1u8, 2, 3, 1] {
-            let n = next_click(st.last_click, now, (3, 4), every);
-            assert_eq!(n, want);
-            st.last_click = Some((now, 3, 4, n));
+        for want in [1u8, 2, 3, 3] {
+            let c = next_click(st.last_click, now, (3, 4), at, 10.0, every);
+            assert_eq!(c.count, want);
+            st.last_click = Some(c);
         }
-        // 칸이 다르거나 간격이 길면 1
-        assert_eq!(next_click(st.last_click, now, (4, 4), every), 1);
-        assert_eq!(next_click(st.last_click, now + every, (3, 4), every), 1);
+        // 처음 누른 자리에서 칸 너비보다 멀거나 간격이 길면 1
+        assert_eq!(
+            next_click(st.last_click, now, (6, 4), (65.0, 80.0), 10.0, every).count,
+            1
+        );
+        assert_eq!(
+            next_click(
+                st.last_click,
+                now + every + Duration::from_millis(1),
+                (3, 4),
+                at,
+                10.0,
+                every
+            )
+            .count,
+            1
+        );
+    }
+
+    /// Ghostty `SelectionGesture` 시험 1949(repeat increments)·1963(clamps at triple click)·2004(distant press resets)·
+    /// 2019(expired repeat resets)·2037(backwards repeat time resets)과 `Surface.zig` 4129줄(`max_distance` = 칸 너비)
+    #[test]
+    fn click_count_follows_ghostty_press_repeat() {
+        let t0 = Instant::now();
+        let every = Duration::from_millis(500);
+        let press = |last: Option<Click>, now: Instant, cell: (usize, usize), pos: (f64, f64)| {
+            next_click(last, now, cell, pos, 10.0, every)
+        };
+        // 1963: 네 번 빠르게 누르면 [1, 2, 3, 3]
+        let mut last = None;
+        let mut counts = vec![];
+        for _ in 0..4 {
+            let c = press(last, t0, (1, 1), (15.0, 25.0));
+            counts.push(c.count);
+            last = Some(c);
+        }
+        assert_eq!(counts, vec![1, 2, 3, 3]);
+        // 이어지는 누름은 처음 누른 자리를 쥔다: 거리는 처음 자리에서 잰다
+        let first = press(None, t0, (1, 1), (19.0, 25.0));
+        let second = press(Some(first), t0, (2, 1), (21.0, 25.0));
+        assert_eq!(
+            (second.count, second.col, second.row, second.origin),
+            (2, 1, 1, (19.0, 25.0))
+        );
+        // 칸 경계를 넘었어도 픽셀 거리가 칸 너비 이하면 이어진다(우리 옛 규칙은 칸이 다르면 끊었다)
+        let third = press(Some(second), t0, (2, 1), (29.0, 25.0));
+        assert_eq!(third.count, 3);
+        // 같은 칸이어도 세로로 칸 너비(10px)보다 멀면 새 누름이다(옛 규칙은 같은 칸이면 이어졌다)
+        let far = press(Some(first), t0, (1, 1), (19.0, 36.0));
+        assert_eq!(far.count, 1);
+        // 2004: 칸 너비를 넘는 거리(11px)는 끊고, 정확히 10px은 이어진다(`distance > max_distance`)
+        assert_eq!(press(Some(first), t0, (3, 1), (29.0, 25.0)).count, 2);
+        assert_eq!(press(Some(first), t0, (3, 1), (29.5, 25.0)).count, 1);
+        // 2019: 간격이 지났으면 새 누름. 간격과 같으면 이어진다(`since > repeat_interval`)
+        assert_eq!(press(Some(first), t0 + every, (1, 1), (19.0, 25.0)).count, 2);
+        assert_eq!(
+            press(Some(first), t0 + every + Duration::from_millis(1), (1, 1), (19.0, 25.0)).count,
+            1
+        );
+        // 2037: 앞 누름보다 이른 때는 새 누름
+        let late = press(None, t0 + Duration::from_secs(2), (1, 1), (19.0, 25.0));
+        assert_eq!(
+            press(Some(late), t0 + Duration::from_secs(1), (1, 1), (19.0, 25.0)).count,
+            1
+        );
     }
 
     /// 수식 키 글은 `send key`와 같은 규칙이다(쉼표, 소문자, 모르는 이름은 오류)
