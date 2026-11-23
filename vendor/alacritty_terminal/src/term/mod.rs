@@ -4218,6 +4218,7 @@ mod tests {
         for i in 0..5 {
             for j in 0..2 {
                 grid[Line(j)][Column(i)].c = 'a';
+                grid[Line(j)][Column(i)].flags.insert(Flags::WRITTEN); // b-terminal(#804)
             }
         }
         grid[Line(0)][Column(0)].c = '"';

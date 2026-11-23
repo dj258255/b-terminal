@@ -255,7 +255,171 @@ fn select_line_all_same() {
 // "selectLine does not join lines across a recycled row"(12803)는 아래 파일에서 본다
 const DEF: &str = bt_core::config::DEFAULT_WORD_CHARS;
 
+// "Screen: selectWord"(10299)
+#[test]
+fn select_word() {
+    let mut d = Diffs::default();
+    let s = mk(10, 10, "ABC  DEF\n 123\n456");
+    d.eq("fwd", word(&s, 10, 10, (0, 0)), Some(((0, 0), (2, 0))));
+    d.eq("back", word(&s, 10, 10, (2, 0)), Some(((0, 0), (2, 0))));
+    d.eq("both", word(&s, 10, 10, (1, 0)), Some(((0, 0), (2, 0))));
+    d.eq("whitespace run", word(&s, 10, 10, (3, 0)), Some(((3, 0), (4, 0))));
+    d.eq("whitespace single", word(&s, 10, 10, (0, 1)), Some(((0, 1), (0, 1))));
+    d.eq("end of screen", word(&s, 10, 10, (1, 2)), Some(((0, 2), (2, 2))));
+    d.done();
+}
+
+// "selectWord at hard line breaks"(10424): 경계 {0,' '}
+#[test]
+fn select_word_hard_breaks() {
+    let mut d = Diffs::default();
+    for (cols, text) in [(5u16, "abcde\nfghij"), (5, "     \n     "), (1, "a\nb"), (1, " \n ")] {
+        let s = mkw(cols, 2, text, Some(" "));
+        for y in 0..2 {
+            for x in 0..cols as usize {
+                d.eq(
+                    &format!("{text:?} ({x},{y})"),
+                    word(&s, cols as usize, 2, (x, y)),
+                    Some(((0, y), (cols as usize - 1, y))),
+                );
+            }
+        }
+    }
+    d.done();
+}
+
+// "selectWord across soft-wrap at right edge"(10464)
+#[test]
+fn select_word_soft_wrap_right_edge() {
+    let mut d = Diffs::default();
+    let s = mkw(5, 3, "abcdefghij\nklmno", Some(" "));
+    for y in 0..2 {
+        for x in 0..5 {
+            d.eq(&format!("({x},{y})"), word(&s, 5, 3, (x, y)), Some(((0, 0), (4, 1))));
+        }
+    }
+    d.done();
+}
+
+// "selectWord wide characters"(10496)
+#[test]
+fn select_word_wide() {
+    let mut d = Diffs::default();
+    // (text, cols, boundary, start, end, expected)
+    let cases: Vec<(&str, usize, &str, usize, usize, &str)> = vec![
+        ("日本語", 10, " ", 0, 5, "日本語"),
+        ("a日b語c", 10, " ", 0, 6, "a日b語c"),
+        (" 日本語 ", 10, " ", 1, 6, "日本語"),
+        ("日本語", 4, " ", 0, 5, "日本語"),
+        ("日本語", 5, " ", 0, 6, "日本語"),
+        ("日本\n語文", 4, " ", 0, 3, "日本"),
+        ("日本\n語文", 4, " ", 4, 7, "語文"),
+        ("a語b", 10, "語", 0, 0, "a"),
+        ("a語b", 10, "語", 1, 2, "語"),
+        ("a語b", 10, "語", 3, 3, "b"),
+        ("abcd語ef", 5, "語", 0, 3, "abcd"),
+        ("abcd語ef", 5, "語", 4, 6, "語"),
+        ("abcd語ef", 5, "語", 7, 8, "ef"),
+    ];
+    for (text, cols, bound, start, end, expected) in cases {
+        let s = mkw(cols as u16, 4, text, Some(bound));
+        for off in start..=end {
+            let p = (off % cols, off / cols);
+            s.select_start(p.0, p.1, SelectKind::Word);
+            s.select_update(p.0, p.1);
+            let got = (span(&s, cols, 4), s.selection_text());
+            let want = (
+                Some(((start % cols, start / cols), (end % cols, end / cols))),
+                Some(expected.to_string()),
+            );
+            d.eq(&format!("{text:?} cols={cols} bound={bound:?} off={off}"), got, want);
+        }
+    }
+    d.done();
+}
+
+// "selectWord across soft-wrap"(10558) / "whitespace across soft-wrap"(10634)
+#[test]
+fn select_word_soft_wrap() {
+    let mut d = Diffs::default();
+    let s = mkw(5, 10, " 1234012\n 123", Some(DEF));
+    d.eq("fwd", word(&s, 5, 10, (1, 0)), Some(((1, 0), (2, 1))));
+    d.eq("back", word(&s, 5, 10, (1, 1)), Some(((1, 0), (2, 1))));
+    d.eq("both", word(&s, 5, 10, (3, 0)), Some(((1, 0), (2, 1))));
+    let s = mkw(5, 10, "1       1\n 123", Some(DEF));
+    d.eq("ws fwd", word(&s, 5, 10, (1, 0)), Some(((1, 0), (2, 1))));
+    d.eq("ws back", word(&s, 5, 10, (1, 1)), Some(((1, 0), (2, 1))));
+    d.eq("ws both", word(&s, 5, 10, (3, 0)), Some(((1, 0), (2, 1))));
+    d.done();
+}
+
+// "selectWord with character boundary"(10704)
+#[test]
+fn select_word_character_boundary() {
+    let mut d = Diffs::default();
+    let cases = [
+        " 'abc' \n123",
+        " \"abc\" \n123",
+        " │abc│ \n123",
+        " `abc` \n123",
+        " |abc| \n123",
+        " :abc: \n123",
+        " ;abc; \n123",
+        " ,abc, \n123",
+        " (abc( \n123",
+        " )abc) \n123",
+        " [abc[ \n123",
+        " ]abc] \n123",
+        " {abc{ \n123",
+        " }abc} \n123",
+        " <abc< \n123",
+        " >abc> \n123",
+        " $abc$ \n123",
+    ];
+    for c in cases {
+        let s = mkw(20, 10, c, Some(DEF));
+        d.eq(&format!("{c:?} fwd"), word(&s, 20, 10, (2, 0)), Some(((2, 0), (4, 0))));
+        d.eq(&format!("{c:?} back"), word(&s, 20, 10, (4, 0)), Some(((2, 0), (4, 0))));
+        d.eq(&format!("{c:?} bidi"), word(&s, 20, 10, (3, 0)), Some(((2, 0), (4, 0))));
+        d.eq(
+            &format!("{c:?} on quote"),
+            word(&s, 20, 10, (1, 0)),
+            Some(((0, 0), (1, 0))),
+        );
+    }
+    d.done();
+}
+
 // "Screen: selectOutput"(10815)
+
+// 10496 selectWord wide characters: 경계 글자에 넓은 글자가 있고 공백도 경계일 때(실제 설정에서 나올 수 있는 꼴)
+#[test]
+fn select_word_wide_boundary_with_space() {
+    let mut d = Diffs::default();
+    let cases: Vec<(&str, usize, &str, usize, usize, &str)> = vec![
+        ("a語b", 10, " 語", 0, 0, "a"),
+        ("a語b", 10, " 語", 1, 2, "語"),
+        ("a語b", 10, " 語", 3, 3, "b"),
+        ("abcd語ef", 5, " 語", 0, 3, "abcd"),
+        ("abcd語ef", 5, " 語", 4, 6, "語"),
+        ("abcd語ef", 5, " 語", 7, 8, "ef"),
+    ];
+    for (text, cols, bound, start, end, expected) in cases {
+        let s = mkw(cols as u16, 4, text, Some(bound));
+        for off in start..=end {
+            let p = (off % cols, off / cols);
+            s.select_start(p.0, p.1, SelectKind::Word);
+            s.select_update(p.0, p.1);
+            let got = (span(&s, cols, 4), s.selection_text());
+            let want = (
+                Some(((start % cols, start / cols), (end % cols, end / cols))),
+                Some(expected.to_string()),
+            );
+            d.eq(&format!("{text:?} cols={cols} bound={bound:?} off={off}"), got, want);
+        }
+    }
+    d.done();
+}
 
 // ---- 전체 고르기(#805) ----
 
@@ -317,6 +481,59 @@ fn drag(s: &Session, kind: SelectKind, a: (usize, usize), b: (usize, usize), col
     s.select_start(a.0, a.1, kind);
     s.select_update(b.0, b.1);
     span(s, cols, rows)
+}
+
+#[test]
+fn drag_by_word_and_line() {
+    let mut d = Diffs::default();
+    let s = mk(20, 5, "foo bar baz\n  qux  quux\n\nlast");
+    // 낱말 끌기: 누른 낱말 처음부터 끈 낱말 끝까지, 거꾸로 끌어도 두 낱말을 다 품는다
+    d.eq(
+        "word fwd",
+        drag(&s, SelectKind::Word, (1, 0), (9, 0), 20, 5),
+        Some(((0, 0), (10, 0))),
+    );
+    d.eq(
+        "word back",
+        drag(&s, SelectKind::Word, (9, 0), (1, 0), 20, 5),
+        Some(((0, 0), (10, 0))),
+    );
+    d.eq(
+        "word next line",
+        drag(&s, SelectKind::Word, (5, 0), (3, 1), 20, 5),
+        Some(((4, 0), (4, 1))),
+    );
+    // 줄 끌기: 누른 줄과 끈 줄을 앞뒤 공백 빼고 함께
+    d.eq(
+        "line fwd",
+        drag(&s, SelectKind::Line, (1, 0), (5, 1), 20, 5),
+        Some(((0, 0), (10, 1))),
+    );
+    d.eq(
+        "line back",
+        drag(&s, SelectKind::Line, (5, 1), (1, 0), 20, 5),
+        Some(((0, 0), (10, 1))),
+    );
+    // 빈 줄을 누르면 고르지 않는다. 글 있는 줄에서 빈 줄로 끌면 Ghostty는 앞서 고른 것을 두지만(`dragSelectionLine`의 null),
+    // 우리는 앞서 값이 없어 그 빈 줄 전체까지 고른다(알려진 차이)
+    d.eq("blank press", drag(&s, SelectKind::Line, (0, 2), (0, 2), 20, 5), None);
+    d.eq(
+        "drag onto blank",
+        drag(&s, SelectKind::Line, (1, 0), (3, 2), 20, 5),
+        Some(((0, 0), (19, 2))),
+    );
+    d.done();
+}
+
+// `selection-word-chars`: 사용자가 정한 경계 글자도 같은 규칙(경계 글자를 누르면 이어진 경계 구간)
+#[test]
+fn custom_word_chars() {
+    let mut d = Diffs::default();
+    let s = mkw(20, 2, "a-b--c d", Some(" -"));
+    d.eq("word", word(&s, 20, 2, (0, 0)), Some(((0, 0), (0, 0))));
+    d.eq("run", word(&s, 20, 2, (3, 0)), Some(((3, 0), (4, 0))));
+    d.eq("space", word(&s, 20, 2, (6, 0)), Some(((6, 0), (6, 0))));
+    d.done();
 }
 
 // 세 번 누른 줄을 복사한 글에는 앞 공백이 없다(#803 재현 절차)

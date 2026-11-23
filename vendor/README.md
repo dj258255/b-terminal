@@ -162,3 +162,10 @@ alacritty_terminal이 글자 묶음 폭(mode 2027)을 지원하는 판을 내면
 ## alacritty_terminal: 줄 끝 자리표시 칸에서 끝나는 고르기(#786)
 
 - 고친 곳: `vendor/alacritty_terminal/src/term/mod.rs`의 `line_to_string`(넘어간 넓은 글자를 `line - 1`이 아니라 다음 줄 첫 칸에서 읽고, 다음 줄이 없으면 덧붙이지 않음)과 `selection_to_string`의 사각 갈래(`include_wrapped_wide`를 늘 거짓으로). `b-terminal(#786)`로 찾을 수 있습니다. 이유: Ghostty 1.4.0 `formatter.zig` `PageList selection ending on spacer head`(4587줄). 윗줄 글자가 섞이거나(debug는 격자 밖 panic) 사각 고르기가 끝을 넓히던 것을 바로잡습니다. 되돌릴 조건: 업스트림이 같게 고치면 지웁니다.
+
+## alacritty_terminal: 줄·낱말·전체 고르기를 Ghostty 규칙으로(#803, #804, #805)
+
+- 고친 곳: `vendor/alacritty_terminal/src/selection.rs`. 안쪽 모듈 `ghostty`(`select_line`·`select_word`·`select_word_between`·`select_all`)를 더하고, `to_range`의 `Semantic`·`Lines` 갈래가 이것을 부르게 했습니다(`range_semantic`·`range_lines`는 누른 칸과 끈 칸을 정렬하기 전 값으로 받고, 고를 칸이 없으면 `None`). 엔진의 괄호 짝 찾기(`bracket_search`로 짝 괄호까지 고르던 것)는 두 번 누르기에서 뺐습니다. 안쪽 시험 `selection::tests::{line_selection, semantic_selection}`와 `term::tests::{semantic_selection_works, line_selection_works}`는 칸마다 `WRITTEN`을 달아 새 규칙에 맞췄습니다. `b-terminal(#803)`·`b-terminal(#804)`·`b-terminal(#805)`로 찾을 수 있습니다.
+- 이유: Ghostty 1.4.0 `Screen.zig`의 `selectLine`(3197줄)·`selectWord`(3457줄)·`selectAll`(3364줄)과 `SelectionGesture.zig`의 `dragSelectionWord`·`dragSelectionLine`. 줄 고르기는 앞뒤 공백을 빼고 OSC 133 칸 종류(`SEMANTIC_PROMPT`·`SEMANTIC_INPUT`·그 밖은 출력)가 바뀌는 곳에서 끊고 글을 찍지 않은 칸만이면 고르지 않으며, 낱말 고르기는 누른 칸이 경계 글자면 이어진 경계 구간만 고르고 넓은 글자는 두 칸을 한 글자로 봅니다. 하이라이트·복사·끌기가 모두 `to_range`를 지나므로 한 곳을 고쳐 같은 범위를 씁니다. `term/search.rs`의 `semantic_search_left`·`semantic_search_right`·`line_search_*`는 vi 모드가 쓰므로 그대로 둡니다.
+- 되돌릴 조건: 없습니다(업스트림은 Ghostty와 다른 alacritty 규칙을 따르는 것으로 보입니다. 올릴 때 `to_range`의 두 갈래가 이 모듈을 부르는지 확인합니다).
+

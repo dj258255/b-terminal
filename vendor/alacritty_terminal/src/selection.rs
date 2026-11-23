@@ -68,6 +68,76 @@ mod ghostty {
         }
     }
 
+    /// Ghostty `selectWordCodepoint`: 넓은 글자의 뒤 칸은 앞 칸의 글자, 줄 끝 자리 칸은 다음 줄 첫 칸의 넓은 글자를 따른다.
+    /// 글자가 없는 칸은 None
+    fn word_char<T>(term: &Term<T>, p: Point) -> Option<char> {
+        let grid = term.grid();
+        let cell = &grid[p];
+        let owner = if cell.flags.contains(Flags::WIDE_CHAR_SPACER) {
+            &grid[Point::new(p.line, Column(p.column.0.saturating_sub(1)))]
+        } else if cell.flags.contains(Flags::LEADING_WIDE_CHAR_SPACER) {
+            if p.line >= term.bottommost_line() {
+                return None;
+            }
+            let owner = &grid[Point::new(p.line + 1, Column(0))];
+            if !owner.flags.contains(Flags::WIDE_CHAR) {
+                return None;
+            }
+            owner
+        } else {
+            cell
+        };
+        has_text(owner).then_some(owner.c)
+    }
+
+    /// Ghostty `Screen.selectWord`. 누른 칸이 경계 글자면 이어진 경계 글자 구간만, 아니면 이어진 낱말 글자 구간만 고른다
+    pub fn select_word<T>(term: &Term<T>, pin: Point) -> Option<(Point, Point)> {
+        let boundaries = term.semantic_escape_chars();
+        let expect_boundary = boundaries.contains(word_char(term, pin)?);
+        let same_kind = |p: Point| -> Option<()> {
+            let c = word_char(term, p)?;
+            (boundaries.contains(c) == expect_boundary).then_some(())
+        };
+
+        let mut end = pin;
+        while let Some(p) = next(term, end) {
+            // 줄을 넘는 것은 앞 줄이 이어질 때만
+            if end.column == term.last_column() && !wraps(term, end.line) {
+                break;
+            }
+            if same_kind(p).is_none() {
+                break;
+            }
+            end = p;
+        }
+
+        let mut start = pin;
+        while let Some(p) = prev(term, start) {
+            if p.column == term.last_column() && !wraps(term, p.line) {
+                break;
+            }
+            if same_kind(p).is_none() {
+                break;
+            }
+            start = p;
+        }
+        Some((start, end))
+    }
+
+    /// Ghostty `Screen.selectWordBetween`: `from`에서 `to` 쪽으로 가며 처음 낱말이 있는 칸의 낱말
+    pub fn select_word_between<T>(term: &Term<T>, from: Point, to: Point) -> Option<(Point, Point)> {
+        let mut p = from;
+        loop {
+            if let Some(w) = select_word(term, p) {
+                return Some(w);
+            }
+            if p == to {
+                return None;
+            }
+            p = if from < to { next(term, p)? } else { prev(term, p)? };
+        }
+    }
+
     /// 줄 고르기가 앞뒤에서 빼는 글자(Ghostty `default_line_whitespace`)
     fn is_line_space(c: char) -> bool {
         matches!(c, '\0' | ' ' | '\t')
@@ -452,7 +522,12 @@ impl Selection {
         match self.ty {
             SelectionType::Simple => self.range_simple(start, end, columns),
             SelectionType::Block => self.range_block(start, end),
-            SelectionType::Semantic => Some(Self::range_semantic(term, start.point, end.point)),
+            // b-terminal(#803, #804): 누른 칸과 끈 칸은 정렬하기 전의 것을 쓴다(Ghostty는 누른 쪽과 끈 쪽을 따로 본다)
+            SelectionType::Semantic => Self::range_semantic(
+                term,
+                self.region.start.point.grid_clamp(term, Boundary::Grid),
+                self.region.end.point.grid_clamp(term, Boundary::Grid),
+            ),
             SelectionType::Lines => Self::range_lines(
                 term,
                 self.region.start.point.grid_clamp(term, Boundary::Grid),
@@ -461,25 +536,17 @@ impl Selection {
         }
     }
 
-    fn range_semantic<T>(term: &Term<T>, mut start: Point, mut end: Point) -> SelectionRange {
-        if start == end {
-            if let Some(matching) = term.bracket_search(start) {
-                if (matching.line == start.line && matching.column < start.column)
-                    || (matching.line < start.line)
-                {
-                    start = matching;
-                } else {
-                    end = matching;
-                }
-
-                return SelectionRange { start, end, is_block: false };
-            }
-        }
-
-        let start = term.semantic_search_left(start);
-        let end = term.semantic_search_right(end);
-
-        SelectionRange { start, end, is_block: false }
+    /// b-terminal(#804): 두 번 누르기·낱말 단위 끌기. Ghostty `Screen.selectWord`·`SelectionGesture.dragSelectionWord`와 같다.
+    /// 누른 칸(`region.start`)과 끈 칸(`region.end`)에서 각각 낱말을 구해 이어 붙인다. 쓰지 않은 칸만 있으면 None
+    fn range_semantic<T>(term: &Term<T>, click: Point, drag: Point) -> Option<SelectionRange> {
+        let word_start = ghostty::select_word_between(term, click, drag)?;
+        let word_current = ghostty::select_word_between(term, drag, click)?;
+        let (start, end) = if drag < click {
+            (word_current.0, word_start.1)
+        } else {
+            (word_start.0, word_current.1)
+        };
+        Some(SelectionRange { start, end, is_block: false })
     }
 
     /// b-terminal(#803): 세 번 누르기·줄 단위 끌기. Ghostty `Screen.selectLine`·`SelectionGesture.dragSelectionLine`과 같다.
@@ -736,9 +803,10 @@ mod tests {
         selection.update(Point::new(Line(4), Column(1)), Side::Right);
         selection = selection.rotate(&size, &(Line(0)..Line(size.0 as i32)), 4).unwrap();
 
-        assert_eq!(selection.to_range(&term(size.0, size.1)).unwrap(), SelectionRange {
-            start: Point::new(Line(0), Column(1)),
-            end: Point::new(Line(5), Column(3)),
+        assert_eq!(selection.to_range(&written(size.0, size.1)).unwrap(), SelectionRange {
+            // b-terminal(#804): 경계 글자가 없는 격자라 낱말이 줄 전체다
+            start: Point::new(Line(0), Column(0)),
+            end: Point::new(Line(5), Column(4)),
             is_block: false,
         });
     }
