@@ -180,48 +180,56 @@ fn esc_lf_c_resets_both_engine_and_scanner() {
 }
 
 // ---- 3. DCS 안의 8비트 ST(0x9C) ----
+// #792: 통과 상태에서 0x80~0xFF는 모두 자료다. 0x9C도 DCS를 끝내지 않는다(Ghostty 1.4.0 `parse_table.zig` 412줄 시험).
+// 전에는 이 시험들이 "0x9C에서 끝난다"를 확인했다
 
 #[test]
-fn dcs_8bit_st_ends_the_dcs_like_the_engine() {
-    // vte `advance_dcs_passthrough`: 0x9C에서 unhook하고 Ground
+fn dcs_8bit_st_does_not_end_the_dcs_like_the_engine() {
+    // vte `advance_dcs_passthrough`: 0x9C는 자료(`put`)이고 unhook하지 않는다
     let bytes = b"\x1bP1$r\x9c\x05";
     let o = oracle(bytes);
-    assert_eq!(o.last().unwrap(), "exec 0x05", "{o:?}");
-    assert!(o.contains(&"unhook".to_string()));
-    // 질의가 아닌 DCS: 끝난 뒤의 ENQ를 스캐너도 읽는다
-    assert_eq!(feed_all(b"\x1bP1$r\x9c\x05"), vec![Signal::Enquiry]);
-    assert_eq!(feed_all(b"\x1bPq\x9c\x05"), vec![Signal::Enquiry]);
+    assert_eq!(o.last().unwrap(), "put 0x05", "{o:?}");
+    assert!(o.contains(&"put 0x9c".to_string()), "{o:?}");
+    assert!(!o.contains(&"unhook".to_string()), "{o:?}");
+    // 스캐너도 ENQ를 자료로 본다. `ESC \`로 끝난 뒤에야 읽는다
+    assert_eq!(feed_all(b"\x1bP1$r\x9c\x05"), vec![]);
+    assert_eq!(feed_all(b"\x1bPq\x9c\x05"), vec![]);
+    assert_eq!(feed_all(b"\x1bPq\x9c\x1b\\\x05"), vec![Signal::Enquiry]);
 }
 
 #[test]
-fn dcs_8bit_st_answers_a_query_like_esc_backslash() {
-    // 끝을 ST로 보니 `ESC \`와 같이 답한다(vte는 0x9C에서 unhook, Ghostty `Parser.zig` 280줄도 dcs_unhook)
-    let via_esc = feed_all(b"\x1bP$qm\x1b\\");
-    let via_c1 = feed_all(b"\x1bP$qm\x9c");
-    assert_eq!(via_esc.len(), 1, "{via_esc:?}");
-    assert_eq!(via_c1, via_esc);
-    let via_esc = feed_all(b"\x1bP+q544e\x1b\\");
-    let via_c1 = feed_all(b"\x1bP+q544e\x9c");
-    assert_eq!(via_esc.len(), 1, "{via_esc:?}");
-    assert_eq!(via_c1, via_esc);
+fn dcs_8bit_st_does_not_answer_a_query() {
+    // 질의는 `ESC \`로 끝나야 답한다. 0x9C는 본문(자료)이다
+    assert!(feed_all(b"\x1bP$qm\x9c").is_empty());
+    assert!(feed_all(b"\x1bP+q544e\x9c").is_empty());
+    assert_eq!(feed_all(b"\x1bP$qm\x1b\\").len(), 1);
+    assert_eq!(feed_all(b"\x1bP+q544e\x1b\\").len(), 1);
 }
 
 #[test]
-fn dcs_8bit_st_in_header_is_ignored_like_the_engine() {
-    // 머리(끝 바이트 전)의 0x9C는 vte가 무시하고 DCS를 이어 간다
+fn dcs_8bit_st_in_header_ends_the_dcs_like_the_engine() {
+    // #793: 머리(끝 바이트 전)의 0x9C는 Ghostty 표의 "어디서나" 전이로 Ground로 간다(전에는 vte가 무시했다).
+    // 이어지는 `qm`은 글자이고 질의가 아니다
     let o = oracle(b"\x1bP$\x9cqm\x1b\\");
-    assert!(o.contains(&"hook q".to_string()), "{o:?}");
-    assert_eq!(feed_all(b"\x1bP$\x9cqm\x1b\\").len(), 1);
+    assert!(!o.iter().any(|s| s.starts_with("hook")), "{o:?}");
+    assert_eq!(
+        o,
+        vec!["print q".to_string(), "print m".to_string(), "esc \\".to_string()]
+    );
+    assert!(feed_all(b"\x1bP$\x9cqm\x1b\\").is_empty());
 }
 
 #[test]
 fn dcs_8bit_st_scanner_and_emulator_agree() {
     let mut e = emu();
     let sigs = e.feed(b"\x1bP$qm\x9chello");
-    assert_eq!(sigs.len(), 1, "{sigs:?}");
-    assert_eq!(screen_text(&mut e), "hello");
-    // 끝난 뒤 새 DCS도 읽는다
-    let sigs = e.feed(b"\x1bP1$r\x9c\x1bP$qm\x9c");
+    assert!(sigs.is_empty(), "{sigs:?}");
+    assert_eq!(screen_text(&mut e), "");
+    // `ESC \`로 끝난 뒤에는 화면에 찍힌다
+    e.feed(b"\x1b\\shown");
+    assert_eq!(screen_text(&mut e), "shown");
+    // 끝난 뒤 새 DCS는 읽는다
+    let sigs = e.feed(b"\x1bP1$r\x1b\\\x1bP$qm\x1b\\");
     assert_eq!(sigs.len(), 1, "{sigs:?}");
 }
 
@@ -385,7 +393,7 @@ fn numeric_params_before_intermediate_still_answer() {
     // 숫자 매개변수는 Ghostty처럼 보지 않는다
     assert_eq!(hook_intermediates(b"\x1bP1;2$qm\x1b\\"), Some(b"$".to_vec()));
     assert_eq!(feed_all(b"\x1bP1;2$qm\x1b\\").len(), 1);
-    assert_eq!(feed_all(b"\x1bP0+q544e\x9c").len(), 1);
+    assert_eq!(feed_all(b"\x1bP0+q544e\x1b\\").len(), 1);
 }
 
 #[test]
@@ -404,7 +412,7 @@ fn ignored_dcs_scanner_and_emulator_agree() {
     let sigs = e.feed(b"\x1bP$0qm\x9c\x05hidden");
     assert!(sigs.is_empty(), "{sigs:?}");
     assert_eq!(screen_text(&mut e), "");
-    let sigs = e.feed(b"\x1b\\shown\x1bP$qm\x9c");
+    let sigs = e.feed(b"\x1b\\shown\x1bP$qm\x1b\\");
     assert_eq!(sigs.len(), 1, "{sigs:?}");
     assert_eq!(screen_text(&mut e), "shown");
 }

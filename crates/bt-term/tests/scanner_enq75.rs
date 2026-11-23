@@ -106,7 +106,8 @@ fn double_esc_c0_stays_in_escape_like_the_engine() {
     same_enq(b"\x1bP\x1b\x1b\x05X\x05", 1);
     same_enq(b"\x1bP\x1b\x1b\x01X\x05", 0);
     same_enq(b"\x1bP\x1b\x1b\x7fX\x05", 0);
-    same_enq(b"\x1bP\x1b\x1b\x9cX\x05", 0);
+    // 0x9C는 Escape에서 Ground로 가므로(#793) X는 글자이고 ENQ는 실행된다
+    same_enq(b"\x1bP\x1b\x1b\x9cX\x05", 1);
 }
 
 #[test]
@@ -152,17 +153,31 @@ fn a_normal_dcs_and_a_new_dcs_after_the_quiet_one_still_answer() {
 
 #[test]
 fn del_and_high_bytes_after_esc_stay_in_escape_like_the_engine() {
-    for c in std::iter::once(0x7fu8).chain(0x80..=0xff) {
+    // DEL과 0xA0 이상은 표에 없어 Escape에 머문다
+    for c in std::iter::once(0x7fu8).chain(0xa0..=0xff) {
         // `ESC c ENQ X ENQ`: 엔진은 Escape에 머물러 첫 ENQ만 실행한다
         same_enq(&[b"\x1b".as_slice(), &[c], b"\x05X\x05"].concat(), 1);
     }
+    // 0x80~0x9F는 Ghostty 표의 "어디서나" 전이다(#793): 상태가 바뀌어 ENQ 수가 C1마다 다르다. 스캐너는 엔진과 같아야 한다
+    for c in 0x80u8..=0x9f {
+        let bytes = [b"\x1b".as_slice(), &[c], b"\x05X\x05"].concat();
+        assert_eq!(enq(&feed_all(&bytes)), oracle(&bytes).enq, "{c:#04x}");
+    }
+    // 실행형 C1은 Ground라 둘 다 실행한다. 문자열을 여는 C1은 둘 다 자료로 본다
+    same_enq(b"\x1b\x85\x05X\x05", 2);
+    same_enq(b"\x1b\x9c\x05X\x05", 2);
+    same_enq(b"\x1b\x9f\x05X\x05", 0);
     // 머문 뒤 `[ c`는 DA1이다
-    let bytes = b"\x1b\x9c[c";
+    let bytes = b"\x1b\xa0[c";
     assert_eq!(oracle(bytes).da1, 1);
     assert_eq!(da1(&feed_all(bytes)), 1);
     let bytes = b"\x1b\x7f[c";
     assert_eq!(oracle(bytes).da1, 1);
     assert_eq!(da1(&feed_all(bytes)), 1);
+    // 0x9C는 Ground로 가서 `[ c`는 글자다
+    let bytes = b"\x1b\x9c[c";
+    assert_eq!(oracle(bytes).da1, 0);
+    assert_eq!(da1(&feed_all(bytes)), 0);
 }
 
 // ---- 3. ESC 중간 바이트 뒤의 C0 ----

@@ -174,14 +174,15 @@ impl<const OSC_RAW_BUF_SIZE: usize> Parser<OSC_RAW_BUF_SIZE> {
             State::CsiIntermediate => self.advance_csi_intermediate(performer, byte),
             State::CsiParam => self.advance_csi_param(performer, byte),
             State::DcsEntry => self.advance_dcs_entry(performer, byte),
-            State::DcsIgnore => self.anywhere(performer, byte),
+            // b-terminal(#793): 무시 상태는 0x80~0xFF를 버린다(C1 전이 없음, Ghostty `parse_table.zig` 215줄)
+            State::DcsIgnore => self.anywhere_c0(performer, byte),
             State::DcsIntermediate => self.advance_dcs_intermediate(performer, byte),
             State::DcsParam => self.advance_dcs_param(performer, byte),
             State::DcsPassthrough => self.advance_dcs_passthrough(performer, byte),
             State::Escape => self.advance_esc(performer, byte),
             State::EscapeIntermediate => self.advance_esc_intermediate(performer, byte),
             State::OscString => self.advance_osc_string(performer, byte),
-            State::SosPmApcString => self.advance_sos_pm_apc_string(performer, byte),
+            State::SosPmApcString => self.anywhere(performer, byte),
             State::Ground => unreachable!(),
         }
     }
@@ -318,7 +319,10 @@ impl<const OSC_RAW_BUF_SIZE: usize> Parser<OSC_RAW_BUF_SIZE> {
     #[inline(always)]
     fn advance_dcs_passthrough<P: Perform>(&mut self, performer: &mut P, byte: u8) {
         match byte {
-            0x00..=0x17 | 0x19 | 0x1C..=0x7E => performer.put(byte),
+            // b-terminal(#792): 0x80~0xFF는 모두 자료다(0x9C도 8비트 ST가 아니다). 원시 0x9C는 UTF-8 연속 바이트와
+            // 구별되지 않아(`한` = ED 95 9C, `Ü` = C3 9C) 전에는 거기서 DCS가 끝나고 남은 글이 화면에 찍혔다.
+            // Ghostty 1.4.0 `parse_table.zig` 241~266줄과 시험 `dcs_passthrough: high bytes are payload data`(412줄)
+            0x00..=0x17 | 0x19 | 0x1C..=0x7E | 0x80..=0xFF => performer.put(byte),
             0x18 | 0x1A => {
                 performer.unhook();
                 performer.execute(byte);
@@ -330,11 +334,6 @@ impl<const OSC_RAW_BUF_SIZE: usize> Parser<OSC_RAW_BUF_SIZE> {
                 self.state = State::Escape
             },
             0x7F => (),
-            0x9C => {
-                performer.unhook();
-                self.state = State::Ground
-            },
-            _ => (),
         }
     }
 
@@ -387,6 +386,8 @@ impl<const OSC_RAW_BUF_SIZE: usize> Parser<OSC_RAW_BUF_SIZE> {
                 self.state = State::Ground
             },
             0x1B => (),
+            // b-terminal(#793): Escape 안의 8비트 C1도 표의 "어디서나" 전이다
+            0x80..=0x9F => self.anywhere(performer, byte),
             _ => (),
         }
     }
@@ -444,22 +445,25 @@ impl<const OSC_RAW_BUF_SIZE: usize> Parser<OSC_RAW_BUF_SIZE> {
         }
     }
 
-    /// b-terminal(#776): APC·SOS·PM 문자열은 CAN·SUB·ESC 말고 8비트 C1로도 끝난다.
-    /// Ghostty 1.4.0 `parse_table.zig` 51~66줄 "anywhere" 전이를 그대로 따른다(`stream.zig`의 시험
-    /// `stream: apc bulk slice C1 ST`, `stream_terminal.zig` 6781줄 시험):
+    /// b-terminal(#776·#793): "어디서나" 전이. Ghostty 1.4.0 `parse_table.zig` 51~66줄을 그대로 따른다
+    /// (`stream.zig`의 시험 `stream: apc bulk slice C1 ST`, `stream_terminal.zig` 6781줄 시험).
+    /// 이 함수를 부르는 상태(Escape, EscapeIntermediate, CSI 넷, DCS 머리 셋, SOS·PM·APC)에서 8비트 C1은:
     /// - 0x80~0x8F·0x91~0x97·0x99·0x9A: Ground로 가며 C1을 실행한다. Ghostty `execute`는 C1을 `ESC (c-0x40)`로 보낸다
     /// - 0x9C(ST): Ground
-    /// - 0x9B(CSI)·0x90(DCS)·0x9D(OSC): 그 문자열을 연다
-    /// - 0x98·0x9E·0x9F(SOS·PM·APC)와 0xA0~0xFF: 표에 없거나 같은 상태라 머문다
-    /// 이 상태는 SOS·PM과 같아서 셋이 함께 맞는다. 나머지(CAN·SUB·ESC)는 `anywhere`다
+    /// - 0x9B(CSI)·0x90(DCS)·0x9D(OSC): 그 문자열을 연다(매개변수를 새로 시작한다)
+    /// - 0x98·0x9E·0x9F(SOS·PM·APC): 문자열 상태로 간다(이미 그 상태면 머문다)
+    /// - 0xA0~0xFF: 표에 없어 머문다
+    /// OSC 문자열과 DCS 통과는 0x80~0xFF가 자료이고 DCS 무시는 버린다(표가 덮는다): 그쪽은 `anywhere_c0`나 자기 갈래를 쓴다.
+    /// SOS·PM·APC는 한 상태라 셋이 함께 맞는다
     #[inline(always)]
-    fn advance_sos_pm_apc_string<P: Perform>(&mut self, performer: &mut P, byte: u8) {
+    fn anywhere<P: Perform>(&mut self, performer: &mut P, byte: u8) {
         match byte {
             0x80..=0x8F | 0x91..=0x97 | 0x99 | 0x9A => {
                 performer.esc_dispatch(&[], false, byte - 0x40);
                 self.state = State::Ground
             },
             0x9C => self.state = State::Ground,
+            0x98 | 0x9E | 0x9F => self.state = State::SosPmApcString,
             0x9B => {
                 self.reset_params();
                 self.state = State::CsiEntry
@@ -473,12 +477,13 @@ impl<const OSC_RAW_BUF_SIZE: usize> Parser<OSC_RAW_BUF_SIZE> {
                 self.osc_num_params = 0;
                 self.state = State::OscString
             },
-            _ => self.anywhere(performer, byte),
+            _ => self.anywhere_c0(performer, byte),
         }
     }
 
+    /// `anywhere`의 C0 몫: CAN·SUB는 Ground, ESC는 Escape
     #[inline(always)]
-    fn anywhere<P: Perform>(&mut self, performer: &mut P, byte: u8) {
+    fn anywhere_c0<P: Perform>(&mut self, performer: &mut P, byte: u8) {
         match byte {
             0x18 | 0x1A => {
                 performer.execute(byte);
@@ -1265,7 +1270,7 @@ mod tests {
 
     #[test]
     fn dcs_reset() {
-        const INPUT: &[u8] = b"\x1b[3;1\x1bP1$tx\x9c";
+        const INPUT: &[u8] = b"\x1b[3;1\x1bP1$tx\x1b";
         let mut dispatcher = Dispatcher::default();
         let mut parser = Parser::new();
 
@@ -1286,7 +1291,7 @@ mod tests {
 
     #[test]
     fn parse_dcs() {
-        const INPUT: &[u8] = b"\x1bP0;1|17/ab\x9c";
+        const INPUT: &[u8] = b"\x1bP0;1|17/ab\x1b";
         let mut dispatcher = Dispatcher::default();
         let mut parser = Parser::new();
 
@@ -1585,6 +1590,42 @@ mod tests {
             assert_eq!(dispatcher.dispatched[i], Sequence::Print('\u{FFFD}'), "{i}");
         }
         assert_eq!(dispatcher.dispatched[10], Sequence::Print('a'));
+    }
+
+    /// b-terminal(#792): DCS 통과 상태에서 0x80~0xFF는 모두 자료다. 0x9C(8비트 ST)도 DCS를 끝내지 않는다
+    #[test]
+    fn dcs_passthrough_keeps_high_bytes_as_data() {
+        let mut d = Dispatcher::default();
+        let mut p = Parser::new();
+        p.advance(&mut d, b"\x1bPqa\x9c\xed\x95\x9c\xff");
+        let puts = d.dispatched.iter().filter(|s| matches!(s, Sequence::DcsPut(_))).count();
+        assert_eq!(puts, 6, "{:?}", d.dispatched);
+        assert!(!d.dispatched.iter().any(|s| matches!(s, Sequence::DcsUnhook)), "{:?}", d.dispatched);
+        p.advance(&mut d, b"\x1b\\");
+        assert!(d.dispatched.iter().any(|s| matches!(s, Sequence::DcsUnhook)));
+    }
+
+    /// b-terminal(#793): CSI 안의 8비트 C1은 Ghostty 표의 "어디서나" 전이다. `ESC [ 1 0x9B 2 m`은 `2m`
+    #[test]
+    fn csi_restarts_on_c1_csi() {
+        let mut d = Dispatcher::default();
+        let mut p = Parser::new();
+        p.advance(&mut d, b"\x1b[1\x9b2m");
+        assert_eq!(d.dispatched.len(), 1, "{:?}", d.dispatched);
+        match &d.dispatched[0] {
+            Sequence::Csi(params, _, _, 'm') => assert_eq!(params, &[[2]]),
+            other => panic!("{other:?}"),
+        }
+        // 0x9C는 CSI를 끝낸다. 뒤의 `m`은 글자다
+        let mut d = Dispatcher::default();
+        let mut p = Parser::new();
+        p.advance(&mut d, b"\x1b[1\x9cm");
+        assert_eq!(d.dispatched, vec![Sequence::Print('m')]);
+        // 0xA0 이상은 머문다
+        let mut d = Dispatcher::default();
+        let mut p = Parser::new();
+        p.advance(&mut d, b"\x1b[1\xa02m");
+        assert_eq!(d.dispatched.len(), 1, "{:?}", d.dispatched);
     }
 
     /// b-terminal(#776): APC·SOS·PM은 0x9C 같은 C1로 끝난다(Ghostty 1.4.0 `parse_table.zig` "anywhere" 전이)

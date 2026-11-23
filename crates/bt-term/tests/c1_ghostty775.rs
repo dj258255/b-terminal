@@ -209,7 +209,8 @@ fn scanner_keeps_reading_after_the_c1_like_the_engine() {
     // 0x9D 뒤는 OscString: 끝까지 OSC라 `c`는 질의가 아니다
     assert_eq!(feed_all(b"\x1b_Ga\x9d0;t\x07"), vec![Signal::Graphics(b"a".to_vec())]);
     // 0x90 뒤는 DcsEntry: `$qm`은 DECRQSS다
-    let got = feed_all(b"\x1b_Ga\x90$qm\x9c");
+    // (#792: DCS는 0x9C가 아니라 `ESC \`로 끝난다)
+    let got = feed_all(b"\x1b_Ga\x90$qm\x1b\\");
     assert_eq!(got.first(), Some(&Signal::Graphics(b"a".to_vec())), "{got:?}");
     assert_eq!(got.len(), 2, "{got:?}");
 }
