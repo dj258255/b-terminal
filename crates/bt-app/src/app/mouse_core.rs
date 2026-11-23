@@ -140,28 +140,15 @@ impl App {
     /// `over`는 마우스가 그 칸 위에 있는가(칸 밖 움직임은 보고하지 않는다)
     pub(super) fn pointer_moved(&mut self, idx: usize, input: &PtrIn, st: &mut PtrState, over: bool) {
         if st.selecting {
-            // 끌 때마다 그 순간의 수식 키로 사각 여부를 정한다(Ghostty Surface.zig 4838줄)
-            let rectangle = input.rectangle_select();
-            if let Some((c, r)) = self.cell_in(idx, input.pos) {
-                match mouse::link_drag(st.link_word, (c, r)) {
-                    mouse::LinkDrag::Keep => return,
-                    mouse::LinkDrag::ToWord => {
-                        if let Some((lc, lr)) = st.link_word.take() {
-                            self.panes[idx].session.select_start_at(
-                                lc,
-                                lr,
-                                bt_term::SelectKind::Word,
-                                bt_term::CellSide::Left,
-                            );
-                        }
-                    }
-                    mouse::LinkDrag::Normal => {}
-                }
-                self.panes[idx].session.select_set_block(rectangle);
-                let side = self.cell_side_in(idx, input.pos);
-                self.panes[idx].session.select_update_at(c, r, side);
-                self.request_redraw();
+            if self.selection_screen_changed(idx, st) {
+                return;
             }
+            // 끌 때마다 포인터가 칸의 위·아래 밖인지 본다(Ghostty `SelectionGesture.drag`, 373줄). 밖이면 틱마다 한 줄씩 스크롤하며
+            // 고르기를 늘린다(`pointer_autoscroll_tick`). 칸 안으로 돌아오면 멈춘다
+            let dir = self.autoscroll_dir_at(idx, input.pos);
+            st.autoscroll_next = mouse::autoscroll_schedule(dir, st.autoscroll_next, Instant::now());
+            st.autoscroll = dir;
+            self.drag_selection_to(idx, input, st);
         } else if self.mouse_reporting_with(idx, input.mods.shift).is_some() {
             // 움직임 보고는 고른 칸 위에서만. 단추를 누른 채면 그 단추로 보낸다(1002는 이것만 받는다).
             // 어떤 움직임을 보낼지는 이벤트 모드가 정한다(mouse::encode)
@@ -170,6 +157,68 @@ impl App {
                 self.report_mouse(idx, held, mouse::Action::Motion, input, st);
             }
         }
+    }
+
+    /// 끌어 고르는 중 포인터 자리까지 고르기를 늘린다(움직임과 자동 스크롤 틱이 함께 쓴다)
+    fn drag_selection_to(&mut self, idx: usize, input: &PtrIn, st: &mut PtrState) {
+        // 끌 때마다 그 순간의 수식 키로 사각 여부를 정한다(Ghostty Surface.zig 4838줄)
+        let rectangle = input.rectangle_select();
+        let Some((c, r)) = self.cell_in(idx, input.pos) else {
+            return;
+        };
+        match mouse::link_drag(st.link_word, (c, r)) {
+            mouse::LinkDrag::Keep => return,
+            mouse::LinkDrag::ToWord => {
+                if let Some((lc, lr)) = st.link_word.take() {
+                    self.panes[idx]
+                        .session
+                        .select_start_at(lc, lr, bt_term::SelectKind::Word, bt_term::CellSide::Left);
+                }
+            }
+            mouse::LinkDrag::Normal => {}
+        }
+        self.panes[idx].session.select_set_block(rectangle);
+        let side = self.cell_side_in(idx, input.pos);
+        self.panes[idx].session.select_update_at(c, r, side);
+        self.request_redraw();
+    }
+
+    /// 누른 뒤 대체 화면으로 들어가거나 나왔는가. 그러면 누른 자리는 다른 화면의 것이다(Ghostty는 누른 자리가 지금 화면의 것이 아니면
+    /// 끌기를 하지 않고, 자동 스크롤 틱은 끌기를 끝낸다)
+    fn selection_screen_changed(&self, idx: usize, st: &PtrState) -> bool {
+        self.panes
+            .get(idx)
+            .is_some_and(|p| p.session.modes().alt_screen != st.press_alt)
+    }
+
+    /// 칸 idx 위에서 포인터(창 좌표) 자리가 부를 자동 스크롤 방향. 칸(여백 포함) 위 끝에서 1픽셀 안이거나 그 위면 위, 아래 끝에서 1픽셀 안이거나 그 아래면 아래
+    fn autoscroll_dir_at(&self, idx: usize, pos: PhysicalPosition<f64>) -> mouse::Autoscroll {
+        let Some(rect) = self.panes.get(idx).and_then(|p| self.pane_rect(p.id)) else {
+            return mouse::Autoscroll::None;
+        };
+        mouse::autoscroll_dir(pos.y - rect.y as f64, rect.h as f64)
+    }
+
+    /// 자동 스크롤 틱(15ms마다, Ghostty `Surface.selectionScrollTick`·`SelectionGesture.autoscrollTick`): 틱마다 정확히 한 줄 스크롤하고
+    /// 그 자리의 칸으로 고르기를 늘린다. 마지막 포인터 자리를 쓴다(포인터가 멈춰 있어도 계속된다).
+    /// 고르는 중이 아니거나 방향이 없으면 멈춘다. 누른 뒤 화면이 바뀌었으면 끌기를 끝낸다. 마우스 보고 중이어도 방향이 남아 있으면 계속한다(Ghostty처럼)
+    pub(super) fn pointer_autoscroll_tick(&mut self, idx: usize, input: &PtrIn, st: &mut PtrState) {
+        if !st.selecting || st.autoscroll == mouse::Autoscroll::None {
+            st.autoscroll = mouse::Autoscroll::None;
+            st.autoscroll_next = None;
+            return;
+        }
+        if self.selection_screen_changed(idx, st) {
+            st.selecting = false;
+            st.last_click = None;
+            st.link_word = None;
+            st.autoscroll = mouse::Autoscroll::None;
+            st.autoscroll_next = None;
+            return;
+        }
+        st.autoscroll_next = Some(mouse::autoscroll_after_tick(st.autoscroll_next, Instant::now()));
+        self.panes[idx].session.scroll(mouse::autoscroll_lines(st.autoscroll));
+        self.drag_selection_to(idx, input, st);
     }
 
     /// 링크 수식 키(macOS ⌘, 그 밖에는 Ctrl) + 왼쪽 단추(#705, `mouse::link_step`). 참이면 삼킨다(평소 처리를 하지 않는다).
@@ -272,6 +321,9 @@ impl App {
             let clicks = next_click(st.last_click, now, (c, r), interval);
             st.last_click = Some((now, c, r, clicks));
             st.link_word = None;
+            st.autoscroll = mouse::Autoscroll::None;
+            st.autoscroll_next = None;
+            st.press_alt = self.panes[idx].session.modes().alt_screen;
             // ⌘(macOS)·Ctrl+세 번 누르기는 줄 대신 그 명령의 출력 구간(#700, Ghostty `SelectionGesture`의 `.output`).
             // 출력이 아닌 칸(프롬프트·입력)이면 아무것도 새로 고르지 않는다(Ghostty도 앞서 고른 것을 그대로 둔다)
             if clicks == 3
@@ -310,6 +362,8 @@ impl App {
             self.request_redraw();
         } else {
             st.selecting = false;
+            st.autoscroll = mouse::Autoscroll::None;
+            st.autoscroll_next = None;
             // 프롬프트 줄을 끌지 않고 한 번 누르면 그 자리로 커서를 옮긴다(cursor-click-to-move, #137). 수식 키는 보지 않고
             // 고른 글이 남았으면 옮기지 않는다(Ghostty maybePromptClick, #729)
             let released = self.cell_in(idx, input.pos);

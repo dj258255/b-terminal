@@ -2,7 +2,7 @@
 
 use bt_core::config::{MiddleClickAction, MouseShiftCapture};
 use bt_term::{CellSide, SelectKind};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// 이 클릭·움직임·휠을 프로그램(마우스 보고)에 보내는가. `mouse-reporting`을 끄면 늘 아니오.
 /// Shift를 누르면 `mouse-shift-capture`가 정한다: `always`는 프로그램이, `never`는 고르기가 받고, `true`·`false`는
@@ -108,6 +108,57 @@ pub fn link_step(
             *state = LinkPress::Pending(id, c, r);
             LinkStep::Pass
         }
+    }
+}
+
+/// 끌어 고르는 중 포인터가 칸의 위·아래 가장자리 밖에 있어 자동 스크롤할 방향(#806).
+/// Ghostty `SelectionGesture.zig`의 `Autoscroll`(114줄)과 같다
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Autoscroll {
+    #[default]
+    None,
+    Up,
+    Down,
+}
+
+/// 자동 스크롤 틱 간격. Ghostty `termio/Thread.zig`의 `selection_scroll_ms`(15ms)
+pub const AUTOSCROLL_INTERVAL: Duration = Duration::from_millis(15);
+
+/// 위·아래 가장자리에서 이만큼(픽셀) 안쪽까지를 밖으로 본다. Ghostty `SelectionGesture.zig` 157줄 `autoscroll_buffer`(전체 화면 가장자리에서도 되게 1px)
+const AUTOSCROLL_EDGE: f64 = 1.0;
+
+/// 칸 위에서 잰 세로 픽셀 `y`(칸의 높이 `height`)로 자동 스크롤 방향을 정한다. `y <= 1`이면 위, `y > height - 1`이면 아래(Ghostty `drag`, 373줄).
+/// 칸 크기 안의 값(1.1 ~ height - 1)은 없음이고 NaN도 없음이다
+pub fn autoscroll_dir(y: f64, height: f64) -> Autoscroll {
+    if y <= AUTOSCROLL_EDGE {
+        Autoscroll::Up
+    } else if y > height - AUTOSCROLL_EDGE {
+        Autoscroll::Down
+    } else {
+        Autoscroll::None
+    }
+}
+
+/// 끌 때(움직임) 다음 틱의 때를 정한다. 방향이 없으면 때도 없다(이벤트 루프가 깨지 않는다). 방향이 생기면 지금부터 한 간격 뒤이고,
+/// 이미 도는 중이면 때를 그대로 둔다(움직일 때마다 틱이 밀리지 않게, Ghostty는 타이머를 이미 켰으면 다시 켜지 않는다)
+pub fn autoscroll_schedule(dir: Autoscroll, next: Option<Instant>, now: Instant) -> Option<Instant> {
+    match dir {
+        Autoscroll::None => None,
+        _ => next.or(Some(now + AUTOSCROLL_INTERVAL)),
+    }
+}
+
+/// 틱을 한 뒤의 다음 때: 지난 때에서 한 간격(루프가 늦게 깨도 박자를 지킨다). 이미 지났으면 지금이다
+pub fn autoscroll_after_tick(next: Option<Instant>, now: Instant) -> Instant {
+    next.map_or(now, |t| t + AUTOSCROLL_INTERVAL).max(now)
+}
+
+/// 자동 스크롤 틱 한 번에 굴리는 줄 수(양수가 위). Ghostty `autoscrollTick`은 틱마다 정확히 한 줄이다(더 굴리려면 틱을 더 자주)
+pub fn autoscroll_lines(dir: Autoscroll) -> i32 {
+    match dir {
+        Autoscroll::None => 0,
+        Autoscroll::Up => 1,
+        Autoscroll::Down => -1,
     }
 }
 
@@ -965,5 +1016,117 @@ mod tests {
         assert_eq!(m(|m| m.mouse_report = true), Some(EventMode::Normal));
         assert_eq!(m(|m| m.mouse_drag = true), Some(EventMode::Button));
         assert_eq!(m(|m| m.mouse_motion = true), Some(EventMode::Any));
+    }
+
+    // ---- 끌기 자동 스크롤·한 칸 끌기·강하게 누르기(#806, #807): Ghostty `SelectionGesture.zig` 시험을 같은 입력·기대로 옮겼다 ----
+
+    use bt_core::Theme;
+    use bt_term::{GridSize, Session, SessionEvent, SpawnOptions};
+    use std::sync::Arc;
+
+    fn session(cols: u16, rows: u16, input: &str) -> Session {
+        let opts = SpawnOptions {
+            program: Some("/bin/sh".into()),
+            args: vec!["-c".into(), "sleep 120".into()],
+            cwd: Some(std::env::temp_dir()),
+            scrollback: 1000,
+            word_chars: Some(" ".to_string()),
+            ..Default::default()
+        };
+        let sink = Arc::new(|_e: SessionEvent| {});
+        let s = Session::spawn(opts, GridSize::new(cols, rows), Theme::default(), sink).expect("spawn");
+        s.feed_local(input.replace('\n', "\r\n").as_bytes());
+        s
+    }
+
+    /// 앱의 한 번 끌기(`App::drag_selection_to`)와 같은 호출: 사각 여부를 정하고 칸 안 쪽과 함께 끝점을 옮긴다
+    fn drag_to(s: &Session, col: usize, row: usize, x_px: f64, cols: usize) {
+        s.select_set_block(false);
+        s.select_update_at(col, row, cell_side(x_px, 10, cols));
+    }
+
+    /// 앱의 자동 스크롤 틱(`App::pointer_autoscroll_tick`)과 같은 호출: 방향으로 정확히 한 줄 스크롤한 뒤 포인터 자리까지 늘린다
+    fn tick(s: &Session, dir: Autoscroll, col: usize, row: usize, x_px: f64, cols: usize) {
+        s.scroll(autoscroll_lines(dir));
+        drag_to(s, col, row, x_px, cols);
+    }
+
+    /// 1678 "drag autoscroll edge boundaries": 위 끝 1픽셀까지는 위, 아래 끝 1픽셀 안부터는 아래, 그 사이는 없음.
+    /// (칸 높이 100픽셀: 1은 위, 1.1은 없음, 99는 없음, 99.1은 아래)
+    #[test]
+    fn autoscroll_direction_has_a_one_pixel_edge() {
+        assert_eq!(autoscroll_dir(1.0, 100.0), Autoscroll::Up);
+        assert_eq!(autoscroll_dir(1.1, 100.0), Autoscroll::None);
+        assert_eq!(autoscroll_dir(99.0, 100.0), Autoscroll::None);
+        assert_eq!(autoscroll_dir(99.1, 100.0), Autoscroll::Down);
+        // 칸 밖은 위·아래로 가고, 계산할 수 없는 값은 없음이다
+        assert_eq!(autoscroll_dir(-40.0, 100.0), Autoscroll::Up);
+        assert_eq!(autoscroll_dir(500.0, 100.0), Autoscroll::Down);
+        assert_eq!(autoscroll_dir(f64::NAN, 100.0), Autoscroll::None);
+        // 틱 간격은 Ghostty `selection_scroll_ms`, 한 틱에 정확히 한 줄(위가 양수)
+        assert_eq!(AUTOSCROLL_INTERVAL, Duration::from_millis(15));
+        assert_eq!(
+            [Autoscroll::None, Autoscroll::Up, Autoscroll::Down].map(autoscroll_lines),
+            [0, 1, -1]
+        );
+    }
+
+    #[test]
+    fn autoscroll_timer_only_runs_while_the_pointer_is_outside() {
+        let t0 = Instant::now();
+        let step = AUTOSCROLL_INTERVAL;
+        // 안쪽이면 때가 없다: 이벤트 루프가 이 때문에 깨지 않는다
+        assert_eq!(autoscroll_schedule(Autoscroll::None, None, t0), None);
+        assert_eq!(
+            autoscroll_schedule(Autoscroll::None, Some(t0), t0),
+            None,
+            "안으로 돌아오면 멈춘다"
+        );
+        // 밖으로 나가면 한 간격 뒤에 첫 틱. 움직여도 때를 미루지 않는다
+        let first = autoscroll_schedule(Autoscroll::Up, None, t0);
+        assert_eq!(first, Some(t0 + step));
+        assert_eq!(autoscroll_schedule(Autoscroll::Down, first, t0 + step / 2), first);
+        // 틱마다 한 간격씩: 늦게 깨도 박자를 지키고, 한참 늦으면 지금부터
+        assert_eq!(autoscroll_after_tick(first, t0 + step), t0 + step * 2);
+        assert_eq!(autoscroll_after_tick(first, t0 + step * 10), t0 + step * 10);
+    }
+
+    /// 1702 "autoscroll tick scrolls and continues drag": (1,1)에서 눌러 아래 밖으로 끌고 틱을 하면 끝이 (3,2)까지 늘어난다
+    #[test]
+    fn autoscroll_tick_continues_the_drag() {
+        let s = session(5, 5, "");
+        s.select_start_at(1, 1, bt_term::SelectKind::Simple, cell_side(10.0, 10, 5));
+        drag_to(&s, 3, 1, 39.0, 5);
+        assert!(
+            s.selection_contains(3, 1) && !s.selection_contains(3, 2),
+            "끌기만으로는 줄 1까지"
+        );
+        tick(&s, Autoscroll::Down, 3, 2, 39.0, 5);
+        assert!(
+            s.selection_contains(1, 1) && s.selection_contains(3, 2),
+            "틱이 (3,2)까지 늘렸다"
+        );
+        assert!(!s.selection_contains(4, 2));
+    }
+
+    /// 1726 "autoscroll tick resolves drag pin after scrolling": 스크롤한 뒤의 그 자리 줄까지 고른다(스크롤 전 줄이 아니다)
+    #[test]
+    fn autoscroll_tick_resolves_the_row_after_scrolling() {
+        // 3줄 화면에 5줄을 찍어 앞 두 줄은 스크롤백이고, 화면은 위로 두 줄 올려 1111·2222·3333을 보인다
+        let s = session(5, 3, "1111\n2222\n3333\n4444\n5555");
+        s.scroll(2);
+        s.select_start_at(1, 1, bt_term::SelectKind::Simple, cell_side(10.0, 10, 5));
+        drag_to(&s, 3, 2, 39.0, 5);
+        assert_eq!(s.selection_text().as_deref(), Some("222\n3333"), "스크롤 전");
+        tick(&s, Autoscroll::Down, 3, 2, 39.0, 5);
+        assert_eq!(
+            s.selection_text().as_deref(),
+            Some("222\n3333\n4444"),
+            "한 줄 스크롤해 그 자리에 온 4444까지"
+        );
+        // 위쪽 틱은 반대로 한 줄 올라가고 끝 줄은 그 자리의 줄(1111)이 된다
+        tick(&s, Autoscroll::Up, 0, 0, 0.0, 5);
+        let text = s.selection_text().expect("고른 글");
+        assert!(text.starts_with("1111\n"), "위로 한 줄: 맨 위 줄 1111부터 {text:?}");
     }
 }

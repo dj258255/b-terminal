@@ -893,6 +893,11 @@ struct Win {
     /// 두 번 누르기로 링크 전체를 고른 칸(#701, `PtrState::link_word`)
     link_word: Option<(usize, usize)>,
     last_click: Option<(Instant, usize, usize, u8)>,
+    /// 끌어 고르는 중 자동 스크롤할 방향과 다음 틱의 때(#806, `PtrState`의 같은 이름 값). 방향이 없으면 이벤트 루프가 이것 때문에 깨지 않는다
+    autoscroll: mouse::Autoscroll,
+    autoscroll_next: Option<Instant>,
+    /// 누를 때 대체 화면이었는가(`PtrState::press_alt`)
+    press_alt: bool,
     scroll_accum: f64,
     /// 가로 휠 누적(마우스 보고용, #300)
     scroll_accum_x: f64,
@@ -995,6 +1000,9 @@ impl Win {
             selecting: false,
             link_word: None,
             last_click: None,
+            autoscroll: mouse::Autoscroll::None,
+            autoscroll_next: None,
+            press_alt: false,
             scroll_accum: 0.0,
             scroll_accum_x: 0.0,
             // 포커스 사건이 오기 전에는 보고 있지 않은 창으로 둔다. 보고 있다고 잘못 알면
@@ -4808,6 +4816,9 @@ impl App {
             selecting: self.w.selecting,
             link_word: self.w.link_word,
             last_click: self.w.last_click,
+            autoscroll: self.w.autoscroll,
+            autoscroll_next: self.w.autoscroll_next,
+            press_alt: self.w.press_alt,
             down: pane.map_or(0, |p| p.mouse_down),
             last_cell: pane.and_then(|p| p.mouse_last_cell),
             accum: self.w.scroll_accum,
@@ -4828,6 +4839,15 @@ impl App {
         }
         if after.last_click != before.last_click {
             self.w.last_click = after.last_click;
+        }
+        if after.autoscroll != before.autoscroll {
+            self.w.autoscroll = after.autoscroll;
+        }
+        if after.autoscroll_next != before.autoscroll_next {
+            self.w.autoscroll_next = after.autoscroll_next;
+        }
+        if after.press_alt != before.press_alt {
+            self.w.press_alt = after.press_alt;
         }
         if after.link_word != before.link_word {
             self.w.link_word = after.link_word;
@@ -5911,6 +5931,44 @@ impl App {
                         p.session.set_visible(shown);
                     }
                 }
+            }
+        }
+    }
+
+    /// 끌어 고르는 중 자동 스크롤 틱을 부를 다음 때(#806). 끄는 중이 아니면 없어서 이벤트 루프가 이것 때문에 깨지 않는다.
+    /// 지금 창의 사람 마우스와 지금 창 칸들의 스크립트 마우스만 본다(끄는 중에는 그 창이 마우스 사건을 받는 창이다)
+    fn autoscroll_next_wake(&self) -> Option<Instant> {
+        let human = self.w.selecting.then_some(self.w.autoscroll_next).flatten();
+        let script = self.panes.iter().filter_map(|p| p.script_mouse.state.autoscroll_next);
+        script.chain(human).min()
+    }
+
+    /// 때가 된 자동 스크롤 틱을 부른다(사람 마우스 하나, 스크립트 마우스는 칸마다). 틱이 다음 때를 다시 정한다
+    fn fire_autoscroll(&mut self, now: Instant) {
+        if self.w.autoscroll_next.is_some_and(|t| t <= now) {
+            match self.active_index() {
+                Some(idx) => {
+                    let (input, before) = self.human_ptr(Some(idx));
+                    let mut st = before.clone();
+                    self.pointer_autoscroll_tick(idx, &input, &mut st);
+                    self.store_human_ptr(Some(idx), &before, &st);
+                }
+                None => self.w.autoscroll_next = None,
+            }
+        }
+        // 스크립트 마우스(AppleScript, macOS에만 있다)의 끌기도 같은 틱을 탄다
+        #[cfg(target_os = "macos")]
+        for idx in 0..self.panes.len() {
+            if self.panes[idx]
+                .script_mouse
+                .state
+                .autoscroll_next
+                .is_some_and(|t| t <= now)
+            {
+                let mods = self.panes[idx].script_mouse.mods;
+                self.with_script_mouse(idx, mods, None, |app, input, sm| {
+                    app.pointer_autoscroll_tick(idx, input, &mut sm.state);
+                });
             }
         }
     }
@@ -7791,6 +7849,7 @@ impl ApplicationHandler<UserEvent> for App {
         if let Some(w) = self.quick_reshow.take() {
             w.focus_window();
         }
+        self.fire_autoscroll(Instant::now());
         if let Some((window, text)) = self.drop_batch.take() {
             // 놓은 창으로 바꿔 넣고, 아래 일들이 보던 지금 창으로 되돌린다(DroppedFile 갈래와 같게)
             let back = self.w.id();
@@ -7959,6 +8018,7 @@ impl ApplicationHandler<UserEvent> for App {
                     .min(),
             )
             .chain(self.quit_deadline)
+            .chain(self.autoscroll_next_wake())
             .chain(self.a11y_next_wake())
             .chain(self.any_window_focused().then_some(self.next_secure_poll))
             .min();

@@ -55,6 +55,12 @@ pub struct PtrState {
     pub selecting: bool,
     /// 마지막 누름: 때, 칸, 누름 횟수(1~3)
     pub last_click: Option<(Instant, usize, usize, u8)>,
+    /// 끌어 고르는 중 포인터가 위·아래 가장자리 밖에 있어 자동 스크롤할 방향(#806, `mouse::autoscroll_dir`)
+    pub autoscroll: crate::mouse::Autoscroll,
+    /// 다음 자동 스크롤 틱의 때. 방향이 없으면 없다(이 값이 없으면 이벤트 루프는 자동 스크롤 때문에 깨지 않는다)
+    pub autoscroll_next: Option<Instant>,
+    /// 누를 때 대체 화면이었는가. 끄는 중 화면이 바뀌면 누른 자리가 다른 화면의 것이라 끌기를 멈춘다(Ghostty의 `validatedLeftClickPin`)
+    pub press_alt: bool,
     /// 눌린 단추 비트(`mouse::button_bit`)
     pub down: u8,
     /// 마지막에 보고한 칸(움직임 중복 제거)
@@ -70,6 +76,8 @@ pub struct PtrState {
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct ScriptMouse {
     pub state: PtrState,
+    /// 마지막으로 보낸 수식 키(자동 스크롤 틱이 끌기에 쓴다)
+    pub mods: PtrMods,
     /// 마지막으로 보낸 위치(칸 왼쪽 위에서 잰 점 좌표). 보낸 적이 없으면 (0, 0)이다
     pub pos_pt: (f64, f64),
     /// 마지막으로 움직임을 처리한 위치(칸 왼쪽 위에서 잰 실제 픽셀). 1픽셀 미만의 움직임을 거르는 데 쓴다
