@@ -466,3 +466,11 @@
 - 까닭: `$p` 처리가 첫 매개변수만 읽고 개수를 보지 않았다. 파서가 마지막 매개변수를 늘 밀어 넣어 `CSI $ p`가 `0`으로 보였다. Ghostty는 정확히 하나일 때만 답하고(숫자 없는 끝 매개변수는 세지 않고, 콜론이 든 CSI는 `m`이 아니면 버린다) 위 모드에 영구 리셋을 답한다
 - 고침: 숫자 없는 끝 매개변수를 파서가 표시하고(`Params::trailing_empty`), DECRQM은 Ghostty가 세는 대로 하나일 때만 답한다. 위 모드는 4를 답한다(우리가 구현한 모드와 겹치지 않음을 확인했다). `?65653`처럼 큰 번호가 다른 모드로 읽히지 않는 것은 그대로다
 - 0.95.0에서 풀기: 없다. 응용이 잘못된 꼴을 보내거나 위 모드를 질의하지 않으면 생기지 않는다
+
+## 59. `clipboard-codepoint-map`이 `copy_to_clipboard:vt`·`html`(과 `mixed`의 HTML)에는 걸리지 않는다
+
+- 언제: 2026-11-23, #787. Ghostty 1.4.0 `formatter.zig`의 시험 `Page codepoint_map with styled formats`(7637줄)를 같은 입력으로 옮겨 견주다 찾았다. 0.96.0까지의 동작이다
+- 증상: 10열에 `\e[31mred text\e[0m`를 찍고 규칙 `U+0065=X`(e→X)로 `copy_to_clipboard:vt`를 하면 `"\x1b[0m\x1b[38;2;204;102;102mred text\x1b[0m"`가 나온다. 맵이 걸리지 않아 `rXd tXxt`가 아니다. `html`과 `mixed`의 HTML도 같고 text/plain만 바뀐다
+- 까닭: 맵을 글을 뽑은 뒤의 문자열(`map_clipboard_text`)에만 걸었고, VT·HTML을 만드는 `copy_format`에는 맵 단계가 없었다. Ghostty는 `Surface.zig` 2338줄이 `codepoint_map`을 담은 한 옵션을 만들어 `vt`·`html` 갈래가 그것을 복사해 `emit`만 바꾸고, `writeCodepointWithReplacement`(2099줄)가 형식과 상관없이 글자를 바꾼다(그 밑의 "VT에는 적용하지 않는다"는 주석은 코드와 반대다)
+- 고침: `copy_format::Options`에 `codepoint_map`을 두고, 글자 칸의 글자(결합 글자 포함)마다 마지막 규칙을 찾아 바꾼 글을 글자마다 그 형식의 `codepoint`로 낸다. 그래서 스타일은 칸의 것을 그대로 쓰고, `html`에서는 바꾼 글도 이스케이프·숫자 참조가 된다. 하이퍼링크 주소와 빈 칸에는 걸지 않는다. `write_selection_file`·`write_screen_file`·`write_scrollback_file`은 Ghostty `writeScreenFile`이 맵을 주지 않으므로 그대로 걸지 않는다
+- 0.96.0에서 풀기: 없다. `vt`·`html`로 복사한 글에 맵이 필요하면 붙여넣은 뒤 바꾼다

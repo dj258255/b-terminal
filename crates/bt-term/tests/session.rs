@@ -2293,3 +2293,26 @@ fn decrqm_permanently_reset_modes() {
     // 큰 번호는 u16 상한(65535)으로 붙고 다른 모드로 읽히지 않는다(?65653이 117로 읽히면 안 된다)
     assert_eq!(reply_to("\\033[?65653$p", |_| {}), hex_of("\x1b[?65535;0$y"));
 }
+
+/// `clipboard-codepoint-map`이 고른 곳의 `vt`·`html`에도 걸린다(#787). 세션의 `selection_styled`가 맵을 끝까지 넘기는지 본다
+#[test]
+fn selection_styled_applies_the_codepoint_map() {
+    use bt_core::config::CodepointRule;
+    let (s, rx) = sh("printf '\\033[31mred text\\033[0m'", GridSize::new(10, 4));
+    wait_exit(&rx);
+    wait_until(&s, |t| t.contains("red text"));
+    s.select_start(0, 0, bt_term::SelectKind::Simple);
+    s.select_update(7, 0);
+    let rules = [CodepointRule {
+        range: ('e' as u32, 'e' as u32),
+        replacement: "X".into(),
+    }];
+    let vt = s.selection_styled(bt_term::CopyEmit::Vt, true, false, &rules).unwrap();
+    assert!(vt.contains("rXd tXxt") && !vt.contains("red"), "{vt:?}");
+    let html = s
+        .selection_styled(bt_term::CopyEmit::Html, true, false, &rules)
+        .unwrap();
+    assert!(html.contains("rXd tXxt"), "{html:?}");
+    let plain = s.selection_styled(bt_term::CopyEmit::Vt, true, false, &[]).unwrap();
+    assert!(plain.contains("red text"), "맵이 비면 그대로: {plain:?}");
+}

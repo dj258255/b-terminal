@@ -2,7 +2,7 @@
 //!
 //! 규칙은 Ghostty `src/terminal/formatter.zig`(`PageFormatter`)와 `style.zig`(`formatterVt`·`formatterHtml`)를
 //! 7fa26e8b675f 판에서 그대로 옮겼다. 복사 길(`Surface.zig copySelectionToClipboards`)은 `unwrap = true`이고
-//! 색을 팔레트 번호로 두지 않고 지금 팔레트의 RGB로 쓴다(`palette` 옵션을 줌). 점 지도(point_map)와 코드포인트 표는 옮기지 않았다.
+//! 색을 팔레트 번호로 두지 않고 지금 팔레트의 RGB로 쓴다(`palette` 옵션을 줌). 점 지도(point_map)는 옮기지 않았다. 코드포인트 맵(`clipboard-codepoint-map`)은 `Options::codepoint_map`으로 건다(#787).
 //!
 //! alacritty 격자와 Ghostty 페이지가 다른 곳(아래 "칸 종류")은 `WRITTEN` 표시로 맞춘다
 
@@ -12,6 +12,7 @@ use alacritty_terminal::index::{Column, Line, Point};
 use alacritty_terminal::term::Term;
 use alacritty_terminal::term::cell::{Cell, Flags, Hyperlink};
 use alacritty_terminal::vte::ansi::{Color, NamedColor};
+use bt_core::config::CodepointRule;
 use bt_core::{Rgb, Theme};
 
 use crate::color;
@@ -52,13 +53,16 @@ pub enum Emit {
 
 /// 옵션(Ghostty `formatter.Options` 중 쓰는 것)
 #[derive(Debug, Clone, Copy)]
-pub struct Options {
+pub struct Options<'a> {
     pub emit: Emit,
     /// `clipboard-trim-trailing-spaces`. Ghostty에서는 꾸밈 있는 꼴에 거의 영향이 없고, VT에서 끝의 빈 줄을 남길지만 정한다
     pub trim: bool,
     /// 바탕·글자 기본색. 있으면 HTML 감싸개의 style, VT 앞머리의 OSC 11·10으로 넣는다
     pub background: Option<Rgb>,
     pub foreground: Option<Rgb>,
+    /// `clipboard-codepoint-map`. 글자 칸의 글자(결합 글자 포함)마다 적용하고, vt·html 모두에 건다(Ghostty `writeCodepointWithReplacement`).
+    /// 하이퍼링크 주소와 빈 칸에는 걸지 않는다. 겹치면 나중 규칙이 이긴다. 비면 바꾸지 않는다
+    pub codepoint_map: &'a [CodepointRule],
 }
 
 /// 색. Ghostty `Style.Color`처럼 팔레트 번호와 RGB를 구분해 둔다(같은 RGB여도 번호와 값은 다른 스타일이다)
@@ -185,6 +189,7 @@ struct Writer<'a, T> {
     term: &'a Term<T>,
     theme: &'a Theme,
     emit: Emit,
+    map: &'a [CodepointRule],
     /// HTML 앵커가 열려 있다(막은 링크는 열지 않으므로 닫지도 않는다)
     anchor_open: bool,
 }
@@ -306,6 +311,20 @@ impl<T> Writer<'_, T> {
         }
     }
 
+    /// 칸의 글자 하나. 규칙이 있으면 바꾼 글(여러 글자일 수 있다)을 글자마다 `codepoint`로 낸다. 그래서 HTML에서는 바꾼 글도
+    /// 이스케이프·숫자 참조가 되고, 스타일은 칸의 것을 그대로 쓴다(Ghostty `writeCodepointWithReplacement`)
+    fn mapped_codepoint(&mut self, c: char) {
+        let cp = c as u32;
+        match self.map.iter().rev().find(|r| r.range.0 <= cp && cp <= r.range.1) {
+            Some(r) => {
+                for rc in r.replacement.chars() {
+                    self.codepoint(rc);
+                }
+            }
+            None => self.codepoint(c),
+        }
+    }
+
     fn link_open(&mut self, link: &Hyperlink) {
         match self.emit {
             // 명시한 id가 있으면 함께. 엔진이 id 없는 링크에 붙인 번호(`<n>_alacritty`)는 명시한 것이 아니다
@@ -365,7 +384,12 @@ fn same_background(a: &Cell, b: &Cell) -> bool {
 
 /// 칸 전체를 만든다(`write_screen_file`·`write_scrollback_file`의 `vt`·`html`, #768). `scrollback`이면 스크롤백 맨 위부터
 /// 맨 아래까지, 아니면 지금 보이는 화면. 이어진 줄은 이어 붙이고(`unwrap`) 끝의 빈 줄은 내지 않는다
-pub(crate) fn format_lines<T: EventListener>(term: &Term<T>, theme: &Theme, scrollback: bool, opts: Options) -> String {
+pub(crate) fn format_lines<T: EventListener>(
+    term: &Term<T>,
+    theme: &Theme,
+    scrollback: bool,
+    opts: Options<'_>,
+) -> String {
     let grid = term.grid();
     let (first, last) = if scrollback {
         (term.topmost_line(), term.bottommost_line())
@@ -392,7 +416,7 @@ pub(crate) fn format_range<T: EventListener>(
     start: Point,
     end: Point,
     block: bool,
-    opts: Options,
+    opts: Options<'_>,
 ) -> String {
     let cols = term.columns();
     let grid = term.grid();
@@ -419,6 +443,7 @@ pub(crate) fn format_range<T: EventListener>(
         term,
         theme,
         emit: opts.emit,
+        map: opts.codepoint_map,
         anchor_open: false,
     };
 
@@ -587,9 +612,9 @@ pub(crate) fn format_range<T: EventListener>(
 
             match k {
                 Kind::Text => {
-                    w.codepoint(cell.c);
+                    w.mapped_codepoint(cell.c);
                     for z in cell.zerowidth().into_iter().flatten() {
-                        w.codepoint(*z);
+                        w.mapped_codepoint(*z);
                     }
                 }
                 Kind::Background => {
@@ -664,21 +689,22 @@ mod tests {
         t
     }
 
-    fn opts(emit: Emit) -> Options {
+    fn opts(emit: Emit) -> Options<'static> {
         Options {
             emit,
             trim: true,
             background: None,
             foreground: None,
+            codepoint_map: &[],
         }
     }
 
     /// 화면 전체(80x24)를 만든다
-    fn all(input: &str, o: Options) -> String {
+    fn all(input: &str, o: Options<'_>) -> String {
         all_in(80, 24, input, o)
     }
 
-    fn all_in(cols: usize, rows: usize, input: &str, o: Options) -> String {
+    fn all_in(cols: usize, rows: usize, input: &str, o: Options<'_>) -> String {
         let t = term(cols, rows, input);
         format_range(
             &t,
@@ -751,6 +777,96 @@ mod tests {
     fn html_plain_text() {
         assert_eq!(html("hello, world"), format!("{WRAP}hello, world</div>"));
         assert_eq!(html("hello world"), format!("{WRAP}hello world</div>"));
+    }
+
+    /// Ghostty `Page codepoint_map with styled formats`(`formatter.zig`): 'e'→'X'. 원본 기대는 `\x1b[0m\x1b[38;5;1mrXd tXxt\x1b[0m`(팔레트를 안 줌).
+    /// 복사 길은 팔레트를 주므로 RGB로 바꿔 적었다. 10열 화면(#787)
+    #[test]
+    fn codepoint_map_applies_to_vt_keeping_styles() {
+        let rules = [rule('e', 'e', "X")];
+        let o = Options {
+            codepoint_map: &rules,
+            ..opts(Emit::Vt)
+        };
+        assert_eq!(
+            all_in(10, 24, "\x1b[31mred text\x1b[0m", o),
+            format!("\x1b[0m\x1b[38;2;{}mrXd tXxt\x1b[0m", semi(1))
+        );
+    }
+
+    /// 같은 입력을 html로: 스타일은 그대로, 글자만 바뀐다
+    #[test]
+    fn codepoint_map_applies_to_html_keeping_styles() {
+        let rules = [rule('e', 'e', "X")];
+        let o = Options {
+            codepoint_map: &rules,
+            ..opts(Emit::Html)
+        };
+        assert_eq!(
+            all_in(10, 24, "\x1b[31mred text\x1b[0m", o),
+            format!(
+                "{WRAP}<div style=\"display: inline;color: rgb({});\">rXd tXxt</div></div>",
+                comma(1)
+            )
+        );
+    }
+
+    /// Ghostty는 바꾼 글도 `writeCodepoint`로 내므로 HTML에서 이스케이프·숫자 참조가 되고, 여러 글자도 된다.
+    /// 겹치면 나중 규칙이 이기고(`prefers last`), 범위도 먹고(`range`·`multiple ranges`), 글자 아닌 칸에는 걸리지 않는다
+    #[test]
+    fn codepoint_map_replacement_is_escaped_in_html_and_last_rule_wins() {
+        let rules = [
+            rule('a', 'm', "A"),
+            rule('o', 'o', "x"),
+            rule('o', 'o', "<&>"),
+            rule('\u{26a1}', '\u{26a1}', "\u{1f525}"),
+        ];
+        let h = Options {
+            codepoint_map: &rules,
+            ..opts(Emit::Html)
+        };
+        assert_eq!(
+            all("hello \u{26a1} world", h),
+            format!("{WRAP}AAAA&lt;&amp;&gt; &#128293; w&lt;&amp;&gt;rAA</div>")
+        );
+        let v = Options {
+            codepoint_map: &rules,
+            ..opts(Emit::Vt)
+        };
+        assert_eq!(all("hello \u{26a1} world", v), "AAAA<&> \u{1f525} w<&>rAA");
+    }
+
+    /// 비어 있는 맵은 바꾸지 않는다(`empty map`). 빈 글로 바꾸면 그 글자가 지워진다
+    #[test]
+    fn codepoint_map_empty_changes_nothing_and_empty_replacement_deletes() {
+        assert_eq!(all("a e", opts(Emit::Vt)), "a e");
+        let rules = [rule('e', 'e', "")];
+        let v = Options {
+            codepoint_map: &rules,
+            ..opts(Emit::Vt)
+        };
+        assert_eq!(all("a e", v), "a ");
+    }
+
+    /// 결합 글자에도 걸리고, 하이퍼링크 주소에는 걸리지 않는다
+    #[test]
+    fn codepoint_map_applies_to_combining_marks_but_not_link_uris() {
+        let rules = [rule('e', 'e', "X"), rule('\u{301}', '\u{301}', "!")];
+        let h = Options {
+            codepoint_map: &rules,
+            ..opts(Emit::Html)
+        };
+        assert_eq!(
+            all("e\u{301}\x1b]8;;http://e.com\x1b\\e\x1b]8;;\x1b\\", h),
+            format!("{WRAP}X!<a href=\"http://e.com\">X</a></div>")
+        );
+    }
+
+    fn rule(a: char, b: char, to: &str) -> CodepointRule {
+        CodepointRule {
+            range: (a as u32, b as u32),
+            replacement: to.to_string(),
+        }
     }
 
     // "Page html with colors": 원본은 var(--vt-palette-1)·var(--vt-palette-4)
