@@ -1630,6 +1630,18 @@ impl Session {
         true
     }
 
+    /// 전체 고르기(`select_all`, #805): Ghostty `Screen.selectAll`처럼 스크롤백까지 통틀어 글이 있는 첫 칸부터 마지막 칸까지 고른다
+    /// (앞뒤의 빈 줄·빈칸·탭은 뺀다). 글이 하나도 없으면 아무것도 바꾸지 않고 거짓(Ghostty `Surface`도 null이면 앞서 고른 것을 그대로 둔다)
+    pub fn select_all(&self) -> bool {
+        let mut g = self.inner.lock();
+        let Some((start, end)) = alacritty_terminal::selection::ghostty_select_all(&g.term) else {
+            return false;
+        };
+        set_range(&mut g, start, end);
+        g.output_click = None;
+        true
+    }
+
     pub fn select_clear(&self) {
         let mut g = self.inner.lock();
         g.term.selection = None;

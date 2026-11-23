@@ -343,7 +343,7 @@ HTML은 `<div style="font-family: monospace; white-space: pre;">` 안에 칸의 
 | `navigate_search:next` / `navigate_search:previous` | 위(오래된 쪽) / 아래 맞은 곳으로 | `super+g` / `super+shift+g` |
 | `toggle_command_palette` | 명령 팔레트 열기·닫기 | `super+shift+p` |
 | `clear_screen` | 화면 지우기(셸에 Ctrl-L). 기본 묶음에 `performable`이 붙어 있지만 b-terminal은 이 동작을 늘 할 수 있는 것으로 봅니다(Ghostty는 대체 화면에서는 키를 프로그램에 보냄, 아직 같지 않음) | `super+k` |
-| `select_all` | 보이는 화면 모두 고르기 | `super+a` |
+| `select_all` | 스크롤백까지 모두 고르기. 글이 있는 첫 칸부터 마지막 칸까지이고 앞뒤의 빈 줄·빈칸·탭은 뺍니다(Ghostty `Screen.selectAll`). 글이 하나도 없으면 아무것도 바꾸지 않습니다. 고른 글을 `copy-on-select`로 복사하지는 않습니다(Ghostty는 복사합니다, 아직 같지 않음) | `super+a` |
 | `reload_config` | 설정 다시 읽기 | `super+shift+comma` |
 | `quit` | 앱 끝내기(프로그램이 도는 칸이 있으면 묻습니다) | `super+q` |
 | `prompt_surface_title` / `set_surface_title:글` | 지금 칸의 제목을 입력 막대로 묻기 / 정하기. 사람이 붙인 제목은 프로그램이 정한 제목보다 먼저 보이고, 빈 글이면 지워져 프로그램 제목으로 돌아갑니다 | (없음, 메뉴 "셸 › 제목 바꾸기…"와 팔레트) |

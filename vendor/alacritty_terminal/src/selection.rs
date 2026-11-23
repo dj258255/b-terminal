@@ -15,6 +15,64 @@ use crate::term::Term;
 use crate::term::cell::{Cell, Flags};
 use crate::vte::ansi::CursorShape;
 
+/// b-terminal(#803, #804, #805): Ghostty `Screen.selectLine`·`selectWord`·`selectAll`의 칸 규칙
+mod ghostty {
+    use super::*;
+
+    /// Ghostty `cell.hasText()`: 글자를 찍은 칸(찍은 빈칸 포함). 넓은 글자의 뒤 칸·줄 끝 자리 칸은 아니다
+    pub fn has_text(cell: &Cell) -> bool {
+        cell.flags.contains(Flags::WRITTEN)
+            && !cell.flags.intersects(Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER)
+    }
+
+    fn next<T>(term: &Term<T>, p: Point) -> Option<Point> {
+        if p.column < term.last_column() {
+            Some(Point::new(p.line, p.column + 1))
+        } else if p.line < term.bottommost_line() {
+            Some(Point::new(p.line + 1, Column(0)))
+        } else {
+            None
+        }
+    }
+
+    fn prev<T>(term: &Term<T>, p: Point) -> Option<Point> {
+        if p.column > Column(0) {
+            Some(Point::new(p.line, p.column - 1))
+        } else if p.line > term.topmost_line() {
+            Some(Point::new(p.line - 1, term.last_column()))
+        } else {
+            None
+        }
+    }
+
+    /// 줄 고르기가 앞뒤에서 빼는 글자(Ghostty `default_line_whitespace`)
+    fn is_line_space(c: char) -> bool {
+        matches!(c, '\0' | ' ' | '\t')
+    }
+
+    /// Ghostty `Screen.selectAll`: 스크롤백까지 통틀어 글이 있는 첫 칸부터 마지막 칸까지. 앞뒤 공백(널·빈칸·탭)은 뺀다
+    pub fn select_all<T>(term: &Term<T>) -> Option<(Point, Point)> {
+        let grid = term.grid();
+        let top = Point::new(term.topmost_line(), Column(0));
+        let bottom = Point::new(term.bottommost_line(), term.last_column());
+        let found = |p: Point| {
+            let cell = &grid[p];
+            has_text(cell) && !is_line_space(cell.c)
+        };
+        let mut start = top;
+        while !found(start) {
+            start = next(term, start)?;
+        }
+        let mut end = bottom;
+        while !found(end) {
+            end = prev(term, end)?;
+        }
+        Some((start, end))
+    }
+}
+
+pub use ghostty::select_all as ghostty_select_all;
+
 /// A Point and side within that point.
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 struct Anchor {

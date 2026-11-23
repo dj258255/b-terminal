@@ -4514,9 +4514,7 @@ impl App {
             }
             Action::SelectAll => {
                 if let Some(t) = self.active_pane() {
-                    let (cols, rows) = pane_cells(&t.session);
-                    t.session.select_start(0, 0, SelectKind::Line);
-                    t.session.select_update(cols.saturating_sub(1), rows.saturating_sub(1));
+                    t.session.select_all();
                 }
             }
             Action::ReloadConfig => self.reload_config(),
