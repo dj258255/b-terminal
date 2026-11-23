@@ -1635,6 +1635,8 @@ impl Session {
             trim: false,
             background: None,
             foreground: None,
+            // 글 복사의 `clipboard-codepoint-map`은 앱이 줄 끝 공백을 지운 뒤에 건다. 파일 길에는 걸지 않는다(#787)
+            codepoint_map: &[],
         };
         let text = crate::copy_format::format_range(&g.term, &theme, range.start, range.end, range.is_block, opts);
         Some(text).filter(|s| !s.is_empty())
@@ -1709,6 +1711,8 @@ impl Session {
             trim: false,
             background: None,
             foreground: None,
+            // 글 복사의 `clipboard-codepoint-map`은 앱이 줄 끝 공백을 지운 뒤에 건다. 파일 길에는 걸지 않는다(#787)
+            codepoint_map: &[],
         };
         crate::copy_format::format_lines(&g.term, &theme, scrollback, opts)
     }
