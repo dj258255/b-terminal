@@ -20,7 +20,7 @@ struct Oracle {
     csi: HashMap<(char, String), usize>,
     /// `ignore`로 dispatch된 CSI의 수(엔진은 이것을 처리하지 않는다)
     ignored: usize,
-    /// 엔진이 실제로 화면 지우기 2·3으로 처리하는 ED(`CSI 2 J`·`CSI 3 J`, 첫 매개변수 기준, 비공개 표시 없음)
+    /// 엔진이 실제로 화면 지우기 2·3·22로 처리하는 ED(`CSI 2 J`·`CSI 3 J`·`CSI 22 J`, 첫 매개변수 기준, 비공개 표시 없음)
     ed: usize,
     /// `ESC c`(RIS)도 스캐너는 Erase로 낸다
     ris: usize,
@@ -39,7 +39,7 @@ impl Perform for Oracle {
             return;
         }
         let inter = String::from_utf8_lossy(i).into_owned();
-        if a == 'J' && i.is_empty() && matches!(p.iter().next().map(|g| g[0]), Some(2 | 3)) {
+        if a == 'J' && i.is_empty() && matches!(p.iter().next().map(|g| g[0]), Some(2 | 3 | 22)) {
             self.ed += 1;
         }
         *self.csi.entry((a, inter)).or_default() += 1;

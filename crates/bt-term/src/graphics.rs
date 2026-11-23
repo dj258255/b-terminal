@@ -4,6 +4,7 @@
 //! 임의 파일을 읽게 되는 길), 받는 바이트·그림 크기·저장 총량에 상한을 둔다. 여기서는 VT 엔진과 상관없이
 //! 명령을 읽고 그림을 저장하며, 무엇을 답하고 커서를 얼마나 옮길지만 정한다. 줄은 스크롤백 맨 위를 0으로 센다
 
+use alacritty_terminal::term::ScrollEvent;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
@@ -39,6 +40,10 @@ pub struct Image {
     seq: u64,
     /// 그림 번호(`I=`, 0이면 없음)
     pub number: u32,
+    /// 임시 표시(`N=`의 맨 아래 비트, Ghostty `usage.transient`): 저장 상한을 넘기면 먼저 쫓아낸다(#799)
+    transient: bool,
+    /// 대체 화면에서 받은 그림이다. Ghostty는 화면마다 그림 저장소가 따로라 화면 지우기(ED 2)가 자기 화면의 그림만 거둔다(#799)
+    alt: bool,
     /// 저장할 때마다 새로 매기는 번호. 조각으로 오는 프레임이 시작한 뒤 그림이 다시 오면 달라져 그 프레임을 버린다(Ghostty `image_generation`)
     generation: u64,
     /// 애니메이션(#554): 프레임이나 재생 제어를 받으면 생긴다. `rgba`가 프레임 1(뿌리)이다
@@ -177,8 +182,10 @@ impl PlacementKey {
 pub struct Outcome {
     /// PTY에 쓸 답(`ESC _ G … ESC \`)
     pub reply: Option<Vec<u8>>,
-    /// 그림을 놓은 뒤 커서를 옮길 만큼(아래 줄 수, 오른쪽 칸 수)
-    pub advance: Option<(u32, u32)>,
+    /// 그림을 놓은 뒤 커서를 옮길 곳(Ghostty `graphics_exec.zig` `display`의 `.after`): (아래로 index할 줄 수 요청, 옮긴 뒤 칸).
+    /// 줄 수는 그림의 줄 수 - 1에 오른쪽 끝에 닿아 감기면 하나 더하고(열 0으로), 상한(스크롤 영역 아래까지 남은 줄 + 화면 높이)은
+    /// 커서와 스크롤 영역을 아는 세션이 건다
+    pub advance: Option<(u32, usize)>,
 }
 
 /// 명령을 놓을 때 필요한 지금 화면 상태
@@ -251,6 +258,52 @@ impl Graphics {
             next_frame: None,
         }
     }
+}
+
+/// 자리의 위쪽 `count`줄을 잘라 낸다(Ghostty `Placement.clipTop`). `span`은 지금 차지하는 줄 수. 남는 것이 없으면 거짓
+fn clip_top(p: &mut Placement, cell: (u32, u32), count: u32, span: u32) -> bool {
+    let src = p.geom.source_rect();
+    let crop = if p.geom.want_rows > 0 {
+        // 칸 수를 정한 그림: 줄마다 원본의 같은 몫
+        (u64::from(src[3]) * u64::from(count) / u64::from(span)) as u32
+    } else {
+        // 원래 크기 그림: 줄마다 칸 높이만큼
+        cell.1.saturating_mul(count)
+    };
+    if crop >= src[3] {
+        return false;
+    }
+    p.geom.src = [src[0], src[1] + crop, src[2], src[3] - crop];
+    if p.geom.want_rows > 0 {
+        p.geom.want_rows = p.geom.want_rows.saturating_sub(count);
+    }
+    true
+}
+
+/// 자리의 아래쪽 `count`줄을 잘라 낸다(Ghostty `Placement.clipBottom`)
+fn clip_bottom(p: &mut Placement, cell: (u32, u32), count: u32, span: u32) -> bool {
+    let src = p.geom.source_rect();
+    if src[3] == 0 {
+        return false;
+    }
+    let height = if p.geom.want_rows > 0 {
+        let crop = (u64::from(src[3]) * u64::from(count) / u64::from(span)) as u32;
+        if crop >= src[3] {
+            return false;
+        }
+        p.geom.want_rows = p.geom.want_rows.saturating_sub(count);
+        src[3] - crop
+    } else {
+        // 남은 줄이 보여 줄 수 있는 원본 높이. 첫 줄은 오프셋만큼 잃는다
+        let visible = cell.1.saturating_mul(span - count);
+        let offset = p.geom.resolve(cell.0, cell.1).off_y;
+        if visible <= offset {
+            return false;
+        }
+        src[3].min(visible - offset)
+    };
+    p.geom.src = [src[0], src[1], src[2], height];
+    true
 }
 
 fn cost(img: &Image) -> usize {
@@ -727,6 +780,8 @@ impl Graphics {
                 // 성공 길
                 self.replace_image(id);
                 image.number = number;
+                image.transient = num(&control, b'N') & 1 == 1;
+                image.alt = cur.alt;
                 self.store(id, image);
                 let out = if action == "T" {
                     self.place(id, &control, cur)
@@ -1031,6 +1086,8 @@ impl Graphics {
             rgba: Arc::new(rgba),
             seq: 0,
             number: 0,
+            transient: false,
+            alt: false,
             generation: 0,
             anim: None,
         })
@@ -1045,13 +1102,24 @@ impl Graphics {
         if let Some(old) = self.images.insert(id, image) {
             self.stored -= cost(&old);
         }
-        // 총량이나 그림 수를 넘으면 오래된 그림부터 버린다(지금 넣은 것은 남긴다)
+        // 총량이나 그림 수를 넘으면 쫓아낸다(지금 넣은 것은 남긴다). 차례는 `eviction_candidate`
         while self.stored > self.limit || self.images.len() > MAX_IMAGES {
-            let Some((&old, _)) = self.images.iter().filter(|(k, _)| **k != id).min_by_key(|(_, i)| i.seq) else {
+            let Some(old) = self.eviction_candidate(id) else {
                 break;
             };
             self.remove_image(old);
         }
+    }
+
+    /// 다음에 쫓아낼 그림(`keep`은 빼고). Ghostty `evictImageExcept`(graphics_storage.zig 1823)의 차례: 임시이고 안 쓰는 그림 →
+    /// 안 쓰는 그림 → 임시이고 쓰는 그림 → 쓰는 그림, 같은 급이면 오래된 것부터(같으면 낮은 번호). 쓴다는 것은 자리가 있다는 뜻이다
+    fn eviction_candidate(&self, keep: u32) -> Option<u32> {
+        let used: std::collections::HashSet<u32> = self.placements.iter().map(|p| p.image).collect();
+        self.images
+            .iter()
+            .filter(|(k, _)| **k != keep)
+            .min_by_key(|(k, i)| (u8::from(!i.transient) + 2 * u8::from(used.contains(k)), i.seq, **k))
+            .map(|(k, _)| *k)
     }
 
     fn remove_image(&mut self, id: u32) {
@@ -1164,10 +1232,16 @@ impl Graphics {
             self.reap_orphans(false);
         }
         let mut out = self.ok_id(c, id);
-        // C=1이면 커서를 옮기지 않는다. 아니면 그림의 마지막 줄, 그림 오른쪽 칸으로(kitty와 같다).
+        // C=1이면 커서를 옮기지 않는다. 아니면 그림의 마지막 줄, 그림 오른쪽 칸으로(kitty와 같다). 그림이 오른쪽 끝에 닿으면
+        // (`x + 칸 수 >= 열 수`) 한 줄 더 내려 열 0으로 감긴다(#801).
         // 가상 배치와 상대 배치는 C와 상관없이 커서를 옮기지 않는다(Ghostty)
         if num(c, b'C') != 1 && matches!(loc, Loc::Pin) {
-            out.advance = Some((rows.saturating_sub(1), cols));
+            let target = cur.col.saturating_add(cols as usize);
+            let wraps = target >= cur.cols as usize;
+            out.advance = Some((
+                rows.saturating_sub(1) + u32::from(wraps),
+                if wraps { 0 } else { target },
+            ));
         }
         out
     }
@@ -1371,7 +1445,7 @@ impl Graphics {
         }
     }
 
-    /// 프레임을 받을 자리 `bytes`(고정 몫 포함)를 마련하고 저장량에 더한다. 모자라면 `keep` 말고 가장 오래된 그림부터 버린다.
+    /// 프레임을 받을 자리 `bytes`(고정 몫 포함)를 마련하고 저장량에 더한다. 모자라면 `keep` 말고 `eviction_candidate`의 차례로 버린다.
     /// 그림 하나와 이 프레임이 상한에 안 들어가면 아무것도 버리지 않고 거절한다(Ghostty `reserveAnimationBytes`는 버리다가 실패한다)
     fn reserve_frame_bytes(&mut self, keep: u32, bytes: usize) -> Result<(), &'static str> {
         let own = self.images.get(&keep).map_or(0, cost);
@@ -1379,13 +1453,7 @@ impl Graphics {
             return Err("ENOSPC");
         }
         while self.stored.saturating_add(bytes) > self.limit {
-            let Some(old) = self
-                .images
-                .iter()
-                .filter(|(k, _)| **k != keep)
-                .min_by_key(|(_, i)| i.seq)
-                .map(|(k, _)| *k)
-            else {
+            let Some(old) = self.eviction_candidate(keep) else {
                 return Err("ENOSPC");
             };
             self.remove_image(old);
@@ -1637,13 +1705,103 @@ impl Graphics {
         }
     }
 
-    /// ED 2를 처리한 뒤(#329, Ghostty `kitty_images.clearScreen`, Terminal.zig 4527~4535줄): 보이는 자리에 걸친 그림을 지우고
+    /// ED 2·ED 22를 처리한 뒤(#329·#799, Ghostty `kitty_images.clearScreen`, Terminal.zig 3716·3780줄): 보이는 자리에 걸친 그림을 지우고
     /// 스크롤백에 다 들어간 것만 남긴다. `active_top`은 지금 활성 화면 맨 위의 절대 줄(엔진이 올렸으면 이미 늘어난 스크롤백 크기)이다.
     /// 대체 화면이면 대체 화면 그림만, 주 화면이면 주 화면 그림만 본다
     pub fn erase_screen(&mut self, active_top: i64, in_alt: bool) {
         // 가상 배치와 상대 배치는 보이는 자리로 지우지 않는다. 지워진 부모의 자식은 뒤따라 간다
         self.placements
             .retain(|p| p.alt != in_alt || !p.is_pin() || (!in_alt && p.line + i64::from(p.rows) <= active_top));
+        self.reap_orphans(false);
+        // 그다음 이 화면에서 자리가 없는 그림의 자료를 모두 거둔다: 대문자 지우기(d=A)와 달리 처음부터 자리가 없던 그림도 간다(#799,
+        // Ghostty `clearScreen`, graphics_storage.zig 1370). 화면마다 저장소가 따로라 다른 화면의 그림은 건드리지 않는다
+        let used: std::collections::HashSet<u32> = self.placements.iter().map(|p| p.image).collect();
+        let unused: Vec<u32> = self
+            .images
+            .iter()
+            .filter(|(id, img)| img.alt == in_alt && !used.contains(id))
+            .map(|(id, _)| *id)
+            .collect();
+        for id in unused {
+            self.drop_image(id);
+        }
+    }
+
+    /// 스크롤 영역 스크롤 한 번을 자리에 반영한다(#800, Ghostty `scrollMarginsBegin`·`end`, graphics_storage.zig 597줄).
+    /// 영역에 온전히 든 자리(위아래 여백과 좌우 여백 안)만 글과 함께 움직이고, 움직여 여백 밖으로 나가는 줄은 그림에서 잘라 내고(맨 위는 원본의
+    /// 위쪽을, 맨 아래는 아래쪽을), 다 나가면 자리를 지운다(그림 자료는 남는다). 영역에 걸치거나 영역 밖이거나 스크롤백에 있는 자리는 화면 줄을 지킨다.
+    /// 화면 전체 영역의 스크롤은 건드리지 않는다: 자리는 스크롤백 맨 위를 0으로 센 줄이라 줄을 따라간다(kitty의 여백 없는 스크롤과 같다).
+    /// 가상 배치와 상대 배치는 줄에 붙지 않으니 움직이지 않는다. `cell`은 지금 칸 크기(px)다
+    pub fn scroll_region(&mut self, ev: &ScrollEvent, cell: (u32, u32)) {
+        if ev.top == 0 && ev.bottom + 1 == ev.rows && ev.left == 0 && ev.right + 1 == ev.cols {
+            return;
+        }
+        let (rows, cols) = (ev.rows as i64, ev.cols as i64);
+        let (top, bottom) = (ev.top as i64, ev.bottom as i64);
+        let (left, right) = (ev.left as i64, ev.right as i64);
+        let (before, after) = (ev.history_before as i64, ev.history_after as i64);
+        let delta = i64::from(ev.delta);
+        let mut gone = false;
+        self.placements.retain_mut(|p| {
+            if p.alt != ev.alt || !p.is_pin() {
+                return true;
+            }
+            // 보이는 화면 위의 줄. 스크롤백에 있는 자리는 영역 스크롤에 움직이지 않는다
+            let y = p.line - before;
+            if y < 0 || y >= rows {
+                return true;
+            }
+            // 영역에 걸치거나 영역 밖이면 같은 화면 줄에 둔다(스크롤백이 생겨도 줄을 지킨다)
+            let mut final_y = y;
+            'inside: {
+                let r = p.geom.resolve(cell.0, cell.1);
+                let (prows, pcols) = (i64::from(r.rows), i64::from(r.cols));
+                // 칸 크기를 몰라 크기를 모르면 온전히 들었다고 볼 수 없다
+                if prows == 0 || pcols == 0 || y < top || y + prows - 1 > bottom {
+                    break 'inside;
+                }
+                let x = p.col as i64;
+                if x < left || (x + pcols - 1).min(cols - 1) > right {
+                    break 'inside;
+                }
+                let new_y = y + delta;
+                let top_clip = (top - new_y).max(0);
+                let bottom_clip = (new_y + prows - 1 - bottom).max(0);
+                if top_clip >= prows || bottom_clip >= prows {
+                    gone = true;
+                    return false;
+                }
+                if top_clip > 0 {
+                    if !clip_top(p, cell, top_clip as u32, prows as u32) {
+                        gone = true;
+                        return false;
+                    }
+                    final_y = top;
+                } else {
+                    if bottom_clip > 0 && !clip_bottom(p, cell, bottom_clip as u32, prows as u32) {
+                        gone = true;
+                        return false;
+                    }
+                    final_y = new_y;
+                }
+                // 자른 만큼 칸 수가 줄었다(`geom`이 원본)
+                let r = p.geom.resolve(cell.0, cell.1);
+                p.cols = r.cols.min(1000);
+                p.rows = r.rows.min(1000);
+            }
+            p.line = after + final_y;
+            true
+        });
+        // 지워진 자리가 부모였으면 자식도 간다(Ghostty는 그림 자료를 남긴다)
+        if gone {
+            self.reap_orphans(false);
+        }
+    }
+
+    /// 스크롤 기록이 상한을 넘어 일부를 잃었다: 어느 자리가 어디로 갔는지 알 수 없으니 그 화면의 줄에 붙은 자리를 모두 지운다.
+    /// 한 번에 십만 번이 넘는 스크롤을 그림이 놓인 채로 흘린 출력에서만 일어난다
+    pub fn lost_scrolls(&mut self, alt: bool) {
+        self.placements.retain(|p| p.alt != alt || !p.is_pin());
         self.reap_orphans(false);
     }
 
@@ -1753,7 +1911,7 @@ mod tests {
         let px = vec![200u8; 25 * 30 * 3];
         let out = g.handle(format!("a=T,f=24,s=25,v=30,i=7;{}", b64(&px)).as_bytes(), CUR);
         assert_eq!(out.reply.unwrap(), b"\x1b_Gi=7;OK\x1b\\");
-        assert_eq!(out.advance, Some((1, 3)));
+        assert_eq!(out.advance, Some((1, 7)), "한 줄 아래, 열 4 + 3칸");
         let p = &g.placements[0];
         assert_eq!((p.line, p.col, p.cols, p.rows), (100, 4, 3, 2));
         assert_eq!(
@@ -1785,7 +1943,7 @@ mod tests {
         assert_eq!(first, Outcome::default(), "조각 중에는 아무것도 안 함");
         let out = g.handle(format!("m=0;{b}").as_bytes(), CUR);
         assert_eq!(out.reply, None, "q=1이면 OK를 답하지 않는다");
-        assert_eq!(out.advance, Some((0, 4)));
+        assert_eq!(out.advance, Some((0, 8)));
         let img = g.image(9).unwrap();
         assert_eq!((img.width, img.height), (2, 1));
         assert_eq!(&img.rgba[4..8], &[0, 0, 255, 128]);
@@ -2279,7 +2437,7 @@ mod tests {
         assert_eq!((p.geom.img_w, p.geom.img_h), (25, 30));
         // 잘라낸 10×12 + 오프셋 (3, 4): 13px -> 2칸, 16px -> 1줄
         assert_eq!((p.cols, p.rows), (2, 1));
-        assert_eq!(out.advance, Some((0, 2)));
+        assert_eq!(out.advance, Some((0, 6)));
     }
 
     #[test]

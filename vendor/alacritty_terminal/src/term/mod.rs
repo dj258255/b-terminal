@@ -414,6 +414,29 @@ impl TermDamageState {
     }
 }
 
+/// b-terminal(#800): 스크롤 영역 스크롤(IND·RI·SU·SD) 한 번의 기록. 세션이 kitty 그림 자리를 Ghostty `scrollMarginsBegin`처럼 옮기려고 쓴다.
+/// 줄은 보이는 화면 위에서 0으로 센 값이고 여백은 두 끝을 포함한다
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ScrollEvent {
+    /// 대체 화면에서 일어났다
+    pub alt: bool,
+    pub top: usize,
+    pub bottom: usize,
+    pub left: usize,
+    pub right: usize,
+    /// 화면의 줄·칸 수
+    pub rows: usize,
+    pub cols: usize,
+    /// 영역 높이로 자른 줄 수. 내용이 올라가면(IND·SU) 음수, 내려가면(RI·SD) 양수
+    pub delta: i32,
+    /// 스크롤 전후의 스크롤백 줄 수(맨 위에서 시작하는 영역의 스크롤은 스크롤백을 만든다)
+    pub history_before: usize,
+    pub history_after: usize,
+}
+
+/// b-terminal(#800): 한 번에 모아 두는 스크롤 기록의 상한. 넘으면 기록을 멈추고 `take_scroll_log`가 잃었다고 알린다
+pub const SCROLL_LOG_MAX: usize = 1 << 17;
+
 pub struct Term<T> {
     /// Terminal focus controlling the cursor shape.
     pub is_focused: bool,
@@ -455,6 +478,11 @@ pub struct Term<T> {
     /// b-terminal(#311): 좌우 여백(DECSLRM). 0부터 세고 두 칸 모두 여백에 든다. 69가 꺼져 있거나 정하지 않았으면 (0, 마지막 칸)
     margin_left: usize,
     margin_right: usize,
+
+    /// b-terminal(#800): 스크롤 기록(`ScrollEvent`). `scroll_log_on`일 때만 쌓는다
+    scroll_log: Vec<ScrollEvent>,
+    scroll_log_on: bool,
+    scroll_log_lost: bool,
 
     /// Modified terminal colors.
     colors: Colors,
@@ -643,6 +671,9 @@ impl<T> Term<T> {
             scroll_region,
             margin_left: 0,
             margin_right: num_cols.saturating_sub(1),
+            scroll_log: Vec::new(),
+            scroll_log_on: false,
+            scroll_log_lost: false,
             event_proxy,
             damage,
             config,
@@ -970,6 +1001,58 @@ impl<T> Term<T> {
     #[inline]
     pub fn scroll_region(&self) -> &Range<Line> {
         &self.scroll_region
+    }
+
+    /// b-terminal(#800): 스크롤 기록을 쌓을지 정한다. 끄면 쌓아 둔 것도 버린다
+    pub fn set_scroll_log(&mut self, on: bool) {
+        self.scroll_log_on = on;
+        if !on {
+            self.scroll_log.clear();
+            self.scroll_log_lost = false;
+        }
+    }
+
+    /// b-terminal(#800): 쌓인 스크롤 기록을 일어난 차례대로 꺼내고 비운다. 두 번째 값이 참이면 상한(`SCROLL_LOG_MAX`)을 넘어 일부를 잃었다
+    pub fn take_scroll_log(&mut self) -> (Vec<ScrollEvent>, bool) {
+        (mem::take(&mut self.scroll_log), mem::take(&mut self.scroll_log_lost))
+    }
+
+    /// b-terminal(#801): 커서를 `col`칸으로 옮긴다(Ghostty `cursorHorizontalAbsolute`). 원점 모드의 여백 기준도 좌우 여백도 따지지 않고
+    /// 줄바꿈 대기만 푼다. kitty 그림을 놓은 뒤 커서를 옮기는 데 쓴다(#801)
+    pub fn set_cursor_column(&mut self, col: usize) {
+        self.damage_cursor();
+        self.grid.cursor.point.column = Column(cmp::min(col, self.last_column().0));
+        self.damage_cursor();
+        self.grid.cursor.input_needs_wrap = false;
+    }
+
+    /// b-terminal(#800): 스크롤 한 번을 기록한다(`lines`는 부른 쪽이 준 줄 수, 영역 높이로 자른다)
+    fn log_scroll(&mut self, up: bool, lines: usize, history_before: usize) {
+        if !self.scroll_log_on {
+            return;
+        }
+        let height = (self.scroll_region.end - self.scroll_region.start).0 as usize;
+        let n = cmp::min(lines, height);
+        if n == 0 {
+            return;
+        }
+        if self.scroll_log.len() >= SCROLL_LOG_MAX {
+            self.scroll_log_lost = true;
+            return;
+        }
+        let delta = i32::try_from(n).unwrap_or(i32::MAX);
+        self.scroll_log.push(ScrollEvent {
+            alt: self.mode.contains(TermMode::ALT_SCREEN),
+            top: self.scroll_region.start.0 as usize,
+            bottom: (self.scroll_region.end.0 - 1) as usize,
+            left: self.margin_left,
+            right: cmp::min(self.margin_right, self.columns().saturating_sub(1)),
+            rows: self.screen_lines(),
+            cols: self.columns(),
+            delta: if up { -delta } else { delta },
+            history_before,
+            history_after: self.grid.history_size(),
+        });
     }
 
     /// b-terminal(#327): 커서 위치 보고에 쓰는 (줄, 칸)(0부터). 원점 모드에서는 위 여백·왼쪽 여백 기준이다
@@ -2650,22 +2733,27 @@ impl<T: EventListener> Handler for Term<T> {
     #[inline]
     fn scroll_up(&mut self, lines: usize) {
         let origin = self.scroll_region.start;
+        let history_before = self.grid.history_size();
         // b-terminal(#311): 좌우 여백이 있으면 여백 사각형만 민다. 커서와 대기 줄바꿈은 그대로다(Ghostty `scrollUp` 3400줄)
         if self.margins_full() {
             self.scroll_up_relative(origin, lines);
         } else {
             self.scroll_rect(origin, lines, false);
         }
+        // b-terminal(#800): IND·SU만 기록한다. IL·DL은 `scroll_*_relative`를 직접 부르므로 기록하지 않는다(Ghostty는 그림을 옮기지 않는다)
+        self.log_scroll(true, lines, history_before);
     }
 
     #[inline]
     fn scroll_down(&mut self, lines: usize) {
         let origin = self.scroll_region.start;
+        let history_before = self.grid.history_size();
         if self.margins_full() {
             self.scroll_down_relative(origin, lines);
         } else {
             self.scroll_rect(origin, lines, true);
         }
+        self.log_scroll(false, lines, history_before);
     }
 
     #[inline]
