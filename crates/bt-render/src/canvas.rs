@@ -252,7 +252,9 @@ impl<'a> Canvas<'a> {
     }
 
     /// `draw_rgba`에서 그림의 일부 `src`(`x, y, w, h`, 그림 픽셀)만 `w × h`로 늘려 덮는다(kitty 그림 잘라내기, #547).
-    /// `src`가 그림 밖으로 나가거나 비었으면 아무것도 그리지 않는다
+    /// `src`가 비었거나 시작점이 그림 밖이면 아무것도 그리지 않는다. 끝이 그림을 넘는 부분은 가장자리 픽셀을 쓴다:
+    /// 자리표시 조각(#553)은 Ghostty와 같은 반올림으로 그림 끝을 1px 넘을 수 있고, Ghostty는 이 값을 텍스처 좌표로 써서
+    /// 샘플러가 가장자리로 잡아 그린다(#747)
     #[allow(clippy::too_many_arguments)]
     pub fn draw_rgba_src(
         &mut self,
@@ -273,8 +275,8 @@ impl<'a> Canvas<'a> {
             || sh == 0
             || iw == 0
             || ih == 0
-            || sx0.checked_add(sw).is_none_or(|e| e > iw)
-            || sy0.checked_add(sh).is_none_or(|e| e > ih)
+            || sx0 >= iw
+            || sy0 >= ih
             || rgba.len() < iw as usize * ih as usize * 4
         {
             return;
@@ -284,9 +286,9 @@ impl<'a> Canvas<'a> {
         let x1 = (x as i64 + w as i64).min(clip.2 as i64).min(self.width as i64) as i32;
         let y1 = (y as i64 + h as i64).min(clip.3 as i64).min(self.clip.1 as i64) as i32;
         for py in y0..y1 {
-            let sy = sy0 + ((py - y) as u64 * sh as u64 / h as u64) as u32;
+            let sy = (sy0 as u64 + (py - y) as u64 * sh as u64 / h as u64).min(ih as u64 - 1) as u32;
             for px in x0..x1 {
-                let sx = sx0 + ((px - x) as u64 * sw as u64 / w as u64) as u32;
+                let sx = (sx0 as u64 + (px - x) as u64 * sw as u64 / w as u64).min(iw as u64 - 1) as u32;
                 let s = (sy as usize * iw as usize + sx as usize) * 4;
                 let a = rgba[s + 3] as u32;
                 if a == 0 {

@@ -224,4 +224,55 @@ mod tests {
         paint_layer(&mut c, &[p], Layer::AboveText, (0, 0), (10, 10), (0, 0, 0, 0));
         assert!(buf.iter().all(|&v| v == 0));
     }
+
+    /// yazi가 96×96 그림을 `U=1`(칸 수 없음)로 놓고 자리표시 6칸×3줄을 찍은 경우(#747). 칸 16×35px이면 격자 96×105px 가운데에
+    /// 위·아래 여백 4.5px로 그림이 놓인다. 끝 줄 조각은 Ghostty와 같은 반올림으로 원본 y 66, 높이 31이 되어 그림 끝(96)을 1px 넘는데,
+    /// Ghostty는 가장자리 픽셀로 잡아 그린다. 세 줄 모두 그려져 96px 높이가 다 보여야 한다
+    #[test]
+    fn unicode_placeholder_rows_draw_even_when_rounding_overshoots_the_image_edge() {
+        use bt_core::kitty_geom::Piece;
+        let (cw, ch) = (16u32, 35u32);
+        let rgba: Vec<u8> = [230u8, 30, 30, 255].repeat(96 * 96);
+        let (w, h) = (6 * cw, 3 * ch);
+        let mut buf = vec![0u32; (w * h) as usize];
+        let mut c = Canvas::new(&mut buf, w, h);
+        let rows: Vec<ImagePaint<'_>> = (0..3)
+            .map(|row| ImagePaint {
+                rgba: &rgba,
+                geom: Geom {
+                    piece: Some(Piece {
+                        grid_cols: 0,
+                        grid_rows: 0,
+                        col: 0,
+                        row,
+                        width: 6,
+                    }),
+                    ..geom(96, 96)
+                },
+                row: row as i32,
+                col: 0,
+                z: 0,
+            })
+            .collect();
+        let last = rows[2].geom.resolve(cw, ch);
+        assert_eq!(
+            last.src,
+            [0, 66, 96, 31],
+            "Ghostty와 같은 반올림: 끝 줄 조각이 그림을 1px 넘는다"
+        );
+        paint_layer(
+            &mut c,
+            &rows,
+            Layer::AboveText,
+            (0, 0),
+            (cw, ch),
+            (0, 0, w as i32, h as i32),
+        );
+        let red: Vec<u32> = (0..h).filter(|&y| c.pixel(48, y) == Rgb::new(230, 30, 30)).collect();
+        assert_eq!(
+            (red.first().copied(), red.last().copied(), red.len()),
+            (Some(5), Some(100), 96),
+            "가운데 세로줄: 여백 4.5px 아래로 96px 모두 그려진다(끝 줄 칸은 y 70~104)"
+        );
+    }
 }
