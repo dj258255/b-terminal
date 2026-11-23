@@ -242,7 +242,66 @@ const MAX_PARAMS: usize = 32;
 /// APC 하나의 상한. kitty는 조각을 4096바이트로 보내지만 한 번에 보내는 도구도 있다
 const MAX_APC: usize = 8 * 1024 * 1024;
 
+/// 8비트 C1이 APC·SOS·PM 문자열 안에서 하는 일. Ghostty 1.4.0 `parse_table.zig` 51~66줄 "anywhere" 전이와 같다(#776).
+/// 엔진(vendor/vte `advance_sos_pm_apc_string`)이 같은 표를 쓴다
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum StrC1 {
+    /// 0x80~0x8F·0x91~0x97·0x99·0x9A(실행)와 0x9C(ST): Ground로 간다
+    Ground,
+    /// 0x9B
+    Csi,
+    /// 0x90
+    Dcs,
+    /// 0x9D
+    Osc,
+}
+
+/// 문자열 안의 C1 한 바이트가 문자열을 끝내면 `Some`, 머물면(0x98·0x9E·0x9F, 0xA0 이상) `None`
+fn str_c1(b: u8) -> Option<StrC1> {
+    match b {
+        0x80..=0x8f | 0x91..=0x97 | 0x99 | 0x9a | 0x9c => Some(StrC1::Ground),
+        0x9b => Some(StrC1::Csi),
+        0x90 => Some(StrC1::Dcs),
+        0x9d => Some(StrC1::Osc),
+        _ => None,
+    }
+}
+
 impl Scanner {
+    /// `ESC [`나 8비트 CSI(0x9B) 뒤의 CSI 상태를 연다
+    fn begin_csi(&mut self) -> St {
+        self.csi.clear();
+        self.csi_taint = false;
+        self.csi_inter = None;
+        self.csi_bad = false;
+        self.csi_gt = false;
+        St::Csi
+    }
+
+    /// `ESC P`나 8비트 DCS(0x90) 뒤의 DCS 머리 상태를 연다. `silent`는 tmux 패스스루 안쪽 DCS(신호를 내지 않음)
+    fn begin_dcs(&mut self, silent: bool) -> St {
+        self.dcs.clear();
+        self.dcs_kind = None;
+        self.dcs_over = false;
+        self.dcs_double = false;
+        self.dcs_silent = silent;
+        self.dcs_inter = false;
+        St::DcsHdr
+    }
+
+    /// 문자열(APC·SOS·PM)을 C1로 끝낸 뒤의 상태
+    fn leave_string(&mut self, end: StrC1) -> St {
+        match end {
+            StrC1::Ground => St::Ground,
+            StrC1::Csi => self.begin_csi(),
+            StrC1::Dcs => self.begin_dcs(false),
+            StrC1::Osc => {
+                self.buf.clear();
+                St::Osc
+            }
+        }
+    }
+
     /// 바이트를 먹이고 끝난 OSC에서 뽑은 신호를 돌려준다
     pub fn feed(&mut self, bytes: &[u8]) -> Vec<Signal> {
         self.feed_at(bytes).into_iter().map(|(_, s)| s).collect()
@@ -304,33 +363,15 @@ impl Scanner {
                 // ESC는 문자열을 끝내고 새 이스케이프를 연다(`ESC \`의 `\`는 Escape 상태에서 Ground로 간다). CAN·SUB는 Ground
                 (St::SosPm, 0x1b) => St::Esc,
                 (St::SosPm, 0x18 | 0x1a) => St::Ground,
+                // 8비트 C1은 문자열을 끝내거나 다른 문자열을 연다(APC와 같은 상태, #776)
+                (St::SosPm, 0x80..=0x9f) => match str_c1(b) {
+                    Some(end) => self.leave_string(end),
+                    None => St::SosPm,
+                },
                 (St::SosPm, _) => St::SosPm,
-                (St::Esc, b'[') => {
-                    self.csi.clear();
-                    self.csi_taint = false;
-                    self.csi_inter = None;
-                    self.csi_bad = false;
-                    self.csi_gt = false;
-                    St::Csi
-                }
-                (St::Esc, b'P') => {
-                    self.dcs.clear();
-                    self.dcs_kind = None;
-                    self.dcs_over = false;
-                    self.dcs_double = false;
-                    self.dcs_silent = false;
-                    self.dcs_inter = false;
-                    St::DcsHdr
-                }
-                (St::EscQuiet, b'P') => {
-                    self.dcs.clear();
-                    self.dcs_kind = None;
-                    self.dcs_over = false;
-                    self.dcs_double = false;
-                    self.dcs_silent = true;
-                    self.dcs_inter = false;
-                    St::DcsHdr
-                }
+                (St::Esc, b'[') => self.begin_csi(),
+                (St::Esc, b'P') => self.begin_dcs(false),
+                (St::EscQuiet, b'P') => self.begin_dcs(true),
                 (St::DcsHdr, 0x1b) => St::DcsEsc,
                 (St::DcsHdr | St::DcsBody | St::DcsIgnore, 0x18 | 0x1a) => {
                     self.dcs = Vec::new();
@@ -429,6 +470,12 @@ impl Scanner {
                 (St::EscQuiet, _) => St::Ground,
                 (St::StrQuiet, 0x1b) => St::EscQuiet,
                 (St::StrQuiet, 0x18 | 0x1a) => St::Ground,
+                // 안쪽 문자열도 엔진처럼 C1로 끝난다(#776). 안쪽 CSI·DCS는 읽을 신호가 없고 조용히 따라갈 상태도 없어 Ground로 둔다
+                (St::StrQuiet, 0x80..=0x9f) => match str_c1(b) {
+                    None => St::StrQuiet,
+                    Some(StrC1::Osc) => St::OscQuiet,
+                    Some(_) => St::Ground,
+                },
                 (St::StrQuiet, _) => St::StrQuiet,
                 (St::OscQuiet, 0x1b) => St::EscQuiet,
                 (St::OscQuiet, 0x07 | 0x18 | 0x1a) => St::Ground,
@@ -462,6 +509,15 @@ impl Scanner {
                     self.finish_apc(&mut out, i + 1);
                     St::Ground
                 }
+                // 8비트 C1: 0x80~0x9F 가운데 문자열을 끝내는 것은 끝난 APC를 내보낸다. 앱(Ghostty `stream_handler.zig` `apcEnd`)은
+                // 끝난 까닭(`terminated`)을 보지 않고 실행한다(CAN·SUB와 같다). 머무는 C1과 0xA0 이상은 자료가 아니다(#776)
+                (St::Apc, 0x80..=0xff) => match str_c1(b) {
+                    Some(end) => {
+                        self.finish_apc(&mut out, i + 1);
+                        self.leave_string(end)
+                    }
+                    None => St::Apc,
+                },
                 (St::Apc, b) => {
                     if self.apc.len() >= MAX_APC {
                         self.apc = Vec::new();

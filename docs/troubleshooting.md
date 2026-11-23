@@ -442,3 +442,19 @@
 - 까닭: 엔진(vendor vte)이 OSC 1337을 몰라 `unhandled`로 버렸다
 - 고침: 엔진이 `1337;Copy=:base64`를 OSC 52 쓰기(`c`)와 같은 호출로 넘긴다. 그 뒤는 OSC 52와 같은 길이라 `clipboard-write`(`deny`면 엔진이 사건을 내지 않고, `ask`면 확인 막대)와 보고 있는 칸 규칙·크기 상한·base64 검사를 그대로 거친다. Ghostty처럼 키는 대소문자를 가리지 않고, `=` 바로 뒤가 `:`가 아니거나(종류 글자 포함) 값이 비었거나 `?`면 버린다. 클립보드를 읽는 길은 만들지 않았다
 - 0.97.0에서 풀기: `clipboard-write = deny`로 두었다면 그대로 막혀 있다. 확인은 `clipboard-write = ask`로 두고 위 `printf`를 찍어 막대가 뜨는지 본다
+
+## 53. UTF-8이 아닌 8비트 C1 바이트(0x80~0x9F)가 화면에서 아무 표시 없이 사라진다
+
+- 언제: 2026-11-23, #775. Ghostty 1.4.0 `stream.zig` 시험 `stream: ground state UTF-8-decoded C1 controls are ignored`(3764줄)를 같은 바이트로 옮겨 견주다 찾았다. 0.95.0까지의 동작이다
+- 증상: `printf 'A\x9bB'`가 `AB`로 보이고, `A\x84B\x85C\x8dD\x88E`는 `ABCDE`(커서 5열)다. Latin-1·CP949 같은 옛 인코딩 글이나 깨진 바이트가 섞인 출력에서 글자가 말없이 빠진다
+- 까닭: vendor/vte가 바닥 상태에서 UTF-8로 읽을 수 없는 한 바이트가 0x9F 이하이면 C1 제어로 `execute`에 보냈고, 엔진이 모르는 제어라 버렸다. Ghostty는 바닥 상태의 8비트 C1을 제어로 읽지 않고 UTF-8 디코더가 거절한 바이트마다 U+FFFD 하나를 찍는다
+- 고침: UTF-8로 읽을 수 없는 바이트는 C1이어도 U+FFFD 하나로 찍는다. `C2 80`~`C2 9F`처럼 UTF-8로 풀린 C1은 전처럼 버리고(Ghostty와 xterm이 그렇다), NBSP(`C2 A0`)와 `Ü`(`C3 9C`)는 찍는다. 시퀀스 중간(`E0 9B`, `E0 80 9B`)은 Ghostty 디코더처럼 거절된 앞 바이트와 그 C1이 각각 U+FFFD이고, `E2 82 9B`처럼 이어지는 바이트로 맞으면 한 글자(U+209B)다. 문자열(OSC·DCS·CSI) 안의 C1은 이 고침의 범위가 아니다
+- 0.95.0에서 풀기: 없다. 프로그램이 0x80~0x9F를 UTF-8이 아닌 채로 내보내지 않으면 생기지 않는다
+
+## 54. APC가 원시 0x9C(8비트 ST)에서 끝나지 않아 뒤의 글이 통째로 사라진다
+
+- 언제: 2026-11-23, #776. Ghostty 1.4.0 `stream.zig` 시험 `stream: apc bulk slice C1 ST`(5337줄)와 `stream_terminal.zig` 6781줄 시험을 옮겨 견주다 찾았다. 0.95.0까지의 동작이다
+- 증상: `printf '\033_Gpayload\234AB'`처럼 APC를 8비트 ST(0x9C)로 끝내면 `AB`가 찍히지 않는다. 엔진이 CAN·SUB·ESC가 올 때까지 문자열 안에 있고, 신호 스캐너도 같아서 kitty 그래픽 명령이 실행되지 않는다. 0x9B·0x9D·0x90이 와도 문자열이 이어진다
+- 까닭: 엔진(`SosPmApcString`)과 스캐너(`St::Apc`·`St::SosPm`)가 CAN·SUB·ESC만 문자열을 끝내는 바이트로 봤다. Ghostty `parse_table.zig`의 "anywhere" 전이는 C1도 상태를 바꾼다
+- 고침: Ghostty 표를 그대로 옮겼다. 0x80~0x8F·0x91~0x97·0x99·0x9A·0x9C는 APC를 끝내고 Ground로 간다(앞의 것들은 `ESC (c-0x40)`처럼 실행: 0x85는 NEL, 0x84는 IND). 0x9B는 CSI, 0x90은 DCS, 0x9D는 OSC를 연다. 0x98·0x9E·0x9F와 0xA0~0xFF는 문자열에 머물고 자료도 아니다. BEL은 전처럼 자료다. 끝난 kitty 그래픽 명령은 Ghostty 앱(`stream_handler.zig` `apcEnd`)처럼 끝난 까닭과 상관없이 실행한다(CAN·SUB로 끝난 것과 같다). SOS(`ESC X`)·PM(`ESC ^`)은 같은 상태라 함께 맞는다
+- 0.95.0에서 풀기: APC는 `ESC \`로 끝낸다(kitty 그래픽 도구는 이미 그렇게 쓴다). APC 자료에 UTF-8 글(`Ü`의 0x9C 같은 바이트)을 넣으면 이제 거기서 끝나니, 자료는 base64 같은 ASCII로 보낸다

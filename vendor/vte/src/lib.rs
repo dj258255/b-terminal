@@ -179,7 +179,7 @@ impl<const OSC_RAW_BUF_SIZE: usize> Parser<OSC_RAW_BUF_SIZE> {
             State::Escape => self.advance_esc(performer, byte),
             State::EscapeIntermediate => self.advance_esc_intermediate(performer, byte),
             State::OscString => self.advance_osc_string(performer, byte),
-            State::SosPmApcString => self.anywhere(performer, byte),
+            State::SosPmApcString => self.advance_sos_pm_apc_string(performer, byte),
             State::Ground => unreachable!(),
         }
     }
@@ -442,6 +442,39 @@ impl<const OSC_RAW_BUF_SIZE: usize> Parser<OSC_RAW_BUF_SIZE> {
         }
     }
 
+    /// b-terminal(#776): APC·SOS·PM 문자열은 CAN·SUB·ESC 말고 8비트 C1로도 끝난다.
+    /// Ghostty 1.4.0 `parse_table.zig` 51~66줄 "anywhere" 전이를 그대로 따른다(`stream.zig`의 시험
+    /// `stream: apc bulk slice C1 ST`, `stream_terminal.zig` 6781줄 시험):
+    /// - 0x80~0x8F·0x91~0x97·0x99·0x9A: Ground로 가며 C1을 실행한다. Ghostty `execute`는 C1을 `ESC (c-0x40)`로 보낸다
+    /// - 0x9C(ST): Ground
+    /// - 0x9B(CSI)·0x90(DCS)·0x9D(OSC): 그 문자열을 연다
+    /// - 0x98·0x9E·0x9F(SOS·PM·APC)와 0xA0~0xFF: 표에 없거나 같은 상태라 머문다
+    /// 이 상태는 SOS·PM과 같아서 셋이 함께 맞는다. 나머지(CAN·SUB·ESC)는 `anywhere`다
+    #[inline(always)]
+    fn advance_sos_pm_apc_string<P: Perform>(&mut self, performer: &mut P, byte: u8) {
+        match byte {
+            0x80..=0x8F | 0x91..=0x97 | 0x99 | 0x9A => {
+                performer.esc_dispatch(&[], false, byte - 0x40);
+                self.state = State::Ground
+            },
+            0x9C => self.state = State::Ground,
+            0x9B => {
+                self.reset_params();
+                self.state = State::CsiEntry
+            },
+            0x90 => {
+                self.reset_params();
+                self.state = State::DcsEntry
+            },
+            0x9D => {
+                self.osc_raw.clear();
+                self.osc_num_params = 0;
+                self.state = State::OscString
+            },
+            _ => self.anywhere(performer, byte),
+        }
+    }
+
     #[inline(always)]
     fn anywhere<P: Perform>(&mut self, performer: &mut P, byte: u8) {
         match byte {
@@ -637,12 +670,11 @@ impl<const OSC_RAW_BUF_SIZE: usize> Parser<OSC_RAW_BUF_SIZE> {
 
                 match err.error_len() {
                     Some(len) => {
-                        // Execute C1 escapes or emit replacement character.
-                        if len == 1 && bytes[valid_bytes] <= 0x9F {
-                            performer.execute(bytes[valid_bytes]);
-                        } else {
-                            performer.print('�');
-                        }
+                        // b-terminal(#775): UTF-8로 읽을 수 없는 바이트는 C1(0x80~0x9F)이어도 U+FFFD
+                        // 하나다. 전에는 한 바이트짜리 C1을 `execute`로 보내 말없이 버렸다.
+                        // Ghostty 1.4.0 `stream.zig`는 바닥 상태에서 `UTF8Decoder`가 거절한 바이트를
+                        // U+FFFD로 찍는다(시험 `stream: ground state UTF-8-decoded C1 controls are ignored`).
+                        performer.print('�');
 
                         // Restart processing after the invalid bytes.
                         //
@@ -1538,18 +1570,39 @@ mod tests {
 
         parser.advance(&mut dispatcher, INPUT);
 
+        // b-terminal(#775): 바닥 상태의 원시 C1은 실행하지 않고 U+FFFD 하나로 찍는다(Ghostty 1.4.0 `UTF8Decoder`)
         assert_eq!(dispatcher.dispatched.len(), 11);
         assert_eq!(dispatcher.dispatched[0], Sequence::Execute(0));
         assert_eq!(dispatcher.dispatched[1], Sequence::Execute(31));
-        assert_eq!(dispatcher.dispatched[2], Sequence::Execute(128));
-        assert_eq!(dispatcher.dispatched[3], Sequence::Execute(144));
-        assert_eq!(dispatcher.dispatched[4], Sequence::Execute(152));
-        assert_eq!(dispatcher.dispatched[5], Sequence::Execute(155));
-        assert_eq!(dispatcher.dispatched[6], Sequence::Execute(156));
-        assert_eq!(dispatcher.dispatched[7], Sequence::Execute(157));
-        assert_eq!(dispatcher.dispatched[8], Sequence::Execute(158));
-        assert_eq!(dispatcher.dispatched[9], Sequence::Execute(159));
+        for i in 2..10 {
+            assert_eq!(dispatcher.dispatched[i], Sequence::Print('\u{FFFD}'), "{i}");
+        }
         assert_eq!(dispatcher.dispatched[10], Sequence::Print('a'));
+    }
+
+    /// b-terminal(#776): APC·SOS·PM은 0x9C 같은 C1로 끝난다(Ghostty 1.4.0 `parse_table.zig` "anywhere" 전이)
+    #[test]
+    fn sos_pm_apc_string_ends_on_c1() {
+        for start in [&b"\x1b_"[..], b"\x1bX", b"\x1b^"] {
+            // ST
+            let mut d = Dispatcher::default();
+            let mut p = Parser::new();
+            p.advance(&mut d, &[start, b"Gpayload\x9cab"].concat());
+            assert_eq!(d.dispatched, vec![Sequence::Print('a'), Sequence::Print('b')]);
+            // 실행형 C1은 `ESC (c-0x40)`로 보낸다(0x85 → `ESC E`)
+            let mut d = Dispatcher::default();
+            let mut p = Parser::new();
+            p.advance(&mut d, &[start, b"x\x85a"].concat());
+            assert_eq!(d.dispatched.len(), 2, "{:?}", d.dispatched);
+            assert_eq!(d.dispatched[1], Sequence::Print('a'));
+            // 머무는 C1: 0x98·0x9E·0x9F·0xA0 이상은 문자열을 끝내지 않는다
+            for c in [0x98u8, 0x9e, 0x9f, 0xa0, 0xff] {
+                let mut d = Dispatcher::default();
+                let mut p = Parser::new();
+                p.advance(&mut d, &[start, b"x", &[c], b"a"].concat());
+                assert_eq!(d.dispatched, vec![], "{c:#04x}");
+            }
+        }
     }
 
     #[test]
