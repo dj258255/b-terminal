@@ -199,7 +199,10 @@ pub struct Cursor {
 /// 조각(m=1)으로 오는 중인 명령
 struct Pending {
     control: HashMap<u8, String>,
+    /// 조각마다 푼 자료를 이은 것(base64를 푼 뒤의 바이트)
     payload: Vec<u8>,
+    /// 지금까지 받은 base64 글의 길이(`MAX_PAYLOAD`와 견준다)
+    wire: usize,
     /// 조각으로 오는 프레임(`a=f`)이 시작할 때의 그림 번호표(`Image.generation`). 끝났을 때 달라졌으면 그 그림은 바뀐 것이다
     frame_gen: Option<u64>,
 }
@@ -254,7 +257,8 @@ fn cost(img: &Image) -> usize {
     img.rgba.len() + IMAGE_OVERHEAD + img.anim.as_ref().map_or(0, |a| a.frame_bytes())
 }
 
-fn parse_control(s: &[u8]) -> HashMap<u8, String> {
+/// 기능 질의(`a=q`에 `e=`)용으로 느슨하게 읽는다: 틀린 값도 글로 둔다. 질의는 검사한 키만 골라 다시 쓰므로 명령을 버리지 않는다
+fn parse_control_lenient(s: &[u8]) -> HashMap<u8, String> {
     let mut m = HashMap::new();
     for kv in s.split(|&b| b == b',') {
         if let [k, b'=', v @ ..] = kv {
@@ -264,13 +268,174 @@ fn parse_control(s: &[u8]) -> HashMap<u8, String> {
     m
 }
 
-fn num(c: &HashMap<u8, String>, k: u8) -> u32 {
-    c.get(&k).and_then(|v| v.parse().ok()).unwrap_or(0)
+/// 값 하나를 숫자로 읽는다. 한 글자인 숫자 아닌 값은 그 글자의 ASCII 코드다(Ghostty `Parser.finishValue`, `i=a`는 97)
+fn value_num(v: &str) -> Option<u32> {
+    match v.as_bytes() {
+        [b] if !b.is_ascii_digit() => Some(u32::from(*b)),
+        _ => v.parse().ok(),
+    }
 }
 
-/// 부호 있는 값(`z`). 읽지 못하면 0
+fn num(c: &HashMap<u8, String>, k: u8) -> u32 {
+    c.get(&k).and_then(|v| value_num(v)).unwrap_or(0)
+}
+
+/// 부호 있는 값(`z`, `H`, `V`). 없으면 0
 fn signed(c: &HashMap<u8, String>, k: u8) -> i32 {
-    c.get(&k).and_then(|v| v.parse().ok()).unwrap_or(0)
+    c.get(&k)
+        .and_then(|v| match v.as_bytes() {
+            [b] if !b.is_ascii_digit() => Some(i32::from(*b)),
+            _ => v.parse().ok(),
+        })
+        .unwrap_or(0)
+}
+
+/// 제어 글의 값 하나가 끝났을 때(Ghostty `Parser.finishValue`): 한 글자인 숫자 아닌 값은 ASCII 코드, 나머지는 숫자(`z`·`H`·`V`는 i32,
+/// 나머지는 u32)로 읽는다. 읽지 못하면(여러 글자 글, 부호 없는 키의 음수, 범위 넘침, 빈 값) `None`이다. 글자 키가 아니면 읽기만 하고 담지 않는다
+fn finish_value(c: &mut HashMap<u8, String>, key: u8, v: &[u8]) -> Option<()> {
+    let stored = match v {
+        [b] if !b.is_ascii_digit() => {
+            // 128 이상인 한 바이트는 글자로 담을 수 없어 코드를 숫자 글로 담는다
+            if b.is_ascii() {
+                char::from(*b).to_string()
+            } else {
+                b.to_string()
+            }
+        }
+        _ => {
+            let t = std::str::from_utf8(v).ok()?;
+            if matches!(key, b'z' | b'H' | b'V') {
+                t.parse::<i32>().ok()?.to_string()
+            } else {
+                t.parse::<u32>().ok()?.to_string()
+            }
+        }
+    };
+    if key.is_ascii_alphabetic() {
+        c.insert(key, stored);
+    }
+    Some(())
+}
+
+/// APC 본문(`ESC _ G` 뒤)을 Ghostty `Parser`의 상태 기계대로 읽어 제어(키-값)와 자료(base64 글)로 나눈다.
+/// 읽을 수 없으면 `None`이고, 그 명령은 버린다(답도 하지 않고 받던 조각 전송도 건드리지 않는다). 버리는 경우:
+/// 숫자가 아니거나 범위를 넘는 값, 키만 남고 끝난 글, 모르는 동작(`a`)·전송 방식(`t`)·압축(`o`)·지우기 종류(`d`).
+/// 값이 12글자를 넘거나 키가 한 글자가 아니면 그 값은 없는 것이고, 그 뒤 키도 `;`까지 모두 무시한다(`control_value_ignore`)
+fn scan_command(raw: &[u8]) -> Option<(HashMap<u8, String>, &[u8])> {
+    enum St {
+        Key,
+        KeyIgnore,
+        Value,
+        ValueIgnore,
+    }
+    // 키·값 글을 모으는 칸은 11바이트다(부호를 포함한 u32·i32의 가장 긴 글)
+    const TEMP: usize = 11;
+    let mut c = HashMap::new();
+    let (mut st, mut temp, mut cur) = (St::Key, Vec::<u8>::with_capacity(TEMP), 0u8);
+    let mut data_at = None;
+    for (i, &b) in raw.iter().enumerate() {
+        match st {
+            St::Key => match b {
+                b'=' => {
+                    if temp.len() == 1 {
+                        cur = temp[0];
+                        st = St::Value;
+                    } else {
+                        st = St::ValueIgnore;
+                    }
+                    temp.clear();
+                }
+                b';' => {
+                    data_at = Some(i + 1);
+                    break;
+                }
+                _ => {
+                    if temp.len() == TEMP {
+                        temp.clear();
+                        st = St::KeyIgnore;
+                    } else {
+                        temp.push(b);
+                    }
+                }
+            },
+            St::KeyIgnore => {
+                if b == b'=' {
+                    st = St::ValueIgnore;
+                }
+            }
+            St::Value => match b {
+                b',' | b';' => {
+                    finish_value(&mut c, cur, &temp)?;
+                    temp.clear();
+                    if b == b';' {
+                        data_at = Some(i + 1);
+                        break;
+                    }
+                    st = St::Key;
+                }
+                _ => {
+                    if temp.len() == TEMP {
+                        temp.clear();
+                        st = St::ValueIgnore;
+                    } else {
+                        temp.push(b);
+                    }
+                }
+            },
+            St::ValueIgnore => match b {
+                b',' => st = St::KeyIgnore,
+                b';' => {
+                    data_at = Some(i + 1);
+                    break;
+                }
+                _ => {}
+            },
+        }
+    }
+    if data_at.is_none() {
+        match st {
+            // 키만 남고 끝난 글(`a=1,b`)과 아무것도 없는 글은 읽을 수 없다
+            St::Key | St::KeyIgnore => return None,
+            St::Value => finish_value(&mut c, cur, &temp)?,
+            St::ValueIgnore => {}
+        }
+    }
+    validate_command(&c)?;
+    Some((c, data_at.map_or(&raw[raw.len()..], |at| &raw[at..])))
+}
+
+/// 동작별로 읽는 값이 틀리면 버린다(Ghostty `Parser.complete`와 각 `parse`). `t`·`o`는 전송 동작(q·t·T·f)에서만, `d`는 지우기에서만 읽는다
+fn validate_command(c: &HashMap<u8, String>) -> Option<()> {
+    let letter = |k: u8| -> Option<Option<u8>> {
+        match c.get(&k) {
+            None => Some(None),
+            Some(v) => u8::try_from(value_num(v)?).ok().map(Some),
+        }
+    };
+    match letter(b'a')?.unwrap_or(b't') {
+        b'q' | b't' | b'T' | b'f' => {
+            if let Some(t) = letter(b't')? {
+                if !matches!(t, b'd' | b'f' | b't' | b's') {
+                    return None;
+                }
+            }
+            if let Some(o) = letter(b'o')? {
+                if o != b'z' {
+                    return None;
+                }
+            }
+        }
+        b'd' => {
+            if let Some(d) = letter(b'd')? {
+                if !b"aAiInNcCfFpPqQrRxXyYzZ".contains(&d) {
+                    return None;
+                }
+            }
+        }
+        b'p' | b'a' | b'c' => {}
+        _ => return None,
+    }
+    Some(())
 }
 
 /// base64를 푼다(표준 알파벳, 덧붙임 = 허용, 공백 무시). 잘못된 글자가 있으면 없다
@@ -305,18 +470,42 @@ pub fn base64_decode(s: &[u8]) -> Option<Vec<u8>> {
     Some(out)
 }
 
-/// PNG를 RGBA로 푼다(크기 상한 안에서)
-fn decode_png(data: &[u8]) -> Result<(u32, u32, Vec<u8>), &'static str> {
+/// PNG 머리(IHDR)의 폭·높이. 서명과 첫 덩어리가 IHDR이 아니면 없다. 자료는 풀지 않고 앞 24바이트만 본다
+fn png_header_size(data: &[u8]) -> Option<(u32, u32)> {
+    const SIG: &[u8; 8] = b"\x89PNG\r\n\x1a\n";
+    if data.len() < 24 || &data[..8] != SIG || &data[12..16] != b"IHDR" {
+        return None;
+    }
+    let be = |at: usize| u32::from_be_bytes([data[at], data[at + 1], data[at + 2], data[at + 3]]);
+    Some((be(16), be(20)))
+}
+
+/// PNG를 RGBA로 푼다(크기 상한 안에서). 풀 크기(폭*높이*4, 픽셀 형식과 상관없이 RGBA 8비트)를 머리로 먼저 세고
+/// 상한(한 변 10000px, 64MiB)을 넘으면 풀기 전에 거절한다(Ghostty `decodePng`도 할당 전에 거절). 오류는 (kitty 코드, 까닭)이다
+fn decode_png(data: &[u8]) -> Result<(u32, u32, Vec<u8>), (&'static str, &'static str)> {
+    const BAD: &str = "EBADPNG";
+    let check = |w: u32, h: u32| -> Result<(), (&'static str, &'static str)> {
+        if w == 0 || h == 0 || w > MAX_SIDE || h > MAX_SIDE {
+            return Err((BAD, "그림 크기가 상한을 넘습니다"));
+        }
+        if (w as usize).saturating_mul(h as usize).saturating_mul(4) > MAX_IMAGE_BYTES {
+            return Err(("EFBIG", "그림이 상한을 넘습니다"));
+        }
+        Ok(())
+    };
+    if let Some((w, h)) = png_header_size(data) {
+        check(w, h)?;
+    }
     let limits = png::Limits { bytes: MAX_IMAGE_BYTES };
     let mut dec = png::Decoder::new_with_limits(data, limits);
     dec.set_transformations(png::Transformations::normalize_to_color8());
-    let mut reader = dec.read_info().map_err(|_| "PNG를 읽지 못했습니다")?;
+    let mut reader = dec.read_info().map_err(|_| (BAD, "PNG를 읽지 못했습니다"))?;
     let (w, h) = (reader.info().width, reader.info().height);
-    if w == 0 || h == 0 || w > MAX_SIDE || h > MAX_SIDE {
-        return Err("그림 크기가 상한을 넘습니다");
-    }
+    check(w, h)?;
     let mut buf = vec![0u8; reader.output_buffer_size()];
-    let info = reader.next_frame(&mut buf).map_err(|_| "PNG를 풀지 못했습니다")?;
+    let info = reader
+        .next_frame(&mut buf)
+        .map_err(|_| (BAD, "PNG를 풀지 못했습니다"))?;
     buf.truncate(info.buffer_size());
     let px = (w * h) as usize;
     let rgba = match info.color_type {
@@ -324,10 +513,10 @@ fn decode_png(data: &[u8]) -> Result<(u32, u32, Vec<u8>), &'static str> {
         png::ColorType::Rgb => buf.chunks_exact(3).flat_map(|p| [p[0], p[1], p[2], 255]).collect(),
         png::ColorType::Grayscale => buf.iter().flat_map(|&g| [g, g, g, 255]).collect(),
         png::ColorType::GrayscaleAlpha => buf.chunks_exact(2).flat_map(|p| [p[0], p[0], p[0], p[1]]).collect(),
-        png::ColorType::Indexed => return Err("팔레트 PNG를 풀지 못했습니다"),
+        png::ColorType::Indexed => return Err((BAD, "팔레트 PNG를 풀지 못했습니다")),
     };
     if rgba.len() != px * 4 {
-        return Err("PNG 크기가 맞지 않습니다");
+        return Err((BAD, "PNG 크기가 맞지 않습니다"));
     }
     Ok((w, h, rgba))
 }
@@ -380,24 +569,42 @@ impl Graphics {
             self.pending = None;
             return Outcome::default();
         }
-        let (ctl, payload) = match raw.iter().position(|&b| b == b';') {
-            Some(i) => (&raw[..i], &raw[i + 1..]),
-            None => (raw, &[][..]),
-        };
-        let control = parse_control(ctl);
-        let more = num(&control, b'm') == 1;
-        let act = Self::action(&control);
-        // 기능 질의는 자료도 조각도 보지 않고 바로 답한다
-        if act == "q" && control.contains_key(&b'e') {
-            return self.feature_query(&control);
+        // 기능 질의(a=q에 e=, Ghostty에 없는 kitty 규약)는 자료도 조각도 보지 않고, 틀린 값도 버리지 않고 바로 답한다
+        let ctl = raw.split(|&b| b == b';').next().unwrap_or_default();
+        if ctl.windows(2).any(|w| w == b"e=") {
+            let lenient = parse_control_lenient(ctl);
+            if Self::action(&lenient) == "q" && lenient.contains_key(&b'e') {
+                return self.feature_query(&lenient);
+            }
         }
+        // 읽을 수 없는 명령은 버린다: 답도 하지 않고 받던 조각 전송도 건드리지 않는다(Ghostty `Handler.end`가 null을 돌려준다)
+        let Some((control, wire)) = scan_command(raw) else {
+            return Outcome::default();
+        };
+        let act = Self::action(&control);
+        // base64는 명령마다(조각마다) 따로 푼다(Ghostty `Parser.decodeData`). 깨졌으면 그 명령을 버린다
+        let Some(payload) = base64_decode(wire) else {
+            return Outcome::default();
+        };
+        // 그림 번호(i)와 이미지 번호(I)는 동작과 상관없이 함께 쓸 수 없다. 받던 전송을 건드리기 전에, 조각을 열기 전에 거른다
+        // (Ghostty graphics_exec.zig `execute`의 첫 검사)
+        if num(&control, b'i') > 0 && num(&control, b'I') > 0 {
+            return self.error(
+                &control,
+                "EINVAL",
+                "그림 번호(i)와 이미지 번호(I)는 함께 쓸 수 없습니다",
+            );
+        }
+        let direct = Self::medium(&control) == "d";
+        // 조각(m)은 직접 전송하는 t·T·f에서만 읽는다. 파일·공유 메모리 전송이나 다른 동작에 붙은 m은 무시한다(Ghostty `Transmission.parse`)
+        let more = matches!(act, "t" | "T" | "f") && direct && num(&control, b'm') > 0;
         // 조각 전송 중에 온 명령 나누기(Ghostty graphics_exec.zig, #15184)
         if self.pending.is_some() {
             match act {
                 // 질의·놓기와 애니메이션 재생 제어·합성(a, c)은 받던 전송을 건드리지 않고 따로 실행한다. m 값은 보지 않고 한 번에 실행한다
-                "q" | "p" | "a" | "c" => return self.execute(&control, payload.to_vec(), cur),
+                "q" | "p" | "a" | "c" => return self.execute(&control, payload, cur),
                 // 직접 전송의 다음 조각: 아래에서 잇는다. 받던 것이 그림이든 프레임이든, 이 명령이 a=f가 아니어도 이어 간다
-                "t" | "T" | "f" if Self::medium(&control) == "d" => {}
+                "t" | "T" | "f" if direct => {}
                 // 지우기와 직접 전송이 아닌 전송: 받던 전송을 버리고 새 명령으로 처리한다
                 "d" | "t" | "T" | "f" => self.abort_pending(),
                 // 모르는 동작은 받던 전송을 건드리지 않고 지금처럼 답한다
@@ -407,12 +614,16 @@ impl Graphics {
         // 조각 모으기: 첫 조각의 제어를 쓰고 자료를 잇는다
         let (control, payload, frame_gen) = match self.pending.take() {
             Some(mut p) => {
-                if p.payload.len() + payload.len() > MAX_PAYLOAD {
-                    // 상한을 넘으면 이 전송은 버린다. 바꾸려던 옛 그림은 지운다(Ghostty)
-                    self.remove_replaced(&p.control);
+                // 조각이 q를 0이 아니게 주면 그 값이 이어진다(0이면 앞 조각의 값을 쓴다, Ghostty `loading.quiet`)
+                if let Some(q) = control.get(&b'q').filter(|_| num(&control, b'q') != 0) {
+                    p.control.insert(b'q', q.clone());
+                }
+                p.wire += wire.len();
+                if p.wire > MAX_PAYLOAD {
+                    // 상한을 넘으면 이 전송은 버린다. 옛 그림은 첫 조각에서 이미 지웠다
                     return self.error(&p.control, "EFBIG", "그림 자료가 상한을 넘습니다");
                 }
-                p.payload.extend_from_slice(payload);
+                p.payload.extend_from_slice(&payload);
                 if more {
                     self.pending = Some(p);
                     return Outcome::default();
@@ -420,7 +631,15 @@ impl Graphics {
                 (p.control, p.payload, p.frame_gen)
             }
             None => {
-                if payload.len() > MAX_PAYLOAD {
+                // 같은 번호를 다시 보내면 옛 그림과 자리를 새 전송이 시작할 때(첫 조각) 지운다. 끝났을 때가 아니다(Ghostty `loadAndAddImage`).
+                // 질의와 프레임은 그림을 바꾸려는 것이 아니다
+                if matches!(act, "t" | "T") {
+                    let id = num(&control, b'i');
+                    if id != 0 {
+                        self.replace_image(id);
+                    }
+                }
+                if wire.len() > MAX_PAYLOAD {
                     return self.error(&control, "EFBIG", "그림 자료가 상한을 넘습니다");
                 }
                 // 프레임 전송은 시작할 때 바탕 그림이 있는지 보고, 끝났을 때 그 그림이 그대로인지 보려고 번호표를 적어 둔다
@@ -435,12 +654,13 @@ impl Graphics {
                 if more {
                     self.pending = Some(Pending {
                         control,
-                        payload: payload.to_vec(),
+                        payload,
+                        wire: wire.len(),
                         frame_gen,
                     });
                     return Outcome::default();
                 }
-                (control, payload.to_vec(), frame_gen)
+                (control, payload, frame_gen)
             }
         };
         self.execute_with(&control, payload, cur, frame_gen)
@@ -454,23 +674,9 @@ impl Graphics {
         c.get(&b't').map(String::as_str).unwrap_or("d")
     }
 
-    /// 받던 조각 전송을 버리고, 그 전송이 바꾸려던 옛 그림(첫 조각의 `i=`)을 지운다
+    /// 받던 조각 전송을 버린다. 바꾸려던 옛 그림은 첫 조각에서 이미 지웠으므로 더 지우지 않는다(Ghostty `loading.destroy`)
     fn abort_pending(&mut self) {
-        if let Some(p) = self.pending.take() {
-            self.remove_replaced(&p.control);
-        }
-    }
-
-    /// 번호(`i=`, 0이 아님)가 있으면 그 옛 그림과 놓인 자리를 지운다. `I=`만 있으면 지우지 않는다.
-    /// 프레임 전송(`a=f`)은 바탕 그림을 바꾸려던 것이 아니므로 버려도 그림을 지우지 않는다
-    fn remove_replaced(&mut self, control: &HashMap<u8, String>) {
-        if Self::action(control) == "f" {
-            return;
-        }
-        let id = num(control, b'i');
-        if id != 0 {
-            self.replace_image(id);
-        }
+        self.pending = None;
     }
 
     /// 다 모은 명령 하나를 실행한다
@@ -497,7 +703,7 @@ impl Graphics {
             );
         }
         match action {
-            "q" => match self.decode(&control, &payload) {
+            "q" => match self.decode(&control, &payload, false) {
                 // 질의: 그림을 저장하지 않고 받을 수 있는지만 답한다
                 Ok(_) => self.ok(&control),
                 Err((code, why)) => self.error(&control, code, why),
@@ -506,16 +712,10 @@ impl Graphics {
                 let id_in = num(&control, b'i');
                 let number = num(&control, b'I');
                 // 명세: 같은 번호로 다시 보내면 옛 그림과 자리를 지운다. 성공이든 실패든 지우고(Ghostty #15184),
-                // 지우는 때는 조각(m=1)을 다 모은 뒤다(kitty는 첫 조각에서 지우지만 Ghostty와 같은 때)
+                // 지우는 때는 전송을 시작할 때(첫 조각)이므로 `handle`이 이미 지웠다
                 let mut image = match self.transmitted(&control, &payload) {
                     Ok(img) => img,
-                    Err((code, why)) => {
-                        // 실패 길
-                        if id_in != 0 {
-                            self.replace_image(id_in);
-                        }
-                        return self.error(&control, code, why);
-                    }
+                    Err((code, why)) => return self.error(&control, code, why),
                 };
                 // 번호가 없으면 정한다: 이미지 번호(I)만 있으면 쓰지 않은 가장 낮은 번호, 둘 다 없으면 내부 번호(답하지 않는다)
                 let implicit = id_in == 0 && number == 0;
@@ -767,7 +967,7 @@ impl Graphics {
 
     /// `t`/`T`로 받은 자료를 저장해도 되는 그림으로 만든다(번호·크기 상한 검사 포함)
     fn transmitted(&self, c: &HashMap<u8, String>, payload: &[u8]) -> Result<Image, (&'static str, &'static str)> {
-        let image = self.decode(c, payload)?;
+        let image = self.decode(c, payload, false)?;
         // 한 장이 저장 상한보다 크면 받지 않는다: 지금 넣은 것은 남기므로 상한을 넘겨 두게 된다
         if cost(&image) > self.limit {
             return Err(("ENOSPC", "그림이 저장 상한(image-storage-limit)을 넘습니다"));
@@ -775,20 +975,28 @@ impl Graphics {
         Ok(image)
     }
 
-    /// 자료를 RGBA 그림으로 푼다
-    fn decode(&self, c: &HashMap<u8, String>, payload: &[u8]) -> Result<Image, (&'static str, &'static str)> {
+    /// 이미 base64를 푼 자료(`data`)를 RGBA 그림으로 만든다. RGB·RGBA 자료는 길이가 `s*v*바이트`와 다르면 거절한다: 모자라면 `ENODATA`,
+    /// 남으면 `EINVAL`(Ghostty `complete`). 프레임(`a=f`)만 `truncate_extra`로 남는 자료를 자른다
+    fn decode(
+        &self,
+        c: &HashMap<u8, String>,
+        data: &[u8],
+        truncate_extra: bool,
+    ) -> Result<Image, (&'static str, &'static str)> {
         let medium = c.get(&b't').map(String::as_str).unwrap_or("d");
         if medium != "d" {
             return Err(("EINVAL", "직접 전송(t=d)만 받습니다"));
         }
-        let mut data = base64_decode(payload).ok_or(("EINVAL", "base64가 아닙니다"))?;
+        let mut data = std::borrow::Cow::Borrowed(data);
         if c.get(&b'o').map(String::as_str) == Some("z") {
-            data = miniz_oxide::inflate::decompress_to_vec_zlib_with_limit(&data, MAX_IMAGE_BYTES)
-                .map_err(|_| ("EINVAL", "zlib을 풀지 못했습니다"))?;
+            data = std::borrow::Cow::Owned(
+                miniz_oxide::inflate::decompress_to_vec_zlib_with_limit(&data, MAX_IMAGE_BYTES)
+                    .map_err(|_| ("EINVAL", "zlib을 풀지 못했습니다"))?,
+            );
         }
         let format = num(c, b'f');
         let (w, h, rgba) = match format {
-            100 => decode_png(&data).map_err(|why| ("EBADPNG", why))?,
+            100 => decode_png(&data)?,
             0 | 24 | 32 => {
                 let (w, h) = (num(c, b's'), num(c, b'v'));
                 if w == 0 || h == 0 || w > MAX_SIDE || h > MAX_SIDE {
@@ -798,6 +1006,9 @@ impl Graphics {
                 let need = w as usize * h as usize * bpp;
                 if data.len() < need {
                     return Err(("ENODATA", "자료가 너비·높이보다 짧습니다"));
+                }
+                if data.len() > need && !truncate_extra {
+                    return Err(("EINVAL", "자료가 너비·높이보다 깁니다"));
                 }
                 let rgba = if bpp == 4 {
                     data[..need].to_vec()
@@ -1198,7 +1409,7 @@ impl Graphics {
             return fail(id, "ENOENT");
         }
         // 자료를 푸는 길(PNG·zlib·길이 검사)은 그림과 같다. 프레임은 모자라면 오류이고 남으면 자른다
-        let frame = match self.decode(c, payload) {
+        let frame = match self.decode(c, payload, true) {
             Ok(f) => f,
             Err((code, _)) => return fail(id, code),
         };
@@ -1732,7 +1943,6 @@ mod tests {
     #[test]
     fn failed_retransmit_removes_old_image_and_placement() {
         let bad = [
-            ("a=T,f=24,s=1,v=1,i=5;!!!!".to_string(), "EINVAL"),
             (format!("a=T,f=24,s=2,v=2,i=5;{}", b64(&[1, 2, 3])), "ENODATA"),
             (format!("a=t,t=f,f=24,s=1,v=1,i=5;{}", b64(b"/etc/passwd")), "EINVAL"),
         ];
@@ -1781,12 +1991,20 @@ mod tests {
         let mut g = Graphics::default();
         g.handle(rgb1("T", 5, [255, 0, 0]).as_bytes(), CUR);
         g.handle(rgb1("T", 6, [9, 9, 9]).as_bytes(), CUR);
-        let all = b64(&[0, 0, 255]); // 4글자
-        let out = g.handle(format!("a=T,f=24,s=1,v=1,i=5,m=1;{}", &all[..2]).as_bytes(), CUR);
+        // 1x2 RGB(6바이트)를 3바이트씩 두 조각으로. 조각마다 base64를 따로 풀므로 4글자 경계에서 나눈다
+        let out = g.handle(
+            format!("a=T,f=24,s=1,v=2,i=5,m=1;{}", b64(&[0, 0, 255])).as_bytes(),
+            CUR,
+        );
         assert_eq!(out, Outcome::default());
         assert!(g.pending.is_some());
+        // 옛 그림과 자리는 첫 조각에서 이미 지웠다(Ghostty "retransmit same id removes image on first chunk")
+        assert!(g.image(5).is_none() && g.placements.iter().all(|p| p.image != 5));
         g
     }
+
+    /// `with_pending_replace`의 두 번째 조각 자료
+    const LAST_CHUNK: [u8; 3] = [1, 2, 3];
 
     #[test]
     fn delete_during_chunked_transfer_aborts_it_and_removes_old_image() {
@@ -1799,8 +2017,7 @@ mod tests {
         assert!(g.placements.iter().all(|p| p.image != 5), "옛 자리가 남았다");
         assert!(g.image(6).is_none(), "지우기가 실행되지 않았다");
         // 뒤늦게 온 마지막 조각은 새 명령이라 그림을 만들지 않는다
-        let all = b64(&[0, 0, 255]);
-        g.handle(format!("m=0;{}", &all[2..]).as_bytes(), CUR);
+        g.handle(format!("m=0;{}", b64(&LAST_CHUNK)).as_bytes(), CUR);
         assert!(g.image(5).is_none() && g.placements.is_empty());
     }
 
@@ -1828,23 +2045,21 @@ mod tests {
         assert_eq!(out.reply.unwrap(), b"\x1b_Gi=6;OK\x1b\\");
         assert!(g.placements.iter().any(|p| p.image == 6 && p.line == 7));
         assert!(g.pending.is_some());
-        assert!(g.image(5).is_some(), "받는 동안 옛 그림은 그대로다");
+        assert!(g.image(5).is_none(), "옛 그림은 첫 조각에서 지웠다");
         // 마지막 조각으로 그림이 완성된다
-        let all = b64(&[0, 0, 255]);
-        let out = g.handle(format!("m=0;{}", &all[2..]).as_bytes(), CUR);
+        let out = g.handle(format!("m=0;{}", b64(&LAST_CHUNK)).as_bytes(), CUR);
         assert_eq!(out.reply.unwrap(), b"\x1b_Gi=5;OK\x1b\\");
-        assert_eq!(g.image(5).unwrap().rgba.as_slice(), &[0, 0, 255, 255]);
+        assert_eq!(g.image(5).unwrap().rgba.as_slice(), &[0, 0, 255, 255, 1, 2, 3, 255]);
         assert!(g.pending.is_none());
     }
 
     #[test]
     fn next_chunk_with_only_m_and_q_still_appends() {
         let mut g = with_pending_replace();
-        let all = b64(&[0, 0, 255]);
-        let out = g.handle(format!("m=0,q=1;{}", &all[2..]).as_bytes(), CUR);
-        // 첫 조각의 제어(q 없음)를 쓰므로 답한다
-        assert_eq!(out.reply.unwrap(), b"\x1b_Gi=5;OK\x1b\\");
-        assert_eq!(g.image(5).unwrap().rgba.as_slice(), &[0, 0, 255, 255]);
+        let out = g.handle(format!("m=0,q=1;{}", b64(&LAST_CHUNK)).as_bytes(), CUR);
+        // 마지막 조각이 올린 q=1을 쓰므로 OK를 답하지 않는다(Ghostty "more chunks with chunk increasing q")
+        assert_eq!(out.reply, None);
+        assert_eq!(g.image(5).unwrap().rgba.as_slice(), &[0, 0, 255, 255, 1, 2, 3, 255]);
     }
 
     #[test]
@@ -1950,10 +2165,11 @@ mod tests {
         // 번호가 없으면 오류 답 규칙대로 답이 없다
         assert_eq!(query(&mut g, "a=q,e=T"), None);
         assert_eq!(query(&mut g, "a=q,i=0,e=T"), None);
-        // 질의가 아닌 동작의 e=는 기능 질의가 아니다(자료를 푸는 보통 동작)
+        // 질의가 아닌 동작의 e=는 기능 질의가 아니다(자료를 푸는 보통 동작): 깨진 base64는 명령을 버린다
+        assert_eq!(query(&mut g, "a=t,i=3,e=T,f=24,s=1,v=1;!!!!"), None);
         assert_eq!(
-            query(&mut g, "a=t,i=3,e=T,f=24,s=1,v=1;!!!!").unwrap(),
-            "\x1b_Gi=3;EINVAL\x1b\\"
+            query(&mut g, "a=t,i=3,e=T,f=24,s=1,v=2;AAAA").unwrap(),
+            "\x1b_Gi=3;ENODATA\x1b\\"
         );
     }
 
