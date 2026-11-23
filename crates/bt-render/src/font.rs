@@ -234,7 +234,12 @@ pub struct Fonts {
     synth: [Synth; 4],
     /// 모든 윤곽에 더하는 두껍게(px, #193 `font-thicken`). 끄면 0
     thicken: f32,
+    /// 이 묶음을 만든 차례(#754). 묶음마다 다르다
+    generation: u64,
 }
+
+/// 글꼴 묶음을 만들 때마다 하나씩 느는 번호(#754)
+static NEXT_GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
 /// `font-codepoint-map` 한 칸: 범위, 네 꼴의 글꼴, 넓은 글자 배율
 struct Mapped {
@@ -735,6 +740,7 @@ impl Fonts {
             } else {
                 0.0
             },
+            generation: NEXT_GENERATION.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
         })
     }
 
@@ -746,6 +752,13 @@ impl Fonts {
     /// 글리프를 크기를 넘어 나눠 쓰는 캐시(GPU 아틀라스)가 열쇠에 넣는다(#422)
     pub fn px(&self) -> f32 {
         self.px
+    }
+
+    /// 이 글꼴 묶음을 만든 차례(#754). 묶음을 새로 만들 때마다 달라서, 글리프를 묶음 밖에 두는 캐시(GPU 아틀라스)가
+    /// 칸 치수가 같은 새 묶음(설정을 다시 읽어 `font-thicken`·`font-feature`·대체 글꼴만 바뀐 것)의 글리프를 옛 그림과
+    /// 가른다. Ghostty #15280이 격자를 주소가 아니라 늘어나는 번호로 가리는 것과 같다
+    pub fn generation(&self) -> u64 {
+        self.generation
     }
 
     /// 색 이모지 글꼴을 찾았는가
