@@ -14,12 +14,12 @@ pub fn dir() -> io::Result<PathBuf> {
     Ok(files)
 }
 
-/// `dir`에 `kind-pid-n.txt`로 `text`를 쓴다. 이미 있는 이름은 건너뛰고(링크를 따라가지 않게 새로 만들기만), 권한은 0600
-pub fn write(dir: &Path, kind: &str, text: &str) -> io::Result<PathBuf> {
+/// `dir`에 `kind-pid-n.<ext>`로 `text`를 쓴다. 이미 있는 이름은 건너뛰고(링크를 따라가지 않게 새로 만들기만), 권한은 0600
+pub fn write(dir: &Path, kind: &str, ext: &str, text: &str) -> io::Result<PathBuf> {
     use std::io::Write;
     use std::os::unix::fs::OpenOptionsExt;
     for n in 0..10_000 {
-        let path = dir.join(format!("{kind}-{}-{n}.txt", std::process::id()));
+        let path = dir.join(format!("{kind}-{}-{n}.{ext}", std::process::id()));
         // create_new(O_EXCL)는 그 이름에 링크가 있어도 따라가지 않고 실패한다
         match std::fs::OpenOptions::new()
             .write(true)
@@ -54,8 +54,8 @@ mod tests {
     #[test]
     fn writes_private_files_with_fresh_names() {
         let d = private_dir("ok", 0o700);
-        let a = write(&d, "screen", "한글 OK\nline 2\n").unwrap();
-        let b = write(&d, "screen", "두 번째").unwrap();
+        let a = write(&d, "screen", "txt", "한글 OK\nline 2\n").unwrap();
+        let b = write(&d, "screen", "txt", "두 번째").unwrap();
         assert_ne!(a, b, "같은 이름을 다시 쓰지 않는다");
         assert_eq!(std::fs::read_to_string(&a).unwrap(), "한글 OK\nline 2\n");
         let mode = std::fs::metadata(&a).unwrap().permissions().mode() & 0o777;
@@ -65,7 +65,10 @@ mod tests {
         // 같은 이름의 링크가 미리 있어도 따라가지 않고 다음 이름으로
         let next = d.join(format!("scrollback-{}-0.txt", std::process::id()));
         std::os::unix::fs::symlink("/etc/hosts", &next).unwrap();
-        let c = write(&d, "scrollback", "x").unwrap();
+        let c = write(&d, "scrollback", "txt", "x").unwrap();
+        // 확장자는 부른 쪽이 정한다(html 형식은 .html, Ghostty `writeScreenFile`)
+        let h = write(&d, "screen", "html", "<div></div>").unwrap();
+        assert_eq!(h.extension().unwrap(), "html");
         assert_ne!(c, next);
         assert!(
             !std::fs::read_to_string("/etc/hosts").is_ok_and(|s| s == "x"),

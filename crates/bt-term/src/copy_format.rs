@@ -363,6 +363,27 @@ fn same_background(a: &Cell, b: &Cell) -> bool {
     kind(a) == Kind::Background && kind(b) == Kind::Background && col_of(a.bg) == col_of(b.bg)
 }
 
+/// 칸 전체를 만든다(`write_screen_file`·`write_scrollback_file`의 `vt`·`html`, #768). `scrollback`이면 스크롤백 맨 위부터
+/// 맨 아래까지, 아니면 지금 보이는 화면. 이어진 줄은 이어 붙이고(`unwrap`) 끝의 빈 줄은 내지 않는다
+pub(crate) fn format_lines<T: EventListener>(term: &Term<T>, theme: &Theme, scrollback: bool, opts: Options) -> String {
+    let grid = term.grid();
+    let (first, last) = if scrollback {
+        (term.topmost_line(), term.bottommost_line())
+    } else {
+        let off = grid.display_offset() as i32;
+        (Line(-off), Line(term.screen_lines() as i32 - 1 - off))
+    };
+    let end_col = Column(term.columns().saturating_sub(1));
+    format_range(
+        term,
+        theme,
+        Point::new(first, Column(0)),
+        Point::new(last, end_col),
+        false,
+        opts,
+    )
+}
+
 /// 격자의 `start`~`end`(양 끝 포함)를 만든다. `block`이면 사각 고르기. 이어진 줄은 이어 붙인다(`unwrap`).
 /// 줄 처리는 `PageFormatter.formatWithStateEmit`을 그대로 따른다
 pub(crate) fn format_range<T: EventListener>(
@@ -671,6 +692,28 @@ mod tests {
 
     fn html(input: &str) -> String {
         all(input, opts(Emit::Html))
+    }
+
+    /// `write_screen_file:…,vt|html`·`write_scrollback_file:…,vt|html`(#768): 칸 전체와 스크롤백 전체를 꾸밈과 함께 만든다
+    #[test]
+    fn format_lines_covers_the_screen_and_the_scrollback() {
+        // 3줄 화면에 5줄을 쓰면 윗 2줄은 스크롤백으로 밀린다
+        let t = term(10, 3, "l1\r\nl2\r\n\x1b[1ml3\x1b[0m\r\nl4\r\nl5");
+        let o = |emit| Options {
+            trim: false,
+            ..opts(emit)
+        };
+        let screen = format_lines(&t, &Theme::default(), false, o(Emit::Vt));
+        assert!(screen.contains("l4") && screen.contains("l5"), "{screen:?}");
+        assert!(
+            !screen.contains("l1") && !screen.contains("l2"),
+            "보이는 화면만: {screen:?}"
+        );
+        let all = format_lines(&t, &Theme::default(), true, o(Emit::Vt));
+        assert!(all.contains("l1") && all.contains("l5"), "{all:?}");
+        assert!(all.contains("\x1b[1m"), "꾸밈이 든다: {all:?}");
+        let h = format_lines(&t, &Theme::default(), true, o(Emit::Html));
+        assert!(h.contains("<div") && h.contains("l1") && h.contains("l5"), "{h:?}");
     }
 
     fn vt(input: &str) -> String {
