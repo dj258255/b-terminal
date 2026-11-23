@@ -123,6 +123,135 @@ fn some(sp: Sp, t: &str) -> (Option<Sp>, Option<String>) {
     (Some(sp), Some(t.to_string()))
 }
 
+#[test]
+fn select_line() {
+    let mut d = Diffs::default();
+    let s = mk(10, 10, "ABC  DEF\n 123\n456");
+    for x in [0, 7, 3, 9] {
+        d.eq(
+            &format!("selectLine x={x}"),
+            lt(&s, 10, 10, (x, 0)),
+            some(((0, 0), (7, 0)), "ABC  DEF"),
+        );
+    }
+    // 앞 공백(Ghostty는 첫 글자부터): 같은 줄 시험에는 없지만 아래 soft-wrap 시험이 start x=1로 보인다
+    d.eq("leading space", lt(&s, 10, 10, (2, 1)), some(((1, 1), (3, 1)), "123"));
+    d.done();
+}
+
+// "selectLine across soft-wrap"(9628) / "across full soft-wrap"(9655) / "ignores blank lines"(9681)
+#[test]
+fn select_line_soft_wrap() {
+    let mut d = Diffs::default();
+    let s = mk(5, 10, " 12 34012   \n 123");
+    d.eq("soft-wrap", lt(&s, 5, 10, (1, 0)), some(((1, 0), (3, 1)), "12 34012"));
+    let s = mk(5, 5, "1ABCD2EFGH\n3IJKL");
+    d.eq(
+        "full soft-wrap",
+        lt(&s, 5, 5, (2, 1)),
+        some(((0, 0), (4, 1)), "1ABCD2EFGH"),
+    );
+    let s = mk(5, 10, " 12 34012             \n 123");
+    d.eq("blank fwd", lt(&s, 5, 10, (1, 0)), some(((1, 0), (3, 1)), "12 34012"));
+    d.eq("blank back", lt(&s, 5, 10, (1, 1)), some(((1, 0), (3, 1)), "12 34012"));
+    d.eq("blank both", lt(&s, 5, 10, (3, 0)), some(((1, 0), (3, 1)), "12 34012"));
+    d.done();
+}
+
+// "selectLine disabled whitespace trimming"(9742)는 설정 없는 선택지라 대응 없음(우리는 늘 Ghostty 기본값 꼴)
+// "selectLine with scrollback"(9792)
+#[test]
+fn select_line_scrollback() {
+    let mut d = Diffs::default();
+    let s = mk(2, 3, "1A\n2B\n3C\n4D\n5E");
+    d.eq("first", lt(&s, 2, 3, (0, 0)), some(((0, 0), (1, 0)), "3C"));
+    d.eq("last", lt(&s, 2, 3, (0, 2)), some(((0, 2), (1, 2)), "5E"));
+    d.done();
+}
+
+// "selectLine semantic prompt boundary"(9837)
+#[test]
+fn select_line_semantic_prompt_boundary() {
+    let mut d = Diffs::default();
+    let s = mkp(5, 10, &format!("ABCDE\n{A}A    {C}> "));
+    d.eq("string", line_text(&s, (1, 1)), Some("A".to_string()));
+    d.eq("output", line(&s, 5, 10, (1, 2)), Some(((0, 2), (0, 2))));
+    d.done();
+}
+
+// "semantic boundary around unwritten cells"(9888): 쓰지 않은 칸은 null
+#[test]
+fn select_line_semantic_unwritten() {
+    let mut d = Diffs::default();
+    let s = mkp(5, 1, &format!("{A}x\x1b[2Cm"));
+    for x in 1..3 {
+        d.eq(&format!("unwritten x={x}"), lt(&s, 5, 1, (x, 0)), (None, None));
+    }
+    d.done();
+}
+
+// "prompt to input boundary"(9907)
+#[test]
+fn select_line_prompt_to_input() {
+    let mut d = Diffs::default();
+    let s = mkp(10, 5, &format!("{A}$>{B}command"));
+    d.eq("prompt", lt(&s, 10, 5, (0, 0)), some(((0, 0), (1, 0)), "$>"));
+    d.eq("input", lt(&s, 10, 5, (5, 0)), some(((2, 0), (8, 0)), "command"));
+    d.done();
+}
+
+// "input to output boundary"(9957)
+#[test]
+fn select_line_input_to_output() {
+    let mut d = Diffs::default();
+    let s = mkp(10, 5, &format!("{B}ls -la\n{C}file.txt"));
+    d.eq("input", line_text(&s, (2, 0)), Some("ls -la".to_string()));
+    d.eq("output", line_text(&s, (2, 1)), Some("file.txt".to_string()));
+    d.done();
+}
+
+// "mid-row boundary"(10003)
+#[test]
+fn select_line_mid_row() {
+    let mut d = Diffs::default();
+    let s = mkp(10, 5, &format!("{C}out{P}$>{B}cmd"));
+    d.eq("output", lt(&s, 10, 5, (1, 0)), some(((0, 0), (2, 0)), "out"));
+    d.eq("prompt", lt(&s, 10, 5, (3, 0)), some(((3, 0), (4, 0)), "$>"));
+    d.eq("input", lt(&s, 10, 5, (6, 0)), some(((5, 0), (7, 0)), "cmd"));
+    d.done();
+}
+
+// "soft-wrap with mid-row transition"(10072)
+#[test]
+fn select_line_soft_wrap_mid_row() {
+    let mut d = Diffs::default();
+    let s = mkp(5, 5, &format!("{A}$ {B}cmd12{C}out"));
+    d.eq("in row0", line_text(&s, (3, 0)), Some("cmd12".to_string()));
+    d.eq("in row1", line_text(&s, (0, 1)), Some("cmd12".to_string()));
+    d.eq("out row1", line_text(&s, (3, 1)), Some("out".to_string()));
+    d.done();
+}
+
+// "semantic boundary disabled"(10142): 설정이 없는 선택지(우리는 경계 없음 = 전체 줄)라 대응 없음
+// "semantic boundary first cell of row"(10175)
+#[test]
+fn select_line_first_cell_of_row() {
+    let mut d = Diffs::default();
+    let s = mkp(5, 5, &format!("{B}12345{C}ABCDE"));
+    d.eq("input", lt(&s, 5, 5, (2, 0)), some(((0, 0), (4, 0)), "12345"));
+    d.eq("output", lt(&s, 5, 5, (2, 1)), some(((0, 1), (4, 1)), "ABCDE"));
+    d.done();
+}
+
+// "semantic all same content"(10264)
+#[test]
+fn select_line_all_same() {
+    let mut d = Diffs::default();
+    let s = mkp(5, 5, &format!("{A}prompt text"));
+    d.eq("string", line_text(&s, (2, 1)), Some("prompt text".to_string()));
+    d.done();
+}
+
 // "selectLine does not join lines across a recycled row"(12803)는 아래 파일에서 본다
 const DEF: &str = bt_core::config::DEFAULT_WORD_CHARS;
 
@@ -188,4 +317,13 @@ fn drag(s: &Session, kind: SelectKind, a: (usize, usize), b: (usize, usize), col
     s.select_start(a.0, a.1, kind);
     s.select_update(b.0, b.1);
     span(s, cols, rows)
+}
+
+// 세 번 누른 줄을 복사한 글에는 앞 공백이 없다(#803 재현 절차)
+#[test]
+fn line_text_has_no_leading_space() {
+    let mut d = Diffs::default();
+    let s = mk(20, 3, "  들여쓴 줄  \n끝");
+    d.eq("text", line_text(&s, (5, 0)), Some("들여쓴 줄".to_string()));
+    d.done();
 }

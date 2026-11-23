@@ -4265,6 +4265,7 @@ mod tests {
         let mut grid: Grid<Cell> = Grid::new(1, 5, 0);
         for i in 0..5 {
             grid[Line(0)][Column(i)].c = 'a';
+            grid[Line(0)][Column(i)].flags.insert(Flags::WRITTEN); // b-terminal(#803)
         }
         grid[Line(0)][Column(0)].c = '"';
         grid[Line(0)][Column(3)].c = '"';

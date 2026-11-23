@@ -19,10 +19,33 @@ use crate::vte::ansi::CursorShape;
 mod ghostty {
     use super::*;
 
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum Kind {
+        Prompt,
+        Input,
+        Output,
+    }
+
+    /// OSC 133 칸 종류. 표시 없는 칸(쓰지 않은 칸 포함)은 출력이다(Ghostty `Cell.semantic_content` 기본값)
+    fn kind(cell: &Cell) -> Kind {
+        if cell.flags.contains(Flags::SEMANTIC_INPUT) {
+            Kind::Input
+        } else if cell.flags.contains(Flags::SEMANTIC_PROMPT) {
+            Kind::Prompt
+        } else {
+            Kind::Output
+        }
+    }
+
     /// Ghostty `cell.hasText()`: 글자를 찍은 칸(찍은 빈칸 포함). 넓은 글자의 뒤 칸·줄 끝 자리 칸은 아니다
     pub fn has_text(cell: &Cell) -> bool {
         cell.flags.contains(Flags::WRITTEN)
             && !cell.flags.intersects(Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER)
+    }
+
+    /// 그 줄이 다음 줄로 이어지는가(Ghostty `row.wrap`)
+    fn wraps<T>(term: &Term<T>, line: Line) -> bool {
+        term.grid()[line][term.last_column()].flags.contains(Flags::WRAPLINE)
     }
 
     fn next<T>(term: &Term<T>, p: Point) -> Option<Point> {
@@ -48,6 +71,82 @@ mod ghostty {
     /// 줄 고르기가 앞뒤에서 빼는 글자(Ghostty `default_line_whitespace`)
     fn is_line_space(c: char) -> bool {
         matches!(c, '\0' | ' ' | '\t')
+    }
+
+    /// Ghostty `Screen.selectLine`. 이어진 줄을 한 줄로 보고, OSC 133 칸 종류가 바뀌는 곳에서 끊고, `trim`이면 앞뒤 공백을 뺀다
+    pub fn select_line<T>(term: &Term<T>, pin: Point, trim: bool) -> Option<(Point, Point)> {
+        let grid = term.grid();
+        let last = term.last_column();
+        let cols = term.columns();
+        let state = kind(&grid[pin]);
+
+        // 줄의 처음: 누른 줄에서 거꾸로 칸 종류가 바뀌는 곳, 없으면 이어진 윗줄들을 거슬러 오른다
+        let start_pin = 'start: {
+            for x in (0..=pin.column.0).rev() {
+                if kind(&grid[pin.line][Column(x)]) != state {
+                    break 'start Point::new(pin.line, Column(x + 1));
+                }
+            }
+            let mut it_prev = Point::new(pin.line, Column(0));
+            let mut line = pin.line;
+            while line > term.topmost_line() {
+                let up = line - 1;
+                if !wraps(term, up) {
+                    break;
+                }
+                for x in (0..cols).rev() {
+                    if kind(&grid[up][Column(x)]) != state {
+                        break 'start it_prev;
+                    }
+                    it_prev = Point::new(up, Column(x));
+                }
+                line = up;
+            }
+            Point::new(it_prev.line, Column(0))
+        };
+
+        // 줄의 끝: 이어진 아랫줄들을 따라 내려가며 칸 종류가 바뀌는 곳 바로 앞, 없으면 이어지지 않는 줄의 끝 칸
+        let end_pin = 'end: {
+            let mut line = pin.line;
+            while line <= term.bottommost_line() {
+                let from = if line == pin.line { pin.column.0 } else { 0 };
+                if from == 0 && kind(&grid[line][Column(0)]) != state {
+                    // 첫 칸부터 다르면 윗줄 끝. (누른 줄의 첫 칸은 늘 같으므로 윗줄이 있다)
+                    break 'end Point::new(line - 1, last);
+                }
+                for x in from..cols {
+                    if kind(&grid[line][Column(x)]) != state {
+                        break 'end Point::new(line, Column(x - 1));
+                    }
+                }
+                if !wraps(term, line) {
+                    break 'end Point::new(line, last);
+                }
+                line += 1;
+            }
+            return None;
+        };
+
+        if !trim {
+            return Some((start_pin, end_pin));
+        }
+
+        let first = |from: Point, to: Point, forward: bool| -> Option<Point> {
+            let mut p = from;
+            loop {
+                if (forward && p > to) || (!forward && p < to) {
+                    return None;
+                }
+                let cell = &grid[p];
+                if has_text(cell) && !is_line_space(cell.c) {
+                    return Some(p);
+                }
+                p = if forward { next(term, p)? } else { prev(term, p)? };
+            }
+        };
+        let start = first(start_pin, end_pin, true)?;
+        let end = first(end_pin, start_pin, false)?;
+        Some((start, end))
     }
 
     /// Ghostty `Screen.selectAll`: 스크롤백까지 통틀어 글이 있는 첫 칸부터 마지막 칸까지. 앞뒤 공백(널·빈칸·탭)은 뺀다
@@ -354,7 +453,11 @@ impl Selection {
             SelectionType::Simple => self.range_simple(start, end, columns),
             SelectionType::Block => self.range_block(start, end),
             SelectionType::Semantic => Some(Self::range_semantic(term, start.point, end.point)),
-            SelectionType::Lines => Some(Self::range_lines(term, start.point, end.point)),
+            SelectionType::Lines => Self::range_lines(
+                term,
+                self.region.start.point.grid_clamp(term, Boundary::Grid),
+                self.region.end.point.grid_clamp(term, Boundary::Grid),
+            ),
         }
     }
 
@@ -379,11 +482,22 @@ impl Selection {
         SelectionRange { start, end, is_block: false }
     }
 
-    fn range_lines<T>(term: &Term<T>, start: Point, end: Point) -> SelectionRange {
-        let start = term.line_search_left(start);
-        let end = term.line_search_right(end);
-
-        SelectionRange { start, end, is_block: false }
+    /// b-terminal(#803): 세 번 누르기·줄 단위 끌기. Ghostty `Screen.selectLine`·`SelectionGesture.dragSelectionLine`과 같다.
+    /// 앞뒤 공백을 빼고 OSC 133 상태가 바뀌는 곳에서 끊는다. 누른 칸에 줄이 없으면 None
+    fn range_lines<T>(term: &Term<T>, click: Point, drag: Point) -> Option<SelectionRange> {
+        // 끈 줄에 글이 없으면 Ghostty는 이번 움직임을 버리고 앞서 고른 것을 둔다. 고르기가 상태 없이 범위를 셈하므로
+        // (그것을 흉내 낼 앞선 값이 없다) 끌고 있을 때는 그 줄 전체를 쓴다. 누른 줄 하나만이면(끌지 않았으면) 고르지 않는다
+        let line = ghostty::select_line(term, drag, true).or_else(|| {
+            (drag != click).then(|| ghostty::select_line(term, drag, false)).flatten()
+        })?;
+        let (mut start, mut end) = ghostty::select_line(term, click, true)
+            .or_else(|| ghostty::select_line(term, click, false))?;
+        if drag < click {
+            start = line.0;
+        } else {
+            end = line.1;
+        }
+        Some(SelectionRange { start, end, is_block: false })
     }
 
     fn range_simple(
@@ -473,6 +587,19 @@ mod tests {
     fn term(height: usize, width: usize) -> Term<()> {
         let size = TermSize::new(width, height);
         Term::new(Config::default(), &size, ())
+    }
+
+    /// b-terminal(#803, #804): 줄·낱말 고르기는 글자를 찍은 칸만 고르므로 모든 칸에 'a'를 찍은 격자를 쓴다
+    fn written(height: usize, width: usize) -> Term<()> {
+        let mut term = term(height, width);
+        for line in 0..height {
+            for col in 0..width {
+                let cell = &mut term.grid_mut()[Line(line as i32)][Column(col)];
+                cell.c = 'a';
+                cell.flags.insert(Flags::WRITTEN);
+            }
+        }
+        term
     }
 
     /// Test case of single cell selection.
@@ -594,7 +721,7 @@ mod tests {
         selection.update(Point::new(Line(4), Column(1)), Side::Right);
         selection = selection.rotate(&size, &(Line(0)..Line(size.0 as i32)), 4).unwrap();
 
-        assert_eq!(selection.to_range(&term(size.0, size.1)).unwrap(), SelectionRange {
+        assert_eq!(selection.to_range(&written(size.0, size.1)).unwrap(), SelectionRange {
             start: Point::new(Line(0), Column(0)),
             end: Point::new(Line(5), Column(4)),
             is_block: false,
