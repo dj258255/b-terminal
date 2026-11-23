@@ -378,6 +378,8 @@ struct Inner {
     search: Option<crate::search::Search>,
     /// kitty 그래픽(#76): 저장한 그림과 놓인 자리
     graphics: crate::graphics::Graphics,
+    /// 글리프 프로토콜(APC 25a1)의 이 칸 등록(#779). 그리지는 않는다(Ghostty 1.4.0과 같다). 전체 초기화(RIS)에서 지운다
+    glossary: crate::glyph::Glossary,
     /// 셀 크기(px). 그림을 칸에 맞출 때 쓴다
     cell: (u32, u32),
     /// 고르기의 움직이는 끝점(#138 adjust_selection). 고르기를 시작·늘이면 바뀐다
@@ -759,6 +761,7 @@ impl Session {
                     .image_storage_limit
                     .map_or(crate::graphics::DEFAULT_STORE, |n| n as usize),
             ),
+            glossary: crate::glyph::Glossary::default(),
             cell: (size.cell_width.max(1) as u32, size.cell_height.max(1) as u32),
             sel_end: None,
             output_click: None,
@@ -915,10 +918,20 @@ impl Session {
                                             parking_lot::MutexGuard::unlocked_fair(&mut g, || {});
                                         }
                                     }
+                                    // 글리프 프로토콜(#779): 등록을 검사해 칸에 두고 답한다. 터미널의 답이라 읽기 전용 칸에서도 쓴다(ADR-018 결정 4).
+                                    // 답은 숫자와 고정 이름으로 다시 쓴 글이라 요청의 글이 PTY로 돌아가지 않는다(ADR-078)
+                                    Signal::Glyph(raw) => {
+                                        if let Some(reply) = g.glossary.handle(&raw) {
+                                            let mut w = thread_writer.lock();
+                                            let _ = w.write_all(&reply);
+                                            let _ = w.flush();
+                                        }
+                                    }
                                     Signal::Erase { visible, scrollback } => {
                                         g.graphics_erase(visible, scrollback);
                                         // 초기화(RIS)는 키보드 잠금도 푼다
                                         if visible && scrollback {
+                                            g.glossary.clear_all();
                                             crate::kitty_color::reset_palette(&mut g.term);
                                             xt_flags = xt_default;
                                             saved_modes = [None; 4];
@@ -1397,6 +1410,7 @@ impl Session {
             let Inner { term, parser, .. } = &mut *g;
             parser.advance(term, b"\x1bc");
             g.graphics_erase(true, true);
+            g.glossary.clear_all();
             g.prompts.clear();
             g.sel_end = None;
         }
@@ -1761,6 +1775,7 @@ fn signal_event(sig: Signal) -> SessionEvent {
         | Signal::Semantic(_)
         | Signal::CommandLine(_)
         | Signal::Graphics(_)
+        | Signal::Glyph(_)
         | Signal::Erase { .. }
         | Signal::TitleReport
         | Signal::Enquiry
@@ -2400,6 +2415,8 @@ pub struct Emulator {
     scanner: Scanner,
     search: Option<crate::search::Search>,
     graphics: crate::graphics::Graphics,
+    /// 글리프 프로토콜의 이 칸 등록(#779)
+    glossary: crate::glyph::Glossary,
     cell: (u32, u32),
     /// 그래픽 명령의 답(PTY가 없으므로 모아 둔다)
     replies: Vec<u8>,
@@ -2424,6 +2441,7 @@ impl Emulator {
             scanner: Scanner::default(),
             search: None,
             graphics: Default::default(),
+            glossary: Default::default(),
             cell: (size.cell_width as u32, size.cell_height as u32),
             replies: Vec::new(),
         }
@@ -2451,12 +2469,18 @@ impl Emulator {
                         self.replies.extend(r);
                     }
                 }
+                Signal::Glyph(raw) => {
+                    if let Some(r) = self.glossary.handle(raw) {
+                        self.replies.extend(r);
+                    }
+                }
                 Signal::Erase { visible, scrollback } => {
                     self.graphics.erase(*visible, *scrollback);
                     if *visible && !*scrollback {
                         erase_screen_graphics(&self.term, &mut self.graphics);
                     }
                     if *visible && *scrollback {
+                        self.glossary.clear_all();
                         crate::kitty_color::reset_palette(&mut self.term);
                     }
                 }

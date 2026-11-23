@@ -35,6 +35,8 @@ pub enum Signal {
     },
     /// kitty 그래픽 명령(APC `ESC _ G … ESC \`)의 `G` 뒤 바이트(#76)
     Graphics(Vec<u8>),
+    /// 글리프 프로토콜(APC `ESC _ 25a1 ; … ESC \`)의 `25a1;` 뒤 바이트(#779). 요청 한 줄 상한(1MiB)을 넘은 것은 내지 않는다
+    Glyph(Vec<u8>),
     /// 화면 지우기(ED 2: 보이는 화면, ED 3: 스크롤백)나 초기화(RIS). 놓인 그림을 함께 지운다
     Erase {
         visible: bool,
@@ -238,6 +240,9 @@ const MAX_CSI: usize = 40;
 /// 엔진은 `:`(하위 매개변수)도 같은 칸을 채우지만, 스캐너는 `:`가 끼면 `csi_taint`로 신호를 내지 않으므로 세미콜론만 세면 된다.
 /// `:`를 받는 신호를 더하면 `:`도 함께 세어야 한다
 const MAX_PARAMS: usize = 32;
+
+/// 글리프 프로토콜 APC의 머리(`ESC _` 뒤)
+const GLYPH_APC_PREFIX: &[u8] = b"25a1;";
 
 /// APC 하나의 상한. kitty는 조각을 4096바이트로 보내지만 한 번에 보내는 도구도 있다
 const MAX_APC: usize = 8 * 1024 * 1024;
@@ -519,7 +524,11 @@ impl Scanner {
                     None => St::Apc,
                 },
                 (St::Apc, b) => {
-                    if self.apc.len() >= MAX_APC {
+                    // 글리프 APC는 Ghostty처럼 식별자 뒤 1MiB까지만 모은다(`apc.zig` 409줄). 넘으면 통째로 버린다
+                    if self.apc.len() >= MAX_APC
+                        || (self.apc.len() >= GLYPH_APC_PREFIX.len() + crate::glyph::MAX_REQUEST
+                            && self.apc.starts_with(GLYPH_APC_PREFIX))
+                    {
                         self.apc = Vec::new();
                         self.apc_skip = true;
                     } else if !self.apc_skip {
@@ -676,11 +685,16 @@ impl Scanner {
         }
     }
 
-    /// 끝난 APC를 내보낸다(상한을 넘겨 버리는 중이거나 kitty 그래픽(`G`)이 아니면 버린다)
+    /// 끝난 APC를 내보낸다(상한을 넘겨 버리는 중이거나 kitty 그래픽(`G`)·글리프(`25a1;`)가 아니면 버린다)
     fn finish_apc(&mut self, out: &mut Vec<(usize, Signal)>, at: usize) {
         let raw = std::mem::take(&mut self.apc);
-        if !self.apc_skip && raw.first() == Some(&b'G') {
+        if self.apc_skip {
+            return;
+        }
+        if raw.first() == Some(&b'G') {
             out.push((at, Signal::Graphics(raw[1..].to_vec())));
+        } else if let Some(rest) = raw.strip_prefix(GLYPH_APC_PREFIX) {
+            out.push((at, Signal::Glyph(rest.to_vec())));
         }
     }
 
@@ -1150,6 +1164,56 @@ mod apc_tests {
         // 끝난 자리는 ESC \ 바로 뒤
         let at = Scanner::default().feed_at(b"xx\x1b_Gq\x1b\\yy");
         assert_eq!(at[0].0, 8, "x x ESC _ G q ESC \\ 다음 자리");
+    }
+
+    /// #779: APC `25a1;`는 글리프 신호가 된다. 조각난 바이트, CAN·SUB·8비트 ST 끝맺음, 다른 식별자
+    #[test]
+    fn glyph_apc_becomes_a_signal() {
+        let mut s = Scanner::default();
+        let mut got = Vec::new();
+        for ch in b"ab\x1b_25a1;q;cp=e0a0\x1b\\cd\x1b_25a1;s\x18\x1b_25a1;s\x1a\x1b_25a1;s\x9c".chunks(2) {
+            got.extend(s.feed(ch));
+        }
+        assert_eq!(
+            got,
+            vec![
+                Signal::Glyph(b"q;cp=e0a0".to_vec()),
+                Signal::Glyph(b"s".to_vec()),
+                Signal::Glyph(b"s".to_vec()),
+                Signal::Glyph(b"s".to_vec()),
+            ]
+        );
+        // `;` 없는 25a1, 다른 식별자, kitty 그래픽은 글리프가 아니다
+        let mut s = Scanner::default();
+        assert_eq!(
+            s.feed(b"\x1b_25a1\x1b\\\x1b_25a2;s\x1b\\\x1b_25a;s\x1b\\\x1b_Gq\x1b\\"),
+            vec![Signal::Graphics(b"q".to_vec())]
+        );
+        // ESC 뒤가 `\`가 아니어도 모인 APC는 끝난 것으로 내보낸다(kitty 그래픽과 같다, #595)
+        let mut s = Scanner::default();
+        assert_eq!(s.feed(b"\x1b_25a1;s\x1b[m"), vec![Signal::Glyph(b"s".to_vec())]);
+        // tmux 패스스루 안쪽은 신호를 내지 않는다(#603)
+        let mut s = Scanner::default();
+        assert!(s.feed(b"\x1bPtmux;\x1b\x1b_25a1;s\x1b\x1b\\\x1b\\").is_empty());
+    }
+
+    /// #779: 글리프 APC는 식별자 뒤 1MiB까지만 모은다(Ghostty `apc.zig` 409줄). 정확히 1MiB는 내고, 1바이트 넘으면 버리고, 버퍼도 늘리지 않는다
+    #[test]
+    fn glyph_apc_over_one_mebibyte_is_dropped() {
+        let max = crate::glyph::MAX_REQUEST;
+        let mut s = Scanner::default();
+        s.feed(b"\x1b_25a1;");
+        s.feed(&vec![b'A'; max]);
+        let at_limit = s.feed(b"\x1b\\");
+        assert_eq!(at_limit.len(), 1);
+        assert!(matches!(&at_limit[0], Signal::Glyph(d) if d.len() == max));
+        let mut s = Scanner::default();
+        s.feed(b"\x1b_25a1;");
+        s.feed(&vec![b'A'; max + 1]);
+        assert!(s.apc.capacity() == 0, "상한을 넘으면 버퍼를 비운다");
+        assert!(s.feed(b"\x1b\\").is_empty());
+        // 그 뒤의 요청은 다시 읽는다
+        assert_eq!(s.feed(b"\x1b_25a1;s\x1b\\"), vec![Signal::Glyph(b"s".to_vec())]);
     }
 
     #[test]
