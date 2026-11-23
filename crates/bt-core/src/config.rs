@@ -6629,11 +6629,21 @@ mod tests {
         );
     }
 
-    /// #541: Ghostty와 같은 판(iTerm2-Color-Schemes 5fad1bd)의 테마 묶음. 그 판에서 더해진 두 테마가 있다
+    /// #541·#755: Ghostty와 같은 판(iTerm2-Color-Schemes 494b809, Ghostty #15311)의 테마 묶음. 5fad1bd(#541)와 494b809에서 더해진 테마가 있다
     #[test]
     fn bundled_themes_match_ghostty_pinned_release() {
-        assert_eq!(BUNDLED_THEMES.len(), 907, "5fad1bd의 ghostty/ 폴더는 907개");
-        for name in ["OpenCode Dark", "OpenCode Light"] {
+        assert_eq!(BUNDLED_THEMES.len(), 914, "494b809의 ghostty/ 폴더는 914개");
+        for name in [
+            "OpenCode Dark",
+            "OpenCode Light",
+            "mistpine",
+            "Termius Dark",
+            "Termius Light",
+            "Wild Charm Dark",
+            "Wild Charm Light",
+            "Zacess Warm Dark",
+            "Zacess Warm Light",
+        ] {
             assert!(bundled_theme_text(name).is_some(), "{name}이 넣어 둔 테마에 없다");
         }
         let c = Config::from_text("theme = OpenCode Dark\n", true);
