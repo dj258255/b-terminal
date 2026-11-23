@@ -23,6 +23,10 @@ pub struct Params {
 
     /// Total number of parameters and subparameters.
     len: usize,
+
+    /// b-terminal(#777): 마지막 매개변수 자리에 숫자가 하나도 없었는가(`CSI $ p`, `CSI 4 ; $ p`). 맨 끝에 밀어 넣은
+    /// 빈 값을 구분하려는 것이다. Ghostty 파서는 숫자 없는 끝 매개변수를 세지 않는다(Parser.zig 378줄 `param_acc_idx > 0`).
+    trailing_empty: bool,
 }
 
 impl Params {
@@ -30,6 +34,12 @@ impl Params {
     #[inline]
     pub fn len(&self) -> usize {
         self.len
+    }
+
+    /// b-terminal(#777): 마지막 매개변수 자리에 숫자가 없었으면 `true`(`len()`에는 그래도 센다).
+    #[inline]
+    pub fn trailing_empty(&self) -> bool {
+        self.trailing_empty
     }
 
     /// Returns `true` if there are no parameters present.
@@ -55,6 +65,13 @@ impl Params {
     pub(crate) fn clear(&mut self) {
         self.current_subparams = 0;
         self.len = 0;
+        self.trailing_empty = false;
+    }
+
+    /// b-terminal(#777): 파서가 디스패치 직전에 정한다.
+    #[inline]
+    pub(crate) fn set_trailing_empty(&mut self, empty: bool) {
+        self.trailing_empty = empty;
     }
 
     /// Add an additional parameter.

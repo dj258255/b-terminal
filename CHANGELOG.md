@@ -7,6 +7,7 @@
 - iTerm2 클립보드 쓰기 `OSC 1337 ; Copy=:base64`를 받습니다(`it2copy` 같은 도구). OSC 52 쓰기(`c`)와 같은 길이라 `clipboard-write`(allow·ask·deny)·보고 있는 칸 규칙·크기 상한·base64 검사를 똑같이 거칩니다. Ghostty처럼 `=` 바로 뒤에 `:`가 있어야 하고(종류 글자는 받지 않음), 값이 비었거나 `?`면 버립니다. 클립보드를 읽는 길은 없습니다. File 같은 다른 1337 하위 명령은 지금처럼 무시합니다. Ghostty `iterm2.zig`와 `stream_terminal.zig` 시험을 옮겨 견줘 찾았습니다 (#778)
 - UTF-8로 읽을 수 없는 8비트 C1 바이트(0x80~0x9F)를 Ghostty처럼 바이트마다 U+FFFD 하나로 찍습니다. 전에는 `A\x9bB`가 `AB`, `A\x84B\x85C\x8dD\x88E`가 `ABCDE`로 말없이 사라졌습니다. `C2 80`~`C2 9F`처럼 UTF-8로 풀린 C1은 그대로 버리고 NBSP와 `Ü`는 찍습니다. Ghostty `stream.zig` 시험을 옮겨 견줘 찾았습니다 (#775)
 - APC·SOS·PM이 8비트 ST(0x9C)와 그 밖의 C1로도 끝납니다(Ghostty `parse_table.zig`처럼: 0x9B·0x90·0x9D는 CSI·DCS·OSC를 열고, 0x98·0x9E·0x9F·0xA0 이상은 머묾). 전에는 `ESC _ G… 0x9C`가 CAN·SUB·ESC까지 문자열로 남아 뒤의 글이 사라지고 kitty 그래픽 명령이 실행되지 않았습니다. 엔진과 알림 스캐너 모두 같게 고쳤습니다 (#776)
+- 모드 질의(DECRQM, `CSI Ps $ p`·`CSI ? Ps $ p`)를 Ghostty 1.4.0처럼 답합니다. 매개변수가 정확히 하나가 아니면(`CSI $ p`, `4;20$p`, `?4;7$p`, `4:20$p`) 답하지 않습니다(전에는 `0;0$y`·`4;2$y`로 답함). 구현하지 않았지만 Ghostty가 영구 리셋(4)으로 답하는 모드(DEC 117, ANSI 1·5·7·10·11·13~19)에 0(모름) 대신 4를 답합니다 (#777)
 
 ## [0.96.0] - 2026-11-23
 
