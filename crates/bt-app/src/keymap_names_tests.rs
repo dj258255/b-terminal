@@ -3,6 +3,9 @@
 //! `parse: backwards compatibility with <= 1.1.x` 3120줄, `parse: global triggers` 3158줄 — 모두 같은 입력과 같은 기대)을
 //! 우리 해석기(`Keymap::build`·`parse_trigger`)에 옮긴 것(#767).
 //!
+//! Ghostty보다 넓게 받는 것(전에 받던 꼴 가운데 뜻이 분명한 것은 계속 받는다): 시험 1이 오류로 치는 `SHIFT+a`·`shift + a`는 우리는 받고,
+//! 옛 별칭(`return`·`esc`·`pageup`·`pagedown`)과 대소문자가 다른 이름(`Enter`)도 받는다. 모르는 이름·중복은 Ghostty처럼 경고다.
+//!
 //! 우리 트리거는 글자 키를 물리 키가 아니라 글자로 맞춘다(ADR-070): Ghostty의 `.physical = .key_a`는 우리 `a`로, `.physical = .digit_0`은
 //! 우리 `digit_0`으로, `.unicode = '0'`도 `digit_0`으로 적는다(`0` 글자와 `digit_0`을 한 키로 센다). 그 밖의 기대는 Ghostty 그대로다.
 
@@ -283,12 +286,21 @@ fn ghostty_rejects_repeated_prefixes() {
     assert!(!is_invalid("all:unconsumed:a=ignore"));
 }
 
-/// Ghostty는 수식 키 이름의 대소문자와 `+` 둘레의 공백을 가린다(`SHIFT`, ` shift `는 키 이름이 될 수 없어 오류)
+/// Ghostty보다 넓게 받는다: 수식 키 이름의 대소문자와 `+` 둘레 공백, 옛 별칭, 대소문자 다른 이름(전에 받던 꼴)
 #[test]
-fn ghostty_is_strict_about_case_and_spaces() {
-    assert!(is_invalid("SHIFT+a=ignore"));
-    assert!(is_invalid("shift + a=ignore"));
-    assert!(is_invalid("Shift+a=ignore"));
+fn wider_than_ghostty_keeps_old_forms() {
+    assert!(is("SHIFT+a=ignore", "s", "a", ign()), "{:?}", one("SHIFT+a=ignore"));
+    assert!(is("Shift+a=ignore", "s", "a", ign()), "{:?}", one("Shift+a=ignore"));
+    assert!(is("shift + a=ignore", "s", "a", ign()), "{:?}", one("shift + a=ignore"));
+    assert!(is("ctrl+return=ignore", "c", "enter", ign()));
+    assert!(is("esc=ignore", "", "escape", ign()));
+    assert!(is("pageup=ignore", "", "page_up", ign()));
+    assert!(is("pagedown=ignore", "", "page_down", ign()));
+    assert!(is("Enter=ignore", "", "enter", ign()));
+    assert!(is("ARROW_UP=ignore", "", "arrow_up", ign()));
+    // 겹침과 모르는 이름은 여전히 경고
+    assert!(is_invalid("SHIFT+shift+a=ignore"));
+    assert!(is_invalid("Keya=ignore"));
 }
 
 /// 유니코드 글자 키는 소문자로 맞춘다(Ghostty `foldedCodepoint`): 눌림 `ö`와 묶음 `ctrl+Ö`가 맞는다

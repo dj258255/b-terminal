@@ -352,6 +352,21 @@ fn parse_key_name(part: &str) -> Result<String, String> {
             return Ok((*k).to_string());
         }
     }
+    // Ghostty에는 없지만 전에 받던 꼴(뜻이 분명한 것)은 계속 받는다: 옛 별칭과 대소문자 다른 이름(`Enter`, `ARROW_UP`)
+    let legacy = match part {
+        "return" => Some("enter"),
+        "esc" => Some("escape"),
+        "pageup" => Some("page_up"),
+        "pagedown" => Some("page_down"),
+        _ => None,
+    };
+    if let Some(k) = legacy {
+        return Ok(k.to_string());
+    }
+    let lower = part.to_ascii_lowercase();
+    if lower != part {
+        return parse_key_name(&lower).map_err(|_| format!("모르는 키 이름: {part}"));
+    }
     Err(format!("모르는 키 이름: {part}"))
 }
 
@@ -366,9 +381,10 @@ pub fn normalize_key(k: &str) -> String {
 
 /// `super+shift+t`를 읽는다(Ghostty `Trigger.parse`). 키 순서(`a>b`)는 `Keymap::build`가 `>`로 나눠 키마다 부른다.
 /// `+`로 조각을 나누고, 조각이 비어 있으면 글자 `+`다(`ctrl++`, `+`). 수식 키 이름은 소문자로만 받고(`SHIFT`는 오류),
-/// 수식 키를 겹치거나 키를 둘 쓰면 오류다. 키는 수식 키 앞에 써도 된다(`a+shift`)
+/// 수식 키를 겹치거나 키를 둘 쓰면 오류다. 키는 수식 키 앞에 써도 된다(`a+shift`). Ghostty보다 넓게 받는 것: 수식 키 이름의
+/// 대소문자(`SHIFT+a`)와 `+` 둘레 공백(`shift + a`), 옛 별칭(`return`·`esc`·`pageup`·`pagedown`)과 대소문자 다른 키 이름(`Enter`)
 pub fn parse_trigger(s: &str) -> Result<Trigger, String> {
-    if s.is_empty() {
+    if s.trim().is_empty() {
         return Err("키가 없습니다".into());
     }
     if s.contains('>') {
@@ -380,7 +396,9 @@ pub fn parse_trigger(s: &str) -> Result<Trigger, String> {
     while !rem.is_empty() {
         let (part, rest) = rem.split_once('+').unwrap_or((rem, ""));
         rem = rest;
-        let slot = match part {
+        // Ghostty보다 넓게: 수식 키 이름의 대소문자와 `+` 둘레의 공백을 가리지 않는다(전에도 받았다)
+        let part = part.trim();
+        let slot = match part.to_ascii_lowercase().as_str() {
             "shift" => Some(&mut mods.shift),
             "ctrl" | "control" => Some(&mut mods.ctrl),
             "alt" | "opt" | "option" => Some(&mut mods.alt),
