@@ -138,15 +138,17 @@ fn chain_text(t: &str) -> Option<String> {
 /// 키 묶음 표를 `keybind = …` 줄로. 기본 묶음 위에 설정의 줄을 차례로 얹고(같은 트리거는 나중 것, `unbind`는 지움,
 /// `clear`는 모두 지움) 읽지 못한 줄은 `Keymap::build`와 같이 건너뛴다. `defaults_only`면 기본만
 pub fn keybind_lines(user: &[String], defaults_only: bool) -> Vec<String> {
-    // 열쇠 = (키 테이블, 전역 여부, 트리거 순서), 값 = 접두사를 뺀 줄 꼬리를 포함한 완성 줄
-    let mut entries: Vec<((String, bool, String), String)> = Vec::new();
-    let put =
-        |entries: &mut Vec<((String, bool, String), String)>, key: (String, bool, String), line: Option<String>| {
-            entries.retain(|(k, _)| *k != key);
-            if let Some(l) = line {
-                entries.push((key, l));
-            }
-        };
+    // 열쇠 = (키 테이블, 전역 여부, 트리거 순서), 값 = 접두사를 뺀 줄 꼬리를 포함한 완성 줄 하나와, 그 뒤에 덧붙은 `chain=` 줄들
+    type Key = (String, bool, String);
+    let mut entries: Vec<(Key, Vec<String>)> = Vec::new();
+    let put = |entries: &mut Vec<(Key, Vec<String>)>, key: Key, line: Option<String>| {
+        entries.retain(|(k, _)| *k != key);
+        if let Some(l) = line {
+            entries.push((key, vec![l]));
+        }
+    };
+    // `chain=`이 덧붙을 앞 묶음의 열쇠(지우기가 끊는다). 앱의 `Keymap::build`와 같은 규칙이다
+    let mut chain_parent: Option<Key> = None;
     let swap_super = !cfg!(target_os = "macos");
     for (t, a) in keymap::defaults() {
         let (Ok(mut trig), Ok(Some(act))) = (keymap::parse_trigger(t), keymap::parse_action(a)) else {
@@ -163,14 +165,26 @@ pub fn keybind_lines(user: &[String], defaults_only: bool) -> Vec<String> {
         put(&mut entries, (String::new(), false, text), Some(line));
     }
     if !defaults_only {
-        for raw in user {
+        // 읽지 못하는 줄은 건너뛴다(앱이 경고하고 버리는 것과 같다). `chain=` 줄은 앞 줄에 달려 있어 줄 전체를 한 번에 본다
+        let bad = keymap::Keymap::build_with_status(user).2;
+        for (raw, bad) in user.iter().zip(bad) {
             let raw = raw.trim();
             if raw == "clear" {
                 entries.clear();
+                chain_parent = None;
                 continue;
             }
-            // 읽지 못하는 줄은 건너뛴다(앱이 경고하고 버리는 것과 같다)
-            if !keymap::Keymap::build(&[raw.to_string()]).1.is_empty() {
+            if bad {
+                continue;
+            }
+            // 덧붙은 동작은 앞 묶음 줄 바로 뒤에 쓴 그대로 보인다
+            if raw.starts_with("chain=") {
+                if let Some((_, lines)) = chain_parent
+                    .as_ref()
+                    .and_then(|p| entries.iter_mut().find(|(k, _)| k == p))
+                {
+                    lines.push(format!("keybind = {raw}"));
+                }
                 continue;
             }
             let eq_at = raw.find('=').unwrap_or(raw.len());
@@ -179,7 +193,10 @@ pub fn keybind_lines(user: &[String], defaults_only: bool) -> Vec<String> {
                 .filter(|&i| i > 0 && !raw[..i].contains(['+', '>']))
                 .map(|i| (raw[..i].to_string(), &raw[i + 1..]));
             let body = match &table {
-                Some((_, "")) => continue,
+                Some((_, "")) => {
+                    chain_parent = None;
+                    continue;
+                }
                 Some((_, rest)) => *rest,
                 None => raw,
             };
@@ -211,15 +228,17 @@ pub fn keybind_lines(user: &[String], defaults_only: bool) -> Vec<String> {
             } else {
                 format!("keybind = {prefixes}{table_name}/{chain}={a}")
             };
-            put(&mut entries, key, if a.trim() == "unbind" { None } else { Some(shown) });
+            let unbind = a.trim() == "unbind";
+            chain_parent = (!unbind).then(|| key.clone());
+            put(&mut entries, key, if unbind { None } else { Some(shown) });
         }
     }
     // 보이는 차례: 기본 묶음(테이블 밖) 먼저, 같은 쪽 안에서는 이름순
-    let mut sorted: BTreeMap<(bool, String, String), String> = BTreeMap::new();
+    let mut sorted: BTreeMap<(bool, String, String), Vec<String>> = BTreeMap::new();
     for ((table, global, chain), line) in entries {
         sorted.insert((!table.is_empty(), table, format!("{}{chain}", u8::from(global))), line);
     }
-    sorted.into_values().collect()
+    sorted.into_values().flatten().collect()
 }
 
 /// `+list-colors` 줄: `이름 = #rrggbb`. 이름은 소문자, 이름순(대소문자 무시), 같은 이름은 한 번
@@ -654,6 +673,59 @@ mod tests {
         assert!(!lines.contains(&"keybind = ctrl+q=new_tab".to_string()), "{lines:?}");
         let lines = keybind_lines(&s(&["clear", "ctrl+x=reset"]), false);
         assert_eq!(lines, vec!["keybind = ctrl+x=reset".to_string()]);
+    }
+
+    /// `chain=<동작>` 줄은 앞 묶음 줄 바로 뒤에 쓴 그대로 보이고, 잘못된 chain 줄과 지워진 묶음의 chain 줄은 보이지 않는다(#766)
+    #[test]
+    fn chain_줄은_앞_묶음_뒤에_보인다() {
+        let lines = keybind_lines(
+            &s(&[
+                "clear",
+                "ctrl+a=new_window",
+                "chain=new_tab",
+                "ctrl+b=new_tab",
+                "chain=close_tab",
+            ]),
+            false,
+        );
+        assert_eq!(
+            lines,
+            vec![
+                "keybind = ctrl+a=new_window".to_string(),
+                "keybind = chain=new_tab".to_string(),
+                "keybind = ctrl+b=new_tab".to_string(),
+                "keybind = chain=close_tab".to_string(),
+            ]
+        );
+        // 앞 묶음이 없거나, unbind·chain=unbind·접두사 붙은 chain은 경고라 보이지 않는다
+        let lines = keybind_lines(
+            &s(&[
+                "clear",
+                "chain=new_tab",
+                "ctrl+a=new_window",
+                "chain=unbind",
+                "global:chain=ignore",
+                "ctrl+a=unbind",
+                "chain=new_tab",
+            ]),
+            false,
+        );
+        assert!(lines.is_empty(), "{lines:?}");
+        // 같은 키를 다시 정하면 앞서 덧붙은 chain도 함께 바뀐다
+        let lines = keybind_lines(
+            &s(&["clear", "ctrl+a=new_window", "chain=new_tab", "ctrl+a=close_tab"]),
+            false,
+        );
+        assert_eq!(lines, vec!["keybind = ctrl+a=close_tab".to_string()]);
+        // 키 테이블·전역 묶음의 chain
+        let lines = keybind_lines(&s(&["clear", "nav/h=goto_split:left", "chain=text:x"]), false);
+        assert_eq!(
+            lines,
+            vec![
+                "keybind = nav/h=goto_split:left".to_string(),
+                "keybind = chain=text:x".to_string()
+            ]
+        );
     }
 
     #[test]

@@ -1110,7 +1110,7 @@ pub struct App {
     /// 읽어 둔 사용자 셰이더(`custom-shader`, #376). GPU 길 창마다 장치가 따로라 창을 만들 때 각자 컴파일한다
     shaders: Vec<bt_gpu::CustomShaderSource>,
     hotkey_registered: Vec<global_hotkey::hotkey::HotKey>,
-    hotkey_actions: std::collections::HashMap<u32, Action>,
+    hotkey_actions: std::collections::HashMap<u32, Vec<Action>>,
     /// 닫고 들고 있는 칸·탭(`undo-timeout`, #164)과 되살린 것을 다시 닫는 일(`redo`)
     undo: UndoStack<Closed>,
     redo: UndoStack<Redo>,
@@ -3554,19 +3554,23 @@ impl App {
                 self.w.kitty_down.insert(physical, id);
             }
         }
-        if let Some(action) = out.action {
+        // 덧붙은 동작(`chain=`)은 첫 동작 뒤에 차례로 한다. 하나가 할 수 없어도 나머지는 한다(Ghostty)
+        let mut todo = out.action.into_iter().chain(out.chained);
+        if let Some(first) = todo.next() {
             if let Some(pane) = script_pane {
                 self.focus_pane(pane);
             }
-            match action {
-                // all:은 글 보내기를 모든 칸에 한다. 다른 동작은 칸 하나의 일이 아니라 지금 칸·창에만 한다
-                Action::Text(text) if out.all => {
-                    for p in &self.panes {
-                        p.session.write(text.as_bytes());
+            for action in std::iter::once(first).chain(todo) {
+                match action {
+                    // all:은 글 보내기를 모든 칸에 한다. 다른 동작은 칸 하나의 일이 아니라 지금 칸·창에만 한다
+                    Action::Text(text) if out.all => {
+                        for p in &self.panes {
+                            p.session.write(text.as_bytes());
+                        }
+                        self.request_redraw();
                     }
-                    self.request_redraw();
+                    action => self.handle_action(action, event_loop),
                 }
-                action => self.handle_action(action, event_loop),
             }
         }
     }
@@ -5380,7 +5384,10 @@ impl App {
             match manager.register(hk) {
                 Ok(()) => {
                     log::info!("전역 단축키: {text}");
-                    self.hotkey_actions.insert(hk.id(), action.clone());
+                    // `chain=`으로 덧붙인 동작은 첫 동작 뒤에 차례로 한다
+                    let mut actions = vec![action.clone()];
+                    actions.extend(self.keymap.global_more.get(trig).cloned().unwrap_or_default());
+                    self.hotkey_actions.insert(hk.id(), actions);
                     self.hotkey_registered.push(hk);
                 }
                 Err(e) => log::warn!("전역 단축키 {text}를 등록하지 못했습니다(다른 앱이 쓰는 중일 수 있습니다): {e}"),
@@ -7209,7 +7216,7 @@ impl ApplicationHandler<UserEvent> for App {
                 self.request_redraw_all()
             }
             UserEvent::Hotkey(id) => {
-                if let Some(a) = self.hotkey_actions.get(&id).cloned() {
+                for a in self.hotkey_actions.get(&id).cloned().unwrap_or_default() {
                     self.handle_action(a, event_loop);
                 }
             }
