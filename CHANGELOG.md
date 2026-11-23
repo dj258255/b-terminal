@@ -9,6 +9,7 @@
 - APC·SOS·PM이 8비트 ST(0x9C)와 그 밖의 C1로도 끝납니다(Ghostty `parse_table.zig`처럼: 0x9B·0x90·0x9D는 CSI·DCS·OSC를 열고, 0x98·0x9E·0x9F·0xA0 이상은 머묾). 전에는 `ESC _ G… 0x9C`가 CAN·SUB·ESC까지 문자열로 남아 뒤의 글이 사라지고 kitty 그래픽 명령이 실행되지 않았습니다. 엔진과 알림 스캐너 모두 같게 고쳤습니다 (#776)
 - 모드 질의(DECRQM, `CSI Ps $ p`·`CSI ? Ps $ p`)를 Ghostty 1.4.0처럼 답합니다. 매개변수가 정확히 하나가 아니면(`CSI $ p`, `4;20$p`, `?4;7$p`, `4:20$p`) 답하지 않습니다(전에는 `0;0$y`·`4;2$y`로 답함). 구현하지 않았지만 Ghostty가 영구 리셋(4)으로 답하는 모드(DEC 117, ANSI 1·5·7·10·11·13~19)에 0(모름) 대신 4를 답합니다 (#777)
 - `clipboard-codepoint-map`을 `copy_to_clipboard`의 `vt`·`html`·`mixed`(HTML)에도 겁니다(Ghostty 1.4.0 `Surface.zig`·`formatter.zig`처럼). 전에는 글(`plain`·`mixed`의 text/plain)에만 걸려, 규칙 `e→X`로 `vt`를 복사해도 `red text`가 그대로 나왔습니다. 꾸밈은 그대로 두고 글자만 바꾸며, 바꾼 글은 `html`에서 이스케이프됩니다. 하이퍼링크 주소와 `write_*_file`로 뽑는 파일에는 걸지 않습니다 (#787)
+- 줄 끝에서 넘어간 넓은 글자 자리(줄 끝의 자리표시 칸)에서 끝나는 고르기가 Ghostty처럼 그 글자까지 가져옵니다. 3열 창의 `1A⚡Z`에서 첫 줄 세 칸을 고르면 전에는 `1A`(윗줄이 있으면 윗줄 첫 글자가 섞여 `1AQ`)가 복사되고 개발 빌드에서는 앱이 죽었습니다. 이제 `1A⚡`, 끝 한 칸만 고르면 `⚡`이고, 사각 고르기는 끝을 넓히지 않아 `1A`입니다. 아래 줄이 없는 자리(맨 아래 줄)에서는 넓히지 않습니다. Ghostty 1.4.0 `formatter.zig` 시험 `PageList selection ending on spacer head`를 같은 입력으로 옮겨 견줘 찾았습니다 (#786)
 
 ## [0.96.0] - 2026-11-23
 

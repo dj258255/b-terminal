@@ -761,13 +761,12 @@ impl<T> Term<T> {
         match self.selection.as_ref() {
             Some(Selection { ty: SelectionType::Block, .. }) => {
                 for line in (start.line.0..end.line.0).map(Line::from) {
-                    res += self
-                        .line_to_string(line, start.column..end.column, start.column.0 != 0)
-                        .trim_end();
+                    // b-terminal(#786): 사각 고르기는 줄 끝 자리표시 칸 너머 글자를 가져오지 않는다(Ghostty `rectangle`)
+                    res += self.line_to_string(line, start.column..end.column, false).trim_end();
                     res += "\n";
                 }
 
-                res += self.line_to_string(end.line, start.column..end.column, true).trim_end();
+                res += self.line_to_string(end.line, start.column..end.column, false).trim_end();
             },
             Some(Selection { ty: SelectionType::Lines, .. }) => {
                 res = self.bounds_to_string(start, end) + "\n";
@@ -852,7 +851,15 @@ impl<T> Term<T> {
             && grid_line[line_length - 1].flags.contains(Flags::LEADING_WIDE_CHAR_SPACER)
             && include_wrapped_wide
         {
-            text.push(self.grid[line - 1i32][Column(0)].c);
+            // b-terminal(#786): 넘어간 글자는 다음 줄 첫 칸에 있다(`line - 1`은 윗줄이라 엉뚱한 글자를 읽고, 맨 위 줄에서는 격자 밖이다).
+            // 다음 줄이 없으면(아래 줄을 지운 뒤 등) 덧붙일 글자가 없다
+            if line < self.bottommost_line() {
+                let wide = &self.grid[line + 1i32][Column(0)];
+                text.push(wide.c);
+                for c in wide.zerowidth().into_iter().flatten() {
+                    text.push(*c);
+                }
+            }
         }
 
         text
