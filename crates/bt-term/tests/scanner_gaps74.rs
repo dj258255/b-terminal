@@ -100,13 +100,18 @@ fn osc_c0_scanner_and_emulator_agree() {
 
 #[test]
 fn bel_can_sub_esc_in_osc_keep_the_073_rule() {
-    // BEL·CAN·SUB는 OSC를 끝내고 내보낸다. ESC 뒤 `\`도 같다
-    for end in [&b"\x07"[..], b"\x18", b"\x1a", b"\x1b\\"] {
+    // BEL은 OSC를 끝내고 내보낸다. ESC 뒤 `\`도 같다
+    for end in [&b"\x07"[..], b"\x1b\\"] {
         let b = [b"\x1b]133;A".as_slice(), end].concat();
         assert!(
             feed_all(&b).contains(&Signal::Prompt(PromptMark::PromptStart)),
             "{end:?}"
         );
+    }
+    // CAN·SUB는 OSC를 끝내되 버린다(#763, Ghostty 1.4.0 `osc.zig` `Parser.end`)
+    for end in [&b"\x18"[..], b"\x1a"] {
+        let b = [b"\x1b]133;A".as_slice(), end].concat();
+        assert!(feed_all(&b).is_empty(), "{end:?}");
     }
 }
 

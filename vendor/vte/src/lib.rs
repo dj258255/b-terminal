@@ -411,8 +411,10 @@ impl<const OSC_RAW_BUF_SIZE: usize> Parser<OSC_RAW_BUF_SIZE> {
                 self.osc_end(performer, byte);
                 self.state = State::Ground
             },
+            // b-terminal(#763): CAN·SUB는 OSC를 끝내되 명령은 버린다(Ghostty 1.4.0 `osc.zig` `Parser.end`, xterm)
             0x18 | 0x1A => {
-                self.osc_end(performer, byte);
+                self.osc_raw.clear();
+                self.osc_num_params = 0;
                 performer.execute(byte);
                 self.state = State::Ground
             },
@@ -962,6 +964,22 @@ mod tests {
         match &dispatcher.dispatched[0] {
             Sequence::Osc(_, true) => (),
             _ => panic!("expected osc with bell terminator"),
+        }
+    }
+
+    // b-terminal(#763): CAN·SUB로 끝난 OSC는 버리고 CAN·SUB만 실행한다(Ghostty 1.4.0 `osc.zig` `Parser.end`, xterm)
+    #[test]
+    fn osc_cancelled_by_can_or_sub_is_not_dispatched() {
+        for end in [0x18u8, 0x1a] {
+            let input = [b"\x1b]2;title".as_slice(), &[end], b"x"].concat();
+            let mut dispatcher = Dispatcher::default();
+            let mut parser = Parser::new();
+            parser.advance(&mut dispatcher, &input);
+            assert_eq!(
+                dispatcher.dispatched,
+                vec![Sequence::Execute(end), Sequence::Print('x')],
+                "{end:#x}"
+            );
         }
     }
 

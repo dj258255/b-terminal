@@ -1583,8 +1583,8 @@ fn links_fuzz_30000() {
 }
 
 // ---- #595: 스캐너가 문자열 끝을 엔진과 같게 본다 ----
-// 기준: Ghostty Parser.zig 276·280·281줄(OSC·DCS·APC 상태를 나갈 때 끝낸 바이트와 상관없이 dispatch·unhook·apc_end),
-// vte `advance_osc_string`(CAN·SUB·ESC에서 `osc_end`)
+// 기준: Ghostty Parser.zig 276·280·281줄(OSC·DCS·APC 상태를 나갈 때 끝낸다. DCS·APC는 바이트와 상관없이 unhook·apc_end,
+// OSC는 `osc.zig` `Parser.end`가 CAN·SUB면 버린다(#763)), vte `advance_osc_string`(ESC에서 `osc_end`)
 
 fn feed_all(b: &[u8]) -> Vec<Signal> {
     Scanner::default().feed(b)
@@ -1592,11 +1592,9 @@ fn feed_all(b: &[u8]) -> Vec<Signal> {
 
 #[test]
 fn can_sub_end_osc_and_the_next_query_is_seen() {
-    // CAN으로 끝난 OSC는 끝난 것으로 내보내고, 뒤따르는 DA1은 새 CSI다
+    // CAN으로 끝난 OSC는 끝나되 명령은 버리고(#763, Ghostty 1.4.0 `osc.zig` `Parser.end`), 뒤따르는 DA1은 새 CSI다
     let got = feed_all(b"\x1b]9;hi\x18\x1b[c");
-    assert_eq!(got.len(), 2, "{got:?}");
-    assert!(matches!(&got[0], Signal::Notify(n) if n.body == "hi"));
-    assert_eq!(got[1], Signal::Da1);
+    assert_eq!(got, vec![Signal::Da1]);
     let got = feed_all(b"\x1b]0;t\x1a\x1b[c");
     assert_eq!(got, vec![Signal::Da1]);
 }

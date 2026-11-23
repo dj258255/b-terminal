@@ -565,9 +565,10 @@ impl Scanner {
                     St::Ground
                 }
                 (St::Osc, 0x1b) => St::OscEsc,
-                // CAN·SUB도 OSC를 끝내고 내보낸다(vte `advance_osc_string`, Ghostty `Parser.zig` 276줄: 나가는 바이트와 상관없이 dispatch)(#595)
+                // CAN·SUB는 OSC를 끝내되 내보내지 않는다(Ghostty 1.4.0 `osc.zig` `Parser.end`가 끝 바이트가 CAN·SUB면 null, xterm과 같음)(#763).
+                // 끊긴 문자열을 알림·폴더·클립보드로 쓰지 않는다. 엔진(vendor/vte)도 같다
                 (St::Osc, 0x18 | 0x1a) => {
-                    self.finish(&mut out, i + 1, false);
+                    self.buf.clear();
                     St::Ground
                 }
                 // 나머지 C0(BEL·CAN·ESC·SUB 말고)는 버린다. 엔진도 OSC 본문에 넣지 않는다(vte `advance_osc_string` 407줄).
