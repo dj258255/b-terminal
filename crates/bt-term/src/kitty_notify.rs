@@ -161,7 +161,10 @@ pub struct Assembler {
 impl Assembler {
     /// `OSC 99 ;` 뒤의 `메타데이터;페이로드`를 먹인다. `bel`은 받은 끝맺음이 BEL인가(답도 같게 한다)
     pub fn packet(&mut self, rest: &str, bel: bool) -> Outcome {
-        let (meta, payload) = rest.split_once(';').unwrap_or(("", rest));
+        // 메타데이터와 페이로드 사이 `;`가 없으면 무효다(Ghostty `parse`의 "missing semicolon before payload", #764)
+        let Some((meta, payload)) = rest.split_once(';') else {
+            return Outcome::Nothing;
+        };
         let encoded = flag(meta, "e", false);
         // 읽기 전에 크기부터 본다(Ghostty 파서와 같다)
         let limit = if encoded {

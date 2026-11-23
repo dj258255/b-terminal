@@ -27,10 +27,11 @@ pub enum Signal {
     Prompt(PromptMark),
     /// 셸이 알린, 지금 실행하는 명령 글(OSC 633;E)
     CommandLine(String),
-    /// 진행 표시(OSC 9;4;상태;값). 상태 0은 지움, 1 보통, 2 오류, 3 끝 모름, 4 멈춤
+    /// 진행 표시(OSC 9;4;상태;값). 상태 0은 지움, 1 보통, 2 오류, 3 끝 모름, 4 멈춤.
+    /// 값이 없거나 읽을 수 없으면 `None`(Ghostty `progress: ?u8`, #764). 읽으면 0~100으로 자른다
     Progress {
         state: u8,
-        percent: u8,
+        percent: Option<u8>,
     },
     /// kitty 그래픽 명령(APC `ESC _ G … ESC \`)의 `G` 뒤 바이트(#76)
     Graphics(Vec<u8>),
@@ -656,6 +657,14 @@ impl Scanner {
         if let Some(sp) = text.strip_prefix("133;").and_then(crate::osc133::parse) {
             out.push((at, Signal::Semantic(sp)));
         }
+        // 9;12(ConEmu 프롬프트 표시)는 133;A와 같다(Ghostty `.semantic_prompt = .init(.fresh_line_new_prompt)`, #764)
+        if text.strip_prefix("9;").is_some_and(|d| osc9(d) == Osc9::Prompt) {
+            if let Some(sp) = crate::osc133::parse("A") {
+                out.push((at, Signal::Semantic(sp)));
+            }
+            out.push((at, Signal::Prompt(PromptMark::PromptStart)));
+            return;
+        }
         if let Some(mut sig) = parse_osc(&text) {
             if let Signal::KittyColor { bel: b, .. } | Signal::KittyClipboard { bel: b, .. } = &mut sig {
                 *b = bel;
@@ -739,42 +748,25 @@ fn csi_signal(fin: u8, params: &[u8]) -> Option<Signal> {
 }
 
 fn parse_osc(s: &str) -> Option<Signal> {
-    // `OSC 7 ST`처럼 번호만 있는 문자열은 빈 OSC 7이다(Ghostty report_pwd.zig는 `7;`만 보지만 같은 뜻)
-    if s == "7" {
-        return Some(Signal::CwdReset);
-    }
+    // 번호만 있는 문자열(`OSC 7 ST`)은 `;`가 없어 명령이 아니다(Ghostty `osc.zig`: 번호 뒤에 `;`가 와야 본문을 모은다). 빈 OSC 7은 `7;`뿐이다(#764)
     let (code, rest) = s.split_once(';')?;
     match code {
-        "9" => {
-            // ConEmu·Windows Terminal의 진행 표시: 9;4;상태;값
-            if let Some(p) = rest.strip_prefix("4;") {
-                let mut it = p.split(';');
-                let state = it.next()?.trim().parse::<u8>().ok()?;
-                let percent = it
-                    .next()
-                    .and_then(|v| v.trim().parse::<u8>().ok())
-                    .unwrap_or(0)
-                    .min(100);
-                return Some(Signal::Progress {
-                    state: state.min(4),
-                    percent,
-                });
-            }
-            // 9;1~9;12 같은 다른 ConEmu 명령은 알림이 아니다
-            if rest
-                .split_once(';')
-                .is_some_and(|(n, _)| n.chars().all(|c| c.is_ascii_digit()) && !n.is_empty())
-            {
-                return None;
-            }
-            let body = clean(rest, MAX_BODY);
-            (!body.is_empty()).then(|| {
-                Signal::Notify(Notification {
-                    title: String::new(),
-                    body,
+        "9" => match osc9(rest) {
+            Osc9::Notify => {
+                let body = clean(rest, MAX_BODY);
+                (!body.is_empty()).then(|| {
+                    Signal::Notify(Notification {
+                        title: String::new(),
+                        body,
+                    })
                 })
-            })
-        }
+            }
+            Osc9::Progress(state, percent) => Some(Signal::Progress { state, percent }),
+            // 9;9;경로는 OSC 7과 같은 report_pwd다(Ghostty osc9.zig `'9'` 가지)
+            Osc9::Cwd(url) => parse_osc(&format!("7;{url}")),
+            // 프롬프트 표시(9;12)는 `finish`가 133;A와 같은 신호 둘로 바꾼다
+            Osc9::Prompt | Osc9::Ignore => None,
+        },
         "777" => {
             // 777;notify;제목;본문
             let rest = rest.strip_prefix("notify;")?;
@@ -841,6 +833,77 @@ fn parse_osc(s: &str) -> Option<Signal> {
             .filter(|r| !r.is_empty())
             .map(|requests| Signal::KittyColor { requests, bel: false }),
         _ => None,
+    }
+}
+
+/// OSC 9의 갈래(Ghostty v1.4.0 `osc9.zig` `parse`)
+#[derive(Debug, PartialEq, Eq)]
+enum Osc9<'a> {
+    /// ConEmu 명령이 아니거나 형식이 맞지 않다: iTerm2 알림(본문은 `9;` 뒤 전체)
+    Notify,
+    /// ConEmu 명령이지만 앱이 쓰지 않고 버린다(sleep·message box·tab title·wait input·guimacro·run process·environment·xterm emulation·comment)
+    Ignore,
+    /// 9;12: 프롬프트 시작(OSC 133;A와 같다)
+    Prompt,
+    /// 9;4;상태;값
+    Progress(u8, Option<u8>),
+    /// 9;9;경로(report_pwd)
+    Cwd(&'a str),
+}
+
+/// `9;` 뒤의 글을 Ghostty `osc9.zig`의 분기대로 가른다. 바이트 비교만 하므로 글자 경계는 ASCII `;` 다음에서만 자른다
+fn osc9(data: &str) -> Osc9<'_> {
+    let b = data.as_bytes();
+    // 이름 번호 뒤에 `;`가 와야 그 명령이다. 모자라거나 다르면 알림이다
+    let semi = |i: usize| b.get(i) == Some(&b';');
+    match b.first() {
+        Some(b'1') => match b.get(1) {
+            Some(b';') => Osc9::Ignore, // 9;1 sleep
+            Some(b'0') => {
+                // 9;10 xterm emulation: `10`, 또는 `10;0`~`10;3`(뒤는 보지 않는다)
+                if b.len() == 2 {
+                    return Osc9::Ignore;
+                }
+                if b.len() < 4 || !semi(2) {
+                    return Osc9::Notify;
+                }
+                if matches!(b[3], b'0'..=b'3') {
+                    Osc9::Ignore
+                } else {
+                    Osc9::Notify
+                }
+            }
+            Some(b'1') if b.len() >= 3 && semi(2) => Osc9::Ignore, // 9;11 comment
+            Some(b'2') => Osc9::Prompt,                            // 9;12 뒤는 보지 않는다
+            _ => Osc9::Notify,
+        },
+        // 9;2 message box, 9;3 tab title, 9;6 guimacro, 9;7 run process, 9;8 environment variable
+        Some(b'2' | b'3' | b'6' | b'7' | b'8') if semi(1) => Osc9::Ignore,
+        Some(b'4') if semi(1) && b.len() >= 3 => {
+            let state = match b[2] {
+                b'0' => 0,
+                b'1' => 1,
+                b'2' => 2,
+                b'3' => 3,
+                b'4' => 4,
+                _ => return Osc9::Notify,
+            };
+            // 값은 set·error·pause만 읽는다. 값 자리가 없으면 set은 0, 나머지는 없음이다(`4;1`은 0%).
+            // `;`가 있는데 읽을 수 없으면(빈 글, 숫자 아님, usize 넘침, `4_2`) 없음이다
+            let mut percent = (state == 1).then_some(0);
+            if matches!(state, 1 | 2 | 4) && b.len() >= 4 && semi(3) {
+                let v = &data[4..];
+                percent = (!v.is_empty() && v.bytes().all(|c| c.is_ascii_digit()))
+                    .then(|| v.parse::<u64>().ok())
+                    .flatten()
+                    .map(|n| n.min(100) as u8);
+            }
+            Osc9::Progress(state, if matches!(state, 1 | 2 | 4) { percent } else { None })
+        }
+        // 9;5 wait input: 첫 글자가 5면 뒤는 보지 않는다
+        Some(b'5') => Osc9::Ignore,
+        Some(b'9') if semi(1) => Osc9::Cwd(&data[2..]),
+        _ => Osc9::Notify,
     }
 }
 
@@ -1216,11 +1279,17 @@ mod tests {
     fn progress_is_not_a_notification() {
         assert_eq!(
             notes(b"\x1b]9;4;1;40\x07"),
-            vec![Signal::Progress { state: 1, percent: 40 }]
+            vec![Signal::Progress {
+                state: 1,
+                percent: Some(40)
+            }]
         );
         assert_eq!(
             notes(b"\x1b]9;4;0;\x07"),
-            vec![Signal::Progress { state: 0, percent: 0 }]
+            vec![Signal::Progress {
+                state: 0,
+                percent: None
+            }]
         );
         assert!(
             notes(b"\x1b]9;9;\"C:\\\\\"\x07").is_empty(),
@@ -1294,11 +1363,11 @@ mod tests {
 
     #[test]
     fn osc7_empty_value_resets_cwd() {
-        // Ghostty report_pwd.zig: `7;`도 빈 값이고, 지우는 신호다. `OSC 7 ST`(세미콜론 없음)도 같다
+        // Ghostty report_pwd.zig: `7;`는 빈 값이고 지우는 신호다. `OSC 7 ST`(세미콜론 없음)는 명령이 아니라 아무것도 하지 않는다(#764)
         assert_eq!(notes(b"\x1b]7;\x07"), vec![Signal::CwdReset]);
         assert_eq!(notes(b"\x1b]7;\x1b\\"), vec![Signal::CwdReset]);
-        assert_eq!(notes(b"\x1b]7\x07"), vec![Signal::CwdReset]);
-        assert_eq!(notes(b"\x1b]7\x1b\\"), vec![Signal::CwdReset]);
+        assert!(notes(b"\x1b]7\x07").is_empty());
+        assert!(notes(b"\x1b]7\x1b\\").is_empty());
         // 7로 시작하는 다른 번호는 아니다
         assert!(notes(b"\x1b]70\x07").is_empty());
     }

@@ -614,7 +614,7 @@ fn check_signal(sig: &Signal, whole_len: usize) -> Result<(), String> {
             }
         }
         Signal::Progress { state, percent } => {
-            if *state > 4 || *percent > 100 {
+            if *state > 4 || percent.is_some_and(|p| p > 100) {
                 return Err("진행 범위".into());
             }
         }
