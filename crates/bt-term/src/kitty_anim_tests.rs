@@ -262,9 +262,7 @@ fn a_chunked_frame_whose_image_was_replaced_is_dropped() {
     assert_eq!(send(&mut g, "a=f,i=1,f=24,s=2,v=1,m=1", &[255, 0, 0]), None);
     // 직접 전송은 받던 프레임의 조각으로 읽히므로, 그림이 바뀌는 길은 쫓겨난 뒤 다시 들어오는 것이다(저장 상한)
     g.remove_image(1);
-    let again = g
-        .decode(&parse_control(b"f=24,s=2,v=1"), b64(&[255; 6]).as_bytes())
-        .unwrap();
+    let again = g.decode(&scan_command(b"f=24,s=2,v=1").unwrap().0, &[255; 6]).unwrap();
     g.store(1, again);
     // 마지막 조각이 오면 옛 그림 몫이라 버린다(Ghostty `image_generation` 검사). 새 그림은 그대로다
     let reply = send(&mut g, "a=f,m=0", &[0, 0, 255]);
