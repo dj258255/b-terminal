@@ -203,3 +203,54 @@ fn two_panes_of_different_sizes_match_cpu_per_pane() {
         assert!(diff * 1000 < want.len() * 5, "{name}: 다른 픽셀 {diff}/{}", want.len());
     }
 }
+
+/// 아틀라스에서 장면의 첫 글자(`kind == 0`) 그림을 잘라 온다
+fn first_glyph_pixels(scene: &Scene, cache: &GlyphCache) -> Vec<u8> {
+    let g = scene.glyphs.iter().find(|g| g.kind == 0).expect("글자 하나는 있다");
+    let (x, y) = (g.atlas[0] as usize, g.atlas[1] as usize);
+    let (w, h) = (g.size[0] as usize, g.size[1] as usize);
+    let side = cache.gray.size() as usize;
+    let data = cache.gray.data();
+    (y..y + h)
+        .flat_map(|r| data[r * side + x..r * side + x + w].iter().copied())
+        .collect()
+}
+
+/// 설정을 다시 읽어 칸 치수는 그대로이고 그림만 바뀐 글꼴(`font-thicken`)로 바꾸면, 같은 캐시라도 새 글꼴의 그림을 쓴다
+/// (#754, Ghostty #15280: 격자를 다시 만들면 셰이퍼 캐시를 주소가 아닌 번호로 가린다)
+#[test]
+fn new_fonts_with_same_metrics_do_not_reuse_old_glyphs() {
+    use bt_gpu::glyphs::SizeSig;
+    let plain = fonts_at(26.0);
+    let thick = Fonts::new(&FontConfig {
+        size: 26.0,
+        scale: 1.0,
+        thicken: true,
+        thicken_strength: 255,
+        ..FontConfig::default()
+    })
+    .expect("넣어 둔 글꼴은 늘 있다");
+    assert_eq!(plain.metrics(), thick.metrics(), "시험 전제: 칸 치수가 같다");
+    let (mut plain, mut thick) = (plain, thick);
+    let cells = row("A", 1);
+    let v = view(&cells, 1);
+
+    let mut fresh = GlyphCache::new(512, 2048);
+    let mut scene = Scene::default();
+    fresh.begin_frame(&[SizeSig::of(&thick)]);
+    scene.build(&mut fresh, &mut thick, &v, BG);
+    let want = first_glyph_pixels(&scene, &fresh);
+
+    let mut shared = GlyphCache::new(512, 2048);
+    shared.begin_frame(&[SizeSig::of(&plain)]);
+    scene.build(&mut shared, &mut plain, &v, BG);
+    let old = first_glyph_pixels(&scene, &shared);
+    assert_ne!(old, want, "시험 전제: 두껍게 한 그림이 다르다");
+    shared.begin_frame(&[SizeSig::of(&thick)]);
+    scene.build(&mut shared, &mut thick, &v, BG);
+    assert_eq!(
+        first_glyph_pixels(&scene, &shared),
+        want,
+        "옛 글꼴의 `A` 그림을 그대로 썼다"
+    );
+}

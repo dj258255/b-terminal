@@ -57,11 +57,13 @@ pub const COLOR_ATLAS_FIRST: u32 = 256;
 
 /// 글리프를 그린 글꼴 크기(#422). 같은 글자도 크기마다 다른 그림이라 열쇠에 이 값이 들어간다.
 /// 칸마다 글자 크기가 달라 한 프레임에 크기가 여럿 섞인다. 픽셀 크기(비트)와 칸 치수가 모두 같아야 같은 크기다
-/// (칸 치수만 같고 픽셀 크기가 다른 글꼴이나, 글꼴 설정만 바뀌어 칸 치수가 달라진 글꼴을 같게 보지 않는다)
+/// (칸 치수만 같고 픽셀 크기가 다른 글꼴이나, 글꼴 설정만 바뀌어 칸 치수가 달라진 글꼴을 같게 보지 않는다).
+/// 글꼴 묶음의 차례(`Fonts::generation`)도 넣어, 설정을 다시 읽어 칸 치수는 그대로이고 그림만 바뀐 묶음이 옛 글리프를 쓰지 않게 한다(#754)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SizeSig {
     px_bits: u32,
     metrics: CellMetrics,
+    generation: u64,
 }
 
 impl SizeSig {
@@ -69,6 +71,7 @@ impl SizeSig {
         Self {
             px_bits: fonts.px().to_bits(),
             metrics: fonts.metrics(),
+            generation: fonts.generation(),
         }
     }
 }
