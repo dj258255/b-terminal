@@ -176,44 +176,136 @@ impl FromStr for Rgb {
     }
 }
 
-/// Parse colors in XParseColor format.
-fn xparse_color(color: &[u8]) -> Option<Rgb> {
-    if !color.is_empty() && color[0] == b'#' {
-        parse_legacy_color(&color[1..])
-    } else if color.len() >= 4 && &color[..4] == b"rgb:" {
-        parse_rgb_color(&color[4..])
-    } else {
-        None
+/// X11 색 이름 표(`rgb.txt`). 출처·라이선스는 `vendor/README.md`. b-terminal(#765)
+const X11_RGB: &str = include_str!("x11_rgb.txt");
+
+/// 색 이름(대소문자 무시, 안쪽 공백은 그대로)으로 X11 표에서 찾는다. 줄 모양은 `RRR GGG BBB<탭>이름`(열 고정).
+fn x11_color(name: &[u8]) -> Option<Rgb> {
+    let name = str::from_utf8(name).ok()?;
+    for line in X11_RGB.lines() {
+        let line = line.trim_end_matches('\r');
+        let entry = match line.get(12..) {
+            Some(entry) => entry.trim_matches([' ', '\t']),
+            None => continue,
+        };
+        if !entry.eq_ignore_ascii_case(name) {
+            continue;
+        }
+        let channel = |range: core::ops::Range<usize>| line.get(range)?.trim().parse::<u8>().ok();
+        return Some(Rgb { r: channel(0..3)?, g: channel(4..7)?, b: channel(8..11)? });
     }
+    None
 }
 
-/// Parse colors in `rgb:r(rrr)/g(ggg)/b(bbb)` format.
-fn parse_rgb_color(color: &[u8]) -> Option<Rgb> {
-    let colors = str::from_utf8(color).ok()?.split('/').collect::<Vec<_>>();
-
-    if colors.len() != 3 {
+/// 16진수 한 채널(1~4자리, 숫자만)을 0~255로 줄여 맞춘다(Ghostty `RGB.fromHex`). `+`·`-`·`_`는 받지 않는다.
+fn scale_hex_channel(input: &[u8]) -> Option<u8> {
+    if input.is_empty() || input.len() > 4 || !input.iter().all(u8::is_ascii_hexdigit) {
         return None;
     }
-
-    // Scale values instead of filling with `0`s.
-    let scale = |input: &str| {
-        if input.len() > 4 {
-            None
-        } else {
-            let max = u32::pow(16, input.len() as u32) - 1;
-            let value = u32::from_str_radix(input, 16).ok()?;
-            Some((255 * value / max) as u8)
-        }
-    };
-
-    Some(Rgb { r: scale(colors[0])?, g: scale(colors[1])?, b: scale(colors[2])? })
+    let value = u32::from_str_radix(str::from_utf8(input).ok()?, 16).ok()?;
+    let max = u32::pow(16, input.len() as u32) - 1;
+    Some((255 * value / max) as u8)
 }
 
-/// Parse colors in `#r(rrr)g(ggg)b(bbb)` format.
+/// `0.0..=1.0` 십진 분수(Ghostty `fraction.parse`). 부호 하나, 숫자와 소수점 하나, 숫자 한 자리 이상, 지수 없음.
+fn parse_fraction(input: &[u8]) -> Option<f64> {
+    let (negative, digits) = match input.first() {
+        Some(b'+') => (false, &input[1..]),
+        Some(b'-') => (true, &input[1..]),
+        _ => (false, input),
+    };
+    let (int_part, frac_part) = match digits.iter().position(|&b| b == b'.') {
+        Some(dot) => (&digits[..dot], Some(&digits[dot + 1..])),
+        None => (digits, None),
+    };
+    if !int_part.iter().all(u8::is_ascii_digit) {
+        return None;
+    }
+    let mut count = int_part.len();
+    let mut int_value = 0f64;
+    for &d in int_part {
+        int_value = int_value * 10.0 + f64::from(d - b'0');
+    }
+    let (mut frac, mut scale) = (0u64, 1u64);
+    if let Some(frac_part) = frac_part {
+        for &d in frac_part {
+            if !d.is_ascii_digit() {
+                return None;
+            }
+            // 15자리까지만 모아 f64로 정확히 나눈다(Ghostty와 같게)
+            if scale < 1_000_000_000_000_000 {
+                frac = frac * 10 + u64::from(d - b'0');
+                scale *= 10;
+            }
+            count += 1;
+        }
+    }
+    if count == 0 {
+        return None;
+    }
+    let magnitude = int_value + frac as f64 / scale as f64;
+    let value = if negative { -magnitude } else { magnitude };
+    (0.0..=1.0).contains(&value).then_some(value)
+}
+
+/// 색 문자열을 Ghostty `RGB.parse`(color.zig 761줄)처럼 읽는다. b-terminal(#765)
+///
+/// 앞뒤 공백·탭은 무시한다. 받는 꼴: `#rgb`·`#rrggbb`·`#rrrgggbbb`·`#rrrrggggbbbb`, X11 색 이름(대소문자 무시),
+/// 이름이 아니면 `rgb`·`rrggbb`(`#` 없음), `rgb:r/g/b`(채널마다 1~4자리), `rgbi:r/g/b`(0.0~1.0).
+///
+/// `#` 꼴만은 Ghostty가 채널을 0~255로 줄여 맞추는 것(`#1af`가 `11aaff`)과 달리 xterm처럼 낮은 자리를 0으로 채운다
+/// (`#1af`가 `10a0f0`). 전부터 xterm과 같던 곳이라 그대로 둔다. 자릿수는 3의 배수 3~12만 받는다.
+fn xparse_color(color: &[u8]) -> Option<Rgb> {
+    let is_blank = |b: &u8| matches!(b, b' ' | b'\t');
+    let start = color.iter().position(|b| !is_blank(b))?;
+    let end = color.iter().rposition(|b| !is_blank(b))? + 1;
+    let input = &color[start..end];
+    if input[0] == b'#' {
+        let digits = &input[1..];
+        if !matches!(digits.len(), 3 | 6 | 9 | 12) || !digits.iter().all(u8::is_ascii_hexdigit) {
+            return None;
+        }
+        return parse_legacy_color(digits);
+    }
+
+    if let Some(rgb) = x11_color(input) {
+        return Some(rgb);
+    }
+
+    if matches!(input.len(), 3 | 6) {
+        let n = input.len() / 3;
+        return Some(Rgb {
+            r: scale_hex_channel(&input[..n])?,
+            g: scale_hex_channel(&input[n..2 * n])?,
+            b: scale_hex_channel(&input[2 * n..])?,
+        });
+    }
+
+    if let Some(rest) = input.strip_prefix(b"rgb:") {
+        return parse_rgb_color(rest, scale_hex_channel);
+    }
+    if let Some(rest) = input.strip_prefix(b"rgbi:") {
+        return parse_rgb_color(rest, |part| {
+            Some((parse_fraction(part)? * 255.0) as u8)
+        });
+    }
+    None
+}
+
+/// `r/g/b` 세 채널을 `channel`로 읽는다.
+fn parse_rgb_color(color: &[u8], channel: impl Fn(&[u8]) -> Option<u8>) -> Option<Rgb> {
+    let mut parts = color.split(|&b| b == b'/');
+    let (r, g, b) = (parts.next()?, parts.next()?, parts.next()?);
+    if parts.next().is_some() {
+        return None;
+    }
+    Some(Rgb { r: channel(r)?, g: channel(g)?, b: channel(b)? })
+}
+
+/// `#r(rrr)g(ggg)b(bbb)`의 자릿수 부분(16진수만, 3의 배수)을 xterm처럼 읽는다: 낮은 자리를 버리거나 0으로 채운다.
 fn parse_legacy_color(color: &[u8]) -> Option<Rgb> {
     let item_len = color.len() / 3;
 
-    // Truncate/Fill to two byte precision.
     let color_from_slice = |slice: &[u8]| {
         let col = usize::from_str_radix(str::from_utf8(slice).ok()?, 16).ok()? << 4;
         Some((col >> (4 * slice.len().saturating_sub(1))) as u8)
@@ -226,17 +318,62 @@ fn parse_legacy_color(color: &[u8]) -> Option<Rgb> {
     })
 }
 
-fn parse_number(input: &[u8]) -> Option<u8> {
-    if input.is_empty() {
+/// OSC 4·104의 색 번호(숫자만, 0~511). 256~259는 Ghostty의 특수 색 자리, 그 위는 `None`(Ghostty `u9` 바깥). b-terminal(#765)
+fn parse_color_index(input: &[u8]) -> Option<u16> {
+    if input.is_empty() || !input.iter().all(u8::is_ascii_digit) {
         return None;
     }
-    let mut num: u8 = 0;
-    for c in input {
-        let c = *c as char;
-        let digit = c.to_digit(10)?;
-        num = num.checked_mul(10).and_then(|v| v.checked_add(digit as u8))?;
+    let mut value = 0u16;
+    for &d in input {
+        value = value.checked_mul(10)?.checked_add(u16::from(d - b'0'))?;
+        if value > 511 {
+            return None;
+        }
     }
-    Some(num)
+    Some(value)
+}
+
+/// 색 OSC(4·10~12·104·110~112)의 인자 조각. Ghostty `tokenizeScalar(';')`처럼 빈 조각을 건너뛴다.
+/// 16번째 칸에 `;`가 글자로 들어올 수 있어 칸마다 `;`로 다시 가른다. b-terminal(#765)
+fn color_tokens<'a>(params: &'a [&'a [u8]]) -> impl Iterator<Item = &'a [u8]> {
+    params[1..].iter().flat_map(|p| p.split(|&b| b == b';')).filter(|t| !t.is_empty())
+}
+
+/// Ghostty 고정 캡처의 크기(`osc.zig` `Parser.MAX_BUF`). OSC 0·2·8의 `N;` 뒤 글(끝 널 한 바이트 포함)이 이 크기에
+/// 닿으면 명령 전체가 없다: 2047바이트까지 받고 2048부터 버린다. b-terminal(#765)
+const OSC_MAX_BUF: usize = 2048;
+
+/// `params[0]` 뒤 인자를 `;`로 이었을 때의 바이트 수
+fn osc_payload_len(params: &[&[u8]]) -> usize {
+    let rest = &params[1..];
+    rest.iter().map(|p| p.len()).sum::<usize>() + rest.len().saturating_sub(1)
+}
+
+/// OSC 8 매개변수(`key=value:key=value`)에서 `id`를 Ghostty `hyperlink.zig`처럼 읽는다. 값이 빈 `id=`는 없음이고,
+/// `=` 없는 조각을 만나면 거기서 멈춘다. b-terminal(#765)
+fn osc8_id(link_params: &[u8]) -> Option<String> {
+    // Ghostty는 `:`와 끝 `;`를 널로 바꾼 뒤 널 사이를 한 조각씩 읽는다. 첫 조각은 둘째 널부터 찾는다(앞이 빈 조각이면 합쳐진다).
+    let mut kvs: Vec<u8> = link_params.iter().map(|&b| if b == b':' { 0 } else { b }).collect();
+    kvs.push(0);
+    let mut id = None;
+    let mut start = 0;
+    while start < kvs.len() {
+        let Some(end) = kvs[start + 1..].iter().position(|&b| b == 0).map(|i| start + 1 + i) else {
+            break;
+        };
+        let kv = &kvs[start..=end];
+        let Some(eq) = kv.iter().position(|&b| b == b'=') else {
+            break;
+        };
+        if &kv[..eq] == b"id" {
+            let value = &kv[eq + 1..kv.len() - 1];
+            if !value.is_empty() {
+                id = str::from_utf8(value).ok().map(str::to_owned);
+            }
+        }
+        start = end + 1;
+    }
+    id
 }
 
 /// Internal state for VTE processor.
@@ -1466,14 +1603,19 @@ where
         match params[0] {
             // Set window title.
             b"0" | b"2" => {
-                if params.len() >= 2 {
-                    let title = params[1..]
-                        .iter()
-                        .flat_map(|x| str::from_utf8(x))
-                        .collect::<Vec<&str>>()
-                        .join(";")
-                        .trim()
-                        .to_owned();
+                // Ghostty: 깨진 UTF-8이 섞이면 요청 전체를 무시하고(`stream.zig` 2855줄), 앞뒤 공백은 그대로 둔다.
+                // 2047바이트를 넘으면 명령이 없다(고정 캡처). 16번째 칸 뒤도 `;` 포함 전부 제목이다. b-terminal(#765)
+                if params.len() >= 2 && osc_payload_len(params) < OSC_MAX_BUF {
+                    let mut title = String::new();
+                    for (i, piece) in params[1..].iter().enumerate() {
+                        let Ok(piece) = str::from_utf8(piece) else {
+                            return unhandled(params);
+                        };
+                        if i > 0 {
+                            title.push(';');
+                        }
+                        title.push_str(piece);
+                    }
                     self.handler.set_title(Some(title));
                     return;
                 }
@@ -1482,92 +1624,103 @@ where
 
             // Set color index.
             b"4" => {
-                if params.len() <= 1 || params.len() % 2 == 0 {
-                    unhandled(params);
-                    return;
-                }
-
-                for chunk in params[1..].chunks(2) {
-                    let index = match parse_number(chunk[0]) {
-                        Some(index) => index,
-                        None => {
-                            unhandled(params);
-                            continue;
-                        },
+                // Ghostty `parseGetSetAnsiColor`: 쌍이 안 맞거나 번호·색이 틀린 곳에서 멈추고 그 앞까지 쓴다.
+                // 빈 조각은 건너뛴다. b-terminal(#765)
+                let mut tokens = color_tokens(params);
+                while let (Some(index), Some(spec)) = (tokens.next(), tokens.next()) {
+                    let Some(index) = parse_color_index(index) else {
+                        unhandled(params);
+                        break;
                     };
+                    // 256~259는 Ghostty의 특수 색(굵게·밑줄 등). 우리에겐 그 자리가 없어 받아만 두고 건너뛴다.
+                    let palette = u8::try_from(index).ok();
+                    if index > 259 {
+                        unhandled(params);
+                        break;
+                    }
 
-                    if let Some(c) = xparse_color(chunk[1]) {
-                        self.handler.set_color(index as usize, c);
-                    } else if chunk[1] == b"?" {
-                        let prefix = alloc::format!("4;{index}");
-                        self.handler.dynamic_color_sequence(prefix, index as usize, terminator);
+                    if spec == b"?" {
+                        if let Some(index) = palette {
+                            let prefix = alloc::format!("4;{index}");
+                            self.handler.dynamic_color_sequence(prefix, index as usize, terminator);
+                        }
+                    } else if let Some(c) = xparse_color(spec) {
+                        if let Some(index) = palette {
+                            self.handler.set_color(index as usize, c);
+                        }
                     } else {
                         unhandled(params);
+                        break;
                     }
                 }
             },
 
             // Hyperlink.
             b"8" if params.len() > 2 => {
-                let link_params = params[1];
+                if osc_payload_len(params) >= OSC_MAX_BUF {
+                    return unhandled(params);
+                }
 
                 // NOTE: The escape sequence is of form 'OSC 8 ; params ; URI ST', where
                 // URI is URL-encoded. However `;` is a special character and might be
                 // passed as is, thus we need to rebuild the URI.
-                let mut uri = str::from_utf8(params[2]).unwrap_or_default().to_string();
+                let mut uri = params[2].to_vec();
                 for param in params[3..].iter() {
-                    uri.push(';');
-                    uri.push_str(str::from_utf8(param).unwrap_or_default());
+                    uri.push(b';');
+                    uri.extend_from_slice(param);
                 }
+                let Ok(uri) = String::from_utf8(uri) else {
+                    return unhandled(params);
+                };
 
-                // The OSC 8 escape sequence must be stopped when getting an empty `uri`.
+                // Ghostty `hyperlink.zig`(b-terminal #765): 값이 빈 `id=`는 id 없음이다. 주소가 비면 링크를 끝내지만
+                // id가 있으면 무효 요청이라 열린 링크가 이어진다(`8;id=foo;`).
+                let id = osc8_id(params[1]);
                 if uri.is_empty() {
+                    if id.is_some() {
+                        return unhandled(params);
+                    }
                     self.handler.set_hyperlink(None);
                     return;
                 }
-
-                // Link parameters are in format of `key1=value1:key2=value2`. Currently only
-                // key `id` is defined.
-                let id = link_params
-                    .split(|&b| b == b':')
-                    .find_map(|kv| kv.strip_prefix(b"id="))
-                    .and_then(|kv| str::from_utf8(kv).ok().map(|e| e.to_owned()));
 
                 self.handler.set_hyperlink(Some(Hyperlink { id, uri }));
             },
 
             // Get/set Foreground, Background, Cursor colors.
             b"10" | b"11" | b"12" => {
-                if params.len() >= 2 {
-                    if let Some(mut dynamic_code) = parse_number(params[0]) {
-                        for param in &params[1..] {
-                            // 10 is the first dynamic color, also the foreground.
-                            let offset = dynamic_code as usize - 10;
-                            let index = NamedColor::Foreground as usize + offset;
+                // Ghostty `parseGetSetDynamicColor`: 색이 틀린 곳에서 멈추고 앞까지 쓴다. 빈 조각은 건너뛴다.
+                // b-terminal(#765)
+                let mut dynamic_code: usize = match params[0] {
+                    b"10" => 10,
+                    b"11" => 11,
+                    _ => 12,
+                };
+                for param in color_tokens(params) {
+                    // 10 is the first dynamic color, also the foreground.
+                    let offset = dynamic_code - 10;
+                    let index = NamedColor::Foreground as usize + offset;
 
-                            // End of setting dynamic colors.
-                            if index > NamedColor::Cursor as usize {
-                                unhandled(params);
-                                break;
-                            }
-
-                            if let Some(color) = xparse_color(param) {
-                                self.handler.set_color(index, color);
-                            } else if param == b"?" {
-                                self.handler.dynamic_color_sequence(
-                                    dynamic_code.to_string(),
-                                    index,
-                                    terminator,
-                                );
-                            } else {
-                                unhandled(params);
-                            }
-                            dynamic_code += 1;
-                        }
-                        return;
+                    // End of setting dynamic colors.
+                    if index > NamedColor::Cursor as usize {
+                        unhandled(params);
+                        break;
                     }
+
+                    if param == b"?" {
+                        self.handler.dynamic_color_sequence(
+                            dynamic_code.to_string(),
+                            index,
+                            terminator,
+                        );
+                    } else if let Some(color) = xparse_color(param) {
+                        self.handler.set_color(index, color);
+                    } else {
+                        unhandled(params);
+                        break;
+                    }
+                    dynamic_code += 1;
                 }
-                unhandled(params);
             },
 
             // Set mouse cursor shape.
@@ -1612,31 +1765,40 @@ where
 
             // Reset color index.
             b"104" => {
-                // Reset all color indexes when no parameters are given.
-                if params.len() == 1 || params[1].is_empty() {
+                // Ghostty `parseResetAnsiColor`(b-terminal #765): 빈 조각과 틀린 번호는 건너뛰고, 쓸 만한 번호가
+                // 하나도 없으면(인자가 없을 때 포함) 팔레트 전체를 되돌린다. 256~259(특수 색)는 우리에겐 자리가
+                // 없지만 번호로는 센다.
+                let mut valid = 0usize;
+                for param in color_tokens(params) {
+                    match parse_color_index(param) {
+                        Some(index) if index < 256 => {
+                            self.handler.reset_color(index as usize);
+                            valid += 1;
+                        },
+                        Some(256..=259) => valid += 1,
+                        _ => unhandled(params),
+                    }
+                }
+                if valid == 0 {
                     for i in 0..256 {
                         self.handler.reset_color(i);
-                    }
-                    return;
-                }
-
-                // Reset color indexes given as parameters.
-                for param in &params[1..] {
-                    match parse_number(param) {
-                        Some(index) => self.handler.reset_color(index as usize),
-                        None => unhandled(params),
                     }
                 }
             },
 
-            // Reset foreground color.
-            b"110" => self.handler.reset_color(NamedColor::Foreground as usize),
-
-            // Reset background color.
-            b"111" => self.handler.reset_color(NamedColor::Background as usize),
-
-            // Reset text cursor color.
-            b"112" => self.handler.reset_color(NamedColor::Cursor as usize),
+            // Reset foreground/background/text cursor color. Ghostty는 인자가 있으면(`110;junk`) 되돌리지 않는다.
+            // 끝에 `;`만 붙은 것(`110;`)은 인자가 아니다. b-terminal(#765)
+            b"110" | b"111" | b"112" => {
+                if color_tokens(params).next().is_some() {
+                    return unhandled(params);
+                }
+                let color = match params[0] {
+                    b"110" => NamedColor::Foreground,
+                    b"111" => NamedColor::Background,
+                    _ => NamedColor::Cursor,
+                };
+                self.handler.reset_color(color as usize);
+            },
 
             _ => unhandled(params),
         }
@@ -2504,17 +2666,17 @@ mod tests {
 
     #[test]
     fn parse_invalid_number() {
-        assert_eq!(parse_number(b"1abc"), None);
+        assert_eq!(parse_color_index(b"1abc"), None);
     }
 
     #[test]
     fn parse_valid_number() {
-        assert_eq!(parse_number(b"123"), Some(123));
+        assert_eq!(parse_color_index(b"123"), Some(123));
     }
 
     #[test]
-    fn parse_number_too_large() {
-        assert_eq!(parse_number(b"321"), None);
+    fn parse_color_index_too_large() {
+        assert_eq!(parse_color_index(b"512"), None);
     }
 
     #[test]
