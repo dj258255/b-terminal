@@ -79,7 +79,12 @@ fn ghostty_chain_without_parent_is_error() {
     // 기본 묶음만 있고 설정에 앞 묶음이 없어도 같다(기본 묶음에는 덧붙지 않는다)
     let (km, w) = Keymap::build(&["chain=new_tab".to_string()]);
     assert_eq!(w.len(), 1, "{w:?}");
-    assert_eq!(km.lookup(&tr("super+t")), Some(&Action::NewTab));
+    // 기본 새 탭 키(macOS는 super+t, 그 밖은 ctrl+shift+t)가 덧붙음 없이 그대로다
+    let keys = km.triggers_for(&Action::NewTab);
+    assert!(!keys.is_empty());
+    for t in keys {
+        assert_eq!(km.lookup(t), Some(&Action::NewTab));
+    }
 }
 
 /// 시험 51 `set: parseAndPut chain multiple times`
