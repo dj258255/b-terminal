@@ -19,6 +19,8 @@ pub struct TabLabel {
 /// 막대 상태 코드: 프로그램 상태(OSC 7501)에서 온 것(`status_bar`)
 const BAR_BLOCKED: u8 = 5;
 const BAR_DONE: u8 = 6;
+/// 오류(2)인데 값이 없다: 빨간 끝 모름 막대(Ghostty macOS는 값 없는 오류를 빨간 맥박으로 그린다)
+const BAR_ERROR_UNKNOWN: u8 = 7;
 
 /// 칸들의 프로그램 상태 가운데 가장 급한 것(`blocked` > `error` > `working` > `done`). 같으면 앞의 것
 pub fn most_urgent(
@@ -56,16 +58,25 @@ pub fn status_bar(s: bt_term::program_status::Summary, bars: bool) -> Option<(u8
 }
 
 /// 프로그램이 보낸 진행 표시(OSC 9;4)를 받는가: `progress-style`이 꺼져 있으면 조용히 버린다.
-/// 상태 0(지움)도 표시를 남기지 않는다. 받으면 (상태, 퍼센트)
-pub fn accept_progress(style: bool, state: u8, percent: u8) -> Option<(u8, u8)> {
-    (style && state != 0).then_some((state, percent))
+/// 상태 0(지움)도 표시를 남기지 않는다. 받으면 (상태, 퍼센트).
+/// 값이 없을 때는 Ghostty macOS(`SurfaceProgressBar.swift`)처럼: 보통·오류는 끝 모름 막대(오류는 빨강), 멈춤은 가득 찬 막대(주황)이고 끝 모름은 그대로다(#764)
+pub fn accept_progress(style: bool, state: u8, percent: Option<u8>) -> Option<(u8, u8)> {
+    if !style || state == 0 {
+        return None;
+    }
+    Some(match (state, percent) {
+        (2, None) => (BAR_ERROR_UNKNOWN, 0),
+        (4, None) => (4, 100),
+        (1, None) => (3, 0),
+        (_, p) => (state, p.unwrap_or(0)),
+    })
 }
 
 /// 진행 막대를 (x, y)에서 폭 w로 그린다. 끝을 모르면(3) 가운데 3분의 1을 칠한다
 pub fn draw_progress(canvas: &mut Canvas, theme: &Theme, x: i32, y: i32, w: u32, p: (u8, u8), h: u32) {
     let (state, percent) = p;
     let color = match state {
-        2 => theme.palette[1],
+        2 | BAR_ERROR_UNKNOWN => theme.palette[1],
         4 => theme.palette[3],
         BAR_BLOCKED => theme.palette[5],
         BAR_DONE => theme.palette[2],
@@ -74,7 +85,7 @@ pub fn draw_progress(canvas: &mut Canvas, theme: &Theme, x: i32, y: i32, w: u32,
     let h = h.max(2);
     canvas.fill_rect(x, y, w, h, theme.background.mix(theme.foreground, 0.12));
     match state {
-        3 => canvas.fill_rect(x + w as i32 / 3, y, w / 3, h, color),
+        3 | BAR_ERROR_UNKNOWN => canvas.fill_rect(x + w as i32 / 3, y, w / 3, h, color),
         _ => canvas.fill_rect(
             x,
             y,
@@ -940,10 +951,30 @@ mod tests {
 
     #[test]
     fn progress_is_ignored_when_style_is_off() {
-        assert_eq!(accept_progress(true, 1, 40), Some((1, 40)));
-        assert_eq!(accept_progress(true, 0, 0), None, "상태 0은 지움");
-        assert_eq!(accept_progress(false, 1, 40), None);
-        assert_eq!(accept_progress(false, 3, 0), None);
+        assert_eq!(accept_progress(true, 1, Some(40)), Some((1, 40)));
+        assert_eq!(accept_progress(true, 0, None), None, "상태 0은 지움");
+        assert_eq!(accept_progress(false, 1, Some(40)), None);
+        assert_eq!(accept_progress(false, 3, None), None);
+    }
+
+    #[test]
+    fn progress_without_a_value_follows_ghostty_macos() {
+        // 값 없는 보통·오류는 끝 모름 막대(오류는 빨강), 멈춤은 가득(주황), 값이 있으면 그 값
+        assert_eq!(accept_progress(true, 1, None), Some((3, 0)));
+        assert_eq!(accept_progress(true, 2, None), Some((BAR_ERROR_UNKNOWN, 0)));
+        assert_eq!(accept_progress(true, 4, None), Some((4, 100)));
+        assert_eq!(accept_progress(true, 3, None), Some((3, 0)));
+        assert_eq!(accept_progress(true, 2, Some(30)), Some((2, 30)));
+        assert_eq!(accept_progress(true, 4, Some(30)), Some((4, 30)));
+        // 빨간 끝 모름 막대는 가운데 3분의 1만 칠한다
+        let theme = Theme::ghostty_default();
+        let mut buf = vec![0u32; 30 * 10];
+        let mut c = Canvas::new(&mut buf, 30, 10);
+        c.clear(theme.background);
+        draw_progress(&mut c, &theme, 0, 0, 30, (BAR_ERROR_UNKNOWN, 0), 4);
+        let red = theme.palette[1].to_u32() & 0xFF_FFFF;
+        assert_ne!(buf[2 * 30 + 15] & 0xFF_FFFF, buf[2 * 30 + 2] & 0xFF_FFFF);
+        assert_eq!(buf[2 * 30 + 15] & 0xFF_FFFF, red);
     }
 
     #[test]

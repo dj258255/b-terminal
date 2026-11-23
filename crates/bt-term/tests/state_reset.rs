@@ -455,7 +455,7 @@ fn full_reset_clears_the_progress_bar() {
             _ => {}
         }
     }
-    assert_eq!(progress, vec![(1, 50), (0, 0)]);
+    assert_eq!(progress, vec![(1, Some(50)), (0, None)]);
 }
 
 #[test]
@@ -472,5 +472,5 @@ fn soft_reset_leaves_the_progress_bar() {
             _ => {}
         }
     }
-    assert_eq!(progress, vec![(1, 50)]);
+    assert_eq!(progress, vec![(1, Some(50))]);
 }

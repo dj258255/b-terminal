@@ -185,7 +185,7 @@ pub enum SessionEvent {
     /// 진행 표시(OSC 9;4). 상태 0은 지움
     Progress {
         state: u8,
-        percent: u8,
+        percent: Option<u8>,
     },
     /// 프로그램이 OSC 52로 클립보드에 쓰려 한다
     ClipboardStore(String),
@@ -932,7 +932,10 @@ impl Session {
                                                 .store(false, std::sync::atomic::Ordering::Release);
                                             thread_mouse_shape.store(0, std::sync::atomic::Ordering::Release);
                                             // 진행 막대도 지운다(Ghostty `fullReset` 처리, stream_terminal.zig 751줄)(#548)
-                                            events.push(SessionEvent::Progress { state: 0, percent: 0 });
+                                            events.push(SessionEvent::Progress {
+                                                state: 0,
+                                                percent: None,
+                                            });
                                             // 프로그램 상태 기록도 모두 지운다(DECSTR은 지우지 않는다)(#618)
                                             thread_status.lock().clear_all();
                                             events.push(SessionEvent::ProgramStatus(None));
