@@ -85,6 +85,7 @@ softbuffer가 색 공간을 고를 수 있게 되거나, GPU 렌더러로 바꿔
 - 고친 곳(#587·#589, 0.72): `src/term/mod.rs`의 `set_scrolling_region`이 아래 경계를 줄 수로 먼저 자르고 `top >= bottom`을 보며(Ghostty `setTopAndBottomMargin`), `split_cell_boundary`는 위 줄이 스크롤백(음수 줄)이면 손상 기록에 적지 않습니다. `src/grid/mod.rs`의 `scroll_up_with_history`는 올려 본 자리(`display_offset`)를 스크롤백이 실제로 생기는 길에서만 올리고 `history_size`로 자릅니다. 이유: 출력 바이트로 엔진이 패닉하거나 올려 본 자리가 스크롤백 밖을 가리킴(퍼징에서 찾음). 되돌릴 조건: 원본이 같은 검사를 갖게 되면 지웁니다.
 
 - 더한 곳(#801, ADR-080): `src/term/mod.rs`에 `Term::set_cursor_column(col)`. `b-terminal(#801)`로 찾을 수 있습니다. kitty 그림을 놓은 뒤 커서를 그림 오른쪽 칸(오른쪽 끝에 닿으면 0열)으로 보내는 데 씁니다. Ghostty `cursorHorizontalAbsolute`처럼 원점 모드·좌우 여백을 따지지 않고 열로 보내고 줄바꿈 대기를 풉니다(`goto_col`은 원점 모드에서 여백 안으로 막습니다). 되돌릴 조건: 원본이 같은 일을 하는 공개 함수를 내면 지우고 그것을 씁니다.
+- 더한 곳(#800, ADR-080): `src/term/mod.rs`에 `ScrollEvent`·`SCROLL_LOG_MAX`(131072)와 `Term`의 필드 `scroll_log`·`scroll_log_on`·`scroll_log_lost`, 메서드 `set_scroll_log`·`take_scroll_log`·`log_scroll`을 더했고, `Handler::scroll_up`·`scroll_down`(IND·RI·SU·SD가 지나는 곳)이 스크롤 전후에 `log_scroll`을 부릅니다. `b-terminal(#800)`로 찾을 수 있습니다. 기록이 켜져 있을 때만(세션이 kitty 그림 자리가 있는 동안 켭니다) 영역(위아래·좌우 여백)·줄 수·스크롤백 줄 수의 전후를 쌓고, 131072개를 넘으면 쌓기를 멈추고 잃었다고 알립니다. IL·DL(`insert_blank_lines`·`delete_lines`)은 `scroll_*_relative`를 직접 불러 기록하지 않습니다(Ghostty는 그 스크롤에 그림을 옮기지 않음). 이유: 그림 자리가 스크롤백 맨 위를 0으로 센 줄이라 영역 스크롤에 글과 함께 움직이게 하려면 어떤 스크롤이 일어났는지 알아야 하는데, 엔진 바깥에서는 DECSTBM·좌우 여백·커서 줄 규칙을 다시 구현해야 합니다. 되돌릴 조건: 원본이 스크롤 알림을 내면 그것을 쓰고 지웁니다. 새 판으로 올릴 때 `tests/kitty_ghostty800.rs`(bt-term)가 통과해야 합니다.
 
 ### 왜
 

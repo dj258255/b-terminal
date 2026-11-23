@@ -6,9 +6,15 @@
 //!   `kittygfx placement moves cursor past a tall image`(1960), `display`의 `.after`(403)
 //! - #799 `graphics_storage.zig`: `storage: erase display preserves scrollback and reclaims unplaced images`(3243),
 //!   `storage: evicts images in priority order`(3768). `graphics_command.zig`: `transmission command with transient hint`(1245)
+//! - #800 `graphics_storage.zig`: `storage: scroll margins placement inside region scrolls and clips at top`(4206),
+//!   `... straddling region does not move`(4260), `... below region does not move`(4295), `... reverse index clips at bottom`(4328),
+//!   `... scaled placement clips proportionally`(4368), `... left/right margins respect columns`(4405),
+//!   `... insert/delete lines do not move placements`(4454), `storage: scroll without margins moves placement into scrollback`(4497),
+//!   `storage: scroll margins large scroll deletes inside placement`(4532), `... straddling placement pin inside region restored`(4556),
+//!   `... multi-line scroll up with scrollback`(4591)
 //!
 //! Ghostty 시험은 핀(`trackPin`)으로 자리를 잡고 `Terminal.index`·`scrollUp` 같은 함수를 부르지만, 여기서는 커서를 옮겨 그림을 놓고
-//! 같은 일을 하는 바이트를 보낸다. 줄 번호는 보이는 화면(0부터) 기준이다.
+//! 같은 일을 하는 바이트(IND `ESC D`, RI `ESC M`, SU `CSI S`, IL·DL)를 보낸다. 줄 번호는 보이는 화면(0부터) 기준이다.
 
 use bt_core::Theme;
 use bt_term::graphics::{Cursor, Graphics};
@@ -29,6 +35,30 @@ fn emu(cols: u16, rows: u16, cw: u16, ch: u16) -> Emulator {
 fn send(e: &mut Emulator, apc_body: &str) -> String {
     e.feed(format!("\x1b_G{apc_body}\x1b\\").as_bytes());
     String::from_utf8_lossy(&e.take_replies()).into_owned()
+}
+
+/// 칸 크기에 맞는 단색 RGB 그림 `w`x`h`(바이트는 모두 0)를 번호 `id`로 놓는다. 커서를 `(row, col)`(0부터)로 옮긴 뒤 놓고 커서는 안 옮긴다(`C=1`)
+fn tile(e: &mut Emulator, id: u32, pid: u32, row: usize, col: usize, w: u32, h: u32) {
+    e.feed(format!("\x1b[{};{}H", row + 1, col + 1).as_bytes());
+    let px = "A".repeat((w * h * 4) as usize);
+    let p = if pid == 0 { String::new() } else { format!(",p={pid}") };
+    let r = send(e, &format!("a=T,t=d,f=24,i={id}{p},s={w},v={h},C=1,q=1;{px}"));
+    assert_eq!(r, "", "q=1이라 답이 없다");
+}
+
+/// 보이는 그림 `(줄, 칸, 잘라내기 x y w h, 칸 수 cols rows)`. 놓인 차례
+type View = (i32, i32, [u32; 4], (u32, u32));
+
+fn views(e: &mut Emulator) -> Vec<View> {
+    e.snapshot()
+        .images
+        .iter()
+        .map(|i| (i.row, i.col, i.geom.src, (i.cols, i.rows)))
+        .collect()
+}
+
+fn rows_of(e: &mut Emulator) -> Vec<i32> {
+    views(e).iter().map(|v| v.0).collect()
 }
 
 // ───────────── #801: 그림 뒤 커서 이동 ─────────────
@@ -276,6 +306,202 @@ fn eviction_prefers_unused_images_over_older_used_ones() {
     assert_eq!(alive(&g, &[1, 2, 3]), vec![1, 3]);
 }
 
+// ───────────── #800: 스크롤 영역 ─────────────
+
+fn scroll_emu() -> Emulator {
+    emu(10, 6, 10, 10) // width_px 100, height_px 60: 칸 10x10
+}
+
+/// `scroll margins placement inside region scrolls and clips at top`(4206):
+/// 영역 안의 그림은 글과 함께 올라가고, 위 여백을 넘으면 위쪽 한 줄이 잘리고, 다 나가면 지운다(그림 자료는 남는다)
+#[test]
+fn scroll_margins_inside_region_scrolls_and_clips_at_top() {
+    let mut e = scroll_emu();
+    tile(&mut e, 1, 1, 2, 0, 10, 20); // 2줄 그림이 줄 2~3
+    e.feed(b"\x1b[2;5r\x1b[5;1H"); // 영역 1~4줄, 커서는 맨 아래 줄
+    assert_eq!(views(&mut e)[0].0, 2);
+
+    e.feed(b"\x1bD");
+    assert_eq!(
+        views(&mut e),
+        vec![(1, 0, [0, 0, 0, 0], (1, 2))],
+        "글과 함께 한 줄 위로"
+    );
+
+    e.feed(b"\x1bD");
+    assert_eq!(
+        views(&mut e),
+        vec![(1, 0, [0, 10, 10, 10], (1, 1))],
+        "위 여백에 붙고 위 한 줄이 잘림: source_y 10, source_height 10"
+    );
+
+    e.feed(b"\x1bD");
+    assert!(views(&mut e).is_empty(), "다 잘리면 자리를 지운다");
+    assert!(send(&mut e, "a=p,i=1,C=1").contains(";OK"), "그림 자료는 남는다");
+}
+
+/// `placement straddling region does not move`(4260): 영역에 다 들어가지 않는 그림은 영역 스크롤에 움직이지 않는다(스크롤백이 생기는 길)
+#[test]
+fn scroll_margins_straddling_placement_does_not_move() {
+    let mut e = scroll_emu();
+    tile(&mut e, 1, 1, 0, 0, 10, 30); // 3줄 그림이 줄 0~2, 영역은 1~2줄
+    e.feed(b"\x1b[1;2r\x1b[2;1H\x1bD");
+    assert_eq!(views(&mut e), vec![(0, 0, [0, 0, 0, 0], (1, 3))]);
+}
+
+/// `placement below region does not move`(4295): 영역 아래(상태줄)의 그림은 제자리다(스크롤백이 생기는 길)
+#[test]
+fn scroll_margins_placement_below_region_does_not_move() {
+    let mut e = scroll_emu();
+    tile(&mut e, 1, 1, 5, 0, 10, 10);
+    e.feed(b"\x1b[1;4r\x1b[4;1H\x1bD\x1bD");
+    assert_eq!(rows_of(&mut e), vec![5]);
+    assert_eq!(e.snapshot().history, 2, "스크롤백은 쌓인다");
+}
+
+/// `reverse index clips at bottom`(4328): 영역 맨 위에서 RI를 하면 그림이 글과 함께 내려가고, 아래 여백에서 잘리고, 다 나가면 지운다
+#[test]
+fn scroll_margins_reverse_index_clips_at_bottom() {
+    let mut e = scroll_emu();
+    tile(&mut e, 1, 1, 3, 0, 10, 20); // 줄 3~4
+    e.feed(b"\x1b[2;5r\x1b[2;1H"); // 영역 1~4줄, 커서는 맨 위 줄
+    e.feed(b"\x1bM");
+    assert_eq!(
+        views(&mut e),
+        vec![(4, 0, [0, 0, 10, 10], (1, 1))],
+        "한 줄 아래, 아래 한 줄이 잘림"
+    );
+    e.feed(b"\x1bM");
+    assert!(views(&mut e).is_empty(), "다 잘리면 지운다");
+}
+
+/// `scaled placement clips proportionally`(4368): 칸 수를 정한(`c r`) 그림은 칸 비율로 잘린다
+#[test]
+fn scroll_margins_scaled_placement_clips_proportionally() {
+    let mut e = scroll_emu();
+    e.feed(b"\x1b[2;1H");
+    let px = "A".repeat(10 * 40 * 4);
+    send(&mut e, &format!("a=T,t=d,f=24,i=1,p=1,s=10,v=40,c=1,r=2,C=1,q=1;{px}"));
+    e.feed(b"\x1b[2;3r\x1b[3;1H\x1bD");
+    assert_eq!(
+        views(&mut e),
+        vec![(1, 0, [0, 20, 10, 20], (1, 1))],
+        "source_y 20, source_height 20, 한 줄·한 칸"
+    );
+}
+
+/// `left/right margins respect columns`(4405): 좌우 여백 밖 칸의 그림은 안 움직이고 안쪽 그림만 올라간다
+#[test]
+fn scroll_margins_left_right_margins_respect_columns() {
+    let mut e = scroll_emu();
+    tile(&mut e, 1, 1, 2, 0, 10, 10);
+    tile(&mut e, 2, 2, 2, 2, 10, 10); // 같은 번호로 다시 보내면 옛 그림의 자리가 지워지므로 다른 그림 번호
+    e.feed(b"\x1b[?69h\x1b[2;8s\x1b[S"); // DECLRMM, 좌우 여백 2~8칸, SU
+    let mut v: Vec<(i32, i32)> = views(&mut e).iter().map(|v| (v.0, v.1)).collect();
+    v.sort_by_key(|x| x.1);
+    assert_eq!(v, vec![(2, 0), (1, 2)], "여백 밖(0칸)은 제자리, 안(2칸)은 한 줄 위");
+}
+
+/// `insert/delete lines do not move placements`(4454): IL·DL은 그림을 옮기지 않는다
+#[test]
+fn scroll_margins_insert_and_delete_lines_do_not_move_placements() {
+    let mut e = scroll_emu();
+    tile(&mut e, 1, 1, 2, 0, 10, 10);
+    e.feed(b"\x1b[2;5r\x1b[2;1H\x1b[M");
+    assert_eq!(rows_of(&mut e), vec![2]);
+    e.feed(b"\x1b[L");
+    assert_eq!(rows_of(&mut e), vec![2]);
+}
+
+/// `scroll without margins moves placement into scrollback`(4497): 영역이 없으면 그림은 줄을 따라 스크롤백으로 간다
+#[test]
+fn scroll_without_margins_moves_placement_into_scrollback() {
+    let mut e = scroll_emu();
+    tile(&mut e, 1, 1, 0, 0, 10, 20);
+    e.feed(b"\x1b[6;1H\x1bD");
+    assert_eq!(rows_of(&mut e), vec![-1]);
+}
+
+/// `large scroll deletes inside placement`(4532): 영역 높이를 넘는 SU는 안에 든 그림을 지운다
+#[test]
+fn scroll_margins_large_scroll_deletes_inside_placement() {
+    let mut e = scroll_emu();
+    tile(&mut e, 1, 1, 2, 0, 10, 10);
+    e.feed(b"\x1b[2;5r\x1b[10S");
+    assert!(views(&mut e).is_empty());
+}
+
+/// `straddling placement pin inside region restored`(4556): 앵커는 영역 안이지만 아래로 삐져나온 그림은 영역 스크롤에 움직이지 않는다
+#[test]
+fn scroll_margins_straddling_placement_with_anchor_inside_is_restored() {
+    let mut e = scroll_emu();
+    tile(&mut e, 1, 1, 4, 0, 10, 20); // 줄 4~5, 영역은 1~4줄
+    e.feed(b"\x1b[2;5r\x1b[5;1H\x1bD");
+    assert_eq!(views(&mut e), vec![(4, 0, [0, 0, 0, 0], (1, 2))]);
+}
+
+/// `multi-line scroll up with scrollback`(4591): 맨 위에서 시작하는 영역의 SU(스크롤백이 생기는 길)에서도 그림은 영역 안에서 움직인다
+#[test]
+fn scroll_margins_multi_line_scroll_up_with_scrollback() {
+    let mut e = scroll_emu();
+    tile(&mut e, 1, 1, 2, 0, 10, 10);
+    e.feed(b"\x1b[1;4r\x1b[2S");
+    assert_eq!(rows_of(&mut e), vec![0]);
+    assert_eq!(e.snapshot().history, 2);
+    e.feed(b"\x1b[2S");
+    assert!(views(&mut e).is_empty(), "영역 밖으로 나가면 지운다");
+}
+
+// ───────────── 위 시험에 없는 경계 ─────────────
+
+/// 스크롤백에 있는 그림과 영역 밖의 칸은 영역 스크롤에 움직이지 않는다
+#[test]
+fn scroll_margins_leave_scrollback_placements_alone() {
+    let mut e = scroll_emu();
+    tile(&mut e, 1, 1, 0, 0, 10, 30); // 3줄 그림
+    e.feed(b"\x1b[6;1H\n\n"); // 두 줄이 스크롤백으로 올라가 맨 아래 한 줄만 보인다
+    let hist = e.snapshot().history as i32;
+    assert_eq!(rows_of(&mut e), vec![-2]);
+    e.feed(b"\x1b[2;5r\x1b[5;1H\x1bD\x1bD"); // 영역만 스크롤
+    assert_eq!(rows_of(&mut e), vec![-2], "스크롤백(history {hist})의 그림은 제자리");
+}
+
+/// 대체 화면의 영역 스크롤은 주 화면의 그림을 건드리지 않는다
+#[test]
+fn scroll_margins_on_the_alternate_screen_do_not_touch_main_screen_placements() {
+    let mut e = scroll_emu();
+    tile(&mut e, 1, 1, 2, 0, 10, 10);
+    e.feed(b"\x1b[?1049h\x1b[2;5r\x1b[5;1H\x1bD\x1bD\x1b[?1049l");
+    assert_eq!(rows_of(&mut e), vec![2]);
+}
+
+/// 좌우 여백이 있는 영역 스크롤에서 IND(맨 아래 줄)도 그림을 옮긴다(Ghostty `index`가 `scrollUp(1)`을 부른다)
+#[test]
+fn scroll_margins_index_with_left_right_margins_moves_inside_placements() {
+    let mut e = scroll_emu();
+    tile(&mut e, 1, 1, 2, 3, 10, 10);
+    e.feed(b"\x1b[?69h\x1b[2;8s\x1b[2;5r\x1b[5;3H\x1bD");
+    assert_eq!(rows_of(&mut e), vec![1]);
+}
+
+/// (Ghostty에 없는 우리 상한) 한 번의 반영 사이에 스크롤 기록이 상한(131072)을 넘으면 그 화면의 줄에 붙은 자리를 모두 지운다. 패닉 없이 끝나고
+/// 상한 안의 스크롤은 그대로 반영된다(위 시험들)
+#[test]
+fn scroll_log_overflow_drops_pinned_placements_instead_of_guessing() {
+    let mut e = scroll_emu();
+    tile(&mut e, 1, 1, 5, 0, 10, 10); // 영역 아래의 그림(제자리여야 하는 자리)
+    e.feed(b"\x1b[1;4r\x1b[4;1H");
+    // 반영 없이 한 번에 넣는다: `Emulator::feed`는 끝에서만 반영한다
+    let flood = "\x1bD".repeat(140_000);
+    e.feed(flood.as_bytes());
+    assert!(views(&mut e).is_empty(), "기록을 잃으면 자리를 믿을 수 없어 지운다");
+    // 그림 자료는 남아 있고, 그 뒤에는 다시 정상으로 쌓는다
+    e.feed(b"\x1b[6;1H");
+    assert!(send(&mut e, "a=p,i=1,C=1,p=9").contains(";OK"));
+    e.feed(b"\x1b[1;4r\x1b[4;1H\x1bD");
+    assert_eq!(rows_of(&mut e), vec![5]);
+}
+
 // ───────────── 세션(PTY, 읽기 스레드) 길 ─────────────
 // 위 시험은 `Emulator::feed`로 같은 처리를 본다. 앱이 쓰는 읽기 스레드도 같은 결과를 내는지 `/bin/sh`와 `printf`로 본다
 // (사용자 셸 설정이 결과를 바꾸지 않게 한다)
@@ -319,5 +545,27 @@ mod pty {
             "printf '\\033_Ga=T,t=d,f=24,i=1,s=1,v=1,c=4294967295,r=4294967295,q=1;AAAA\\033\\\\'; printf READY".into(),
         );
         assert_eq!(s.snapshot().history, 5);
+    }
+
+    /// #800: 영역 안 IND가 그림을 글과 함께 올린다. 영역 아래 그림은 제자리다
+    #[test]
+    fn session_moves_placements_with_the_scroll_region() {
+        let px = "A".repeat(10 * 10 * 4);
+        let script = format!(
+            "printf '\\033[3;1H\\033_Ga=T,t=d,f=24,i=1,s=10,v=10,C=1,q=1;{px}\\033\\\\'; \
+             printf '\\033[6;1H\\033_Ga=T,t=d,f=24,i=2,s=10,v=10,C=1,q=1;{px}\\033\\\\'; \
+             printf '\\033[2;5r\\033[5;1H\\033D'; printf READY"
+        );
+        let s = run(10, 6, script);
+        let mut rows: Vec<(u32, i32)> = Vec::new();
+        for img in s.snapshot().images {
+            rows.push((img.width, img.row));
+        }
+        rows.sort();
+        assert_eq!(
+            rows,
+            vec![(10, 1), (10, 5)],
+            "영역 안 그림은 한 줄 위로, 영역 아래 그림은 제자리"
+        );
     }
 }

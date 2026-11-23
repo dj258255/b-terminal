@@ -564,3 +564,135 @@ fn unicode_placeholders_draw_the_image_on_both_paths_and_never_the_glyph() {
         "대조: 글자를 그대로 그리면 프레임이 달라야 한다(빈 네모가 찍힌다)"
     );
 }
+
+// ---- 스크롤 영역에서 잘린 그림(#800) ----
+
+/// 영역 스크롤에 위쪽이 잘린 그림(`geom.src`가 아래 반쪽)을 CPU 길과 GPU 길이 같은 픽셀로 그린다. 잘린 부분의 빨강은 없고 남은 파랑만 있다
+#[test]
+fn scroll_clipped_placement_draws_the_same_on_both_paths() {
+    let Some(mut g) = GpuRenderer::new_headless() else {
+        eprintln!("건너뜀: GPU 어댑터가 없다");
+        return;
+    };
+    let mut f = fonts();
+    let m = f.metrics();
+    let (cw, ch) = (m.width as i32, m.height as i32);
+    let theme = Theme::default();
+    let mut e = Emulator::new(
+        GridSize {
+            cols: COLS,
+            rows: ROWS,
+            cell_width: m.width as u16,
+            cell_height: m.height as u16,
+        },
+        theme.clone(),
+    );
+    // 위 반은 빨강, 아래 반은 파랑인 8x8 그림을 2칸 x 2줄로 줄 2에 놓는다. 영역은 1~3줄이고 맨 아래 줄에서 IND를 두 번 보낸다:
+    // 한 번은 한 줄 위로 올라가고, 두 번째는 위 여백을 넘어 위 한 줄(빨강 반쪽)이 잘린다
+    let mut img = Vec::new();
+    for y in 0..8 {
+        for _ in 0..8 {
+            img.extend_from_slice(if y < 4 { &[255, 0, 0, 255] } else { &[0, 0, 255, 255] });
+        }
+    }
+    e.feed(b"\x1b[3;4H");
+    e.feed(format!("\x1b_Ga=T,f=32,s=8,v=8,i=1,c=2,r=2,C=1,q=2;{}\x1b\\", b64(&img)).as_bytes());
+    e.feed(b"\x1b[2;4r\x1b[4;1H\x1bD\x1bD");
+    let screen = e.snapshot();
+    assert_eq!(screen.images.len(), 1);
+    let im = &screen.images[0];
+    assert_eq!(
+        (im.row, im.col, im.rows, im.geom.src),
+        (1, 3, 1, [0, 4, 8, 4]),
+        "위 한 줄이 잘렸다"
+    );
+    let paints = [ImagePaint {
+        rgba: &im.rgba,
+        geom: im.geom,
+        row: im.row,
+        col: im.col,
+        z: im.z,
+    }];
+
+    let origin = (13, 41);
+    let (w, h) = (
+        origin.0 as u32 + COLS as u32 * m.width + 17,
+        origin.1 as u32 + ROWS as u32 * m.height + 23,
+    );
+    let n = (w * h) as usize;
+    let clip = (
+        origin.0,
+        origin.1,
+        origin.0 + COLS as i32 * cw,
+        origin.1 + ROWS as i32 * ch,
+    );
+    let paint = |c: &mut Canvas, layer| paint_layer(c, &paints, layer, origin, (m.width, m.height), clip);
+    let lower_base = |c: &mut Canvas| {
+        c.clear(WIN_BG);
+        c.fill_rect(
+            origin.0 - 6,
+            origin.1 - 6,
+            COLS as u32 * m.width + 12,
+            ROWS as u32 * m.height + 12,
+            screen.background,
+        );
+    };
+    let dc = cells(&screen);
+    let view = GridView {
+        cols: screen.cols,
+        rows: screen.rows,
+        cells: &dc,
+        cursor: None,
+        selection_bg: theme.selection_background,
+        selection_fg: theme.selection_foreground,
+        preedit: None,
+        min_contrast: 1.0,
+    };
+    // CPU 길
+    let mut want = vec![0u32; n];
+    {
+        let mut c = Canvas::new(&mut want, w, h);
+        lower_base(&mut c);
+        let under = Under {
+            below_bg: None,
+            below_text: None,
+            default_bg: Some(screen.background),
+        };
+        draw_grid_under(&mut c, &mut f, origin.0, origin.1, &view, &under);
+        paint(&mut c, Layer::AboveText);
+    }
+    // GPU 길: 그림은 위층
+    let (mut lower, mid, mut upper) = (vec![0u32; n], vec![0u32; n], vec![0u32; n]);
+    lower_base(&mut Canvas::new(&mut lower, w, h));
+    paint(&mut Canvas::new(&mut upper, w, h), Layer::AboveText);
+    let panes = [PaneDraw {
+        font: 0,
+        x: origin.0,
+        y: origin.1,
+        view: &view,
+        clear: screen.background,
+    }];
+    let got = g.compose_layers(
+        &mut [&mut f],
+        (w, h),
+        LayerUpdate {
+            lower: Some(&lower),
+            upper: Some(&upper),
+        },
+        None,
+        Some(&mid),
+        &panes,
+    );
+    let (nd, max, over) = diff(&want, &got);
+    eprintln!("잘린 그림: 다른 픽셀 {nd}/{n}, 차이가 1을 넘는 픽셀 {over}, 최대 차이 {max}");
+    assert!(max <= 3, "CPU 길과 GPU 길이 다르다: 최대 차이 {max}");
+    assert!(over * 1000 < n * 5, "차이가 1을 넘는 픽셀 {over}/{n}");
+    // 잘린 그림은 줄 1의 두 칸(3·4열)에 남은 파랑 반쪽만 늘려 그린다. 빨강은 없다
+    for (name, buf) in [("CPU", &want), ("GPU", &got)] {
+        let p = pixel(buf, w, origin.0 + 3 * cw + cw / 2, origin.1 + ch + ch / 2);
+        assert_eq!(p, Rgb::new(0, 0, 255), "{name}: 잘리고 남은 파랑");
+        let any_red =
+            (0..2 * cw).any(|dx| (0..ch).any(|dy| pixel(buf, w, origin.0 + 3 * cw + dx, origin.1 + ch + dy).r > 200));
+        assert!(!any_red, "{name}: 잘린 빨강 반쪽이 보이면 안 된다");
+    }
+}

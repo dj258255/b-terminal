@@ -4,6 +4,7 @@
 //! 임의 파일을 읽게 되는 길), 받는 바이트·그림 크기·저장 총량에 상한을 둔다. 여기서는 VT 엔진과 상관없이
 //! 명령을 읽고 그림을 저장하며, 무엇을 답하고 커서를 얼마나 옮길지만 정한다. 줄은 스크롤백 맨 위를 0으로 센다
 
+use alacritty_terminal::term::ScrollEvent;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
@@ -257,6 +258,52 @@ impl Graphics {
             next_frame: None,
         }
     }
+}
+
+/// 자리의 위쪽 `count`줄을 잘라 낸다(Ghostty `Placement.clipTop`). `span`은 지금 차지하는 줄 수. 남는 것이 없으면 거짓
+fn clip_top(p: &mut Placement, cell: (u32, u32), count: u32, span: u32) -> bool {
+    let src = p.geom.source_rect();
+    let crop = if p.geom.want_rows > 0 {
+        // 칸 수를 정한 그림: 줄마다 원본의 같은 몫
+        (u64::from(src[3]) * u64::from(count) / u64::from(span)) as u32
+    } else {
+        // 원래 크기 그림: 줄마다 칸 높이만큼
+        cell.1.saturating_mul(count)
+    };
+    if crop >= src[3] {
+        return false;
+    }
+    p.geom.src = [src[0], src[1] + crop, src[2], src[3] - crop];
+    if p.geom.want_rows > 0 {
+        p.geom.want_rows = p.geom.want_rows.saturating_sub(count);
+    }
+    true
+}
+
+/// 자리의 아래쪽 `count`줄을 잘라 낸다(Ghostty `Placement.clipBottom`)
+fn clip_bottom(p: &mut Placement, cell: (u32, u32), count: u32, span: u32) -> bool {
+    let src = p.geom.source_rect();
+    if src[3] == 0 {
+        return false;
+    }
+    let height = if p.geom.want_rows > 0 {
+        let crop = (u64::from(src[3]) * u64::from(count) / u64::from(span)) as u32;
+        if crop >= src[3] {
+            return false;
+        }
+        p.geom.want_rows = p.geom.want_rows.saturating_sub(count);
+        src[3] - crop
+    } else {
+        // 남은 줄이 보여 줄 수 있는 원본 높이. 첫 줄은 오프셋만큼 잃는다
+        let visible = cell.1.saturating_mul(span - count);
+        let offset = p.geom.resolve(cell.0, cell.1).off_y;
+        if visible <= offset {
+            return false;
+        }
+        src[3].min(visible - offset)
+    };
+    p.geom.src = [src[0], src[1], src[2], height];
+    true
 }
 
 fn cost(img: &Image) -> usize {
@@ -1678,6 +1725,84 @@ impl Graphics {
         for id in unused {
             self.drop_image(id);
         }
+    }
+
+    /// 스크롤 영역 스크롤 한 번을 자리에 반영한다(#800, Ghostty `scrollMarginsBegin`·`end`, graphics_storage.zig 597줄).
+    /// 영역에 온전히 든 자리(위아래 여백과 좌우 여백 안)만 글과 함께 움직이고, 움직여 여백 밖으로 나가는 줄은 그림에서 잘라 내고(맨 위는 원본의
+    /// 위쪽을, 맨 아래는 아래쪽을), 다 나가면 자리를 지운다(그림 자료는 남는다). 영역에 걸치거나 영역 밖이거나 스크롤백에 있는 자리는 화면 줄을 지킨다.
+    /// 화면 전체 영역의 스크롤은 건드리지 않는다: 자리는 스크롤백 맨 위를 0으로 센 줄이라 줄을 따라간다(kitty의 여백 없는 스크롤과 같다).
+    /// 가상 배치와 상대 배치는 줄에 붙지 않으니 움직이지 않는다. `cell`은 지금 칸 크기(px)다
+    pub fn scroll_region(&mut self, ev: &ScrollEvent, cell: (u32, u32)) {
+        if ev.top == 0 && ev.bottom + 1 == ev.rows && ev.left == 0 && ev.right + 1 == ev.cols {
+            return;
+        }
+        let (rows, cols) = (ev.rows as i64, ev.cols as i64);
+        let (top, bottom) = (ev.top as i64, ev.bottom as i64);
+        let (left, right) = (ev.left as i64, ev.right as i64);
+        let (before, after) = (ev.history_before as i64, ev.history_after as i64);
+        let delta = i64::from(ev.delta);
+        let mut gone = false;
+        self.placements.retain_mut(|p| {
+            if p.alt != ev.alt || !p.is_pin() {
+                return true;
+            }
+            // 보이는 화면 위의 줄. 스크롤백에 있는 자리는 영역 스크롤에 움직이지 않는다
+            let y = p.line - before;
+            if y < 0 || y >= rows {
+                return true;
+            }
+            // 영역에 걸치거나 영역 밖이면 같은 화면 줄에 둔다(스크롤백이 생겨도 줄을 지킨다)
+            let mut final_y = y;
+            'inside: {
+                let r = p.geom.resolve(cell.0, cell.1);
+                let (prows, pcols) = (i64::from(r.rows), i64::from(r.cols));
+                // 칸 크기를 몰라 크기를 모르면 온전히 들었다고 볼 수 없다
+                if prows == 0 || pcols == 0 || y < top || y + prows - 1 > bottom {
+                    break 'inside;
+                }
+                let x = p.col as i64;
+                if x < left || (x + pcols - 1).min(cols - 1) > right {
+                    break 'inside;
+                }
+                let new_y = y + delta;
+                let top_clip = (top - new_y).max(0);
+                let bottom_clip = (new_y + prows - 1 - bottom).max(0);
+                if top_clip >= prows || bottom_clip >= prows {
+                    gone = true;
+                    return false;
+                }
+                if top_clip > 0 {
+                    if !clip_top(p, cell, top_clip as u32, prows as u32) {
+                        gone = true;
+                        return false;
+                    }
+                    final_y = top;
+                } else {
+                    if bottom_clip > 0 && !clip_bottom(p, cell, bottom_clip as u32, prows as u32) {
+                        gone = true;
+                        return false;
+                    }
+                    final_y = new_y;
+                }
+                // 자른 만큼 칸 수가 줄었다(`geom`이 원본)
+                let r = p.geom.resolve(cell.0, cell.1);
+                p.cols = r.cols.min(1000);
+                p.rows = r.rows.min(1000);
+            }
+            p.line = after + final_y;
+            true
+        });
+        // 지워진 자리가 부모였으면 자식도 간다(Ghostty는 그림 자료를 남긴다)
+        if gone {
+            self.reap_orphans(false);
+        }
+    }
+
+    /// 스크롤 기록이 상한을 넘어 일부를 잃었다: 어느 자리가 어디로 갔는지 알 수 없으니 그 화면의 줄에 붙은 자리를 모두 지운다.
+    /// 한 번에 십만 번이 넘는 스크롤을 그림이 놓인 채로 흘린 출력에서만 일어난다
+    pub fn lost_scrolls(&mut self, alt: bool) {
+        self.placements.retain(|p| p.alt != alt || !p.is_pin());
+        self.reap_orphans(false);
     }
 
     /// 대체 화면을 나왔다: 그 화면에 놓인 그림을 지운다

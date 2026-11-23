@@ -465,6 +465,7 @@ impl Inner {
 
     /// 화면 지우기에 맞춰 놓인 그림을 지운다
     fn graphics_erase(&mut self, visible: bool, scrollback: bool) {
+        sync_graphics(&mut self.term, &mut self.graphics, self.cell);
         self.graphics.erase(visible, scrollback);
         if visible && !scrollback {
             erase_screen_graphics(&self.term, &mut self.graphics);
@@ -1154,6 +1155,11 @@ impl Session {
                             if let Some((cap, _)) = capture.as_mut() {
                                 push_capped(cap, rest);
                             }
+                            // 이 읽기에서 쌓인 스크롤 기록을 그림 자리에 반영한다(#800). 기록이 한 읽기(64KiB)를 넘어 쌓이지 않게 한다
+                            let Inner {
+                                term, graphics, cell, ..
+                            } = &mut *g;
+                            sync_graphics(term, graphics, *cell);
                         }
                         // 새 출력이 오면 맨 아래로(scroll-to-bottom의 output, #147)
                         if thread_scroll_on_output.load(std::sync::atomic::Ordering::Relaxed) {
@@ -1368,8 +1374,15 @@ impl Session {
             let mut g = self.inner.lock();
             // 동기 출력(?2026)을 푼다(Ghostty `Terminal.resize`, Terminal.zig 5263줄). 모아 둔 글은 크기를 바꾸기 전에 먹인다
             // (Ghostty는 글을 모으지 않아 이미 옛 크기 화면에 있다)
-            let Inner { term, parser, .. } = &mut *g;
+            let Inner {
+                term,
+                parser,
+                graphics,
+                cell,
+                ..
+            } = &mut *g;
             release_sync(term, parser);
+            sync_graphics(term, graphics, *cell); // 옛 크기에서 일어난 스크롤을 먼저 반영한다(#800)
             g.term.resize(Dims(size));
             g.cell = (size.cell_width as u32, size.cell_height as u32);
         }
@@ -1748,8 +1761,13 @@ impl Session {
         let theme = self.theme.lock().clone();
         let mut g = self.inner.lock();
         let Inner {
-            term, search, graphics, ..
+            term,
+            search,
+            graphics,
+            cell,
+            ..
         } = &mut *g;
+        sync_graphics(term, graphics, *cell);
         snapshot_of(term, &theme, search.as_mut(), Some(graphics), std::time::Instant::now())
     }
 
@@ -2311,6 +2329,8 @@ fn graphics_command<T: EventListener>(
     cell: (u32, u32),
     raw: &[u8],
 ) -> Option<Vec<u8>> {
+    // 이 명령 앞까지의 스크롤을 자리에 반영한 뒤의 줄 번호로 놓는다(#800)
+    sync_graphics(term, graphics, cell);
     let cur = crate::graphics::Cursor {
         line: term.grid().history_size() as i64 + term.grid().cursor.point.line.0 as i64,
         col: term.grid().cursor.point.column.0,
@@ -2322,9 +2342,14 @@ fn graphics_command<T: EventListener>(
         cols: term.columns() as u32,
     };
     let out = graphics.handle(raw, cur);
+    if !graphics.placements.is_empty() {
+        // 놓은 그림도 아래 커서 이동이 스크롤하는 영역 안이면 함께 움직인다(Ghostty는 자리를 더한 뒤에 index한다)
+        term.set_scroll_log(true);
+    }
     if let Some((rows, col)) = out.advance {
         move_cursor_after_placement(term, parser, rows, col);
     }
+    sync_graphics(term, graphics, cell);
     out.reply
 }
 
@@ -2348,6 +2373,19 @@ fn move_cursor_after_placement<T: EventListener>(term: &mut Term<T>, parser: &mu
         parser.advance(term, "\x1bD".repeat(n).as_bytes());
     }
     term.set_cursor_column(col);
+}
+
+/// 엔진이 모아 둔 스크롤 기록을 그림 자리에 반영하고, 자리가 있는 동안만 기록을 쌓게 한다(#800).
+/// 자리가 없으면 줄 번호가 바뀔 일이 없어 엔진은 기록하지 않는다. 화면을 읽기 전·그림 명령 전·지우기 전·크기를 바꾸기 전과 읽기마다 부른다
+fn sync_graphics<T: EventListener>(term: &mut Term<T>, graphics: &mut crate::graphics::Graphics, cell: (u32, u32)) {
+    let (events, lost) = term.take_scroll_log();
+    for ev in &events {
+        graphics.scroll_region(ev, cell);
+    }
+    if lost {
+        graphics.lost_scrolls(term.mode().contains(TermMode::ALT_SCREEN));
+    }
+    term.set_scroll_log(!graphics.placements.is_empty());
 }
 
 /// 지금 보이는 줄에 걸친 kitty 그림들. 대체 화면을 나왔으면 그 화면의 그림을 지운다
@@ -2504,6 +2542,7 @@ impl Emulator {
                     }
                 }
                 Signal::Erase { visible, scrollback } => {
+                    sync_graphics(&mut self.term, &mut self.graphics, self.cell);
                     self.graphics.erase(*visible, *scrollback);
                     if *visible && !*scrollback {
                         erase_screen_graphics(&self.term, &mut self.graphics);
@@ -2527,12 +2566,14 @@ impl Emulator {
             notes.push(sig);
         }
         self.parser.advance(&mut self.term, &bytes[pos..]);
+        sync_graphics(&mut self.term, &mut self.graphics, self.cell);
         notes
     }
 
     pub fn resize(&mut self, size: GridSize) {
         let size = size.clamped();
         release_sync(&mut self.term, &mut self.parser);
+        sync_graphics(&mut self.term, &mut self.graphics, self.cell);
         self.term.resize(Dims(size));
     }
 
@@ -2545,6 +2586,7 @@ impl Emulator {
     }
 
     pub fn snapshot(&mut self) -> Screen {
+        sync_graphics(&mut self.term, &mut self.graphics, self.cell);
         snapshot_of(
             &self.term,
             &self.theme,
@@ -2556,6 +2598,7 @@ impl Emulator {
 
     /// 시각을 정해 화면을 만든다(애니메이션 프레임 고르기 시험용, #554). 시각은 `kitty_clock_start`부터의 간격으로 준다
     pub fn snapshot_at(&mut self, now: std::time::Instant) -> Screen {
+        sync_graphics(&mut self.term, &mut self.graphics, self.cell);
         snapshot_of(
             &self.term,
             &self.theme,
