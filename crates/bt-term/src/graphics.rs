@@ -39,6 +39,10 @@ pub struct Image {
     seq: u64,
     /// 그림 번호(`I=`, 0이면 없음)
     pub number: u32,
+    /// 임시 표시(`N=`의 맨 아래 비트, Ghostty `usage.transient`): 저장 상한을 넘기면 먼저 쫓아낸다(#799)
+    transient: bool,
+    /// 대체 화면에서 받은 그림이다. Ghostty는 화면마다 그림 저장소가 따로라 화면 지우기(ED 2)가 자기 화면의 그림만 거둔다(#799)
+    alt: bool,
     /// 저장할 때마다 새로 매기는 번호. 조각으로 오는 프레임이 시작한 뒤 그림이 다시 오면 달라져 그 프레임을 버린다(Ghostty `image_generation`)
     generation: u64,
     /// 애니메이션(#554): 프레임이나 재생 제어를 받으면 생긴다. `rgba`가 프레임 1(뿌리)이다
@@ -729,6 +733,8 @@ impl Graphics {
                 // 성공 길
                 self.replace_image(id);
                 image.number = number;
+                image.transient = num(&control, b'N') & 1 == 1;
+                image.alt = cur.alt;
                 self.store(id, image);
                 let out = if action == "T" {
                     self.place(id, &control, cur)
@@ -1033,6 +1039,8 @@ impl Graphics {
             rgba: Arc::new(rgba),
             seq: 0,
             number: 0,
+            transient: false,
+            alt: false,
             generation: 0,
             anim: None,
         })
@@ -1047,13 +1055,24 @@ impl Graphics {
         if let Some(old) = self.images.insert(id, image) {
             self.stored -= cost(&old);
         }
-        // 총량이나 그림 수를 넘으면 오래된 그림부터 버린다(지금 넣은 것은 남긴다)
+        // 총량이나 그림 수를 넘으면 쫓아낸다(지금 넣은 것은 남긴다). 차례는 `eviction_candidate`
         while self.stored > self.limit || self.images.len() > MAX_IMAGES {
-            let Some((&old, _)) = self.images.iter().filter(|(k, _)| **k != id).min_by_key(|(_, i)| i.seq) else {
+            let Some(old) = self.eviction_candidate(id) else {
                 break;
             };
             self.remove_image(old);
         }
+    }
+
+    /// 다음에 쫓아낼 그림(`keep`은 빼고). Ghostty `evictImageExcept`(graphics_storage.zig 1823)의 차례: 임시이고 안 쓰는 그림 →
+    /// 안 쓰는 그림 → 임시이고 쓰는 그림 → 쓰는 그림, 같은 급이면 오래된 것부터(같으면 낮은 번호). 쓴다는 것은 자리가 있다는 뜻이다
+    fn eviction_candidate(&self, keep: u32) -> Option<u32> {
+        let used: std::collections::HashSet<u32> = self.placements.iter().map(|p| p.image).collect();
+        self.images
+            .iter()
+            .filter(|(k, _)| **k != keep)
+            .min_by_key(|(k, i)| (u8::from(!i.transient) + 2 * u8::from(used.contains(k)), i.seq, **k))
+            .map(|(k, _)| *k)
     }
 
     fn remove_image(&mut self, id: u32) {
@@ -1379,7 +1398,7 @@ impl Graphics {
         }
     }
 
-    /// 프레임을 받을 자리 `bytes`(고정 몫 포함)를 마련하고 저장량에 더한다. 모자라면 `keep` 말고 가장 오래된 그림부터 버린다.
+    /// 프레임을 받을 자리 `bytes`(고정 몫 포함)를 마련하고 저장량에 더한다. 모자라면 `keep` 말고 `eviction_candidate`의 차례로 버린다.
     /// 그림 하나와 이 프레임이 상한에 안 들어가면 아무것도 버리지 않고 거절한다(Ghostty `reserveAnimationBytes`는 버리다가 실패한다)
     fn reserve_frame_bytes(&mut self, keep: u32, bytes: usize) -> Result<(), &'static str> {
         let own = self.images.get(&keep).map_or(0, cost);
@@ -1387,13 +1406,7 @@ impl Graphics {
             return Err("ENOSPC");
         }
         while self.stored.saturating_add(bytes) > self.limit {
-            let Some(old) = self
-                .images
-                .iter()
-                .filter(|(k, _)| **k != keep)
-                .min_by_key(|(_, i)| i.seq)
-                .map(|(k, _)| *k)
-            else {
+            let Some(old) = self.eviction_candidate(keep) else {
                 return Err("ENOSPC");
             };
             self.remove_image(old);
@@ -1645,7 +1658,7 @@ impl Graphics {
         }
     }
 
-    /// ED 2를 처리한 뒤(#329, Ghostty `kitty_images.clearScreen`, Terminal.zig 4527~4535줄): 보이는 자리에 걸친 그림을 지우고
+    /// ED 2·ED 22를 처리한 뒤(#329·#799, Ghostty `kitty_images.clearScreen`, Terminal.zig 3716·3780줄): 보이는 자리에 걸친 그림을 지우고
     /// 스크롤백에 다 들어간 것만 남긴다. `active_top`은 지금 활성 화면 맨 위의 절대 줄(엔진이 올렸으면 이미 늘어난 스크롤백 크기)이다.
     /// 대체 화면이면 대체 화면 그림만, 주 화면이면 주 화면 그림만 본다
     pub fn erase_screen(&mut self, active_top: i64, in_alt: bool) {
@@ -1653,6 +1666,18 @@ impl Graphics {
         self.placements
             .retain(|p| p.alt != in_alt || !p.is_pin() || (!in_alt && p.line + i64::from(p.rows) <= active_top));
         self.reap_orphans(false);
+        // 그다음 이 화면에서 자리가 없는 그림의 자료를 모두 거둔다: 대문자 지우기(d=A)와 달리 처음부터 자리가 없던 그림도 간다(#799,
+        // Ghostty `clearScreen`, graphics_storage.zig 1370). 화면마다 저장소가 따로라 다른 화면의 그림은 건드리지 않는다
+        let used: std::collections::HashSet<u32> = self.placements.iter().map(|p| p.image).collect();
+        let unused: Vec<u32> = self
+            .images
+            .iter()
+            .filter(|(id, img)| img.alt == in_alt && !used.contains(id))
+            .map(|(id, _)| *id)
+            .collect();
+        for id in unused {
+            self.drop_image(id);
+        }
     }
 
     /// 대체 화면을 나왔다: 그 화면에 놓인 그림을 지운다

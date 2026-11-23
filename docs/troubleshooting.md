@@ -555,6 +555,14 @@
 - 고침: `Screen.selectAll`(3364줄)처럼 스크롤백을 포함한 전체에서 글이 있는 첫 칸(널·빈칸·탭이 아닌 글자)과 마지막 칸을 찾아 그 둘을 고른다. 글이 하나도 없으면 아무것도 바꾸지 않는다(Ghostty `Surface`의 `select_all`도 null이면 앞서 고른 것을 둔다). 시험: `crates/bt-term/tests/select_ghostty803.rs`(Ghostty `selectAll` 시험 9509)
 - 0.98.0에서 풀기: `write_scrollback_file` 계열 동작으로 스크롤백을 파일로 뽑는다
 
+## 65. 화면을 지워도 자리 없는 그림 자료가 남고, 저장 상한에 닿으면 화면에 보이는 그림이 먼저 사라질 수 있다
+
+- 언제: 2026-11-23, #799. Ghostty 1.4.0 kitty 그래픽 시험 `erase display preserves scrollback and reclaims unplaced images`(graphics_storage.zig 3243)·`evicts images in priority order`(3768)를 같은 입력으로 옮겨 견주다 찾았다. 0.98.0까지의 동작이다
+- 증상: `printf '\033_Ga=t,f=24,s=1,v=1,i=3;AAAA\033\\\033[2J\033_Ga=p,i=3\033\\'`에서 Ghostty는 `ENOENT`, 우리는 `OK`였다(화면을 지워도 자리가 없던 그림이 저장소에 남아 쌓임). 저장 상한(`image-storage-limit`)에 닿으면 가장 오래된 그림부터 쫓아내서, 오래 쓰는 화면 속 그림이 방금 보내 둔 안 쓰는 그림보다 먼저 사라질 수 있었다. 전송 명령의 `N=1`(임시 표시)은 읽지 않았다
+- 까닭: ED 2가 자리만 지우고 자료는 지우지 않았다(`d=A`처럼 "자리가 없어진 그림"만 지우는 길이 없었다). 쫓아내기는 저장한 차례만 보았다
+- 고침: ED 2와 ED 22는 그 화면(주·대체)에서 자리가 없는 그림의 자료를 모두 거둔다(스크롤백에 다 들어간 자리는 남는다). 쫓아내는 차례를 Ghostty와 같게 했다: 임시이고 안 쓰는 그림 → 안 쓰는 그림 → 임시이고 쓰는 그림 → 쓰는 그림, 같은 급이면 오래된 것부터. `N`의 맨 아래 비트가 임시다. ED 3이 주 화면 자리를 모두 지우는 것(ADR-010 결정 4)은 그대로다(ADR-080)
+- 0.98.0에서 풀기: 안 쓰는 그림은 `a=d,d=I,i=번호`로 직접 지운다. 상한 근처에서는 오래 쓸 그림을 마지막에 보낸다
+
 ## 67. 그림을 놓은 뒤 커서 이동이 느슨해 스크롤백을 크게 밀어내고, 오른쪽 끝에서 감기지 않는다
 
 - 언제: 2026-11-23, #801. Ghostty 1.4.0 `graphics_exec.zig`의 `placement bounds cursor movement for untrusted dimensions`(1938)·`placement moves cursor past a tall image`(1960)와 `display`의 `.after`(403)를 같은 입력으로 옮겨 견주다 찾았다. 0.98.0까지의 동작이다

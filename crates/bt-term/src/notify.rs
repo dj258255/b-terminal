@@ -647,7 +647,8 @@ impl Scanner {
                         // `?`가 붙은 `CSI ? 2 J`(DECSED)는 모은 매개변수가 `?2`라 여기서 읽지 않는다
                         if b == b'J' {
                             match self.csi.as_slice() {
-                                b"2" => out.push((
+                                // ED 22(scroll_complete)도 Ghostty는 화면 지우기와 같이 그림을 정리한다(`clearScreen`, #799)
+                                b"2" | b"22" => out.push((
                                     i + 1,
                                     Signal::Erase {
                                         visible: true,
