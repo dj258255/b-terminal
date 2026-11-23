@@ -1654,6 +1654,30 @@ impl Session {
         ))
     }
 
+    /// 칸 전체(`scrollback`이면 스크롤백 포함, 아니면 보이는 화면)를 VT 이스케이프 또는 HTML로 만든다
+    /// (`write_screen_file`·`write_scrollback_file`의 `vt`·`html`, #768). Ghostty `writeScreenFile`처럼 끝 칸 공백을 깎지 않고
+    /// 바탕·글자 기본색을 함께 넣는다
+    pub fn styled_text(&self, scrollback: bool, emit: crate::copy_format::Emit) -> String {
+        let theme = self.theme.lock().clone();
+        let g = self.inner.lock();
+        let colors = g.term.colors();
+        let opts = crate::copy_format::Options {
+            emit,
+            trim: false,
+            background: Some(color::named(
+                &theme,
+                colors,
+                alacritty_terminal::vte::ansi::NamedColor::Background,
+            )),
+            foreground: Some(color::named(
+                &theme,
+                colors,
+                alacritty_terminal::vte::ansi::NamedColor::Foreground,
+            )),
+        };
+        crate::copy_format::format_lines(&g.term, &theme, scrollback, opts)
+    }
+
     /// 지금 화면을 꺼낸다
     pub fn snapshot(&self) -> Screen {
         let theme = self.theme.lock().clone();

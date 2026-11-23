@@ -246,7 +246,7 @@ fn subsequence(hay: &str, needle: &str) -> bool {
     needle.chars().all(|c| it.any(|h| h == c))
 }
 
-/// 동작에 걸린 단축키를 보기 좋게(⌘⇧D). 여럿이면 짧은 것
+/// 동작에 걸린 단축키를 보기 좋게(⌘⇧D). 여럿이면 가장 나중에 정한 것(Ghostty `getTrigger`), performable은 뺀다
 pub fn shortcut(keymap: &Keymap, command: &Command) -> String {
     let Command::Action(action) = command else {
         return String::new();
@@ -254,8 +254,8 @@ pub fn shortcut(keymap: &Keymap, command: &Command) -> String {
     keymap
         .triggers_for(action)
         .into_iter()
+        .next()
         .map(format_trigger)
-        .min_by_key(|s| (s.chars().count(), s.clone()))
         .unwrap_or_default()
 }
 

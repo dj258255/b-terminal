@@ -3061,20 +3061,48 @@ impl App {
     }
 
     /// 지금 칸의 글을 이 사용자 전용 폴더에 파일로 쓰고, 그 경로를 복사·붙여넣기·열기(#125)
-    fn write_file(&mut self, source: crate::keymap::FileSource, then: crate::keymap::FileThen) {
-        use crate::keymap::{FileSource, FileThen};
+    fn write_file(
+        &mut self,
+        source: crate::keymap::FileSource,
+        then: crate::keymap::FileThen,
+        format: crate::keymap::FileFormat,
+    ) {
+        use crate::keymap::{FileFormat, FileSource, FileThen};
         let Some(p) = self.active_pane() else { return };
+        // `vt`·`html`은 색·꾸밈을 함께 쓴다(Ghostty `writeScreenFile`의 `emit`). `plain`은 글만
+        let emit = match format {
+            FileFormat::Plain => None,
+            FileFormat::Vt => Some(bt_term::CopyEmit::Vt),
+            FileFormat::Html => Some(bt_term::CopyEmit::Html),
+        };
         let (id, kind, text) = match source {
             // 스크롤백 상한보다 넉넉히: tail_text가 맨 위에서 멈춘다
-            FileSource::Scrollback => (p.id, "scrollback", p.session.tail_text(1_000_000)),
-            FileSource::Screen => (p.id, "screen", p.session.snapshot().text()),
-            FileSource::Selection => match p.session.selection_text().filter(|t| !t.is_empty()) {
-                Some(t) => (p.id, "selection", t),
-                // Ghostty처럼 고른 글이 없으면 아무것도 하지 않는다
-                None => return,
-            },
+            FileSource::Scrollback => (
+                p.id,
+                "scrollback",
+                emit.map_or_else(|| p.session.tail_text(1_000_000), |e| p.session.styled_text(true, e)),
+            ),
+            FileSource::Screen => (
+                p.id,
+                "screen",
+                emit.map_or_else(|| p.session.snapshot().text(), |e| p.session.styled_text(false, e)),
+            ),
+            FileSource::Selection => {
+                match p
+                    .session
+                    .selection_text()
+                    .filter(|t| !t.is_empty())
+                    .and_then(|plain| match emit {
+                        None => Some(plain),
+                        Some(e) => p.session.selection_styled(e, false, true),
+                    }) {
+                    Some(t) => (p.id, "selection", t),
+                    // Ghostty처럼 고른 글이 없으면 아무것도 하지 않는다
+                    None => return,
+                }
+            }
         };
-        let path = match crate::dump::dir().and_then(|d| crate::dump::write(&d, kind, &text)) {
+        let path = match crate::dump::dir().and_then(|d| crate::dump::write(&d, kind, format.extension(), &text)) {
             Ok(path) => path,
             Err(e) => {
                 log::warn!("파일로 쓰지 못했습니다: {e}");
@@ -4193,7 +4221,7 @@ impl App {
             | Action::AdjustSelection(_)
             | Action::ScrollToSelection
             | Action::SearchSelection
-            | Action::WriteFile(crate::keymap::FileSource::Selection, _) => has_selection(self),
+            | Action::WriteFile(crate::keymap::FileSource::Selection, ..) => has_selection(self),
             Action::PasteSelection => self.selection_clipboard_text().is_some(),
             Action::Paste => self
                 .clipboard
@@ -4315,7 +4343,7 @@ impl App {
             Action::ResetWindowSize => self.reset_window_size(),
             Action::ToggleWindowDecorations => self.toggle_window_decorations(),
             Action::ToggleVisibility => self.toggle_visibility(),
-            Action::WriteFile(source, then) => self.write_file(source, then),
+            Action::WriteFile(source, then, format) => self.write_file(source, then, format),
             Action::AdjustSelection(adj) => {
                 if let Some(t) = self.active_pane() {
                     t.session.adjust_selection(adj);

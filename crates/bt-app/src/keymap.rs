@@ -80,7 +80,7 @@ pub enum Action {
     /// 마우스 아래 링크 주소를 클립보드에(Ghostty `copy_url_to_clipboard`)
     CopyUrl,
     /// 칸의 글을 파일로 쓰고 그 경로를 어떻게 할지(Ghostty `write_scrollback_file` 등, #125)
-    WriteFile(FileSource, FileThen),
+    WriteFile(FileSource, FileThen, FileFormat),
     /// 입력 막대로 지금 칸의 제목을 묻는다(Ghostty `prompt_surface_title`, #124)
     PromptSurfaceTitle,
     /// 지금 칸의 제목을 정한다. 빈 글이면 사람이 붙인 제목을 지운다(Ghostty `set_surface_title`)
@@ -169,6 +169,25 @@ pub enum FileSource {
     Scrollback,
     Screen,
     Selection,
+}
+
+/// 파일에 쓰는 형식(Ghostty `WriteScreen.Format`). `plain`은 글만, `vt`는 색·꾸밈 이스케이프가 든 글(.txt), `html`은 HTML(.html)
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum FileFormat {
+    #[default]
+    Plain,
+    Vt,
+    Html,
+}
+
+impl FileFormat {
+    /// 파일 확장자(Ghostty: `plain`·`vt`는 txt, `html`은 html)
+    pub fn extension(self) -> &'static str {
+        match self {
+            Self::Plain | Self::Vt => "txt",
+            Self::Html => "html",
+        }
+    }
 }
 
 /// 쓴 파일의 경로를: 클립보드에 넣기, 칸에 붙여넣기, 기본 앱으로 열기
@@ -286,13 +305,85 @@ fn unescape(s: &str) -> String {
     out
 }
 
+/// 값을 받지 않는(Ghostty `void`) 동작. 콜론을 붙이면 오류다
+const VOID_ACTIONS: &[&str] = &[
+    "unbind",
+    "ignore",
+    "paste_from_clipboard",
+    "paste_from_selection",
+    "new_tab",
+    "new_window",
+    "close_surface",
+    "close_window",
+    "close_all_windows",
+    "undo",
+    "redo",
+    "equalize_splits",
+    "toggle_split_zoom",
+    "start_search",
+    "end_search",
+    "search_selection",
+    "toggle_quick_terminal",
+    "toggle_command_palette",
+    "next_tab",
+    "previous_tab",
+    "last_tab",
+    "reset_font_size",
+    "scroll_page_up",
+    "scroll_page_down",
+    "scroll_to_top",
+    "scroll_to_bottom",
+    "scroll_to_selection",
+    "clear_screen",
+    "reload_config",
+    "quit",
+    "toggle_fullscreen",
+    "toggle_maximize",
+    "toggle_window_float_on_top",
+    "prompt_surface_title",
+    "prompt_tab_title",
+    "prompt_window_title",
+    "copy_url_to_clipboard",
+    "copy_title_to_clipboard",
+    "select_all",
+    "toggle_secure_input",
+    "check_for_updates",
+    "show_gtk_inspector",
+    "show_on_screen_keyboard",
+    "toggle_tab_overview",
+    "reset",
+    "move_tab_to_new_window",
+    "reset_window_size",
+    "toggle_window_decorations",
+    "toggle_visibility",
+    "deactivate_key_table",
+    "deactivate_all_key_tables",
+    "end_key_sequence",
+    "toggle_background_opacity",
+    "toggle_mouse_reporting",
+    "toggle_readonly",
+];
+
 /// 동작 이름을 읽는다. `None`이면 unbind
 pub fn parse_action(s: &str) -> Result<Option<Action>, String> {
     let (name, arg) = s
         .split_once(':')
         .map(|(a, b)| (a.trim(), Some(b)))
         .unwrap_or((s.trim(), None));
-    let num = |d: f32| arg.and_then(|a| a.trim().parse::<f32>().ok()).unwrap_or(d);
+    // Ghostty `Action.parse`: 값 없는(void) 동작에 콜론이 있으면 오류다(`ignore:A`)
+    if arg.is_some() && VOID_ACTIONS.contains(&name) {
+        return Err(format!("{name}은 값을 받지 않습니다"));
+    }
+    // 글 값 동작(`[]const u8`)은 콜론이 꼭 있어야 한다. 콜론 뒤가 비어 있는 것은 빈 글이다
+    let text = || arg.ok_or_else(|| format!("{name}:글이 필요합니다(콜론 뒤가 비어도 됩니다)"));
+    // 실수 값: NaN·무한대·글은 받지 않는다
+    let float = |what: &str| {
+        arg.and_then(|a| a.trim().parse::<f32>().ok())
+            .filter(|f| f.is_finite())
+            .ok_or_else(|| format!("{name}:{what}"))
+    };
+    // 값을 빠뜨린 꼴은 전부터 뜻이 분명해(1pt 키우기·줄이기) 계속 받는다. Ghostty는 오류다. 틀린 값은 오류
+    let float_or_one = |what: &str| if arg.is_none() { Ok(1.0) } else { float(what) };
     Ok(Some(match name {
         "unbind" => return Ok(None),
         "copy_to_clipboard" => Action::Copy(match arg.map(str::trim) {
@@ -304,7 +395,11 @@ pub fn parse_action(s: &str) -> Result<Option<Action>, String> {
         "new_tab" => Action::NewTab,
         "new_window" => Action::NewWindow,
         "close_surface" => Action::CloseSurface,
-        "close_tab" => Action::CloseTab,
+        // Ghostty는 this·other·right를 받는다. b-terminal은 지금 탭 닫기(this)만 있고 나머지는 틀린 값으로 알린다
+        "close_tab" => match arg.map(str::trim) {
+            None | Some("this") => Action::CloseTab,
+            _ => return Err("close_tab:this(other·right는 아직 없습니다)".into()),
+        },
         "undo" => Action::Undo,
         "redo" => Action::Redo,
         "new_split" => match arg.map(str::trim).unwrap_or("auto") {
@@ -330,9 +425,10 @@ pub fn parse_action(s: &str) -> Result<Option<Action>, String> {
         "toggle_command_palette" => Action::TogglePalette,
         "end_search" => Action::EndSearch,
         // next는 위(오래된 출력)로: 터미널은 맨 아래에서 찾기 시작한다(iTerm2와 같다)
-        "navigate_search" => match arg.map(str::trim).unwrap_or("next") {
-            "next" => Action::NavigateSearch(true),
-            "previous" => Action::NavigateSearch(false),
+        // Ghostty의 NavigateSearch는 기본값이 없어 값을 생략할 수 없다
+        "navigate_search" => match arg.map(str::trim) {
+            Some("next") => Action::NavigateSearch(true),
+            Some("previous") => Action::NavigateSearch(false),
             _ => return Err("navigate_search:next·previous".into()),
         },
         "goto_tab" => Action::GotoTab(
@@ -343,8 +439,8 @@ pub fn parse_action(s: &str) -> Result<Option<Action>, String> {
         "next_tab" => Action::NextTab,
         "previous_tab" => Action::PrevTab,
         "last_tab" => Action::LastTab,
-        "increase_font_size" => Action::FontBigger(num(1.0)),
-        "decrease_font_size" => Action::FontSmaller(num(1.0)),
+        "increase_font_size" => Action::FontBigger(float_or_one("글자를 키울 크기(pt)")?),
+        "decrease_font_size" => Action::FontSmaller(float_or_one("글자를 줄일 크기(pt)")?),
         "reset_font_size" => Action::FontReset,
         "scroll_page_up" => Action::ScrollPageUp,
         "scroll_page_down" => Action::ScrollPageDown,
@@ -385,13 +481,29 @@ pub fn parse_action(s: &str) -> Result<Option<Action>, String> {
                 "write_screen_file" => FileSource::Screen,
                 _ => FileSource::Selection,
             };
-            let then = match arg.map(str::trim) {
-                Some("copy") => FileThen::Copy,
-                Some("paste") => FileThen::Paste,
-                Some("open") => FileThen::Open,
-                _ => return Err(format!("{name}:copy·paste·open")),
+            // Ghostty `WriteScreen.parse`: `<copy|paste|open>` 또는 `<copy|paste|open>,<plain|vt|html>`. 쉼표가 없으면 plain
+            let usage = || format!("{name}:copy·paste·open 뒤에 선택으로 ,plain·,vt·,html");
+            let (then, format) = match arg
+                .map(str::trim)
+                .map(|a| a.split_once(',').map_or((a, None), |(t, f)| (t, Some(f))))
+            {
+                Some((t, f)) => (
+                    match t {
+                        "copy" => FileThen::Copy,
+                        "paste" => FileThen::Paste,
+                        "open" => FileThen::Open,
+                        _ => return Err(usage()),
+                    },
+                    match f {
+                        None | Some("plain") => FileFormat::Plain,
+                        Some("vt") => FileFormat::Vt,
+                        Some("html") => FileFormat::Html,
+                        Some(_) => return Err(usage()),
+                    },
+                ),
+                None => return Err(usage()),
             };
-            Action::WriteFile(source, then)
+            Action::WriteFile(source, then, format)
         }
         "set_surface_title" => Action::SetSurfaceTitle(arg.unwrap_or("").to_string()),
         "prompt_tab_title" => Action::PromptTabTitle,
@@ -400,16 +512,21 @@ pub fn parse_action(s: &str) -> Result<Option<Action>, String> {
         "set_window_title" => Action::SetWindowTitle(arg.unwrap_or("").to_string()),
         "copy_title_to_clipboard" => Action::CopyTitle,
         "scroll_page_lines" => Action::ScrollLines(
-            arg.and_then(|a| a.trim().parse().ok())
+            arg.and_then(|a| a.trim().parse::<i16>().ok())
+                .map(i32::from)
                 .ok_or("scroll_page_lines:줄 수(양수면 아래로)")?,
         ),
-        "scroll_page_fractional" => Action::ScrollFraction(
-            arg.and_then(|a| a.trim().parse::<f32>().ok())
-                .filter(|f| f.is_finite())
-                .ok_or("scroll_page_fractional:화면의 몇 분의 일(양수면 아래로)")?,
-        ),
+        "scroll_page_fractional" => Action::ScrollFraction(float("화면의 몇 분의 일(양수면 아래로)")?),
         "select_all" => Action::SelectAll,
-        "jump_to_prompt" => Action::JumpToPrompt(arg.and_then(|a| a.trim().parse().ok()).unwrap_or(-1)),
+        // Ghostty는 i16이다(범위 밖·소수·글은 오류). 값을 빠뜨린 꼴은 전부터 -1(앞 프롬프트)로 뜻이 분명해 계속 받는다(Ghostty는 오류)
+        "jump_to_prompt" => Action::JumpToPrompt(match arg {
+            None => -1,
+            Some(a) => a
+                .trim()
+                .parse::<i16>()
+                .map(i32::from)
+                .map_err(|_| "jump_to_prompt:-32768~32767 사이 정수")?,
+        }),
         "ignore" => Action::Ignore,
         "toggle_secure_input" => Action::ToggleSecureInput,
         // 받기만 하는 동작(#211): 키를 먹고 아무 일도 하지 않는다. 이유는 docs/configuration.md
@@ -424,9 +541,9 @@ pub fn parse_action(s: &str) -> Result<Option<Action>, String> {
             Some("main" | "io" | "render") => Action::Ignore,
             _ => return Err("crash:main·io·render".into()),
         },
-        "text" => Action::Text(unescape(arg.unwrap_or(""))),
-        "csi" => Action::Text(format!("\x1b[{}", arg.unwrap_or(""))),
-        "esc" => Action::Text(format!("\x1b{}", arg.unwrap_or(""))),
+        "text" => Action::Text(unescape(text()?)),
+        "csi" => Action::Text(format!("\x1b[{}", text()?)),
+        "esc" => Action::Text(format!("\x1b{}", text()?)),
         "reset" => Action::Reset,
         "scroll_to_row" => Action::ScrollToRow(
             arg.and_then(|a| a.trim().parse().ok())
@@ -434,13 +551,9 @@ pub fn parse_action(s: &str) -> Result<Option<Action>, String> {
         ),
         "scroll_to_selection" => Action::ScrollToSelection,
         // 글은 그대로 받는다(Ghostty처럼 이스케이프를 풀지 않는다). 빈 글은 찾기 취소
-        "search" => Action::Search(arg.ok_or("search:찾을 글(비우면 찾기 취소)")?.to_string()),
+        "search" => Action::Search(text()?.to_string()),
         "search_selection" => Action::SearchSelection,
-        "set_font_size" => Action::SetFontSize(
-            arg.and_then(|a| a.trim().parse::<f32>().ok())
-                .filter(|f| f.is_finite())
-                .ok_or("set_font_size:글자 크기(pt)")?,
-        ),
+        "set_font_size" => Action::SetFontSize(float("글자 크기(pt)")?),
         // Ghostty도 이 동작은 설정에 쓸 수 없다(Binding.zig: "Cursor keys can't be set currently")
         "cursor_key" => return Err("cursor_key는 Ghostty처럼 설정에 쓸 수 없는 동작입니다".into()),
         "close_window" => Action::CloseWindow,
@@ -511,6 +624,8 @@ pub struct BindFlags {
 struct Bound {
     action: Action,
     flags: BindFlags,
+    /// 정한 차례(클수록 나중). 같은 동작에 키가 여럿일 때 되짚기가 가장 나중 것을 고른다
+    order: u64,
 }
 
 /// 트리거 이름 `catch_all`: 다른 묶음에 걸리지 않은 모든 키에 맞는다(Ghostty)
@@ -545,6 +660,8 @@ pub struct Keymap {
     /// 키 테이블(`keybind = 이름/트리거=동작`): 켜기 전에는 쓰지 않는 이름 붙은 묶음 모음.
     /// 테이블 안의 `global`·`tables`는 쓰지 않는다
     tables: HashMap<String, Keymap>,
+    /// 다음 묶음에 줄 정한 차례
+    next_order: u64,
 }
 
 /// 기본 묶음(Ghostty macOS 기본에서 b-terminal에 있는 것). 다른 OS는 super 대신 ctrl+shift
@@ -693,6 +810,8 @@ impl Keymap {
                     trig.mods.shift = true;
                 }
                 let performable = default_performable(&act);
+                km.next_order += 1;
+                let order = km.next_order;
                 km.map.insert(
                     trig,
                     Bound {
@@ -701,6 +820,7 @@ impl Keymap {
                             performable,
                             ..BindFlags::default()
                         },
+                        order,
                     },
                 );
             }
@@ -860,7 +980,12 @@ impl Keymap {
     /// 키(들)에 동작을 건다. 겹치는 묶음은 나중 것이 이긴다(Ghostty):
     /// 순서의 앞 키에 걸린 한 키 묶음·짧은 순서, 이 키들로 시작하는 긴 순서를 지운다
     fn bind(&mut self, keys: Vec<Trigger>, action: Action, flags: BindFlags) {
-        let action = Bound { action, flags };
+        self.next_order += 1;
+        let action = Bound {
+            action,
+            flags,
+            order: self.next_order,
+        };
         let n = keys.len();
         self.seqs
             .retain(|k, _| !(k.len() < n && keys.starts_with(k) || k.len() > n && k.starts_with(&keys)));
@@ -949,13 +1074,18 @@ impl Keymap {
         Resolved::None
     }
 
-    /// 이 동작에 걸린 트리거들(명령 팔레트가 단축키를 보일 때)
+    /// 이 동작에 걸린 트리거들(명령 팔레트가 단축키를 보일 때). Ghostty `Set.getTrigger`처럼 가장 나중에 정한 것이 먼저이고,
+    /// performable 묶음은 뺀다. 순서(`a>b`)는 첫 키를 낸다
     pub fn triggers_for(&self, action: &Action) -> Vec<&Trigger> {
-        self.map
+        let mut found: Vec<(u64, &Trigger)> = self
+            .map
             .iter()
-            .filter(|(_, b)| b.action == *action)
-            .map(|(t, _)| t)
-            .collect()
+            .chain(self.seqs.iter().map(|(k, b)| (&k[0], b)))
+            .filter(|(_, b)| b.action == *action && !b.flags.performable)
+            .map(|(t, b)| (b.order, t))
+            .collect();
+        found.sort_by_key(|(order, _)| std::cmp::Reverse(*order));
+        found.into_iter().map(|(_, t)| t).collect()
     }
 }
 
@@ -1675,18 +1805,70 @@ mod tests {
         );
         assert_eq!(
             parse_action("write_scrollback_file:copy").unwrap(),
-            Some(Action::WriteFile(FileSource::Scrollback, FileThen::Copy))
+            Some(Action::WriteFile(
+                FileSource::Scrollback,
+                FileThen::Copy,
+                FileFormat::Plain
+            ))
         );
         assert_eq!(
             parse_action("write_screen_file:open").unwrap(),
-            Some(Action::WriteFile(FileSource::Screen, FileThen::Open))
+            Some(Action::WriteFile(FileSource::Screen, FileThen::Open, FileFormat::Plain))
         );
         assert_eq!(
             parse_action("write_selection_file:paste").unwrap(),
-            Some(Action::WriteFile(FileSource::Selection, FileThen::Paste))
+            Some(Action::WriteFile(
+                FileSource::Selection,
+                FileThen::Paste,
+                FileFormat::Plain
+            ))
         );
         assert!(parse_action("write_screen_file").is_err(), "할 일이 있어야 한다");
         assert!(parse_action("write_screen_file:mail").is_err());
+    }
+
+    /// Ghostty 1.4.0 `test "parse: write screen file format"`(4600줄)·`"write screen file invalid"`(4614줄)과 같은 입력·기대(#768)
+    #[test]
+    fn write_file_formats_parse_like_ghostty() {
+        assert_eq!(
+            parse_action("write_screen_file:copy,html").unwrap(),
+            Some(Action::WriteFile(FileSource::Screen, FileThen::Copy, FileFormat::Html))
+        );
+        assert_eq!(
+            parse_action("write_scrollback_file:open,vt").unwrap(),
+            Some(Action::WriteFile(
+                FileSource::Scrollback,
+                FileThen::Open,
+                FileFormat::Vt
+            ))
+        );
+        assert_eq!(
+            parse_action("write_selection_file:paste,plain").unwrap(),
+            Some(Action::WriteFile(
+                FileSource::Selection,
+                FileThen::Paste,
+                FileFormat::Plain
+            ))
+        );
+        for s in [
+            "write_screen_file:",
+            "write_screen_file:,",
+            "write_screen_file:copy,",
+            "write_screen_file:,html",
+            "write_screen_file:copy,pdf",
+            "write_screen_file:copy,html,x",
+            "write_screen_file:copy, html",
+            "write_screen_file:html",
+        ] {
+            assert!(parse_action(s).is_err(), "{s}");
+        }
+        assert_eq!(FileFormat::Plain.extension(), "txt");
+        assert_eq!(FileFormat::Vt.extension(), "txt");
+        assert_eq!(FileFormat::Html.extension(), "html");
+    }
+
+    #[test]
+    fn write_file_and_selection_actions_parse() {
         assert_eq!(
             parse_action("adjust_selection:end_of_line").unwrap(),
             Some(Action::AdjustSelection(bt_term::SelectionAdjust::EndOfLine))
@@ -2584,5 +2766,176 @@ mod tests {
         assert!(sq.apply_table_action(&km, &Action::ActivateKeyTable("t".into())).0);
         assert_eq!(press(&mut sq, &km, "a").1, Some(Action::NewTab));
         assert!(!sq.apply_table_action(&km, &Action::ActivateKeyTable("t".into())).0);
+    }
+
+    // 아래 시험은 Ghostty v1.4.0 src/input/Binding.zig의 시험과 같은 입력·기대로 옮겼다(#768)
+
+    /// Ghostty 1.4.0 `test "parse: action no parameters"`(3353줄 근처): `a=ignore:A`는 InvalidFormat.
+    /// 값 없는(void) 동작에 콜론을 붙이면 모두 오류(`Action.parse`의 `void =>` 가지)
+    #[test]
+    fn void_actions_reject_a_parameter() {
+        assert_eq!(parse_action("ignore").unwrap(), Some(Action::Ignore));
+        for s in [
+            "ignore:A",
+            "new_tab:x",
+            "quit:1",
+            "reset_font_size:1",
+            "select_all:x",
+            "close_surface:1",
+            "paste_from_clipboard:x",
+            "toggle_fullscreen:",
+            "unbind:x",
+            "check_for_updates:1",
+        ] {
+            assert!(parse_action(s).is_err(), "{s}는 값을 받지 않는다");
+        }
+    }
+
+    /// Ghostty `Action.parse`: 글 값(`[]const u8`) 동작은 콜론이 꼭 있어야 한다(`csi`·`esc`·`text`·`set_*_title`·`search`).
+    /// 콜론 뒤가 빈 글인 것(`csi:`)은 받는다
+    #[test]
+    fn text_actions_require_a_colon() {
+        for s in ["csi", "esc", "text", "search"] {
+            assert!(parse_action(s).is_err(), "{s}는 콜론이 필요하다");
+        }
+        assert_eq!(parse_action("csi:").unwrap(), Some(Action::Text("\x1b[".into())));
+        assert_eq!(parse_action("esc:").unwrap(), Some(Action::Text("\x1b".into())));
+        assert_eq!(parse_action("text:").unwrap(), Some(Action::Text(String::new())));
+        // 제목 동작의 콜론 없는 꼴은 전처럼 "지우기"로 받는다(Ghostty는 오류지만 뜻이 분명한 꼴은 넓게 받는다)
+        assert_eq!(
+            parse_action("set_tab_title").unwrap(),
+            Some(Action::SetTabTitle(String::new()))
+        );
+        assert_eq!(
+            parse_action("set_tab_title:").unwrap(),
+            Some(Action::SetTabTitle(String::new()))
+        );
+    }
+
+    /// Ghostty: 정수(`i16`)·실수(`f32`) 값은 틀리면 InvalidFormat. NaN·inf는 받지 않는다. 값 빠뜨림은 전처럼 받는다
+    #[test]
+    fn numeric_parameters_are_strict() {
+        for s in [
+            "jump_to_prompt:abc",
+            "jump_to_prompt:1.5",
+            "jump_to_prompt:99999",
+            "jump_to_prompt:-32769",
+            "jump_to_prompt:",
+            "increase_font_size:abc",
+            "increase_font_size:nan",
+            "increase_font_size:inf",
+            "decrease_font_size:abc",
+            "decrease_font_size:NaN",
+            "decrease_font_size:-inf",
+            "scroll_page_lines:99999",
+            "scroll_page_lines:1.5",
+        ] {
+            assert!(parse_action(s).is_err(), "{s}");
+        }
+        // 값을 빠뜨린 꼴은 전처럼 받는다(Ghostty는 오류)
+        assert_eq!(parse_action("jump_to_prompt").unwrap(), Some(Action::JumpToPrompt(-1)));
+        assert_eq!(
+            parse_action("increase_font_size").unwrap(),
+            Some(Action::FontBigger(1.0))
+        );
+        assert_eq!(
+            parse_action("decrease_font_size").unwrap(),
+            Some(Action::FontSmaller(1.0))
+        );
+        assert_eq!(
+            parse_action("jump_to_prompt:-1").unwrap(),
+            Some(Action::JumpToPrompt(-1))
+        );
+        assert_eq!(
+            parse_action("jump_to_prompt:32767").unwrap(),
+            Some(Action::JumpToPrompt(32767))
+        );
+        assert_eq!(
+            parse_action("jump_to_prompt:-32768").unwrap(),
+            Some(Action::JumpToPrompt(-32768))
+        );
+        assert_eq!(
+            parse_action("increase_font_size:1.5").unwrap(),
+            Some(Action::FontBigger(1.5))
+        );
+        assert_eq!(
+            parse_action("decrease_font_size:2").unwrap(),
+            Some(Action::FontSmaller(2.0))
+        );
+    }
+
+    /// 값을 생략해도 되는 것은 `default`가 있는 enum뿐이다(Ghostty `new_split`·`copy_to_clipboard`·`close_tab`·`open_config`).
+    /// 틀린 값은 기본값으로 바뀌지 않고 오류다
+    #[test]
+    fn only_enums_with_a_default_may_omit_the_parameter() {
+        assert_eq!(parse_action("new_split").unwrap(), Some(Action::NewSplit(None)));
+        assert_eq!(parse_action("close_tab").unwrap(), Some(Action::CloseTab));
+        assert_eq!(parse_action("close_tab:this").unwrap(), Some(Action::CloseTab));
+        assert_eq!(parse_action("open_config").unwrap(), Some(Action::OpenConfig));
+        assert!(parse_action("new_split:sideways").is_err());
+        assert!(parse_action("close_tab:nope").is_err());
+        assert!(
+            parse_action("navigate_search").is_err(),
+            "navigate_search는 기본값이 없다"
+        );
+        assert!(parse_action("goto_split").is_err());
+    }
+
+    /// 키를 모두 지운 묶음에 `lines`를 얹는다
+    fn only(lines: &[&str]) -> Keymap {
+        let mut v = vec!["clear".to_string()];
+        v.extend(lines.iter().map(|s| s.to_string()));
+        Keymap::build(&v).0
+    }
+
+    fn t(s: &str) -> Trigger {
+        parse_trigger(s).unwrap()
+    }
+
+    /// Ghostty `test "set: parseAndPut sequence"`(4060줄 근처): 순서 `ctrl+a>b`도 되짚기에 들고 첫 키를 낸다
+    #[test]
+    fn reverse_lookup_includes_sequences() {
+        let km = only(&["ctrl+a>b=new_window"]);
+        assert_eq!(km.triggers_for(&Action::NewWindow), vec![&t("ctrl+a")]);
+    }
+
+    /// Ghostty `test "set: maintains reverse mapping"`(4077줄): 가장 나중에 정한 키가 먼저고,
+    /// 그 키를 지우면 앞의 것으로 돌아간다
+    #[test]
+    fn reverse_lookup_prefers_the_most_recent_binding() {
+        let km = only(&["a=new_window", "b=new_window"]);
+        assert_eq!(km.triggers_for(&Action::NewWindow).first(), Some(&&t("b")));
+        // 정한 차례를 거꾸로 해도(긴 키가 먼저여도) 나중 것
+        let km = only(&["ctrl+shift+a=new_window", "b=new_window", "x=new_window"]);
+        assert_eq!(km.triggers_for(&Action::NewWindow).first(), Some(&&t("x")));
+        // 같은 키를 다시 정하면 그 자리가 가장 나중이 된다
+        let km = only(&["a=new_window", "b=new_window", "a=new_window"]);
+        assert_eq!(km.triggers_for(&Action::NewWindow).first(), Some(&&t("a")));
+        // 지우면 앞의 것
+        let km = only(&["a=new_window", "b=new_window", "b=unbind"]);
+        assert_eq!(km.triggers_for(&Action::NewWindow), vec![&t("a")]);
+    }
+
+    /// Ghostty `test "set: performable is not part of reverse mappings"`(4105줄): performable은 되짚기에서 뺀다
+    #[test]
+    fn reverse_lookup_skips_performable() {
+        let km = only(&["a=new_window", "performable:b=new_window"]);
+        assert_eq!(km.triggers_for(&Action::NewWindow), vec![&t("a")]);
+        let km = only(&["performable:b=new_window"]);
+        assert!(km.triggers_for(&Action::NewWindow).is_empty());
+    }
+
+    /// 명령 팔레트는 되짚기의 첫 키(가장 나중에 정한 키)를 보인다. 더 짧은 키를 고르지 않는다
+    #[test]
+    fn palette_shortcut_is_the_most_recent_binding() {
+        let km = only(&[
+            "ctrl+shift+alt+x=toggle_split_zoom",
+            "y=toggle_split_zoom",
+            "performable:z=toggle_split_zoom",
+        ]);
+        let c = crate::palette::Command::Action(Action::ToggleSplitZoom);
+        assert_eq!(crate::palette::shortcut(&km, &c), "Y");
+        let km = only(&["y=toggle_split_zoom", "ctrl+shift+alt+x=toggle_split_zoom"]);
+        assert_eq!(crate::palette::shortcut(&km, &c), "⌃⌥⇧X");
     }
 }

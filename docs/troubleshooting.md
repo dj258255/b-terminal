@@ -418,3 +418,11 @@
 - 까닭: vendor/vte의 색 해석이 `#…`·`rgb:…`만 알았고, OSC 4·10~12는 조각 수·짝수 검사와 `continue`로 Ghostty와 다른 곳에서 멈추거나 이어 갔다. 제목은 깨진 조각만 빼고 이었고 `trim()`을 했으며, OSC 문자열을 16조각까지만 들고 있어 나머지를 버렸다
 - 고침: Ghostty `RGB.parse`대로 읽고(X11 이름 표 포함), 색 OSC는 Ghostty처럼 빈 조각을 건너뛰며 첫 틀린 곳에서 멈춘다. 제목은 깨진 UTF-8이면 요청 전체를 무시하고 앞뒤 공백을 두며, 파서가 16번째 조각에 남은 `;` 포함 전부를 담는다. OSC 0·2·8은 `N;` 뒤가 2048바이트 이상이면 무시한다. 링크는 빈 `id=`를 id 없음으로 보고 `8;id=foo;`를 무효로 둔다
 - 0.95.0에서 풀기: 색은 `rgb:ff/00/00`처럼 쓰고, 제목은 UTF-8이 맞는 글자만 보낸다. 다만 `#fff`는 Ghostty가 `ffffff`, 우리가 xterm처럼 `f0f0f0`으로 읽는 차이가 남는다
+
+## 52. 키 묶음에 오타 인자를 썼는데 경고 없이 기본값으로 동작하고, `write_screen_file:copy,html`은 막힌다
+
+- 언제: 2026-11-23, #768. Ghostty 1.4.0 `Binding.zig` 시험(13·45·46·69·70)을 옮겨 견주다 찾았다. 0.95.0까지의 동작이다
+- 증상: `ignore:A`·`new_tab:x`·`quit:1`이 받아들여지고, `csi`·`esc`·`text`가 빈 글로 읽힌다. `jump_to_prompt:abc`는 -1, `increase_font_size:abc`는 1.0(`:nan`은 NaN)으로 바뀐다. 반대로 `write_screen_file:copy,html`은 "copy·paste·open" 경고로 버려진다. 같은 동작에 키가 둘이면 명령 팔레트가 가장 짧은 키를 보이고 `performable:` 묶음도 보인다
+- 까닭: 동작 해석이 인자를 느슨하게 읽었고(Ghostty는 값 없는 동작의 콜론·글 동작의 콜론 빠짐·정수/실수 틀림을 모두 오류로 한다), `write_*_file`에는 형식 자리가 없었으며, 역방향 조회가 정한 차례를 모르는 해시 순서였다
+- 고침: Ghostty `Action.parse`처럼 읽는다(틀린 값만 경고한다. 전부터 뜻이 분명했던 꼴은 Ghostty보다 넓게 계속 받는다: 콜론 없는 `set_tab_title`(제목 지우기), 값 없는 `increase_font_size`·`decrease_font_size`(1)·`jump_to_prompt`(-1). Ghostty는 이 꼴들을 오류로 본다). `write_*_file`은 `,plain`·`,vt`·`,html`을 받아 그 형식으로 쓰고(`html`은 `.html`), 팔레트는 가장 나중에 정한 키를 보이며 `performable:`은 뺀다
+- 0.95.0에서 풀기: 인자를 틀리지 않게 쓴다. 형식(`vt`·`html`)으로 쓰는 길은 없었다

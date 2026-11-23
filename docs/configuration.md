@@ -273,6 +273,8 @@ keybind = nav/escape=deactivate_key_table
 
 - 수식 키: `super`(cmd) `ctrl` `alt`(opt) `shift`. 키 이름은 Ghostty 이름: `a`~`z`, `digit_1`(또는 `1`), `equal`, `minus`, `comma`, `bracket_left`, `bracket_right`, `arrow_up`, `page_up`, `home`, `enter`, `f1` …
 - 한글처럼 글자 키가 라틴 글자가 아닌 입력 소스(macOS): `ctrl`이나 `super`가 붙은 글자 키는 macOS 자판의 ⌘ 층 글자로 맞춥니다(macOS 메뉴 단축키가 쓰는 글자). 그래서 한글 2벌식에서도 ⌘T는 `super+t`, ⌃A는 `ctrl+a`입니다. `ctrl`·`super` 없이 누른 글자 키는 입력기가 조합으로 가져가므로 키 묶음에 오지 않습니다(키 순서 `ctrl+a>n`의 `n`은 영문 입력 소스에서만 듣고, `ctrl+a>ctrl+n`은 한글에서도 듣습니다). 자판의 글자 그대로(`super+ㅅ`) 묶을 수는 없습니다.
+- 동작의 값(Ghostty와 같음): 값이 없는 동작에 콜론을 붙이면(`ignore:A`, `new_tab:x`, `quit:1`) 설정 경고입니다. 글 값 동작(`csi`·`esc`·`text`·`search`)은 콜론이 꼭 있어야 하고(`csi`만 쓰면 경고, 빈 글은 `csi:`), 정수·실수 값(`jump_to_prompt`·`increase_font_size`·`scroll_page_lines`·`goto_tab` 등)은 틀리거나 범위를 넘으면 경고이며 NaN·무한은 받지 않습니다. 전부터 뜻이 분명했던 꼴은 Ghostty보다 넓게 계속 받습니다: `set_surface_title`·`set_tab_title`·`set_window_title`의 콜론 없는 꼴(제목 지우기, Ghostty는 오류), 값 없는 `increase_font_size`·`decrease_font_size`(1pt, Ghostty는 오류), 값 없는 `jump_to_prompt`(-1, Ghostty는 오류). 값을 생략할 수 있는 것은 기본값이 있는 `new_split`(auto)·`copy_to_clipboard`(mixed)·`close_tab`(this)·`open_config`(os_open)뿐입니다.
+- 명령 팔레트가 보이는 단축키: 같은 동작에 키가 여럿이면 가장 나중에 정한 키이고(순서 `a>b`는 첫 키), `performable:` 묶음은 뺍니다(Ghostty `getTrigger`).
 - 키 순서(`ctrl+a>n`, Ghostty와 같은 문법): 앞 키를 누르면 다음 키를 기다립니다. 시간 제한은 없습니다. 순서에 묶이지 않은 키를 누르면 그때까지 누른 키를 모두 프로그램에 그대로 보냅니다(`ctrl+a` `x` → `^A` `x`). 겹치는 묶음은 나중 것이 이깁니다(`ctrl+a=…` 뒤에 `ctrl+a>n=…`을 쓰면 `ctrl+a`는 앞 키가 됩니다). 명령 팔레트에는 키 순서를 보이지 않습니다.
 - 접두사(Ghostty와 같은 문법, 겹쳐 쓸 수 있고 순서는 상관없음: `unconsumed:performable:ctrl+c=copy_to_clipboard`):
   - `unconsumed:` 동작을 하고 그 키도 프로그램에 보냅니다(기본은 키를 먹음). 키 순서의 마지막 키에서는 그 키만 보내고, 앞 키는 이미 순서에 먹힌 것으로 봅니다.
@@ -319,9 +321,9 @@ HTML은 `<div style="font-family: monospace; white-space: pre;">` 안에 칸의 
 | (마우스) 칸 사이 경계선을 끌기 / 두 번 누르기 | 경계선 위(선 양쪽 3pt까지)에서 포인터가 크기 조절 모양이 되고, 왼쪽 단추로 끌면 그 경계선의 비율만 바뀝니다(양쪽 칸 최소 10pt, Ghostty와 같음). 누른 자리에서 10pt 넘게 움직여야 비율이 바뀝니다(Ghostty `DragGesture` 기본). 두 번 누르면 그 탭의 모든 칸을 고르게(`equalize_splits`와 같음). 누른 것은 프로그램(마우스 보고)·글 고르기에 가지 않고, 끄는 동안 다른 누름도 가지 않습니다. 칸 하나를 크게 보는 중에는 경계선이 없습니다. 칸 끌기 손잡이보다 경계선이 먼저 맞습니다. 격리한 실제 창에서 마우스(CGEvent)로 끌기·두 번 누르기를 확인했습니다. 두 번 누르기 간격은 `click-repeat-interval`을 따릅니다 | 마우스 |
 | `toggle_split_zoom` | 고른 칸만 탭 전체로 크게 보기 / 되돌리기 | `super+shift+enter` |
 | `undo` / `redo` | 닫은 칸·탭을 원래 자리에 되살리기(`undo-timeout` 안에서) / 되살린 것을 다시 닫기. 되살릴 것이 없으면 키는 프로그램으로 갑니다(Ghostty의 `performable`과 같다) | `super+z` `super+shift+t` / `super+shift+z`(macOS만) |
-| `increase_font_size:N` / `decrease_font_size:N` / `reset_font_size` | 고른 칸의 글자 크기(같은 창의 다른 칸과 다른 창은 그대로). `reset_font_size`는 `font-size`로 | `super+=` / `super+-` / `super+0` |
+| `increase_font_size:N` / `decrease_font_size:N`(N은 유한한 수. 빼면 1) / `reset_font_size` | 고른 칸의 글자 크기(같은 창의 다른 칸과 다른 창은 그대로). `reset_font_size`는 `font-size`로 | `super+=` / `super+-` / `super+0` |
 | `scroll_page_up` / `scroll_page_down` | 스크롤백 한 쪽 | `shift+page_up` `super+page_up` / 아래도 같음 |
-| `jump_to_prompt:-1` / `jump_to_prompt:1` | 앞·뒤 프롬프트로(셸 통합) | `super+arrow_up` `super+shift+arrow_up` / `super+arrow_down` `super+shift+arrow_down` |
+| `jump_to_prompt:-1` / `jump_to_prompt:1` | 앞·뒤 프롬프트로(셸 통합). 값은 -32768~32767 정수이고 틀리면 설정 경고입니다(빼면 -1) | `super+arrow_up` `super+shift+arrow_up` / `super+arrow_down` `super+shift+arrow_down` |
 | `scroll_to_top` / `scroll_to_bottom` | 맨 위 / 맨 아래 | `shift+home` `super+home` / `shift+end` `super+end` |
 | `scroll_page_lines:N` / `scroll_page_fractional:F` | N줄 / 화면의 F배만큼 스크롤(양수면 아래로, 음수면 위로) | (없음) |
 | `toggle_fullscreen` | 전체 화면 켜고 끄기 | `super+ctrl+f` `super+enter`(macOS) |
@@ -345,7 +347,7 @@ HTML은 `<div style="font-family: monospace; white-space: pre;">` 안에 칸의 
 | `prompt_tab_title` / `set_tab_title:글` | 지금 탭의 제목을 입력 막대로 묻기 / 정하기. 탭 제목은 그 탭 칸들의 제목보다 먼저 보이고, 빈 글이면 지워져 칸 제목으로 돌아갑니다. 닫았다 `undo`하면 따라 돌아옵니다 | (없음, 메뉴 "셸 › 탭 제목 바꾸기…"와 팔레트) |
 | `prompt_window_title` / `set_window_title:글` | 지금 창의 제목을 입력 막대로 묻기 / 정하기. 설정 `title`이 있으면 그것이 먼저이고, 아니면 이 제목, 없으면 지금 탭 제목입니다. 빈 글이면 지웁니다. 탭 줄에는 영향이 없습니다 | (없음, 메뉴 "셸 › 창 제목 바꾸기…"와 팔레트) |
 | `copy_title_to_clipboard` | 지금 칸의 터미널 제목(사람이 붙인 것, 없으면 프로그램이 정한 것)을 클립보드로 복사합니다. 제목이 없거나 비면 하지 않습니다 | (없음, 팔레트) |
-| `write_scrollback_file:할일` / `write_screen_file:할일` / `write_selection_file:할일` | 스크롤백 전체 / 화면 / 고른 글을 파일로 쓰고, 할일이 `copy`면 경로를 클립보드에, `paste`면 칸에 붙여넣고, `open`이면 기본 앱으로 엽니다. 파일은 이 사용자 전용 임시 폴더에 두고 앱이 끝날 때 지웁니다. 고른 글이 없으면 아무것도 하지 않습니다 | `write_screen_file`: `super+shift+j`(paste) `super+shift+alt+j`(open) `super+ctrl+shift+j`(copy)(macOS). 나머지는 (없음, 팔레트에 열기·복사) |
+| `write_scrollback_file:할일[,형식]` / `write_screen_file:할일[,형식]` / `write_selection_file:할일[,형식]` | 스크롤백 전체 / 화면 / 고른 글을 파일로 쓰고(형식은 `plain`(기본, 글만)·`vt`(색·꾸밈 이스케이프가 든 글, `.txt`)·`html`(바탕·글자 기본색을 넣은 HTML, `.html`)이고 쉼표 앞뒤에 공백을 두지 않습니다. 형식이 틀리면 설정 경고입니다), 할일이 `copy`면 경로를 클립보드에, `paste`면 칸에 붙여넣고, `open`이면 기본 앱으로 엽니다. 파일은 이 사용자 전용 임시 폴더에 두고 앱이 끝날 때 지웁니다. 고른 글이 없으면 아무것도 하지 않습니다 | `write_screen_file`: `super+shift+j`(paste) `super+shift+alt+j`(open) `super+ctrl+shift+j`(copy)(macOS). 나머지는 (없음, 팔레트에 열기·복사) |
 | `adjust_selection:방향` | 고른 것의 끝점을 옮깁니다. 방향은 `left` `right`(글이 있는 앞·다음 칸까지 빈 칸을 건너뛰고 줄을 넘어감) `up`(맨 윗줄이면 줄 처음으로) `down`(글이 있는 다음 줄로, 없으면 줄 끝으로) `page_up` `page_down`(한 화면만큼 옮길 수 없으면 `home`·`end`) `home` `end`(글이 있는 마지막 줄의 끝) `beginning_of_line` `end_of_line`. Ghostty `Selection.adjust`와 같습니다. 고른 것이 없으면 아무것도 하지 않습니다 | `shift+arrow_left` `right` `up` `down`(`performable`이라 고른 것이 없으면 키는 프로그램으로 갑니다). Ghostty는 `shift+home` `end` `page_up` `page_down`도 이 동작이지만 b-terminal은 그 키를 스크롤에 둡니다 |
 | `copy_url_to_clipboard` | 마우스 아래 링크(화면의 URL·OSC 8) 주소를 클립보드에 | (없음) |
 | `toggle_quick_terminal` | 퀵 터미널(화면 가장자리에서 미끄러져 나오는 창) 보이기·숨기기. 자리·크기·화면·움직임은 `quick-terminal-*` 설정. 창 상태 복원에서 빠집니다 | (없음, `global:`로 묶으세요) |
