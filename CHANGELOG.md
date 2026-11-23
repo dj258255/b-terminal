@@ -5,6 +5,7 @@
 ## [아직 릴리스하지 않음]
 
 - GPU 길에서 설정을 다시 읽어 칸 크기는 그대로이고 글꼴 모양만 바뀌면(`font-thicken`·`font-feature`·대체 글꼴 등) 이미 나온 글자가 옛 모양으로 남던 것을 고쳤습니다. 글꼴 묶음마다 차례 번호를 주어 아틀라스가 옛 글리프를 쓰지 않습니다(Ghostty #15280과 같은 꼴). 단위 시험으로 확인했습니다 (#754)
+- 넣어 둔 테마를 Ghostty가 새로 고정한 판(iTerm2-Color-Schemes `release-20261116-150709-494b809`, Ghostty #15311)과 같게 올렸습니다. 새 테마 `mistpine`·`Termius Dark`·`Termius Light`·`Wild Charm Dark`·`Wild Charm Light`·`Zacess Warm Dark`·`Zacess Warm Light`가 더해져 914개입니다. 914개 모두 그 판과 내용이 같음을 GitHub 트리의 blob sha로 대조했습니다 (#755)
 
 ## [0.94.0] - 2026-11-23
 
