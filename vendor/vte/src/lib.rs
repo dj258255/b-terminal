@@ -318,7 +318,10 @@ impl<const OSC_RAW_BUF_SIZE: usize> Parser<OSC_RAW_BUF_SIZE> {
     #[inline(always)]
     fn advance_dcs_passthrough<P: Perform>(&mut self, performer: &mut P, byte: u8) {
         match byte {
-            0x00..=0x17 | 0x19 | 0x1C..=0x7E => performer.put(byte),
+            // b-terminal(#792): 0x80~0xFF는 모두 자료다(0x9C도 8비트 ST가 아니다). 원시 0x9C는 UTF-8 연속 바이트와
+            // 구별되지 않아(`한` = ED 95 9C, `Ü` = C3 9C) 전에는 거기서 DCS가 끝나고 남은 글이 화면에 찍혔다.
+            // Ghostty 1.4.0 `parse_table.zig` 241~266줄과 시험 `dcs_passthrough: high bytes are payload data`(412줄)
+            0x00..=0x17 | 0x19 | 0x1C..=0x7E | 0x80..=0xFF => performer.put(byte),
             0x18 | 0x1A => {
                 performer.unhook();
                 performer.execute(byte);
@@ -330,11 +333,6 @@ impl<const OSC_RAW_BUF_SIZE: usize> Parser<OSC_RAW_BUF_SIZE> {
                 self.state = State::Escape
             },
             0x7F => (),
-            0x9C => {
-                performer.unhook();
-                self.state = State::Ground
-            },
-            _ => (),
         }
     }
 
@@ -1265,7 +1263,7 @@ mod tests {
 
     #[test]
     fn dcs_reset() {
-        const INPUT: &[u8] = b"\x1b[3;1\x1bP1$tx\x9c";
+        const INPUT: &[u8] = b"\x1b[3;1\x1bP1$tx\x1b";
         let mut dispatcher = Dispatcher::default();
         let mut parser = Parser::new();
 
@@ -1286,7 +1284,7 @@ mod tests {
 
     #[test]
     fn parse_dcs() {
-        const INPUT: &[u8] = b"\x1bP0;1|17/ab\x9c";
+        const INPUT: &[u8] = b"\x1bP0;1|17/ab\x1b";
         let mut dispatcher = Dispatcher::default();
         let mut parser = Parser::new();
 
@@ -1585,6 +1583,19 @@ mod tests {
             assert_eq!(dispatcher.dispatched[i], Sequence::Print('\u{FFFD}'), "{i}");
         }
         assert_eq!(dispatcher.dispatched[10], Sequence::Print('a'));
+    }
+
+    /// b-terminal(#792): DCS 통과 상태에서 0x80~0xFF는 모두 자료다. 0x9C(8비트 ST)도 DCS를 끝내지 않는다
+    #[test]
+    fn dcs_passthrough_keeps_high_bytes_as_data() {
+        let mut d = Dispatcher::default();
+        let mut p = Parser::new();
+        p.advance(&mut d, b"\x1bPqa\x9c\xed\x95\x9c\xff");
+        let puts = d.dispatched.iter().filter(|s| matches!(s, Sequence::DcsPut(_))).count();
+        assert_eq!(puts, 6, "{:?}", d.dispatched);
+        assert!(!d.dispatched.iter().any(|s| matches!(s, Sequence::DcsUnhook)), "{:?}", d.dispatched);
+        p.advance(&mut d, b"\x1b\\");
+        assert!(d.dispatched.iter().any(|s| matches!(s, Sequence::DcsUnhook)));
     }
 
     /// b-terminal(#776): APC·SOS·PM은 0x9C 같은 C1로 끝난다(Ghostty 1.4.0 `parse_table.zig` "anywhere" 전이)

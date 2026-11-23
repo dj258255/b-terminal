@@ -426,12 +426,9 @@ impl Scanner {
                 (St::DcsHdr, _) => St::DcsHdr,
                 (St::DcsIgnore, 0x1b) => St::DcsEsc,
                 (St::DcsIgnore, _) => St::DcsIgnore,
-                // 8비트 ST(0x9C)도 DCS를 끝낸다: vte는 통과 상태에서 unhook하고 Ground로 간다(`advance_dcs_passthrough` 332줄).
-                // 끝을 ST로 보니 `ESC \`와 같이 다룬다. 머리(끝 바이트 전)의 0x9C는 vte도 무시한다(#598)
-                (St::DcsBody, 0x9c) => {
-                    self.finish_dcs(&mut out, i + 1);
-                    St::Ground
-                }
+                // b-terminal(#792): 통과 상태에서 0x80~0xFF는 모두 자료이고 0x9C도 DCS를 끝내지 않는다(엔진과 Ghostty 1.4.0
+                // `parse_table.zig` 시험 `dcs_passthrough: high bytes are payload data`). 끝은 `ESC \`와 CAN·SUB·ESC뿐이다.
+                // 머리(끝 바이트 전)의 0x9C는 아직 따로 다룬다(#793)
                 (St::DcsBody, 0x1b) => St::DcsEsc,
                 (St::DcsBody, b) => {
                     if let Some(kind) = self.dcs_kind.filter(|_| !self.dcs_over) {
