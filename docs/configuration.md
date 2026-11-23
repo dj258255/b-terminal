@@ -273,7 +273,7 @@ keybind = nav/escape=deactivate_key_table
 
 - 수식 키: `super`(cmd) `ctrl` `alt`(opt) `shift`. 키 이름은 Ghostty 이름: `a`~`z`, `digit_1`(또는 `1`), `equal`, `minus`, `comma`, `bracket_left`, `bracket_right`, `arrow_up`, `page_up`, `home`, `enter`, `f1` …
 - 한글처럼 글자 키가 라틴 글자가 아닌 입력 소스(macOS): `ctrl`이나 `super`가 붙은 글자 키는 macOS 자판의 ⌘ 층 글자로 맞춥니다(macOS 메뉴 단축키가 쓰는 글자). 그래서 한글 2벌식에서도 ⌘T는 `super+t`, ⌃A는 `ctrl+a`입니다. `ctrl`·`super` 없이 누른 글자 키는 입력기가 조합으로 가져가므로 키 묶음에 오지 않습니다(키 순서 `ctrl+a>n`의 `n`은 영문 입력 소스에서만 듣고, `ctrl+a>ctrl+n`은 한글에서도 듣습니다). 자판의 글자 그대로(`super+ㅅ`) 묶을 수는 없습니다.
-- 동작의 값(Ghostty와 같음): 값이 없는 동작에 콜론을 붙이면(`ignore:A`, `new_tab:x`, `quit:1`) 설정 경고입니다. 글 값 동작(`csi`·`esc`·`text`·`search`·`set_surface_title`·`set_tab_title`·`set_window_title`)은 콜론이 꼭 있어야 하고(`csi`만 쓰면 경고, 빈 글은 `set_tab_title:`), 정수·실수 값(`jump_to_prompt`·`increase_font_size`·`scroll_page_lines`·`goto_tab` 등)은 틀리거나 범위를 넘으면 경고이며 NaN·무한은 받지 않습니다. 값을 생략할 수 있는 것은 기본값이 있는 `new_split`(auto)·`copy_to_clipboard`(mixed)·`close_tab`(this)·`open_config`(os_open)뿐입니다.
+- 동작의 값(Ghostty와 같음): 값이 없는 동작에 콜론을 붙이면(`ignore:A`, `new_tab:x`, `quit:1`) 설정 경고입니다. 글 값 동작(`csi`·`esc`·`text`·`search`)은 콜론이 꼭 있어야 하고(`csi`만 쓰면 경고, 빈 글은 `csi:`), 정수·실수 값(`jump_to_prompt`·`increase_font_size`·`scroll_page_lines`·`goto_tab` 등)은 틀리거나 범위를 넘으면 경고이며 NaN·무한은 받지 않습니다. 전부터 뜻이 분명했던 꼴은 Ghostty보다 넓게 계속 받습니다: `set_surface_title`·`set_tab_title`·`set_window_title`의 콜론 없는 꼴(제목 지우기, Ghostty는 오류), 값 없는 `increase_font_size`·`decrease_font_size`(1pt, Ghostty는 오류), 값 없는 `jump_to_prompt`(-1, Ghostty는 오류). 값을 생략할 수 있는 것은 기본값이 있는 `new_split`(auto)·`copy_to_clipboard`(mixed)·`close_tab`(this)·`open_config`(os_open)뿐입니다.
 - 명령 팔레트가 보이는 단축키: 같은 동작에 키가 여럿이면 가장 나중에 정한 키이고(순서 `a>b`는 첫 키), `performable:` 묶음은 뺍니다(Ghostty `getTrigger`).
 - 키 순서(`ctrl+a>n`, Ghostty와 같은 문법): 앞 키를 누르면 다음 키를 기다립니다. 시간 제한은 없습니다. 순서에 묶이지 않은 키를 누르면 그때까지 누른 키를 모두 프로그램에 그대로 보냅니다(`ctrl+a` `x` → `^A` `x`). 겹치는 묶음은 나중 것이 이깁니다(`ctrl+a=…` 뒤에 `ctrl+a>n=…`을 쓰면 `ctrl+a`는 앞 키가 됩니다). 명령 팔레트에는 키 순서를 보이지 않습니다.
 - 접두사(Ghostty와 같은 문법, 겹쳐 쓸 수 있고 순서는 상관없음: `unconsumed:performable:ctrl+c=copy_to_clipboard`):
@@ -321,9 +321,9 @@ HTML은 `<div style="font-family: monospace; white-space: pre;">` 안에 칸의 
 | (마우스) 칸 사이 경계선을 끌기 / 두 번 누르기 | 경계선 위(선 양쪽 3pt까지)에서 포인터가 크기 조절 모양이 되고, 왼쪽 단추로 끌면 그 경계선의 비율만 바뀝니다(양쪽 칸 최소 10pt, Ghostty와 같음). 누른 자리에서 10pt 넘게 움직여야 비율이 바뀝니다(Ghostty `DragGesture` 기본). 두 번 누르면 그 탭의 모든 칸을 고르게(`equalize_splits`와 같음). 누른 것은 프로그램(마우스 보고)·글 고르기에 가지 않고, 끄는 동안 다른 누름도 가지 않습니다. 칸 하나를 크게 보는 중에는 경계선이 없습니다. 칸 끌기 손잡이보다 경계선이 먼저 맞습니다. 격리한 실제 창에서 마우스(CGEvent)로 끌기·두 번 누르기를 확인했습니다. 두 번 누르기 간격은 `click-repeat-interval`을 따릅니다 | 마우스 |
 | `toggle_split_zoom` | 고른 칸만 탭 전체로 크게 보기 / 되돌리기 | `super+shift+enter` |
 | `undo` / `redo` | 닫은 칸·탭을 원래 자리에 되살리기(`undo-timeout` 안에서) / 되살린 것을 다시 닫기. 되살릴 것이 없으면 키는 프로그램으로 갑니다(Ghostty의 `performable`과 같다) | `super+z` `super+shift+t` / `super+shift+z`(macOS만) |
-| `increase_font_size:N` / `decrease_font_size:N`(N은 꼭 써야 하는 유한한 수) / `reset_font_size` | 고른 칸의 글자 크기(같은 창의 다른 칸과 다른 창은 그대로). `reset_font_size`는 `font-size`로 | `super+=` / `super+-` / `super+0` |
+| `increase_font_size:N` / `decrease_font_size:N`(N은 유한한 수. 빼면 1) / `reset_font_size` | 고른 칸의 글자 크기(같은 창의 다른 칸과 다른 창은 그대로). `reset_font_size`는 `font-size`로 | `super+=` / `super+-` / `super+0` |
 | `scroll_page_up` / `scroll_page_down` | 스크롤백 한 쪽 | `shift+page_up` `super+page_up` / 아래도 같음 |
-| `jump_to_prompt:-1` / `jump_to_prompt:1` | 앞·뒤 프롬프트로(셸 통합). 값은 -32768~32767 정수이고 빠뜨리거나 틀리면 설정 경고입니다 | `super+arrow_up` `super+shift+arrow_up` / `super+arrow_down` `super+shift+arrow_down` |
+| `jump_to_prompt:-1` / `jump_to_prompt:1` | 앞·뒤 프롬프트로(셸 통합). 값은 -32768~32767 정수이고 틀리면 설정 경고입니다(빼면 -1) | `super+arrow_up` `super+shift+arrow_up` / `super+arrow_down` `super+shift+arrow_down` |
 | `scroll_to_top` / `scroll_to_bottom` | 맨 위 / 맨 아래 | `shift+home` `super+home` / `shift+end` `super+end` |
 | `scroll_page_lines:N` / `scroll_page_fractional:F` | N줄 / 화면의 F배만큼 스크롤(양수면 아래로, 음수면 위로) | (없음) |
 | `toggle_fullscreen` | 전체 화면 켜고 끄기 | `super+ctrl+f` `super+enter`(macOS) |

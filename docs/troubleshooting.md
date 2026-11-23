@@ -424,5 +424,5 @@
 - 언제: 2026-11-23, #768. Ghostty 1.4.0 `Binding.zig` 시험(13·45·46·69·70)을 옮겨 견주다 찾았다. 0.95.0까지의 동작이다
 - 증상: `ignore:A`·`new_tab:x`·`quit:1`이 받아들여지고, `csi`·`esc`·`text`가 빈 글로 읽힌다. `jump_to_prompt:abc`는 -1, `increase_font_size:abc`는 1.0(`:nan`은 NaN)으로 바뀐다. 반대로 `write_screen_file:copy,html`은 "copy·paste·open" 경고로 버려진다. 같은 동작에 키가 둘이면 명령 팔레트가 가장 짧은 키를 보이고 `performable:` 묶음도 보인다
 - 까닭: 동작 해석이 인자를 느슨하게 읽었고(Ghostty는 값 없는 동작의 콜론·글 동작의 콜론 빠짐·정수/실수 틀림을 모두 오류로 한다), `write_*_file`에는 형식 자리가 없었으며, 역방향 조회가 정한 차례를 모르는 해시 순서였다
-- 고침: Ghostty `Action.parse`처럼 읽는다(기본값이 있는 enum만 값을 생략한다. 제목 동작의 `set_tab_title`처럼 콜론 없는 꼴은 이제 경고이고 지우기는 `set_tab_title:`이다). `write_*_file`은 `,plain`·`,vt`·`,html`을 받아 그 형식으로 쓰고(`html`은 `.html`), 팔레트는 가장 나중에 정한 키를 보이며 `performable:`은 뺀다
+- 고침: Ghostty `Action.parse`처럼 읽는다(틀린 값만 경고한다. 전부터 뜻이 분명했던 꼴은 Ghostty보다 넓게 계속 받는다: 콜론 없는 `set_tab_title`(제목 지우기), 값 없는 `increase_font_size`·`decrease_font_size`(1)·`jump_to_prompt`(-1). Ghostty는 이 꼴들을 오류로 본다). `write_*_file`은 `,plain`·`,vt`·`,html`을 받아 그 형식으로 쓰고(`html`은 `.html`), 팔레트는 가장 나중에 정한 키를 보이며 `performable:`은 뺀다
 - 0.95.0에서 풀기: 인자를 틀리지 않게 쓴다. 형식(`vt`·`html`)으로 쓰는 길은 없었다

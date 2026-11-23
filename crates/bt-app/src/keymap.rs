@@ -376,12 +376,14 @@ pub fn parse_action(s: &str) -> Result<Option<Action>, String> {
     }
     // 글 값 동작(`[]const u8`)은 콜론이 꼭 있어야 한다. 콜론 뒤가 비어 있는 것은 빈 글이다
     let text = || arg.ok_or_else(|| format!("{name}:글이 필요합니다(콜론 뒤가 비어도 됩니다)"));
-    // 실수 값: 기본값이 없다. NaN·무한대는 받지 않는다
+    // 실수 값: NaN·무한대·글은 받지 않는다
     let float = |what: &str| {
         arg.and_then(|a| a.trim().parse::<f32>().ok())
             .filter(|f| f.is_finite())
             .ok_or_else(|| format!("{name}:{what}"))
     };
+    // 값을 빠뜨린 꼴은 전부터 뜻이 분명해(1pt 키우기·줄이기) 계속 받는다. Ghostty는 오류다. 틀린 값은 오류
+    let float_or_one = |what: &str| if arg.is_none() { Ok(1.0) } else { float(what) };
     Ok(Some(match name {
         "unbind" => return Ok(None),
         "copy_to_clipboard" => Action::Copy(match arg.map(str::trim) {
@@ -437,8 +439,8 @@ pub fn parse_action(s: &str) -> Result<Option<Action>, String> {
         "next_tab" => Action::NextTab,
         "previous_tab" => Action::PrevTab,
         "last_tab" => Action::LastTab,
-        "increase_font_size" => Action::FontBigger(float("글자를 키울 크기(pt)")?),
-        "decrease_font_size" => Action::FontSmaller(float("글자를 줄일 크기(pt)")?),
+        "increase_font_size" => Action::FontBigger(float_or_one("글자를 키울 크기(pt)")?),
+        "decrease_font_size" => Action::FontSmaller(float_or_one("글자를 줄일 크기(pt)")?),
         "reset_font_size" => Action::FontReset,
         "scroll_page_up" => Action::ScrollPageUp,
         "scroll_page_down" => Action::ScrollPageDown,
@@ -503,11 +505,11 @@ pub fn parse_action(s: &str) -> Result<Option<Action>, String> {
             };
             Action::WriteFile(source, then, format)
         }
-        "set_surface_title" => Action::SetSurfaceTitle(text()?.to_string()),
+        "set_surface_title" => Action::SetSurfaceTitle(arg.unwrap_or("").to_string()),
         "prompt_tab_title" => Action::PromptTabTitle,
         "prompt_window_title" => Action::PromptWindowTitle,
-        "set_tab_title" => Action::SetTabTitle(text()?.to_string()),
-        "set_window_title" => Action::SetWindowTitle(text()?.to_string()),
+        "set_tab_title" => Action::SetTabTitle(arg.unwrap_or("").to_string()),
+        "set_window_title" => Action::SetWindowTitle(arg.unwrap_or("").to_string()),
         "copy_title_to_clipboard" => Action::CopyTitle,
         "scroll_page_lines" => Action::ScrollLines(
             arg.and_then(|a| a.trim().parse::<i16>().ok())
@@ -516,12 +518,15 @@ pub fn parse_action(s: &str) -> Result<Option<Action>, String> {
         ),
         "scroll_page_fractional" => Action::ScrollFraction(float("화면의 몇 분의 일(양수면 아래로)")?),
         "select_all" => Action::SelectAll,
-        // Ghostty는 i16이다(범위 밖·소수·글은 오류, 값을 생략할 수도 없다)
-        "jump_to_prompt" => Action::JumpToPrompt(
-            arg.and_then(|a| a.trim().parse::<i16>().ok())
+        // Ghostty는 i16이다(범위 밖·소수·글은 오류). 값을 빠뜨린 꼴은 전부터 -1(앞 프롬프트)로 뜻이 분명해 계속 받는다(Ghostty는 오류)
+        "jump_to_prompt" => Action::JumpToPrompt(match arg {
+            None => -1,
+            Some(a) => a
+                .trim()
+                .parse::<i16>()
                 .map(i32::from)
-                .ok_or("jump_to_prompt:-32768~32767 사이 정수")?,
-        ),
+                .map_err(|_| "jump_to_prompt:-32768~32767 사이 정수")?,
+        }),
         "ignore" => Action::Ignore,
         "toggle_secure_input" => Action::ToggleSecureInput,
         // 받기만 하는 동작(#211): 키를 먹고 아무 일도 하지 않는다. 이유는 docs/configuration.md
@@ -1911,9 +1916,9 @@ mod tests {
             Some(Action::SetSurfaceTitle("빌드 서버".into()))
         );
         assert_eq!(
-            parse_action("set_surface_title:").unwrap(),
+            parse_action("set_surface_title").unwrap(),
             Some(Action::SetSurfaceTitle(String::new())),
-            "글이 없으면 지우기(Ghostty처럼 콜론은 꼭 쓴다)"
+            "글이 없으면 지우기"
         );
         assert_eq!(
             parse_action("scroll_page_lines:-3").unwrap(),
@@ -2463,16 +2468,16 @@ mod tests {
             Some(Action::SetTabTitle("빌드 서버".into()))
         );
         assert_eq!(
-            parse_action("set_tab_title:").unwrap(),
+            parse_action("set_tab_title").unwrap(),
             Some(Action::SetTabTitle(String::new())),
-            "글이 없으면 지우기(Ghostty처럼 콜론은 꼭 쓴다)"
+            "글이 없으면 지우기"
         );
         assert_eq!(
             parse_action("set_window_title:창").unwrap(),
             Some(Action::SetWindowTitle("창".into()))
         );
         assert_eq!(
-            parse_action("set_window_title:").unwrap(),
+            parse_action("set_window_title").unwrap(),
             Some(Action::SetWindowTitle(String::new()))
         );
     }
@@ -2790,42 +2795,35 @@ mod tests {
     /// 콜론 뒤가 빈 글인 것(`csi:`)은 받는다
     #[test]
     fn text_actions_require_a_colon() {
-        for s in [
-            "csi",
-            "esc",
-            "text",
-            "set_surface_title",
-            "set_tab_title",
-            "set_window_title",
-            "search",
-        ] {
+        for s in ["csi", "esc", "text", "search"] {
             assert!(parse_action(s).is_err(), "{s}는 콜론이 필요하다");
         }
         assert_eq!(parse_action("csi:").unwrap(), Some(Action::Text("\x1b[".into())));
         assert_eq!(parse_action("esc:").unwrap(), Some(Action::Text("\x1b".into())));
         assert_eq!(parse_action("text:").unwrap(), Some(Action::Text(String::new())));
+        // 제목 동작의 콜론 없는 꼴은 전처럼 "지우기"로 받는다(Ghostty는 오류지만 뜻이 분명한 꼴은 넓게 받는다)
+        assert_eq!(
+            parse_action("set_tab_title").unwrap(),
+            Some(Action::SetTabTitle(String::new()))
+        );
         assert_eq!(
             parse_action("set_tab_title:").unwrap(),
-            Some(Action::SetTabTitle(String::new())),
-            "빈 글로 지우기는 콜론을 쓴 꼴로"
+            Some(Action::SetTabTitle(String::new()))
         );
     }
 
-    /// Ghostty: 정수(`i16`)·실수(`f32`) 값은 기본값이 없어 생략·틀린 값이 InvalidFormat. NaN·inf는 받지 않는다
+    /// Ghostty: 정수(`i16`)·실수(`f32`) 값은 틀리면 InvalidFormat. NaN·inf는 받지 않는다. 값 빠뜨림은 전처럼 받는다
     #[test]
     fn numeric_parameters_are_strict() {
         for s in [
-            "jump_to_prompt",
             "jump_to_prompt:abc",
             "jump_to_prompt:1.5",
             "jump_to_prompt:99999",
             "jump_to_prompt:-32769",
             "jump_to_prompt:",
-            "increase_font_size",
             "increase_font_size:abc",
             "increase_font_size:nan",
             "increase_font_size:inf",
-            "decrease_font_size",
             "decrease_font_size:abc",
             "decrease_font_size:NaN",
             "decrease_font_size:-inf",
@@ -2834,6 +2832,16 @@ mod tests {
         ] {
             assert!(parse_action(s).is_err(), "{s}");
         }
+        // 값을 빠뜨린 꼴은 전처럼 받는다(Ghostty는 오류)
+        assert_eq!(parse_action("jump_to_prompt").unwrap(), Some(Action::JumpToPrompt(-1)));
+        assert_eq!(
+            parse_action("increase_font_size").unwrap(),
+            Some(Action::FontBigger(1.0))
+        );
+        assert_eq!(
+            parse_action("decrease_font_size").unwrap(),
+            Some(Action::FontSmaller(1.0))
+        );
         assert_eq!(
             parse_action("jump_to_prompt:-1").unwrap(),
             Some(Action::JumpToPrompt(-1))
