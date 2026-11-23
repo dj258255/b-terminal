@@ -177,8 +177,10 @@ impl PlacementKey {
 pub struct Outcome {
     /// PTY에 쓸 답(`ESC _ G … ESC \`)
     pub reply: Option<Vec<u8>>,
-    /// 그림을 놓은 뒤 커서를 옮길 만큼(아래 줄 수, 오른쪽 칸 수)
-    pub advance: Option<(u32, u32)>,
+    /// 그림을 놓은 뒤 커서를 옮길 곳(Ghostty `graphics_exec.zig` `display`의 `.after`): (아래로 index할 줄 수 요청, 옮긴 뒤 칸).
+    /// 줄 수는 그림의 줄 수 - 1에 오른쪽 끝에 닿아 감기면 하나 더하고(열 0으로), 상한(스크롤 영역 아래까지 남은 줄 + 화면 높이)은
+    /// 커서와 스크롤 영역을 아는 세션이 건다
+    pub advance: Option<(u32, usize)>,
 }
 
 /// 명령을 놓을 때 필요한 지금 화면 상태
@@ -1164,10 +1166,16 @@ impl Graphics {
             self.reap_orphans(false);
         }
         let mut out = self.ok_id(c, id);
-        // C=1이면 커서를 옮기지 않는다. 아니면 그림의 마지막 줄, 그림 오른쪽 칸으로(kitty와 같다).
+        // C=1이면 커서를 옮기지 않는다. 아니면 그림의 마지막 줄, 그림 오른쪽 칸으로(kitty와 같다). 그림이 오른쪽 끝에 닿으면
+        // (`x + 칸 수 >= 열 수`) 한 줄 더 내려 열 0으로 감긴다(#801).
         // 가상 배치와 상대 배치는 C와 상관없이 커서를 옮기지 않는다(Ghostty)
         if num(c, b'C') != 1 && matches!(loc, Loc::Pin) {
-            out.advance = Some((rows.saturating_sub(1), cols));
+            let target = cur.col.saturating_add(cols as usize);
+            let wraps = target >= cur.cols as usize;
+            out.advance = Some((
+                rows.saturating_sub(1) + u32::from(wraps),
+                if wraps { 0 } else { target },
+            ));
         }
         out
     }
@@ -1753,7 +1761,7 @@ mod tests {
         let px = vec![200u8; 25 * 30 * 3];
         let out = g.handle(format!("a=T,f=24,s=25,v=30,i=7;{}", b64(&px)).as_bytes(), CUR);
         assert_eq!(out.reply.unwrap(), b"\x1b_Gi=7;OK\x1b\\");
-        assert_eq!(out.advance, Some((1, 3)));
+        assert_eq!(out.advance, Some((1, 7)), "한 줄 아래, 열 4 + 3칸");
         let p = &g.placements[0];
         assert_eq!((p.line, p.col, p.cols, p.rows), (100, 4, 3, 2));
         assert_eq!(
@@ -1785,7 +1793,7 @@ mod tests {
         assert_eq!(first, Outcome::default(), "조각 중에는 아무것도 안 함");
         let out = g.handle(format!("m=0;{b}").as_bytes(), CUR);
         assert_eq!(out.reply, None, "q=1이면 OK를 답하지 않는다");
-        assert_eq!(out.advance, Some((0, 4)));
+        assert_eq!(out.advance, Some((0, 8)));
         let img = g.image(9).unwrap();
         assert_eq!((img.width, img.height), (2, 1));
         assert_eq!(&img.rgba[4..8], &[0, 0, 255, 128]);
@@ -2279,7 +2287,7 @@ mod tests {
         assert_eq!((p.geom.img_w, p.geom.img_h), (25, 30));
         // 잘라낸 10×12 + 오프셋 (3, 4): 13px -> 2칸, 16px -> 1줄
         assert_eq!((p.cols, p.rows), (2, 1));
-        assert_eq!(out.advance, Some((0, 2)));
+        assert_eq!(out.advance, Some((0, 6)));
     }
 
     #[test]

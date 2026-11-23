@@ -2322,15 +2322,32 @@ fn graphics_command<T: EventListener>(
         cols: term.columns() as u32,
     };
     let out = graphics.handle(raw, cur);
-    if let Some((down, right)) = out.advance {
-        // 그림이 차지한 줄만큼 줄을 내린다(맨 아래면 스크롤된다). 그다음 그림 오른쪽 칸으로
-        let mut seq = "\n".repeat(down as usize);
-        if right > 0 {
-            seq.push_str(&format!("\x1b[{right}C"));
-        }
-        parser.advance(term, seq.as_bytes());
+    if let Some((rows, col)) = out.advance {
+        move_cursor_after_placement(term, parser, rows, col);
     }
     out.reply
+}
+
+/// 그림을 놓은 뒤 커서를 옮긴다(#801, Ghostty `graphics_exec.zig` `display`의 `.after`, 403줄).
+/// `rows`만큼 index(IND, 스크롤 영역을 따르고 맨 아래 줄이면 영역이 스크롤한다)하되, 믿지 않는 출력이 큰 값을 줄 수 있으므로
+/// "스크롤 영역 맨 아래까지 남은 줄 + 화면 높이"를 넘지 않는다(영역 안이 아니면 화면 높이). 그다음 줄바꿈 대기를 풀고 `col`칸으로 간다
+fn move_cursor_after_placement<T: EventListener>(term: &mut Term<T>, parser: &mut Processor, rows: u32, col: usize) {
+    let point = term.grid().cursor.point;
+    let region = term.scroll_region();
+    let in_region = point.line >= region.start
+        && point.line < region.end
+        && point.column.0 >= term.left_margin()
+        && point.column.0 <= term.right_margin();
+    let before_scroll = if in_region {
+        (region.end.0 - 1 - point.line.0) as usize
+    } else {
+        0
+    };
+    let n = (rows as usize).min(before_scroll.saturating_add(term.screen_lines()));
+    if n > 0 {
+        parser.advance(term, "\x1bD".repeat(n).as_bytes());
+    }
+    term.set_cursor_column(col);
 }
 
 /// 지금 보이는 줄에 걸친 kitty 그림들. 대체 화면을 나왔으면 그 화면의 그림을 지운다

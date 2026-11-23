@@ -972,6 +972,15 @@ impl<T> Term<T> {
         &self.scroll_region
     }
 
+    /// b-terminal(#801): 커서를 `col`칸으로 옮긴다(Ghostty `cursorHorizontalAbsolute`). 원점 모드의 여백 기준도 좌우 여백도 따지지 않고
+    /// 줄바꿈 대기만 푼다. kitty 그림을 놓은 뒤 커서를 옮기는 데 쓴다(#801)
+    pub fn set_cursor_column(&mut self, col: usize) {
+        self.damage_cursor();
+        self.grid.cursor.point.column = Column(cmp::min(col, self.last_column().0));
+        self.damage_cursor();
+        self.grid.cursor.input_needs_wrap = false;
+    }
+
     /// b-terminal(#327): 커서 위치 보고에 쓰는 (줄, 칸)(0부터). 원점 모드에서는 위 여백·왼쪽 여백 기준이다
     /// (Ghostty stream_handler.zig `cursorReportPos` 854줄). DSR 6과 DECXCPR가 함께 쓴다
     fn cursor_report_pos(&self) -> (usize, usize) {

@@ -84,6 +84,8 @@ softbuffer가 색 공간을 고를 수 있게 되거나, GPU 렌더러로 바꿔
 - 고친 곳(#583·#584, 0.71): `src/term/semantic.rs`의 `redraw=last` 프롬프트 비우기가 윗줄 이음을 떼고(Ghostty `PageList.zig` `reflowBlankRow`), `src/grid/resize.rs`에 `Grid::resize_with_lost_wraps`를 더해 비운 줄이 잃은 이어진 줄 몫만큼 커서 아래 빈 줄 사용을 줄입니다. 같은 파일에서 자동 줄바꿈이 꺼진 열 줄이기는 잘린 넓은 글자 머리를 비우고, 줄 늘리기는 커서가 맨 아래가 아니면 스크롤백을 끌어내리지 않습니다. `src/term/mod.rs`의 `Term::resize`는 크기 0을 거절하고 `Term::new`는 1로 올립니다. 이유: Ghostty `Terminal.zig`·`PageList.zig`와 같게(#577 조사). 되돌릴 조건: 원본이 같은 규칙을 갖게 되면 지웁니다.
 - 고친 곳(#587·#589, 0.72): `src/term/mod.rs`의 `set_scrolling_region`이 아래 경계를 줄 수로 먼저 자르고 `top >= bottom`을 보며(Ghostty `setTopAndBottomMargin`), `split_cell_boundary`는 위 줄이 스크롤백(음수 줄)이면 손상 기록에 적지 않습니다. `src/grid/mod.rs`의 `scroll_up_with_history`는 올려 본 자리(`display_offset`)를 스크롤백이 실제로 생기는 길에서만 올리고 `history_size`로 자릅니다. 이유: 출력 바이트로 엔진이 패닉하거나 올려 본 자리가 스크롤백 밖을 가리킴(퍼징에서 찾음). 되돌릴 조건: 원본이 같은 검사를 갖게 되면 지웁니다.
 
+- 더한 곳(#801, ADR-080): `src/term/mod.rs`에 `Term::set_cursor_column(col)`. `b-terminal(#801)`로 찾을 수 있습니다. kitty 그림을 놓은 뒤 커서를 그림 오른쪽 칸(오른쪽 끝에 닿으면 0열)으로 보내는 데 씁니다. Ghostty `cursorHorizontalAbsolute`처럼 원점 모드·좌우 여백을 따지지 않고 열로 보내고 줄바꿈 대기를 풉니다(`goto_col`은 원점 모드에서 여백 안으로 막습니다). 되돌릴 조건: 원본이 같은 일을 하는 공개 함수를 내면 지우고 그것을 씁니다.
+
 ### 왜
 
 alacritty_terminal은 글자마다 `unicode-width`로 폭을 세고, 폭 0인 글자만 앞 칸에 붙입니다. 그래서 ZWJ 가족은 6칸, 피부색은 4칸을 차지해 Ghostty(`grapheme-width-method = unicode`)와 어긋나고 프로그램이 mode 2027로 묶음 폭을 요청해도 받지 못합니다. 엔진 바깥(바이트를 바꾸는 방식)에서는 줄바꿈·커서·지우기와 섞여 안전하게 할 수 없었습니다.
