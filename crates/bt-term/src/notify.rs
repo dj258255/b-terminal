@@ -156,6 +156,8 @@ enum St {
     #[default]
     Ground,
     Esc,
+    /// `ESC` 뒤 중간 바이트(0x20~0x2F)를 지난 Escape(`ESC (`, `ESC #` 등, #793): 끝 바이트까지. 8비트 C1은 엔진 표를 따른다
+    EscInter,
     Osc,
     /// OSC 안에서 ESC를 봤다(다음이 \면 끝)
     OscEsc,
@@ -247,8 +249,9 @@ const GLYPH_APC_PREFIX: &[u8] = b"25a1;";
 /// APC 하나의 상한. kitty는 조각을 4096바이트로 보내지만 한 번에 보내는 도구도 있다
 const MAX_APC: usize = 8 * 1024 * 1024;
 
-/// 8비트 C1이 APC·SOS·PM 문자열 안에서 하는 일. Ghostty 1.4.0 `parse_table.zig` 51~66줄 "anywhere" 전이와 같다(#776).
-/// 엔진(vendor/vte `advance_sos_pm_apc_string`)이 같은 표를 쓴다
+/// 8비트 C1이 문자열(APC·SOS·PM)과 Escape·CSI·DCS 머리 안에서 하는 일. Ghostty 1.4.0 `parse_table.zig` 51~66줄
+/// "어디서나" 전이와 같다(#776·#793). 엔진(vendor/vte `anywhere`)이 같은 표를 쓴다.
+/// OSC 문자열과 DCS 통과·무시는 표가 0x80~0xFF를 자료로 덮어 여기에 오지 않는다
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum StrC1 {
     /// 0x80~0x8F·0x91~0x97·0x99·0x9A(실행)와 0x9C(ST): Ground로 간다
@@ -259,17 +262,28 @@ enum StrC1 {
     Dcs,
     /// 0x9D
     Osc,
+    /// 0x9F(APC)
+    Apc,
+    /// 0x98(SOS)·0x9E(PM)
+    SosPm,
 }
 
-/// 문자열 안의 C1 한 바이트가 문자열을 끝내면 `Some`, 머물면(0x98·0x9E·0x9F, 0xA0 이상) `None`
-fn str_c1(b: u8) -> Option<StrC1> {
+/// 0x80~0x9F 한 바이트가 상태를 바꾸는 곳. 0xA0 이상은 표에 없어 `None`(머문다)
+fn c1(b: u8) -> Option<StrC1> {
     match b {
         0x80..=0x8f | 0x91..=0x97 | 0x99 | 0x9a | 0x9c => Some(StrC1::Ground),
         0x9b => Some(StrC1::Csi),
         0x90 => Some(StrC1::Dcs),
         0x9d => Some(StrC1::Osc),
+        0x9f => Some(StrC1::Apc),
+        0x98 | 0x9e => Some(StrC1::SosPm),
         _ => None,
     }
+}
+
+/// 문자열 안의 C1 한 바이트가 그 문자열을 끝내면 `Some`. 문자열 시작 C1(0x98·0x9E·0x9F)은 같은 상태라 머문다
+fn str_c1(b: u8) -> Option<StrC1> {
+    c1(b).filter(|k| !matches!(k, StrC1::Apc | StrC1::SosPm))
 }
 
 impl Scanner {
@@ -294,17 +308,32 @@ impl Scanner {
         St::DcsHdr
     }
 
-    /// 문자열(APC·SOS·PM)을 C1로 끝낸 뒤의 상태
-    fn leave_string(&mut self, end: StrC1) -> St {
-        match end {
+    /// C1로 옮겨 간 뒤의 상태. `quiet`는 tmux 패스스루 안쪽이다(신호를 내지 않고, 조용히 따라갈 CSI 상태가 없어 Ground로 둔다)
+    fn leave_c1(&mut self, to: StrC1, quiet: bool) -> St {
+        match to {
             StrC1::Ground => St::Ground,
+            StrC1::Csi if quiet => St::Ground,
             StrC1::Csi => self.begin_csi(),
-            StrC1::Dcs => self.begin_dcs(false),
+            StrC1::Dcs => self.begin_dcs(quiet),
+            StrC1::Osc if quiet => St::OscQuiet,
             StrC1::Osc => {
                 self.buf.clear();
                 St::Osc
             }
+            StrC1::Apc if quiet => St::StrQuiet,
+            StrC1::Apc => {
+                self.apc.clear();
+                self.apc_skip = false;
+                St::Apc
+            }
+            StrC1::SosPm if quiet => St::StrQuiet,
+            StrC1::SosPm => St::SosPm,
         }
+    }
+
+    /// 문자열(APC·SOS·PM)을 C1로 끝낸 뒤의 상태
+    fn leave_string(&mut self, end: StrC1) -> St {
+        self.leave_c1(end, false)
     }
 
     /// 바이트를 먹이고 끝난 OSC에서 뽑은 신호를 돌려준다
@@ -378,6 +407,17 @@ impl Scanner {
                 (St::Esc, b'P') => self.begin_dcs(false),
                 (St::EscQuiet, b'P') => self.begin_dcs(true),
                 (St::DcsHdr, 0x1b) => St::DcsEsc,
+                // b-terminal(#793): DCS 머리(진입·매개변수·중간 바이트)의 8비트 C1도 표의 "어디서나" 전이다. 끝 바이트 전이라
+                // 아직 연 DCS가 아니라서 모은 머리를 버린다
+                (St::DcsHdr, 0x80..=0x9f) => match c1(b) {
+                    Some(to) => {
+                        let quiet = self.dcs_silent;
+                        self.dcs = Vec::new();
+                        self.dcs_kind = None;
+                        self.leave_c1(to, quiet)
+                    }
+                    None => St::DcsHdr,
+                },
                 (St::DcsHdr | St::DcsBody | St::DcsIgnore, 0x18 | 0x1a) => {
                     self.dcs = Vec::new();
                     self.dcs_kind = None;
@@ -428,7 +468,6 @@ impl Scanner {
                 (St::DcsIgnore, _) => St::DcsIgnore,
                 // b-terminal(#792): 통과 상태에서 0x80~0xFF는 모두 자료이고 0x9C도 DCS를 끝내지 않는다(엔진과 Ghostty 1.4.0
                 // `parse_table.zig` 시험 `dcs_passthrough: high bytes are payload data`). 끝은 `ESC \`와 CAN·SUB·ESC뿐이다.
-                // 머리(끝 바이트 전)의 0x9C는 아직 따로 다룬다(#793)
                 (St::DcsBody, 0x1b) => St::DcsEsc,
                 (St::DcsBody, b) => {
                     if let Some(kind) = self.dcs_kind.filter(|_| !self.dcs_over) {
@@ -466,17 +505,21 @@ impl Scanner {
                     St::EscQuiet
                 }
                 (St::EscQuiet, 0x18 | 0x1a) => St::Ground,
+                // b-terminal(#793): 안쪽 Escape의 8비트 C1도 엔진의 표를 따른다
+                (St::EscQuiet, 0x80..=0x9f) => match c1(b) {
+                    Some(to) => self.leave_c1(to, true),
+                    None => St::EscQuiet,
+                },
                 (St::EscQuiet, 0x00..=0x17 | 0x19 | 0x1b..=0x1f | 0x7f..=0xff) => St::EscQuiet,
                 (St::EscQuiet, b'X' | b'^' | b'_') => St::StrQuiet,
                 (St::EscQuiet, b']') => St::OscQuiet,
                 (St::EscQuiet, _) => St::Ground,
                 (St::StrQuiet, 0x1b) => St::EscQuiet,
                 (St::StrQuiet, 0x18 | 0x1a) => St::Ground,
-                // 안쪽 문자열도 엔진처럼 C1로 끝난다(#776). 안쪽 CSI·DCS는 읽을 신호가 없고 조용히 따라갈 상태도 없어 Ground로 둔다
+                // 안쪽 문자열도 엔진처럼 C1로 끝난다(#776)
                 (St::StrQuiet, 0x80..=0x9f) => match str_c1(b) {
                     None => St::StrQuiet,
-                    Some(StrC1::Osc) => St::OscQuiet,
-                    Some(_) => St::Ground,
+                    Some(to) => self.leave_c1(to, true),
                 },
                 (St::StrQuiet, _) => St::StrQuiet,
                 (St::OscQuiet, 0x1b) => St::EscQuiet,
@@ -503,6 +546,25 @@ impl Scanner {
                 // 그 밖의 C0는 엔진이 실행하고 Escape에 머문다(vte `advance_esc` 342줄, Ghostty의 escape 상태). `ESC LF [ c`의 DA1을 읽어야 한다(#598)
                 (St::Esc, 0x00..=0x17 | 0x19 | 0x1c..=0x1f) => St::Esc,
                 // 0x7F와 0x80 이상은 엔진이 무시하고 Escape에 머문다(vte `advance_esc`의 `_ => ()`). Ground로 보내면 뒤의 ENQ에 더 답한다(#603)
+                (St::Esc, 0x20..=0x2f) => St::EscInter,
+                // EscapeIntermediate: 엔진처럼 C0를 실행하고(ENQ에는 답한다) 중간 바이트를 더 모으며 끝 바이트(0x30~0x7E)에서 Ground로 간다
+                (St::EscInter, 0x1b) => St::Esc,
+                (St::EscInter, 0x18 | 0x1a) => St::Ground,
+                (St::EscInter, 0x05) => {
+                    out.push((i + 1, Signal::Enquiry));
+                    St::EscInter
+                }
+                (St::EscInter, 0x30..=0x7e) => St::Ground,
+                (St::EscInter, 0x80..=0x9f) => match c1(b) {
+                    Some(to) => self.leave_c1(to, false),
+                    None => St::EscInter,
+                },
+                (St::EscInter, _) => St::EscInter,
+                // b-terminal(#793): Escape 안의 8비트 C1은 표의 "어디서나" 전이다. 0x7F와 0xA0 이상은 머문다
+                (St::Esc, 0x80..=0x9f) => match c1(b) {
+                    Some(to) => self.leave_c1(to, false),
+                    None => St::Esc,
+                },
                 (St::Esc, 0x7f..=0xff) => St::Esc,
                 (St::Esc, _) => St::Ground,
                 (St::Apc, 0x1b) => St::ApcEsc,
@@ -549,6 +611,11 @@ impl Scanner {
                     St::Csi
                 }
                 (St::Csi, 0x1b) => St::Esc,
+                // b-terminal(#793): CSI 안의 8비트 C1도 표의 "어디서나" 전이다(`ESC [ 1 0x9B 2 m`은 `2m`)
+                (St::Csi, 0x80..=0x9f) => match c1(b) {
+                    Some(to) => self.leave_c1(to, false),
+                    None => St::Csi,
+                },
                 // CAN·SUB는 CSI를 끊는다(엔진도 그렇다)(#595)
                 (St::Csi, 0x18 | 0x1a) => St::Ground,
                 (St::Csi, 0x05) => {

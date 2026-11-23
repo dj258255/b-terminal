@@ -207,11 +207,16 @@ fn dcs_8bit_st_does_not_answer_a_query() {
 }
 
 #[test]
-fn dcs_8bit_st_in_header_is_ignored_like_the_engine() {
-    // 머리(끝 바이트 전)의 0x9C는 vte가 무시하고 DCS를 이어 간다
+fn dcs_8bit_st_in_header_ends_the_dcs_like_the_engine() {
+    // #793: 머리(끝 바이트 전)의 0x9C는 Ghostty 표의 "어디서나" 전이로 Ground로 간다(전에는 vte가 무시했다).
+    // 이어지는 `qm`은 글자이고 질의가 아니다
     let o = oracle(b"\x1bP$\x9cqm\x1b\\");
-    assert!(o.contains(&"hook q".to_string()), "{o:?}");
-    assert_eq!(feed_all(b"\x1bP$\x9cqm\x1b\\").len(), 1);
+    assert!(!o.iter().any(|s| s.starts_with("hook")), "{o:?}");
+    assert_eq!(
+        o,
+        vec!["print q".to_string(), "print m".to_string(), "esc \\".to_string()]
+    );
+    assert!(feed_all(b"\x1bP$\x9cqm\x1b\\").is_empty());
 }
 
 #[test]

@@ -96,7 +96,7 @@ fn ed_after_an_intermediate_is_not_an_erase() {
     no_erase(b"\x1b[(2J");
     no_erase(b"\x1b[ 3J");
     no_erase(b"\x1b[!2J");
-    // 0x80 이상은 엔진이 무시하고 머문다. 그 뒤의 중간 바이트도 같다
+    // 0x80~0x9F는 CSI를 끝낸다(#793, Ghostty 표의 "어디서나" 전이): 0x80은 실행하고 Ground로 가서 뒤는 그냥 글자다
     no_erase(b"\x1b[\x80$3J");
     no_erase(b"\x1b[\x9d(2J");
     no_erase(b"\x1b[\x9c(2J");
@@ -135,10 +135,13 @@ fn ed_with_a_leading_colon_is_not_an_erase() {
 fn plain_ed_and_the_bytes_the_engine_ignores_still_erase() {
     one_erase(b"\x1b[2J");
     one_erase(b"\x1b[3J");
-    // DEL과 0x80 이상은 CSI 안 어디서나 무시된다(엔진 `anywhere`). 매개변수 앞뒤에 끼어도 ED는 그대로다
+    // DEL과 0xA0 이상은 CSI 안 어디서나 무시된다(표에 없다). 매개변수 앞뒤에 끼어도 ED는 그대로다.
+    // 0x80~0x9F는 CSI를 끝내거나 새로 연다(#793): `ESC [ 0x80 …`은 Ground, `ESC [ 1 0x9B 2 J`는 `2J`
     one_erase(b"\x1b[\x7f3J");
     one_erase(b"\x1b[2\x7fJ");
-    one_erase(b"\x1b[\x80\x9d2\x9cJ");
+    one_erase(b"\x1b[\xa02\xffJ");
+    one_erase(b"\x1b[1\x9b2J");
+    no_erase(b"\x1b[\x80\x9d2\x9cJ");
     // C0는 실행하고 CSI에 머문다. CAN·SUB는 끊고 ESC는 새 이스케이프를 연다
     one_erase(b"\x1b[\x012\x0aJ");
     one_erase(b"\x1b[2\x00\x1fJ");
@@ -314,7 +317,7 @@ impl Rng {
 const PIECES: &[&[u8]] = &[
     b"0", b"1", b"2", b"3", b"21", b"16", b"19", b"8", b"996", b"2031", b"2033", b"2048", b"5522", b"63", b"15", b";",
     b";", b":", b"<", b"=", b">", b">", b"?", b"?", b" ", b"$", b"!", b"*", b"#", b"(", b"\x7f", b"\x80", b"\x9c",
-    b"\x9d", b"\x00", b"\x01", b"\x05", b"\x0a", b"\x18", b"\x1a", b"\x1b",
+    b"\x9b", b"\x00", b"\x01", b"\x05", b"\x0a", b"\x18", b"\x1a", b"\x1b",
 ];
 
 const FINALS: &[u8] = b"JcqtypnhlsrKm@\x7f";
