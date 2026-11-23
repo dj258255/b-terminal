@@ -1763,6 +1763,27 @@ where
                 }
             },
 
+            // iTerm2 `1337;Copy=:base64`: OSC 52 쓰기(`c`)와 같은 호출이다(Ghostty `iterm2.zig`). 클립보드를 읽는
+            // 길은 만들지 않는다(`?`는 버린다). 다른 하위 명령(File 등)은 지금처럼 무시한다. b-terminal(#778)
+            b"1337" => {
+                if params.len() != 2 {
+                    return unhandled(params);
+                }
+                let (key, value) = match params[1].iter().position(|&b| b == b'=') {
+                    Some(i) => (&params[1][..i], &params[1][i + 1..]),
+                    None => return unhandled(params),
+                };
+                if !key.eq_ignore_ascii_case(b"Copy") {
+                    return unhandled(params);
+                }
+                match value {
+                    [b':', data @ ..] if !data.is_empty() && data != b"?" => {
+                        self.handler.clipboard_store(b'c', data)
+                    },
+                    _ => unhandled(params),
+                }
+            },
+
             // Reset color index.
             b"104" => {
                 // Ghostty `parseResetAnsiColor`(b-terminal #765): 빈 조각과 틀린 번호는 건너뛰고, 쓸 만한 번호가
@@ -2458,9 +2479,19 @@ mod tests {
         identity_reported: bool,
         color: Option<Rgb>,
         reset_colors: Vec<usize>,
+        stores: Vec<(u8, Vec<u8>)>,
+        loads: usize,
     }
 
     impl Handler for MockHandler {
+        fn clipboard_store(&mut self, clipboard: u8, base64: &[u8]) {
+            self.stores.push((clipboard, base64.to_vec()));
+        }
+
+        fn clipboard_load(&mut self, _: u8, _: &str) {
+            self.loads += 1;
+        }
+
         fn terminal_attribute(&mut self, attr: Attr) {
             self.attr = Some(attr);
         }
@@ -2500,6 +2531,8 @@ mod tests {
                 identity_reported: false,
                 color: None,
                 reset_colors: Vec::new(),
+                stores: Vec::new(),
+                loads: 0,
             }
         }
     }
@@ -2866,5 +2899,59 @@ mod tests {
         let rgb1 = Rgb { r: 0x12, g: 0x34, b: 0x56 };
         let rgb2 = Rgb { r: 0xFE, g: 0xDC, b: 0xBA };
         assert!((rgb1.contrast(rgb2) - 9.786_558_997_257_74).abs() < f64::EPSILON);
+    }
+
+    /// b-terminal(#778): iTerm2 `OSC 1337 ; Copy=:base64`는 OSC 52 쓰기(`c`)와 같은 호출이 된다.
+    /// Ghostty v1.4.0 `iterm2.zig`의 Copy 시험을 같은 입력·기대로 옮겼다.
+    fn osc1337(body: &str) -> MockHandler {
+        let mut parser = Processor::<TestSyncHandler>::new();
+        let mut handler = MockHandler::default();
+        parser.advance(&mut handler, format!("\x1b]1337;{body}\x1b\\").as_bytes());
+        handler
+    }
+
+    #[test]
+    fn osc1337_copy_with_no_value() {
+        let h = osc1337("Copy");
+        assert!(h.stores.is_empty() && h.loads == 0);
+    }
+
+    #[test]
+    fn osc1337_copy_with_empty_value() {
+        assert!(osc1337("Copy=").stores.is_empty());
+    }
+
+    #[test]
+    fn osc1337_copy_with_only_prefix_colon() {
+        assert!(osc1337("Copy=:").stores.is_empty());
+    }
+
+    #[test]
+    fn osc1337_copy_with_question_mark() {
+        let h = osc1337("Copy=:?");
+        assert!(h.stores.is_empty());
+        assert_eq!(h.loads, 0, "읽기가 되면 안 된다");
+    }
+
+    #[test]
+    fn osc1337_copy_without_prefix_colon() {
+        assert!(osc1337("Copy=YWJjMTIz").stores.is_empty());
+        // 종류 글자는 받지 않는다(Ghostty는 `=` 바로 뒤 `:`만 본다)
+        assert!(osc1337("Copy=c:YWJjMTIz").stores.is_empty());
+    }
+
+    #[test]
+    fn osc1337_copy_with_valid_base64() {
+        let h = osc1337("Copy=:YWJjMTIz");
+        assert_eq!(h.stores, vec![(b'c', b"YWJjMTIz".to_vec())]);
+        // 키는 대소문자를 가리지 않는다
+        assert_eq!(osc1337("copy=:YWJjMTIz").stores.len(), 1);
+    }
+
+    #[test]
+    fn osc1337_other_subcommands_are_ignored() {
+        assert!(osc1337("File=inline=1:YWJj").stores.is_empty());
+        assert!(osc1337("CurrentDir=/tmp").stores.is_empty());
+        assert!(osc1337("BobrKurwa=abc123").stores.is_empty());
     }
 }
