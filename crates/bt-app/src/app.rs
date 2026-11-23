@@ -1089,10 +1089,8 @@ pub struct App {
     menu: Option<muda::Menu>,
     control: Option<crate::control::ControlServer>,
     keymap: Keymap,
-    /// --config-file(설정을 다시 읽을 때 같은 파일을 읽는다)
-    config_extra: Option<std::path::PathBuf>,
-    /// `--config-default-files`(거짓이면 설정을 다시 읽을 때도 기본 설정 파일을 읽지 않는다)
-    config_default_files: bool,
+    /// 명령줄의 설정 인자. 설정을 다시 읽을 때도 같은 것을 쓴다
+    config_args: ConfigArgs,
     /// 지금 창(사건을 받은 창)의 상태. 다른 창의 사건이 오면 `others`와 바꿔 끼운다(#36)
     w: Win,
     others: Vec<Win>,
@@ -1133,10 +1131,21 @@ pub struct App {
     menu_secure: Option<muda::CheckMenuItem>,
 }
 
+/// 명령줄에서 온 설정 인자(설정을 다시 읽을 때 Ghostty처럼 같은 것을 다시 쓴다)
+#[derive(Debug, Default, Clone)]
+pub struct ConfigArgs {
+    /// `--config-file`
+    pub extra: Option<std::path::PathBuf>,
+    /// `--config-default-files`(거짓이면 다시 읽을 때도 기본 설정 파일을 읽지 않는다)
+    pub default_files: bool,
+    /// `--키=값` 설정 덮어쓰기(#743)
+    pub settings: Vec<(String, String)>,
+}
+
 impl App {
     pub fn new(
         config: AppConfig,
-        (config_extra, config_default_files): (Option<std::path::PathBuf>, bool),
+        config_args: ConfigArgs,
         proxy: EventLoopProxy<UserEvent>,
         first: SpawnOptions,
     ) -> Self {
@@ -1170,8 +1179,7 @@ impl App {
             text_waiters: Vec::new(),
             control: None,
             keymap,
-            config_extra,
-            config_default_files,
+            config_args,
             w: Win::new(font_size),
             others: Vec::new(),
             last_focused: None,
@@ -4619,10 +4627,11 @@ impl App {
     }
 
     fn reload_config(&mut self) {
-        let next = AppConfig::load_with(
-            self.config_extra.as_deref(),
+        let next = AppConfig::load_full(
+            self.config_args.extra.as_deref(),
             crate::system_is_dark(),
-            self.config_default_files,
+            self.config_args.default_files,
+            &self.config_args.settings,
         );
         for w in &next.warnings {
             log::warn!("설정: {w}");

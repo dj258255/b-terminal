@@ -2556,6 +2556,12 @@ impl Config {
     /// `load`와 같고, `default_files`가 거짓이면 기본 설정 파일(b-terminal·Ghostty 사용자 설정)을 읽지 않는다.
     /// `--config-default-files=false`(명령줄 전용). `extra`(`--config-file`)는 그래도 읽는다
     pub fn load_with(extra: Option<&Path>, dark: bool, default_files: bool) -> Self {
+        Self::load_full(extra, dark, default_files, &[])
+    }
+
+    /// `load_with`에 명령줄의 `--키=값`(`cli`)을 더한다. Ghostty `Config.load`처럼 기본 설정 파일 다음, `--config-file`(`extra`) 앞에
+    /// 적용한다(`loadDefaultFiles` → `loadCliArgs` → `loadRecursiveFiles`). 모르는 키·틀린 값은 파일의 줄처럼 경고가 된다(#743)
+    pub fn load_full(extra: Option<&Path>, dark: bool, default_files: bool, cli: &[(String, String)]) -> Self {
         let mut cfg = Config::default();
         let mut warnings = Vec::new();
         let mut sources = Vec::new();
@@ -2567,7 +2573,21 @@ impl Config {
         let extra_entries = extra
             .map(|p| read_entries(p, 0, &mut warnings, &mut sources))
             .unwrap_or_default();
-        let import = own.iter().chain(&extra_entries).rfind(|e| e.key == "import-ghostty");
+        let cli_entries: Vec<Entry> = cli
+            .iter()
+            .enumerate()
+            .map(|(i, (k, v))| Entry {
+                key: k.clone(),
+                value: v.clone(),
+                file: PathBuf::from("<명령줄>"),
+                line: i + 1,
+            })
+            .collect();
+        let import = own
+            .iter()
+            .chain(&cli_entries)
+            .chain(&extra_entries)
+            .rfind(|e| e.key == "import-ghostty");
         // Ghostty 설정은 옮겨 오는 사람만 켠다(기본 끔, ADR-006)
         let import = import.map(|e| parse_bool(&e.value) == Some(true)).unwrap_or(false);
         let mut entries = Vec::new();
@@ -2582,6 +2602,7 @@ impl Config {
             }
         }
         entries.extend(own);
+        entries.extend(cli_entries);
         entries.extend(extra_entries);
         cfg.apply_all(&entries, dark, &mut warnings);
         cfg.warnings = warnings;
@@ -4216,6 +4237,34 @@ fn parse_text(text: &str, origin: &Path) -> Vec<Entry> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn cli_settings_apply_after_default_files_and_before_config_file() {
+        // Ghostty `Config.load`: 기본 파일 → 명령줄 → config-file(#743)
+        let dir = std::env::temp_dir().join(format!("bt-cli-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let f = dir.join("extra");
+        std::fs::write(&f, "font-size = 14\n").unwrap();
+        let cli = |v: &[(&str, &str)]| {
+            v.iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect::<Vec<_>>()
+        };
+        let c = Config::load_full(None, true, false, &cli(&[("font-size", "20")]));
+        assert_eq!(c.font_size, 20.0, "명령줄 값이 들어간다");
+        let c = Config::load_full(Some(&f), true, false, &cli(&[("font-size", "20")]));
+        assert_eq!(c.font_size, 14.0, "--config-file이 명령줄 뒤에 읽힌다");
+        // 모르는 키는 앱을 멈추지 않고 경고가 된다(Ghostty의 진단)
+        let c = Config::load_full(None, true, false, &cli(&[("no-such-key", "1")]));
+        assert!(
+            c.warnings
+                .iter()
+                .any(|w| w.contains("<명령줄>") && w.contains("no-such-key")),
+            "{:?}",
+            c.warnings
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn config_default_files_false_reads_only_the_given_file() {
         let dir = std::env::temp_dir().join(format!("bt-cdf-{}", std::process::id()));
