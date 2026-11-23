@@ -2082,7 +2082,9 @@ fn attrs_from_sgr_parameters<H: Handler>(handler: &mut H, params: &mut ParamsIte
             [4, 3] => Some(Attr::Undercurl),
             [4, 4] => Some(Attr::DottedUnderline),
             [4, 5] => Some(Attr::DashedUnderline),
-            [4, ..] => Some(Attr::Underline),
+            // b-terminal(#761): 하위 매개변수가 하나면(모르는 모양 포함) 홑밑줄, 둘 이상이면 알 수 없는 속성(Ghostty sgr.zig)
+            [4] | [4, _] => Some(Attr::Underline),
+            [4, ..] => None,
             [5] => Some(Attr::BlinkSlow),
             [6] => Some(Attr::BlinkFast),
             [7] => Some(Attr::Reverse),
@@ -2163,6 +2165,10 @@ fn attrs_from_sgr_parameters<H: Handler>(handler: &mut H, params: &mut ParamsIte
 /// Handle colon separated rgb color escape sequence.
 #[inline]
 fn handle_colon_rgb(params: &[u16]) -> Option<Color> {
+    // b-terminal(#761): 직접 색은 `2:r:g:b`나 `2:색공간:r:g:b`만 받는다. 더 길면 알 수 없는 속성(Ghostty sgr.zig `parseDirectColor`)
+    if params.first() == Some(&2) && params.len() > 5 {
+        return None;
+    }
     let rgb_start = if params.len() > 4 { 2 } else { 1 };
     let rgb_iter = params[rgb_start..].iter().copied();
     let mut iter = iter::once(params[0]).chain(rgb_iter);
