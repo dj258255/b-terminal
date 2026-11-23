@@ -2,7 +2,7 @@
 
 처음 보는 분을 위한 안내입니다. 무엇인지, 무엇이 Ghostty와 같고 다른지, 어떻게 짜여 있는지, 어디까지 믿어도 되는지를 한 문서에 모았습니다. 자세한 설정은 [configuration.md](configuration.md), 이유와 근거는 [decisions.md](decisions.md)에 있습니다.
 
-이 문서는 0.95.0 기준입니다. 이 문서에 없는 숫자는 재지 않은 것입니다.
+이 문서는 0.96.0 기준입니다. 이 문서에 없는 숫자는 재지 않은 것입니다.
 
 ## 무엇인가
 
@@ -25,7 +25,7 @@ AI 에이전트를 다루는 화면(에이전트 목록·상태·훅·구독 사
 
 ### 같은 점
 
-- **설정 문법과 키 이름.** `~/.config/b-terminal/config`에 `키 = 값`으로 씁니다. 키 묶음(`keybind`)의 문법, 키 순서(`ctrl+a>n`), 키 테이블, 전역 단축키(`global:`)도 Ghostty와 같습니다. Ghostty 설정을 옮겨 오려면 `import-ghostty = true`를 씁니다([configuration.md](configuration.md)).
+- **설정 문법과 키 이름.** `~/.config/b-terminal/config`에 `키 = 값`으로 씁니다. 키 묶음(`keybind`)의 문법, 키 순서(`ctrl+a>n`), 키 테이블, 전역 단축키(`global:`), 한 키에 여러 동작(`chain=`)도 Ghostty와 같습니다. 모르는 키 이름이나 동작 인자는 설정 경고가 됩니다. Ghostty 설정을 옮겨 오려면 `import-ghostty = true`를 씁니다([configuration.md](configuration.md)).
 - **기본 키.** 새 탭 ⌘T, 분할 ⌘D·⌘⇧D, 찾기 ⌘F, 명령 팔레트 ⌘⇧P처럼 Ghostty macOS 기본과 같습니다.
 - **터미널 출력이 할 수 있는 일을 넓히는 설정은 기본으로 끕니다.** ENQ 답, 키보드 잠금, 출력이 창 크기 바꾸기, 체크섬 보고가 그렇습니다([ADR-013](decisions.md#adr-013-터미널-출력이-할-수-있는-일을-넓히는-vt-설정은-ghostty처럼-기본을-끈다)).
 - **클립보드.** OSC 52 읽기는 기본으로 묻고([ADR-046](decisions.md#adr-046-clipboard-read-기본을-ghostty처럼-ask로-한다)), 줄바꿈이 든 붙여넣기는 괄호 붙여넣기가 아니면 먼저 묻습니다([ADR-011](decisions.md#adr-011-줄바꿈이-든-붙여넣기는-괄호-붙여넣기가-아니면-먼저-묻는다)). 붙여넣는 글의 위험 제어 바이트는 공백으로 바꿉니다([ADR-054](decisions.md#adr-054-붙여넣는-글의-위험-제어-바이트는-모드와-상관없이-공백으로-바꾸고-창에-끌어다-놓은-파일-경로는-셸-이스케이프해-같은-붙여넣기-길로-넣는다)). 고르면 복사하는 `copy-on-select`의 기본은 `primary`입니다. 고른 글은 앱 안 선택 클립보드에 두고 ⌘⇧V로 붙여넣으며, ⌘V의 시스템 클립보드는 덮지 않습니다([ADR-048](decisions.md#adr-048-고르기-복사는-기본으로-앱-안-선택-클립보드에-두고-시스템-클립보드는-덮지-않는다)).
@@ -125,7 +125,7 @@ PTY 바이트 ──> bt-term 읽기 스레드 ──┬─> VT 엔진(alacritty
 
 ## 지금 상태와 한계
 
-- **판.** 0.95.0입니다. 1.0 전이라 기본 동작이 판마다 바뀔 수 있습니다. 바뀐 것은 [CHANGELOG.md](../CHANGELOG.md), 계획과 진행은 [ROADMAP.md](../ROADMAP.md)에 있습니다.
+- **판.** 0.96.0입니다. 1.0 전이라 기본 동작이 판마다 바뀔 수 있습니다. 바뀐 것은 [CHANGELOG.md](../CHANGELOG.md), 계획과 진행은 [ROADMAP.md](../ROADMAP.md)에 있습니다.
 - **macOS가 1순위입니다.** 실제 창에서 확인한 것은 macOS(Apple M2 Pro 한 기기)가 거의 전부입니다.
 - **Linux는 CPU 길입니다.** Linux GPU 길은 재지도 실제 창으로 보지도 않았습니다. CI는 Linux에서 전체를 빌드하고 시험하지만 GPU는 없습니다.
 - **다른 Mac에 나눠 줄 수 없습니다.** Developer ID 서명과 공증 없이는 배포하지 않습니다. 계정이 없어서 서명·공증·다른 Mac에서 열기는 해 보지 못했습니다([release-macos.md](release-macos.md)). 지금은 직접 빌드해 이 컴퓨터에서 씁니다.
