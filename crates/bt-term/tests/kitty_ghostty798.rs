@@ -377,3 +377,195 @@ fn id_and_number_are_exclusive_for_animation_frames_too() {
     );
     assert_eq!(h(&mut g, "a=t,f=24,s=1,v=1,i=3;AAAA"), "\x1b_Gi=3;OK\x1b\\");
 }
+
+// ───────────── #802: 그림 자료 검사 ─────────────
+
+/// "image load with invalid RGB data"(1173)와 `complete`의 길이 검사: 1x1 RGB에 4바이트는 EINVAL이고 저장하지 않는다
+#[test]
+fn extra_rgb_bytes_are_rejected() {
+    let mut g = Graphics::default();
+    assert_eq!(
+        h(&mut g, &format!("a=t,f=24,s=1,v=1,i=31;{}", b64(b"AAAA"))),
+        "\x1b_Gi=31;EINVAL\x1b\\"
+    );
+    assert!(g.image(31).is_none());
+    // RGBA도, 한 바이트만 남아도
+    assert_eq!(
+        h(&mut g, &format!("a=t,f=32,s=1,v=1,i=31;{}", b64(&[0; 5]))),
+        "\x1b_Gi=31;EINVAL\x1b\\"
+    );
+    assert_eq!(
+        h(&mut g, &format!("a=T,f=24,s=1,v=1,i=31;{}", b64(&[0; 4]))),
+        "\x1b_Gi=31;EINVAL\x1b\\"
+    );
+    assert!(g.image(31).is_none());
+    assert!(g.placements.is_empty());
+    // 질의(a=q)도 같은 검사를 한다(1117)
+    assert_eq!(
+        h(&mut g, &format!("a=q,f=24,s=1,v=1,i=31;{}", b64(&[0; 4]))),
+        "\x1b_Gi=31;EINVAL\x1b\\"
+    );
+    // 정확한 길이는 받는다
+    assert_eq!(
+        h(&mut g, &format!("a=t,f=24,s=1,v=1,i=31;{}", b64(&[1, 2, 3]))),
+        "\x1b_Gi=31;OK\x1b\\"
+    );
+}
+
+/// 풀고 나서도 같은 검사다(`o=z`): 남는 바이트는 EINVAL이다
+#[test]
+fn extra_bytes_after_zlib_are_rejected() {
+    let mut g = Graphics::default();
+    let z = miniz_oxide::deflate::compress_to_vec_zlib(&[7u8; 4], 1);
+    assert_eq!(
+        h(&mut g, &format!("a=t,f=24,o=z,s=1,v=1,i=31;{}", b64(&z))),
+        "\x1b_Gi=31;EINVAL\x1b\\"
+    );
+    let z = miniz_oxide::deflate::compress_to_vec_zlib(&[7u8; 3], 1);
+    assert_eq!(
+        h(&mut g, &format!("a=t,f=24,o=z,s=1,v=1,i=31;{}", b64(&z))),
+        "\x1b_Gi=31;OK\x1b\\"
+    );
+}
+
+/// 둘로 나눠 와도 합친 길이로 본다
+#[test]
+fn extra_bytes_across_chunks_are_rejected() {
+    let mut g = Graphics::default();
+    assert_eq!(h(&mut g, &format!("a=t,f=24,s=1,v=1,i=31,m=1;{}", b64(&[0; 3]))), "");
+    assert_eq!(h(&mut g, &format!("m=0;{}", b64(&[0; 3]))), "\x1b_Gi=31;EINVAL\x1b\\");
+    assert!(g.image(31).is_none());
+}
+
+/// 짧은 자료의 ENODATA는 그대로다
+#[test]
+fn short_data_keeps_enodata() {
+    let mut g = Graphics::default();
+    assert_eq!(
+        h(&mut g, &format!("a=t,f=24,s=1,v=1,i=31;{}", b64(&[0, 0]))),
+        "\x1b_Gi=31;ENODATA\x1b\\"
+    );
+    assert!(g.image(31).is_none());
+}
+
+/// 프레임(a=f)은 남는 자료를 지금처럼 자른다(Ghostty `complete`의 프레임 길)
+#[test]
+fn frames_still_truncate_extra_data() {
+    let mut g = Graphics::default();
+    assert_eq!(h(&mut g, &format!("a=t,f=24,s=1,v=1,i=1;{}", b64(&[9, 9, 9]))), OK1);
+    let r = h(&mut g, &format!("a=f,i=1,f=24,s=1,v=1;{}", b64(&[1, 2, 3, 4, 5, 6])));
+    assert_eq!(r, "\x1b_Gi=1,r=2;OK\x1b\\");
+    assert_eq!(g.image(1).unwrap().frame_count(), 2);
+    // 모자라면 오류
+    let r = h(&mut g, &format!("a=f,i=1,f=24,s=1,v=1;{}", b64(&[1, 2])));
+    assert_eq!(r, "\x1b_Gi=1;ENODATA\x1b\\");
+}
+
+/// 손으로 만든 PNG 조각(서명, 길이, 종류, 자료, CRC)
+fn crc32(d: &[u8]) -> u32 {
+    let mut c = 0xFFFF_FFFFu32;
+    for &b in d {
+        c ^= u32::from(b);
+        for _ in 0..8 {
+            c = if c & 1 != 0 { (c >> 1) ^ 0xEDB8_8320 } else { c >> 1 };
+        }
+    }
+    !c
+}
+
+fn chunk(kind: &[u8; 4], body: &[u8]) -> Vec<u8> {
+    let mut v = (body.len() as u32).to_be_bytes().to_vec();
+    let mut tail = kind.to_vec();
+    tail.extend_from_slice(body);
+    v.extend_from_slice(&tail);
+    v.extend_from_slice(&crc32(&tail).to_be_bytes());
+    v
+}
+
+/// 머리(IHDR)만 큰 값이고 자료는 쓰레기인 작은 PNG. 풀기 시작하면 읽다가 실패하고, 크기를 먼저 보면 풀지 않고 거절한다
+fn fake_png(w: u32, h: u32, depth: u8, color: u8) -> Vec<u8> {
+    let mut v = b"\x89PNG\r\n\x1a\n".to_vec();
+    let mut ihdr = w.to_be_bytes().to_vec();
+    ihdr.extend_from_slice(&h.to_be_bytes());
+    ihdr.extend_from_slice(&[depth, color, 0, 0, 0]);
+    v.extend(chunk(b"IHDR", &ihdr));
+    v.extend(chunk(b"IDAT", &[0x78, 0x01, 0, 0]));
+    v.extend(chunk(b"IEND", &[]));
+    v
+}
+
+fn real_png(w: u32, h: u32) -> Vec<u8> {
+    let mut out = Vec::new();
+    {
+        let mut enc = png::Encoder::new(&mut out, w, h);
+        enc.set_color(png::ColorType::Rgba);
+        enc.set_depth(png::BitDepth::Eight);
+        let mut wr = enc.write_header().unwrap();
+        wr.write_image_data(&vec![200u8; (w * h * 4) as usize]).unwrap();
+    }
+    out
+}
+
+/// issue 802: 상한(64MiB)을 넘는 풀 크기는 풀기 전에 거절한다. 10000x10000 RGBA는 400MB이므로 풀면 그만큼 잡는다.
+/// 코드는 지금 것(EFBIG)을 둔다. (Ghostty 2153·2192의 "할당 전에 거절"에 해당)
+#[test]
+fn png_over_the_byte_cap_is_rejected_before_decoding() {
+    let data = fake_png(10_000, 10_000, 8, 6);
+    let mut g = Graphics::default();
+    let line = format!("a=t,f=100,i=31;{}", b64(&data));
+    let r = h(&mut g, &line);
+    assert_eq!(r, "\x1b_Gi=31;EFBIG\x1b\\");
+    assert!(g.image(31).is_none());
+}
+
+/// 픽셀 형식이 달라도(16비트 RGBA·1비트 회색·팔레트) 풀 크기는 RGBA 8비트(w*h*4)로 센다
+#[test]
+fn png_size_is_counted_as_rgba8_for_every_pixel_format() {
+    for (depth, color) in [(16u8, 6u8), (1, 0), (8, 3), (16, 0), (8, 2)] {
+        let data = fake_png(8000, 8000, depth, color);
+        let mut g = Graphics::default();
+        let line = format!("a=t,f=100,i=31;{}", b64(&data));
+        let r = h(&mut g, &line);
+        assert_eq!(r, "\x1b_Gi=31;EFBIG\x1b\\", "depth={depth} color={color}");
+    }
+}
+
+/// 한 변이 상한(10000px)을 넘는 PNG: Ghostty 2192(32768x32767)는 풀기 전에 거절한다. 코드는 지금 것(EBADPNG)을 둔다
+#[test]
+fn png_with_a_huge_side_is_rejected_before_decoding() {
+    let data = fake_png(32_768, 32_767, 8, 6);
+    let mut g = Graphics::default();
+    let line = format!("a=t,f=100,i=31;{}", b64(&data));
+    let r = h(&mut g, &line);
+    assert_eq!(r, "\x1b_Gi=31;EBADPNG\x1b\\");
+    // 압축(o=z)한 PNG도 같다
+    let z = miniz_oxide::deflate::compress_to_vec_zlib(&data, 1);
+    let line = format!("a=t,f=100,o=z,i=31;{}", b64(&z));
+    let r = h(&mut g, &line);
+    assert_eq!(r, "\x1b_Gi=31;EBADPNG\x1b\\");
+}
+
+/// 깨진 PNG는 그대로 EBADPNG, 상한 안의 멀쩡한 PNG는 그대로 받는다(크기 검사가 정상 그림을 막지 않는다)
+#[test]
+fn png_within_limits_and_garbage_png_keep_their_codes() {
+    let mut g = Graphics::default();
+    assert_eq!(
+        h(&mut g, &format!("a=t,f=100,i=31;{}", b64(b"not a png at all"))),
+        "\x1b_Gi=31;EBADPNG\x1b\\"
+    );
+    let data = real_png(50, 76);
+    assert_eq!(
+        h(&mut g, &format!("a=t,f=100,i=32;{}", b64(&data))),
+        "\x1b_Gi=32;OK\x1b\\"
+    );
+    let img = g.image(32).unwrap();
+    assert_eq!((img.width, img.height), (50, 76));
+    assert_eq!(img.rgba.len(), 50 * 76 * 4);
+    // 64MiB에 꼭 맞는 크기(4096x4096 RGBA)는 받는다
+    let data = fake_png(4096, 4096, 8, 6);
+    let r = h(&mut g, &format!("a=t,f=100,i=33;{}", b64(&data)));
+    assert_eq!(
+        r, "\x1b_Gi=33;EBADPNG\x1b\\",
+        "크기는 통과하고 자료가 쓰레기라 풀다가 실패한다"
+    );
+}

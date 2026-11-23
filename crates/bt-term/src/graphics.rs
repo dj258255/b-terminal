@@ -470,18 +470,42 @@ pub fn base64_decode(s: &[u8]) -> Option<Vec<u8>> {
     Some(out)
 }
 
-/// PNG를 RGBA로 푼다(크기 상한 안에서)
-fn decode_png(data: &[u8]) -> Result<(u32, u32, Vec<u8>), &'static str> {
+/// PNG 머리(IHDR)의 폭·높이. 서명과 첫 덩어리가 IHDR이 아니면 없다. 자료는 풀지 않고 앞 24바이트만 본다
+fn png_header_size(data: &[u8]) -> Option<(u32, u32)> {
+    const SIG: &[u8; 8] = b"\x89PNG\r\n\x1a\n";
+    if data.len() < 24 || &data[..8] != SIG || &data[12..16] != b"IHDR" {
+        return None;
+    }
+    let be = |at: usize| u32::from_be_bytes([data[at], data[at + 1], data[at + 2], data[at + 3]]);
+    Some((be(16), be(20)))
+}
+
+/// PNG를 RGBA로 푼다(크기 상한 안에서). 풀 크기(폭*높이*4, 픽셀 형식과 상관없이 RGBA 8비트)를 머리로 먼저 세고
+/// 상한(한 변 10000px, 64MiB)을 넘으면 풀기 전에 거절한다(Ghostty `decodePng`도 할당 전에 거절). 오류는 (kitty 코드, 까닭)이다
+fn decode_png(data: &[u8]) -> Result<(u32, u32, Vec<u8>), (&'static str, &'static str)> {
+    const BAD: &str = "EBADPNG";
+    let check = |w: u32, h: u32| -> Result<(), (&'static str, &'static str)> {
+        if w == 0 || h == 0 || w > MAX_SIDE || h > MAX_SIDE {
+            return Err((BAD, "그림 크기가 상한을 넘습니다"));
+        }
+        if (w as usize).saturating_mul(h as usize).saturating_mul(4) > MAX_IMAGE_BYTES {
+            return Err(("EFBIG", "그림이 상한을 넘습니다"));
+        }
+        Ok(())
+    };
+    if let Some((w, h)) = png_header_size(data) {
+        check(w, h)?;
+    }
     let limits = png::Limits { bytes: MAX_IMAGE_BYTES };
     let mut dec = png::Decoder::new_with_limits(data, limits);
     dec.set_transformations(png::Transformations::normalize_to_color8());
-    let mut reader = dec.read_info().map_err(|_| "PNG를 읽지 못했습니다")?;
+    let mut reader = dec.read_info().map_err(|_| (BAD, "PNG를 읽지 못했습니다"))?;
     let (w, h) = (reader.info().width, reader.info().height);
-    if w == 0 || h == 0 || w > MAX_SIDE || h > MAX_SIDE {
-        return Err("그림 크기가 상한을 넘습니다");
-    }
+    check(w, h)?;
     let mut buf = vec![0u8; reader.output_buffer_size()];
-    let info = reader.next_frame(&mut buf).map_err(|_| "PNG를 풀지 못했습니다")?;
+    let info = reader
+        .next_frame(&mut buf)
+        .map_err(|_| (BAD, "PNG를 풀지 못했습니다"))?;
     buf.truncate(info.buffer_size());
     let px = (w * h) as usize;
     let rgba = match info.color_type {
@@ -489,10 +513,10 @@ fn decode_png(data: &[u8]) -> Result<(u32, u32, Vec<u8>), &'static str> {
         png::ColorType::Rgb => buf.chunks_exact(3).flat_map(|p| [p[0], p[1], p[2], 255]).collect(),
         png::ColorType::Grayscale => buf.iter().flat_map(|&g| [g, g, g, 255]).collect(),
         png::ColorType::GrayscaleAlpha => buf.chunks_exact(2).flat_map(|p| [p[0], p[0], p[0], p[1]]).collect(),
-        png::ColorType::Indexed => return Err("팔레트 PNG를 풀지 못했습니다"),
+        png::ColorType::Indexed => return Err((BAD, "팔레트 PNG를 풀지 못했습니다")),
     };
     if rgba.len() != px * 4 {
-        return Err("PNG 크기가 맞지 않습니다");
+        return Err((BAD, "PNG 크기가 맞지 않습니다"));
     }
     Ok((w, h, rgba))
 }
@@ -679,7 +703,7 @@ impl Graphics {
             );
         }
         match action {
-            "q" => match self.decode(&control, &payload) {
+            "q" => match self.decode(&control, &payload, false) {
                 // 질의: 그림을 저장하지 않고 받을 수 있는지만 답한다
                 Ok(_) => self.ok(&control),
                 Err((code, why)) => self.error(&control, code, why),
@@ -943,7 +967,7 @@ impl Graphics {
 
     /// `t`/`T`로 받은 자료를 저장해도 되는 그림으로 만든다(번호·크기 상한 검사 포함)
     fn transmitted(&self, c: &HashMap<u8, String>, payload: &[u8]) -> Result<Image, (&'static str, &'static str)> {
-        let image = self.decode(c, payload)?;
+        let image = self.decode(c, payload, false)?;
         // 한 장이 저장 상한보다 크면 받지 않는다: 지금 넣은 것은 남기므로 상한을 넘겨 두게 된다
         if cost(&image) > self.limit {
             return Err(("ENOSPC", "그림이 저장 상한(image-storage-limit)을 넘습니다"));
@@ -951,8 +975,14 @@ impl Graphics {
         Ok(image)
     }
 
-    /// 이미 base64를 푼 자료(`data`)를 RGBA 그림으로 만든다
-    fn decode(&self, c: &HashMap<u8, String>, data: &[u8]) -> Result<Image, (&'static str, &'static str)> {
+    /// 이미 base64를 푼 자료(`data`)를 RGBA 그림으로 만든다. RGB·RGBA 자료는 길이가 `s*v*바이트`와 다르면 거절한다: 모자라면 `ENODATA`,
+    /// 남으면 `EINVAL`(Ghostty `complete`). 프레임(`a=f`)만 `truncate_extra`로 남는 자료를 자른다
+    fn decode(
+        &self,
+        c: &HashMap<u8, String>,
+        data: &[u8],
+        truncate_extra: bool,
+    ) -> Result<Image, (&'static str, &'static str)> {
         let medium = c.get(&b't').map(String::as_str).unwrap_or("d");
         if medium != "d" {
             return Err(("EINVAL", "직접 전송(t=d)만 받습니다"));
@@ -966,7 +996,7 @@ impl Graphics {
         }
         let format = num(c, b'f');
         let (w, h, rgba) = match format {
-            100 => decode_png(&data).map_err(|why| ("EBADPNG", why))?,
+            100 => decode_png(&data)?,
             0 | 24 | 32 => {
                 let (w, h) = (num(c, b's'), num(c, b'v'));
                 if w == 0 || h == 0 || w > MAX_SIDE || h > MAX_SIDE {
@@ -976,6 +1006,9 @@ impl Graphics {
                 let need = w as usize * h as usize * bpp;
                 if data.len() < need {
                     return Err(("ENODATA", "자료가 너비·높이보다 짧습니다"));
+                }
+                if data.len() > need && !truncate_extra {
+                    return Err(("EINVAL", "자료가 너비·높이보다 깁니다"));
                 }
                 let rgba = if bpp == 4 {
                     data[..need].to_vec()
@@ -1376,7 +1409,7 @@ impl Graphics {
             return fail(id, "ENOENT");
         }
         // 자료를 푸는 길(PNG·zlib·길이 검사)은 그림과 같다. 프레임은 모자라면 오류이고 남으면 자른다
-        let frame = match self.decode(c, payload) {
+        let frame = match self.decode(c, payload, true) {
             Ok(f) => f,
             Err((code, _)) => return fail(id, code),
         };
