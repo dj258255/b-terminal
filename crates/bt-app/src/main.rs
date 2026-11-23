@@ -51,7 +51,8 @@ const USAGE: &str =
     "사용: b-terminal [--config-file <파일>] [--config-default-files=false] [--show-config] [--list-themes] [--cwd <폴더>] [-e <프로그램> [인자...]]
 
 설정: ~/.config/b-terminal/config (Ghostty와 같은 문법). 테마 907개를 넣어 두었습니다(--list-themes).
---config-default-files=false: 위 기본 설정 파일을 읽지 않습니다(--config-file로 준 파일은 읽습니다).";
+--config-default-files=false: 위 기본 설정 파일을 읽지 않습니다(--config-file로 준 파일은 읽습니다).
+--<설정 키>=<값>: 설정 파일의 그 키를 덮어씁니다(예: --font-size=20). 기본 설정 파일 다음, --config-file 앞에 적용합니다.";
 
 /// 명령줄에서 읽은 것
 #[derive(Debug, Default)]
@@ -61,6 +62,10 @@ struct Cli {
     show_config: bool,
     /// `--config-default-files=false`면 거짓(기본 설정 파일을 읽지 않는다)
     default_files: bool,
+    /// `--키=값` 설정 덮어쓰기(Ghostty `loadCliArgs`, #743). 값 없는 `--키`는 `true`
+    settings: Vec<(String, String)>,
+    /// 설정 키가 아니라 무시한 인자(Ghostty의 "invalid field" 진단). 앱은 그대로 뜬다
+    warnings: Vec<String>,
 }
 
 /// 명령줄: `-e` 뒤는 모두 처음 탭에서 띄울 프로그램과 인자다(Ghostty·xterm과 같다)
@@ -81,6 +86,7 @@ fn parse_args(args: impl Iterator<Item = String>) -> Result<Cli, String> {
             "--config-file" => {
                 cli.config_file = Some(args.next().ok_or("--config-file 뒤에 파일이 필요합니다")?.into())
             }
+            v if v.starts_with("--config-file=") => cli.config_file = Some(v["--config-file=".len()..].into()),
             "--show-config" => cli.show_config = true,
             // 명령줄 전용 bool(Ghostty). 값 없이 쓰면 켬
             "--config-default-files" => cli.default_files = true,
@@ -96,7 +102,15 @@ fn parse_args(args: impl Iterator<Item = String>) -> Result<Cli, String> {
             }
             "-h" | "--help" => return Err(USAGE.into()),
             "--version" => return Err(format!("b-terminal {}", env!("CARGO_PKG_VERSION"))),
-            other => return Err(format!("모르는 인자: {other}\n{USAGE}")),
+            // 그 밖의 `--키=값`·`--키`는 설정 덮어쓰기(Ghostty `loadCliArgs`). 모르는 키는 설정이 경고로 적는다
+            v if v.starts_with("--") && v.len() > 2 => {
+                let (k, val) = v[2..].split_once('=').unwrap_or((&v[2..], "true"));
+                cli.settings.push((k.to_string(), val.to_string()));
+            }
+            // `--`로 시작하지 않는 인자(Cocoa의 `-AppleInterfaceStyle Dark` 등)는 적어 두고 넘어간다(Ghostty "invalid field", #743)
+            other => cli
+                .warnings
+                .push(format!("명령줄: 설정 키가 아닌 인자라 무시했습니다: {other}")),
         }
     }
     Ok(cli)
@@ -141,7 +155,13 @@ fn main() -> anyhow::Result<()> {
             return Ok(());
         }
     };
-    let mut config = bt_core::Config::load_with(cli.config_file.as_deref(), system_is_dark(), cli.default_files);
+    let mut config = bt_core::Config::load_full(
+        cli.config_file.as_deref(),
+        system_is_dark(),
+        cli.default_files,
+        &cli.settings,
+    );
+    config.warnings.splice(0..0, cli.warnings.iter().cloned());
     if cli.show_config {
         for src in &config.sources {
             println!("# 읽은 파일: {}", src.display());
@@ -211,7 +231,11 @@ fn main() -> anyhow::Result<()> {
     app::install_scripting(event_loop.create_proxy(), config.macos_applescript);
     let mut app = app::App::new(
         config,
-        (cli.config_file.clone(), cli.default_files),
+        app::ConfigArgs {
+            extra: cli.config_file.clone(),
+            default_files: cli.default_files,
+            settings: cli.settings.clone(),
+        },
         event_loop.create_proxy(),
         cli.first,
     );
@@ -234,7 +258,6 @@ mod tests {
         assert_eq!(o.args, vec!["-u", "NONE"]);
         assert_eq!(o.cwd.as_deref(), Some(std::path::Path::new("/tmp")));
         assert!(parse(&["-e"]).is_err());
-        assert!(parse(&["--nope"]).is_err());
         let cli = parse_args(
             ["--config-file", "/tmp/x", "--show-config"]
                 .iter()
@@ -243,6 +266,30 @@ mod tests {
         .unwrap();
         assert_eq!(cli.config_file.as_deref(), Some(std::path::Path::new("/tmp/x")));
         assert!(cli.show_config);
+    }
+
+    #[test]
+    fn unknown_args_warn_and_dash_dash_key_value_sets_config_like_ghostty() {
+        // `open --args -AppleInterfaceStyle Dark`처럼 Cocoa 인자가 와도 앱은 뜬다(Ghostty `cli/args.zig`의 "invalid field" 진단, #743)
+        let args = [
+            "-AppleInterfaceStyle",
+            "Dark",
+            "--font-size=20",
+            "--window-vsync",
+            "--nope=1",
+        ];
+        let cli = parse_args(args.iter().map(|s| s.to_string())).expect("모르는 인자로 끝나지 않는다");
+        let kv = |k: &str, v: &str| (k.to_string(), v.to_string());
+        assert_eq!(
+            cli.settings,
+            vec![kv("font-size", "20"), kv("window-vsync", "true"), kv("nope", "1")]
+        );
+        assert_eq!(cli.warnings.len(), 2, "{:?}", cli.warnings);
+        assert!(cli.warnings[0].contains("-AppleInterfaceStyle"));
+        // Ghostty의 `--config-file=경로` 꼴도 받는다
+        let cli = parse_args(["--config-file=/tmp/x"].iter().map(|s| s.to_string())).unwrap();
+        assert_eq!(cli.config_file.as_deref(), Some(std::path::Path::new("/tmp/x")));
+        assert!(cli.settings.is_empty());
     }
 
     #[test]
@@ -265,6 +312,7 @@ mod tests {
         assert!(!c.default_files);
         assert_eq!(c.config_file.as_deref(), Some(std::path::Path::new("/tmp/x")));
         assert!(USAGE.contains("--config-default-files"));
+        assert!(USAGE.contains("--<설정 키>=<값>"));
     }
 
     #[test]

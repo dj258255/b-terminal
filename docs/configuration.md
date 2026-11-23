@@ -9,9 +9,12 @@ b-terminal은 Ghostty와 같은 문법으로 설정합니다. Ghostty를 깔지 
 1. 기본값: JetBrains Mono 13, 바탕 `#282c34`, 글자 `#ffffff`, Tomorrow Night 팔레트, Nerd Font 기호(Ghostty 1.3 기본과 같은 값). 두 글꼴은 앱에 넣어 두었습니다([assets/fonts](../assets/fonts/README.md)).
 2. Ghostty 설정 파일 — b-terminal 설정에 `import-ghostty = true`를 쓴 경우만(기본 끔): `$XDG_CONFIG_HOME/ghostty/config`(`config.ghostty`), macOS는 `~/Library/Application Support/com.mitchellh.ghostty/config`(`config.ghostty`) 중 처음 찾은 하나.
 3. b-terminal 설정: `~/.config/b-terminal/config`(`$XDG_CONFIG_HOME` 따름)
-4. 명령줄 `--config-file <파일>`
+4. 명령줄 `--<설정 키>=<값>`(예: `--font-size=20`, 값 없는 `--키`는 `true`). Ghostty와 같은 자리이고, 설정을 다시 읽을 때도 그대로 씁니다
+5. 명령줄 `--config-file <파일>`(`--config-file=<파일>`도 됨)
 
-`b-terminal --config-default-files=false`(Ghostty와 같은 명령줄 전용 키)를 주면 2·3번(기본 설정 파일)을 읽지 않고, 4번으로 준 파일만 읽습니다. 설정을 다시 읽을 때도 같습니다. 설정 파일 안에 이 키를 써도 경고 없이 아무 일도 하지 않습니다(Ghostty와 같음). 값 없이 `--config-default-files`만 쓰면 켬(기본)입니다.
+`b-terminal --config-default-files=false`(Ghostty와 같은 명령줄 전용 키)를 주면 2·3번(기본 설정 파일)을 읽지 않고, 4·5번만 읽습니다. 설정을 다시 읽을 때도 같습니다. 설정 파일 안에 이 키를 써도 경고 없이 아무 일도 하지 않습니다(Ghostty와 같음). 값 없이 `--config-default-files`만 쓰면 켬(기본)입니다.
+
+모르는 설정 키와 `--`로 시작하지 않는 인자(macOS가 넘기는 `-AppleInterfaceStyle` 같은 것)는 앱을 멈추지 않고 경고로 남습니다(Ghostty와 같음).
 
 `b-terminal --show-config`는 읽은 파일, 경고, 지금 적용된 값을 Ghostty 문법으로 보입니다. `+show-config --changes-only=false`와 같은 글(`theme` 줄 포함)이고 기본과의 비교는 없습니다.
 
