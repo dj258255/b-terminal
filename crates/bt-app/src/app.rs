@@ -3530,7 +3530,9 @@ impl App {
             }
         };
         let keymap = std::mem::take(&mut self.keymap);
-        let out = seq.feed_with(&keymap, trigger, bytes, &mut |a| self.can_perform(a));
+        // 숫자 패드 키는 물리 이름(`kp_1`)으로도 맞춘다
+        let alt = trigger.as_ref().and_then(|t| keys::numpad_trigger(physical, t.mods));
+        let out = seq.feed_with_alt(&keymap, trigger, alt, bytes, &mut |a| self.can_perform(a));
         self.keymap = keymap;
         match script_pane {
             None => self.w.keyseq = seq,

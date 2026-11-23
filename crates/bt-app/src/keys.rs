@@ -150,6 +150,48 @@ pub(crate) fn trigger_of(without_modifiers: &Key, mods: ModifiersState) -> Optio
     })
 }
 
+/// 숫자 패드 키의 Ghostty 물리 키 이름(`numpad_1`, `numpad_enter`…)으로 만든 트리거. 숫자 패드가 아니면 없다.
+/// 숫자 패드 `1`은 글자 `1`로도 읽혀 `trigger`가 `digit_1`을 주므로, 이 트리거는 그것과 따로 `kp_1` 묶음을 맞추는 데 쓴다.
+/// macOS·X11·Windows의 winit이 주는 숫자 패드 코드만 만든다(숫자 패드 방향키 `numpad_up` 등은 winit에 코드가 없어 만들 수 없다)
+pub(crate) fn numpad_trigger(physical: PhysicalKey, mods: Mods) -> Option<Trigger> {
+    let PhysicalKey::Code(code) = physical else { return None };
+    let key = match code {
+        KeyCode::Numpad0 => "numpad_0",
+        KeyCode::Numpad1 => "numpad_1",
+        KeyCode::Numpad2 => "numpad_2",
+        KeyCode::Numpad3 => "numpad_3",
+        KeyCode::Numpad4 => "numpad_4",
+        KeyCode::Numpad5 => "numpad_5",
+        KeyCode::Numpad6 => "numpad_6",
+        KeyCode::Numpad7 => "numpad_7",
+        KeyCode::Numpad8 => "numpad_8",
+        KeyCode::Numpad9 => "numpad_9",
+        KeyCode::NumpadAdd => "numpad_add",
+        KeyCode::NumpadBackspace => "numpad_backspace",
+        KeyCode::NumpadClear => "numpad_clear",
+        KeyCode::NumpadClearEntry => "numpad_clear_entry",
+        KeyCode::NumpadComma => "numpad_comma",
+        KeyCode::NumpadDecimal => "numpad_decimal",
+        KeyCode::NumpadDivide => "numpad_divide",
+        KeyCode::NumpadEnter => "numpad_enter",
+        KeyCode::NumpadEqual => "numpad_equal",
+        KeyCode::NumpadMemoryAdd => "numpad_memory_add",
+        KeyCode::NumpadMemoryClear => "numpad_memory_clear",
+        KeyCode::NumpadMemoryRecall => "numpad_memory_recall",
+        KeyCode::NumpadMemoryStore => "numpad_memory_store",
+        KeyCode::NumpadMemorySubtract => "numpad_memory_subtract",
+        KeyCode::NumpadMultiply => "numpad_multiply",
+        KeyCode::NumpadParenLeft => "numpad_paren_left",
+        KeyCode::NumpadParenRight => "numpad_paren_right",
+        KeyCode::NumpadSubtract => "numpad_subtract",
+        _ => return None,
+    };
+    Some(Trigger {
+        mods,
+        key: key.to_string(),
+    })
+}
+
 /// 키 묶음 트리거의 수정 키
 fn trigger_mods(mods: ModifiersState) -> Mods {
     Mods {
@@ -199,6 +241,55 @@ fn named_key_name(n: WKey) -> Option<&'static str> {
         WKey::F10 => "f10",
         WKey::F11 => "f11",
         WKey::F12 => "f12",
+        WKey::F13 => "f13",
+        WKey::F14 => "f14",
+        WKey::F15 => "f15",
+        WKey::F16 => "f16",
+        WKey::F17 => "f17",
+        WKey::F18 => "f18",
+        WKey::F19 => "f19",
+        WKey::F20 => "f20",
+        WKey::F21 => "f21",
+        WKey::F22 => "f22",
+        WKey::F23 => "f23",
+        WKey::F24 => "f24",
+        WKey::F25 => "f25",
+        WKey::CapsLock => "caps_lock",
+        WKey::ContextMenu => "context_menu",
+        WKey::NumLock => "num_lock",
+        WKey::ScrollLock => "scroll_lock",
+        WKey::PrintScreen => "print_screen",
+        WKey::Pause => "pause",
+        WKey::Help => "help",
+        WKey::Fn => "fn",
+        WKey::FnLock => "fn_lock",
+        WKey::Convert => "convert",
+        WKey::KanaMode => "kana_mode",
+        WKey::NonConvert => "non_convert",
+        WKey::Copy => "copy",
+        WKey::Cut => "cut",
+        WKey::Paste => "paste",
+        WKey::BrowserBack => "browser_back",
+        WKey::BrowserFavorites => "browser_favorites",
+        WKey::BrowserForward => "browser_forward",
+        WKey::BrowserHome => "browser_home",
+        WKey::BrowserRefresh => "browser_refresh",
+        WKey::BrowserSearch => "browser_search",
+        WKey::BrowserStop => "browser_stop",
+        WKey::Eject => "eject",
+        WKey::LaunchApplication1 => "launch_app_1",
+        WKey::LaunchApplication2 => "launch_app_2",
+        WKey::LaunchMail => "launch_mail",
+        WKey::MediaPlayPause => "media_play_pause",
+        WKey::MediaStop => "media_stop",
+        WKey::MediaTrackNext => "media_track_next",
+        WKey::MediaTrackPrevious => "media_track_previous",
+        WKey::Power => "power",
+        WKey::Standby => "sleep",
+        WKey::AudioVolumeDown => "audio_volume_down",
+        WKey::AudioVolumeMute => "audio_volume_mute",
+        WKey::AudioVolumeUp => "audio_volume_up",
+        WKey::WakeUp => "wake_up",
         _ => return None,
     })
 }
