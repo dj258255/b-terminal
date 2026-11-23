@@ -316,6 +316,24 @@ impl<T: GridCell + Default + PartialEq> Grid<T> {
         let mut buffered: Option<Vec<T>> = None;
 
         let mut rows = self.raw.take_all();
+
+        // b-terminal(#808): 1열에는 넓은 글자가 들어가지 않는다. 그대로 두면 아래 반복이 넓은 글자를 다음 줄 맨 앞으로 밀고 또 밀어
+        // 끝나지 않는다(CPU 100%, 메모리가 계속 늘었다). Ghostty는 이때 넓은 글자를 지운다(시험 `resize less cols to eliminate wide
+        // char`, Screen.zig 8974줄·9050줄). 넓은 글자 머리와 자리표시 칸을 빈 칸으로 바꾸고 줄 이음 표시는 남긴다
+        if columns == 1 {
+            let wide = Flags::WIDE_CHAR | Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER;
+            for row in rows.iter_mut() {
+                for c in 0..row.len() {
+                    let cell = &mut row[Column(c)];
+                    if cell.flags().intersects(wide) {
+                        let wrap = *cell.flags() & Flags::WRAPLINE;
+                        *cell = T::default();
+                        cell.flags_mut().insert(wrap);
+                    }
+                }
+            }
+        }
+
         for (i, mut row) in rows.drain(..).enumerate().rev() {
             // Append lines left over from the previous row.
             if let Some(buffered) = buffered.take() {
