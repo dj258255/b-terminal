@@ -3077,16 +3077,16 @@ impl App {
             FileFormat::Html => Some(bt_term::CopyEmit::Html),
         };
         let (id, kind, text) = match source {
-            // 스크롤백 상한보다 넉넉히: tail_text가 맨 위에서 멈춘다
+            // `plain`도 Ghostty `formatter.zig`처럼(접힌 줄을 잇고 줄 끝 공백을 남김, #785)
             FileSource::Scrollback => (
                 p.id,
                 "scrollback",
-                emit.map_or_else(|| p.session.tail_text(1_000_000), |e| p.session.styled_text(true, e)),
+                emit.map_or_else(|| p.session.plain_text(true), |e| p.session.styled_text(true, e)),
             ),
             FileSource::Screen => (
                 p.id,
                 "screen",
-                emit.map_or_else(|| p.session.snapshot().text(), |e| p.session.styled_text(false, e)),
+                emit.map_or_else(|| p.session.plain_text(false), |e| p.session.styled_text(false, e)),
             ),
             FileSource::Selection => {
                 match p

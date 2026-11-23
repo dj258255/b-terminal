@@ -47,6 +47,8 @@ impl CopyFormat {
 /// 만들 꼴
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Emit {
+    /// 글만(꾸밈·링크 없음). 복사의 `plain`과 `write_*_file`의 `plain`(#785)
+    Plain,
     Vt,
     Html,
 }
@@ -129,6 +131,20 @@ fn kind(cell: &Cell) -> Kind {
         Kind::Background
     } else {
         Kind::Empty
+    }
+}
+
+/// 칸 종류를 `emit`에 맞춰 본다. 글만 낼 때(`Plain`)는 바탕색만 가진 칸도 빈 칸이다(Ghostty `formatStyled`가 거짓이면 `hasText`만 본다).
+/// 탭 글자(`\t`)는 이동한 칸을 내지 않으려고 글자로 둔다: 복사는 지금까지 탭 글자를 남겼고 이동한 칸은 내지 않았다(Ghostty는 공백으로 낸다. 이번 범위 밖)
+fn kind_for(cell: &Cell, emit: Emit) -> Kind {
+    let k = kind(cell);
+    if emit != Emit::Plain {
+        return k;
+    }
+    match k {
+        Kind::Background | Kind::Empty if cell.c == '\t' => Kind::Text,
+        Kind::Background => Kind::Empty,
+        k => k,
     }
 }
 
@@ -285,6 +301,7 @@ impl<T> Writer<'_, T> {
                 }
                 self.out.push_str("\">");
             }
+            Emit::Plain => {}
         }
     }
 
@@ -292,13 +309,14 @@ impl<T> Writer<'_, T> {
         self.out.push_str(match self.emit {
             Emit::Vt => "\x1b[0m",
             Emit::Html => "</div>",
+            Emit::Plain => "",
         });
     }
 
     /// 글자 하나. HTML은 특수 문자를 이스케이프하고 ASCII 밖은 숫자 참조로 낸다(인코딩 판별 문제를 피함, Ghostty #9426)
     fn codepoint(&mut self, c: char) {
         match self.emit {
-            Emit::Vt => self.out.push(c),
+            Emit::Plain | Emit::Vt => self.out.push(c),
             Emit::Html => match c {
                 '<' => self.out.push_str("&lt;"),
                 '>' => self.out.push_str("&gt;"),
@@ -327,6 +345,7 @@ impl<T> Writer<'_, T> {
 
     fn link_open(&mut self, link: &Hyperlink) {
         match self.emit {
+            Emit::Plain => {}
             // 명시한 id가 있으면 함께. 엔진이 id 없는 링크에 붙인 번호(`<n>_alacritty`)는 명시한 것이 아니다
             Emit::Vt => {
                 let id = link.id();
@@ -353,6 +372,7 @@ impl<T> Writer<'_, T> {
 
     fn link_close(&mut self) {
         match self.emit {
+            Emit::Plain => {}
             Emit::Vt => self.out.push_str("\x1b]8;;\x1b\\"),
             Emit::Html => {
                 if self.anchor_open {
@@ -449,6 +469,7 @@ pub(crate) fn format_range<T: EventListener>(
 
     // 앞머리: 바탕·글자 기본색
     match opts.emit {
+        Emit::Plain => {}
         Emit::Html => {
             w.out.push_str("<div style=\"font-family: monospace; white-space: pre;");
             if let Some(bg) = opts.background {
@@ -474,8 +495,9 @@ pub(crate) fn format_range<T: EventListener>(
     }
     let newline = match opts.emit {
         Emit::Vt => "\r\n",
-        Emit::Html => "\n",
+        Emit::Html | Emit::Plain => "\n",
     };
+    let plain = opts.emit == Emit::Plain;
 
     let mut blank_rows = 0usize;
     let mut blank_cells = 0usize;
@@ -494,7 +516,7 @@ pub(crate) fn format_range<T: EventListener>(
         let row_end = if block || line == last { end_x + 1 } else { cols };
         let mut row_start = 0;
         if start_x > 0 && (block || is_first) {
-            match kind(&row[Column(start_x)]) {
+            match kind_for(&row[Column(start_x)], opts.emit) {
                 // 넓은 글자의 뒤 칸에서 시작하면 앞 칸부터
                 Kind::Spacer if row[Column(start_x)].flags.contains(Flags::WIDE_CHAR_SPACER) => row_start = start_x - 1,
                 // 줄 끝의 앞 칸 자리표시에서 시작하면 이 줄은 건너뛴다
@@ -508,8 +530,8 @@ pub(crate) fn format_range<T: EventListener>(
         let cells: Vec<&Cell> = (row_start..row_end).map(|c| &row[Column(c)]).collect();
 
         // 글자 없는 줄은 모았다가, 뒤에 글자 있는 줄이 오면 줄바꿈으로 낸다. VT는 바탕색만 가진 줄도 글자 줄처럼 둔다
-        let has_text = cells.iter().any(|c| kind(c) == Kind::Text);
-        let has_bg = cells.iter().any(|c| kind(c) == Kind::Background);
+        let has_text = cells.iter().any(|c| kind_for(c, opts.emit) == Kind::Text);
+        let has_bg = cells.iter().any(|c| kind_for(c, opts.emit) == Kind::Background);
         let keeps = has_text || (opts.emit == Emit::Vt && has_bg);
         if !keeps {
             blank_rows += 1;
@@ -538,15 +560,26 @@ pub(crate) fn format_range<T: EventListener>(
         }
 
         let mut i = 0;
+        // 글만 낼 때 탭 글자 바로 뒤의 빈 칸은 탭이 건넌 칸이라 내지 않는다
+        let mut after_tab = false;
         while i < cells.len() {
             let cell = cells[i];
-            let k = kind(cell);
+            let k = kind_for(cell, opts.emit);
             if k == Kind::Spacer {
                 i += 1;
                 continue;
             }
             // 글자 없는 칸은 센다. 뒤에 글자가 오면 그때 낸다
             if k == Kind::Empty {
+                if !after_tab {
+                    blank_cells += 1;
+                }
+                i += 1;
+                continue;
+            }
+            after_tab = plain && cell.c == '\t' && !cell.flags.contains(Flags::WRITTEN);
+            // 끝 공백은 `trim`이면 빈 칸으로 센다(Ghostty: 뒤에 글자가 오면 그때 공백으로 내고, 끝이면 버린다)
+            if plain && opts.trim && k == Kind::Text && cell.c == ' ' && cell.zerowidth().is_none() {
                 blank_cells += 1;
                 i += 1;
                 continue;
@@ -578,11 +611,12 @@ pub(crate) fn format_range<T: EventListener>(
             }
 
             // 스타일이 바뀌었나
-            let cell_style = style_of(cell);
+            let cell_style = if plain { Style::default() } else { style_of(cell) };
             if cell_style != style {
                 if style != Style::default() {
                     match opts.emit {
                         Emit::Html => w.style_close(),
+                        Emit::Plain => {}
                         // VT는 기본 스타일로 돌아갈 때만 닫는다. 다른 스타일의 시작이 `ESC[0m`이다
                         Emit::Vt => {
                             if cell_style == Style::default() {
@@ -598,7 +632,11 @@ pub(crate) fn format_range<T: EventListener>(
             }
 
             // 하이퍼링크가 바뀌었나
-            let cell_link = if k == Kind::Text { cell.hyperlink() } else { None };
+            let cell_link = if k == Kind::Text && !plain {
+                cell.hyperlink()
+            } else {
+                None
+            };
             if cell_link != link {
                 // HTML은 늘 닫고 연다. VT는 새 링크를 열면 열려 있던 것이 바뀌므로 링크가 끝날 때만 닫는다
                 if link.is_some() && (opts.emit == Emit::Html || cell_link.is_none()) {
@@ -646,7 +684,7 @@ pub(crate) fn format_range<T: EventListener>(
     }
     if opts.emit == Emit::Html {
         w.out.push_str("</div>");
-    } else if !opts.trim && blank_rows > 1 {
+    } else if opts.emit == Emit::Vt && !opts.trim && blank_rows > 1 {
         // VT는 끝의 빈 줄을 자리로 남긴다(`trim = false`)
         for _ in 0..blank_rows - 1 {
             w.out.push_str("\r\n");

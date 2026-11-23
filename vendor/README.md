@@ -157,3 +157,6 @@ alacritty_terminal이 글자 묶음 폭(mode 2027)을 지원하는 판을 내면
 
 - 고친 곳: `vendor/vte/src/params.rs`의 `Params::trailing_empty`·`set_trailing_empty`, `vendor/vte/src/lib.rs`의 `param_seen`(디스패치 직전에 정함), `vendor/vte/src/ansi.rs`의 `decrqm_has_single_param`과 `$p` 두 갈래의 조건, `vendor/alacritty_terminal/src/term/mod.rs`의 `ModeState::PermanentlyReset`과 `report_mode`·`report_private_mode`의 영구 리셋 모드. `b-terminal(#777)`로 찾을 수 있습니다. 이유: Ghostty 1.4.0 `stream.zig`(DECRQM은 매개변수가 정확히 하나일 때만)와 `modes.zig` `getReport`(DEC 117, ANSI 1·5·7·10·11·13~19에 영구 리셋 4). 되돌릴 조건: 위 동작을 업스트림이 같게 내면 지웁니다.
 
+## alacritty_terminal: 줄 끝 자리표시 칸에서 끝나는 고르기(#786)
+
+- 고친 곳: `vendor/alacritty_terminal/src/term/mod.rs`의 `line_to_string`(넘어간 넓은 글자를 `line - 1`이 아니라 다음 줄 첫 칸에서 읽고, 다음 줄이 없으면 덧붙이지 않음)과 `selection_to_string`의 사각 갈래(`include_wrapped_wide`를 늘 거짓으로). `b-terminal(#786)`로 찾을 수 있습니다. 이유: Ghostty 1.4.0 `formatter.zig` `PageList selection ending on spacer head`(4587줄). 윗줄 글자가 섞이거나(debug는 격자 밖 panic) 사각 고르기가 끝을 넓히던 것을 바로잡습니다. 되돌릴 조건: 업스트림이 같게 고치면 지웁니다.
