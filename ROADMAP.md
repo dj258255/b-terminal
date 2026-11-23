@@ -1703,12 +1703,28 @@ Ghostty 1.4.0 단위 시험 견주기 둘째 판([#760](https://github.com/dj258
 | [#786](https://github.com/dj258255/b-terminal/issues/786) | 줄 끝에서 넘어간 넓은 글자 자리에서 끝나는 고르기가 엉뚱한 글자를 가져옴(debug는 panic) | [#789](https://github.com/dj258255/b-terminal/pull/789) | 11-23 08:09 → 08:36 | 고치기 에이전트, 실제 창(끌기)·병합 |
 | [#787](https://github.com/dj258255/b-terminal/issues/787) | clipboard-codepoint-map이 vt·html 복사에 걸리지 않음 | [#788](https://github.com/dj258255/b-terminal/pull/788) | 11-23 08:09 → 08:25 | 고치기 에이전트, 병합(실제 창은 막힘) |
 
+## 0.98.0 (2026-11-23)
+
+Ghostty 1.4.0 단위 시험 견주기([#760](https://github.com/dj258255/b-terminal/issues/760))에서 0.97 밖으로 넘긴 것을 마저 한 판. 마일스톤 0.98.
+
+- 글리프 프로토콜(#779)은 처음에 파서·래스터라이저·렌더러 연결로 나눴으나, Ghostty 1.4.0 원본에서 글로서리를 쓰는 곳이 `Terminal.zig`·`stream_terminal.zig`뿐이고 렌더러·글꼴은 부르지 않으며 `glyf_rasterize.zig`는 시험에서만 쓰이는 것을 확인했습니다. 그래서 받기·검사·저장·답까지만 넣었고, 그리기와 등록의 `width`는 Ghostty가 시작할 때 따라갑니다(이슈 댓글, ADR-078).
+- DCS 0x9C(#792): 이슈에 적은 "tmux로 감싼 한글 알림이 깨짐"은 고치기 전에도 깨지지 않았습니다(안쪽이 OSC 문자열이라 0x9C가 자료). 실제로 깨진 것은 날 한글이 DCS 본문에 곧바로 든 경우(tmux 제어 모드 `%output` 모양)였고, 0.92.0에서 `글` 줄이 화면에 남는 것을 격리한 실제 창에서 봤습니다.
+- 그대로 두기로 정한 것: 글 복사의 탭은 탭으로 남깁니다(Ghostty는 건넌 칸을 공백으로 냄). alacritty에서 이어 온 동작이고 Makefile 같은 글의 뜻을 지키므로, 뜻이 분명한 이전 동작은 남긴다는 원칙대로입니다. configuration의 고르기 한계에 이미 적혀 있습니다.
+- 남은 차이(이슈로 열지 않음): tmux 안쪽 신호는 ADR-053대로 내지 않음, SOS·PM 안의 kitty 명령은 실행하지 않음(Ghostty는 APC와 같은 상태).
+- 실제 창 확인(격리한 실제 창, 0.92.0과 견줘 한 번씩, 창을 앞으로 올리지 않음): 글리프는 PTY에서 `stty raw`·`printf`·`dd`로 답 바이트 8가지 비교(0.92.0은 모두 답 없음), DCS·C1은 `printf` 뒤 `btctl read`로 화면 비교 5가지.
+
+| 이슈 | 내용 | PR | 연 때·병합(UTC) | 주 세션이 한 것 |
+|---|---|---|---|---|
+| [#779](https://github.com/dj258255/b-terminal/issues/779) | 글리프 프로토콜(APC 25a1)을 받지 않음 | [#794](https://github.com/dj258255/b-terminal/pull/794) | 11-23 05:47 → 09:09 | 범위 다시 정함(원본 확인), 고치기 에이전트, 보안 검토·실제 창 PTY·병합 |
+| [#792](https://github.com/dj258255/b-terminal/issues/792) | DCS 자료 안의 0x9C에서 DCS가 끝남 | [#795](https://github.com/dj258255/b-terminal/pull/795) | 11-23 08:43 → 09:17 | 고치기 에이전트, 충돌 풀기·실제 창·병합 |
+| [#793](https://github.com/dj258255/b-terminal/issues/793) | CSI·ESC 등 상태 안의 원시 C1을 무시함 | [#795](https://github.com/dj258255/b-terminal/pull/795) | 11-23 08:43 → 09:17 | 고치기 에이전트, 실제 창·병합 |
+
 ## 다음
 
 - 0.91~0.97에서 '범수 님이 확인할 것'의 대부분을 주 세션이 확인했습니다. 무엇을 확인했고 무엇을 못 했는지는 위 0.91.0~0.95.0 절에 있습니다. 남은 것: 데스크톱 알림 띠가 하나만 뜨는지와 VoiceOver 소리, Space, 저전력 모드를 끈 0.42, 외부 모니터, 타자 느낌. 이 가운데 VoiceOver와 저전력 모드는 시스템 설정을 바꿔야 하고, Space 옮기기는 하드웨어 키 입력이 있어야 하며, 외부 모니터는 이 기기에 없어 주 세션이 확인하지 않았습니다. 알림 띠는 시험 앱 묶음에 알림 허락이 없어(알림 설정에 항목이 없음) 뜨지 않고, 허락하려면 시스템 설정을 바꿔야 해서 확인하지 않았습니다. 타자 느낌은 사람이 쳐 봐야 압니다.
 - 0.94 뒤 tmux 3.8을 확인했습니다(격리한 실제 창, 한 번 잼). 받은 병이 의존 라이브러리 경로 때문에 실행되지 않던 것을 의존 병과 함께 이어 실행했습니다. tmux가 알아본 바깥 터미널 기능 목록, 가로 나누기 뒤 왼쪽 칸에 찍은 한글(`가나다라마 끝`)·이모지(`😀🙂 이모지`) 줄과 칸 경계선(경계선 앞 폭이 모든 줄에서 40칸으로 같음), 마우스로 칸 고르기, Shift+Enter가 안쪽 프로그램에 `ESC[27;2;13~`으로 가는 것을 봤습니다.
 - Ctrl+Enter가 아무 바이트도 내지 않는 것처럼 보였으나(#751) 결함이 아니었습니다. 앱이 뒤에 있을 때 보낸 합성 키를 AppKit이 창까지 넘기지 않은 탓이었고, 앱을 앞에 두고 보내면 `ESC[27;5;13~`이 갑니다(한 번 잼).
-- 다음 판 후보: 글리프 프로토콜(#779), 0.97.0 절의 작은 차이 셋, Ghostty 새 병합분(2026-11-23 03:00 UTC까지 봄), Ghostty 단위 시험 가운데 아직 견주지 않은 파일.
+- 다음 판 후보: Ghostty 새 병합분(2026-11-23 03:00 UTC까지 봄), Ghostty 단위 시험 가운데 아직 견주지 않은 파일, Ghostty가 글리프를 그리기 시작하면 따라가기.
 - 범수 님이 직접 해야 할 것: 키보드·마우스 확인(한글 2벌식 "안녕 하세요⏎", Claude Code의 Shift+Enter, Cmd-D·Cmd-F·Cmd-클릭·Cmd-N·Cmd-Shift-P, 메뉴, 창 닫기 단추, vim·htop, kitty icat·yazi, 투명 창), Developer ID 계정으로 `scripts/bundle-macos.sh --sign … --notarize … --dmg`
 - 정함(0.49·0.50, 주 세션 추천안): `window-colorspace` 기본은 `display-p3` 그대로. 0.50부터 `srgb`도 GPU 길로 그립니다(창마다 약 13.6MB 더, ADR-047). 기본을 Ghostty처럼 `srgb`로 바꾸시려면 알려 주세요
 - 범수 님이 확인할 것(0.6): 퀵 터미널을 실제 전역 단축키로(`keybind = global:ctrl+backquote=toggle_quick_terminal`), 외부 모니터로 창을 옮겼을 때 present 시간(`RUST_LOG=b_terminal=debug`)
