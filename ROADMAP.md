@@ -1662,12 +1662,33 @@ Ghostty 1.4.0 뒤 병합분 대조와 테마 판 맞추기. 마일스톤 0.95.
 | [#755](https://github.com/dj258255/b-terminal/issues/755) | 넣어 둔 테마를 Ghostty가 올린 판(494b809, 914개)으로 | [#757](https://github.com/dj258255/b-terminal/pull/757) | 11-23 03:34 → 03:47 | 전부 |
 | [#752](https://github.com/dj258255/b-terminal/issues/752) | ROADMAP: tmux 3.8 확인 결과와 남은 것의 이유 | [#753](https://github.com/dj258255/b-terminal/pull/753) | 11-23 02:28 → 02:33 | 전부 |
 
+## 0.96.0 (2026-11-23)
+
+Ghostty 1.4.0 단위 시험 견주기([#760](https://github.com/dj258255/b-terminal/issues/760)). 마일스톤 0.96.
+
+- 옮겨 견준 시험: `sgr.zig`, OSC 파서(`osc.zig`와 `osc/parsers/*.zig`), `Binding.zig`. 다른 곳을 원인별 이슈로 나눠 고쳤습니다(아래 표). 조사 에이전트가 탐침으로 견줬고, 주 세션이 각 원인을 Ghostty 원본과 대조한 뒤 이슈를 열었습니다.
+- 원칙: Ghostty보다 엄격하게 바꿀 때, 전에 받던 꼴 가운데 뜻이 분명했던 것(옛 키 이름 `return`·`esc`·`pageup`, 수식 키 대소문자, 값 없는 `increase_font_size` 등)은 계속 받고 뜻이 없던 꼴만 경고합니다. Ghostty와 뜻이 부딪히는 꼴(`ctrl++`)은 Ghostty를 따릅니다.
+- ADR-053의 갱신 기록(#595)이 Ghostty `Parser.zig` 한 줄만 보고 "CAN·SUB에서도 OSC를 실행"이라 적었던 것이 틀렸습니다. 그 줄이 부르는 `osc.zig` `Parser.end`가 버립니다. ADR-076으로 바로잡았습니다.
+- 실제 창 확인: 이슈마다 격리한 실제 창에서 0.92.0과 견줘 한 번씩 봤습니다(바이트를 `printf`로 넣거나 AppleScript `send key`, 창을 앞으로 올리지 않음). 결과는 각 PR의 검증 절에 있습니다.
+- 더 견준 것(고칠 결함 없음): `key_encode.zig` 103개. 다른 결과는 이미 적힌 차이(Caps Lock 상태, Option 소비)이거나 앱 입구까지 올 수 없는 입력이었습니다. 키를 뗄 때 대체 키를 붙이는 것은 Ghostty macOS 앱(뗌에 글을 싣지 않음)과 다르지만 Ghostty 인코더 시험(1895줄)과 같아 그대로 둡니다.
+- 0.97로 넘긴 것: `stream.zig`·`stream_terminal.zig` 견주기에서 나온 원시 C1 바이트(#775), APC 0x9C(#776), DECRQM(#777), OSC 1337 Copy(#778), 글리프 프로토콜(#779, 새 기능). 매개변수가 둘 이상인 CSI를 첫 매개변수로 실행하는 것과 제목 push·pop(`CSI 22·23 t`)은 xterm과 같아 ADR-056 3항대로 둡니다.
+
+| 이슈 | 내용 | PR | 연 때·병합(UTC) | 주 세션이 한 것 |
+|---|---|---|---|---|
+| [#761](https://github.com/dj258255/b-terminal/issues/761) | 콜론 하위 매개변수가 너무 많은 SGR을 받아들임 | [#762](https://github.com/dj258255/b-terminal/pull/762) | 11-23 04:06 → 04:17 | 전부 |
+| [#763](https://github.com/dj258255/b-terminal/issues/763) | CAN·SUB로 끊긴 OSC를 실행함 | [#769](https://github.com/dj258255/b-terminal/pull/769) | 11-23 04:19 → 04:39 | 조사·고치기 에이전트, 검토·실제 창·병합 |
+| [#764](https://github.com/dj258255/b-terminal/issues/764) | OSC 9 하위 명령 분기가 Ghostty `osc9.zig`와 다름 | [#770](https://github.com/dj258255/b-terminal/pull/770) | 11-23 04:19 → 04:47 | 조사·고치기 에이전트, 검토·실제 창·병합 |
+| [#765](https://github.com/dj258255/b-terminal/issues/765) | vte의 OSC 색·제목·링크 해석이 Ghostty와 다름 | [#771](https://github.com/dj258255/b-terminal/pull/771) | 11-23 04:19 → 04:58 | 조사·고치기 에이전트, 검토·실제 창·병합 |
+| [#768](https://github.com/dj258255/b-terminal/issues/768) | 키 묶음 동작 인자 검사가 Ghostty와 다름 | [#772](https://github.com/dj258255/b-terminal/pull/772) | 11-23 04:30 → 05:16 | 고치기 에이전트, 옛 꼴 유지 지시·실제 창·병합 |
+| [#767](https://github.com/dj258255/b-terminal/issues/767) | 키 묶음의 키 이름 해석이 Ghostty와 다름 | [#773](https://github.com/dj258255/b-terminal/pull/773) | 11-23 04:30 → 05:25 | 고치기 에이전트, 옛 꼴 유지 지시·실제 창·병합 |
+| [#766](https://github.com/dj258255/b-terminal/issues/766) | 키 묶음 `chain=<동작>` | [#774](https://github.com/dj258255/b-terminal/pull/774) | 11-23 04:29 → 05:43 | 고치기 에이전트, 리눅스 시험 고침·실제 창·병합 |
+
 ## 다음
 
-- 0.91~0.95에서 '범수 님이 확인할 것'의 대부분을 주 세션이 확인했습니다. 무엇을 확인했고 무엇을 못 했는지는 위 0.91.0~0.95.0 절에 있습니다. 남은 것: 데스크톱 알림 띠가 하나만 뜨는지와 VoiceOver 소리, Space, 저전력 모드를 끈 0.42, 외부 모니터, 타자 느낌. 이 가운데 VoiceOver와 저전력 모드는 시스템 설정을 바꿔야 하고, Space 옮기기는 하드웨어 키 입력이 있어야 하며, 외부 모니터는 이 기기에 없어 주 세션이 확인하지 않았습니다. 알림 띠는 시험 앱 묶음에 알림 허락이 없어(알림 설정에 항목이 없음) 뜨지 않고, 허락하려면 시스템 설정을 바꿔야 해서 확인하지 않았습니다. 타자 느낌은 사람이 쳐 봐야 압니다.
+- 0.91~0.96에서 '범수 님이 확인할 것'의 대부분을 주 세션이 확인했습니다. 무엇을 확인했고 무엇을 못 했는지는 위 0.91.0~0.95.0 절에 있습니다. 남은 것: 데스크톱 알림 띠가 하나만 뜨는지와 VoiceOver 소리, Space, 저전력 모드를 끈 0.42, 외부 모니터, 타자 느낌. 이 가운데 VoiceOver와 저전력 모드는 시스템 설정을 바꿔야 하고, Space 옮기기는 하드웨어 키 입력이 있어야 하며, 외부 모니터는 이 기기에 없어 주 세션이 확인하지 않았습니다. 알림 띠는 시험 앱 묶음에 알림 허락이 없어(알림 설정에 항목이 없음) 뜨지 않고, 허락하려면 시스템 설정을 바꿔야 해서 확인하지 않았습니다. 타자 느낌은 사람이 쳐 봐야 압니다.
 - 0.94 뒤 tmux 3.8을 확인했습니다(격리한 실제 창, 한 번 잼). 받은 병이 의존 라이브러리 경로 때문에 실행되지 않던 것을 의존 병과 함께 이어 실행했습니다. tmux가 알아본 바깥 터미널 기능 목록, 가로 나누기 뒤 왼쪽 칸에 찍은 한글(`가나다라마 끝`)·이모지(`😀🙂 이모지`) 줄과 칸 경계선(경계선 앞 폭이 모든 줄에서 40칸으로 같음), 마우스로 칸 고르기, Shift+Enter가 안쪽 프로그램에 `ESC[27;2;13~`으로 가는 것을 봤습니다.
 - Ctrl+Enter가 아무 바이트도 내지 않는 것처럼 보였으나(#751) 결함이 아니었습니다. 앱이 뒤에 있을 때 보낸 합성 키를 AppKit이 창까지 넘기지 않은 탓이었고, 앱을 앞에 두고 보내면 `ESC[27;5;13~`이 갑니다(한 번 잼).
-- 다음 판 후보: Ghostty 새 병합분(2026-11-23 03:00 UTC까지 봄), Ghostty 단위 시험 가운데 아직 옮기지 않은 것.
+- 다음 판 후보: 0.97 마일스톤(#775~#778), 글리프 프로토콜(#779), Ghostty 새 병합분(2026-11-23 03:00 UTC까지 봄), Ghostty 단위 시험 가운데 아직 옮기지 않은 것(`formatter.zig` 나머지 등).
 - 범수 님이 직접 해야 할 것: 키보드·마우스 확인(한글 2벌식 "안녕 하세요⏎", Claude Code의 Shift+Enter, Cmd-D·Cmd-F·Cmd-클릭·Cmd-N·Cmd-Shift-P, 메뉴, 창 닫기 단추, vim·htop, kitty icat·yazi, 투명 창), Developer ID 계정으로 `scripts/bundle-macos.sh --sign … --notarize … --dmg`
 - 정함(0.49·0.50, 주 세션 추천안): `window-colorspace` 기본은 `display-p3` 그대로. 0.50부터 `srgb`도 GPU 길로 그립니다(창마다 약 13.6MB 더, ADR-047). 기본을 Ghostty처럼 `srgb`로 바꾸시려면 알려 주세요
 - 범수 님이 확인할 것(0.6): 퀵 터미널을 실제 전역 단축키로(`keybind = global:ctrl+backquote=toggle_quick_terminal`), 외부 모니터로 창을 옮겼을 때 present 시간(`RUST_LOG=b_terminal=debug`)
