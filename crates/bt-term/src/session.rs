@@ -1629,9 +1629,15 @@ impl Session {
     }
 
     /// 고른 곳을 색·꾸밈이 든 글(VT 이스케이프 또는 HTML)로 만든다(`copy_to_clipboard:vt|html|mixed`, #550).
-    /// 같은 범위의 글은 `selection_text`다. `screen_colors`가 참이면 바탕·글자 기본색도 넣는다(Ghostty는 `vt`·`html`에서만,
+    /// 같은 범위의 글은 `selection_text`다. `codepoint_map`은 `clipboard-codepoint-map`(복사 길만. 파일로 뽑는 길은 비워 넘긴다). `screen_colors`가 참이면 바탕·글자 기본색도 넣는다(Ghostty는 `vt`·`html`에서만,
     /// `mixed`의 HTML에서는 뺀다). 고른 것이 없으면 None
-    pub fn selection_styled(&self, emit: crate::copy_format::Emit, trim: bool, screen_colors: bool) -> Option<String> {
+    pub fn selection_styled(
+        &self,
+        emit: crate::copy_format::Emit,
+        trim: bool,
+        screen_colors: bool,
+        codepoint_map: &[bt_core::config::CodepointRule],
+    ) -> Option<String> {
         let theme = self.theme.lock().clone();
         let g = self.inner.lock();
         let range = g.term.selection.as_ref().and_then(|s| s.to_range(&g.term))?;
@@ -1643,6 +1649,7 @@ impl Session {
                 .then(|| color::named(&theme, colors, alacritty_terminal::vte::ansi::NamedColor::Background)),
             foreground: screen_colors
                 .then(|| color::named(&theme, colors, alacritty_terminal::vte::ansi::NamedColor::Foreground)),
+            codepoint_map,
         };
         Some(crate::copy_format::format_range(
             &g.term,
@@ -1674,6 +1681,8 @@ impl Session {
                 colors,
                 alacritty_terminal::vte::ansi::NamedColor::Foreground,
             )),
+            // Ghostty `writeScreenFile`은 `codepoint_map`을 주지 않는다. 파일에는 맵을 걸지 않는다
+            codepoint_map: &[],
         };
         crate::copy_format::format_lines(&g.term, &theme, scrollback, opts)
     }

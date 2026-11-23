@@ -2414,10 +2414,11 @@ impl App {
             return false;
         };
         let trim = self.config.clipboard_trim_trailing_spaces;
+        let map = self.config.clipboard_codepoint_map.as_slice();
         let pane = self.active_pane();
         let payload = crate::copy::payload(format, &text, |emit, colors| {
             pane.as_ref()
-                .and_then(|t| t.session.selection_styled(emit, trim, colors))
+                .and_then(|t| t.session.selection_styled(emit, trim, colors, map))
         });
         let Some(cb) = self.clipboard.as_mut() else {
             return false;
@@ -3094,7 +3095,7 @@ impl App {
                     .filter(|t| !t.is_empty())
                     .and_then(|plain| match emit {
                         None => Some(plain),
-                        Some(e) => p.session.selection_styled(e, false, true),
+                        Some(e) => p.session.selection_styled(e, false, true, &[]),
                     }) {
                     Some(t) => (p.id, "selection", t),
                     // Ghostty처럼 고른 글이 없으면 아무것도 하지 않는다
