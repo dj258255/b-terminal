@@ -2250,3 +2250,46 @@ fn resize_releases_synchronized_output() {
     assert!(s.sync_deadline().is_none(), "크기를 바꿨는데 동기 출력이 남았다");
     wait_until(&s, |t| t.contains("SYNCED"));
 }
+
+// b-terminal(#777): DECRQM(`CSI Ps $ p`·`CSI ? Ps $ p`)는 매개변수가 정확히 하나일 때만 답한다
+// (Ghostty stream.zig `DECRQM dispatch`). 잘못된 꼴 뒤에 오는 정상 질의(`?25`)의 답만 나와야 한다.
+#[test]
+fn decrqm_malformed_forms_are_ignored() {
+    let ok = hex_of("\x1b[?25;1$y");
+    for bad in [
+        "\\033[$p",
+        "\\033[?$p",
+        "\\033[4;20$p",
+        "\\033[?4;7$p",
+        "\\033[4:20$p",
+        "\\033[4:$p",
+    ] {
+        assert_eq!(
+            reply_to(&format!("{bad}\\033[?25$p"), |_| {}),
+            ok,
+            "{bad}는 답이 없어야 한다"
+        );
+    }
+}
+
+// b-terminal(#777): 구현하지 않았지만 Ghostty가 영구 리셋(4)으로 답하는 모드(modes.zig `getReport`)
+#[test]
+fn decrqm_permanently_reset_modes() {
+    assert_eq!(reply_to("\\033[?117$p", |_| {}), hex_of("\x1b[?117;4$y"));
+    for m in [1, 5, 7, 10, 11, 13, 14, 15, 16, 17, 18, 19] {
+        assert_eq!(
+            reply_to(&format!("\\033[{m}$p"), |_| {}),
+            hex_of(&format!("\x1b[{m};4$y")),
+            "ANSI {m}"
+        );
+    }
+    // 숫자 없는 끝 매개변수는 세지 않으니 `CSI ; $ p`·`CSI 4 ; $ p`는 매개변수 하나다(Ghostty Parser.zig 378줄)
+    assert_eq!(reply_to("\\033[;$p", |_| {}), hex_of("\x1b[0;0$y"));
+    assert_eq!(reply_to("\\033[4;$p", |_| {}), hex_of("\x1b[4;2$y"));
+    // 구현한 모드와 모르는 모드는 그대로
+    assert_eq!(reply_to("\\033[4$p", |_| {}), hex_of("\x1b[4;2$y"));
+    assert_eq!(reply_to("\\033[9999$p", |_| {}), hex_of("\x1b[9999;0$y"));
+    assert_eq!(reply_to("\\033[?9999$p", |_| {}), hex_of("\x1b[?9999;0$y"));
+    // 큰 번호는 u16 상한(65535)으로 붙고 다른 모드로 읽히지 않는다(?65653이 117로 읽히면 안 된다)
+    assert_eq!(reply_to("\\033[?65653$p", |_| {}), hex_of("\x1b[?65535;0$y"));
+}

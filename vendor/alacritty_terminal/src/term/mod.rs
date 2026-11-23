@@ -3499,6 +3499,8 @@ impl<T: EventListener> Handler for Term<T> {
             PrivateMode::Unknown(2033) => return,
             // b-terminal(#325): 모드 5522(kitty 붙여넣기 이벤트)도 같다
             PrivateMode::Unknown(5522) => return,
+            // b-terminal(#777): DECECM(117)는 Ghostty처럼 영구 리셋(4)이다(modes.zig `getReport`). 구현한 모드와 겹치지 않는다
+            PrivateMode::Unknown(117) => ModeState::PermanentlyReset,
             PrivateMode::Unknown(_) => ModeState::NotSupported,
         };
 
@@ -3507,7 +3509,7 @@ impl<T: EventListener> Handler for Term<T> {
             *probe = match state {
                 ModeState::Set => Some(true),
                 ModeState::Reset => Some(false),
-                ModeState::NotSupported => None,
+                ModeState::NotSupported | ModeState::PermanentlyReset => None,
             };
             return;
         }
@@ -3609,6 +3611,9 @@ impl<T: EventListener> Handler for Term<T> {
                 NamedMode::KeyboardAction => self.mode.contains(TermMode::KEYBOARD_ACTION).into(),
                 NamedMode::SendReceive => self.mode.contains(TermMode::SEND_RECEIVE).into(),
             },
+            // b-terminal(#777): 구현하지 않았지만 Ghostty가 영구 리셋(4)으로 답하는 ANSI 모드(modes.zig `getReport`:
+            // GATM·SRTM·VEM·HEM·PUM·FEAM·FETM·MATM·TTM·SATM·TSM·EBM). 구현한 모드(2·4·12·20)와 겹치지 않는다(Ghostty는 겹치면 컴파일 오류)
+            ansi::Mode::Unknown(1 | 5 | 7 | 10 | 11 | 13..=19) => ModeState::PermanentlyReset,
             ansi::Mode::Unknown(_) => ModeState::NotSupported,
         };
 
@@ -3851,6 +3856,8 @@ enum ModeState {
     Set = 1,
     /// The mode is currently not set.
     Reset = 2,
+    /// b-terminal(#777): 영구 리셋. 바꿀 수 없는 모드(DECRPM 4)
+    PermanentlyReset = 4,
 }
 
 impl From<bool> for ModeState {

@@ -58,6 +58,8 @@ pub struct Parser<const OSC_RAW_BUF_SIZE: usize = MAX_OSC_RAW> {
     intermediate_idx: usize,
     params: Params,
     param: u16,
+    /// b-terminal(#777): 지금 매개변수 자리에 숫자를 하나라도 받았는가
+    param_seen: bool,
     #[cfg(not(feature = "std"))]
     osc_raw: ArrayVec<u8, OSC_RAW_BUF_SIZE>,
     #[cfg(feature = "std")]
@@ -497,6 +499,7 @@ impl<const OSC_RAW_BUF_SIZE: usize> Parser<OSC_RAW_BUF_SIZE> {
         } else {
             self.params.push(self.param);
         }
+        self.params.set_trailing_empty(!self.param_seen);
         performer.csi_dispatch(self.params(), self.intermediates(), self.ignoring, byte as char);
 
         self.state = State::Ground
@@ -531,6 +534,7 @@ impl<const OSC_RAW_BUF_SIZE: usize> Parser<OSC_RAW_BUF_SIZE> {
         } else {
             self.params.extend(self.param);
             self.param = 0;
+            self.param_seen = false;
         }
     }
 
@@ -542,6 +546,7 @@ impl<const OSC_RAW_BUF_SIZE: usize> Parser<OSC_RAW_BUF_SIZE> {
         } else {
             self.params.push(self.param);
             self.param = 0;
+            self.param_seen = false;
         }
     }
 
@@ -552,6 +557,7 @@ impl<const OSC_RAW_BUF_SIZE: usize> Parser<OSC_RAW_BUF_SIZE> {
             self.ignoring = true;
         } else {
             // Continue collecting bytes into param.
+            self.param_seen = true;
             self.param = self.param.saturating_mul(10);
             self.param = self.param.saturating_add((byte - b'0') as u16);
         }
@@ -605,6 +611,7 @@ impl<const OSC_RAW_BUF_SIZE: usize> Parser<OSC_RAW_BUF_SIZE> {
         self.intermediate_idx = 0;
         self.ignoring = false;
         self.param = 0;
+        self.param_seen = false;
 
         self.params.clear();
     }

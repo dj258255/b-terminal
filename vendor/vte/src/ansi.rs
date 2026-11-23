@@ -2063,11 +2063,14 @@ where
             // b-terminal(#312): `CSI > Ps n`은 modifyOtherKeys를 되돌린다(Ghostty stream.zig 2362~2368줄: 켜짐 없는 기본으로)
             ('n', [b'>']) => handler.set_modify_other_keys(ModifyOtherKeys::Reset),
             ('P', []) => handler.delete_chars(next_param_or(1) as usize),
-            ('p', [b'$']) => {
+            // b-terminal(#777): DECRQM은 매개변수가 정확히 하나일 때만 답한다(Ghostty stream.zig 2349~2395줄 `params.len != 1`).
+            // Ghostty는 숫자 없는 끝 매개변수를 세지 않고(`CSI $ p`는 0개, `CSI ; $ p`는 1개) 콜론이 든 CSI는 `m`이 아니면
+            // 버린다(Parser.zig 392~397줄). 전에는 `CSI $ p`가 `0;0$y`, `4;20$p`가 `4;2$y`로 답했다
+            ('p', [b'$']) if decrqm_has_single_param(params) => {
                 let mode = next_param_or(0);
                 handler.report_mode(Mode::new(mode));
             },
-            ('p', [b'?', b'$']) => {
+            ('p', [b'?', b'$']) if decrqm_has_single_param(params) => {
                 let mode = next_param_or(0);
                 handler.report_private_mode(PrivateMode::new(mode));
             },
@@ -2446,6 +2449,12 @@ pub mod C0 {
 // Tests for parsing escape sequences.
 //
 // Byte sequences used in these tests are recording of pty stdout.
+/// b-terminal(#777): Ghostty가 세는 대로 DECRQM의 매개변수가 정확히 하나인가(콜론이 있으면 아니다).
+fn decrqm_has_single_param(params: &Params) -> bool {
+    let count = params.iter().count() - usize::from(params.trailing_empty());
+    count == 1 && params.iter().all(|p| p.len() == 1)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2953,5 +2962,44 @@ mod tests {
         assert!(osc1337("File=inline=1:YWJj").stores.is_empty());
         assert!(osc1337("CurrentDir=/tmp").stores.is_empty());
         assert!(osc1337("BobrKurwa=abc123").stores.is_empty());
+    }
+
+    // b-terminal(#777): DECRQM은 매개변수가 정확히 하나일 때만 불린다(Ghostty stream.zig `DECRQM dispatch`)
+    #[test]
+    fn decrqm_only_with_exactly_one_param() {
+        #[derive(Default)]
+        struct Rec {
+            modes: Vec<u16>,
+            private: Vec<u16>,
+        }
+        impl Handler for Rec {
+            fn report_mode(&mut self, mode: Mode) {
+                self.modes.push(mode.raw());
+            }
+            fn report_private_mode(&mut self, mode: PrivateMode) {
+                self.private.push(mode.raw());
+            }
+        }
+
+        let mut parser = Processor::<StdSyncHandler>::new();
+        let mut rec = Rec::default();
+        for seq in [
+            &b"\x1b[$p"[..],
+            b"\x1b[?$p",
+            b"\x1b[4;20$p",
+            b"\x1b[?4;7$p",
+            b"\x1b[4:20$p",
+            b"\x1b[4:$p",
+            b"\x1b[4p",
+        ] {
+            parser.advance(&mut rec, seq);
+        }
+        assert!(rec.modes.is_empty() && rec.private.is_empty(), "{:?} {:?}", rec.modes, rec.private);
+
+        for seq in [&b"\x1b[4$p"[..], b"\x1b[?25$p", b"\x1b[0$p", b"\x1b[;$p", b"\x1b[20;$p"] {
+            parser.advance(&mut rec, seq);
+        }
+        assert_eq!(rec.modes, [4, 0, 0, 20]);
+        assert_eq!(rec.private, [25]);
     }
 }
