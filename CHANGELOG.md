@@ -10,6 +10,7 @@
 - 모드 질의(DECRQM, `CSI Ps $ p`·`CSI ? Ps $ p`)를 Ghostty 1.4.0처럼 답합니다. 매개변수가 정확히 하나가 아니면(`CSI $ p`, `4;20$p`, `?4;7$p`, `4:20$p`) 답하지 않습니다(전에는 `0;0$y`·`4;2$y`로 답함). 구현하지 않았지만 Ghostty가 영구 리셋(4)으로 답하는 모드(DEC 117, ANSI 1·5·7·10·11·13~19)에 0(모름) 대신 4를 답합니다 (#777)
 - `clipboard-codepoint-map`을 `copy_to_clipboard`의 `vt`·`html`·`mixed`(HTML)에도 겁니다(Ghostty 1.4.0 `Surface.zig`·`formatter.zig`처럼). 전에는 글(`plain`·`mixed`의 text/plain)에만 걸려, 규칙 `e→X`로 `vt`를 복사해도 `red text`가 그대로 나왔습니다. 꾸밈은 그대로 두고 글자만 바꾸며, 바꾼 글은 `html`에서 이스케이프됩니다. 하이퍼링크 주소와 `write_*_file`로 뽑는 파일에는 걸지 않습니다 (#787)
 - 줄 끝에서 넘어간 넓은 글자 자리(줄 끝의 자리표시 칸)에서 끝나는 고르기가 Ghostty처럼 그 글자까지 가져옵니다. 3열 창의 `1A⚡Z`에서 첫 줄 세 칸을 고르면 전에는 `1A`(윗줄이 있으면 윗줄 첫 글자가 섞여 `1AQ`)가 복사되고 개발 빌드에서는 앱이 죽었습니다. 이제 `1A⚡`, 끝 한 칸만 고르면 `⚡`이고, 사각 고르기는 끝을 넓히지 않아 `1A`입니다. 아래 줄이 없는 자리(맨 아래 줄)에서는 넓히지 않습니다. Ghostty 1.4.0 `formatter.zig` 시험 `PageList selection ending on spacer head`를 같은 입력으로 옮겨 견줘 찾았습니다 (#786)
+- 글(plain)로 복사·파일로 쓰기를 Ghostty 1.4.0 `formatter.zig`처럼 합니다. 고른 영역 끝의 빈 줄을 줄바꿈으로 남기지 않습니다(전에는 `clear; printf 'hello, world\n'` 뒤 전체 고르기가 `hello, world\n$\n` 뒤에 줄바꿈 21개를 더 붙여, 괄호 붙여넣기를 끈 셸에서 명령이 실행될 수 있었습니다). `write_screen_file:plain`이 창 폭에서 접힌 줄을 잇고, 직접 친 줄 끝 공백이 `clipboard-trim-trailing-spaces = false`와 `write_*_file`에서 남습니다(지우기·커서 이동으로 비운 칸은 이전처럼 버립니다). 줄 고르기(세 번 누르기)가 줄 끝에 붙이던 줄바꿈도 같은 까닭으로 없앴습니다(Ghostty처럼). 고른 영역 가운데의 빈 줄은 그대로입니다. 탭 글자는 이전처럼 남깁니다 (#785)
 
 ## [0.96.0] - 2026-11-23
 

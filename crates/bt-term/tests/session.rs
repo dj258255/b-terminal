@@ -388,18 +388,26 @@ fn block_select_follows_the_text_when_output_scrolls_mid_drag() {
 }
 
 /// #433: 사각의 왼쪽·오른쪽 가장자리에 넓은 글자(두 칸)가 걸치면 그 글자를 통째로 가져온다(반쪽을 자르거나 빼먹지 않는다).
-/// 줄 끝 공백은 줄마다 지우고 줄 가운데 공백은 남긴다. 공백뿐인 줄은 빈 줄이 된다(실측: VT 엔진 0.26, 재현은 이 시험)
+/// 줄 끝 공백은 복사할 때(`clipboard-trim-trailing-spaces`) 줄마다 지우고 줄 가운데 공백은 남긴다. 공백뿐인 줄은 빈 줄이 된다.
+/// 고른 글 자체(`selection_text`)는 직접 친 줄 끝 공백을 남긴다(#785, Ghostty `trim = false`)
 #[test]
 fn block_select_keeps_wide_chars_whole_and_trims_line_ends() {
     use bt_term::SelectKind::Block;
     let (s, rx) = sh("printf 'ab  cd\\nxyzwuv\\nq     r\\n한a한bcd\\n'", GridSize::new(20, 6));
     wait_exit(&rx);
     wait_until(&s, |t| t.contains("q"));
-    let pick = |c0, r0, c1, r1| {
+    let raw = |c0, r0, c1, r1| {
         s.select_start(c0, r0, Block);
         s.select_update(c1, r1);
         s.selection_text()
     };
+    // 복사 길: 줄 끝 공백을 지운다
+    let pick = |c0, r0, c1, r1| raw(c0, r0, c1, r1).map(|t| bt_term::trim_trailing_spaces(&t));
+    assert_eq!(
+        raw(4, 1, 5, 3).as_deref(),
+        Some("uv\n  \n한b"),
+        "지우기 전에는 가운데 줄의 친 공백이 남는다(#785)"
+    );
     // 한(0~1칸) a(2) 한(3~4) b(5). 사각이 한 글자의 둘째 칸에서 시작하거나 첫째 칸에서 끝나도 그 글자를 통째로
     assert_eq!(pick(1, 3, 3, 3).as_deref(), Some("한a한"), "시작이 넓은 글자의 둘째 칸");
     assert_eq!(pick(2, 3, 4, 3).as_deref(), Some("a한"), "끝이 넓은 글자의 둘째 칸");
@@ -444,7 +452,11 @@ fn select_set_block_toggles_simple_and_leaves_word_and_line() {
     assert_eq!(s.selection_text().as_deref(), Some("abc def"), "낱말 고르기는 그대로");
     s.select_start(0, 1, Line);
     s.select_set_block(true);
-    assert_eq!(s.selection_text().as_deref(), Some("ghi jkl\n"), "줄 고르기는 그대로");
+    assert_eq!(
+        s.selection_text().as_deref(),
+        Some("ghi jkl"),
+        "줄 고르기는 그대로(끝 줄바꿈 없음, #785)"
+    );
 }
 
 /// #433: 사각 고르기가 덮는 칸(화면의 SELECTED)은 사각이다. 글자 고르기는 줄을 따라가 사각이 아니다
@@ -2033,7 +2045,7 @@ fn word_and_line_select_do_not_depend_on_drag_direction() {
         s.select_update(c1, r1);
         assert_eq!(
             s.selection_text().as_deref(),
-            Some("abc def\nghi jkl\n"),
+            Some("abc def\nghi jkl"),
             "줄 ({c0},{r0})->({c1},{r1})"
         );
     }
@@ -2215,7 +2227,7 @@ fn word_and_line_select_ignore_the_side() {
         s.select_update_at(1, 0, s1);
         assert_eq!(
             s.selection_text().as_deref(),
-            Some("abc def\nghi jkl\n"),
+            Some("abc def\nghi jkl"),
             "줄 {s0:?} {s1:?}"
         );
     }

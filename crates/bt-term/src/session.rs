@@ -1623,9 +1623,21 @@ impl Session {
         g.output_click = None;
     }
 
+    /// 고른 곳의 글. Ghostty `formatter.zig`(`unwrap = true`, `trim = false`)처럼 만든다(#785): 접힌 줄은 잇고, 글 없는 줄은 모았다가
+    /// 뒤에 글 있는 줄이 올 때만 줄바꿈으로 내(끝의 빈 줄은 안 나온다), 직접 쓴 줄 끝 공백은 남기고 지우기·건너뜀으로 빈 칸은 버린다.
+    /// `clipboard-trim-trailing-spaces`는 복사하는 쪽이 `trim_trailing_spaces`로 건다. 글이 없으면 None
     pub fn selection_text(&self) -> Option<String> {
+        let theme = self.theme.lock().clone();
         let g = self.inner.lock();
-        g.term.selection_to_string().filter(|s| !s.is_empty())
+        let range = g.term.selection.as_ref().and_then(|s| s.to_range(&g.term))?;
+        let opts = crate::copy_format::Options {
+            emit: crate::copy_format::Emit::Plain,
+            trim: false,
+            background: None,
+            foreground: None,
+        };
+        let text = crate::copy_format::format_range(&g.term, &theme, range.start, range.end, range.is_block, opts);
+        Some(text).filter(|s| !s.is_empty())
     }
 
     /// 고른 곳을 색·꾸밈이 든 글(VT 이스케이프 또는 HTML)로 만든다(`copy_to_clipboard:vt|html|mixed`, #550).
@@ -1683,6 +1695,20 @@ impl Session {
             )),
             // Ghostty `writeScreenFile`은 `codepoint_map`을 주지 않는다. 파일에는 맵을 걸지 않는다
             codepoint_map: &[],
+        };
+        crate::copy_format::format_lines(&g.term, &theme, scrollback, opts)
+    }
+
+    /// 칸 전체(`scrollback`이면 스크롤백 포함, 아니면 보이는 화면)를 글로 만든다(`write_screen_file`·`write_scrollback_file`의 `plain`, #785).
+    /// Ghostty `writeScreenFile`처럼 접힌 줄을 잇고 줄 끝 공백을 남기며(`trim = false`) 끝의 빈 줄은 내지 않는다
+    pub fn plain_text(&self, scrollback: bool) -> String {
+        let theme = self.theme.lock().clone();
+        let g = self.inner.lock();
+        let opts = crate::copy_format::Options {
+            emit: crate::copy_format::Emit::Plain,
+            trim: false,
+            background: None,
+            foreground: None,
         };
         crate::copy_format::format_lines(&g.term, &theme, scrollback, opts)
     }
