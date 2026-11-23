@@ -128,7 +128,7 @@
 - 만드는 바이트 순서(최소 재현): `ESC ] 9 ; hi CAN`, `ESC ] 9 ; hi`, `ESC _ G a=q,i=1 CAN`, `ESC P 1 $ r` 가운데 하나 뒤에 DA1(`ESC [ c`). `/bin/sh`의 `printf`로 PTY에 보내고 읽으면 기준(앞에 아무것도 없음)은 `ESC[?62;22c`가 오는데 넷 모두 빈 답이었다
 - 원인: 스캐너(`notify.rs`)가 엔진(vte)·Ghostty와 문자열이 끝나는 자리를 달리 봤다. OSC·APC 안의 CAN·SUB를 글자로 모았고, 문자열 안의 ESC 다음이 `\`가 아니면 그 바이트를 새 이스케이프로 읽지 않고 버렸다(`[`가 사라져 CSI가 글자가 됨). CSI 안의 CAN은 CSI를 끊지 않아 `ESC[2 CAN J`의 J를 ED로 읽었다. Ghostty `Parser.zig`는 OSC·DCS·APC 상태를 나갈 때(BEL·CAN·SUB·ESC 모두) 늘 dispatch·unhook·apc_end를 부른다(276·280·281줄)
 - 확인하는 법: `crates/bt-term/tests/parser_fuzz73.rs`의 `can_*`·`esc_*`·`session_answers_da1_after_interrupted_strings`
-- b-terminal: 문자열 안의 CAN·SUB·ESC는 그 문자열을 끝낸다. OSC·APC는 끝난 것으로 내보내고, ESC 뒤 바이트는 새 이스케이프로 다시 읽는다. 일부러 다르게 둔 것: DCS 질의는 끊기면 내보내지 않고(답을 PTY에 쓰는 길이라, 기존 시험이 정한 규칙), 겹친 ESC 뒤(tmux 패스스루)는 다시 읽지 않는다
+- b-terminal: 문자열 안의 CAN·SUB·ESC는 그 문자열을 끝낸다. OSC·APC는 끝난 것으로 내보내고(CAN·SUB로 끝난 OSC는 0.96부터 버린다, 48번), ESC 뒤 바이트는 새 이스케이프로 다시 읽는다. 일부러 다르게 둔 것: DCS 질의는 끊기면 내보내지 않고(답을 PTY에 쓰는 길이라, 기존 시험이 정한 규칙), 겹친 ESC 뒤(tmux 패스스루)는 다시 읽지 않는다
 
 ## 19. 신호 스캐너와 엔진이 C0·8비트 ST·SOS/PM·DCS 머리를 다르게 읽어 질의 답이 빠진다
 
@@ -393,3 +393,13 @@
 - 까닭: vendor/vte가 `4:` 뒤 하위 매개변수 수를 보지 않고 홑밑줄로 보았고, 콜론 직접 색은 넘치는 값을 버리고 받아들였다
 - 고침: Ghostty처럼 둘 다 알 수 없는 속성으로 버린다(바른 `4:n`·`38:2:r:g:b`·`38:2:색공간:r:g:b`는 그대로)
 - 0.95.0에서 풀기: 없다. 프로그램이 바른 SGR을 보내면 생기지 않는다
+
+## 48. CAN이나 SUB로 끊긴 OSC가 제목·알림·클립보드·작업 폴더를 바꾼다
+
+- 언제: 2026-11-23, #763. Ghostty OSC 파서 시험을 우리 엔진에 같은 바이트로 넣어 견주다(#760) 찾았다. 0.95.0까지의 동작이다. 실제로 이런 바이트를 내는 프로그램은 찾지 않았다
+- 증상: `printf '\033]2;끊긴 제목\030'`을 받으면 창 제목이 "끊긴 제목"으로 바뀐다. `ESC]52;c;Zm9v SUB`는 클립보드 쓰기(허락했으면), `ESC]9;hello CAN`·`ESC]99;;hello SUB`는 알림, `ESC]7;file:///tmp/x CAN`은 작업 폴더 바꾸기가 된다. Ghostty와 xterm은 모두 버린다
+- 까닭: 엔진(vendor/vte `advance_osc_string`)과 신호 스캐너(`notify.rs`)가 CAN·SUB에서 OSC를 끝낸 뒤 모인 바이트를 명령으로 썼다. #595(18번)에서 Ghostty `Parser.zig` 276줄만 보고 "끝낸 바이트와 상관없이 dispatch"로 맞췄는데, 그 줄이 부르는 `osc.zig` `Parser.end`가 CAN·SUB면 null을 돌려주는 것을 놓쳤다
+- 고침: CAN·SUB로 끝난 OSC는 엔진과 스캐너 모두 버린다. CAN·SUB 자체는 실행하고, 뒤따르는 질의·새 OSC는 그대로 읽는다. BEL·`ESC \`·다른 ESC로 끝난 OSC, DCS·APC는 바뀌지 않는다
+- 확인하는 법: `crates/bt-term/tests/osc_can_sub763.rs`, vendor/vte `osc_cancelled_by_can_or_sub_is_not_dispatched`
+- 0.95.0에서 풀기: OSC를 BEL이나 `ESC \`로 끝내면 생기지 않는다. 받는 쪽에서 막는 설정은 없다
+
