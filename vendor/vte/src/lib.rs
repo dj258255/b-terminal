@@ -430,7 +430,13 @@ impl<const OSC_RAW_BUF_SIZE: usize> Parser<OSC_RAW_BUF_SIZE> {
                         return;
                     }
                 }
-                self.action_osc_put_param()
+                // b-terminal(#765): 마지막 칸(16번째)에 다다르면 `;`를 칸 나눔 대신 글자로 둬서, 16번째
+                // 칸이 나머지 전부(`;` 포함)가 된다. 전에는 거기서부터 버렸다(제목 `0;p0;…;p19`가 잘림).
+                if self.osc_num_params == MAX_OSC_PARAMS - 1 {
+                    self.action_osc_put(b';');
+                } else {
+                    self.action_osc_put_param()
+                }
             },
             _ => self.action_osc_put(byte),
         }
@@ -946,7 +952,9 @@ mod tests {
         match &dispatcher.dispatched[0] {
             Sequence::Osc(params, _) => {
                 assert_eq!(params.len(), MAX_OSC_PARAMS);
-                assert!(params.iter().all(Vec::is_empty));
+                // b-terminal(#765): 앞 15칸은 비고, 16번째 칸이 남은 `;` 전부를 글자로 가진다.
+                assert!(params[..MAX_OSC_PARAMS - 1].iter().all(Vec::is_empty));
+                assert_eq!(params[MAX_OSC_PARAMS - 1], ";".repeat(params::MAX_PARAMS + 1 - (MAX_OSC_PARAMS - 1)).into_bytes());
             },
             _ => panic!("expected osc sequence"),
         }
