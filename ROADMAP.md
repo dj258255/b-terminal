@@ -1683,12 +1683,32 @@ Ghostty 1.4.0 단위 시험 견주기([#760](https://github.com/dj258255/b-termi
 | [#767](https://github.com/dj258255/b-terminal/issues/767) | 키 묶음의 키 이름 해석이 Ghostty와 다름 | [#773](https://github.com/dj258255/b-terminal/pull/773) | 11-23 04:30 → 05:25 | 고치기 에이전트, 옛 꼴 유지 지시·실제 창·병합 |
 | [#766](https://github.com/dj258255/b-terminal/issues/766) | 키 묶음 `chain=<동작>` | [#774](https://github.com/dj258255/b-terminal/pull/774) | 11-23 04:29 → 05:43 | 고치기 에이전트, 리눅스 시험 고침·실제 창·병합 |
 
+## 0.97.0 (2026-11-23)
+
+Ghostty 1.4.0 단위 시험 견주기 둘째 판([#760](https://github.com/dj258255/b-terminal/issues/760)). 마일스톤 0.97.
+
+- 견준 시험: `stream.zig` 92개, `stream_terminal.zig` 148개, `formatter.zig` 124개. 조사 에이전트가 탐침으로 견주고, 주 세션이 원인마다 Ghostty 원본과 대조한 뒤 이슈를 열었습니다.
+- 그대로 둔 것: 매개변수가 둘 이상인 CSI를 첫 매개변수로 실행하는 것과 제목 push·pop(`CSI 22·23 t`)은 xterm과 같아 ADR-056 3항대로 둡니다. XTVERSION 이름, `TN` 답, OSC 7501 답은 이미 정한 대로 Ghostty와 다릅니다.
+- 문서가 틀렸던 것: `clipboard-codepoint-map`을 "vt·html에는 적용하지 않음(Ghostty와 같음)"이라 적었으나, Ghostty 코드는 vt·html에도 걸고 그 자리의 주석만 반대였습니다(#787).
+- 실제 창 확인(격리한 실제 창, 0.92.0과 견줘 한 번씩): 원시 C1과 APC 0x9C는 `printf` 출력 비교, DECRQM은 PTY에서 답 바이트 비교, OSC 1337 Copy는 `clipboard-write = ask`에서 확인 막대("쓸 글(6글자): iTerm2")를 보고 Esc로 거절(사람 입력이 153초 없을 때만 창을 앞에 둠, 시스템 클립보드 해시가 전후 같음), 글 복사는 `write_selection_file`·`write_screen_file`로 뽑은 파일 비교. `clipboard-codepoint-map`의 vt·html 복사는 시스템 클립보드에 써야 보여, 이 세션의 안전 검사가 막아 하지 못했습니다(세션 시험으로 갈음).
+- 0.97 밖으로 넘긴 것: 글리프 프로토콜([#779](https://github.com/dj258255/b-terminal/issues/779), 새 기능). 견주기에서 본 작은 차이로 아직 이슈로 열지 않은 것: DCS 통과 상태에서 0x9C를 끝으로 봄(Ghostty는 자료), CSI·ESC·OSC 상태 안의 C1, 글 복사의 탭(Ghostty는 건넌 칸을 공백으로 냄).
+
+| 이슈 | 내용 | PR | 연 때·병합(UTC) | 주 세션이 한 것 |
+|---|---|---|---|---|
+| [#775](https://github.com/dj258255/b-terminal/issues/775) | 원시 C1 바이트(0x80~0x9F)를 표시 없이 버림 | [#783](https://github.com/dj258255/b-terminal/pull/783) | 11-23 05:47 → 07:58 | 고치기 에이전트, 충돌 풀기·실제 창·병합 |
+| [#776](https://github.com/dj258255/b-terminal/issues/776) | APC 문자열이 원시 0x9C에서 끝나지 않음 | [#783](https://github.com/dj258255/b-terminal/pull/783) | 11-23 05:47 → 07:58 | 고치기 에이전트, 실제 창·병합 |
+| [#777](https://github.com/dj258255/b-terminal/issues/777) | 모드 질의(DECRQM)가 잘못된 꼴에 답하고 구현하지 않은 모드에 0을 답함 | [#784](https://github.com/dj258255/b-terminal/pull/784) | 11-23 05:47 → 08:08 | 고치기 에이전트, 충돌 풀기·실제 창 PTY·병합 |
+| [#778](https://github.com/dj258255/b-terminal/issues/778) | iTerm2 클립보드 쓰기 OSC 1337 Copy를 받지 않음 | [#782](https://github.com/dj258255/b-terminal/pull/782) | 11-23 05:47 → 07:49 | 고치기 에이전트, 보안 검토·실제 창(확인 막대)·병합 |
+| [#785](https://github.com/dj258255/b-terminal/issues/785) | 글 복사가 끝의 빈 줄을 남기고, 화면 파일이 접힌 줄을 잇지 않으며, 친 끝 공백을 늘 지움 | [#789](https://github.com/dj258255/b-terminal/pull/789) | 11-23 08:09 → 08:36 | 고치기 에이전트, #787과 합친 컴파일 오류 고침·실제 창·병합 |
+| [#786](https://github.com/dj258255/b-terminal/issues/786) | 줄 끝에서 넘어간 넓은 글자 자리에서 끝나는 고르기가 엉뚱한 글자를 가져옴(debug는 panic) | [#789](https://github.com/dj258255/b-terminal/pull/789) | 11-23 08:09 → 08:36 | 고치기 에이전트, 실제 창(끌기)·병합 |
+| [#787](https://github.com/dj258255/b-terminal/issues/787) | clipboard-codepoint-map이 vt·html 복사에 걸리지 않음 | [#788](https://github.com/dj258255/b-terminal/pull/788) | 11-23 08:09 → 08:25 | 고치기 에이전트, 병합(실제 창은 막힘) |
+
 ## 다음
 
-- 0.91~0.96에서 '범수 님이 확인할 것'의 대부분을 주 세션이 확인했습니다. 무엇을 확인했고 무엇을 못 했는지는 위 0.91.0~0.95.0 절에 있습니다. 남은 것: 데스크톱 알림 띠가 하나만 뜨는지와 VoiceOver 소리, Space, 저전력 모드를 끈 0.42, 외부 모니터, 타자 느낌. 이 가운데 VoiceOver와 저전력 모드는 시스템 설정을 바꿔야 하고, Space 옮기기는 하드웨어 키 입력이 있어야 하며, 외부 모니터는 이 기기에 없어 주 세션이 확인하지 않았습니다. 알림 띠는 시험 앱 묶음에 알림 허락이 없어(알림 설정에 항목이 없음) 뜨지 않고, 허락하려면 시스템 설정을 바꿔야 해서 확인하지 않았습니다. 타자 느낌은 사람이 쳐 봐야 압니다.
+- 0.91~0.97에서 '범수 님이 확인할 것'의 대부분을 주 세션이 확인했습니다. 무엇을 확인했고 무엇을 못 했는지는 위 0.91.0~0.95.0 절에 있습니다. 남은 것: 데스크톱 알림 띠가 하나만 뜨는지와 VoiceOver 소리, Space, 저전력 모드를 끈 0.42, 외부 모니터, 타자 느낌. 이 가운데 VoiceOver와 저전력 모드는 시스템 설정을 바꿔야 하고, Space 옮기기는 하드웨어 키 입력이 있어야 하며, 외부 모니터는 이 기기에 없어 주 세션이 확인하지 않았습니다. 알림 띠는 시험 앱 묶음에 알림 허락이 없어(알림 설정에 항목이 없음) 뜨지 않고, 허락하려면 시스템 설정을 바꿔야 해서 확인하지 않았습니다. 타자 느낌은 사람이 쳐 봐야 압니다.
 - 0.94 뒤 tmux 3.8을 확인했습니다(격리한 실제 창, 한 번 잼). 받은 병이 의존 라이브러리 경로 때문에 실행되지 않던 것을 의존 병과 함께 이어 실행했습니다. tmux가 알아본 바깥 터미널 기능 목록, 가로 나누기 뒤 왼쪽 칸에 찍은 한글(`가나다라마 끝`)·이모지(`😀🙂 이모지`) 줄과 칸 경계선(경계선 앞 폭이 모든 줄에서 40칸으로 같음), 마우스로 칸 고르기, Shift+Enter가 안쪽 프로그램에 `ESC[27;2;13~`으로 가는 것을 봤습니다.
 - Ctrl+Enter가 아무 바이트도 내지 않는 것처럼 보였으나(#751) 결함이 아니었습니다. 앱이 뒤에 있을 때 보낸 합성 키를 AppKit이 창까지 넘기지 않은 탓이었고, 앱을 앞에 두고 보내면 `ESC[27;5;13~`이 갑니다(한 번 잼).
-- 다음 판 후보: 0.97 마일스톤(#775~#778), 글리프 프로토콜(#779), Ghostty 새 병합분(2026-11-23 03:00 UTC까지 봄), Ghostty 단위 시험 가운데 아직 옮기지 않은 것(`formatter.zig` 나머지 등).
+- 다음 판 후보: 글리프 프로토콜(#779), 0.97.0 절의 작은 차이 셋, Ghostty 새 병합분(2026-11-23 03:00 UTC까지 봄), Ghostty 단위 시험 가운데 아직 견주지 않은 파일.
 - 범수 님이 직접 해야 할 것: 키보드·마우스 확인(한글 2벌식 "안녕 하세요⏎", Claude Code의 Shift+Enter, Cmd-D·Cmd-F·Cmd-클릭·Cmd-N·Cmd-Shift-P, 메뉴, 창 닫기 단추, vim·htop, kitty icat·yazi, 투명 창), Developer ID 계정으로 `scripts/bundle-macos.sh --sign … --notarize … --dmg`
 - 정함(0.49·0.50, 주 세션 추천안): `window-colorspace` 기본은 `display-p3` 그대로. 0.50부터 `srgb`도 GPU 길로 그립니다(창마다 약 13.6MB 더, ADR-047). 기본을 Ghostty처럼 `srgb`로 바꾸시려면 알려 주세요
 - 범수 님이 확인할 것(0.6): 퀵 터미널을 실제 전역 단축키로(`keybind = global:ctrl+backquote=toggle_quick_terminal`), 외부 모니터로 창을 옮겼을 때 present 시간(`RUST_LOG=b_terminal=debug`)

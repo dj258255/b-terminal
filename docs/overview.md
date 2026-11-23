@@ -2,7 +2,7 @@
 
 처음 보는 분을 위한 안내입니다. 무엇인지, 무엇이 Ghostty와 같고 다른지, 어떻게 짜여 있는지, 어디까지 믿어도 되는지를 한 문서에 모았습니다. 자세한 설정은 [configuration.md](configuration.md), 이유와 근거는 [decisions.md](decisions.md)에 있습니다.
 
-이 문서는 0.96.0 기준입니다. 이 문서에 없는 숫자는 재지 않은 것입니다.
+이 문서는 0.97.0 기준입니다. 이 문서에 없는 숫자는 재지 않은 것입니다.
 
 ## 무엇인가
 
@@ -32,7 +32,7 @@ AI 에이전트를 다루는 화면(에이전트 목록·상태·훅·구독 사
 - **키 바이트.** kitty 키보드를 켜지 않은 프로그램에는 Ghostty 앱과 같은 바이트를 보냅니다(Ctrl+[·Ctrl+i는 `CSI u`). Shift+Enter·Ctrl+Enter 같은 수식 키가 붙은 이름 키도 Ghostty 표 그대로입니다(`ESC[27;2;13~` 등). 기본 키 묶음은 Ghostty macOS 기본 목록과 같고, Option+←·→(단어 이동)와 Cmd+←·→·Backspace(줄 처음·끝, 줄 지우기)도 그 안에 있습니다([ADR-055](decisions.md#adr-055-레거시-키-인코딩은-ghostty-앱이-보내는-바이트에-맞추고-option은-글자-길에서만-설정을-따르며-macos-기본-키-묶음에-글-편집-다섯-개를-더한다)).
 - **분할 칸 누르기.** 고르지 않은 칸을 누르면 그 칸만 고르고, 그 누름은 프로그램에 보내지 않습니다(0.57, [ROADMAP](../ROADMAP.md)).
 - **AppleScript.** macOS 앱 묶음에 Ghostty 1.4와 같은 사전이 있습니다. 창·탭·터미널 객체, 새 창·탭·분할(새 칸 설정 레코드 포함), 글·키·마우스 보내기, 키 묶음 동작 부르기를 합니다. 끄려면 `macos-applescript = false`([configuration.md](configuration.md)).
-- **프로토콜.** kitty 키보드·그래픽(직접 전송만)·색(OSC 21)·클립보드(OSC 5522), OSC 8 링크, OSC 133 셸 통합, 사용자 셰이더(`custom-shader`)를 받습니다.
+- **프로토콜.** kitty 키보드·그래픽(직접 전송만)·색(OSC 21)·클립보드(OSC 5522)·iTerm2 클립보드 쓰기(OSC 1337 Copy, OSC 52와 같은 검사), OSC 8 링크, OSC 133 셸 통합, 사용자 셰이더(`custom-shader`)를 받습니다.
 
 ### 다른 점
 
@@ -125,7 +125,7 @@ PTY 바이트 ──> bt-term 읽기 스레드 ──┬─> VT 엔진(alacritty
 
 ## 지금 상태와 한계
 
-- **판.** 0.96.0입니다. 1.0 전이라 기본 동작이 판마다 바뀔 수 있습니다. 바뀐 것은 [CHANGELOG.md](../CHANGELOG.md), 계획과 진행은 [ROADMAP.md](../ROADMAP.md)에 있습니다.
+- **판.** 0.97.0입니다. 1.0 전이라 기본 동작이 판마다 바뀔 수 있습니다. 바뀐 것은 [CHANGELOG.md](../CHANGELOG.md), 계획과 진행은 [ROADMAP.md](../ROADMAP.md)에 있습니다.
 - **macOS가 1순위입니다.** 실제 창에서 확인한 것은 macOS(Apple M2 Pro 한 기기)가 거의 전부입니다.
 - **Linux는 CPU 길입니다.** Linux GPU 길은 재지도 실제 창으로 보지도 않았습니다. CI는 Linux에서 전체를 빌드하고 시험하지만 GPU는 없습니다.
 - **다른 Mac에 나눠 줄 수 없습니다.** Developer ID 서명과 공증 없이는 배포하지 않습니다. 계정이 없어서 서명·공증·다른 Mac에서 열기는 해 보지 못했습니다([release-macos.md](release-macos.md)). 지금은 직접 빌드해 이 컴퓨터에서 씁니다.
