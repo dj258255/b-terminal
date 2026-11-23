@@ -794,6 +794,24 @@ struct Bound {
     flags: BindFlags,
     /// 정한 차례(클수록 나중). 같은 동작에 키가 여럿일 때 되짚기가 가장 나중 것을 고른다
     order: u64,
+    /// 첫 동작 뒤에 이어 하는 동작(`chain=<동작>` 줄이 덧붙인다, Ghostty 1.4)
+    more: Vec<Action>,
+}
+
+impl Bound {
+    /// 첫 동작과 덧붙은 동작을 차례로
+    fn actions(&self) -> impl Iterator<Item = &Action> {
+        std::iter::once(&self.action).chain(&self.more)
+    }
+}
+
+/// `chain=<동작>`이 덧붙을 앞 묶음: 가장 최근에 정한 키 묶음 하나(Ghostty `chain_parent`)
+#[derive(Debug, Clone, PartialEq)]
+enum ChainParent {
+    /// 전역 단축키(`global:`)
+    Global(Trigger),
+    /// 기본 묶음(`table`이 없다) 또는 키 테이블의 묶음. 키 순서면 모든 키
+    Bind { table: Option<String>, keys: Vec<Trigger> },
 }
 
 /// 트리거 이름 `catch_all`: 다른 묶음에 걸리지 않은 모든 키에 맞는다(Ghostty)
@@ -825,6 +843,8 @@ pub struct Keymap {
     seqs: HashMap<Vec<Trigger>, Bound>,
     /// 전역 단축키(`keybind = global:…`, #95): 앱이 앞에 없어도 받는다
     pub global: Vec<(Trigger, Action)>,
+    /// 전역 단축키에 `chain=`으로 덧붙인 동작(첫 동작 뒤에 차례로)
+    pub global_more: HashMap<Trigger, Vec<Action>>,
     /// 키 테이블(`keybind = 이름/트리거=동작`): 켜기 전에는 쓰지 않는 이름 붙은 묶음 모음.
     /// 테이블 안의 `global`·`tables`는 쓰지 않는다
     tables: HashMap<String, Keymap>,
@@ -969,6 +989,12 @@ pub(crate) fn default_performable(a: &Action) -> bool {
 impl Keymap {
     /// 기본 묶음 위에 설정의 keybind를 얹는다. 읽지 못한 줄은 경고로 돌려준다
     pub fn build(user: &[String]) -> (Self, Vec<String>) {
+        let (km, warnings, _) = Self::build_with_status(user);
+        (km, warnings)
+    }
+
+    /// `build`와 같고, 줄마다 경고가 났는지(`true`)도 돌려준다. `chain=` 줄은 앞 줄에 달려 있어 줄 하나만으로는 가릴 수 없다
+    pub fn build_with_status(user: &[String]) -> (Self, Vec<String>, Vec<bool>) {
         let mut km = Keymap::default();
         let mut warnings = Vec::new();
         let swap_super = !cfg!(target_os = "macos");
@@ -991,13 +1017,24 @@ impl Keymap {
                             ..BindFlags::default()
                         },
                         order,
+                        more: Vec::new(),
                     },
                 );
             }
         }
-        'lines: for line in user {
+        // `chain=`이 덧붙을 묶음: 가장 최근에 정한 묶음. 지우기(`unbind`·`clear`·`이름/`)가 끊고, 읽지 못한 줄은 바꾸지 않는다
+        let mut chain_parent: Option<ChainParent> = None;
+        let mut bad = vec![false; user.len()];
+        let mut seen = 0;
+        'lines: for (idx, line) in user.iter().enumerate() {
+            // 앞 줄에서 경고가 났는지(`continue 'lines`가 많아 다음 줄 맨 앞에서 본다)
+            if idx > 0 && warnings.len() > seen {
+                bad[idx - 1] = true;
+            }
+            seen = warnings.len();
             let line = line.trim();
             if line == "clear" {
+                chain_parent = None;
                 km.map.clear();
                 km.seqs.clear();
                 // Ghostty: clear는 키 테이블도 지운다
@@ -1015,11 +1052,30 @@ impl Keymap {
                 Some((name, "")) => {
                     // 이름만 쓰면 테이블을 만들고 비운다
                     km.tables.insert(name.clone(), Keymap::default());
+                    chain_parent = None;
                     continue;
                 }
                 Some((_, rest)) => *rest,
                 None => line,
             };
+            // chain=<동작>(Ghostty 1.4): 가장 최근에 정한 묶음에 동작을 덧붙인다. 이름/chain=…, 접두사 붙은 chain, 키 순서 안의 chain은 오류
+            if let Some(chain_action) = line.strip_prefix("chain=") {
+                if table.is_some() {
+                    warnings.push(format!("keybind {line}: chain에는 키 테이블 이름을 붙일 수 없습니다(앞 묶음이 있는 테이블에 저절로 붙습니다)"));
+                    continue;
+                }
+                match parse_action(chain_action) {
+                    Err(e) => warnings.push(format!("keybind {line}: {e}")),
+                    Ok(None) => warnings.push(format!("keybind {line}: chain에는 unbind를 쓸 수 없습니다")),
+                    Ok(Some(act)) => match &chain_parent {
+                        Some(p) if km.append_chain(p, act) => {}
+                        _ => warnings.push(format!(
+                            "keybind {line}: chain 앞에 덧붙일 키 묶음이 없습니다(바로 앞 줄이 키 묶음이어야 합니다)"
+                        )),
+                    },
+                }
+                continue;
+            }
             // 접두사(Ghostty와 같다): `all:` `unconsumed:` `performable:` `global:`을 겹쳐 쓸 수 있지만 같은 것을 두 번 쓰면 오류다
             let mut flags = BindFlags::default();
             let mut is_global = false;
@@ -1049,6 +1105,12 @@ impl Keymap {
                 continue;
             };
             let (t, a) = (&line[..eq], &line[eq + 1..]);
+            if t.split('>').any(|p| p.trim() == "chain") {
+                warnings.push(format!(
+                    "keybind {line}: chain은 접두사나 키 순서와 함께 쓸 수 없습니다"
+                ));
+                continue;
+            }
             if table.is_some() && is_global {
                 warnings.push(format!("keybind {line}: 키 테이블 안의 global:은 쓸 수 없습니다"));
                 continue;
@@ -1058,9 +1120,15 @@ impl Keymap {
                 match (parse_trigger(t), parse_action(a)) {
                     (Ok(trig), Ok(Some(act))) => {
                         km.global.retain(|(g, _)| *g != trig);
-                        km.global.push((trig, act));
+                        km.global_more.remove(&trig);
+                        km.global.push((trig.clone(), act));
+                        chain_parent = Some(ChainParent::Global(trig));
                     }
-                    (Ok(trig), Ok(None)) => km.global.retain(|(g, _)| *g != trig),
+                    (Ok(trig), Ok(None)) => {
+                        km.global.retain(|(g, _)| *g != trig);
+                        km.global_more.remove(&trig);
+                        chain_parent = None;
+                    }
                     (Err(e), _) | (_, Err(e)) => warnings.push(format!("keybind {line}: {e}")),
                 }
                 continue;
@@ -1082,12 +1150,24 @@ impl Keymap {
                 None => &mut km,
             };
             match parse_action(a) {
-                Ok(Some(act)) => target.bind(keys, act, flags),
-                Ok(None) => target.unbind(&keys),
+                Ok(Some(act)) => {
+                    chain_parent = Some(ChainParent::Bind {
+                        table: table.as_ref().map(|(n, _)| n.clone()),
+                        keys: keys.clone(),
+                    });
+                    target.bind(keys, act, flags);
+                }
+                Ok(None) => {
+                    target.unbind(&keys);
+                    chain_parent = None;
+                }
                 Err(e) => warnings.push(format!("keybind {line}: {e}")),
             }
         }
-        (km, warnings)
+        if !user.is_empty() && warnings.len() > seen {
+            bad[user.len() - 1] = true;
+        }
+        (km, warnings, bad)
     }
 
     /// 전역 단축키 글(global-hotkey 크레이트의 꼴, 예: `ctrl+Backquote`). 받지 못하는 키면 없다
@@ -1142,6 +1222,30 @@ impl Keymap {
         self.map.get(t).map(|b| &b.action)
     }
 
+    /// `chain=` 동작을 앞 묶음 뒤에 덧붙인다. 앞 묶음이 없으면 하지 않고 거짓
+    fn append_chain(&mut self, parent: &ChainParent, action: Action) -> bool {
+        match parent {
+            ChainParent::Global(t) => {
+                let found = self.global.iter().any(|(g, _)| g == t);
+                if found {
+                    self.global_more.entry(t.clone()).or_default().push(action);
+                }
+                found
+            }
+            ChainParent::Bind { table, keys } => {
+                let target = match table {
+                    Some(name) => self.tables.get_mut(name),
+                    None => Some(self),
+                };
+                let bound = target.and_then(|m| match keys.as_slice() {
+                    [t] => m.map.get_mut(t),
+                    _ => m.seqs.get_mut(keys),
+                });
+                bound.map(|b| b.more.push(action)).is_some()
+            }
+        }
+    }
+
     /// 키(들)에 동작을 건다. 겹치는 묶음은 나중 것이 이긴다(Ghostty):
     /// 순서의 앞 키에 걸린 한 키 묶음·짧은 순서, 이 키들로 시작하는 긴 순서를 지운다
     fn bind(&mut self, keys: Vec<Trigger>, action: Action, flags: BindFlags) {
@@ -1150,6 +1254,7 @@ impl Keymap {
             action,
             flags,
             order: self.next_order,
+            more: Vec::new(),
         };
         let n = keys.len();
         self.seqs
@@ -1240,13 +1345,13 @@ impl Keymap {
     }
 
     /// 이 동작에 걸린 트리거들(명령 팔레트가 단축키를 보일 때). Ghostty `Set.getTrigger`처럼 가장 나중에 정한 것이 먼저이고,
-    /// performable 묶음은 뺀다. 순서(`a>b`)는 첫 키를 낸다
+    /// performable 묶음과 `chain=`으로 동작이 덧붙은 묶음은 뺀다. 순서(`a>b`)는 첫 키를 낸다
     pub fn triggers_for(&self, action: &Action) -> Vec<&Trigger> {
         let mut found: Vec<(u64, &Trigger)> = self
             .map
             .iter()
             .chain(self.seqs.iter().map(|(k, b)| (&k[0], b)))
-            .filter(|(_, b)| b.action == *action && !b.flags.performable)
+            .filter(|(_, b)| b.action == *action && !b.flags.performable && b.more.is_empty())
             .map(|(t, b)| (b.order, t))
             .collect();
         found.sort_by_key(|(order, _)| std::cmp::Reverse(*order));
@@ -1290,6 +1395,8 @@ pub struct Sequencer {
 pub struct KeyOutcome {
     pub send: Vec<u8>,
     pub action: Option<Action>,
+    /// `action` 뒤에 차례로 할 동작(`chain=`으로 덧붙인 것)
+    pub chained: Vec<Action>,
     /// `all:` 접두사가 붙은 묶음에서 나온 동작인가
     pub all: bool,
 }
@@ -1428,8 +1535,10 @@ impl Sequencer {
                 keys.push(t.clone());
                 let (layer, found) = self.find(km, &keys);
                 match found {
-                    // all: 묶음에는 performable이 효과가 없다(Ghostty)
-                    Resolved::Action(b) if !b.flags.performable || b.flags.all || self.can_do(km, &b.action, can) => {
+                    // all: 묶음에는 performable이 효과가 없다(Ghostty). 덧붙은 동작 가운데 하나라도 할 수 있으면 한 것이다
+                    Resolved::Action(b)
+                        if !b.flags.performable || b.flags.all || b.actions().any(|a| self.can_do(km, a, can)) =>
+                    {
                         // 맨 위 once 테이블의 묶음(catch_all 포함)을 썼으면 그 테이블은 빠진다.
                         // 동작을 하기 전에 뺀다: 그 묶음이 다른 테이블을 켜도 그것을 빼지 않게
                         if let Layer::Table(i) = layer {
@@ -1439,23 +1548,29 @@ impl Sequencer {
                         }
                         // end_key_sequence는 앞 키만 보내고 이 키는 버린다
                         let mut send: Vec<u8> = Vec::new();
-                        if matches!(b.action, Action::EndKeySequence) {
+                        if b.actions().any(|a| matches!(a, Action::EndKeySequence)) {
                             send = self.pending.drain(..).flat_map(|(_, b)| b).collect();
                         }
                         self.pending.clear();
-                        let table_action = is_table_action(&b.action);
-                        if table_action {
-                            let _ = self.apply_table_action(km, &b.action);
+                        // 덧붙은 동작은 차례로 한다. 키 테이블 동작은 여기서 끝내고, 나머지는 앱이 할 몫이다
+                        let mut todo: Vec<Action> = Vec::new();
+                        for a in b.actions() {
+                            if is_table_action(a) {
+                                let _ = self.apply_table_action(km, a);
+                            } else {
+                                todo.push(a.clone());
+                            }
                         }
                         // unconsumed: 동작을 하고 이 키도 프로그램에 보낸다(앞서 쌓은 키는 이미 순서에 먹혔다).
                         // all: 묶음은 특정 칸에 묶이지 않아 늘 키를 먹는다(Ghostty)
                         if b.flags.unconsumed && !b.flags.all {
                             send.extend(bytes);
                         }
+                        let mut todo = todo.into_iter();
                         return KeyOutcome {
                             send,
-                            // 테이블 동작은 여기서 끝냈다
-                            action: (!table_action).then(|| b.action.clone()),
+                            action: todo.next(),
+                            chained: todo.collect(),
                             all: b.flags.all,
                         };
                     }
@@ -1478,6 +1593,7 @@ impl Sequencer {
             return KeyOutcome {
                 send: bytes,
                 action: None,
+                chained: Vec::new(),
                 all: false,
             };
         }
@@ -1487,7 +1603,7 @@ impl Sequencer {
             if self
                 .layer_map(km, layer)
                 .and_then(|m| m.wildcard(std::slice::from_ref(t)))
-                .is_some_and(|b| b.action == Action::Ignore)
+                .is_some_and(|b| b.actions().any(|a| *a == Action::Ignore))
             {
                 self.pending.clear();
                 return KeyOutcome::default();
@@ -1501,6 +1617,7 @@ impl Sequencer {
         KeyOutcome {
             send,
             action: rest.action,
+            chained: rest.chained,
             all: rest.all,
         }
     }
@@ -1544,6 +1661,10 @@ pub fn script_sequencer(slot: &mut Option<(u64, Sequencer)>, pane: u64) -> (Sequ
 #[cfg(test)]
 #[path = "keymap_names_tests.rs"]
 mod keymap_names_tests;
+
+#[cfg(test)]
+#[path = "keymap_chain_tests.rs"]
+mod keymap_chain_tests;
 
 #[cfg(test)]
 mod tests {
@@ -2490,7 +2611,7 @@ mod tests {
             KeyOutcome {
                 send: b"U".to_vec(),
                 action: Some(Action::NewTab),
-                all: false
+                ..Default::default()
             }
         );
         // 접두사 없는 묶음은 먹는다
