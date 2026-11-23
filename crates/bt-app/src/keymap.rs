@@ -217,62 +217,212 @@ fn parse_direction(s: &str) -> Option<Direction> {
     })
 }
 
-/// 키 이름을 Ghostty 이름으로 맞춘다
-pub fn normalize_key(k: &str) -> String {
-    let k = k.trim().to_ascii_lowercase();
-    match k.as_str() {
-        "=" | "plus" => "equal".into(),
-        "-" => "minus".into(),
-        "," => "comma".into(),
-        "." => "period".into(),
-        "/" => "slash".into(),
-        ";" => "semicolon".into(),
-        "'" => "quote".into(),
-        "`" | "grave_accent" => "backquote".into(),
-        "[" | "left_bracket" => "bracket_left".into(),
-        "]" | "right_bracket" => "bracket_right".into(),
-        "\\" => "backslash".into(),
-        " " => "space".into(),
-        "return" => "enter".into(),
-        "esc" => "escape".into(),
-        "up" => "arrow_up".into(),
-        "down" => "arrow_down".into(),
-        "left" => "arrow_left".into(),
-        "right" => "arrow_right".into(),
-        "pageup" => "page_up".into(),
-        "pagedown" => "page_down".into(),
-        d if d.len() == 1 && d.as_bytes()[0].is_ascii_digit() => format!("digit_{d}"),
-        _ => k,
+/// Ghostty `key.zig`의 `Key`(W3C 키 코드를 snake_case로 적은 것, `unidentified` 제외). 설정의 키 이름은 이 표와 W3C 이름,
+/// 1.1.x 호환 이름(`COMPAT_KEYS`), 글자 한 개만 받는다
+#[rustfmt::skip]
+const KEY_NAMES: &[&str] = &[
+    "backquote", "backslash", "bracket_left", "bracket_right", "comma", "digit_0", "digit_1", "digit_2", "digit_3",
+    "digit_4", "digit_5", "digit_6", "digit_7", "digit_8", "digit_9", "equal", "intl_backslash", "intl_ro",
+    "intl_yen", "key_a", "key_b", "key_c", "key_d", "key_e", "key_f", "key_g", "key_h", "key_i", "key_j", "key_k",
+    "key_l", "key_m", "key_n", "key_o", "key_p", "key_q", "key_r", "key_s", "key_t", "key_u", "key_v", "key_w",
+    "key_x", "key_y", "key_z", "minus", "period", "quote", "semicolon", "slash", "alt_left", "alt_right", "backspace",
+    "caps_lock", "context_menu", "control_left", "control_right", "enter", "meta_left", "meta_right", "shift_left",
+    "shift_right", "space", "tab", "convert", "kana_mode", "non_convert", "delete", "end", "help", "home", "insert",
+    "page_down", "page_up", "arrow_down", "arrow_left", "arrow_right", "arrow_up", "num_lock", "numpad_0", "numpad_1",
+    "numpad_2", "numpad_3", "numpad_4", "numpad_5", "numpad_6", "numpad_7", "numpad_8", "numpad_9", "numpad_add",
+    "numpad_backspace", "numpad_clear", "numpad_clear_entry", "numpad_comma", "numpad_decimal", "numpad_divide",
+    "numpad_enter", "numpad_equal", "numpad_memory_add", "numpad_memory_clear", "numpad_memory_recall",
+    "numpad_memory_store", "numpad_memory_subtract", "numpad_multiply", "numpad_paren_left", "numpad_paren_right",
+    "numpad_subtract", "numpad_separator", "numpad_up", "numpad_down", "numpad_right", "numpad_left", "numpad_begin",
+    "numpad_home", "numpad_end", "numpad_insert", "numpad_delete", "numpad_page_up", "numpad_page_down", "escape",
+    "f1", "f2", "f3", "f4", "f5", "f6", "f7", "f8", "f9", "f10", "f11", "f12", "f13", "f14", "f15", "f16", "f17",
+    "f18", "f19", "f20", "f21", "f22", "f23", "f24", "f25", "fn", "fn_lock", "print_screen", "scroll_lock", "pause",
+    "browser_back", "browser_favorites", "browser_forward", "browser_home", "browser_refresh", "browser_search",
+    "browser_stop", "eject", "launch_app_1", "launch_app_2", "launch_mail", "media_play_pause", "media_select",
+    "media_stop", "media_track_next", "media_track_previous", "power", "sleep", "audio_volume_down",
+    "audio_volume_mute", "audio_volume_up", "wake_up", "copy", "cut", "paste",
+];
+
+/// Ghostty 1.1.x 호환 이름(`Binding.zig`의 `backwards_compatible_keys`): 이름 → 우리 트리거 키.
+/// `zero`~`nine`·`plus`·`apostrophe`는 글자 키라 글자로(ADR-070), 나머지는 물리 키 이름
+#[rustfmt::skip]
+const COMPAT_KEYS: &[(&str, &str)] = &[
+    ("zero", "digit_0"), ("one", "digit_1"), ("two", "digit_2"), ("three", "digit_3"), ("four", "digit_4"),
+    ("five", "digit_5"), ("six", "digit_6"), ("seven", "digit_7"), ("eight", "digit_8"), ("nine", "digit_9"),
+    ("plus", "+"), ("apostrophe", "quote"), ("grave_accent", "backquote"), ("left_bracket", "bracket_left"),
+    ("right_bracket", "bracket_right"), ("up", "arrow_up"), ("down", "arrow_down"), ("left", "arrow_left"),
+    ("right", "arrow_right"), ("kp_0", "numpad_0"), ("kp_1", "numpad_1"), ("kp_2", "numpad_2"), ("kp_3", "numpad_3"),
+    ("kp_4", "numpad_4"), ("kp_5", "numpad_5"), ("kp_6", "numpad_6"), ("kp_7", "numpad_7"), ("kp_8", "numpad_8"),
+    ("kp_9", "numpad_9"), ("kp_add", "numpad_add"), ("kp_subtract", "numpad_subtract"),
+    ("kp_multiply", "numpad_multiply"), ("kp_divide", "numpad_divide"), ("kp_decimal", "numpad_decimal"),
+    ("kp_enter", "numpad_enter"), ("kp_equal", "numpad_equal"), ("kp_separator", "numpad_separator"),
+    ("kp_left", "numpad_left"), ("kp_right", "numpad_right"), ("kp_up", "numpad_up"), ("kp_down", "numpad_down"),
+    ("kp_page_up", "numpad_page_up"), ("kp_page_down", "numpad_page_down"), ("kp_home", "numpad_home"),
+    ("kp_end", "numpad_end"), ("kp_insert", "numpad_insert"), ("kp_delete", "numpad_delete"),
+    ("kp_begin", "numpad_begin"), ("left_shift", "shift_left"), ("right_shift", "shift_right"),
+    ("left_control", "control_left"), ("right_control", "control_right"), ("left_alt", "alt_left"),
+    ("right_alt", "alt_right"), ("left_super", "meta_left"), ("right_super", "meta_right"),
+];
+
+/// 글자 한 개를 트리거 키 이름으로. 기호는 Ghostty 이름(`=`은 `equal`), 숫자는 `digit_N`, 그 밖에는 소문자(유니코드 포함).
+/// `+`는 이름이 없어 `+` 그대로다(Ghostty도 글자 `+`로 센다)
+fn char_key(c: char) -> String {
+    match c {
+        '=' => "equal".into(),
+        '-' => "minus".into(),
+        ',' => "comma".into(),
+        '.' => "period".into(),
+        '/' => "slash".into(),
+        ';' => "semicolon".into(),
+        '\'' => "quote".into(),
+        '`' => "backquote".into(),
+        '[' => "bracket_left".into(),
+        ']' => "bracket_right".into(),
+        '\\' => "backslash".into(),
+        ' ' => "space".into(),
+        d if d.is_ascii_digit() => format!("digit_{d}"),
+        c => {
+            // Ghostty `foldedCodepoint`: 한 글자로 접히는 것만 접는다(`ß` 같은 여러 글자로 바뀌는 것은 그대로)
+            let mut lower = c.to_lowercase();
+            match (lower.next(), lower.next()) {
+                (Some(l), None) => l.to_string(),
+                _ => c.to_string(),
+            }
+        }
     }
 }
 
-/// `super+shift+t`를 읽는다. 키 순서(`a>b`)는 `Keymap::build`가 `>`로 나눠 키마다 부른다
+/// 이름 표의 키를 트리거 키로. 글자 키(`key_a`)는 글자로 맞춘다(ADR-070)
+fn canonical_key(name: &str) -> String {
+    match name.strip_prefix("key_") {
+        Some(l) if l.len() == 1 => l.to_string(),
+        _ => name.to_string(),
+    }
+}
+
+/// W3C 키 코드(`KeyA`, `Digit1`, `ArrowUp`, `NumpadEnter`)를 표의 이름으로(Ghostty `Key.fromW3C`): 통째로 소문자로 바꾼 것이
+/// 이름이면 그것, 아니면 대문자·숫자 앞에 `_`를 넣어 snake_case로. 대소문자를 가린다(`Keya`는 없다)
+fn from_w3c(code: &str) -> Option<&'static str> {
+    if code.len() > 128 {
+        return None;
+    }
+    let find = |s: &str| KEY_NAMES.iter().copied().find(|n| *n == s);
+    if let Some(n) = find(&code.to_ascii_lowercase()) {
+        return Some(n);
+    }
+    let mut snake = String::new();
+    for (i, ch) in code.chars().enumerate() {
+        match ch {
+            'a'..='z' => snake.push(ch),
+            'A'..='Z' | '0'..='9' => {
+                if i > 0 {
+                    snake.push('_');
+                }
+                snake.push(ch.to_ascii_lowercase());
+            }
+            _ => return None,
+        }
+    }
+    find(&snake)
+}
+
+/// 트리거의 키 부분(수식 키가 아닌 조각) 하나를 트리거 키 이름으로(Ghostty `Trigger.parse`와 같은 차례).
+/// 이름 표, 글자 한 개, W3C 이름, `catch_all`, 1.1.x 호환 이름(`physical:` 접두사 포함) 순서
+fn parse_key_name(part: &str) -> Result<String, String> {
+    if let Some(n) = KEY_NAMES.iter().find(|n| **n == part) {
+        return Ok(canonical_key(n));
+    }
+    let mut chars = part.chars();
+    if let (Some(c), None) = (chars.next(), chars.next()) {
+        return Ok(char_key(c));
+    }
+    if let Some(n) = from_w3c(part) {
+        return Ok(canonical_key(n));
+    }
+    if part == CATCH_ALL {
+        return Ok(CATCH_ALL.into());
+    }
+    // `physical:zero`처럼 1.1.x가 물리 키를 가리킨 이름. `plus`에는 물리 짝이 없다
+    let (old, physical) = match part.strip_prefix("physical:") {
+        Some(rest) => (rest, true),
+        None => (part, false),
+    };
+    if !(physical && old == "plus") {
+        if let Some((_, k)) = COMPAT_KEYS.iter().find(|(n, _)| *n == old) {
+            return Ok((*k).to_string());
+        }
+    }
+    Err(format!("모르는 키 이름: {part}"))
+}
+
+/// 눌린 글자 키를 트리거 키 이름으로(`keys::trigger_of`가 쓴다). 한 글자면 `char_key`, 아니면 소문자로
+pub fn normalize_key(k: &str) -> String {
+    let mut chars = k.chars();
+    match (chars.next(), chars.next()) {
+        (Some(c), None) => char_key(c),
+        _ => k.to_lowercase(),
+    }
+}
+
+/// `super+shift+t`를 읽는다(Ghostty `Trigger.parse`). 키 순서(`a>b`)는 `Keymap::build`가 `>`로 나눠 키마다 부른다.
+/// `+`로 조각을 나누고, 조각이 비어 있으면 글자 `+`다(`ctrl++`, `+`). 수식 키 이름은 소문자로만 받고(`SHIFT`는 오류),
+/// 수식 키를 겹치거나 키를 둘 쓰면 오류다. 키는 수식 키 앞에 써도 된다(`a+shift`)
 pub fn parse_trigger(s: &str) -> Result<Trigger, String> {
+    if s.is_empty() {
+        return Err("키가 없습니다".into());
+    }
     if s.contains('>') {
         return Err(format!("키 하나에 `>`가 있습니다: {s}"));
     }
     let mut mods = Mods::default();
-    // `super++`처럼 키 자체가 +인 경우: 마지막 +를 키로 떼어 낸다
-    let (head, key) = match s.strip_suffix("++") {
-        Some(h) => (h, "plus"),
-        None => s.rsplit_once('+').unwrap_or(("", s)),
-    };
-    for m in head.split('+').filter(|m| !m.trim().is_empty()) {
-        match m.trim().to_ascii_lowercase().as_str() {
-            "shift" => mods.shift = true,
-            "ctrl" | "control" => mods.ctrl = true,
-            "alt" | "opt" | "option" => mods.alt = true,
-            "super" | "cmd" | "command" => mods.sup = true,
-            other => return Err(format!("모르는 수식 키: {other}")),
+    let mut key: Option<String> = None;
+    let mut rem = s;
+    while !rem.is_empty() {
+        let (part, rest) = rem.split_once('+').unwrap_or((rem, ""));
+        rem = rest;
+        let slot = match part {
+            "shift" => Some(&mut mods.shift),
+            "ctrl" | "control" => Some(&mut mods.ctrl),
+            "alt" | "opt" | "option" => Some(&mut mods.alt),
+            "super" | "cmd" | "command" => Some(&mut mods.sup),
+            _ => None,
+        };
+        if let Some(slot) = slot {
+            if *slot {
+                return Err(format!("수식 키를 두 번 썼습니다: {part}"));
+            }
+            *slot = true;
+            continue;
         }
+        if key.is_some() {
+            return Err(format!("키가 둘 이상입니다: {s}"));
+        }
+        key = Some(if part.is_empty() {
+            "+".into()
+        } else {
+            parse_key_name(part)?
+        });
     }
-    if key.trim().is_empty() {
-        return Err(format!("키가 없습니다: {s}"));
+    match key {
+        Some(key) => Ok(Trigger { mods, key }),
+        None => Err(format!("키가 없습니다: {s}")),
     }
-    Ok(Trigger {
-        mods,
-        key: normalize_key(key),
-    })
+}
+
+/// 트리거와 동작을 나누는 `=`의 자리(Ghostty `Parser.init`). 트리거에도 `=`가 올 수 있어(`==ignore`, `=+ctrl=…`)
+/// 뒤에 `+`나 `=`가 오는 `=`는 건너뛴다
+fn find_equals(s: &str) -> Option<usize> {
+    let b = s.as_bytes();
+    let mut off = 0;
+    while let Some(i) = s[off..].find('=') {
+        let idx = off + i;
+        if idx + 1 < b.len() && matches!(b[idx + 1], b'+' | b'=') {
+            off = idx + 1;
+            continue;
+        }
+        return Some(idx);
+    }
+    None
 }
 
 fn unescape(s: &str) -> String {
@@ -697,6 +847,8 @@ pub(crate) fn defaults() -> Vec<(&'static str, &'static str)> {
         ("super+shift+g", "navigate_search:previous"),
         ("super+equal", "increase_font_size:1"),
         ("super+shift+equal", "increase_font_size:1"),
+        // Ghostty 기본 묶음은 `+` 글자(⌘+)다. `+`가 수식 키 없이 나오는 자판(독일어 등)에서 듣는다
+        ("super++", "increase_font_size:1"),
         ("super+minus", "decrease_font_size:1"),
         ("super+0", "reset_font_size"),
         ("super+k", "clear_screen"),
@@ -825,7 +977,7 @@ impl Keymap {
                 );
             }
         }
-        for line in user {
+        'lines: for line in user {
             let line = line.trim();
             if line == "clear" {
                 km.map.clear();
@@ -850,29 +1002,31 @@ impl Keymap {
                 Some((_, rest)) => *rest,
                 None => line,
             };
-            // 접두사(Ghostty와 같다): `all:` `unconsumed:` `performable:` `global:`을 겹쳐 쓸 수 있다
+            // 접두사(Ghostty와 같다): `all:` `unconsumed:` `performable:` `global:`을 겹쳐 쓸 수 있지만 같은 것을 두 번 쓰면 오류다
             let mut flags = BindFlags::default();
             let mut is_global = false;
             let mut line = line;
             loop {
-                if let Some(r) = line.strip_prefix("all:") {
-                    flags.all = true;
-                    line = r;
+                let (seen, r) = if let Some(r) = line.strip_prefix("all:") {
+                    (std::mem::replace(&mut flags.all, true), r)
                 } else if let Some(r) = line.strip_prefix("unconsumed:") {
-                    flags.unconsumed = true;
-                    line = r;
+                    (std::mem::replace(&mut flags.unconsumed, true), r)
                 } else if let Some(r) = line.strip_prefix("performable:") {
-                    flags.performable = true;
-                    line = r;
+                    (std::mem::replace(&mut flags.performable, true), r)
                 } else if let Some(r) = line.strip_prefix("global:") {
-                    is_global = true;
-                    line = r;
+                    (std::mem::replace(&mut is_global, true), r)
                 } else {
                     break;
+                };
+                if seen {
+                    let name = &line[..line.len() - r.len()];
+                    warnings.push(format!("keybind {line}: 접두사 {name}를 두 번 썼습니다"));
+                    continue 'lines;
                 }
+                line = r;
             }
-            // 트리거에도 =가 올 수 있다(super+=). 마지막 =를 나눔 자리로 본다
-            let Some(eq) = line.rfind('=') else {
+            // 트리거에도 =가 올 수 있다(`super+=`, `==ignore`). Ghostty처럼 뒤에 +나 =가 오지 않는 첫 =가 나눔 자리다
+            let Some(eq) = find_equals(line) else {
                 warnings.push(format!("keybind는 `트리거=동작` 꼴입니다: {line}"));
                 continue;
             };
@@ -893,13 +1047,6 @@ impl Keymap {
                 }
                 continue;
             }
-            // text:에 =가 들어간 경우를 위해 동작 이름이 알려진 첫 =로 다시 나눠 본다
-            let (t, a) = match line.find('=') {
-                Some(first) if first < eq && parse_action(&line[first + 1..]).is_ok() => {
-                    (&line[..first], &line[first + 1..])
-                }
-                _ => (t, a),
-            };
             let keys = match t.split('>').map(parse_trigger).collect::<Result<Vec<_>, _>>() {
                 Ok(k) => k,
                 Err(e) => {
@@ -1232,6 +1379,31 @@ impl Sequencer {
         bytes: Vec<u8>,
         can: &mut dyn FnMut(&Action) -> bool,
     ) -> KeyOutcome {
+        self.feed_with_alt(km, trigger, None, bytes, can)
+    }
+
+    /// `feed_with`에 숫자 패드 키의 물리 이름(`numpad_1`, `alt`)을 함께 준다. 숫자 패드 `1`은 글자 `1`이기도 해서(Ghostty도 둘 다 맞춘다)
+    /// 물리 이름(`kp_1`)으로 묶은 것이 있으면 그것을, 없으면 글자(`trigger`)로 찾는다
+    pub fn feed_with_alt(
+        &mut self,
+        km: &Keymap,
+        trigger: Option<Trigger>,
+        alt: Option<Trigger>,
+        bytes: Vec<u8>,
+        can: &mut dyn FnMut(&Action) -> bool,
+    ) -> KeyOutcome {
+        let trigger = match (trigger, alt) {
+            (Some(t), Some(a)) => {
+                let mut keys: Vec<Trigger> = self.pending.iter().map(|(k, _)| k.clone()).collect();
+                keys.push(a.clone());
+                if matches!(self.find(km, &keys).1, Resolved::None) {
+                    Some(t)
+                } else {
+                    Some(a)
+                }
+            }
+            (t, _) => t,
+        };
         match &trigger {
             Some(t) => {
                 let mut keys: Vec<Trigger> = self.pending.iter().map(|(k, _)| k.clone()).collect();
@@ -1350,6 +1522,10 @@ pub fn script_sequencer(slot: &mut Option<(u64, Sequencer)>, pane: u64) -> (Sequ
         None => (Sequencer::default(), None),
     }
 }
+
+#[cfg(test)]
+#[path = "keymap_names_tests.rs"]
+mod keymap_names_tests;
 
 #[cfg(test)]
 mod tests {
@@ -1679,7 +1855,10 @@ mod tests {
         assert_eq!(trig("ctrl+1").key, "digit_1");
         assert_eq!(trig("ctrl+digit_1").key, "digit_1");
         assert_eq!(trig("super+]").key, "bracket_right");
-        assert_eq!(trig("super++").key, "equal");
+        // `+`는 글자 `+`다(Ghostty). `=`는 `equal`이고 `plus`는 1.1.x 이름으로 `+`다
+        assert_eq!(trig("super++").key, "+");
+        assert_eq!(trig("plus").key, "+");
+        assert_eq!(trig("super+=").key, "equal");
         assert!(parse_trigger("ctrl+a>n").is_err());
         assert!(parse_trigger("hyper+a").is_err());
     }
@@ -2634,10 +2813,10 @@ mod tests {
             "a/y=activate_key_table:b",
             "b/x=activate_key_table:a",
             "a/q=text:in-a",
-            "start=activate_key_table:a",
+            "f9=activate_key_table:a",
         ]);
         let mut sq = Sequencer::default();
-        press(&mut sq, &km, "start");
+        press(&mut sq, &km, "f9");
         press(&mut sq, &km, "x"); // 이미 맨 위: 무시
         assert_eq!(sq.stack_names(), ["a"]);
         press(&mut sq, &km, "y");
