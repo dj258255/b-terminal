@@ -4,6 +4,7 @@ mod color;
 pub mod copy_format;
 pub mod csi_query;
 pub mod dcs;
+pub mod glyph;
 pub mod graphics;
 pub mod input;
 pub mod kitty_anim;
