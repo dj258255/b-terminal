@@ -4,6 +4,7 @@
 //! 칸이 줄과 함께 스크롤백으로 가고 다시 감싸일 때도 따라가고, 글자를 덮어써도 남는다(`write_at_cursor`).
 //! b-terminal(#825): 칸만 지우거나 미는 연산(EL·ED의 커서 줄·ECH·DCH·ICH, 넓은 글자 경계 정리)도 표시를 남긴다(Ghostty `Screen.clearCells`는
 //! 줄 속성을 건드리지 않는다). 표시가 지워지는 것은 줄째 지우는 연산뿐이다(ED 0의 아랫줄, ED 1의 윗줄, ED 2·3, DECALN, RIS, IL·DL로 비워진 줄).
+//! b-terminal(#826): 커서 칸 종류·클릭 방식·표지를 받은 적은 화면마다 따로 둔다(`Term::semantic`은 보고 있는 화면, `inactive_semantic`은 쉬는 화면).
 
 use super::*;
 
@@ -201,9 +202,24 @@ impl<T> Term<T> {
         }
     }
 
-    /// 초기화(RIS)
+    /// 초기화(RIS): 두 화면 모두(Ghostty `fullReset`은 대체 화면을 없애고 주 화면을 초기화한다)
     pub(super) fn semantic_reset(&mut self) {
         self.semantic = SemanticState::default();
+        self.inactive_semantic = SemanticState::default();
+    }
+
+    /// b-terminal(#826): 화면을 바꾼 직후, 커서가 쓰는 글의 종류와 줄 끝 지우기 표지를 이전 화면의 것으로 맞춘다.
+    /// Ghostty `cursorCopy`가 `self.cursor = other`로 `semantic_content`·`semantic_content_clear_eol`까지 복사하기 때문이다
+    /// (47·1047은 들어갈 때와 나올 때, 1049는 들어갈 때만. 1049를 나올 때는 `restoreCursor`라 건드리지 않는다).
+    /// 클릭 방식과 본 적 있음(`semantic_prompt.{click,seen}`)은 복사하지 않고 화면마다 남는다
+    pub(super) fn semantic_copy_cursor_from_inactive(&mut self) {
+        self.semantic.content = self.inactive_semantic.content;
+        self.semantic.clear_eol = self.inactive_semantic.clear_eol;
+    }
+
+    /// 주 화면의 OSC 133 상태. 대체 화면을 보고 있으면 쉬고 있는 쪽이다
+    fn primary_semantic(&self) -> &SemanticState {
+        if self.mode.contains(TermMode::ALT_SCREEN) { &self.inactive_semantic } else { &self.semantic }
     }
 
     /// 다시 그리기 조건이 맞을 때 셸이 지울 줄 범위(첫 줄, 끝 줄, 둘 다 포함). 주 화면의 격자(대체 화면이면 밀려난 주 화면)를 본다.
@@ -211,8 +227,10 @@ impl<T> Term<T> {
     /// `last`면 커서 줄만이다. 프롬프트 첫 줄을 찾는 규칙은 PageList.promptIterator 원문이 없어 Ghostty 동작을 읽고 추정한 것이다:
     /// 커서 줄에서 위로 올라가며 이어진 줄·표시 없는 줄을 지나 처음 만나는 프롬프트 줄
     fn semantic_redraw_span(&self) -> Option<(i32, i32)> {
-        let redraw = self.semantic.redraw;
-        if redraw == Redraw::False || self.semantic.content == SemanticContent::Output {
+        // b-terminal(#826): 크기를 바꿀 때 다시 그리는 것은 주 화면이다. 대체 화면을 보고 있어도 주 화면의 칸 종류를 본다
+        let primary = self.primary_semantic();
+        let redraw = primary.redraw;
+        if redraw == Redraw::False || primary.content == SemanticContent::Output {
             return None;
         }
         let grid = if self.mode.contains(TermMode::ALT_SCREEN) { &self.inactive_grid } else { &self.grid };

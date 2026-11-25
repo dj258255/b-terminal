@@ -187,3 +187,7 @@ alacritty_terminal이 글자 묶음 폭(mode 2027)을 지원하는 판을 내면
 ## alacritty_terminal: 칸 지우기·밀기가 OSC 133 줄 프롬프트 표시를 남김(#825)
 
 - 고친 곳: `vendor/alacritty_terminal/src/term/mod.rs`의 `blank_cell`·`take_marks`(새 함수)와 이것을 쓰는 `erase_line`·`clear_unprotected`·`erase_chars`·`insert_blank`·`delete_chars`·`clear_screen`(ED 0·1의 커서 줄)·`blank_cell_keep_wrap`·`repair_wide_cells`·`scroll_rect`의 경계 정리, `src/term/semantic.rs` 머리 주석. `b-terminal(#825)`로 찾을 수 있습니다. 이유: 줄 표시를 0번 칸에 두어 칸을 지우면 함께 사라졌습니다. Ghostty `Screen.clearCells`는 줄 속성을 건드리지 않습니다. 되돌릴 조건: upstream이 줄 메타데이터를 내놓으면 지웁니다. 테스트는 `crates/bt-term/tests/erase_prompt825.rs`에 있습니다.
+
+## alacritty_terminal: OSC 133 상태를 화면마다 따로 둠(#826)
+
+- 고친 곳: `vendor/alacritty_terminal/src/term/mod.rs`의 `Term::inactive_semantic`(새 필드), `swap_alt_grids`(맞바꿈), `swap_alt`·`switch_screen_legacy`(커서 복사), `src/term/semantic.rs`의 `semantic_copy_cursor_from_inactive`·`primary_semantic`(새 함수), `semantic_reset`(두 화면)·`semantic_redraw_span`(주 화면의 상태). `b-terminal(#826)`으로 찾을 수 있습니다. 이유: Ghostty는 `cursor.semantic_content`와 `semantic_prompt.{click,seen}`을 화면마다 둡니다. 되돌릴 조건: 없음(원본이 같은 구조를 가짐). 테스트는 `crates/bt-term/tests/screen_semantic826.rs`에 있습니다.

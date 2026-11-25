@@ -553,6 +553,9 @@ pub struct Term<T> {
     mouse_shift_capture: Option<bool>,
     /// b-terminal(#329): OSC 133 상태(커서의 글 종류, 지우기 규칙, 다시 그리기)
     semantic: semantic::SemanticState,
+    /// b-terminal(#826): 쉬고 있는 화면의 OSC 133 상태. Ghostty는 `cursor.semantic_content`와 `semantic_prompt.{click,seen}`을
+    /// 화면마다 둔다. `semantic`은 보고 있는 화면의 것이고 화면을 바꿀 때 맞바꾼다(`swap_alt_grids`)
+    inactive_semantic: semantic::SemanticState,
 }
 
 /// b-terminal 패치(#180): 한 칸의 결합 문자 목록에 이어 붙이는 글자 수 상한(join_grapheme)
@@ -715,6 +718,7 @@ impl<T> Term<T> {
             protected_iso: false,
             mouse_shift_capture: None,
             semantic: Default::default(), // b-terminal(#329)
+            inactive_semantic: Default::default(), // b-terminal(#826)
             mode,
         }
     }
@@ -1416,6 +1420,7 @@ impl<T> Term<T> {
             // Reset alternate screen contents.
             self.inactive_grid.reset_region(..);
             self.swap_alt_grids();
+            self.semantic_copy_cursor_from_inactive(); // b-terminal(#826): 들어갈 때만 칸 종류를 복사한다(Ghostty `cursorCopy`)
         } else {
             self.swap_alt_grids();
             // b-terminal(#545): 주 화면의 커서 자리·펜은 그 화면에 남아 있다. 저장할 때의 원점 모드와 문자 집합 상태를
@@ -1451,6 +1456,7 @@ impl<T> Term<T> {
         let cursor = self.grid.cursor.clone();
         self.swap_alt_grids();
         self.grid.cursor = cursor;
+        self.semantic_copy_cursor_from_inactive(); // b-terminal(#826): 47·1047은 두 방향 모두 커서를 복사한다(Ghostty `cursorCopy`)
     }
 
     /// 두 화면과 키보드 모드 쌓음을 맞바꾼다(`swap_alt`의 뒷부분, b-terminal #296에서 갈랐다)
@@ -1461,6 +1467,10 @@ impl<T> Term<T> {
         self.set_keyboard_mode(keyboard_mode, KeyboardModesApplyBehavior::Replace);
 
         mem::swap(&mut self.grid, &mut self.inactive_grid);
+        // b-terminal(#826): OSC 133 상태도 화면마다 따로 둔다. `redraw=`는 터미널 전체의 것(Ghostty `flags.shell_redraws_prompt`)이라 함께 간다
+        let redraw = self.semantic.redraw;
+        mem::swap(&mut self.semantic, &mut self.inactive_semantic);
+        self.semantic.redraw = redraw;
         self.mode ^= TermMode::ALT_SCREEN;
         self.selection = None;
         self.mark_fully_damaged();
