@@ -4472,8 +4472,17 @@ impl App {
             }
             Action::LastTab if !self.w.tabs.is_empty() => self.activate(self.w.tabs.len() - 1),
             Action::GotoTab(n) if n <= self.w.tabs.len() => self.activate(n - 1),
-            // Ghostty의 clear_screen: 화면과 스크롤백을 지운다. 셸에 Ctrl-L을 보내 프롬프트를 다시 그리게 한다
-            Action::ClearScreen => self.write_active(b"\x0c"),
+            // Ghostty의 clear_screen(#821): 스크롤백과 선택을 지우고, 프롬프트가 아니면 커서 윗줄까지만 지우며 FF를 보내지 않는다.
+            // 프롬프트이면 화면을 지우고 셸에 FF(Ctrl-L)를 보내 다시 그리게 한다. 대체 화면은 `can_perform`이 걸러 여기 오지 않는다
+            Action::ClearScreen => {
+                let redraw = self
+                    .active_pane()
+                    .is_some_and(|t| t.session.clear_screen() == bt_term::ClearScreen::Redraw);
+                if redraw {
+                    self.write_active(b"\x0c");
+                }
+                self.request_redraw();
+            }
             Action::ScrollPageUp | Action::ScrollPageDown => {
                 if let Some(t) = self.active_pane() {
                     let rows = t.session.size().rows as i32;

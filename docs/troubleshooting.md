@@ -624,3 +624,13 @@
 - 고침: `scroll_rect`가 옮기기 전에 영역 안 줄들의 표시를 읽어 두고, 옮긴 뒤 줄 단위로 다시 쓴다. 줄 일부만 옮기면 받는 줄 표시는 받는 줄과 보낸 줄의 합(`combine`: 프롬프트 > 이어짐 > 없음), 줄 전체를 옮기면 보낸 줄 표시, 칸만 지운 줄은 그대로다. 0번 칸의 다른 표시(넓은 글자 등)는 건드리지 않는다. 시험: `crates/bt-term/tests/margin_prompt817.rs`(Ghostty `insertLines and deleteLines in margins keep semantic prompt` 네 경우, `Page cloneRowFrom partial combines semantic prompt`의 아홉 조합, 이슈 표 여섯 입력)
 - 한계: kitty 유니코드 자리표시의 줄 단위 표시(`kitty_virtual_placeholder`)는 우리에게 없어 옮기지 않았다
 - 0.99.0에서 풀기: 좌우 여백과 OSC 133을 함께 쓰지 않는다
+
+## 76. ⌘K가 실행 중인 프로그램에 Ctrl-L을 보내고 스크롤백을 지우지 않는다
+
+- 언제: 2026-11-25, #821. Ghostty 1.4.0 `Surface.zig`·`Termio.zig`와 같은 입력으로 견주다 찾았다. 0.100.0까지의 동작이다
+- 증상: `sleep 30`을 실행하고 ⌘K를 누르면 `sleep`의 입력으로 FF(0x0C)가 들어가고, 스크롤백은 그대로 남는다. vim 같은 대체 화면에서는 키를 먹지 않아야 하는데 (이 부분은 `performable`로 이미 맞았다) 그 밖의 칸에서는 `clear_screen`이 늘 `write(FF)` 하나였다
+- 까닭: `Action::ClearScreen`이 `write_active(b"\x0c")`뿐이었다. Ghostty는 엔진에서 스크롤백·고르기·화면을 지우고(`Termio.clearScreen(history = true)`), 커서가 프롬프트일 때만 FF를 보낸다
+- 고침: `bt-term`에 `Session::clear_screen`(`ClearScreen::{Ignored, Cleared, Redraw}`)을 두고 앱은 `Redraw`일 때만 FF를 쓴다. 대체 화면은 `Ignored`. 아니면 고르기를 풀고 스크롤백을 지우며(ED 3), 프롬프트가 아니면 커서 윗줄을 떼어 내(남은 줄이 올라와 커서 줄이 맨 위) kitty 그림을 지우고(`d=A`) `Cleared`로 끝낸다. 프롬프트이면 ED 2와 같은 지우기를 하고 `Redraw`. 프롬프트 판단은 Ghostty `cursorIsAtPrompt`처럼 커서 줄 표시나 커서 칸 종류(입력·프롬프트)다
+- 눈에 띄는 차이: 셸 통합이 없으면 커서 칸 종류의 기본값이 출력(Ghostty `Screen.Cursor.semantic_content = .output`)이라 늘 "프롬프트가 아님"이다. 그래서 셸 통합 없는 셸에서 ⌘K는 FF를 보내지 않고, 커서 윗줄을 지우고 프롬프트 줄을 맨 위로 올린다(Ghostty 1.4.0과 같다). 이전의 "화면을 지우고 셸이 다시 그림"과 다르다
+- 한계: 프롬프트에서 ED 2는 Ghostty처럼 화면 내용을 스크롤백으로 올리는 규칙(마지막 글 줄이 프롬프트일 때)을 따르므로, 스크롤백을 지운 직후 지워지는 화면이 스크롤백에 남을 수 있다(Ghostty 소스에 TODO로 남은 같은 동작). 읽기 전용 칸에서는 지우되 FF는 쓰지 않는다
+- 0.100.0에서 풀기: ⌘K 대신 `clear`나 Ctrl-L을 쓴다
