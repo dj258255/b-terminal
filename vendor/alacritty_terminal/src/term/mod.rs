@@ -1186,6 +1186,59 @@ impl<T> Term<T> {
         }
     }
 
+    /// b-terminal(#815): 전체 폭 영역에서 IL·DL(과 같은 길을 가는 SU·SD·RI)이 줄을 옮긴 뒤, 이웃이 바뀐 줄만 줄 접힘 표시를 푼다
+    /// (Ghostty main #15309 `insertLines`·`deleteLines` 끝의 `rowClearWrap`). 함께 움직인 줄은 접힘 표시와 줄 끝 앞 칸
+    /// 자리표시를 지킨다. 우리는 "이어받는 줄" 표시가 따로 없고 윗줄의 `WRAPLINE`이 그것이라, Ghostty의
+    /// `rowClearWrapContinuation`은 윗줄을 푸는 것으로 이미 이뤄진다. `origin`은 옮기기 시작한 줄, `insert`는 IL·SD 쪽이다
+    fn clear_wraps_after_shift(&mut self, origin: Line, lines: usize, insert: bool) {
+        let end = self.scroll_region.end;
+        let rem = (end - origin).0.max(0) as usize;
+        if rem == 0 {
+            return;
+        }
+        // 커서 줄 바로 위 줄은 그 아래 줄이 바뀌었다(스크롤백의 마지막 줄이어도 같다)
+        if origin > self.topmost_line() {
+            self.reset_row_wrap(origin - 1i32);
+        }
+        if insert {
+            // 새 맨 아래 줄은 영역 밖으로 밀린 줄을 이어받지 않는다
+            self.reset_row_wrap(end - 1i32);
+        } else {
+            // 옮겨진 마지막 줄 아래에는 빈 줄이 온다. 영역을 다 지웠으면 옮겨진 줄이 없다
+            let moved = rem.saturating_sub(lines.min(rem));
+            if moved > 0 {
+                self.reset_row_wrap(origin + (moved - 1));
+            }
+        }
+        self.mark_fully_damaged();
+    }
+
+    /// b-terminal(#815): Ghostty `scrollUp`은 영역이 맨 위에서 시작하고 전체 폭이며 스크롤백을 두는 화면(또는 영역이 화면 전체)이면
+    /// 스크롤백으로 올리고, 아니면 `deleteLines`로 옮긴다. 뒤쪽일 때만 줄 접힘 표시를 정리한다
+    fn scroll_up_moves_rows_in_place(&self) -> bool {
+        let region = &self.scroll_region;
+        !(region.start == 0
+            && (self.grid.max_scroll_limit() > 0 || region.end.0 as usize == self.screen_lines()))
+    }
+
+    /// b-terminal(#815): `wrap_fix`가 거짓이면 줄 접힘 표시를 정리하지 않는다. LF·IND는 Ghostty에서 `cursorScrollRegionUp`이라 건드리지 않는다
+    fn scroll_up_with_wrap_fix(&mut self, lines: usize, wrap_fix: bool) {
+        let origin = self.scroll_region.start;
+        let history_before = self.grid.history_size();
+        // b-terminal(#311): 좌우 여백이 있으면 여백 사각형만 민다. 커서와 대기 줄바꿈은 그대로다(Ghostty `scrollUp` 3400줄)
+        if self.margins_full() {
+            self.scroll_up_relative(origin, lines);
+            // b-terminal(#815): 스크롤백을 만들지 않는 SU는 Ghostty에서 `deleteLines`다. 줄 접힘 표시를 그쪽처럼 정리한다
+            if wrap_fix && self.scroll_up_moves_rows_in_place() {
+                self.clear_wraps_after_shift(origin, lines, false);
+            }
+        } else {
+            self.scroll_rect(origin, lines, false);
+        }
+        // b-terminal(#800): IND·SU만 기록한다. IL·DL은 `scroll_*_relative`를 직접 부르므로 기록하지 않는다(Ghostty는 그림을 옮기지 않는다)
+        self.log_scroll(true, lines, history_before);
+    }
+
     /// b-terminal(#524): EL 0·ED 0이 지우기 시작하는 칸. 커서가 넓은 글자의 뒤 칸이면 앞 칸부터다(Ghostty `eraseLine` right)
     fn erase_start_column(&self) -> usize {
         let point = self.grid.cursor.point;
@@ -2664,7 +2717,7 @@ impl<T: EventListener> Handler for Term<T> {
             // b-terminal(#311): 아래 여백 줄에서는 커서가 좌우 여백 안일 때만 스크롤한다(밖이면 움직이지도 않는다).
             // 좌우 여백이 있으면 사각형만 밀고 스크롤백에 쌓지 않는다(Ghostty `index` 3017줄)
             if self.cursor_in_margins() {
-                self.scroll_up(1);
+                self.scroll_up_with_wrap_fix(1, false);
             }
         } else if next < self.screen_lines() {
             self.damage_cursor();
@@ -2732,16 +2785,7 @@ impl<T: EventListener> Handler for Term<T> {
 
     #[inline]
     fn scroll_up(&mut self, lines: usize) {
-        let origin = self.scroll_region.start;
-        let history_before = self.grid.history_size();
-        // b-terminal(#311): 좌우 여백이 있으면 여백 사각형만 민다. 커서와 대기 줄바꿈은 그대로다(Ghostty `scrollUp` 3400줄)
-        if self.margins_full() {
-            self.scroll_up_relative(origin, lines);
-        } else {
-            self.scroll_rect(origin, lines, false);
-        }
-        // b-terminal(#800): IND·SU만 기록한다. IL·DL은 `scroll_*_relative`를 직접 부르므로 기록하지 않는다(Ghostty는 그림을 옮기지 않는다)
-        self.log_scroll(true, lines, history_before);
+        self.scroll_up_with_wrap_fix(lines, true);
     }
 
     #[inline]
@@ -2750,6 +2794,8 @@ impl<T: EventListener> Handler for Term<T> {
         let history_before = self.grid.history_size();
         if self.margins_full() {
             self.scroll_down_relative(origin, lines);
+            // b-terminal(#815): SD·RI는 Ghostty에서 `insertLines`다
+            self.clear_wraps_after_shift(origin, lines, true);
         } else {
             self.scroll_rect(origin, lines, true);
         }
@@ -2766,6 +2812,8 @@ impl<T: EventListener> Handler for Term<T> {
         if self.scroll_region.contains(&origin) && self.cursor_in_margins() {
             if self.margins_full() {
                 self.scroll_down_relative(origin, lines);
+                // b-terminal(#815): 함께 움직인 줄은 접힘 표시를 지키고 이웃이 바뀐 줄만 푼다(Ghostty main #15309)
+                self.clear_wraps_after_shift(origin, lines, true);
             } else {
                 self.scroll_rect(origin, lines, true);
             }
@@ -2785,12 +2833,9 @@ impl<T: EventListener> Handler for Term<T> {
             if self.margins_full() {
                 // b-terminal(#585): DL은 스크롤백을 만들지 않는다(Ghostty `deleteLines`는 영역 안 줄만 옮긴다)
                 self.scroll_up_relative_with(origin, lines, false);
-                // b-terminal(#582): 전체 폭 영역에서 옮겨진 줄과 지워진 줄은 줄 이음 표지를 잃는다(Ghostty
-                // `deleteLines` 3942~3948줄의 `wrap = false`, 지운 줄은 `reset()`). 우리는 표지를 마지막 칸의
-                // `WRAPLINE`으로 들므로 커서 줄부터 영역 끝까지 푼다. 좌우 여백이 있으면 줄에 남긴다(아래 `scroll_rect`)
-                for y in origin.0..self.scroll_region.end.0 {
-                    self.reset_row_wrap(Line(y));
-                }
+                // b-terminal(#582, #815): 줄 접힘 표시는 줄의 것이라 함께 움직인다. 이웃이 바뀐 줄(커서 윗줄, 옮겨진 마지막 줄)만
+                // 푼다(Ghostty main #15309). #582는 Ghostty 1.4.0처럼 커서 줄부터 영역 끝까지 모두 풀었다
+                self.clear_wraps_after_shift(origin, lines, false);
             } else {
                 self.scroll_rect(origin, lines, false);
             }
