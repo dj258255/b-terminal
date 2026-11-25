@@ -2419,6 +2419,8 @@ fn snapshot_of<T: EventListener>(
                 if cells[last].flags.contains(CellFlags::SELECTED)
                     && cells[last].flags.contains(CellFlags::SPACER)
                     && !cells[last].flags.contains(CellFlags::WIDE)
+                    // 앞 칸이 넓은 글자면 마지막 칸은 그 꼬리다(자리표시 칸과 같은 SPACER 표시를 쓴다)
+                    && !(cols > 1 && cells[last - 1].flags.contains(CellFlags::WIDE))
                     && cells[next].flags.contains(CellFlags::WIDE)
                     && !cells[next].flags.contains(CellFlags::SELECTED)
                     && sel.end.line.0 + offset == r as i32

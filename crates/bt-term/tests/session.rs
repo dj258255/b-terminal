@@ -2394,3 +2394,19 @@ fn selection_ending_on_spacer_head_paints_the_wrapped_wide_char() {
     s.select_update(9, 0);
     assert_eq!(selected_cols(&s, 2, 10), vec![vec![7, 8, 9], vec![]], "사각은 그대로");
 }
+
+/// #836: 줄이 넓은 글자로 끝나면(꼬리 칸이 마지막 열) 자리표시 칸이 아니므로 다음 줄로 넓히지 않는다
+#[test]
+fn selection_ending_on_a_wide_tail_at_line_end_does_not_spill_to_next_row() {
+    use bt_term::SelectKind::Simple;
+    let (s, rx) = sh("printf 'abcdefgh宽宽x'", GridSize::new(10, 3));
+    wait_exit(&rx);
+    wait_until(&s, |t| t.contains('x'));
+    s.select_start(6, 0, Simple);
+    s.select_update(9, 0);
+    assert_eq!(
+        selected_cols(&s, 2, 10),
+        vec![vec![6, 7, 8, 9], vec![]],
+        "다음 줄 넓은 글자는 고르지 않음"
+    );
+}
