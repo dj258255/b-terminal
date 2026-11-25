@@ -46,7 +46,7 @@
 | [ADR-014](#adr-014-글자-묶음-폭mode-2027을-위해-alacritty_terminal을-vendor로-고쳐-쓴다) | 글자 묶음 폭(mode 2027)을 위해 alacritty_terminal을 vendor로 고쳐 쓴다 | 유효 |
 | [ADR-025](#adr-025-윗줄sgr-5355은-vte를-vendor로-들여와-해석하고-격자-빈-비트-하나로-들고-글자색으로-긋는다) | 윗줄(SGR 53·55)은 vte를 vendor로 들여와 해석하고, 격자 빈 비트 하나로 들고, 글자색으로 긋는다 | 유효 |
 | [ADR-052](#adr-052-접근성은-accesskit로-보이는-화면만-늦춰서-내놓고-요청은-포커스만-받는다) | 접근성은 accesskit로, 보이는 화면만 늦춰서 내놓고 요청은 포커스만 받는다 | 유효 |
-| [ADR-056](#adr-056-한-칸에-덧붙는-글자는-64개까지만-두고-엔진이-ghostty와-다른-곳은-xterm과-같은-쪽이-아니면-ghostty를-따른다) | 한 칸에 덧붙는 글자는 64개까지만 두고, 엔진이 Ghostty와 다른 곳은 xterm과 같은 쪽이 아니면 Ghostty를 따른다 | 유효 |
+| [ADR-056](#adr-056-한-칸에-덧붙는-글자는-64개까지만-두고-엔진이-ghostty와-다른-곳은-xterm과-같은-쪽이-아니면-ghostty를-따른다) | 한 칸에 덧붙는 글자는 64개까지만 두고, 엔진이 Ghostty와 다른 곳은 xterm과 같은 쪽이 아니면 Ghostty를 따른다 | 일부 바뀜(줄 이음 표지: DL이 영역 끝까지 풀던 것을 이웃이 바뀐 줄만 풀고 IL·SU·SD·RI도 같게, Ghostty main #15309, #815) |
 
 ### 입력·IME
 
@@ -1783,7 +1783,7 @@ E8의 실제 창 로그에서 10ms 넘는 GPU 프레임은 세 가지였다. (1)
 
 ## ADR-056 한 칸에 덧붙는 글자는 64개까지만 두고, 엔진이 Ghostty와 다른 곳은 xterm과 같은 쪽이 아니면 Ghostty를 따른다
 
-상태: 채택
+상태: 일부 바뀜(줄 이음 표지: DL이 영역 끝까지 풀던 것을 이웃이 바뀐 줄만 풀고 IL·SU·SD·RI도 같게, Ghostty main #15309, #815)
 관련: [#577](https://github.com/dj258255/b-terminal/issues/577), [#579](https://github.com/dj258255/b-terminal/issues/579), [#580](https://github.com/dj258255/b-terminal/issues/580), [#581](https://github.com/dj258255/b-terminal/issues/581), [#582](https://github.com/dj258255/b-terminal/issues/582), [#583](https://github.com/dj258255/b-terminal/issues/583), [#584](https://github.com/dj258255/b-terminal/issues/584), [#585](https://github.com/dj258255/b-terminal/issues/585), ADR-001(엔진), ADR-014(엔진 사본), ADR-010(그림 상한)
 
 ### 맥락

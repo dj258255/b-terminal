@@ -293,15 +293,18 @@ fn delete_lines_resets_wrap() {
 }
 
 #[test]
-fn delete_lines_resets_wrap_on_all_shifted_rows() {
+fn delete_lines_resets_wrap_only_where_the_neighbor_changed() {
     // 4줄 중 위 두 줄이 이어진 줄이고, DL이 그 줄을 위로 올린다
     let mut t = T::new(3, 4);
     t.feed("ABCDEFGHI\r\nJ");
     assert!(wrapped(&t, 0) && wrapped(&t, 1));
     t.feed("\x1b[1;1H\x1b[M");
-    for line in 0..4 {
-        assert!(!wrapped(&t, line), "line {line}");
-    }
+    // #815: Ghostty main #15309부터 함께 올라간 줄은 표지를 지킨다(1.4.0은 모두 풀었다). 위 두 줄(DEF·GHI)은
+    // 이어진 채 올라가 0번 줄만 이음 표지가 남고, 옮겨진 마지막 줄(J)과 빈 줄은 없다
+    assert_eq!(
+        (0..4).map(|l| wrapped(&t, l)).collect::<Vec<_>>(),
+        [true, false, false, false]
+    );
     // DL 한 번에 영역을 다 지워도 마찬가지
     let mut t = T::new(3, 3);
     t.feed("ABCDEFGHI\x1b[1;1H\x1b[5M");
@@ -319,10 +322,11 @@ fn delete_lines_outside_region_leaves_wrap_alone() {
 }
 
 #[test]
-fn delete_lines_keeps_rows_above_cursor() {
-    // 커서 줄 위의 줄(영역 안이어도 옮기지 않는 줄)은 표지가 그대로
-    let mut t = T::new(3, 4);
-    t.feed("ABCDEFGHI\x1b[2;1H\x1b[M");
+fn delete_lines_clears_only_the_row_just_above_cursor() {
+    // 커서 줄 위의 줄은 옮기지 않지만, 그 바로 아래 줄이 바뀌므로 그 줄만 표지를 잃는다(#815, Ghostty main #15309.
+    // 1.4.0 때는 위 줄의 표지가 그대로였다). 더 위의 줄은 그대로다
+    let mut t = T::new(3, 5);
+    t.feed("ABCDEFGHIJKL\x1b[3;1H\x1b[M");
     assert!(wrapped(&t, 0));
     assert!(!wrapped(&t, 1));
     assert!(!wrapped(&t, 2));
