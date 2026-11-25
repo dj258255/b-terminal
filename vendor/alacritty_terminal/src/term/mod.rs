@@ -31,6 +31,7 @@ pub mod cell;
 pub mod color;
 pub mod search;
 pub mod semantic; // b-terminal(#329)
+use semantic::{RowPrompt, combine_marks};
 
 /// Minimum number of columns.
 ///
@@ -1337,20 +1338,40 @@ impl<T> Term<T> {
             }
         };
 
+        // b-terminal(#817): 줄 표시(프롬프트·이어진 프롬프트)는 0번 칸에 있어 칸과 함께 휩쓸린다. 옮기기 전에 읽어 두고 줄 단위로 다시 쓴다
+        // (Ghostty #15327): 줄 일부만 옮기면 받는 줄과 보낸 줄의 표시를 합치고, 줄 전체를 옮기면 보낸 줄 표시를 쓰며, 칸만 지운 줄은 그대로 둔다
+        let whole_row = left == 0 && right + 1 == columns;
+        let old_marks: Vec<RowPrompt> = (top..bottom).map(|y| self.row_prompt(Line(y))).collect();
+        let mark_at = |y: i32| old_marks[(y - top) as usize];
+        let mut new_marks = old_marks.clone();
+
         if down {
             for y in (top + count..bottom).rev() {
                 copy_row(self, y - count, y);
+                new_marks[(y - top) as usize] =
+                    if whole_row { mark_at(y - count) } else { combine_marks(mark_at(y), mark_at(y - count)) };
             }
             for y in top..top + count {
                 clear_row(self, y);
+                if whole_row {
+                    new_marks[(y - top) as usize] = RowPrompt::None;
+                }
             }
         } else {
             for y in top..bottom - count {
                 copy_row(self, y + count, y);
+                new_marks[(y - top) as usize] =
+                    if whole_row { mark_at(y + count) } else { combine_marks(mark_at(y), mark_at(y + count)) };
             }
             for y in bottom - count..bottom {
                 clear_row(self, y);
+                if whole_row {
+                    new_marks[(y - top) as usize] = RowPrompt::None;
+                }
             }
+        }
+        for (i, mark) in new_marks.into_iter().enumerate() {
+            self.set_row_prompt(Line(top + i as i32), mark);
         }
 
         self.selection = None;

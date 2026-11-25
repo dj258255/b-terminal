@@ -615,3 +615,12 @@
 - 고침: IL·DL(과 SU·SD·RI 가운데 Ghostty가 `deleteLines`·`insertLines`로 처리하는 것)이 전체 폭 영역을 옮긴 뒤 이웃이 바뀐 줄만 푼다. 커서 바로 윗줄, DL이면 옮겨진 마지막 줄, IL이면 새 맨 아래 줄이다. 풀 때 줄 끝이 앞 칸 자리표시(spacer head)였으면 그 칸도 빈 칸으로 만든다. 스크롤백을 만드는 SU와 LF·IND는 건드리지 않는다(Ghostty도 다른 길). 좌우 여백이 있는 길(`scroll_rect`)은 원래 표시를 지켰고 그대로다
 - 0.99.0에서 풀기: 없다(화면에서 접힘이 풀린 줄은 이어 붙지 않는다)
 - 한계: 우리는 "윗줄에서 이어받는 줄" 표시가 따로 없고 윗줄의 `WRAPLINE`이 그것이라 Ghostty의 `wrap_continuation`을 따로 지우지 않는다. 같은 입력의 줄 상태는 Ghostty 시험 표와 같다. Ghostty의 페이지 경계 시험은 우리에게 페이지가 없어 같은 입력의 화면과 표시만 견줬다
+
+## 75. 좌우 여백 안 IL·DL에서 OSC 133 프롬프트 줄 표시가 칸과 함께 휩쓸린다
+
+- 언제: 2026-11-25, #817. #815(IL·DL 줄 접힘 표시)를 고치다 찾았다. 0.99.0까지의 동작이다
+- 증상: DECLRMM(`ESC[?69h`)에서 IL·DL을 하면 Ghostty main(#15327)과 줄 표시가 다르다. 5줄 10열, 커서 `ESC[3;3H`에서 줄 3(0부터)에 프롬프트(P)가 있을 때 IL 여백 3;10이면 우리는 `...P.`, Ghostty는 `...PP`이고, 줄 2에 P가 있을 때 DL 여백 1;8이면 우리는 `.....`, Ghostty는 `..P..`이다. 0번 열이 여백 안이면 표시가 칸과 함께 옮겨지고 비워지는 줄은 표시를 잃으며, 여백 밖이면 표시가 제자리에 남고 옮겨 온 칸의 표시는 합쳐지지 않았다. 프롬프트 건너뛰기(`jump_to_prompt`)가 한 프롬프트를 놓치거나 표시 없는 줄에 멈춘다
+- 까닭: 줄 표시를 그 줄 0번 칸의 `ROW_PROMPT`·`ROW_PROMPT_CONTINUATION` 칸 표시로 두는데 `scroll_rect`가 칸을 `copy_row`로 덮고 `clear_row`로 지웠다
+- 고침: `scroll_rect`가 옮기기 전에 영역 안 줄들의 표시를 읽어 두고, 옮긴 뒤 줄 단위로 다시 쓴다. 줄 일부만 옮기면 받는 줄 표시는 받는 줄과 보낸 줄의 합(`combine`: 프롬프트 > 이어짐 > 없음), 줄 전체를 옮기면 보낸 줄 표시, 칸만 지운 줄은 그대로다. 0번 칸의 다른 표시(넓은 글자 등)는 건드리지 않는다. 시험: `crates/bt-term/tests/margin_prompt817.rs`(Ghostty `insertLines and deleteLines in margins keep semantic prompt` 네 경우, `Page cloneRowFrom partial combines semantic prompt`의 아홉 조합, 이슈 표 여섯 입력)
+- 한계: kitty 유니코드 자리표시의 줄 단위 표시(`kitty_virtual_placeholder`)는 우리에게 없어 옮기지 않았다
+- 0.99.0에서 풀기: 좌우 여백과 OSC 133을 함께 쓰지 않는다
