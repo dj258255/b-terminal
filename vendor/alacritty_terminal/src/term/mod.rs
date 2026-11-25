@@ -33,6 +33,23 @@ pub mod search;
 pub mod semantic; // b-terminal(#329)
 use semantic::{RowPrompt, combine_marks};
 
+/// b-terminal(#825): 줄 프롬프트 표시를 싣는 플래그(0번 칸). 칸을 지우거나 밀어도 줄의 표시는 남긴다(Ghostty `Screen.clearCells`는 줄 속성을 건드리지 않는다)
+const ROW_MARK_FLAGS: Flags = Flags::ROW_PROMPT.union(Flags::ROW_PROMPT_CONTINUATION);
+
+/// b-terminal(#825): 칸을 배경색 `bg`의 빈 칸으로 만들되 줄 프롬프트 표시는 남긴다
+fn blank_cell(cell: &mut Cell, bg: Color) {
+    let marks = cell.flags & ROW_MARK_FLAGS;
+    *cell = bg.into();
+    cell.flags.insert(marks);
+}
+
+/// b-terminal(#825): 칸에서 줄 프롬프트 표시를 떼어 돌려준다(칸을 옮기고 나서 0번 칸에 다시 붙인다)
+fn take_marks(cell: &mut Cell) -> Flags {
+    let marks = cell.flags & ROW_MARK_FLAGS;
+    cell.flags.remove(ROW_MARK_FLAGS);
+    marks
+}
+
 /// Minimum number of columns.
 ///
 /// A minimum of 2 is necessary to hold fullwidth unicode characters.
@@ -536,6 +553,9 @@ pub struct Term<T> {
     mouse_shift_capture: Option<bool>,
     /// b-terminal(#329): OSC 133 상태(커서의 글 종류, 지우기 규칙, 다시 그리기)
     semantic: semantic::SemanticState,
+    /// b-terminal(#826): 쉬고 있는 화면의 OSC 133 상태. Ghostty는 `cursor.semantic_content`와 `semantic_prompt.{click,seen}`을
+    /// 화면마다 둔다. `semantic`은 보고 있는 화면의 것이고 화면을 바꿀 때 맞바꾼다(`swap_alt_grids`)
+    inactive_semantic: semantic::SemanticState,
 }
 
 /// b-terminal 패치(#180): 한 칸의 결합 문자 목록에 이어 붙이는 글자 수 상한(join_grapheme)
@@ -698,6 +718,7 @@ impl<T> Term<T> {
             protected_iso: false,
             mouse_shift_capture: None,
             semantic: Default::default(), // b-terminal(#329)
+            inactive_semantic: Default::default(), // b-terminal(#826)
             mode,
         }
     }
@@ -1124,12 +1145,13 @@ impl<T> Term<T> {
         column >= self.margin_left && column <= self.margin_right
     }
 
-    /// b-terminal(#524): 칸 하나를 현재 배경색의 빈 칸으로 만든다. 줄 끝의 이어진 줄 표시(WRAPLINE)는 남긴다
+    /// b-terminal(#524): 칸 하나를 현재 배경색의 빈 칸으로 만든다. 줄 끝의 이어진 줄 표시(WRAPLINE)와
+    /// 0번 칸의 줄 프롬프트 표시(#825)는 남긴다
     fn blank_cell_keep_wrap(&mut self, line: Line, column: usize) {
         let bg = self.grid.cursor.template.bg;
         let cell = &mut self.grid[line][Column(column)];
         let wrap = cell.flags.contains(Flags::WRAPLINE);
-        *cell = bg.into();
+        blank_cell(cell, bg);
         cell.flags.set(Flags::WRAPLINE, wrap);
     }
 
@@ -1277,7 +1299,7 @@ impl<T> Term<T> {
             if orphan {
                 let wrap = flags.contains(Flags::WRAPLINE);
                 let cell = &mut self.grid[line][Column(c)];
-                *cell = bg.into();
+                blank_cell(cell, bg);
                 cell.flags.set(Flags::WRAPLINE, wrap);
             }
         }
@@ -1311,12 +1333,12 @@ impl<T> Term<T> {
                 }
             }
             if left > 0 && self.grid[line][Column(left)].flags.contains(Flags::WIDE_CHAR_SPACER) {
-                self.grid[line][Column(left - 1)] = bg.into();
-                self.grid[line][Column(left)] = bg.into();
+                blank_cell(&mut self.grid[line][Column(left - 1)], bg);
+                blank_cell(&mut self.grid[line][Column(left)], bg);
             }
             if right + 1 < columns && self.grid[line][Column(right)].flags.contains(Flags::WIDE_CHAR) {
-                self.grid[line][Column(right)] = bg.into();
-                self.grid[line][Column(right + 1)] = bg.into();
+                blank_cell(&mut self.grid[line][Column(right)], bg);
+                blank_cell(&mut self.grid[line][Column(right + 1)], bg);
             }
         }
 
@@ -1398,6 +1420,7 @@ impl<T> Term<T> {
             // Reset alternate screen contents.
             self.inactive_grid.reset_region(..);
             self.swap_alt_grids();
+            self.semantic_copy_cursor_from_inactive(); // b-terminal(#826): 들어갈 때만 칸 종류를 복사한다(Ghostty `cursorCopy`)
         } else {
             self.swap_alt_grids();
             // b-terminal(#545): 주 화면의 커서 자리·펜은 그 화면에 남아 있다. 저장할 때의 원점 모드와 문자 집합 상태를
@@ -1433,6 +1456,7 @@ impl<T> Term<T> {
         let cursor = self.grid.cursor.clone();
         self.swap_alt_grids();
         self.grid.cursor = cursor;
+        self.semantic_copy_cursor_from_inactive(); // b-terminal(#826): 47·1047은 두 방향 모두 커서를 복사한다(Ghostty `cursorCopy`)
     }
 
     /// 두 화면과 키보드 모드 쌓음을 맞바꾼다(`swap_alt`의 뒷부분, b-terminal #296에서 갈랐다)
@@ -1443,6 +1467,10 @@ impl<T> Term<T> {
         self.set_keyboard_mode(keyboard_mode, KeyboardModesApplyBehavior::Replace);
 
         mem::swap(&mut self.grid, &mut self.inactive_grid);
+        // b-terminal(#826): OSC 133 상태도 화면마다 따로 둔다. `redraw=`는 터미널 전체의 것(Ghostty `flags.shell_redraws_prompt`)이라 함께 간다
+        let redraw = self.semantic.redraw;
+        mem::swap(&mut self.semantic, &mut self.inactive_semantic);
+        self.semantic.redraw = redraw;
         self.mode ^= TermMode::ALT_SCREEN;
         self.selection = None;
         self.mark_fully_damaged();
@@ -1855,7 +1883,7 @@ impl<T> Term<T> {
         let bg = self.grid.cursor.template.bg;
         for cell in &mut self.grid[line][range] {
             if !cell.flags.contains(Flags::PROTECTED) {
-                *cell = bg.into();
+                blank_cell(cell, bg);
             }
         }
     }
@@ -1940,7 +1968,7 @@ impl<T> Term<T> {
         } else {
             let row = &mut self.grid[point.line];
             for cell in &mut row[left..right] {
-                *cell = bg.into();
+                blank_cell(cell, bg);
             }
         }
 
@@ -2436,6 +2464,8 @@ impl<T: EventListener> Handler for Term<T> {
 
         let row = &mut self.grid[line][..];
 
+        // b-terminal(#825): 줄 프롬프트 표시는 줄의 것이라 칸이 밀려도 0번 칸에 남긴다(Ghostty `insertBlanks`는 줄 속성을 건드리지 않는다)
+        let marks = take_marks(&mut row[0]);
         for offset in (0..num_cells).rev() {
             row.swap(destination + offset, source.0 + offset);
         }
@@ -2445,6 +2475,7 @@ impl<T: EventListener> Handler for Term<T> {
         for cell in &mut row[source.0..destination] {
             *cell = bg.into();
         }
+        row[0].flags.insert(marks);
         self.repair_wide_cells(line, source.0.saturating_sub(1), right + 1);
     }
 
@@ -2898,7 +2929,7 @@ impl<T: EventListener> Handler for Term<T> {
         }
         let row = &mut self.grid[line];
         for cell in &mut row[start..end] {
-            *cell = bg.into();
+            blank_cell(cell, bg);
         }
     }
 
@@ -2931,6 +2962,8 @@ impl<T: EventListener> Handler for Term<T> {
         self.grid.cursor.input_needs_wrap = false; // b-terminal(#525): DCH는 줄바꿈 대기를 푼다(Ghostty `deleteChars`의 `cursorResetWrap`). 여백 밖이면 위에서 이미 돌아갔다
         let row = &mut self.grid[line][..];
 
+        // b-terminal(#825): 줄 프롬프트 표시는 줄의 것이라 칸이 당겨져도 0번 칸에 남긴다(Ghostty `deleteChars`는 줄 속성을 건드리지 않는다)
+        let marks = take_marks(&mut row[0]);
         for offset in 0..(right + 1 - start - count) {
             row.swap(start + offset, start + count + offset);
         }
@@ -2939,6 +2972,7 @@ impl<T: EventListener> Handler for Term<T> {
         for cell in &mut row[right + 1 - count..=right] {
             *cell = bg.into();
         }
+        row[0].flags.insert(marks);
         self.repair_wide_cells(line, start.saturating_sub(1), right + 1);
     }
 
@@ -3192,7 +3226,7 @@ impl<T: EventListener> Handler for Term<T> {
                 // b-terminal(#524): 커서가 넓은 글자의 앞 칸이면 뒤 칸까지 지운다(Ghostty `eraseLine` left)
                 let end = Column(self.erase_end_column());
                 for cell in &mut self.grid[cursor.line][..end] {
-                    *cell = bg.into();
+                    blank_cell(cell, bg);
                 }
 
                 let range = Line(0)..=cursor.line;
@@ -3204,7 +3238,7 @@ impl<T: EventListener> Handler for Term<T> {
                 let start = self.erase_start_column();
                 self.reset_row_wrap(cursor.line);
                 for cell in &mut self.grid[cursor.line][Column(start)..] {
-                    *cell = bg.into();
+                    blank_cell(cell, bg);
                 }
 
                 if (cursor.line.0 as usize) < screen_lines - 1 {
