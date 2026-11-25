@@ -192,3 +192,7 @@ alacritty_terminal이 글자 묶음 폭(mode 2027)을 지원하는 판을 내면
 ## alacritty_terminal: OSC 133 상태를 화면마다 따로 둠(#826)
 
 - 고친 곳: `vendor/alacritty_terminal/src/term/mod.rs`의 `Term::inactive_semantic`(새 필드), `swap_alt_grids`(맞바꿈), `swap_alt`·`switch_screen_legacy`(커서 복사), `src/term/semantic.rs`의 `semantic_copy_cursor_from_inactive`·`primary_semantic`(새 함수), `semantic_reset`(두 화면)·`semantic_redraw_span`(주 화면의 상태). `b-terminal(#826)`으로 찾을 수 있습니다. 이유: Ghostty는 `cursor.semantic_content`와 `semantic_prompt.{click,seen}`을 화면마다 둡니다. 되돌릴 조건: 없음(원본이 같은 구조를 가짐). 테스트는 `crates/bt-term/tests/screen_semantic826.rs`에 있습니다.
+
+## vte의 `x11_rgb.txt`를 vte 밖에서도 읽습니다(#837)
+
+`vendor/vte/src/x11_rgb.txt`(Ghostty `rgb.txt` 782줄)를 `bt-core`(`theme.rs`, 설정의 색 값과 `+list-colors`)와 `bt-term`(`kitty_color.rs`, 시험)도 `include_str!`로 읽습니다. 파일을 옮기거나 지우면 이들도 고쳐야 합니다. vte 코드는 이 일로 바꾸지 않았습니다.

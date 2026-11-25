@@ -724,3 +724,12 @@
 - 고침: `bt_render::no_min_contrast`가 Ghostty `isGraphicsElement`의 범위(U+2500~259F, U+1FB00~1FBFF, U+1CC00~1CEBF, U+E0B0~E0D7)를 그대로 옮겨 CPU·GPU 모두 명암비를 건너뛴다. `cell_colors`는 굵은 24비트 글자색이 (OSC 10 반영) 기본 글자색과 같으면 `bold-color`를 쓴다
 - 남긴 것: 이모지·밑줄·취소선에 명암비를 거는지는 이번에 바꾸지 않았다(Ghostty는 밑줄·취소선 조각에도 명암비를 걸지만 우리는 걸지 않는다)
 - 0.101.0에서 풀기: 글자색을 바탕과 충분히 다르게 쓰거나 `minimum-contrast`를 1로 둔다
+
+## 87. 설정의 색 값이 `#rrggbb`와 이름 다섯 개만 받고 나머지는 조용히 기본값으로 남는다
+
+- 언제: 2026-11-25, #837. Ghostty 1.4.0 `terminal/color.zig` 시험과 견준 조사(0.102)에서 찾았다. 0.101.0까지의 동작이다
+- 증상: `background = #fff`·`#345`·12자리 `#`·`rgb:ff/00/00`·`rgbi:`·`LawnGreen`·`medium spring green`·`forestgreen`·`gray`·`darkblue`, `palette = 0xF=…`·`0b1=…`·`0o7=…`·`1=LawnGreen`·`20=#abc`가 먹지 않고 기본값이 남았다. 경고도 없었다(`palette`는 모양이 틀리면 경고했다). `+list-colors`는 소문자 676개를 냈다
+- 까닭: 설정의 색 값은 `Rgb::parse_hex`(6자리 16진수)와 `named_color`(이름 다섯 개)만 썼고, `palette` 번호는 10진수만 읽었다. 색 키 몇 곳은 못 읽으면 기본값을 그대로 두었다. `+list-colors`가 쓰던 표는 빈칸 든 이름을 뺀 소문자 676개였다
+- 고침: `Rgb::parse_color`(Ghostty `RGB.parse`)와 `parse_palette_entry`(Ghostty `parsePaletteEntry`)를 더해 색 키 전부(`background`·`foreground`·`cursor-color`·`cursor-text`·`selection-*`·`bold-color`·`palette`·`search-*`·`unfocused-split-fill`·`split-divider-color`)가 쓰게 했다. 못 읽는 값은 경고하고 기본값을 둔다. X11 표는 `vendor/vte/src/x11_rgb.txt`(782개) 하나로 합쳐 `+list-colors`와 kitty 색 프로토콜도 같은 표를 읽는다. 터미널 색 OSC의 `#rgb`는 xterm 규칙 그대로다(ADR-084)
+- 한계: 같은 `#fff`가 OSC로 오면 `f0f0f0`, 설정에서는 `ffffff`다. `palette` 번호의 `_` 둘레 세부는 Zig 표준 라이브러리를 읽지 못해 추정이다. `+list-colors`의 색 입힌 대화형 출력(Ghostty tty 모드)은 없고 평문만 낸다
+- 0.101.0에서 풀기: 색 값을 `#rrggbb`로 쓴다

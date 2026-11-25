@@ -34,6 +34,67 @@ impl Rgb {
         Some(Self::from_u32(v))
     }
 
+    /// 설정의 색 값을 Ghostty 1.4.0 `terminal/color.zig`의 `RGB.parse`대로 읽는다(#837).
+    ///
+    /// 앞뒤 공백·탭은 무시한다. 받는 꼴: `#rgb`·`#rrggbb`·`#rrrgggbbb`·`#rrrrggggbbbb`, X11 색 이름
+    /// (대소문자 무시, 안쪽 빈칸은 표대로: `medium spring green`과 `MediumSpringGreen`은 되고 `medium springgreen`은 안 된다),
+    /// `rgb`·`rrggbb`(`#` 없음), `rgb:r/g/b`(칸마다 1~4자리), `rgbi:r/g/b`(0.0~1.0).
+    /// 칸의 비트 수는 `값*255/최댓값`(버림)으로 8비트가 되어 `#fff`는 `ffffff`, `#345`는 `334455`다.
+    ///
+    /// 터미널 색 OSC(`OSC 4`·`10`~`12`)는 이 함수가 아니라 VT 엔진의 xterm 규칙(낮은 자리를 0으로 채움)을 따른다(ADR-056·084).
+    pub fn parse_color(s: &str) -> Option<Self> {
+        let input = s.trim_matches([' ', '\t']).as_bytes();
+        if input.is_empty() {
+            return None;
+        }
+        if input[0] == b'#' {
+            let n = match input.len() {
+                4 => 1,
+                7 => 2,
+                10 => 3,
+                13 => 4,
+                _ => return None,
+            };
+            return Some(Self::new(
+                hex_channel(&input[1..1 + n])?,
+                hex_channel(&input[1 + n..1 + 2 * n])?,
+                hex_channel(&input[1 + 2 * n..])?,
+            ));
+        }
+        if let Some(c) = x11_color(input) {
+            return Some(c);
+        }
+        if matches!(input.len(), 3 | 6) {
+            let n = input.len() / 3;
+            return Some(Self::new(
+                hex_channel(&input[..n])?,
+                hex_channel(&input[n..2 * n])?,
+                hex_channel(&input[2 * n..])?,
+            ));
+        }
+        if input.len() < "rgb:a/a/a".len() || &input[..3] != b"rgb" {
+            return None;
+        }
+        let (intensity, rest) = match input[3] {
+            b'i' => (true, &input[4..]),
+            _ => (false, &input[3..]),
+        };
+        let rest = rest.strip_prefix(b":")?;
+        let mut parts = rest.split(|&b| b == b'/');
+        let (r, g, b) = (parts.next()?, parts.next()?, parts.next()?);
+        if parts.next().is_some() {
+            return None;
+        }
+        let ch = |p: &[u8]| {
+            if intensity {
+                intensity_channel(p)
+            } else {
+                hex_channel(p)
+            }
+        };
+        Some(Self::new(ch(r)?, ch(g)?, ch(b)?))
+    }
+
     /// WCAG 상대 휘도(0~1, #123)
     pub fn luminance(self) -> f32 {
         let lin = |c: u8| {
@@ -369,6 +430,97 @@ impl Theme {
     }
 }
 
+/// X11 색 이름 표(Ghostty `src/terminal/res/rgb.txt` 782줄, `vendor/vte`와 같은 파일). 줄 모양은 `RRR GGG BBB<탭>이름`
+const X11_RGB: &str = include_str!("../../../vendor/vte/src/x11_rgb.txt");
+
+/// X11 색 이름 표를 파일 차례대로: `(이름, 색)`. `+list-colors`가 쓴다
+pub fn x11_colors() -> impl Iterator<Item = (&'static str, Rgb)> {
+    X11_RGB.lines().filter_map(|line| {
+        let line = line.trim_end_matches('\r');
+        let name = line.get(12..)?.trim_matches([' ', '\t']);
+        let ch = |r: std::ops::Range<usize>| line.get(r)?.trim().parse::<u8>().ok();
+        Some((name, Rgb::new(ch(0..3)?, ch(4..7)?, ch(8..11)?)))
+    })
+}
+
+/// 이름(대소문자 무시, 안쪽 빈칸은 그대로)으로 X11 표에서 찾는다
+fn x11_color(name: &[u8]) -> Option<Rgb> {
+    use std::collections::HashMap;
+    use std::sync::OnceLock;
+    static MAP: OnceLock<HashMap<String, Rgb>> = OnceLock::new();
+    let map = MAP.get_or_init(|| {
+        let mut m = HashMap::new();
+        for (n, c) in x11_colors() {
+            m.entry(n.to_ascii_lowercase()).or_insert(c);
+        }
+        m
+    });
+    map.get(std::str::from_utf8(name).ok()?.to_ascii_lowercase().as_str())
+        .copied()
+}
+
+/// 16진수 1~4자리(숫자만)를 `값*255/최댓값`(버림)으로 8비트로 만든다(Ghostty `RGB.fromHex`). `+`·`-`·`_`는 받지 않는다
+fn hex_channel(d: &[u8]) -> Option<u8> {
+    if d.is_empty() || d.len() > 4 || !d.iter().all(u8::is_ascii_hexdigit) {
+        return None;
+    }
+    let v = u32::from_str_radix(std::str::from_utf8(d).ok()?, 16).ok()?;
+    let max = (1u32 << (4 * d.len())) - 1;
+    Some((v * 255 / max) as u8)
+}
+
+/// `rgbi:`의 한 칸: 0.0~1.0 십진 분수(부호 하나 가능, 숫자와 소수점 하나, 숫자 한 자리 이상, 지수 없음)를 버림으로 8비트로(Ghostty `fromIntensity`)
+fn intensity_channel(p: &[u8]) -> Option<u8> {
+    let body = match p.first() {
+        Some(b'+' | b'-') => &p[1..],
+        _ => p,
+    };
+    let digits = body.iter().filter(|b| b.is_ascii_digit()).count();
+    let dots = body.iter().filter(|&&b| b == b'.').count();
+    if digits == 0 || dots > 1 || digits + dots != body.len() {
+        return None;
+    }
+    let f: f64 = std::str::from_utf8(p).ok()?.parse().ok()?;
+    (0.0..=1.0).contains(&f).then_some((f * 255.0) as u8)
+}
+
+/// `palette = N=색`의 값을 Ghostty `parsePaletteEntry`대로 읽는다(#837). 번호는 10진수나 `0x`·`0o`·`0b` 접두 수(0~255,
+/// 앞뒤 공백·탭 무시), 색은 [`Rgb::parse_color`]. 번호가 0~255를 넘으면 `Err(true)`, 모양이 틀리면 `Err(false)`
+pub fn parse_palette_entry(v: &str) -> Result<(u8, Rgb), bool> {
+    let (n, c) = v.split_once('=').ok_or(false)?;
+    let idx = parse_int_base0(n.trim_matches([' ', '\t']))?;
+    let color = Rgb::parse_color(c).ok_or(false)?;
+    Ok((idx, color))
+}
+
+/// Zig `std.fmt.parseInt(u8, s, 0)`: 부호 하나, `0x`·`0o`·`0b` 접두(소문자), 숫자 사이의 `_`. 넘치면 `Err(true)`
+fn parse_int_base0(s: &str) -> Result<u8, bool> {
+    let (neg, body) = match s.as_bytes().first() {
+        Some(b'+') => (false, &s[1..]),
+        Some(b'-') => (true, &s[1..]),
+        _ => (false, s),
+    };
+    let (radix, digits) = match body.get(..2) {
+        Some("0x") if body.len() > 2 => (16, &body[2..]),
+        Some("0o") if body.len() > 2 => (8, &body[2..]),
+        Some("0b") if body.len() > 2 => (2, &body[2..]),
+        _ => (10, body),
+    };
+    if digits.is_empty() || digits.starts_with('_') || digits.ends_with('_') || digits.contains("__") {
+        return Err(false);
+    }
+    let mut acc: u32 = 0;
+    for c in digits.chars().filter(|&c| c != '_') {
+        let d = c.to_digit(radix).ok_or(false)?;
+        acc = (acc * radix + d).min(1000);
+    }
+    // 부호 없는 수에 `-`가 붙으면 0만 받는다(Zig는 넘침으로 본다)
+    if acc > 255 || (neg && acc != 0) {
+        return Err(true);
+    }
+    Ok(acc as u8)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -514,6 +666,75 @@ mod tests {
         assert_eq!(Rgb::parse_hex("ff8000"), Some(Rgb::new(255, 128, 0)));
         assert_eq!(Rgb::parse_hex("#ff80"), None);
         assert_eq!(Rgb::parse_hex("zzzzzz"), None);
+    }
+
+    /// #837: Ghostty `color.zig` `RGB.parse` 시험의 값
+    #[test]
+    fn parse_color_matches_ghostty_rgb_parse() {
+        let c = |s| Rgb::parse_color(s);
+        assert_eq!(c("rgbi:1.0/0/0"), Some(Rgb::new(255, 0, 0)));
+        assert_eq!(c("rgb:7f/a0a0/0"), Some(Rgb::new(127, 160, 0)));
+        assert_eq!(c("rgb:f/ff/fff"), Some(Rgb::new(255, 255, 255)));
+        assert_eq!(c("#ff0010"), Some(Rgb::new(255, 0, 16)));
+        assert_eq!(c("0A0B0C"), Some(Rgb::new(10, 11, 12)));
+        assert_eq!(c("FFF"), Some(Rgb::new(255, 255, 255)));
+        assert_eq!(c("#345"), Some(Rgb::new(51, 68, 85)));
+        assert_eq!(c("#fffffffff"), Some(Rgb::new(255, 255, 255)));
+        assert_eq!(c("#ffffffffffff"), Some(Rgb::new(255, 255, 255)));
+        assert_eq!(c(" #AABBCC   "), Some(Rgb::new(170, 187, 204)));
+        assert_eq!(c("white"), Some(Rgb::new(255, 255, 255)));
+        assert_eq!(c("LawnGreen"), Some(Rgb::new(124, 252, 0)));
+        assert_eq!(c("medium spring green"), Some(Rgb::new(0, 250, 154)));
+        assert_eq!(c(" Forest Green "), Some(Rgb::new(34, 139, 34)));
+        assert_eq!(c("\tForestGreen\t"), Some(Rgb::new(34, 139, 34)));
+        for bad in [
+            "",
+            "  ",
+            "rgb;",
+            "rgb:",
+            ":a/a/a",
+            "a/a/a",
+            "rgb:a/a/a/",
+            "rgb:00000///",
+            "rgb:000/",
+            "rgbi:a/a/a",
+            "rgb:0.5/0.0/1.0",
+            "rgb:not/hex/zz",
+            "#",
+            "#ff",
+            "#ffff",
+            "#fffff",
+            "#gggggg",
+            "#12345",
+            "12345",
+            "nosuchcolor",
+            "rgb:f_f/0/0",
+            "#f_f000000",
+            "medium springgreen",
+        ] {
+            assert_eq!(c(bad), None, "{bad:?}");
+        }
+        assert_eq!(x11_colors().count(), 782);
+    }
+
+    /// #837: Ghostty `color.zig` `parsePaletteEntry` 시험의 값
+    #[test]
+    fn parse_palette_entry_matches_ghostty() {
+        let p = parse_palette_entry;
+        assert_eq!(p("0=#AABBCC"), Ok((0, Rgb::new(170, 187, 204))));
+        assert_eq!(p("0b1=#014589"), Ok((1, Rgb::new(1, 69, 137))));
+        assert_eq!(p("0o7=#234567"), Ok((7, Rgb::new(35, 69, 103))));
+        assert_eq!(p("0xF=#ABCDEF"), Ok((15, Rgb::new(171, 205, 239))));
+        assert_eq!(p("0 =  #AABBCC"), Ok((0, Rgb::new(170, 187, 204))));
+        assert_eq!(p(" 1= #DDEEFF    "), Ok((1, Rgb::new(221, 238, 255))));
+        assert_eq!(p("  2  =  #123456 "), Ok((2, Rgb::new(18, 52, 86))));
+        assert_eq!(p("1=black"), Ok((1, Rgb::new(0, 0, 0))));
+        assert_eq!(p("256=#fff"), Err(true));
+        assert_eq!(p("0x100=#fff"), Err(true));
+        assert_eq!(p("x=#fff"), Err(false));
+        assert_eq!(p("#fff"), Err(false));
+        assert_eq!(p("1=nosuch"), Err(false));
+        assert_eq!(p("=#fff"), Err(false));
     }
 
     #[test]

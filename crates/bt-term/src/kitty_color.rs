@@ -130,24 +130,15 @@ pub fn parse(data: &str) -> Option<Vec<Request>> {
     Some(list)
 }
 
-/// X11 색 이름 표(`r g b 이름`). `+list-colors`와 같은 파일이다
-const X11_COLORS: &str = include_str!("../../bt-app/src/x11_colors.txt");
-
 /// X11 색 이름 표를 소문자 이름으로 찾게 한 번만 만든 것. 이름이 겹치면 앞 줄이 이긴다(줄마다 훑던 때와 같다).
 /// OSC 21 하나에 이름 항목이 수백 개 올 수 있어 줄마다 훑으면 8KiB 하나가 1ms를 넘게 걸렸다(#596)
 fn x11_table() -> &'static HashMap<String, (u8, u8, u8)> {
     static TABLE: OnceLock<HashMap<String, (u8, u8, u8)>> = OnceLock::new();
     TABLE.get_or_init(|| {
         let mut m = HashMap::new();
-        for l in X11_COLORS.lines() {
-            let mut f = l.split_whitespace();
-            let (Some(r), Some(g), Some(b), Some(n)) = (f.next(), f.next(), f.next(), f.next()) else {
-                continue;
-            };
-            let (Ok(r), Ok(g), Ok(b)) = (r.parse(), g.parse(), b.parse()) else {
-                continue;
-            };
-            m.entry(n.to_ascii_lowercase()).or_insert((r, g, b));
+        // 빈칸 든 이름(`medium spring green`)은 찾는 쪽이 빈칸을 빼므로 닿지 않는다(#837 전에는 표에서 뺐다)
+        for (n, c) in bt_core::theme::x11_colors() {
+            m.entry(n.to_ascii_lowercase()).or_insert((c.r, c.g, c.b));
         }
         m
     })

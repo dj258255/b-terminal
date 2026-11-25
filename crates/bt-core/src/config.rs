@@ -2701,48 +2701,71 @@ impl Config {
 
     fn apply_color(&mut self, e: &Entry, warnings: &mut Vec<String>) -> bool {
         let v = e.value.trim();
-        let color = || Rgb::parse_hex(v).or_else(|| named_color(v));
+        let color = || Rgb::parse_color(v);
+        // 색 값을 읽지 못하면 경고하고 기본값을 둔다(#837). 빈 값은 그대로 둔다
+        let bad_color = |warnings: &mut Vec<String>| {
+            if !v.is_empty() {
+                warnings.push(format!(
+                    "{}:{}: {} 값을 읽지 못했습니다: {v}",
+                    e.file.display(),
+                    e.line,
+                    e.key
+                ));
+            }
+        };
         let t = &mut self.theme;
         match e.key.as_str() {
-            "background" => t.background = color().unwrap_or(t.background),
-            "foreground" => t.foreground = color().unwrap_or(t.foreground),
+            "background" | "foreground" => match color() {
+                Some(c) if e.key == "background" => t.background = c,
+                Some(c) => t.foreground = c,
+                None => bad_color(warnings),
+            },
             // cell-foreground·cell-background(Ghostty 1.2): 커서 칸의 글자색·바탕색을 따른다(#135)
             "cursor-color" => match CellColor::parse(v) {
                 Some(c) => self.cursor_color_cell = Some(c),
                 None => {
                     self.cursor_color_cell = None;
-                    t.cursor = color().unwrap_or(t.cursor)
+                    match color() {
+                        Some(c) => t.cursor = c,
+                        None => bad_color(warnings),
+                    }
                 }
             },
             "cursor-text" => match CellColor::parse(v) {
                 Some(c) => self.cursor_text_cell = Some(c),
                 None => {
                     self.cursor_text_cell = None;
-                    t.cursor_text = color().unwrap_or(t.cursor_text)
+                    match color() {
+                        Some(c) => t.cursor_text = c,
+                        None => bad_color(warnings),
+                    }
                 }
             },
-            "selection-background" => t.selection_background = color().unwrap_or(t.selection_background),
-            "selection-foreground" => t.selection_foreground = color(),
+            "selection-background" => match color() {
+                Some(c) => t.selection_background = c,
+                None => bad_color(warnings),
+            },
+            "selection-foreground" => {
+                t.selection_foreground = color();
+                if t.selection_foreground.is_none() {
+                    bad_color(warnings);
+                }
+            }
             "palette" => {
-                let parsed = v.split_once('=').and_then(|(n, c)| {
-                    Some((
-                        n.trim().parse::<usize>().ok()?,
-                        Rgb::parse_hex(c).or_else(|| named_color(c.trim()))?,
-                    ))
-                });
-                match parsed {
-                    Some((n, c)) if n < 16 => t.palette[n] = c,
+                // 번호는 10진수나 `0x`·`0o`·`0b`, 색은 `RGB.parse`(Ghostty `parsePaletteEntry`, #837)
+                match crate::theme::parse_palette_entry(v) {
+                    Ok((n, c)) if n < 16 => t.palette[n as usize] = c,
                     // 16~255번(#177): 정한 값은 xterm 표나 만든 색 위에 얹는다
-                    Some((n, c)) if n < 256 => {
-                        self.palette_set.retain(|(i, _)| *i as usize != n);
-                        self.palette_set.push((n as u8, c));
+                    Ok((n, c)) => {
+                        self.palette_set.retain(|(i, _)| *i != n);
+                        self.palette_set.push((n, c));
                     }
-                    Some(_) => warnings.push(format!(
+                    Err(true) => warnings.push(format!(
                         "{}:{}: palette 번호는 0~255입니다: {v}",
                         e.file.display(),
                         e.line
                     )),
-                    None => warnings.push(format!(
+                    Err(false) => warnings.push(format!(
                         "{}:{}: palette 값을 읽지 못했습니다: {v}",
                         e.file.display(),
                         e.line
@@ -3589,7 +3612,7 @@ impl Config {
                 self.unfocused_split_fill = if v.is_empty() {
                     None
                 } else {
-                    Rgb::parse_hex(v).or_else(|| named_color(v)).or_else(|| {
+                    Rgb::parse_color(v).or_else(|| {
                         bad(warnings);
                         None
                     })
@@ -3599,7 +3622,7 @@ impl Config {
                 self.split_divider_color = if v.is_empty() {
                     None
                 } else {
-                    Rgb::parse_hex(v).or_else(|| named_color(v)).or_else(|| {
+                    Rgb::parse_color(v).or_else(|| {
                         bad(warnings);
                         None
                     })
@@ -4109,25 +4132,13 @@ fn hex(c: Rgb) -> String {
     format!("#{:02x}{:02x}{:02x}", c.r, c.g, c.b)
 }
 
-/// X11 색 이름 몇 개(Ghostty 테마가 가끔 쓴다)
-/// 찾기 강조 색 값: `#rrggbb`·이름 색·`cell-foreground`·`cell-background`(Ghostty `search-*`)
+/// 찾기 강조 색 값: 색 값(`RGB.parse`)·`cell-foreground`·`cell-background`(Ghostty `search-*`)
 fn parse_search_color(v: &str) -> Option<SearchColor> {
     match v {
         "cell-foreground" => Some(SearchColor::CellForeground),
         "cell-background" => Some(SearchColor::CellBackground),
-        _ => Rgb::parse_hex(v).or_else(|| named_color(v)).map(SearchColor::Rgb),
+        _ => Rgb::parse_color(v).map(SearchColor::Rgb),
     }
-}
-
-fn named_color(v: &str) -> Option<Rgb> {
-    Some(match v.to_ascii_lowercase().as_str() {
-        "black" => Rgb::new(0, 0, 0),
-        "white" => Rgb::new(255, 255, 255),
-        "red" => Rgb::new(255, 0, 0),
-        "green" => Rgb::new(0, 255, 0),
-        "blue" => Rgb::new(0, 0, 255),
-        _ => return None,
-    })
 }
 
 /// `light:`와 `dark:`가 둘 다 있는 테마 값인가(시스템 모양을 따라 바뀐다)
@@ -7243,5 +7254,94 @@ mod tests {
                 "custom-shader-animation = always"
             ]
         );
+    }
+
+    /// #837: 설정의 색 값은 Ghostty `Config`의 `RGB.parse`대로 읽는다(`#rgb`·12·16비트·`rgb:`·`rgbi:`·X11 이름)
+    #[test]
+    fn color_keys_parse_like_ghostty_rgb_parse() {
+        let bg = |v: &str| Config::from_text(&format!("background = {v}\n"), true).theme.background;
+        assert_eq!(bg("#fff"), Rgb::new(255, 255, 255));
+        assert_eq!(bg("#345"), Rgb::new(51, 68, 85));
+        assert_eq!(bg("FFF"), Rgb::new(255, 255, 255));
+        assert_eq!(bg("0A0B0C"), Rgb::new(10, 11, 12));
+        assert_eq!(bg("#fffffffff"), Rgb::new(255, 255, 255));
+        assert_eq!(bg("#ffffffffffff"), Rgb::new(255, 255, 255));
+        assert_eq!(bg("rgb:ff/00/00"), Rgb::new(255, 0, 0));
+        assert_eq!(bg("rgb:7f/a0a0/0"), Rgb::new(127, 160, 0));
+        assert_eq!(bg("rgbi:1.0/0/0"), Rgb::new(255, 0, 0));
+        assert_eq!(bg("LawnGreen"), Rgb::new(124, 252, 0));
+        assert_eq!(bg("medium spring green"), Rgb::new(0, 250, 154));
+        assert_eq!(bg(" Forest Green "), Rgb::new(34, 139, 34));
+        assert_eq!(bg("forestgreen"), Rgb::new(34, 139, 34));
+        assert_eq!(bg("gray"), Rgb::new(190, 190, 190));
+        assert_eq!(bg("darkblue"), Rgb::new(0, 0, 139));
+        // 키마다 같은 풀이를 쓴다
+        let c = Config::from_text(
+            "foreground = #fff\ncursor-color = LawnGreen\ncursor-text = #345\nselection-background = rgb:ff/00/00\n\
+             selection-foreground = darkblue\nbold-color = forestgreen\n",
+            true,
+        );
+        assert_eq!(c.theme.foreground, Rgb::new(255, 255, 255));
+        assert_eq!(c.theme.cursor, Rgb::new(124, 252, 0));
+        assert_eq!(c.theme.cursor_text, Rgb::new(51, 68, 85));
+        assert_eq!(c.theme.selection_background, Rgb::new(255, 0, 0));
+        assert_eq!(c.theme.selection_foreground, Some(Rgb::new(0, 0, 139)));
+        assert_eq!(c.theme.bold_color, Some(Rgb::new(34, 139, 34)));
+        assert!(c.warnings.is_empty(), "{:?}", c.warnings);
+    }
+
+    /// #837: 받지 못하는 색 값은 경고하고 기본값을 둔다(조용히 무시하지 않는다)
+    #[test]
+    fn bad_color_values_warn_and_keep_defaults() {
+        let d = Config::default().theme.background;
+        for v in [
+            "#ff",
+            "#fffff",
+            "12345",
+            "nosuchcolor",
+            "rgb:a/a/a/",
+            "rgb:f_f/0/0",
+            "#f_f000000",
+            "#gggggg",
+        ] {
+            let c = Config::from_text(&format!("background = {v}\n"), true);
+            assert_eq!(c.theme.background, d, "{v}");
+            assert_eq!(c.warnings.len(), 1, "{v}: {:?}", c.warnings);
+        }
+        for k in [
+            "foreground",
+            "cursor-color",
+            "cursor-text",
+            "selection-background",
+            "selection-foreground",
+            "bold-color",
+        ] {
+            let c = Config::from_text(&format!("{k} = nosuchcolor\n"), true);
+            assert_eq!(c.warnings.len(), 1, "{k}: {:?}", c.warnings);
+        }
+    }
+
+    /// #837: `palette`의 번호는 `0x`·`0b`·`0o`를 받고 색은 `RGB.parse`대로(Ghostty `parsePaletteEntry`)
+    #[test]
+    fn palette_keys_parse_like_ghostty_parse_palette_entry() {
+        let c = Config::from_text(
+            "palette = 0xF=#ABCDEF\npalette = 0b1=#014589\npalette = 0o7=#234567\npalette = 1=LawnGreen\n\
+             palette = 20=#abc\npalette = 0 =  #AABBCC\npalette = 2=black\n",
+            true,
+        );
+        assert_eq!(c.theme.palette[15], Rgb::new(171, 205, 239));
+        assert_eq!(c.theme.palette[7], Rgb::new(35, 69, 103));
+        assert_eq!(c.theme.palette[1], Rgb::new(124, 252, 0));
+        assert_eq!(c.theme.palette[0], Rgb::new(170, 187, 204));
+        assert_eq!(c.theme.palette[2], Rgb::new(0, 0, 0));
+        assert_eq!(c.palette_set, vec![(20, Rgb::new(0xaa, 0xbb, 0xcc))]);
+        assert!(c.warnings.is_empty(), "{:?}", c.warnings);
+        // 번호가 넘치면 범위, 모양이 틀리면 읽지 못함 경고
+        let c = Config::from_text(
+            "palette = 256=#fff\npalette = x=#fff\npalette = 1=nosuch\npalette = #fff\n",
+            true,
+        );
+        assert_eq!(c.warnings.len(), 4, "{:?}", c.warnings);
+        assert!(c.warnings[0].contains("0~255"), "{:?}", c.warnings);
     }
 }
