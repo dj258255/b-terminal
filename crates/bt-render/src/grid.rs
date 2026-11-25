@@ -297,7 +297,7 @@ fn draw_rows(
 }
 
 /// 칸의 글자색. 차례는 Ghostty와 같다: 고른 칸이면 `selection_fg`, 최소 명암비(#123)를 켰으면 바탕과 비슷한 색을
-/// 흰색이나 검은색으로, 마지막으로 흐린 칸(SGR 2)이면 `faint-opacity`를 건다(#835).
+/// 흰색이나 검은색으로(그래픽 글자는 뺀다, #839), 마지막으로 흐린 칸(SGR 2)이면 `faint-opacity`를 건다(#835).
 /// 명암비는 알파를 걸기 전의 색으로 재고, 명암비가 색을 바꿨으면 흰색·검은색은 알파 없이 그린다
 /// (Ghostty 셰이더 `contrasted_color`가 알파 1짜리 색을 돌려준다).
 /// 이어지는 칸은 같은 (글자색, 바탕) 쌍이 많아 앞 결과(`memo`)를 쓴다. GPU 렌더러도 이 함수를 쓴다(규칙은 한 벌)
@@ -307,7 +307,7 @@ pub fn text_color(view: &GridView, cell: &DrawCell, memo: &mut Option<((Rgb, Rgb
         _ => cell.fg,
     };
     let bg = if cell.selected { view.selection_bg } else { cell.bg };
-    let contrast = view.min_contrast > 1.0;
+    let contrast = view.min_contrast > 1.0 && !no_min_contrast(cell.ch);
     let adjusted = if contrast {
         match *memo {
             Some((pair, out)) if pair == (fg, bg) => out,
@@ -334,6 +334,12 @@ pub fn decoration_color(view: &GridView, cell: &DrawCell) -> Rgb {
             .mix(if cell.selected { view.selection_bg } else { cell.bg }, 1.0 - opacity),
         None => cell.fg,
     }
+}
+
+/// 최소 명암비를 걸지 않을 글자(Ghostty `renderer/cell.zig` `noMinContrast`·`isGraphicsElement`):
+/// 상자 그림(U+2500~257F), 블록(U+2580~259F), 레거시 컴퓨팅 기호(U+1FB00~1FBFF, U+1CC00~1CEBF), 파워라인(U+E0B0~E0D7)
+pub fn no_min_contrast(ch: char) -> bool {
+    matches!(ch as u32, 0x2500..=0x259F | 0x1FB00..=0x1FBFF | 0x1CC00..=0x1CEBF | 0xE0B0..=0xE0D7)
 }
 
 /// 어느 글꼴에도 없는 글자를 칸 `(px, py, w, h)`에 빈 상자로 그린다

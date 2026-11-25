@@ -530,3 +530,20 @@ fn faint_cells_match_cpu() {
     p.min_contrast = 4.5;
     check(&mut g, &mut f, "흐림+최소 명암비", &v, &p, Alpha::default());
 }
+
+/// #839: 상자·블록·레거시·파워라인 글자는 최소 명암비를 걸지 않는다
+#[test]
+fn graphics_elements_skip_min_contrast_like_cpu() {
+    let Some(mut g) = gpu() else { return };
+    let mut f = fonts(2.0);
+    let mut cells = row_cells("█─▀\u{e0b0}\u{e0b2}▌│ab", 12);
+    for c in &mut cells {
+        c.fg = Rgb::new(42, 46, 54);
+    }
+    let mut v = grid(&cells, 12);
+    v.min_contrast = 3.0;
+    let mut p = grid(&cells, 12);
+    // 'ab'만 흰색으로 바뀌고 그래픽 글자는 그대로여야 한다(최소 명암비를 끈 화면과는 'ab'만 다르다)
+    p.min_contrast = 1.0;
+    check(&mut g, &mut f, "그래픽 글자 최소 명암비", &v, &p, Alpha::default());
+}

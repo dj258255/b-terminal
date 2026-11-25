@@ -2114,6 +2114,64 @@ fn hidden_cell_under_a_block_cursor_draws_no_glyph() {
 }
 
 #[test]
+fn min_contrast_skips_box_block_legacy_and_powerline_glyphs_but_not_letters() {
+    let Some(mut f) = fonts(1.0) else { return };
+    let near = Rgb::new(42, 46, 54);
+    let bg = Rgb::new(30, 32, 40);
+    for ch in [
+        '█',
+        '─',
+        '\u{e0b0}',
+        '\u{1fb00}',
+        '▀',
+        '\u{259f}',
+        '\u{257f}',
+        '\u{e0d7}',
+    ] {
+        let cell = DrawCell {
+            fg: near,
+            bg,
+            ..blank(ch)
+        };
+        let (_, px) = paint_ink(&mut f, &cell, |v| v.min_contrast = 3.0);
+        assert!(
+            !px.iter().any(|p| p.r > 200 && p.g > 200 && p.b > 200),
+            "U+{:04X}에 최소 명암비가 걸려 흰색이 그려졌다",
+            ch as u32
+        );
+    }
+    // 대조: 같은 색 글자 M은 흰색으로 바뀐다
+    let cell = DrawCell {
+        fg: near,
+        bg,
+        ..blank('M')
+    };
+    let (_, px) = paint_ink(&mut f, &cell, |v| v.min_contrast = 3.0);
+    assert!(px.iter().any(|p| p.r > 200 && p.g > 200 && p.b > 200));
+    // 경계 바깥: U+24FF, U+E0D8, U+1FAFF 아래 U+1FAFF는 레거시 범위 안, U+1FC00은 밖
+    assert!(
+        bt_render::text_color(
+            &GridView {
+                cols: 1,
+                rows: 1,
+                cells: &[],
+                cursor: None,
+                selection_bg: bg,
+                selection_fg: None,
+                preedit: None,
+                min_contrast: 3.0,
+            },
+            &DrawCell {
+                fg: near,
+                bg,
+                ..blank('\u{e0d8}')
+            },
+            &mut None,
+        ) != near
+    );
+}
+
+#[test]
 fn faint_color_is_applied_last_after_selection_and_min_contrast() {
     let sel_bg = Rgb::new(10, 60, 120);
     let sel_fg = Rgb::new(250, 250, 100);

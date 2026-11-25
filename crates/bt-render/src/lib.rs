@@ -21,7 +21,7 @@ pub use font::{
 };
 pub use grid::{
     CursorStyle, DrawCell, DrawCursor, GridView, Under, decoration_color, draw_grid, draw_grid_rows, draw_grid_under,
-    ligatures, lock_rects, text_color,
+    ligatures, lock_rects, no_min_contrast, text_color,
 };
 pub use text::{char_cells, draw_text, text_cells, truncate};
 pub use underline::Underline;

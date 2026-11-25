@@ -74,8 +74,10 @@ pub(crate) fn cell_colors(theme: &Theme, overrides: &Colors, fg: Color, bg: Colo
             other => other,
         }
     };
+    // Ghostty `Style.fg()`: 굵고 글자색이 기본 글자색과 같은 24비트 색이어도 bold-color를 쓴다(#839)
     let mut fg_rgb = match (bold_default, fg) {
         (Some(c), Color::Named(NamedColor::Foreground)) => c,
+        (Some(c), Color::Spec(rgb)) if from_vt(rgb) == named(theme, overrides, NamedColor::Foreground) => c,
         _ => resolve(theme, overrides, fg),
     };
     let mut bg_rgb = resolve(theme, overrides, bg);
@@ -148,6 +150,43 @@ mod tests {
             ..Theme::default()
         };
         assert_eq!(cell_colors(&none, &o, fg, bg, Flags::DIM).0, none.foreground);
+    }
+
+    #[test]
+    fn bold_color_also_replaces_rgb_text_equal_to_the_default_foreground() {
+        let o = Colors::default();
+        let bg = Color::Named(NamedColor::Background);
+        let orange = Rgb::new(0xff, 0x80, 0);
+        let t = Theme {
+            bold_color: Some(orange),
+            ..Theme::default()
+        };
+        let f = t.foreground;
+        let same = Color::Spec(VtRgb { r: f.r, g: f.g, b: f.b });
+        // Ghostty style.zig fg(): 굵고 24비트 글자색이 기본 글자색과 같으면 bold-color
+        assert_eq!(cell_colors(&t, &o, same, bg, Flags::BOLD).0, orange);
+        // 굵지 않거나 다른 RGB면 그대로
+        assert_eq!(cell_colors(&t, &o, same, bg, Flags::empty()).0, f);
+        let other = Color::Spec(VtRgb {
+            r: f.r ^ 1,
+            g: f.g,
+            b: f.b,
+        });
+        assert_eq!(
+            cell_colors(&t, &o, other, bg, Flags::BOLD).0,
+            Rgb::new(f.r ^ 1, f.g, f.b)
+        );
+        // bold-color가 없으면(bright만) 건드리지 않는다
+        let b = Theme {
+            bold_is_bright: true,
+            ..Theme::default()
+        };
+        assert_eq!(cell_colors(&b, &o, same, bg, Flags::BOLD).0, f);
+        // OSC 10으로 바꾼 기본 글자색과 같은 RGB도 기본 글자색이다
+        let mut o2 = Colors::default();
+        o2[NamedColor::Foreground] = Some(VtRgb { r: 1, g: 2, b: 3 });
+        let osc = Color::Spec(VtRgb { r: 1, g: 2, b: 3 });
+        assert_eq!(cell_colors(&t, &o2, osc, bg, Flags::BOLD).0, orange);
     }
 
     #[test]
