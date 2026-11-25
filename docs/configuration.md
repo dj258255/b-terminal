@@ -342,7 +342,7 @@ HTML은 `<div style="font-family: monospace; white-space: pre;">` 안에 칸의 
 | `start_search` / `end_search` | 찾기 막대 열기 / 닫기. 막대에서 글을 치면 바로 찾고, Enter는 위로·Shift-Enter는 아래로, Esc로 닫습니다. 기본 묶음은 `performable`이라 막대가 닫혀 있으면 Esc는 프로그램으로 갑니다 | `super+f` / `escape` `super+shift+f`(macOS) |
 | `navigate_search:next` / `navigate_search:previous` | 위(오래된 쪽) / 아래 맞은 곳으로 | `super+g` / `super+shift+g` |
 | `toggle_command_palette` | 명령 팔레트 열기·닫기 | `super+shift+p` |
-| `clear_screen` | 화면 지우기(셸에 Ctrl-L). 기본 묶음에 `performable`이 붙어 있지만 b-terminal은 이 동작을 늘 할 수 있는 것으로 봅니다(Ghostty는 대체 화면에서는 키를 프로그램에 보냄, 아직 같지 않음) | `super+k` |
+| `clear_screen` | 화면 지우기(Ghostty 1.4.0의 `clear_screen`). 대체 화면이면 아무것도 하지 않고 키를 프로그램에 넘깁니다(기본 묶음의 `performable`). 아니면 스크롤백과 고른 글을 지웁니다. 커서가 프롬프트가 아니면(셸 통합이 없으면 늘 이쪽입니다) 커서 윗줄까지만 지우고 남은 줄을 맨 위로 올리며 kitty 그림을 지우고, PTY에는 아무것도 보내지 않습니다. 커서가 프롬프트이면(OSC 133으로 커서 줄에 프롬프트 표시가 있거나 커서 칸이 프롬프트·입력) 화면을 지우고 PTY에 FF(Ctrl-L)를 보내 셸이 다시 그리게 합니다. 읽기 전용 칸은 지우되 FF는 보내지 않습니다 | `super+k` |
 | `select_all` | 스크롤백까지 모두 고르기. 글이 있는 첫 칸부터 마지막 칸까지이고 앞뒤의 빈 줄·빈칸·탭은 뺍니다(Ghostty `Screen.selectAll`). 글이 하나도 없으면 아무것도 바꾸지 않습니다. 고른 글을 `copy-on-select`로 복사하지는 않습니다(Ghostty는 복사합니다, 아직 같지 않음) | `super+a` |
 | `reload_config` | 설정 다시 읽기 | `super+shift+comma` |
 | `quit` | 앱 끝내기(프로그램이 도는 칸이 있으면 묻습니다) | `super+q` |

@@ -473,6 +473,36 @@ impl Inner {
     }
 }
 
+impl Inner {
+    /// ⌘K(`clear_screen`)의 엔진 몫(#821). 고른 끝점·명령 출력 고르기·프롬프트 기억도 함께 맞춘다
+    fn clear_screen(&mut self) -> ClearScreen {
+        let before = self.term.grid().history_size() as i64;
+        let cursor_before = self.term.grid().cursor.point.line.0 as i64;
+        let Inner {
+            term,
+            parser,
+            graphics,
+            cell,
+            ..
+        } = self;
+        let out = clear_screen_op(term, parser, graphics, *cell);
+        if out == ClearScreen::Ignored {
+            return out;
+        }
+        self.sel_end = None;
+        self.output_click = None;
+        // 스크롤백이 사라지고 커서 윗줄이 떨어져 나가 절대 줄 번호가 밀린다. 남은 줄의 프롬프트만 새 번호로 옮긴다
+        let shift = before + if out == ClearScreen::Cleared { cursor_before } else { 0 };
+        let rows = self.term.screen_lines() as i64;
+        let prompts = std::mem::take(&mut self.prompts);
+        self.prompts = prompts
+            .into_iter()
+            .filter_map(|p| Some(p - shift).filter(|&n| n >= 0 && n < rows))
+            .collect();
+        out
+    }
+}
+
 /// PTY 하나와 그 화면 상태
 pub struct Session {
     inner: Arc<Mutex<Inner>>,
@@ -1436,6 +1466,12 @@ impl Session {
         self.mouse_shape.store(0, std::sync::atomic::Ordering::Release);
     }
 
+    /// ⌘K(`clear_screen`)의 엔진 몫(#821, Ghostty `Termio.clearScreen`). `Redraw`이면 부르는 쪽이 PTY에 FF를 쓴다.
+    /// `Ignored`(대체 화면)이면 아무것도 바꾸지 않는다
+    pub fn clear_screen(&self) -> ClearScreen {
+        self.inner.lock().clear_screen()
+    }
+
     /// 스크롤 막대를 그리고 누르는 데 쓰는 값: (보이는 줄 수, 스크롤백 줄 수, 맨 아래에서 올라간 줄 수).
     /// 대체 화면은 스크롤백이 없어 0이다. 화면 전체를 풀지 않아 마우스 움직임마다 불러도 가볍다
     pub fn scroll_metrics(&self) -> (usize, usize, usize) {
@@ -1786,6 +1822,75 @@ impl Session {
 /// 색 구성표 보고(`CSI ? 997 ; 1 n` 어두움, `; 2 n` 밝음). 고정된 바이트이고 출력이 정한 글은 들어가지 않는다(#232)
 fn scheme_report(light: bool) -> &'static [u8] {
     if light { b"\x1b[?997;2n" } else { b"\x1b[?997;1n" }
+}
+
+/// `clear_screen`(⌘K)의 결과(#821)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClearScreen {
+    /// 대체 화면이라 아무것도 하지 않았다. 키를 소비하지 않고 프로그램에 넘긴다
+    Ignored,
+    /// 지웠다. PTY에는 아무것도 쓰지 않는다(프롬프트가 아니었다)
+    Cleared,
+    /// 프롬프트라 화면을 지웠다. 셸이 다시 그리도록 PTY에 FF(0x0C)를 써야 한다
+    Redraw,
+}
+
+/// 커서가 프롬프트에 있는가(Ghostty `Terminal.cursorIsAtPrompt`, Terminal.zig 2313줄): 대체 화면이면 아니다.
+/// 커서 줄에 프롬프트 표시가 있으면 맞고, 아니면 커서 칸의 글 종류가 입력·프롬프트일 때 맞다.
+/// 셸 통합이 없으면 글 종류는 늘 출력(Ghostty `Screen.Cursor.semantic_content` 기본값)이라 늘 아니다
+fn cursor_is_at_prompt<T>(term: &Term<T>) -> bool {
+    use alacritty_terminal::term::semantic::{RowPrompt, SemanticContent};
+    if term.mode().contains(TermMode::ALT_SCREEN) {
+        return false;
+    }
+    if term.row_prompt(term.grid().cursor.point.line) != RowPrompt::None {
+        return true;
+    }
+    matches!(
+        term.semantic_content(),
+        SemanticContent::Input | SemanticContent::Prompt
+    )
+}
+
+/// ⌘K(`clear_screen`)의 엔진 몫(#821, Ghostty `Termio.clearScreen(history = true)`, Termio.zig 605줄).
+/// 대체 화면이면 아무것도 하지 않는다. 아니면 선택을 풀고 스크롤백을 지운다(ED 3). 프롬프트가 아니면 커서 윗줄까지 지워
+/// (남은 줄이 위로 올라 커서 줄이 맨 위가 된다, Ghostty `eraseActive`가 줄을 떼어 내는 것과 같다) kitty 그림을 모두 지우고 끝낸다.
+/// 프롬프트이면 ED 2와 같은 지우기를 하고 `Redraw`를 돌려준다
+fn clear_screen_op<T: EventListener>(
+    term: &mut Term<T>,
+    parser: &mut Processor,
+    graphics: &mut crate::graphics::Graphics,
+    cell: (u32, u32),
+) -> ClearScreen {
+    use alacritty_terminal::vte::ansi::{ClearMode, Handler};
+    if term.mode().contains(TermMode::ALT_SCREEN) {
+        return ClearScreen::Ignored;
+    }
+    // 동기 갱신 중에 모아 둔 바이트가 지운 뒤에 그려지지 않게 먼저 푼다
+    release_sync(term, parser);
+    sync_graphics(term, graphics, cell);
+    term.selection = None;
+    let at_prompt = cursor_is_at_prompt(term);
+    if !at_prompt {
+        let line = term.grid().cursor.point.line.0;
+        if line > 0 {
+            let region = Line(0)..Line(term.screen_lines() as i32);
+            term.grid_mut().scroll_up_in_place(&region, line as usize);
+            term.grid_mut().cursor.point.line = Line(0);
+        }
+    }
+    // 스크롤백 지우기(ED 3). 끝에서 화면 전체를 다시 그리게 표시한다
+    Handler::clear_screen(term, ClearMode::Saved);
+    if !at_prompt {
+        // Ghostty는 `kitty_images.delete(.all = true)`: 보이는 자리를 모두 지우고 쓰지 않게 된 그림 자료도 지운다(`d=A`)
+        graphics_command(term, parser, graphics, cell, b"a=d,d=A");
+        graphics.erase(false, true);
+        return ClearScreen::Cleared;
+    }
+    graphics.erase(false, true);
+    Handler::clear_screen(term, ClearMode::All);
+    erase_screen_graphics(term, graphics);
+    ClearScreen::Redraw
 }
 
 /// ED 2를 엔진이 처리한 뒤의 그림 정리(#329): 스크롤백에 다 들어간 그림만 남기고 보이는 자리의 그림은 지운다
@@ -2639,6 +2744,18 @@ impl Emulator {
     pub fn tail_text(&self, lines: usize) -> String {
         tail_text(&self.term, lines)
     }
+
+    /// ⌘K(`clear_screen`)의 엔진 몫(#821). `Session::clear_screen`과 같다
+    pub fn clear_screen(&mut self) -> ClearScreen {
+        let Emulator {
+            term,
+            parser,
+            graphics,
+            cell,
+            ..
+        } = self;
+        clear_screen_op(term, parser, graphics, *cell)
+    }
 }
 
 impl Session {
@@ -2900,6 +3017,90 @@ mod tests {
             adjusted_point(at(-4, 3), PageDown, 10, Line(-5), Line(9), 10, &all),
             at(6, 3)
         );
+    }
+
+    // ---- ⌘K clear_screen(#821, Ghostty 1.4.0 Termio.clearScreen) ----
+
+    fn clear_emu(rows: u16) -> Emulator {
+        Emulator::new(GridSize::new(20, rows), Theme::default())
+    }
+
+    fn row_text(e: &Emulator, row: i32) -> String {
+        (0..e.term.columns())
+            .map(|c| e.term.grid()[Line(row)][Column(c)].c)
+            .collect::<String>()
+            .trim_end()
+            .to_string()
+    }
+
+    fn select_all(e: &mut Emulator) {
+        let mut sel = Selection::new(SelectionType::Simple, Point::new(Line(0), Column(0)), Side::Left);
+        sel.update(Point::new(Line(0), Column(3)), Side::Right);
+        e.term.selection = Some(sel);
+    }
+
+    #[test]
+    fn clear_screen_ignored_on_alt_screen() {
+        let mut e = clear_emu(5);
+        e.feed(b"one\r\ntwo\x1b[?1049h\x1b[HALT");
+        select_all(&mut e);
+        assert_eq!(e.clear_screen(), ClearScreen::Ignored);
+        assert_eq!(row_text(&e, 0), "ALT", "대체 화면은 건드리지 않는다");
+        assert!(e.term.selection.is_some(), "선택도 그대로다");
+    }
+
+    #[test]
+    fn clear_screen_without_shell_integration_erases_above_cursor_and_sends_no_ff() {
+        // 셸 통합이 없으면 커서 칸 종류는 출력이라 프롬프트가 아니다(Ghostty 기본값 .output)
+        let mut e = clear_emu(5);
+        e.feed(b"a1\r\na2\r\na3\r\na4\r\na5");
+        e.feed(b"\r\n\r\nb1\r\nb2\r\nb3\r\nb4");
+        assert!(e.term.grid().history_size() > 0);
+        select_all(&mut e);
+        assert_eq!(e.clear_screen(), ClearScreen::Cleared, "FF를 보내라고 하지 않는다");
+        assert_eq!(e.term.grid().history_size(), 0, "스크롤백을 지운다");
+        assert!(e.term.selection.is_none(), "선택을 푼다");
+        // 커서 줄(b4)만 남고 맨 위로 올라온다
+        assert_eq!(row_text(&e, 0), "b4");
+        assert_eq!(row_text(&e, 1), "");
+        assert_eq!(e.term.grid().cursor.point.line, Line(0));
+    }
+
+    #[test]
+    fn clear_screen_running_command_keeps_cursor_row_and_sends_no_ff() {
+        // 명령이 도는 중(출력 구간): 커서 줄은 남고 FF는 가지 않는다
+        let mut e = clear_emu(5);
+        e.feed(b"\x1b]133;A\x07$ sleep 30\x1b]133;C\x07\r\nout1\r\nout2");
+        assert_eq!(e.clear_screen(), ClearScreen::Cleared);
+        assert_eq!(row_text(&e, 0), "out2");
+    }
+
+    #[test]
+    fn clear_screen_at_prompt_erases_screen_and_asks_for_ff() {
+        let mut e = clear_emu(5);
+        e.feed(b"old1\r\nold2\r\nold3\r\nold4\r\nold5\r\nold6");
+        e.feed(b"\x1b]133;A\x07$ ");
+        select_all(&mut e);
+        assert_eq!(e.clear_screen(), ClearScreen::Redraw);
+        assert!(e.term.selection.is_none());
+        // Ghostty 1.4.0도 같다: 스크롤백을 지운 뒤의 ED 2가 프롬프트 규칙(`scrollClear`)으로 화면 내용을 스크롤백에 올린다
+        // (Termio.zig의 "TODO: fix this"). 이 줄이 바뀌면 Ghostty가 고친 것이니 견줘 본다
+        assert_eq!(e.term.grid().history_size(), 5);
+        for r in 0..5 {
+            assert_eq!(row_text(&e, r), "", "줄 {r}: 화면은 빈다(셸이 FF로 다시 그린다)");
+        }
+    }
+
+    #[test]
+    fn clear_screen_clears_kitty_images_when_not_at_prompt() {
+        let mut e = clear_emu(5);
+        // 1x1 RGB 그림을 놓는다
+        e.feed(b"\x1b_Ga=T,f=24,s=1,v=1,i=7,q=2;AAAA\x1b\\");
+        e.feed(b"\r\ntext");
+        assert!(!e.graphics.placements.is_empty());
+        assert_eq!(e.clear_screen(), ClearScreen::Cleared);
+        assert!(e.graphics.placements.is_empty());
+        assert!(e.graphics.image(7).is_none(), "그림 자료도 지운다");
     }
 }
 
