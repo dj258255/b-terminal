@@ -1529,6 +1529,18 @@ impl Session {
         Some(s.status(term))
     }
 
+    /// 화면이 지난번 센 뒤로 바뀌었으면 다시 세어 돌려준다. 안 바뀌었거나 찾는 중이 아니면 없다(#833)
+    pub fn search_refresh(&self) -> Option<crate::search::SearchStatus> {
+        let mut g = self.inner.lock();
+        let Inner { term, search, .. } = &mut *g;
+        search.as_mut()?.refresh(term)
+    }
+
+    /// 스크롤백 전체를 센 횟수(시험용). 찾는 중이 아니면 0
+    pub fn search_recounts(&self) -> usize {
+        self.inner.lock().search.as_ref().map_or(0, |s| s.recounts())
+    }
+
     /// 찾기를 끝낸다(강조를 지운다). 화면 자리는 그대로 둔다
     pub fn search_clear(&self) {
         self.inner.lock().search = None;
@@ -2750,6 +2762,16 @@ impl Emulator {
     pub fn search_status(&mut self) -> Option<crate::search::SearchStatus> {
         let s = self.search.as_mut()?;
         Some(s.status(&self.term))
+    }
+
+    /// 화면이 지난번 센 뒤로 바뀌었으면 다시 세어 돌려준다. 안 바뀌었거나 찾는 중이 아니면 없다(#833)
+    pub fn search_refresh(&mut self) -> Option<crate::search::SearchStatus> {
+        self.search.as_mut()?.refresh(&self.term)
+    }
+
+    /// 스크롤백 전체를 센 횟수(시험용). 찾는 중이 아니면 0
+    pub fn search_recounts(&self) -> usize {
+        self.search.as_ref().map_or(0, |s| s.recounts())
     }
 
     pub fn search_clear(&mut self) {

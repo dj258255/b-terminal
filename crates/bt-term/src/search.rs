@@ -13,6 +13,8 @@
 //!   스크롤백은 바뀌지 않는다고 본다. 크기가 바뀌면 고른 것을 푼다.
 //! - 고를 때 맞은 곳이 보이는 화면과 겹치면 그대로 두고, 아니면 맞은 곳 시작이 맨 윗줄에 오게 옮긴다.
 //!
+//! 새로 고침(#833): 막대가 열린 동안 출력이 와 화면이 바뀌면(`refresh`, 지문이 다를 때만) 개수를 다시 센다.
+//!
 //! 성능 보호로 두는 상한은 Ghostty에 없다: 세는 상한 `MAX_COUNT`, 한 화면에서 칠하는 상한 `MAX_VISIBLE`.
 
 use alacritty_terminal::event::EventListener;
@@ -63,6 +65,56 @@ pub(crate) struct Search {
     /// 찾는 글 안의 `\n` 수(앞뒤로 더 읽을 하드 줄 수)
     newlines: usize,
     selected: Option<Selected>,
+    /// 마지막으로 센 때의 화면 지문. 같으면 다시 세지 않는다(#833)
+    seen: Option<Fingerprint>,
+    /// 스크롤백 전체를 센 횟수(시험용)
+    recounts: usize,
+}
+
+/// 화면이 바뀌었는지 보는 지문(Ghostty는 화면의 바뀜 표시를 본다). 스크롤백은 쓰는 쪽으로만 바뀌므로
+/// 밀려 올라간 줄 수와 스크롤백 크기, 활성 화면 칸의 해시로 갈음한다
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Fingerprint {
+    scrolled: u64,
+    history: usize,
+    columns: usize,
+    lines: usize,
+    alt: bool,
+    active: u64,
+}
+
+impl Fingerprint {
+    fn of<T>(term: &Term<T>) -> Self {
+        // FNV-1a. 활성 화면(수천 칸)만 훑는다
+        let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+        let mut eat = |v: u64| {
+            h = (h ^ v).wrapping_mul(0x0000_0100_0000_01b3);
+        };
+        let grid = term.grid();
+        for line in 0..term.screen_lines() as i32 {
+            let row = &grid[Line(line)];
+            for col in 0..term.columns() {
+                let c = &row[Column(col)];
+                eat(c.c as u64);
+                if let Some(z) = c.zerowidth() {
+                    for &x in z {
+                        eat(x as u64 | 1 << 40);
+                    }
+                }
+                if c.flags.intersects(Flags::WIDE_CHAR | Flags::WRAPLINE) {
+                    eat(c.flags.bits() as u64 | 1 << 41);
+                }
+            }
+        }
+        Self {
+            scrolled: grid.scrolled_total(),
+            history: grid.history_size(),
+            columns: term.columns(),
+            lines: term.screen_lines(),
+            alt: term.mode().contains(TermMode::ALT_SCREEN),
+            active: h,
+        }
+    }
 }
 
 /// 줄 글(소문자로 접은 바이트)과 바이트마다 그 글자가 있는 칸(`첫 줄부터의 줄 * 열 수 + 열`)
@@ -244,6 +296,8 @@ impl Search {
             needle,
             newlines,
             selected: None,
+            seen: None,
+            recounts: 0,
         })
     }
 
@@ -358,8 +412,24 @@ impl Search {
         v
     }
 
+    /// 화면이 지난번 센 뒤로 바뀌었으면 다시 세어 돌려준다. 안 바뀌었으면 찾지 않고 없다(Ghostty `reloadActive`).
+    /// 고른 곳은 `status`가 출력에 맞춘다
+    pub fn refresh<T>(&mut self, term: &Term<T>) -> Option<SearchStatus> {
+        if self.seen == Some(Fingerprint::of(term)) {
+            return None;
+        }
+        Some(self.status(term))
+    }
+
+    /// 스크롤백 전체를 센 횟수(시험용)
+    pub fn recounts(&self) -> usize {
+        self.recounts
+    }
+
     /// 스크롤백 전체에서 센다(상한까지)
     pub fn status<T>(&mut self, term: &Term<T>) -> SearchStatus {
+        self.seen = Some(Fingerprint::of(term));
+        self.recounts += 1;
         let cur = self.current(term);
         let all = self.all(term);
         let capped = all.len() >= MAX_COUNT;

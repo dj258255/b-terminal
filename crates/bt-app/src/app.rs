@@ -704,7 +704,38 @@ struct SearchBar {
     pane: u64,
     query: String,
     status: Option<bt_term::search::SearchStatus>,
+    /// 출력이 와서 다시 셀 수 있는 가장 이른 때(#833)
+    next_refresh: Instant,
+    /// 때가 되기 전에 출력이 와서 미룬 새로 고침이 있다
+    refresh_pending: bool,
 }
+
+impl SearchBar {
+    fn new(pane: u64, query: String) -> Self {
+        Self {
+            pane,
+            query,
+            status: None,
+            next_refresh: Instant::now(),
+            refresh_pending: false,
+        }
+    }
+
+    /// 출력이 왔다: 지금 다시 셀 때인가. 아니면 미뤄 두고 거짓(때에 다시 부른다)
+    fn refresh_due(&mut self, now: Instant) -> bool {
+        if now < self.next_refresh {
+            self.refresh_pending = true;
+            return false;
+        }
+        self.next_refresh = now + SEARCH_REFRESH;
+        self.refresh_pending = false;
+        true
+    }
+}
+
+/// 막대가 열린 동안 출력으로 개수를 다시 세는 가장 짧은 간격(#833). Ghostty는 따로 둔 스레드가 24ms마다 보지만
+/// 우리는 주 스레드에서 세므로 더 길게 둔다
+const SEARCH_REFRESH: Duration = Duration::from_millis(100);
 
 /// 찾기 막대 오른쪽에 보일 결과 글
 fn search_status_text(query: &str, status: Option<bt_term::search::SearchStatus>) -> String {
@@ -3967,11 +3998,7 @@ impl App {
             return;
         }
         self.end_search();
-        self.w.search = Some(SearchBar {
-            pane: id,
-            query: String::new(),
-            status: None,
-        });
+        self.w.search = Some(SearchBar::new(id, String::new()));
         self.request_redraw();
     }
 
@@ -3988,13 +4015,7 @@ impl App {
         }
         match self.w.search.as_mut() {
             Some(s) => s.query = text,
-            None => {
-                self.w.search = Some(SearchBar {
-                    pane: id,
-                    query: text,
-                    status: None,
-                })
-            }
+            None => self.w.search = Some(SearchBar::new(id, text)),
         }
         self.search_query_changed();
     }
@@ -4016,6 +4037,30 @@ impl App {
             s.status = p.session.search(&s.query);
         }
         self.request_redraw();
+    }
+
+    /// 출력이 왔거나 미룬 때가 됐다: 막대가 열려 있고 화면이 바뀌었으면 개수를 다시 센다(#833).
+    /// 화면이 그대로면 찾지 않는다. 간격 안이면 미뤄 두었다가 `search_next_wake`에 다시 부른다
+    fn refresh_search(&mut self, now: Instant) {
+        let Some(s) = self.w.search.as_mut() else { return };
+        if !s.refresh_due(now) {
+            return;
+        }
+        if let Some(p) = self.panes.iter().find(|p| p.id == s.pane) {
+            if let Some(st) = p.session.search_refresh() {
+                s.status = Some(st);
+                self.request_redraw();
+            }
+        }
+    }
+
+    /// 미룬 새로 고침을 부를 때
+    fn search_next_wake(&self) -> Option<Instant> {
+        self.w
+            .search
+            .as_ref()
+            .filter(|s| s.refresh_pending)
+            .map(|s| s.next_refresh)
     }
 
     fn search_step(&mut self, older: bool) {
@@ -7282,6 +7327,7 @@ impl ApplicationHandler<UserEvent> for App {
                     self.update_hover();
                 }
                 self.check_text_waiters();
+                self.refresh_search(Instant::now());
                 // 어느 창의 칸이 바뀌었는지 모르므로 모든 창(바뀐 줄이 없는 창은 올리지 않는다)
                 self.request_redraw_all()
             }
@@ -7876,6 +7922,9 @@ impl ApplicationHandler<UserEvent> for App {
             w.focus_window();
         }
         self.fire_autoscroll(Instant::now());
+        if self.search_next_wake().is_some_and(|t| t <= Instant::now()) {
+            self.refresh_search(Instant::now());
+        }
         if let Some((window, text)) = self.drop_batch.take() {
             // 놓은 창으로 바꿔 넣고, 아래 일들이 보던 지금 창으로 되돌린다(DroppedFile 갈래와 같게)
             let back = self.w.id();
@@ -8045,6 +8094,7 @@ impl ApplicationHandler<UserEvent> for App {
             )
             .chain(self.quit_deadline)
             .chain(self.autoscroll_next_wake())
+            .chain(self.search_next_wake())
             .chain(self.a11y_next_wake())
             .chain(self.any_window_focused().then_some(self.next_secure_poll))
             .min();
@@ -8936,6 +8986,21 @@ mod tests {
         assert_eq!(keep_tail("abcdef".into(), 3), ("def".into(), true));
         // "한"은 3바이트: 4바이트 안쪽으로 자르면 글자를 쪼개지 않고 "글"만 남는다
         assert_eq!(keep_tail("한글".into(), 4), ("글".into(), true));
+    }
+
+    /// #833: 출력이 쏟아져도 간격 안에서는 다시 세지 않고 미뤄 두었다가 때에 한 번만 센다
+    #[test]
+    fn search_refresh_is_throttled_and_deferred() {
+        let mut bar = SearchBar::new(1, "x".into());
+        let t0 = bar.next_refresh;
+        assert!(bar.refresh_due(t0), "처음 온 출력은 바로");
+        assert!(!bar.refresh_pending);
+        for ms in [1u64, 10, 50, 99] {
+            assert!(!bar.refresh_due(t0 + Duration::from_millis(ms)), "간격 안은 미룬다");
+        }
+        assert!(bar.refresh_pending);
+        assert!(bar.refresh_due(t0 + SEARCH_REFRESH), "간격이 지나면 센다");
+        assert!(!bar.refresh_pending);
     }
 
     #[test]
