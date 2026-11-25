@@ -88,6 +88,16 @@ fn mark_of(flags: Flags) -> RowPrompt {
     }
 }
 
+/// b-terminal(#817): 한 줄에 두 줄의 칸이 섞일 때의 표시(Ghostty `Row.SemanticPrompt.combine`, #15327). 프롬프트 > 이어짐 > 없음.
+/// 순서는 상관없다. 잘못된 시작은 건너뛸 때 멈춤 자리가 하나 늘 뿐이지만 잘못된 이어짐은 프롬프트를 건너뛰게 한다
+pub(super) fn combine_marks(a: RowPrompt, b: RowPrompt) -> RowPrompt {
+    match (a, b) {
+        (RowPrompt::Prompt, _) | (_, RowPrompt::Prompt) => RowPrompt::Prompt,
+        (RowPrompt::Continuation, _) | (_, RowPrompt::Continuation) => RowPrompt::Continuation,
+        _ => RowPrompt::None,
+    }
+}
+
 impl<T> Term<T> {
     pub fn semantic_content(&self) -> SemanticContent {
         self.semantic.content
@@ -111,7 +121,7 @@ impl<T> Term<T> {
         mark_of(self.grid[line][Column(0)].flags)
     }
 
-    fn set_row_prompt(&mut self, line: Line, mark: RowPrompt) {
+    pub(super) fn set_row_prompt(&mut self, line: Line, mark: RowPrompt) {
         let flags = &mut self.grid[line][Column(0)].flags;
         flags.remove(ROW_MARKS);
         match mark {

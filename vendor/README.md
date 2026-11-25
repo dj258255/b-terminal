@@ -179,3 +179,7 @@ alacritty_terminal이 글자 묶음 폭(mode 2027)을 지원하는 판을 내면
 ## alacritty_terminal: IL·DL이 줄 접힘 표시를 지킴(#815)
 
 - 고친 곳: `vendor/alacritty_terminal/src/term/mod.rs`의 `clear_wraps_after_shift`(새 함수)와 이것을 부르는 `insert_blank_lines`·`delete_lines`·`scroll_up`(`scroll_up_with_wrap_fix`)·`scroll_down`, `src/grid/mod.rs`의 `max_scroll_limit()`(읽기 접근자). `b-terminal(#815)`로 찾을 수 있습니다. #582에서 넣은 `delete_lines`의 "커서 줄부터 영역 끝까지 줄 이음 풀기"를 걷어내고, 전체 폭 영역을 옮긴 뒤 이웃이 바뀐 줄(커서 윗줄, DL의 옮겨진 마지막 줄, IL·SD의 새 맨 아래 줄)만 풉니다(줄 끝이 앞 칸 자리표시면 그 칸도 빈 칸으로). 스크롤백을 만드는 SU와 LF·IND(`scroll_up_with_wrap_fix(_, false)`)는 건드리지 않습니다. 이유: Ghostty main #15309(2026-11-23)가 같게 고쳤습니다. 되돌릴 조건: 원본이 같은 규칙을 갖게 되면 지웁니다.
+
+## alacritty_terminal: 좌우 여백 줄 밀기의 OSC 133 줄 표시(#817)
+
+- 고친 곳: `vendor/alacritty_terminal/src/term/mod.rs`의 `scroll_rect`와 `src/term/semantic.rs`(`combine_marks` 추가, `set_row_prompt`를 `pub(super)`로). 옮기기 전에 영역 안 줄의 표시를 읽어 두고 옮긴 뒤 줄 단위로 다시 씁니다(일부만 옮기면 받는 줄과 보낸 줄의 합, 전체를 옮기면 보낸 줄, 칸만 지운 줄은 그대로). `b-terminal(#817)`로 찾을 수 있습니다. 이유: 줄 표시를 0번 칸에 두어 칸과 함께 휩쓸렸습니다. Ghostty main #15327의 `Row.SemanticPrompt.combine`과 `moveCells`·`clonePartialRowFrom`. 되돌릴 조건: upstream이 줄 메타데이터를 내놓으면 지웁니다. 테스트는 `crates/bt-term/tests/margin_prompt817.rs`에 있습니다.
