@@ -46,6 +46,7 @@ fn cell(ch: char) -> DrawCell {
         cluster_cells: 0,
         overline: false,
         underline_color: None,
+        hidden: false,
     }
 }
 
@@ -446,4 +447,48 @@ fn transparent_window_matches_cpu() {
     g.set_cells_alpha(None);
     let opaque = g.render(&mut f, &v, BG);
     assert!(opaque.iter().all(|p| p >> 24 == 0xff));
+}
+
+/// #834: 숨김 칸은 고르기·최소 명암비·꾸밈이 있어도 글자를 그리지 않는다(GPU도 CPU와 같다)
+#[test]
+fn hidden_cells_match_cpu_and_draw_no_text() {
+    let Some(mut g) = gpu() else { return };
+    let mut f = fonts(2.0);
+    let mut cells = row_cells("secret value ab", 16);
+    cells.extend(row_cells("hidden 가나 ──", 16));
+    for (i, c) in cells.iter_mut().enumerate() {
+        c.selected = (2..9).contains(&(i % 16));
+        if (4..11).contains(&(i % 16)) {
+            c.hidden = true;
+            c.underline = Underline::Single;
+            c.strike = true;
+            c.overline = true;
+        }
+    }
+    let plain: Vec<DrawCell> = cells
+        .iter()
+        .map(|c| DrawCell {
+            hidden: false,
+            ..c.clone()
+        })
+        .collect();
+    let mut v = grid(&cells, 16);
+    v.min_contrast = 4.5;
+    let mut p = grid(&plain, 16);
+    p.min_contrast = 4.5;
+    check(&mut g, &mut f, "숨김", &v, &p, Alpha::default());
+    // 숨긴 칸만 있는 줄은 고른 바탕 색 한 가지뿐이다
+    let only: Vec<DrawCell> = cells
+        .iter()
+        .map(|c| DrawCell {
+            hidden: true,
+            selected: true,
+            ..c.clone()
+        })
+        .collect();
+    let mut o = grid(&only, 16);
+    o.min_contrast = 4.5;
+    let frame = gpu_frame(&mut g, &mut f, &o, Alpha::default());
+    let first = frame[0];
+    assert!(frame.iter().all(|&px| px == first), "숨긴 칸에서 글자·꾸밈이 그려졌다");
 }

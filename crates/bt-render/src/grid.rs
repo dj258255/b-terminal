@@ -28,6 +28,8 @@ pub struct DrawCell {
     pub overline: bool,
     /// 밑줄 색(SGR 58). 없으면 글자색(#276)
     pub underline_color: Option<Rgb>,
+    /// 숨김(SGR 8). 바탕만 칠하고 글자·밑줄·윗줄·취소선은 그리지 않는다(고름·찾기·최소 명암비와 상관없이, #834)
+    pub hidden: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -196,6 +198,10 @@ fn draw_rows(
             if cell.spacer || col < skip_until {
                 continue;
             }
+            // 숨김(SGR 8)은 바탕만 칠하고 글자·밑줄·윗줄·취소선을 그리지 않는다(xterm·Ghostty와 같다, #834)
+            if cell.hidden {
+                continue;
+            }
             if let Some(text) = &cell.cluster {
                 if let Some(g) = fonts.cluster_glyph(text) {
                     let span = cell.cluster_cells.max(1) as i32;
@@ -330,6 +336,7 @@ pub fn ligatures(fonts: &mut Fonts, row: &[DrawCell], cursor_col: Option<usize>)
             !cell.spacer
                 && !cell.wide
                 && !cell.emoji
+                && !cell.hidden
                 && cell.cluster.is_none()
                 && cell.ch > ' '
                 // 상자 그림·블록은 직접 그린다
@@ -419,13 +426,15 @@ fn draw_cursor(
     match cur.style {
         CursorStyle::Block => {
             paint(canvas, px, cy, w, ch);
-            // 반투명이면 커서 위 글자도 칸 글자색과 커서 글자색 사이로
+            // 반투명이면 커서 위 글자도 칸 글자색과 커서 글자색 사이로. 숨김 칸은 글자가 없다(#834)
             let text = if alpha == 255 {
                 cur.text_color
             } else {
                 cell.fg.mix(cur.text_color, cur.opacity)
             };
-            draw_cell_text(canvas, fonts, m, px, py, span, cell.ch, text, cell.bold, cell.italic);
+            if !cell.hidden {
+                draw_cell_text(canvas, fonts, m, px, py, span, cell.ch, text, cell.bold, cell.italic);
+            }
         }
         CursorStyle::Hollow => {
             let t = m.cursor_hollow.min(ch / 2).max(1);

@@ -55,6 +55,7 @@ fn cells(s: &Screen) -> Vec<DrawCell> {
             cluster_cells: 0,
             overline: c.flags.contains(CellFlags::OVERLINE),
             underline_color: c.underline_color,
+            hidden: c.flags.contains(CellFlags::HIDDEN),
         })
         .collect();
     bt_render::cluster::mark(&mut cells, s.cols, |i| {
@@ -944,6 +945,7 @@ fn blank(ch: char) -> DrawCell {
         cluster_cells: 0,
         overline: false,
         underline_color: None,
+        hidden: false,
     }
 }
 
@@ -2002,4 +2004,121 @@ fn block_selection_paints_a_rectangle_of_cells() {
             assert_eq!(p, want, "칸 ({col},{row}) 왼쪽 위 픽셀");
         }
     }
+}
+
+// ---- #834·#835·#839: 칸 색 그리기(숨김·흐림·최소 명암비) ----
+
+/// 한 칸을 `view`로 그려 칸 안에서 `bg`와 다른 픽셀 수를 센다
+fn paint_ink(f: &mut Fonts, cell: &DrawCell, tweak: impl Fn(&mut GridView)) -> (usize, Vec<Rgb>) {
+    let m = f.metrics();
+    let (w, h) = (m.width, m.height);
+    let mut buf = vec![0u32; (w * h) as usize];
+    let t = Theme::default();
+    let cells = [cell.clone()];
+    let mut view = GridView {
+        cols: 1,
+        rows: 1,
+        cells: &cells,
+        cursor: None,
+        selection_bg: Rgb::new(10, 60, 120),
+        selection_fg: Some(Rgb::new(250, 250, 100)),
+        preedit: None,
+        min_contrast: 1.0,
+    };
+    let _ = t;
+    tweak(&mut view);
+    let bg = if cell.selected { view.selection_bg } else { cell.bg };
+    let mut c = Canvas::new(&mut buf, w, h);
+    c.clear(Rgb::new(0, 0, 0));
+    draw_grid(&mut c, f, 0, 0, &view);
+    let px: Vec<Rgb> = buf.iter().map(|&p| Rgb::from_u32(p)).collect();
+    (px.iter().filter(|p| **p != bg).count(), px)
+}
+
+fn styled(ch: char) -> DrawCell {
+    DrawCell {
+        fg: Rgb::new(220, 220, 210),
+        bg: Rgb::new(30, 32, 40),
+        ..blank(ch)
+    }
+}
+
+#[test]
+fn hidden_cell_paints_only_its_background_even_when_selected_or_contrast_raised() {
+    let Some(mut f) = fonts(1.0) else { return };
+    let mut hidden = styled('M');
+    hidden.hidden = true;
+    hidden.underline = bt_render::Underline::Single;
+    hidden.strike = true;
+    hidden.overline = true;
+    // 글자색이 바탕과 비슷해 최소 명암비가 흰색으로 바꿀 칸(숨김 칸은 엔진이 글자색을 바탕과 같게 둔다)
+    hidden.fg = hidden.bg;
+    let (plain, _) = paint_ink(&mut f, &hidden, |_| {});
+    assert_eq!(plain, 0, "숨김은 기본에서 그리지 않는다");
+    let (sel, _) = paint_ink(
+        &mut f,
+        &DrawCell {
+            selected: true,
+            ..hidden.clone()
+        },
+        |_| {},
+    );
+    assert_eq!(sel, 0, "고른 숨김 칸은 고름 글자색으로 글자가 드러나면 안 된다");
+    let (contrast, _) = paint_ink(&mut f, &hidden, |v| v.min_contrast = 3.0);
+    assert_eq!(contrast, 0, "최소 명암비가 숨김 글자를 흰색으로 바꿔 드러내면 안 된다");
+    // 대조: 숨기지 않은 같은 칸은 잉크가 있다
+    let (shown, _) = paint_ink(
+        &mut f,
+        &DrawCell {
+            hidden: false,
+            selected: true,
+            ..hidden.clone()
+        },
+        |_| {},
+    );
+    assert!(shown > 20, "대조군에 잉크가 없다: {shown}");
+}
+
+#[test]
+fn hidden_cell_under_a_block_cursor_draws_no_glyph() {
+    let Some(mut f) = fonts(1.0) else { return };
+    let mut hidden = styled('M');
+    hidden.hidden = true;
+    let m = f.metrics();
+    let cur = DrawCursor {
+        col: 0,
+        row: 0,
+        style: CursorStyle::Block,
+        wide: false,
+        color: Rgb::new(200, 100, 50),
+        text_color: Rgb::new(1, 2, 3),
+        opacity: 1.0,
+    };
+    let (buf, w, h) = draw_row(&mut f, &[hidden], Some(cur));
+    let cell_h = m.height;
+    assert_eq!(h, cell_h);
+    // 커서 글자색(1,2,3)으로 칠한 픽셀이 없어야 한다: 커서 칸 전부가 커서 색이다
+    let glyph_px = buf[..(w * h) as usize]
+        .iter()
+        .filter(|&&p| Rgb::from_u32(p) == Rgb::new(1, 2, 3))
+        .count();
+    assert_eq!(glyph_px, 0, "숨김 칸 위 커서가 글자를 그렸다");
+}
+
+/// #834: 숨긴 칸은 합자 묶음에 끼지 않는다(합자 글리프에 숨긴 글자의 모양이 섞여 드러나지 않게)
+#[test]
+fn hidden_cell_is_left_out_of_ligature_runs() {
+    let Some(mut f) = fonts(1.0) else { return };
+    let row = |hide: bool| {
+        let mut v: Vec<DrawCell> = "a->b".chars().map(styled).collect();
+        v[2].hidden = hide;
+        v
+    };
+    let shown = bt_render::ligatures(&mut f, &row(false), None);
+    assert!(
+        shown.iter().any(|&g| g != 0),
+        "대조군: `->`가 합자로 묶여야 한다(글꼴이 합자를 못 하면 이 시험은 뜻이 없다)"
+    );
+    let hidden = bt_render::ligatures(&mut f, &row(true), None);
+    assert!(hidden.iter().all(|&g| g == 0), "숨긴 `>`가 합자에 끼었다: {hidden:?}");
 }

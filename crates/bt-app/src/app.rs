@@ -7186,6 +7186,7 @@ pub fn to_draw_cells(s: &Screen, theme: &bt_core::Theme) -> Vec<DrawCell> {
                 overline: c.flags.contains(CellFlags::OVERLINE),
                 // 숨김(SGR 8) 칸은 밑줄 색도 그리지 않는다. 색은 bt-term이 팔레트·OSC 4를 반영해 RGB로 푼 것
                 underline_color: c.underline_color.filter(|_| !c.flags.contains(CellFlags::HIDDEN)),
+                hidden: c.flags.contains(CellFlags::HIDDEN),
             }
         })
         .collect();
@@ -8430,6 +8431,18 @@ mod tests {
         assert_eq!((cells[2].fg, cells[2].bg), (Rgb::new(9, 9, 9), Rgb::new(1, 2, 3)));
     }
 
+    /// #834: 숨김은 칸 색을 섞지 않고 그리는 쪽에 표시로 넘긴다
+    #[test]
+    fn hidden_cells_carry_a_mark_to_the_renderer() {
+        use bt_term::{Emulator, GridSize};
+        let theme = bt_core::Theme::default();
+        let mut e = Emulator::new(GridSize::new(4, 1), theme.clone());
+        e.feed(b"a\x1b[8mb\x1b[0m");
+        let cells = to_draw_cells(&e.snapshot(), &theme);
+        assert!(!cells[0].hidden);
+        assert!(cells[1].hidden);
+    }
+
     /// kitty 그래픽 자리표시 글자(U+10EEEE, #553)와 붙은 결합 문자는 글자로 그리지 않는다(빈 네모가 찍히지 않게). 화면 값에는 그대로 남는다
     #[test]
     fn placeholder_cells_are_drawn_blank() {
@@ -8911,6 +8924,7 @@ mod tests {
             cluster_cells: 0,
             overline: false,
             underline_color: None,
+            hidden: false,
         };
         let (cols, rows) = (4, 3);
         let cells = vec![blank.clone(); cols * rows];

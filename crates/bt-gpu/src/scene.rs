@@ -211,7 +211,7 @@ impl Scene {
             let py = row as i32 * ch;
             for col in 0..view.cols {
                 let cell = &view.cells[row * view.cols + col];
-                if cell.spacer || !(cell.overline || cell.strike) {
+                if cell.spacer || cell.hidden || !(cell.overline || cell.strike) {
                     continue;
                 }
                 let span = if cell.wide { 2 } else { 1 };
@@ -250,7 +250,7 @@ impl Scene {
             let subs = ligatures(fonts, &view.cells[row * view.cols..(row + 1) * view.cols], cursor_col);
             for col in 0..view.cols {
                 let cell = &view.cells[row * view.cols + col];
-                if cell.spacer || col < skip_until {
+                if cell.spacer || col < skip_until || cell.hidden {
                     continue;
                 }
                 let px = col as i32 * cw;
@@ -462,7 +462,9 @@ impl Scene {
                 } else {
                     cell.fg.mix(cur.text_color, cur.opacity)
                 };
-                self.cell_text(cache, fonts, m, px, py, span, cell, text);
+                if !cell.hidden {
+                    self.cell_text(cache, fonts, m, px, py, span, cell, text);
+                }
             }
             CursorStyle::Hollow => {
                 let t = m.cursor_hollow.min(ch / 2).max(1);
