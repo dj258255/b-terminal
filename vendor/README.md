@@ -172,3 +172,6 @@ alacritty_terminal이 글자 묶음 폭(mode 2027)을 지원하는 판을 내면
 - 이유: Ghostty 1.4.0 `Screen.zig`의 `selectLine`(3197줄)·`selectWord`(3457줄)·`selectAll`(3364줄)과 `SelectionGesture.zig`의 `dragSelectionWord`·`dragSelectionLine`. 줄 고르기는 앞뒤 공백을 빼고 OSC 133 칸 종류(`SEMANTIC_PROMPT`·`SEMANTIC_INPUT`·그 밖은 출력)가 바뀌는 곳에서 끊고 글을 찍지 않은 칸만이면 고르지 않으며, 낱말 고르기는 누른 칸이 경계 글자면 이어진 경계 구간만 고르고 넓은 글자는 두 칸을 한 글자로 봅니다. 하이라이트·복사·끌기가 모두 `to_range`를 지나므로 한 곳을 고쳐 같은 범위를 씁니다. `term/search.rs`의 `semantic_search_left`·`semantic_search_right`·`line_search_*`는 vi 모드가 쓰므로 그대로 둡니다.
 - 되돌릴 조건: 없습니다(업스트림은 Ghostty와 다른 alacritty 규칙을 따르는 것으로 보입니다. 올릴 때 `to_range`의 두 갈래가 이 모듈을 부르는지 확인합니다).
 
+## alacritty_terminal: 1열로 줄일 때 넓은 글자(#808)
+
+- 고친 곳: `vendor/alacritty_terminal/src/grid/resize.rs`의 `shrink_columns`. 열이 1이 되면 다시 흘리기 전에 모든 줄(스크롤백 포함)의 넓은 글자 머리와 자리표시 칸을 빈 칸으로 바꿉니다(줄 이음 표시 WRAPLINE은 남김). `b-terminal(#808)`로 찾을 수 있습니다. 이유: 1열에는 넓은 글자가 들어가지 않는데, 다시 흘리기 반복이 넓은 글자를 다음 줄 맨 앞으로 밀고 다시 밀어 끝나지 않았습니다(탐침에서 CPU 100%, 메모리 1GB 넘게 늘었음). Ghostty는 넓은 글자를 지웁니다(`Screen.zig` 시험 `resize less cols to eliminate wide char` 8974줄·`... with row space` 9050줄). 앱은 `GridSize::clamped`가 열을 2 이상으로 올려 닿지 않았고, 이 고침은 엔진 안의 방어입니다. 되돌릴 조건: 업스트림이 1열 다시 흘리기에서 끝나게 고치면 지웁니다. 시험은 `crates/bt-term/tests/resize_ghostty808.rs`에 있습니다(끝나지 않으면 2초 뒤 실패).

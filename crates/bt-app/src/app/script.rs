@@ -746,7 +746,7 @@ impl App {
 
     /// 칸 `idx`에서 스크립트 마우스 상태를 꺼내 `run`에 넘기고 돌려놓는다. `run`은 위치(창 실제 픽셀)를 담은 입력과 상태를 받는다.
     /// 칸이 보이지 않으면 아무것도 하지 않는다(고른 칸이라 보통은 보인다)
-    fn with_script_mouse(
+    pub(super) fn with_script_mouse(
         &mut self,
         idx: usize,
         mods: crate::script_mouse::PtrMods,
@@ -757,6 +757,7 @@ impl App {
             return;
         };
         let mut sm = std::mem::take(&mut self.panes[idx].script_mouse);
+        sm.mods = mods;
         if let Some(p) = pos {
             sm.pos_pt = p;
         }
@@ -800,7 +801,7 @@ impl App {
         };
         self.with_script_mouse(idx, mods, None, |app, input, sm| {
             // 링크 수식 키 + 왼쪽 단추는 링크를 연다(#705, 사람과 같은 처리)
-            let clicks = sm.state.last_click.map_or(0, |l| l.3);
+            let clicks = sm.state.last_click.map_or(0, |l| l.count);
             if !app.link_click_step(mb, pressed, input, &mut sm.link_click, clicks) {
                 app.pointer_button(idx, mb, pressed, input, &mut sm.state);
             }
