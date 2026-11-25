@@ -2328,3 +2328,69 @@ fn selection_styled_applies_the_codepoint_map() {
     let plain = s.selection_styled(bt_term::CopyEmit::Vt, true, false, &[]).unwrap();
     assert!(plain.contains("red text"), "맵이 비면 그대로: {plain:?}");
 }
+
+/// #836: 넓은 글자의 머리나 꼬리 한쪽만 골라도 고름 색은 두 칸을 다 칠한다(Ghostty `x_compare`와 `render.zig`의 줄 범위)
+fn selected_cols(s: &Session, rows: usize, cols: usize) -> Vec<Vec<usize>> {
+    use bt_term::CellFlags;
+    let snap = s.snapshot();
+    (0..rows)
+        .map(|r| {
+            (0..cols)
+                .filter(|&c| snap.cell(c, r).flags.contains(CellFlags::SELECTED))
+                .collect()
+        })
+        .collect()
+}
+
+#[test]
+fn selection_paints_both_cells_of_a_wide_char() {
+    use bt_term::{
+        CellSide::{Left, Right},
+        SelectKind::{Block, Simple},
+    };
+    let (s, rx) = sh("printf 'a宽b\\n'", GridSize::new(10, 3));
+    wait_exit(&rx);
+    wait_until(&s, |t| t.contains("a宽b"));
+    // 꼬리(3열 b가 아니라 2열)에서 시작해 머리 쪽으로: Ghostty 시험 "selection starting on wide char spacer tail"
+    s.select_start(3, 0, Simple);
+    s.select_update(2, 0);
+    assert_eq!(selected_cols(&s, 1, 10), vec![vec![1, 2, 3]], "꼬리에서 시작");
+    // 머리에서 끝남
+    s.select_start(0, 0, Simple);
+    s.select_update(1, 0);
+    assert_eq!(selected_cols(&s, 1, 10), vec![vec![0, 1, 2]], "머리에서 끝남");
+    // 마우스 규칙(쪽을 보는 길)
+    s.select_start_at(0, 0, Simple, Left);
+    s.select_update_at(1, 0, Right);
+    assert_eq!(selected_cols(&s, 1, 10), vec![vec![0, 1, 2]], "0L→1R");
+    s.select_start_at(0, 0, Simple, Left);
+    s.select_update_at(2, 0, Left);
+    assert_eq!(selected_cols(&s, 1, 10), vec![vec![0, 1, 2]], "0L→2L");
+    s.select_start_at(3, 0, Simple, Right);
+    s.select_update_at(2, 0, Left);
+    assert_eq!(selected_cols(&s, 1, 10), vec![vec![1, 2, 3]], "3R→2L");
+    // 사각도 꼬리 칸 한 칸만 걸치면 넓은 글자 전체를 칠한다(x_compare)
+    s.select_start(2, 0, Block);
+    s.select_update(2, 0);
+    assert_eq!(selected_cols(&s, 1, 10), vec![vec![1, 2]], "사각, 꼬리만");
+}
+
+#[test]
+fn selection_ending_on_spacer_head_paints_the_wrapped_wide_char() {
+    use bt_term::SelectKind::{Block, Simple};
+    let (s, rx) = sh("printf 'abcdefghi宽'", GridSize::new(10, 3));
+    wait_exit(&rx);
+    wait_until(&s, |t| t.contains("宽"));
+    // Ghostty 시험 "selection ending on wide char spacer head": 7→9(줄 끝 자리표시 칸)
+    s.select_start(7, 0, Simple);
+    s.select_update(9, 0);
+    assert_eq!(
+        selected_cols(&s, 2, 10),
+        vec![vec![7, 8, 9], vec![0, 1]],
+        "다음 줄 넓은 글자까지"
+    );
+    // 사각은 줄을 넘지 않아 넓히지 않는다
+    s.select_start(7, 0, Block);
+    s.select_update(9, 0);
+    assert_eq!(selected_cols(&s, 2, 10), vec![vec![7, 8, 9], vec![]], "사각은 그대로");
+}

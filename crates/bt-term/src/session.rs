@@ -2410,6 +2410,34 @@ fn snapshot_of<T: EventListener>(
         };
     }
 
+    // 넓은 글자의 머리와 꼬리는 하나로 고른다(Ghostty `render.zig`의 줄 범위와 `generic.zig`의 `x_compare`).
+    // 꼬리 칸은 머리 칸 자리로 견주고, 줄 끝 자리표시 칸에서 끝난 글자 고름은 다음 줄의 넓은 글자까지 넓힌다(사각은 넓히지 않는다)
+    if let Some(sel) = selection {
+        if !sel.is_block {
+            for r in 0..rows.saturating_sub(1) {
+                let (last, next) = (r * cols + cols - 1, (r + 1) * cols);
+                if cells[last].flags.contains(CellFlags::SELECTED)
+                    && cells[last].flags.contains(CellFlags::SPACER)
+                    && !cells[last].flags.contains(CellFlags::WIDE)
+                    && cells[next].flags.contains(CellFlags::WIDE)
+                    && !cells[next].flags.contains(CellFlags::SELECTED)
+                    && sel.end.line.0 + offset == r as i32
+                {
+                    cells[next].flags.insert(CellFlags::SELECTED);
+                }
+            }
+        }
+        for i in 0..cells.len() {
+            if cells[i].flags.contains(CellFlags::WIDE) && i % cols + 1 < cols {
+                let sel_pair =
+                    cells[i].flags.contains(CellFlags::SELECTED) || cells[i + 1].flags.contains(CellFlags::SELECTED);
+                if sel_pair && cells[i + 1].flags.contains(CellFlags::SPACER) {
+                    cells[i].flags.insert(CellFlags::SELECTED);
+                    cells[i + 1].flags.insert(CellFlags::SELECTED);
+                }
+            }
+        }
+    }
     let vt_cursor = content.cursor;
     let cursor_row = vt_cursor.point.line.0 + offset;
     let show = content.mode.contains(TermMode::SHOW_CURSOR);
