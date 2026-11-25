@@ -30,6 +30,8 @@ pub struct DrawCell {
     pub underline_color: Option<Rgb>,
     /// 숨김(SGR 8). 바탕만 칠하고 글자·밑줄·윗줄·취소선은 그리지 않는다(고름·찾기·최소 명암비와 상관없이, #834)
     pub hidden: bool,
+    /// 흐림(SGR 2)이면 `faint-opacity`. 글자색은 반전·고름·찾기·최소 명암비를 정한 마지막에 이 알파로 바탕에 섞는다(#835)
+    pub faint: Option<f32>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -215,9 +217,10 @@ fn draw_rows(
             let px = x + col as i32 * cw;
             let span = if cell.wide { 2 } else { 1 };
             let fg = text_color(view, cell, &mut contrast_memo);
+            let deco = decoration_color(view, cell);
             // 밑줄은 글자보다 먼저 그려 글자 밑에 깐다(Ghostty와 같다. 색 밑줄이 내려가는 획과 겹쳐도 글자가 읽힌다, #276)
             if cell.underline != Underline::None {
-                let color = cell.underline_color.unwrap_or(cell.fg);
+                let color = cell.underline_color.unwrap_or(deco);
                 // 넓은 글자는 칸마다 따로 긋는다(Ghostty도 칸마다 밑줄 조각을 얹는다)
                 for k in 0..span as i32 {
                     crate::underline::draw(
@@ -240,7 +243,7 @@ fn draw_rows(
                     py + m.overline_offset as i32,
                     m.width * span,
                     m.overline_thickness,
-                    cell.fg,
+                    deco,
                 );
             }
             // U+FE0F가 붙은 글자는 그 칸 안에 색 이모지로(색 글꼴에 없으면 글자로)
@@ -265,7 +268,7 @@ fn draw_rows(
                     py + m.strike_offset as i32,
                     m.width * span,
                     m.strike_thickness,
-                    cell.fg,
+                    deco,
                 );
             }
         }
@@ -293,24 +296,43 @@ fn draw_rows(
     }
 }
 
-/// 칸의 글자색: 고른 칸이면 `selection_fg`, 최소 명암비(#123)를 켰으면 바탕과 비슷한 색을 흰색이나 검은색으로.
+/// 칸의 글자색. 차례는 Ghostty와 같다: 고른 칸이면 `selection_fg`, 최소 명암비(#123)를 켰으면 바탕과 비슷한 색을
+/// 흰색이나 검은색으로, 마지막으로 흐린 칸(SGR 2)이면 `faint-opacity`를 건다(#835).
+/// 명암비는 알파를 걸기 전의 색으로 재고, 명암비가 색을 바꿨으면 흰색·검은색은 알파 없이 그린다
+/// (Ghostty 셰이더 `contrasted_color`가 알파 1짜리 색을 돌려준다).
 /// 이어지는 칸은 같은 (글자색, 바탕) 쌍이 많아 앞 결과(`memo`)를 쓴다. GPU 렌더러도 이 함수를 쓴다(규칙은 한 벌)
 pub fn text_color(view: &GridView, cell: &DrawCell, memo: &mut Option<((Rgb, Rgb), Rgb)>) -> Rgb {
     let fg = match (cell.selected, view.selection_fg) {
         (true, Some(c)) => c,
         _ => cell.fg,
     };
-    if view.min_contrast <= 1.0 {
-        return fg;
-    }
     let bg = if cell.selected { view.selection_bg } else { cell.bg };
-    match *memo {
-        Some((pair, out)) if pair == (fg, bg) => out,
-        _ => {
-            let out = fg.contrasted(bg, view.min_contrast);
-            *memo = Some(((fg, bg), out));
-            out
+    let contrast = view.min_contrast > 1.0;
+    let adjusted = if contrast {
+        match *memo {
+            Some((pair, out)) if pair == (fg, bg) => out,
+            _ => {
+                let out = fg.contrasted(bg, view.min_contrast);
+                *memo = Some(((fg, bg), out));
+                out
+            }
         }
+    } else {
+        fg
+    };
+    match cell.faint {
+        Some(opacity) if !(contrast && fg.contrast(bg) < view.min_contrast) => adjusted.mix(bg, 1.0 - opacity),
+        _ => adjusted,
+    }
+}
+
+/// 밑줄(밑줄 색이 없을 때)·윗줄·취소선의 색: 칸의 글자색에 흐림만 건다. 고름 글자색과 최소 명암비는 걸지 않는다(지금까지와 같다)
+pub fn decoration_color(view: &GridView, cell: &DrawCell) -> Rgb {
+    match cell.faint {
+        Some(opacity) => cell
+            .fg
+            .mix(if cell.selected { view.selection_bg } else { cell.bg }, 1.0 - opacity),
+        None => cell.fg,
     }
 }
 

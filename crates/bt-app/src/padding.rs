@@ -151,6 +151,7 @@ mod tests {
             overline: false,
             underline_color: None,
             hidden: false,
+            faint: None,
         }
     }
 

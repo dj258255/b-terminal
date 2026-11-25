@@ -2366,6 +2366,9 @@ fn snapshot_of<T: EventListener>(
         if f.contains(Flags::HIDDEN) {
             flags.insert(CellFlags::HIDDEN);
         }
+        if f.contains(Flags::DIM) {
+            flags.insert(CellFlags::FAINT);
+        }
         if src.c == crate::kitty_unicode::PLACEHOLDER {
             flags.insert(CellFlags::PLACEHOLDER);
         }

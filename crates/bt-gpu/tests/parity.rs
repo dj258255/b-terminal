@@ -47,6 +47,7 @@ fn cell(ch: char) -> DrawCell {
         overline: false,
         underline_color: None,
         hidden: false,
+        faint: None,
     }
 }
 
@@ -491,4 +492,41 @@ fn hidden_cells_match_cpu_and_draw_no_text() {
     let frame = gpu_frame(&mut g, &mut f, &o, Alpha::default());
     let first = frame[0];
     assert!(frame.iter().all(|&px| px == first), "숨긴 칸에서 글자·꾸밈이 그려졌다");
+}
+
+/// #835: 흐린 칸은 마지막 글자색(고름·최소 명암비 뒤)에 faint-opacity를 건다
+#[test]
+fn faint_cells_match_cpu() {
+    let Some(mut g) = gpu() else { return };
+    let mut f = fonts(2.0);
+    let mut cells = row_cells("faint text ab", 16);
+    cells.extend(row_cells("faint 가나 selected", 16));
+    for (i, c) in cells.iter_mut().enumerate() {
+        c.faint = Some(0.4);
+        c.selected = (16..24).contains(&i);
+        // 취소선은 글자 위에(CPU) 글자 아래에(GPU) 그려 고른 칸에선 색이 겹쳐 달라진다(이 판 이전부터): 고르지 않은 칸에만
+        c.strike = i % 5 == 0 && !c.selected;
+        c.overline = i % 7 == 0;
+        c.underline = if i % 3 == 0 { Underline::Single } else { Underline::None };
+    }
+    let plain: Vec<DrawCell> = cells
+        .iter()
+        .map(|c| DrawCell {
+            faint: None,
+            ..c.clone()
+        })
+        .collect();
+    check(
+        &mut g,
+        &mut f,
+        "흐림",
+        &grid(&cells, 16),
+        &grid(&plain, 16),
+        Alpha::default(),
+    );
+    let mut v = grid(&cells, 16);
+    v.min_contrast = 4.5;
+    let mut p = grid(&plain, 16);
+    p.min_contrast = 4.5;
+    check(&mut g, &mut f, "흐림+최소 명암비", &v, &p, Alpha::default());
 }

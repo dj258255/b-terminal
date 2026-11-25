@@ -12,8 +12,8 @@
 use bt_core::Rgb;
 use bt_render::font::CellMetrics;
 use bt_render::{
-    CursorStyle, DrawCell, DrawCursor, FontStyle, Fonts, GridView, Underline, char_cells, ligatures, lock_rects,
-    sprite, text_color,
+    CursorStyle, DrawCell, DrawCursor, FontStyle, Fonts, GridView, Underline, char_cells, decoration_color, ligatures,
+    lock_rects, sprite, text_color,
 };
 
 use crate::glyphs::{Entry, GlyphCache, Key};
@@ -214,6 +214,7 @@ impl Scene {
                 if cell.spacer || cell.hidden || !(cell.overline || cell.strike) {
                     continue;
                 }
+                let deco = decoration_color(view, cell);
                 let span = if cell.wide { 2 } else { 1 };
                 let px = col as i32 * cw;
                 if cell.overline {
@@ -222,7 +223,7 @@ impl Scene {
                         py + m.overline_offset as i32,
                         m.width * span,
                         m.overline_thickness,
-                        cell.fg,
+                        deco,
                         255,
                     );
                 }
@@ -232,7 +233,7 @@ impl Scene {
                         py + m.strike_offset as i32,
                         m.width * span,
                         m.strike_thickness,
-                        cell.fg,
+                        deco,
                         255,
                     );
                 }
@@ -268,9 +269,10 @@ impl Scene {
                 }
                 let span = if cell.wide { 2 } else { 1 };
                 let fg = text_color(view, cell, &mut contrast_memo);
+                let deco = decoration_color(view, cell);
                 // 밑줄은 글자 밑에 깐다. 넓은 글자는 칸마다 따로 긋는다(CPU와 같다)
                 if cell.underline != Underline::None {
-                    let color = cell.underline_color.unwrap_or(cell.fg);
+                    let color = cell.underline_color.unwrap_or(deco);
                     let e = cache.get_mask(
                         Key::Underline(
                             cell.underline as u8,

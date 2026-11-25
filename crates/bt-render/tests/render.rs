@@ -56,6 +56,10 @@ fn cells(s: &Screen) -> Vec<DrawCell> {
             overline: c.flags.contains(CellFlags::OVERLINE),
             underline_color: c.underline_color,
             hidden: c.flags.contains(CellFlags::HIDDEN),
+            faint: c
+                .flags
+                .contains(CellFlags::FAINT)
+                .then_some(Theme::default().faint_opacity),
         })
         .collect();
     bt_render::cluster::mark(&mut cells, s.cols, |i| {
@@ -726,6 +730,9 @@ fn paint_theme(f: &mut Fonts, theme: &Theme, bytes: &[u8], edit: impl FnOnce(&mu
     e.feed(bytes);
     let s = e.snapshot();
     let mut dc = cells(&s);
+    for (d, c) in dc.iter_mut().zip(&s.cells) {
+        d.faint = c.flags.contains(CellFlags::FAINT).then_some(theme.faint_opacity);
+    }
     edit(&mut dc);
     let m = f.metrics();
     let (w, h) = (m.width * 4, m.height);
@@ -946,6 +953,7 @@ fn blank(ch: char) -> DrawCell {
         overline: false,
         underline_color: None,
         hidden: false,
+        faint: None,
     }
 }
 
@@ -2103,6 +2111,61 @@ fn hidden_cell_under_a_block_cursor_draws_no_glyph() {
         .filter(|&&p| Rgb::from_u32(p) == Rgb::new(1, 2, 3))
         .count();
     assert_eq!(glyph_px, 0, "숨김 칸 위 커서가 글자를 그렸다");
+}
+
+#[test]
+fn faint_color_is_applied_last_after_selection_and_min_contrast() {
+    let sel_bg = Rgb::new(10, 60, 120);
+    let sel_fg = Rgb::new(250, 250, 100);
+    let bg = Rgb::new(30, 32, 40);
+    let view = |min| GridView {
+        cols: 1,
+        rows: 1,
+        cells: &[],
+        cursor: None,
+        selection_bg: sel_bg,
+        selection_fg: Some(sel_fg),
+        preedit: None,
+        min_contrast: min,
+    };
+    let base = DrawCell {
+        fg: Rgb::new(200, 200, 200),
+        bg,
+        faint: Some(0.5),
+        ..blank('a')
+    };
+    // 흐린 칸: 글자색을 바탕 쪽으로
+    assert_eq!(
+        bt_render::text_color(&view(1.0), &base, &mut None),
+        base.fg.mix(bg, 0.5)
+    );
+    // 흐린 칸을 고르면 고름 글자색에 알파를 건다(고름 바탕 쪽으로)
+    let sel = DrawCell {
+        selected: true,
+        ..base.clone()
+    };
+    assert_eq!(
+        bt_render::text_color(&view(1.0), &sel, &mut None),
+        sel_fg.mix(sel_bg, 0.5)
+    );
+    // 흐리지 않으면 그대로
+    let plain = DrawCell {
+        faint: None,
+        ..sel.clone()
+    };
+    assert_eq!(bt_render::text_color(&view(1.0), &plain, &mut None), sel_fg);
+    // 명암비는 알파 앞의 색으로 잰다: 알파를 건 색은 모자라도 알파 앞 색이 충분하면 바꾸지 않는다
+    let weak = DrawCell {
+        fg: Rgb::new(120, 120, 120),
+        bg,
+        faint: Some(0.2),
+        ..blank('a')
+    };
+    assert!(Rgb::new(120, 120, 120).contrast(bg) >= 3.0);
+    assert_eq!(
+        bt_render::text_color(&view(3.0), &weak, &mut None),
+        weak.fg.mix(bg, 0.8)
+    );
 }
 
 /// #834: 숨긴 칸은 합자 묶음에 끼지 않는다(합자 글리프에 숨긴 글자의 모양이 섞여 드러나지 않게)

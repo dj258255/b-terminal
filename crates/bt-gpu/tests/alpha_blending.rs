@@ -47,6 +47,7 @@ fn cell(ch: char, fg: Rgb, bg: Rgb) -> DrawCell {
         overline: false,
         underline_color: None,
         hidden: false,
+        faint: None,
     }
 }
 

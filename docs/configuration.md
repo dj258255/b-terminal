@@ -103,7 +103,7 @@ config-file = ?~/.config/b-terminal/local   # ?가 붙으면 없어도 된다
 | `selection-background` / `selection-foreground` | `#rrggbb` | 색 뒤집기 | |
 | `bold-is-bright` | `true` / `false` | `false` | Ghostty 기본과 같게 끔 |
 | `bold-color` | `#rrggbb`, `bright` | 없음 | 굵은 글자의 색(Ghostty 1.2). 색을 주면 굵은 기본 글자색이 그 색이 되고, 나머지 굵은 0~7번 색은 밝은 8~15번 색이 됩니다. `bright`는 색 없이 굵은 0~7번 색만 밝게 올립니다(`bold-is-bright = true`와 같음). 값을 비우면 기본 |
-| `faint-opacity` | `0`~`1` | `0.5` | 흐린 글자(SGR 2)의 불투명도(Ghostty 1.2). 1이면 그대로, 0이면 바탕에 묻혀 보이지 않습니다. 범위 밖은 가까운 값으로 묶습니다. 전에는 0.6 고정이었습니다. |
+| `faint-opacity` | `0`~`1` | `0.5` | 흐린 글자(SGR 2)의 불투명도(Ghostty 1.2). 1이면 그대로, 0이면 바탕에 묻혀 보이지 않습니다. 범위 밖은 가까운 값으로 묶습니다. 전에는 0.6 고정이었습니다. 반전·고르기·찾기·최소 명암비로 글자색을 정한 마지막에 그 색에 겁니다(Ghostty처럼) |
 | `search-background` / `search-foreground` | `#rrggbb`, `cell-foreground`, `cell-background` | `#ffe082` / `#000000` | 찾기에 맞은 칸의 바탕·글자색(지금 고른 곳 말고 나머지). `cell-*`는 그 칸의 글자색·바탕색 |
 | `search-selected-background` / `search-selected-foreground` | `#rrggbb`, `cell-foreground`, `cell-background` | `#f2a57e` / `#000000` | 지금 고른 맞은 곳(Enter로 옮겨 다니는 것)의 바탕·글자색 |
 | `selection-clear-on-typing` | `true` / `false` | `true` | 글을 치면 고른 영역을 지웁니다(IME 조합을 시작할 때도). 끄면 지우지 않지만 Esc는 지웁니다. 붙여넣기는 이 값과 상관없이 지웁니다 |

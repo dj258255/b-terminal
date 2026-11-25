@@ -38,6 +38,7 @@ fn cells(s: &Screen) -> Vec<DrawCell> {
             overline: false,
             underline_color: None,
             hidden: false,
+            faint: None,
         })
         .collect();
     cluster::mark(&mut cells, s.cols, |i| {
@@ -368,6 +369,7 @@ fn placeholder_cells(s: &Screen, raw: bool) -> Vec<DrawCell> {
             overline: false,
             underline_color: None,
             hidden: false,
+            faint: None,
         })
         .collect();
     cluster::mark(&mut cells, s.cols, |i| {

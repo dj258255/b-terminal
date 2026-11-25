@@ -7187,6 +7187,7 @@ pub fn to_draw_cells(s: &Screen, theme: &bt_core::Theme) -> Vec<DrawCell> {
                 // 숨김(SGR 8) 칸은 밑줄 색도 그리지 않는다. 색은 bt-term이 팔레트·OSC 4를 반영해 RGB로 푼 것
                 underline_color: c.underline_color.filter(|_| !c.flags.contains(CellFlags::HIDDEN)),
                 hidden: c.flags.contains(CellFlags::HIDDEN),
+                faint: c.flags.contains(CellFlags::FAINT).then_some(theme.faint_opacity),
             }
         })
         .collect();
@@ -8431,16 +8432,29 @@ mod tests {
         assert_eq!((cells[2].fg, cells[2].bg), (Rgb::new(9, 9, 9), Rgb::new(1, 2, 3)));
     }
 
-    /// #834: 숨김은 칸 색을 섞지 않고 그리는 쪽에 표시로 넘긴다
+    /// #834·#835: 숨김·흐림은 칸 색을 섞지 않고 그리는 쪽에 표시로 넘긴다(흐림은 `faint-opacity`와 함께)
     #[test]
-    fn hidden_cells_carry_a_mark_to_the_renderer() {
+    fn hidden_and_faint_cells_carry_marks_to_the_renderer() {
         use bt_term::{Emulator, GridSize};
-        let theme = bt_core::Theme::default();
-        let mut e = Emulator::new(GridSize::new(4, 1), theme.clone());
-        e.feed(b"a\x1b[8mb\x1b[0m");
-        let cells = to_draw_cells(&e.snapshot(), &theme);
-        assert!(!cells[0].hidden);
-        assert!(cells[1].hidden);
+        let theme = bt_core::Theme {
+            faint_opacity: 0.25,
+            ..bt_core::Theme::default()
+        };
+        let mut e = Emulator::new(GridSize::new(6, 1), theme.clone());
+        e.feed(b"a\x1b[8mb\x1b[0;2mc\x1b[7md\x1b[0m");
+        let s = e.snapshot();
+        let cells = to_draw_cells(&s, &theme);
+        assert!(!cells[0].hidden && cells[0].faint.is_none());
+        assert!(cells[1].hidden && cells[1].faint.is_none());
+        assert!(!cells[2].hidden && cells[2].faint == Some(0.25));
+        assert_eq!(
+            (cells[2].fg, cells[2].bg),
+            (theme.foreground, theme.background),
+            "흐림은 색을 섞지 않는다"
+        );
+        // 흐림 + 반전: 바탕은 원래 글자색 그대로
+        assert_eq!(cells[3].faint, Some(0.25));
+        assert_eq!((cells[3].fg, cells[3].bg), (theme.background, theme.foreground));
     }
 
     /// kitty 그래픽 자리표시 글자(U+10EEEE, #553)와 붙은 결합 문자는 글자로 그리지 않는다(빈 네모가 찍히지 않게). 화면 값에는 그대로 남는다
@@ -8925,6 +8939,7 @@ mod tests {
             overline: false,
             underline_color: None,
             hidden: false,
+            faint: None,
         };
         let (cols, rows) = (4, 3);
         let cells = vec![blank.clone(); cols * rows];
