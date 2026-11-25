@@ -2,7 +2,8 @@
 //!
 //! 줄의 표시(프롬프트·이어진 프롬프트)는 그 줄 0번 칸의 `Flags::ROW_PROMPT`·`ROW_PROMPT_CONTINUATION`에 둔다.
 //! 칸이 줄과 함께 스크롤백으로 가고 다시 감싸일 때도 따라가고, 글자를 덮어써도 남는다(`write_at_cursor`).
-//! 칸을 지우면(EL·ED·ICH 등) 표시도 함께 사라진다(Ghostty는 줄의 표시가 남는다. 다시 그리기가 지울 때는 남긴다).
+//! b-terminal(#825): 칸만 지우거나 미는 연산(EL·ED의 커서 줄·ECH·DCH·ICH, 넓은 글자 경계 정리)도 표시를 남긴다(Ghostty `Screen.clearCells`는
+//! 줄 속성을 건드리지 않는다). 표시가 지워지는 것은 줄째 지우는 연산뿐이다(ED 0의 아랫줄, ED 1의 윗줄, ED 2·3, DECALN, RIS, IL·DL로 비워진 줄).
 
 use super::*;
 

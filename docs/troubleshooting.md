@@ -197,7 +197,6 @@
 - 알림이 아예 안 보이면: 시스템 설정 → 알림에서 b-terminal(앱 묶음일 때) 또는 스크립트 편집기(그 밖) 항목이 허용인지 본다. b-terminal 쪽은 `desktop-notifications = false`(프로그램 알림만 끔)인지 본다
 - b-terminal(#625, ADR-058): `scripts/bundle-macos.sh`로 만든 앱 묶음으로 돌면 알림을 `UNUserNotificationCenter`로 내고, 누르면 그 칸의 창·탭·칸으로 간다(Ghostty와 같다). 처음 알림을 낼 때 b-terminal 알림 권한을 묻는다. 그 칸을 보면 알림 센터의 그 칸 알림이 지워진다. 앱 묶음이 아닌 실행(`cargo run`, 내려받은 실행 파일만 돌림)은 번들 식별자가 없어 이 프레임워크를 쓸 수 없으므로(쓰면 앱이 죽는다) 여전히 `osascript`이고 스크립트 편집기가 열린다. 프레임워크 호출은 vendor winit 안에만 두어 작업 공간의 `unsafe_code = "deny"`는 그대로다. 실제로 알림을 띄워 눌러 보지는 않았다(데스크톱 알림을 보내지 않는다는 작업 규칙)
 
-
 ## 24. AppleScript가 "터미널이 답하지 않습니다"를 낸다
 
 - 언제: 2026-11-18, #634. AppleScript 사전을 넣으며 시간 초과 길을 따져 적었다. 사용자 제보는 없다
@@ -344,7 +343,6 @@
 - 까닭: 손잡이 판단이 포인터가 숨었는지 보지 않았다. Ghostty `auto`는 `cursorVisible`이 거짓이면 점을 보이지 않는다
 - 고침: `auto`이면 포인터가 숨은 동안 손잡이를 보이지 않는다. `always`는 그대로다
 - 0.90.0에서 풀기: 마우스를 조금 움직이면 포인터와 함께 점이 다시 정상으로 보인다(보이는 것만의 차이)
-
 
 ## 42. kitty 키보드를 켠 프로그램에서 Shift+Tab·Shift+Enter가 Shift 없이 간다
 
@@ -644,3 +642,10 @@
 - 한계: OSC 안의 C0(BEL·CAN·SUB·ESC 말고)는 VT 상태표가 먼저 버리므로(엔진·Ghostty 같음) 검사에 닿는 것은 DEL과 C1이다. 메타데이터에 깨진 UTF-8이 있으면 우리는 조각 전체를 버리지만 Ghostty는 페이로드만 본다(알림을 못 받는 쪽이라 그대로 뒀다)
 - 0.100.0에서 풀기: 없다
 
+## 80. 칸을 지우거나 밀면(EL·ED·ECH·DCH·ICH) OSC 133 줄 프롬프트 표시도 사라진다
+
+- 언제: 2026-11-25, #825. Ghostty 1.4.0 단위 시험과 같은 입력으로 견준 조사(0.101)에서 찾았다. 0.100.0까지의 동작이다
+- 증상: 줄 표시를 0번 칸의 `ROW_PROMPT`·`ROW_PROMPT_CONTINUATION`에 두어, 프롬프트 줄에서 0번 칸을 지우는 `\r ESC[K`, `ESC[2K`, `\r ESC[J`, `ESC[4G ESC[1K`, `\r ESC[2P`, `\r ESC[2X`, `\r ESC[2@`가 줄 표시를 지웠다(0번 칸을 건드리지 않으면 남았다). 셸이 줄을 지우고 다시 그리는 사이에 프롬프트 건너뛰기·출력 고르기가 그 프롬프트를 놓친다
+- 까닭: Ghostty `Screen.clearCells`는 칸만 비우고 줄의 `semantic_prompt`를 건드리지 않는다. 줄 속성을 지우는 것은 줄째 지우는 `clearRows`(ED 0의 아랫줄, ED 1의 윗줄, ED 2, DECALN)뿐이다. 우리는 줄 표시가 칸에 있어 칸을 `bg.into()`로 덮는 곳마다 표시가 함께 사라졌다
+- 고침: 칸을 비우는 곳이 0번 칸의 표시를 남기는 `blank_cell`을 쓰고(`erase_line`·`clear_unprotected`·`erase_chars`·ED 0·1의 커서 줄·`blank_cell_keep_wrap`·`repair_wide_cells`·`scroll_rect`의 경계 정리), 칸을 밀어 옮기는 ICH·DCH는 옮기기 전에 표시를 떼어 두었다가 0번 칸에 다시 붙인다(`take_marks`). 줄째 지우는 연산(`reset_region`)은 표시도 지운다. 글자 쓰기(print)는 이미 표시를 남겼다(`write_at_cursor`·`blank_wide_partner`). 마지막 보호 방식이 ISO이면 ED는 Ghostty처럼 줄 표시를 남기고, DEC(DECSCA)이면 지운다. 시험: `crates/bt-term/tests/erase_prompt825.rs`
+- 0.100.0에서 풀기: 프롬프트 줄을 `ESC[2K` 대신 줄을 건드리지 않는 방법으로 다시 그린다(없음)
