@@ -148,6 +148,8 @@ pub enum PromptMark {
 
 /// OSC 하나의 상한. 넘으면 버린다(상한은 모으기 전에 본다)
 const MAX_OSC: usize = 8 * 1024;
+/// OSC 133에서 `133;` 뒤로 받는 바이트 상한(Ghostty `osc.zig`의 `MAX_BUF`). 넘으면 명령 전체를 버린다(#822)
+const MAX_OSC133_TRAILING: usize = 2048;
 pub(crate) const MAX_TITLE: usize = 120;
 pub(crate) const MAX_BODY: usize = 500;
 
@@ -787,6 +789,11 @@ impl Scanner {
             }
             return;
         }
+        // OSC 133은 `133;` 뒤가 2048바이트를 넘으면 명령 전체를 버린다(#822, Ghostty `captureTrailing(.fixed)`의 `MAX_BUF`).
+        // 같은 OSC를 읽는 `133;A` 등의 옵션 신호와 아래의 옛 표지 모두 이 앞에서 걸러진다
+        if raw.strip_prefix(b"133;").is_some_and(|t| t.len() > MAX_OSC133_TRAILING) {
+            return;
+        }
         let text = String::from_utf8_lossy(&raw);
         // OSC 133(#329): 옵션까지 읽은 신호를 먼저 낸다. 엔진이 fresh-line으로 커서를 옮긴 뒤에 `Prompt`가 그 줄을 적는다
         if let Some(sp) = text.strip_prefix("133;").and_then(crate::osc133::parse) {
@@ -919,8 +926,9 @@ fn parse_osc(s: &str) -> Option<Signal> {
                 "B" => Signal::Prompt(PromptMark::CommandStart),
                 "I" if code == "133" => Signal::Prompt(PromptMark::CommandStart),
                 "C" => Signal::Prompt(PromptMark::CommandExecuted),
+                // 종료 코드는 `osc133::parse`가 읽은 하나만 쓴다(#822: Ghostty `parseInt`라 공백을 받지 않는다)
                 "D" => Signal::Prompt(PromptMark::CommandFinished(
-                    parts.next().and_then(|c| c.trim().parse().ok()),
+                    crate::osc133::parse(rest).and_then(|sp| sp.exit_code),
                 )),
                 // VS Code: 633;E;명령(;는 \x3b, \는 \\로 적는다)
                 "E" if code == "633" => {

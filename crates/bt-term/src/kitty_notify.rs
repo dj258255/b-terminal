@@ -111,6 +111,12 @@ fn decode(payload: &str) -> Option<String> {
     String::from_utf8(bytes).ok()
 }
 
+/// kitty 명세의 "safe UTF-8": C0·DEL·C1 제어 문자가 없다(Ghostty `osc/encoding.zig` `isSafeUtf8`)
+fn is_safe_utf8(s: &str) -> bool {
+    !s.chars()
+        .any(|c| matches!(c, '\u{0}'..='\u{1f}' | '\u{7f}' | '\u{80}'..='\u{9f}'))
+}
+
 /// 제어 문자를 공백으로 바꾼다(앞뒤를 자르지 않는다: 조각 경계의 공백은 글의 일부다)
 fn sanitize(s: &str) -> String {
     s.chars().map(|c| if c.is_control() { ' ' } else { c }).collect()
@@ -173,6 +179,11 @@ impl Assembler {
             MAX_PLAIN_PAYLOAD
         };
         if payload.len() > limit {
+            return Outcome::Nothing;
+        }
+        // 페이로드가 안전한 UTF-8이 아니면 명령 전체를 버린다(#822, Ghostty `isSafeUtf8`): C0(0x00~0x1F), DEL, C1(U+0080~U+009F).
+        // 메타데이터에는 걸지 않는다. 푼 뒤의 글(`e=1`)은 이 검사 밖이라 아래 `sanitize`가 다룬다
+        if !is_safe_utf8(payload) {
             return Outcome::Nothing;
         }
         let kind = kind(meta);
