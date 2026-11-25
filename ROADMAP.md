@@ -1719,12 +1719,37 @@ Ghostty 1.4.0 단위 시험 견주기([#760](https://github.com/dj258255/b-termi
 | [#792](https://github.com/dj258255/b-terminal/issues/792) | DCS 자료 안의 0x9C에서 DCS가 끝남 | [#795](https://github.com/dj258255/b-terminal/pull/795) | 11-23 08:43 → 09:17 | 고치기 에이전트, 충돌 풀기·실제 창·병합 |
 | [#793](https://github.com/dj258255/b-terminal/issues/793) | CSI·ESC 등 상태 안의 원시 C1을 무시함 | [#795](https://github.com/dj258255/b-terminal/pull/795) | 11-23 08:43 → 09:17 | 고치기 에이전트, 실제 창·병합 |
 
+## 0.99.0 (2026-11-25)
+
+Ghostty 1.4.0 단위 시험 견주기 넷째 판([#760](https://github.com/dj258255/b-terminal/issues/760)). 마일스톤 0.99.
+
+- 견준 시험: kitty `graphics_command`·`graphics_exec`·`graphics_storage`·`graphics_image` 221개 중 165개(지원하지 않는 전송 방식·내부 구조 56개는 셈만 함), `Screen.zig`·`SelectionGesture.zig`·`Selection.zig` 282개 중 168개(내부 구조 114개). 조사 에이전트 둘이 탐침으로 견주고, 주 세션이 중요한 차이를 Ghostty 원본과 대조한 뒤 원인끼리 묶어 이슈 열하나를 열었습니다.
+- 그대로 둔 것: kitty 오류 코드(`ENODATA`·`EBADPNG`·`EFBIG`·`ENOSPC`)와 답에 설명을 넣지 않는 것(전부터 쓰던 kitty 명세 코드, ADR-010 결정 3), 우리 상한(Ghostty보다 엄격). 맨 위 커서로 줄 수를 줄일 때 아래 줄을 버리는 것은 xterm `ScreenResize`도 같아 ADR-056 3항대로 둡니다(#808). 짝 괄호를 두 번 눌러 괄호 안을 고르던 alacritty 동작은 Ghostty에 없고 정한 적도 없어 뺐습니다(#804).
+- 보안 경계: 그림 명령 하나가 스크롤백을 995줄 밀던 것을 화면 높이로 묶었고(#801), 큰 PNG를 풀기 전에 거절해 10000x10000 PNG(1.9MB)를 보냈을 때 앱 최대 RSS가 약 514MB(0.92.0)에서 약 129MB가 됐습니다(격리한 실제 창, release 묶음 앱, 한 번 잼).
+- 실제 창 확인(격리한 실제 창, 0.92.0과 견줘 한 번씩): kitty 명령은 PTY에서 답 바이트 비교, 스크롤 영역·커서·화면 지우기는 그림 위치를 찍어 비교(사람 입력이 1234초 없을 때만 찍는 순간 창을 앞에 둠, 찍은 그림은 본 뒤 지움), 고르기는 AppleScript 마우스와 `write_selection_file`, 자동 스크롤은 위 가장자리 끌기(1.5초에 110줄). 아래 가장자리 자동 스크롤·트랙패드 강하게 누르기·한 칸 안 끌기 뒤 링크는 합성할 수 없어 단위 시험으로만 확인했습니다.
+- 진행 중 사고: 두 고치기 에이전트가 공유 scratchpad의 같은 폴더를 써서 한쪽 커밋에 다른 쪽 문서가 섞였다가, push 전에 에이전트가 찾아 고쳤습니다. 주 세션이 두 브랜치의 diff에서 섞인 줄이 없는 것을 확인했습니다. 다음부터 에이전트마다 scratchpad 하위 폴더 이름을 정해 줍니다.
+- 주 세션의 시험 스크립트 실수 둘: 앱 셸에 없는 변수로 PNG 자료가 비어 갔던 것과, base64 `AAAA`를 4바이트로 착각한 것. 둘 다 엔진에 같은 바이트를 넣어 갈라 본 뒤 다시 쟀습니다.
+
+| 이슈 | 내용 | PR | 연 때·병합(UTC) | 주 세션이 한 것 |
+|---|---|---|---|---|
+| [#798](https://github.com/dj258255/b-terminal/issues/798) | kitty 그래픽 명령 파싱·조각 전송이 Ghostty와 여섯 곳 다름 | [#809](https://github.com/dj258255/b-terminal/pull/809) | 11-23 13:35 → 14:08 | 원본 대조, 고치기 에이전트, 실제 창 PTY(답 바이트·큰 PNG 메모리)·병합 |
+| [#799](https://github.com/dj258255/b-terminal/issues/799) | kitty 그림 저장: 화면 지우기가 안 쓰는 그림을 남기고 쫓아내기가 쓰임·임시 표시를 보지 않음 | [#811](https://github.com/dj258255/b-terminal/pull/811) | 11-23 13:35 → 14:34 | 원본 대조, 고치기 에이전트, 충돌 풀기·실제 창 화면·병합 |
+| [#800](https://github.com/dj258255/b-terminal/issues/800) | 스크롤 영역(DECSTBM)에서 kitty 그림이 글과 따로 움직임 | [#811](https://github.com/dj258255/b-terminal/pull/811) | 11-23 13:35 → 14:34 | 고치기 에이전트, ADR 충돌 풀기·실제 창 화면·병합 |
+| [#801](https://github.com/dj258255/b-terminal/issues/801) | kitty 그림 뒤 커서 이동: 줄 수 상한이 느슨하고 오른쪽 끝에서 감기지 않음 | [#811](https://github.com/dj258255/b-terminal/pull/811) | 11-23 13:35 → 14:34 | 원본 대조, 고치기 에이전트, 보안 검토·실제 창 화면·병합 |
+| [#802](https://github.com/dj258255/b-terminal/issues/802) | kitty 그림 자료: 남는 RGB 자료를 받고 PNG 크기를 푼 뒤에 봄 | [#809](https://github.com/dj258255/b-terminal/pull/809) | 11-23 13:35 → 14:08 | 고치기 에이전트, 보안 검토·실제 창 PTY·병합 |
+| [#803](https://github.com/dj258255/b-terminal/issues/803) | 세 번 누르기가 앞뒤 공백·프롬프트 경계를 보지 않고 줄 전체를 고름 | [#810](https://github.com/dj258255/b-terminal/pull/810) | 11-23 13:40 → 14:16 | 고치기 에이전트, 실제 창(AppleScript 마우스)·병합 |
+| [#804](https://github.com/dj258255/b-terminal/issues/804) | 두 번 누르기에서 누른 칸이 경계 글자면 이웃 낱말까지 번짐 | [#810](https://github.com/dj258255/b-terminal/pull/810) | 11-23 13:40 → 14:16 | 고치기 에이전트, 실제 창·병합 |
+| [#805](https://github.com/dj258255/b-terminal/issues/805) | 전체 고르기가 보이는 화면만 고름 | [#810](https://github.com/dj258255/b-terminal/pull/810) | 11-23 13:41 → 14:16 | 원본 대조, 고치기 에이전트, 실제 창·병합 |
+| [#806](https://github.com/dj258255/b-terminal/issues/806) | 끌어 고를 때 가장자리 밖에서 자동 스크롤하지 않음 | [#812](https://github.com/dj258255/b-terminal/pull/812) | 11-23 13:41 → 11-25 00:51 | 원본 대조, 고치기 에이전트, 실제 창(위 가장자리 끌기)·병합 |
+| [#807](https://github.com/dj258255/b-terminal/issues/807) | 마우스 누르기 규칙 세 곳 | [#812](https://github.com/dj258255/b-terminal/pull/812) | 11-23 13:41 → 11-25 00:51 | 고치기 에이전트, 실제 창(네 번 누르기)·병합 |
+| [#808](https://github.com/dj258255/b-terminal/issues/808) | 맨 위 커서의 줄 줄이기, 엔진 1열 resize | [#812](https://github.com/dj258255/b-terminal/pull/812) | 11-23 13:41 → 11-25 00:51 | 고치기 에이전트(xterm 소스 대조), 병합 |
+
 ## 다음
 
 - 0.91~0.97에서 '범수 님이 확인할 것'의 대부분을 주 세션이 확인했습니다. 무엇을 확인했고 무엇을 못 했는지는 위 0.91.0~0.95.0 절에 있습니다. 남은 것: 데스크톱 알림 띠가 하나만 뜨는지와 VoiceOver 소리, Space, 저전력 모드를 끈 0.42, 외부 모니터, 타자 느낌. 이 가운데 VoiceOver와 저전력 모드는 시스템 설정을 바꿔야 하고, Space 옮기기는 하드웨어 키 입력이 있어야 하며, 외부 모니터는 이 기기에 없어 주 세션이 확인하지 않았습니다. 알림 띠는 시험 앱 묶음에 알림 허락이 없어(알림 설정에 항목이 없음) 뜨지 않고, 허락하려면 시스템 설정을 바꿔야 해서 확인하지 않았습니다. 타자 느낌은 사람이 쳐 봐야 압니다.
 - 0.94 뒤 tmux 3.8을 확인했습니다(격리한 실제 창, 한 번 잼). 받은 병이 의존 라이브러리 경로 때문에 실행되지 않던 것을 의존 병과 함께 이어 실행했습니다. tmux가 알아본 바깥 터미널 기능 목록, 가로 나누기 뒤 왼쪽 칸에 찍은 한글(`가나다라마 끝`)·이모지(`😀🙂 이모지`) 줄과 칸 경계선(경계선 앞 폭이 모든 줄에서 40칸으로 같음), 마우스로 칸 고르기, Shift+Enter가 안쪽 프로그램에 `ESC[27;2;13~`으로 가는 것을 봤습니다.
 - Ctrl+Enter가 아무 바이트도 내지 않는 것처럼 보였으나(#751) 결함이 아니었습니다. 앱이 뒤에 있을 때 보낸 합성 키를 AppKit이 창까지 넘기지 않은 탓이었고, 앱을 앞에 두고 보내면 `ESC[27;5;13~`이 갑니다(한 번 잼).
-- 다음 판 후보: Ghostty 새 병합분(2026-11-23 03:00 UTC까지 봄), Ghostty 단위 시험 가운데 아직 견주지 않은 파일, Ghostty가 글리프를 그리기 시작하면 따라가기.
+- 다음 판 후보: Ghostty 새 병합분(2026-11-23 10:30 UTC까지 봄), Ghostty 단위 시험 가운데 아직 견주지 않은 파일(`PageList.zig`는 대부분 내부 구조, `render.zig`·`page.zig`·`style.zig`), Ghostty가 글리프를 그리기 시작하면 따라가기, kitty 그림이 대체 화면을 나와도 남는 것(Ghostty는 화면 저장소째 버림).
 - 범수 님이 직접 해야 할 것: 키보드·마우스 확인(한글 2벌식 "안녕 하세요⏎", Claude Code의 Shift+Enter, Cmd-D·Cmd-F·Cmd-클릭·Cmd-N·Cmd-Shift-P, 메뉴, 창 닫기 단추, vim·htop, kitty icat·yazi, 투명 창), Developer ID 계정으로 `scripts/bundle-macos.sh --sign … --notarize … --dmg`
 - 정함(0.49·0.50, 주 세션 추천안): `window-colorspace` 기본은 `display-p3` 그대로. 0.50부터 `srgb`도 GPU 길로 그립니다(창마다 약 13.6MB 더, ADR-047). 기본을 Ghostty처럼 `srgb`로 바꾸시려면 알려 주세요
 - 범수 님이 확인할 것(0.6): 퀵 터미널을 실제 전역 단축키로(`keybind = global:ctrl+backquote=toggle_quick_terminal`), 외부 모니터로 창을 옮겼을 때 present 시간(`RUST_LOG=b_terminal=debug`)
