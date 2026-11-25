@@ -2410,3 +2410,15 @@ fn selection_ending_on_a_wide_tail_at_line_end_does_not_spill_to_next_row() {
         "다음 줄 넓은 글자는 고르지 않음"
     );
 }
+
+/// #834: 숨김(SGR 8) 글자는 화면에서만 가려진다. 글 복사에는 들어간다(Ghostty 포매터도 글자를 그대로 낸다).
+/// 이 동작을 바꾸지 않았다는 기록이다
+#[test]
+fn hidden_text_is_still_copied_as_plain_text() {
+    let (s, rx) = sh("printf 'pw: \\033[8msecret\\033[0m\\n'", GridSize::new(20, 3));
+    wait_exit(&rx);
+    wait_until(&s, |t| t.contains("secret"));
+    s.select_start(0, 0, bt_term::SelectKind::Simple);
+    s.select_update(11, 0);
+    assert_eq!(s.selection_text().as_deref(), Some("pw: secret"));
+}

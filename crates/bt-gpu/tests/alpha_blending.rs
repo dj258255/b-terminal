@@ -46,6 +46,8 @@ fn cell(ch: char, fg: Rgb, bg: Rgb) -> DrawCell {
         cluster_cells: 0,
         overline: false,
         underline_color: None,
+        hidden: false,
+        faint: None,
     }
 }
 

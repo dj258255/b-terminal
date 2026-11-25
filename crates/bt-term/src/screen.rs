@@ -34,6 +34,8 @@ impl CellFlags {
     /// kitty 그래픽 자리표시 글자(U+10EEEE, #553). 글꼴에 없는 글자이고 그림이 그 칸에 그려지므로 글자로 그리지 않는다.
     /// `ch`와 결합 문자는 그대로 둔다(복사·화면 읽기는 Ghostty처럼 글자를 그대로 낸다)
     pub const PLACEHOLDER: Self = Self(1 << 16);
+    /// 흐림(SGR 2). 글자색은 그대로 두고 그릴 때 `faint-opacity`를 건다(#835)
+    pub const FAINT: Self = Self(1 << 17);
 
     pub const fn empty() -> Self {
         Self(0)

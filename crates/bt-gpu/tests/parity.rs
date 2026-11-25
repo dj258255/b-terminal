@@ -46,6 +46,8 @@ fn cell(ch: char) -> DrawCell {
         cluster_cells: 0,
         overline: false,
         underline_color: None,
+        hidden: false,
+        faint: None,
     }
 }
 
@@ -446,4 +448,102 @@ fn transparent_window_matches_cpu() {
     g.set_cells_alpha(None);
     let opaque = g.render(&mut f, &v, BG);
     assert!(opaque.iter().all(|p| p >> 24 == 0xff));
+}
+
+/// #834: 숨김 칸은 고르기·최소 명암비·꾸밈이 있어도 글자를 그리지 않는다(GPU도 CPU와 같다)
+#[test]
+fn hidden_cells_match_cpu_and_draw_no_text() {
+    let Some(mut g) = gpu() else { return };
+    let mut f = fonts(2.0);
+    let mut cells = row_cells("secret value ab", 16);
+    cells.extend(row_cells("hidden 가나 ──", 16));
+    for (i, c) in cells.iter_mut().enumerate() {
+        c.selected = (2..9).contains(&(i % 16));
+        if (4..11).contains(&(i % 16)) {
+            c.hidden = true;
+            c.underline = Underline::Single;
+            c.strike = true;
+            c.overline = true;
+        }
+    }
+    let plain: Vec<DrawCell> = cells
+        .iter()
+        .map(|c| DrawCell {
+            hidden: false,
+            ..c.clone()
+        })
+        .collect();
+    let mut v = grid(&cells, 16);
+    v.min_contrast = 4.5;
+    let mut p = grid(&plain, 16);
+    p.min_contrast = 4.5;
+    check(&mut g, &mut f, "숨김", &v, &p, Alpha::default());
+    // 숨긴 칸만 있는 줄은 고른 바탕 색 한 가지뿐이다
+    let only: Vec<DrawCell> = cells
+        .iter()
+        .map(|c| DrawCell {
+            hidden: true,
+            selected: true,
+            ..c.clone()
+        })
+        .collect();
+    let mut o = grid(&only, 16);
+    o.min_contrast = 4.5;
+    let frame = gpu_frame(&mut g, &mut f, &o, Alpha::default());
+    let first = frame[0];
+    assert!(frame.iter().all(|&px| px == first), "숨긴 칸에서 글자·꾸밈이 그려졌다");
+}
+
+/// #835: 흐린 칸은 마지막 글자색(고름·최소 명암비 뒤)에 faint-opacity를 건다
+#[test]
+fn faint_cells_match_cpu() {
+    let Some(mut g) = gpu() else { return };
+    let mut f = fonts(2.0);
+    let mut cells = row_cells("faint text ab", 16);
+    cells.extend(row_cells("faint 가나 selected", 16));
+    for (i, c) in cells.iter_mut().enumerate() {
+        c.faint = Some(0.4);
+        c.selected = (16..24).contains(&i);
+        // 취소선은 글자 위에(CPU) 글자 아래에(GPU) 그려 고른 칸에선 색이 겹쳐 달라진다(이 판 이전부터): 고르지 않은 칸에만
+        c.strike = i % 5 == 0 && !c.selected;
+        c.overline = i % 7 == 0;
+        c.underline = if i % 3 == 0 { Underline::Single } else { Underline::None };
+    }
+    let plain: Vec<DrawCell> = cells
+        .iter()
+        .map(|c| DrawCell {
+            faint: None,
+            ..c.clone()
+        })
+        .collect();
+    check(
+        &mut g,
+        &mut f,
+        "흐림",
+        &grid(&cells, 16),
+        &grid(&plain, 16),
+        Alpha::default(),
+    );
+    let mut v = grid(&cells, 16);
+    v.min_contrast = 4.5;
+    let mut p = grid(&plain, 16);
+    p.min_contrast = 4.5;
+    check(&mut g, &mut f, "흐림+최소 명암비", &v, &p, Alpha::default());
+}
+
+/// #839: 상자·블록·레거시·파워라인 글자는 최소 명암비를 걸지 않는다
+#[test]
+fn graphics_elements_skip_min_contrast_like_cpu() {
+    let Some(mut g) = gpu() else { return };
+    let mut f = fonts(2.0);
+    let mut cells = row_cells("█─▀\u{e0b0}\u{e0b2}▌│ab", 12);
+    for c in &mut cells {
+        c.fg = Rgb::new(42, 46, 54);
+    }
+    let mut v = grid(&cells, 12);
+    v.min_contrast = 3.0;
+    let mut p = grid(&cells, 12);
+    // 'ab'만 흰색으로 바뀌고 그래픽 글자는 그대로여야 한다(최소 명암비를 끈 화면과는 'ab'만 다르다)
+    p.min_contrast = 1.0;
+    check(&mut g, &mut f, "그래픽 글자 최소 명암비", &v, &p, Alpha::default());
 }

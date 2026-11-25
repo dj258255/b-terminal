@@ -58,7 +58,7 @@ pub(crate) fn underline_rgb(
     })
 }
 
-/// 셀 하나의 전경·배경을 꾸밈까지 반영해 푼다
+/// 셀 하나의 전경·배경을 꾸밈(반전·숨김·굵은 글자 색)까지 반영해 푼다. 흐림은 `CellFlags::FAINT`로 따로 넘긴다
 pub(crate) fn cell_colors(theme: &Theme, overrides: &Colors, fg: Color, bg: Color, flags: Flags) -> (Rgb, Rgb) {
     // 굵은 글자의 0~7번을 밝은 8~15번으로 올리는 것은 설정(bold-is-bright 또는 bold-color)을 따른다. Ghostty 기본은 끔.
     // bold-color가 색이면 굵은 기본 글자색은 그 색이고, 나머지 0~7번은 밝은 색이다
@@ -74,15 +74,14 @@ pub(crate) fn cell_colors(theme: &Theme, overrides: &Colors, fg: Color, bg: Colo
             other => other,
         }
     };
+    // Ghostty `Style.fg()`: 굵고 글자색이 기본 글자색과 같은 24비트 색이어도 bold-color를 쓴다(#839)
     let mut fg_rgb = match (bold_default, fg) {
         (Some(c), Color::Named(NamedColor::Foreground)) => c,
+        (Some(c), Color::Spec(rgb)) if from_vt(rgb) == named(theme, overrides, NamedColor::Foreground) => c,
         _ => resolve(theme, overrides, fg),
     };
     let mut bg_rgb = resolve(theme, overrides, bg);
-    if flags.contains(Flags::DIM) {
-        // faint-opacity: 1이면 그대로, 0이면 바탕색
-        fg_rgb = fg_rgb.mix(bg_rgb, 1.0 - theme.faint_opacity);
-    }
+    // 흐림(SGR 2)은 여기서 색을 섞지 않는다. 그릴 때 마지막 글자색에 `faint-opacity`를 건다(#835, `bt_render::text_color`)
     if flags.contains(Flags::INVERSE) {
         std::mem::swap(&mut fg_rgb, &mut bg_rgb);
     }
@@ -131,30 +130,63 @@ mod tests {
         assert_eq!(fg, t.palette[9]);
     }
 
+    /// #835: 흐림(SGR 2)은 엔진의 칸 색을 바꾸지 않는다. 그릴 때 마지막 글자색에 `faint-opacity`를 건다(Ghostty처럼)
     #[test]
-    fn faint_text_mixes_toward_the_background_by_faint_opacity() {
+    fn faint_does_not_change_cell_colors_and_inverse_keeps_the_full_foreground_as_background() {
         let o = Colors::default();
         let (fg, bg) = (
             Color::Named(NamedColor::Foreground),
             Color::Named(NamedColor::Background),
         );
         let t = Theme::default();
-        // Ghostty 기본 faint-opacity 0.5: 글자색과 바탕색의 가운데
-        let (dim, _) = cell_colors(&t, &o, fg, bg, Flags::DIM);
-        assert_eq!(dim, t.foreground.mix(t.background, 0.5));
-        // 1이면 그대로, 0이면 바탕색과 같아 보이지 않는다
-        let full = Theme {
-            faint_opacity: 1.0,
-            ..Theme::default()
-        };
-        assert_eq!(cell_colors(&full, &o, fg, bg, Flags::DIM).0, t.foreground);
+        assert_eq!(cell_colors(&t, &o, fg, bg, Flags::DIM), (t.foreground, t.background));
+        // 반전: 바탕은 원래 글자색 그대로(흐려지지 않음), 글자는 원래 바탕색
+        assert_eq!(
+            cell_colors(&t, &o, fg, bg, Flags::DIM | Flags::INVERSE),
+            (t.background, t.foreground)
+        );
         let none = Theme {
             faint_opacity: 0.0,
             ..Theme::default()
         };
-        assert_eq!(cell_colors(&none, &o, fg, bg, Flags::DIM).0, t.background);
-        // 흐리지 않은 글자는 영향이 없다
-        assert_eq!(cell_colors(&none, &o, fg, bg, Flags::empty()).0, t.foreground);
+        assert_eq!(cell_colors(&none, &o, fg, bg, Flags::DIM).0, none.foreground);
+    }
+
+    #[test]
+    fn bold_color_also_replaces_rgb_text_equal_to_the_default_foreground() {
+        let o = Colors::default();
+        let bg = Color::Named(NamedColor::Background);
+        let orange = Rgb::new(0xff, 0x80, 0);
+        let t = Theme {
+            bold_color: Some(orange),
+            ..Theme::default()
+        };
+        let f = t.foreground;
+        let same = Color::Spec(VtRgb { r: f.r, g: f.g, b: f.b });
+        // Ghostty style.zig fg(): 굵고 24비트 글자색이 기본 글자색과 같으면 bold-color
+        assert_eq!(cell_colors(&t, &o, same, bg, Flags::BOLD).0, orange);
+        // 굵지 않거나 다른 RGB면 그대로
+        assert_eq!(cell_colors(&t, &o, same, bg, Flags::empty()).0, f);
+        let other = Color::Spec(VtRgb {
+            r: f.r ^ 1,
+            g: f.g,
+            b: f.b,
+        });
+        assert_eq!(
+            cell_colors(&t, &o, other, bg, Flags::BOLD).0,
+            Rgb::new(f.r ^ 1, f.g, f.b)
+        );
+        // bold-color가 없으면(bright만) 건드리지 않는다
+        let b = Theme {
+            bold_is_bright: true,
+            ..Theme::default()
+        };
+        assert_eq!(cell_colors(&b, &o, same, bg, Flags::BOLD).0, f);
+        // OSC 10으로 바꾼 기본 글자색과 같은 RGB도 기본 글자색이다
+        let mut o2 = Colors::default();
+        o2[NamedColor::Foreground] = Some(VtRgb { r: 1, g: 2, b: 3 });
+        let osc = Color::Spec(VtRgb { r: 1, g: 2, b: 3 });
+        assert_eq!(cell_colors(&t, &o2, osc, bg, Flags::BOLD).0, orange);
     }
 
     #[test]

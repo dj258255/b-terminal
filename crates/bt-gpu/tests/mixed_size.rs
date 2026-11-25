@@ -35,6 +35,8 @@ fn cell(ch: char) -> DrawCell {
         cluster_cells: 0,
         overline: false,
         underline_color: None,
+        hidden: false,
+        faint: None,
     }
 }
 

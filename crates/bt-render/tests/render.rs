@@ -55,6 +55,11 @@ fn cells(s: &Screen) -> Vec<DrawCell> {
             cluster_cells: 0,
             overline: c.flags.contains(CellFlags::OVERLINE),
             underline_color: c.underline_color,
+            hidden: c.flags.contains(CellFlags::HIDDEN),
+            faint: c
+                .flags
+                .contains(CellFlags::FAINT)
+                .then_some(Theme::default().faint_opacity),
         })
         .collect();
     bt_render::cluster::mark(&mut cells, s.cols, |i| {
@@ -725,6 +730,9 @@ fn paint_theme(f: &mut Fonts, theme: &Theme, bytes: &[u8], edit: impl FnOnce(&mu
     e.feed(bytes);
     let s = e.snapshot();
     let mut dc = cells(&s);
+    for (d, c) in dc.iter_mut().zip(&s.cells) {
+        d.faint = c.flags.contains(CellFlags::FAINT).then_some(theme.faint_opacity);
+    }
     edit(&mut dc);
     let m = f.metrics();
     let (w, h) = (m.width * 4, m.height);
@@ -944,6 +952,8 @@ fn blank(ch: char) -> DrawCell {
         cluster_cells: 0,
         overline: false,
         underline_color: None,
+        hidden: false,
+        faint: None,
     }
 }
 
@@ -2002,4 +2012,234 @@ fn block_selection_paints_a_rectangle_of_cells() {
             assert_eq!(p, want, "칸 ({col},{row}) 왼쪽 위 픽셀");
         }
     }
+}
+
+// ---- #834·#835·#839: 칸 색 그리기(숨김·흐림·최소 명암비) ----
+
+/// 한 칸을 `view`로 그려 칸 안에서 `bg`와 다른 픽셀 수를 센다
+fn paint_ink(f: &mut Fonts, cell: &DrawCell, tweak: impl Fn(&mut GridView)) -> (usize, Vec<Rgb>) {
+    let m = f.metrics();
+    let (w, h) = (m.width, m.height);
+    let mut buf = vec![0u32; (w * h) as usize];
+    let t = Theme::default();
+    let cells = [cell.clone()];
+    let mut view = GridView {
+        cols: 1,
+        rows: 1,
+        cells: &cells,
+        cursor: None,
+        selection_bg: Rgb::new(10, 60, 120),
+        selection_fg: Some(Rgb::new(250, 250, 100)),
+        preedit: None,
+        min_contrast: 1.0,
+    };
+    let _ = t;
+    tweak(&mut view);
+    let bg = if cell.selected { view.selection_bg } else { cell.bg };
+    let mut c = Canvas::new(&mut buf, w, h);
+    c.clear(Rgb::new(0, 0, 0));
+    draw_grid(&mut c, f, 0, 0, &view);
+    let px: Vec<Rgb> = buf.iter().map(|&p| Rgb::from_u32(p)).collect();
+    (px.iter().filter(|p| **p != bg).count(), px)
+}
+
+fn styled(ch: char) -> DrawCell {
+    DrawCell {
+        fg: Rgb::new(220, 220, 210),
+        bg: Rgb::new(30, 32, 40),
+        ..blank(ch)
+    }
+}
+
+#[test]
+fn hidden_cell_paints_only_its_background_even_when_selected_or_contrast_raised() {
+    let Some(mut f) = fonts(1.0) else { return };
+    let mut hidden = styled('M');
+    hidden.hidden = true;
+    hidden.underline = bt_render::Underline::Single;
+    hidden.strike = true;
+    hidden.overline = true;
+    // 글자색이 바탕과 비슷해 최소 명암비가 흰색으로 바꿀 칸(숨김 칸은 엔진이 글자색을 바탕과 같게 둔다)
+    hidden.fg = hidden.bg;
+    let (plain, _) = paint_ink(&mut f, &hidden, |_| {});
+    assert_eq!(plain, 0, "숨김은 기본에서 그리지 않는다");
+    let (sel, _) = paint_ink(
+        &mut f,
+        &DrawCell {
+            selected: true,
+            ..hidden.clone()
+        },
+        |_| {},
+    );
+    assert_eq!(sel, 0, "고른 숨김 칸은 고름 글자색으로 글자가 드러나면 안 된다");
+    let (contrast, _) = paint_ink(&mut f, &hidden, |v| v.min_contrast = 3.0);
+    assert_eq!(contrast, 0, "최소 명암비가 숨김 글자를 흰색으로 바꿔 드러내면 안 된다");
+    // 대조: 숨기지 않은 같은 칸은 잉크가 있다
+    let (shown, _) = paint_ink(
+        &mut f,
+        &DrawCell {
+            hidden: false,
+            selected: true,
+            ..hidden.clone()
+        },
+        |_| {},
+    );
+    assert!(shown > 20, "대조군에 잉크가 없다: {shown}");
+}
+
+#[test]
+fn hidden_cell_under_a_block_cursor_draws_no_glyph() {
+    let Some(mut f) = fonts(1.0) else { return };
+    let mut hidden = styled('M');
+    hidden.hidden = true;
+    let m = f.metrics();
+    let cur = DrawCursor {
+        col: 0,
+        row: 0,
+        style: CursorStyle::Block,
+        wide: false,
+        color: Rgb::new(200, 100, 50),
+        text_color: Rgb::new(1, 2, 3),
+        opacity: 1.0,
+    };
+    let (buf, w, h) = draw_row(&mut f, &[hidden], Some(cur));
+    let cell_h = m.height;
+    assert_eq!(h, cell_h);
+    // 커서 글자색(1,2,3)으로 칠한 픽셀이 없어야 한다: 커서 칸 전부가 커서 색이다
+    let glyph_px = buf[..(w * h) as usize]
+        .iter()
+        .filter(|&&p| Rgb::from_u32(p) == Rgb::new(1, 2, 3))
+        .count();
+    assert_eq!(glyph_px, 0, "숨김 칸 위 커서가 글자를 그렸다");
+}
+
+#[test]
+fn min_contrast_skips_box_block_legacy_and_powerline_glyphs_but_not_letters() {
+    let Some(mut f) = fonts(1.0) else { return };
+    let near = Rgb::new(42, 46, 54);
+    let bg = Rgb::new(30, 32, 40);
+    for ch in [
+        '█',
+        '─',
+        '\u{e0b0}',
+        '\u{1fb00}',
+        '▀',
+        '\u{259f}',
+        '\u{257f}',
+        '\u{e0d7}',
+    ] {
+        let cell = DrawCell {
+            fg: near,
+            bg,
+            ..blank(ch)
+        };
+        let (_, px) = paint_ink(&mut f, &cell, |v| v.min_contrast = 3.0);
+        assert!(
+            !px.iter().any(|p| p.r > 200 && p.g > 200 && p.b > 200),
+            "U+{:04X}에 최소 명암비가 걸려 흰색이 그려졌다",
+            ch as u32
+        );
+    }
+    // 대조: 같은 색 글자 M은 흰색으로 바뀐다
+    let cell = DrawCell {
+        fg: near,
+        bg,
+        ..blank('M')
+    };
+    let (_, px) = paint_ink(&mut f, &cell, |v| v.min_contrast = 3.0);
+    assert!(px.iter().any(|p| p.r > 200 && p.g > 200 && p.b > 200));
+    // 경계 바깥: U+24FF, U+E0D8, U+1FAFF 아래 U+1FAFF는 레거시 범위 안, U+1FC00은 밖
+    assert!(
+        bt_render::text_color(
+            &GridView {
+                cols: 1,
+                rows: 1,
+                cells: &[],
+                cursor: None,
+                selection_bg: bg,
+                selection_fg: None,
+                preedit: None,
+                min_contrast: 3.0,
+            },
+            &DrawCell {
+                fg: near,
+                bg,
+                ..blank('\u{e0d8}')
+            },
+            &mut None,
+        ) != near
+    );
+}
+
+#[test]
+fn faint_color_is_applied_last_after_selection_and_min_contrast() {
+    let sel_bg = Rgb::new(10, 60, 120);
+    let sel_fg = Rgb::new(250, 250, 100);
+    let bg = Rgb::new(30, 32, 40);
+    let view = |min| GridView {
+        cols: 1,
+        rows: 1,
+        cells: &[],
+        cursor: None,
+        selection_bg: sel_bg,
+        selection_fg: Some(sel_fg),
+        preedit: None,
+        min_contrast: min,
+    };
+    let base = DrawCell {
+        fg: Rgb::new(200, 200, 200),
+        bg,
+        faint: Some(0.5),
+        ..blank('a')
+    };
+    // 흐린 칸: 글자색을 바탕 쪽으로
+    assert_eq!(
+        bt_render::text_color(&view(1.0), &base, &mut None),
+        base.fg.mix(bg, 0.5)
+    );
+    // 흐린 칸을 고르면 고름 글자색에 알파를 건다(고름 바탕 쪽으로)
+    let sel = DrawCell {
+        selected: true,
+        ..base.clone()
+    };
+    assert_eq!(
+        bt_render::text_color(&view(1.0), &sel, &mut None),
+        sel_fg.mix(sel_bg, 0.5)
+    );
+    // 흐리지 않으면 그대로
+    let plain = DrawCell {
+        faint: None,
+        ..sel.clone()
+    };
+    assert_eq!(bt_render::text_color(&view(1.0), &plain, &mut None), sel_fg);
+    // 명암비는 알파 앞의 색으로 잰다: 알파를 건 색은 모자라도 알파 앞 색이 충분하면 바꾸지 않는다
+    let weak = DrawCell {
+        fg: Rgb::new(120, 120, 120),
+        bg,
+        faint: Some(0.2),
+        ..blank('a')
+    };
+    assert!(Rgb::new(120, 120, 120).contrast(bg) >= 3.0);
+    assert_eq!(
+        bt_render::text_color(&view(3.0), &weak, &mut None),
+        weak.fg.mix(bg, 0.8)
+    );
+}
+
+/// #834: 숨긴 칸은 합자 묶음에 끼지 않는다(합자 글리프에 숨긴 글자의 모양이 섞여 드러나지 않게)
+#[test]
+fn hidden_cell_is_left_out_of_ligature_runs() {
+    let Some(mut f) = fonts(1.0) else { return };
+    let row = |hide: bool| {
+        let mut v: Vec<DrawCell> = "a->b".chars().map(styled).collect();
+        v[2].hidden = hide;
+        v
+    };
+    let shown = bt_render::ligatures(&mut f, &row(false), None);
+    assert!(
+        shown.iter().any(|&g| g != 0),
+        "대조군: `->`가 합자로 묶여야 한다(글꼴이 합자를 못 하면 이 시험은 뜻이 없다)"
+    );
+    let hidden = bt_render::ligatures(&mut f, &row(true), None);
+    assert!(hidden.iter().all(|&g| g == 0), "숨긴 `>`가 합자에 끼었다: {hidden:?}");
 }
