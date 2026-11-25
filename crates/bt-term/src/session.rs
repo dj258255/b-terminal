@@ -1503,13 +1503,12 @@ impl Session {
         true
     }
 
-    /// 찾기를 시작한다(#39): 맨 아래에서 위로 첫 맞은 곳으로 화면을 옮긴다. 빈 글이면 찾기를 끄고 없다
+    /// 찾기를 시작한다(#39): 바늘만 정하고 아무것도 고르지 않으며 화면도 옮기지 않는다(#824). 빈 글이면 찾기를 끄고 없다
     pub fn search(&self, query: &str) -> Option<crate::search::SearchStatus> {
         let mut g = self.inner.lock();
         let Inner { term, search, .. } = &mut *g;
         *search = crate::search::Search::new(query);
         let s = search.as_mut()?;
-        s.step(term, true);
         Some(s.status(term))
     }
 
@@ -1519,6 +1518,14 @@ impl Session {
         let Inner { term, search, .. } = &mut *g;
         let s = search.as_mut()?;
         s.step(term, older);
+        Some(s.status(term))
+    }
+
+    /// 지금 찾기 결과(몇 번째, 모두 몇 개)를 다시 센다. 찾는 중이 아니면 없다
+    pub fn search_status(&self) -> Option<crate::search::SearchStatus> {
+        let mut g = self.inner.lock();
+        let Inner { term, search, .. } = &mut *g;
+        let s = search.as_mut()?;
         Some(s.status(term))
     }
 
@@ -2286,7 +2293,10 @@ fn snapshot_of<T: EventListener>(
     let selection = content.selection;
     // 찾기: 보이는 맞은 곳들과 지금 것. 칸을 위에서 아래로 훑으며 맞춘다
     let (matches, current) = match search {
-        Some(s) => (s.visible(term), s.current.clone()),
+        Some(s) => {
+            let current = s.current(term);
+            (s.visible(term), current)
+        }
         None => (Vec::new(), None),
     };
     let mut match_cursor = 0;
@@ -2723,17 +2733,22 @@ impl Emulator {
         self.graphics.next_frame()
     }
 
-    /// 찾기를 시작한다(맨 아래에서 위로 첫 맞은 곳). 빈 글이면 찾기를 끄고 없다
+    /// 찾기를 시작한다(고르지 않는다). 빈 글이면 찾기를 끄고 없다
     pub fn search(&mut self, query: &str) -> Option<crate::search::SearchStatus> {
         self.search = crate::search::Search::new(query);
         let s = self.search.as_mut()?;
-        s.step(&mut self.term, true);
         Some(s.status(&self.term))
     }
 
     pub fn search_step(&mut self, older: bool) -> Option<crate::search::SearchStatus> {
         let s = self.search.as_mut()?;
         s.step(&mut self.term, older);
+        Some(s.status(&self.term))
+    }
+
+    /// 지금 찾기 결과(몇 번째, 모두 몇 개)를 다시 센다. 출력이 와서 맞은 곳이 바뀌었을 수 있다
+    pub fn search_status(&mut self) -> Option<crate::search::SearchStatus> {
+        let s = self.search.as_mut()?;
         Some(s.status(&self.term))
     }
 

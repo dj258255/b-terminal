@@ -144,6 +144,11 @@ pub struct Grid<T> {
 
     /// Maximum number of lines in history.
     max_scroll_limit: usize,
+
+    /// b-terminal(#824): 스크롤백으로 올라간 줄 수의 누계. `이 값 + Line`은 줄이 스크롤백에 밀려나도
+    /// 바뀌지 않는 줄 번호라 검색이 고른 곳을 내용을 따라 기억하는 데 쓴다.
+    #[cfg_attr(feature = "serde", serde(skip))]
+    scrolled_total: u64,
 }
 
 impl<T: GridCell + Default + PartialEq> Grid<T> {
@@ -156,7 +161,13 @@ impl<T: GridCell + Default + PartialEq> Grid<T> {
             cursor: Cursor::default(),
             lines,
             columns,
+            scrolled_total: 0,
         }
+    }
+
+    /// b-terminal(#824): 화면 맨 위에서 스크롤백으로 올라간 줄 수의 누계(되돌아가지 않는다)
+    pub fn scrolled_total(&self) -> u64 {
+        self.scrolled_total
     }
 
     /// b-terminal(#815): 스크롤백 상한(0이면 스크롤백을 두지 않는 화면)
@@ -297,6 +308,9 @@ impl<T: GridCell + Default + PartialEq> Grid<T> {
 
         // Only rotate the entire history if the active region starts at the top.
         if history && region.start == 0 {
+            // b-terminal(#824): 올라간 줄 수를 센다(스크롤백이 가득 차 밀려나도 센다)
+            self.scrolled_total += positions as u64;
+
             // Create scrollback for the new lines.
             self.increase_scroll_limit(positions);
 

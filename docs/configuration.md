@@ -339,7 +339,7 @@ HTML은 `<div style="font-family: monospace; white-space: pre;">` 안에 칸의 
 | `reset_window_size` | 창을 새 창이 만들어질 크기(`window-width`·`window-height`, 없으면 기본)로 되돌림. 전체 화면에서는 하지 않고, 최대화는 풀고 되돌립니다 | (없음) |
 | `toggle_window_decorations` | 지금 창의 제목 막대·테두리 켜고 끄기(Ghostty는 Linux만 구현). 설정을 다시 읽으면 `window-decoration`으로 돌아갑니다 | (없음) |
 | `toggle_visibility` | 모든 창 숨기기 / 다시 보이기(macOS만). Ghostty처럼 b-terminal이 맨 앞 앱이면 숨기고(보고 있는 칸이 전체 화면이면 아무것도 하지 않습니다), 아니면 숨긴 창을 되살려 맨 앞으로 가져옵니다. 다른 앱 뒤에 보이는 창도 숨기지 않고 앞으로 가져옵니다 | (없음, 전역 단축키 `global:`와 함께 쓰는 동작) |
-| `start_search` / `end_search` | 찾기 막대 열기 / 닫기. 막대에서 글을 치면 바로 찾고, Enter는 위로·Shift-Enter는 아래로, Esc로 닫습니다. 기본 묶음은 `performable`이라 막대가 닫혀 있으면 Esc는 프로그램으로 갑니다 | `super+f` / `escape` `super+shift+f`(macOS) |
+| `start_search` / `end_search` | 찾기 막대 열기 / 닫기. 막대에서 글을 치면 바로 맞은 곳을 모두 칠하고 `-/N`을 보입니다(아무것도 고르지 않고 화면도 옮기지 않음). Enter(위 단추)를 처음 누르면 맨 아래, Shift-Enter(아래 단추)를 처음 누르면 맨 위 맞은 곳을 고르고, 이어서 위로·아래로 돕니다. Esc로 닫습니다. ASCII는 대문자를 쳐도 대소문자를 무시하고(`É`와 `é` 같은 비ASCII는 가림) 줄 끝 빈칸은 깎습니다. 고른 곳은 출력이 와도 같은 내용을 따라갑니다. 기본 묶음은 `performable`이라 막대가 닫혀 있으면 Esc는 프로그램으로 갑니다 | `super+f` / `escape` `super+shift+f`(macOS) |
 | `navigate_search:next` / `navigate_search:previous` | 위(오래된 쪽) / 아래 맞은 곳으로 | `super+g` / `super+shift+g` |
 | `toggle_command_palette` | 명령 팔레트 열기·닫기 | `super+shift+p` |
 | `clear_screen` | 화면 지우기(Ghostty 1.4.0의 `clear_screen`). 대체 화면이면 아무것도 하지 않고 키를 프로그램에 넘깁니다(기본 묶음의 `performable`). 아니면 스크롤백과 고른 글을 지웁니다. 커서가 프롬프트가 아니면(셸 통합이 없으면 늘 이쪽입니다) 커서 윗줄까지만 지우고 남은 줄을 맨 위로 올리며 kitty 그림을 지우고, PTY에는 아무것도 보내지 않습니다. 커서가 프롬프트이면(OSC 133으로 커서 줄에 프롬프트 표시가 있거나 커서 칸이 프롬프트·입력) 화면을 지우고 PTY에 FF(Ctrl-L)를 보내 셸이 다시 그리게 합니다. 읽기 전용 칸은 지우되 FF는 보내지 않습니다 | `super+k` |

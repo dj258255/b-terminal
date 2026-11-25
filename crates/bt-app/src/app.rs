@@ -715,7 +715,8 @@ fn search_status_text(query: &str, status: Option<bt_term::search::SearchStatus>
     match st.index {
         _ if st.total == 0 => "없음".into(),
         Some(i) => format!("{i}/{}{plus}", st.total),
-        None => format!("{}{plus}개", st.total),
+        // 아직 고르지 않았다(바늘을 막 바꿨다): Ghostty처럼 `-/N`
+        None => format!("-/{}{plus}", st.total),
     }
 }
 
@@ -4008,7 +4009,7 @@ impl App {
         }
     }
 
-    /// 친 글이 바뀌었다: 처음부터(맨 아래에서 위로) 다시 찾는다
+    /// 친 글이 바뀌었다: 맞은 곳을 다시 세기만 한다(아무것도 고르지 않고 화면도 옮기지 않는다. Enter·위 단추를 처음 누르면 맨 아래 것을 고른다)
     fn search_query_changed(&mut self) {
         let Some(s) = self.w.search.as_mut() else { return };
         if let Some(p) = self.panes.iter().find(|p| p.id == s.pane) {
@@ -8942,6 +8943,8 @@ mod tests {
         let st = |index, total, capped| Some(SearchStatus { index, total, capped });
         assert_eq!(search_status_text("err", st(Some(2), 5, false)), "2/5");
         assert_eq!(search_status_text("e", st(Some(1), 1000, true)), "1/1000+");
+        assert_eq!(search_status_text("e", st(None, 7, false)), "-/7", "고르기 전에는 -/N");
+        assert_eq!(search_status_text("e", st(None, 1000, true)), "-/1000+");
         assert_eq!(search_status_text("zz", st(None, 0, false)), "없음");
         assert_eq!(
             search_status_text("", st(None, 0, false)),
