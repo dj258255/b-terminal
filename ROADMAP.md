@@ -1768,12 +1768,48 @@ Ghostty main 새 병합분 따라가기. 마일스톤 0.100.
 | [#815](https://github.com/dj258255/b-terminal/issues/815) | IL·DL이 함께 움직인 줄의 줄 접힘 표시를 풂 | [#816](https://github.com/dj258255/b-terminal/pull/816) | 11-25 00:59 → 01:20 | 병합분 탐침, 고치기 에이전트, 실제 창(화면 파일)·보안 검토·병합 |
 | [#817](https://github.com/dj258255/b-terminal/issues/817) | 좌우 여백 안 IL·DL에서 프롬프트 줄 표시가 칸과 함께 휩쓸림 | [#818](https://github.com/dj258255/b-terminal/pull/818) | 11-25 01:17 → 06:26 | 원본 diff 대조, 고치기 에이전트(중간에 멈춤), 마무리·실제 창(출력 고르기)·병합 |
 
+## 0.101.0 (2026-11-25)
+
+Ghostty 1.4.0 단위 시험 견주기 다섯째 판([#760](https://github.com/dj258255/b-terminal/issues/760)). 마일스톤 0.101.
+
+- 견준 시험
+  - `semantic_prompt.zig` 65개 중 47개, `kitty_desktop_notification.zig` 58개 중 23개(읽지 않는 키 35개는 셈만 함)
+  - `search/*.zig` 75개 중 31개(페이지·버퍼 내부 41개, 다름 3개)
+  - `apc.zig` 22개 중 15개, `kitty_clipboard_protocol.zig` 27개 중 24개
+  - 조사 에이전트 둘이 탐침으로 견줬고, 주 세션이 중요한 차이(⌘K, 찾기 대소문자·겹침, 막대, `clearCells`)를 Ghostty 원본과 대조해 이슈 여섯을 열었습니다.
+- 사용자가 쓰던 동작이 바뀝니다.
+  - 찾기의 smart case(#39)는 "Ghostty와 같다"는 틀린 근거로 정한 것이라 Ghostty를 따랐습니다(ADR-082).
+  - 셸 통합이 없는 셸에서 ⌘K는 Ctrl-L을 보내지 않고 커서 윗줄까지만 지웁니다(Ghostty `cursorIsAtPrompt`, ADR-081).
+  - 프롬프트에서 ⌘K를 누르면 ED 2가 화면을 스크롤백으로 올려, 지운 화면이 스크롤백에 남습니다. Ghostty 원본에도 `TODO: fix this`로 적힌 같은 동작입니다.
+- 그대로 둔 것
+  - 찾기의 세는 상한 1000과 칠하는 상한 2000(성능 보호)
+  - OSC 99·5522·kitty 그림 APC의 길이 상한(우리가 더 엄격, ADR-010·030·053)
+  - OSC 99의 읽지 않는 키(`o`·`a`·`u`·`w` 등)
+- 실제 창 확인(격리한 창, release 묶음 앱, 0.92.0과 견줘 한 번씩)
+  - ⌘K: `cat -v`에 `^L`이 가는지와 스크롤백 줄 수를 봤습니다.
+  - OSC 133: Cmd+세 번 누르기 출력 고르기와 `write_selection_file`로 봤습니다.
+  - 찾기: `search:` 동작, 키 코드 Enter, 제어 소켓 `send`를 썼고, 막대와 강조는 사람 입력이 없을 때만 찍어 본 뒤 지웠습니다.
+  - 결합 문자 검색과 OSC 99 알림이 실제로 뜨는지는 엔진 시험으로만 봤습니다.
+- 진행 중 일
+  - 주 세션의 시험 스크립트가 AppleScript 글에 `\0`을 넣어 명령이 넘어가지 않은 일이 한 번 있었습니다. 파일로 옮겨 다시 쟀습니다.
+  - 찾기 브랜치에서 `cargo test --workspace`를 네 번 돌려 한 번 실패가 1개 있었습니다. 출력을 남기지 않아 어느 시험인지 모릅니다(나머지 세 번과 CI는 통과).
+  - `docs/troubleshooting.md`의 절이 병합 순서대로 붙어 번호가 어긋나 있던 것(52·51·56…, 73·71·72, 80·81·78·79)을 번호 순으로 다시 놓았습니다. 줄 내용은 그대로입니다.
+
+| 이슈 | 내용 | PR | 연 때·병합(UTC) | 주 세션이 한 것 |
+|---|---|---|---|---|
+| [#821](https://github.com/dj258255/b-terminal/issues/821) | ⌘K가 늘 PTY에 FF만 씀 | [#827](https://github.com/dj258255/b-terminal/pull/827) | 11-25 06:47 → 07:10 | 원본 대조, 고치기 에이전트, 실제 창(`cat -v`의 `^L`·스크롤백 줄 수)·병합 |
+| [#822](https://github.com/dj258255/b-terminal/issues/822) | OSC 133 종료 코드 공백·길이 상한, OSC 99 본문 DEL·C1 | [#827](https://github.com/dj258255/b-terminal/pull/827) | 11-25 06:47 → 07:10 | 조사 에이전트, 고치기 에이전트, 병합 |
+| [#823](https://github.com/dj258255/b-terminal/issues/823) | 화면 찾기가 찾는 글이 Ghostty와 다름 | [#829](https://github.com/dj258255/b-terminal/pull/829) | 11-25 06:48 → 07:41 | 원본 대조(`findIgnoreCase`·`start + 1`), 고치기 에이전트, 실제 창(막대 그림)·병합 |
+| [#824](https://github.com/dj258255/b-terminal/issues/824) | 찾기 고른 곳·화면 이동 | [#829](https://github.com/dj258255/b-terminal/pull/829) | 11-25 06:48 → 07:41 | 원본 대조(macOS 막대), 고치기 에이전트, 실제 창(출력 뒤 따라가기)·병합 |
+| [#825](https://github.com/dj258255/b-terminal/issues/825) | 칸 지우기가 OSC 133 줄 표시를 지움 | [#828](https://github.com/dj258255/b-terminal/pull/828) | 11-25 06:48 → 07:22 | 원본 대조(`clearCells`), 고치기 에이전트, 실제 창(출력 고르기)·병합 |
+| [#826](https://github.com/dj258255/b-terminal/issues/826) | OSC 133 상태를 두 화면이 함께 씀 | [#828](https://github.com/dj258255/b-terminal/pull/828) | 11-25 06:48 → 07:22 | 고치기 에이전트(이슈의 첫 입력이 틀린 것을 찾음), 실제 창(출력 고르기)·병합 |
+
 ## 다음
 
 - 0.91~0.97에서 '범수 님이 확인할 것'의 대부분을 주 세션이 확인했습니다. 무엇을 확인했고 무엇을 못 했는지는 위 0.91.0~0.95.0 절에 있습니다. 남은 것: 데스크톱 알림 띠가 하나만 뜨는지와 VoiceOver 소리, Space, 저전력 모드를 끈 0.42, 외부 모니터, 타자 느낌. 이 가운데 VoiceOver와 저전력 모드는 시스템 설정을 바꿔야 하고, Space 옮기기는 하드웨어 키 입력이 있어야 하며, 외부 모니터는 이 기기에 없어 주 세션이 확인하지 않았습니다. 알림 띠는 시험 앱 묶음에 알림 허락이 없어(알림 설정에 항목이 없음) 뜨지 않고, 허락하려면 시스템 설정을 바꿔야 해서 확인하지 않았습니다. 타자 느낌은 사람이 쳐 봐야 압니다.
 - 0.94 뒤 tmux 3.8을 확인했습니다(격리한 실제 창, 한 번 잼). 받은 병이 의존 라이브러리 경로 때문에 실행되지 않던 것을 의존 병과 함께 이어 실행했습니다. tmux가 알아본 바깥 터미널 기능 목록, 가로 나누기 뒤 왼쪽 칸에 찍은 한글(`가나다라마 끝`)·이모지(`😀🙂 이모지`) 줄과 칸 경계선(경계선 앞 폭이 모든 줄에서 40칸으로 같음), 마우스로 칸 고르기, Shift+Enter가 안쪽 프로그램에 `ESC[27;2;13~`으로 가는 것을 봤습니다.
 - Ctrl+Enter가 아무 바이트도 내지 않는 것처럼 보였으나(#751) 결함이 아니었습니다. 앱이 뒤에 있을 때 보낸 합성 키를 AppKit이 창까지 넘기지 않은 탓이었고, 앱을 앞에 두고 보내면 `ESC[27;5;13~`이 갑니다(한 번 잼).
-- 다음 판 후보: Ghostty 새 병합분(2026-11-25 04:28 UTC까지 봄), Ghostty 단위 시험 가운데 아직 견주지 않은 파일(`PageList.zig`는 대부분 내부 구조, `render.zig`·`page.zig`·`style.zig`), Ghostty가 글리프를 그리기 시작하면 따라가기, kitty 그림이 대체 화면을 나와도 남는 것(Ghostty는 화면 저장소째 버림).
+- 다음 판 후보: Ghostty 새 병합분(2026-11-25 04:28 UTC까지 봄), Ghostty 단위 시험 가운데 아직 견주지 않은 파일(`render.zig`·`style.zig`·`color.zig`·`tmux/*`·`kitty/dnd_test.zig`, `PageList.zig`·`page.zig`는 대부분 내부 구조), 찾기 막대의 개수를 출력이 오는 대로 다시 세기(Ghostty처럼), OSC 133 `seen`을 `A`에서만 켜기, Ghostty가 글리프를 그리기 시작하면 따라가기, kitty 그림이 대체 화면을 나와도 남는 것(Ghostty는 화면 저장소째 버림).
 - 범수 님이 직접 해야 할 것: 키보드·마우스 확인(한글 2벌식 "안녕 하세요⏎", Claude Code의 Shift+Enter, Cmd-D·Cmd-F·Cmd-클릭·Cmd-N·Cmd-Shift-P, 메뉴, 창 닫기 단추, vim·htop, kitty icat·yazi, 투명 창), Developer ID 계정으로 `scripts/bundle-macos.sh --sign … --notarize … --dmg`
 - 정함(0.49·0.50, 주 세션 추천안): `window-colorspace` 기본은 `display-p3` 그대로. 0.50부터 `srgb`도 GPU 길로 그립니다(창마다 약 13.6MB 더, ADR-047). 기본을 Ghostty처럼 `srgb`로 바꾸시려면 알려 주세요
 - 범수 님이 확인할 것(0.6): 퀵 터미널을 실제 전역 단축키로(`keybind = global:ctrl+backquote=toggle_quick_terminal`), 외부 모니터로 창을 옮겼을 때 present 시간(`RUST_LOG=b_terminal=debug`)
