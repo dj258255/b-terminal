@@ -109,6 +109,7 @@ fn render(fonts: &mut Fonts, bytes: &[u8], cols: u16, rows: u16, cursor: bool) -
         selection_fg_cell: Default::default(),
         preedit: None,
         min_contrast: 1.0,
+        trail: None,
     };
     let mut canvas = Canvas::new(&mut buf, w, h);
     canvas.clear(s.background);
@@ -284,6 +285,7 @@ fn view_of<'a>(s: &Screen, dc: &'a [DrawCell], t: &Theme) -> GridView<'a> {
         selection_fg_cell: Default::default(),
         preedit: None,
         min_contrast: 1.0,
+        trail: None,
     }
 }
 
@@ -670,6 +672,7 @@ fn minimum_contrast_turns_unreadable_text_white() {
             selection_fg_cell: Default::default(),
             preedit: None,
             min_contrast: min,
+            trail: None,
         };
         let mut c = Canvas::new(&mut buf, w, h);
         draw_grid(&mut c, f, 0, 0, &view);
@@ -719,6 +722,7 @@ fn half_transparent_block_cursor_mixes_with_the_cell() {
             selection_fg_cell: Default::default(),
             preedit: None,
             min_contrast: 1.0,
+            trail: None,
         };
         let mut c = Canvas::new(&mut buf, w, h);
         draw_grid(&mut c, f, 0, 0, &view);
@@ -756,6 +760,7 @@ fn paint_theme(f: &mut Fonts, theme: &Theme, bytes: &[u8], edit: impl FnOnce(&mu
         selection_fg_cell: Default::default(),
         preedit: None,
         min_contrast: 1.0,
+        trail: None,
     };
     let mut c = Canvas::new(&mut buf, w, h);
     c.clear(s.background);
@@ -984,6 +989,7 @@ fn draw_row(f: &mut Fonts, cells: &[DrawCell], cursor: Option<DrawCursor>) -> (V
         selection_fg_cell: Default::default(),
         preedit: None,
         min_contrast: 1.0,
+        trail: None,
     };
     let mut c = Canvas::new(&mut buf, w, h);
     c.clear(Rgb::new(0, 0, 0));
@@ -1249,6 +1255,7 @@ fn translucent_corners(f: &mut Fonts, cells_on: bool) -> (u32, u32) {
         selection_fg_cell: Default::default(),
         preedit: None,
         min_contrast: 1.0,
+        trail: None,
     };
     let mut c = Canvas::new(&mut buf, w, h);
     c.set_see_through(s.background, 128);
@@ -1954,6 +1961,7 @@ fn two_panes_of_different_font_sizes_draw_like_their_own_frames() {
             selection_fg_cell: Default::default(),
             preedit: None,
             min_contrast: 1.0,
+            trail: None,
         };
         draw_grid(&mut canvas, fonts, x, 0, &view);
     }
@@ -2018,6 +2026,7 @@ fn block_selection_paints_a_rectangle_of_cells() {
         selection_fg_cell: Default::default(),
         preedit: None,
         min_contrast: 1.0,
+        trail: None,
     };
     let mut canvas = Canvas::new(&mut buf, w, h);
     canvas.clear(s.background);
@@ -2052,6 +2061,7 @@ fn paint_ink(f: &mut Fonts, cell: &DrawCell, tweak: impl Fn(&mut GridView)) -> (
         selection_fg_cell: Default::default(),
         preedit: None,
         min_contrast: 1.0,
+        trail: None,
     };
     let _ = t;
     tweak(&mut view);
@@ -2225,6 +2235,7 @@ fn min_contrast_skips_box_block_legacy_and_powerline_glyphs_but_not_letters() {
                 selection_fg_cell: Default::default(),
                 preedit: None,
                 min_contrast: 3.0,
+                trail: None,
             },
             &DrawCell {
                 fg: near,
@@ -2252,6 +2263,7 @@ fn faint_color_is_applied_last_after_selection_and_min_contrast() {
         selection_fg_cell: Default::default(),
         preedit: None,
         min_contrast: min,
+        trail: None,
     };
     let base = DrawCell {
         fg: Rgb::new(200, 200, 200),

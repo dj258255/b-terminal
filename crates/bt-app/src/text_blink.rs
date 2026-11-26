@@ -106,6 +106,7 @@ mod tests {
             selection_fg_cell: Default::default(),
             preedit: None,
             min_contrast: 1.0,
+            trail: None,
         };
         let mut c = Canvas::new(&mut buf, w, h);
         c.clear(theme.background);

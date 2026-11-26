@@ -73,6 +73,8 @@ pub struct GridView<'a> {
     pub preedit: Option<&'a str>,
     /// 글자색과 바탕의 최소 명암비(Ghostty `minimum-contrast`, #123). 1이면 끔
     pub min_contrast: f32,
+    /// 커서 흔적(kitty `cursor_trail`, #891). 칸 위에 알파로 덮는다. 격자를 통째로 다시 그리는 프레임에만 준다
+    pub trail: Option<crate::trail::TrailPaint>,
 }
 
 impl GridView<'_> {
@@ -317,6 +319,14 @@ fn draw_rows(
                     &view.cells[cur.row * view.cols + cur.col],
                 );
             }
+        }
+    }
+
+    // 4) 커서 흔적(#891): 글자와 커서 위에 알파로 덮는다. 자르기(`set_clip_y`)가 다시 그리는 줄 밖은 막는다
+    if let Some(t) = &view.trail {
+        let rects = crate::trail::trail_rects(t, view.cols as i32 * cw, view.rows as i32 * ch);
+        for r in rects {
+            canvas.blend_rect(x + r.x, y + r.y, r.w, r.h, t.color, t.alpha);
         }
     }
 }

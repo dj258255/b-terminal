@@ -89,6 +89,7 @@ fn view<'a>(s: &Screen, dc: &'a [DrawCell], t: &Theme, cursor: Option<DrawCursor
         selection_fg_cell: Default::default(),
         preedit: None,
         min_contrast: 1.0,
+        trail: None,
     }
 }
 
@@ -164,6 +165,7 @@ fn background_only_cells_match_cpu_exactly() {
         selection_fg_cell: Default::default(),
         preedit: None,
         min_contrast: 1.0,
+        trail: None,
     };
     let clear = Rgb::new(1, 2, 3);
     let want = cpu_frame(&mut f, &v, clear);

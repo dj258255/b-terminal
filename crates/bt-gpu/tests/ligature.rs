@@ -73,6 +73,7 @@ fn view(cells: &[DrawCell], cols: usize, cursor: Option<DrawCursor>) -> GridView
         selection_fg_cell: Default::default(),
         preedit: None,
         min_contrast: 1.0,
+        trail: None,
     }
 }
 

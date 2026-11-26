@@ -106,6 +106,7 @@ impl Scene {
             selection_fg_cell: Default::default(),
             preedit: None,
             min_contrast: 1.0,
+            trail: None,
         };
         let panes = [PaneDraw {
             font: 0,
