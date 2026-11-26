@@ -1124,7 +1124,12 @@ impl Graphics {
         match medium {
             "d" => {}
             // 파일 전송: 자료는 base64로 푼 경로다. 읽은 내용이 이 자리의 자료가 된다. 실패 이유(경로·내용)는 답에 담지 않는다
+            // PNG(f=100)만 받는다: 원시 RGB·RGBA는 아무 파일이나 크기만 맞으면 해석되어 OK·EINVAL 답으로 파일의 존재와 크기를 알려 준다.
+            // 파일을 열기 전에 거른다(ADR-088)
             "f" => {
+                if num(c, b'f') != 100 {
+                    return Err(("EINVAL", "파일 전송은 PNG(f=100)만 받습니다"));
+                }
                 let bytes = read_local_file(&data, u64::from(num(c, b'O')), u64::from(num(c, b'S')))
                     .ok_or(("EINVAL", "파일을 읽지 못했습니다"))?;
                 data = std::borrow::Cow::Owned(bytes);

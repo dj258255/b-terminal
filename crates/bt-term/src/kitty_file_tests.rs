@@ -81,40 +81,78 @@ fn query_with_a_file_reads_it_without_storing() {
 }
 
 #[test]
-fn zlib_compressed_raw_rgb_file_with_offset_and_size() {
+fn offset_size_and_zlib_apply_to_png_files() {
+    let png = png_2x1();
     let dir = tempfile::tempdir().unwrap();
-    let p = dir.path().canonicalize().unwrap().join("raw.bin");
-    // 앞 3바이트는 쓰레기, 그다음 RGB 한 점, 뒤는 쓰레기: O=3,S=3이면 한 점만 읽는다(Ghostty "regular file size reads exactly requested bytes")
-    std::fs::write(&p, [9, 9, 9, 1, 2, 3, 8, 8, 8]).unwrap();
+    let p = dir.path().canonicalize().unwrap().join("wrapped.bin");
+    // 앞 3바이트와 뒤 5바이트는 쓰레기: O=3,S=PNG 길이면 PNG만 읽는다(Ghostty "regular file size reads exactly requested bytes")
+    let mut data = vec![9, 9, 9];
+    data.extend_from_slice(&png);
+    data.extend_from_slice(&[8; 5]);
+    std::fs::write(&p, &data).unwrap();
     let mut g = Graphics::default();
+    let n = png.len();
     assert_eq!(
-        reply(&mut g, &path_cmd("a=t,t=f,f=24,s=1,v=1,i=5,O=3,S=3", &p)),
+        reply(&mut g, &path_cmd(&format!("a=t,t=f,f=100,i=5,O=3,S={n}"), &p)),
         "\x1b_Gi=5;OK\x1b\\"
     );
-    assert_eq!(&g.image(5).unwrap().rgba[..4], &[1, 2, 3, 255]);
-    // 오프셋만 주면 파일 끝까지 읽어 길이가 넘친다
+    // 오프셋만 주면 뒤 쓰레기까지 읽어 PNG 해독이 실패하지 않을 수 있으나 앞 쓰레기가 남아 거절한다
     assert_eq!(
-        reply(&mut g, &path_cmd("a=t,t=f,f=24,s=1,v=1,i=6,O=3", &p)),
+        reply(&mut g, &path_cmd("a=t,t=f,f=100,i=6", &p)),
         "\x1b_Gi=6;EINVAL\x1b\\"
     );
     // S가 파일 끝을 넘으면(짧은 자료) 거절한다(Ghostty "size rejects short data")
     assert_eq!(
-        reply(&mut g, &path_cmd("a=t,t=f,f=24,s=1,v=1,i=7,O=8,S=3", &p)),
+        reply(&mut g, &path_cmd(&format!("a=t,t=f,f=100,i=7,O=3,S={}", n + 100), &p)),
         "\x1b_Gi=7;EINVAL\x1b\\"
     );
     // 오프셋이 파일 끝을 넘으면 거절한다
     assert_eq!(
-        reply(&mut g, &path_cmd("a=t,t=f,f=24,s=1,v=1,i=8,O=100,S=3", &p)),
+        reply(&mut g, &path_cmd("a=t,t=f,f=100,i=8,O=1000,S=3", &p)),
         "\x1b_Gi=8;EINVAL\x1b\\"
     );
     // 압축(o=z)은 파일 내용에도 적용한다
-    let z = miniz_oxide::deflate::compress_to_vec_zlib(&[4, 5, 6], 6);
-    std::fs::write(&p, z).unwrap();
+    std::fs::write(&p, miniz_oxide::deflate::compress_to_vec_zlib(&png, 6)).unwrap();
     assert_eq!(
-        reply(&mut g, &path_cmd("a=t,t=f,f=24,o=z,s=1,v=1,i=9", &p)),
+        reply(&mut g, &path_cmd("a=t,t=f,f=100,o=z,i=9", &p)),
         "\x1b_Gi=9;OK\x1b\\"
     );
-    assert_eq!(&g.image(9).unwrap().rgba[..4], &[4, 5, 6, 255]);
+    assert_eq!((g.image(9).unwrap().width, g.image(9).unwrap().height), (2, 1));
+}
+
+/// 파일 정보 오라클 막기(#856 보안 검토): t=f는 f=100(PNG)만 받고, 다른 f는 파일을 열기 전에 EINVAL이다.
+/// 원시 RGB·RGBA(f=24·32)와 s·v·O·S를 쓰면 아무 파일이나 크기만 맞으면 해석되어 존재와 크기를 알아낼 수 있다
+#[test]
+fn only_png_format_is_accepted_for_files() {
+    let dir = tempfile::tempdir().unwrap();
+    let base = dir.path().canonicalize().unwrap();
+    let raw = base.join("raw.bin");
+    std::fs::write(&raw, [1, 2, 3, 4, 5, 6, 7, 8]).unwrap();
+    let (_d, png) = tmp_png();
+    let missing = base.join("none.bin");
+    let mut g = Graphics::default();
+    for f in [
+        "f=24,s=1,v=1",
+        "f=32,s=1,v=1",
+        "f=24,s=1,v=1,O=3,S=3",
+        "s=1,v=1",
+        "f=0,s=1,v=1",
+        "f=99",
+    ] {
+        // 있는 raw 파일, 있는 PNG 파일, 없는 파일이 모두 같은 답이고 그림은 생기지 않는다
+        for p in [&raw, &png, &missing] {
+            for a in ["a=t", "a=T", "a=q"] {
+                let r = reply(&mut g, &path_cmd(&format!("{a},t=f,{f},i=3"), p));
+                assert_eq!(r, "\x1b_Gi=3;EINVAL\x1b\\", "{a} {f} {p:?}");
+            }
+        }
+    }
+    assert!(g.image(3).is_none() && g.placements.is_empty());
+    // f=100이면 그대로 받는다(a=q 포함)
+    assert_eq!(
+        reply(&mut g, &path_cmd("a=q,t=f,f=100,i=4", &png)),
+        "\x1b_Gi=4;OK\x1b\\"
+    );
 }
 
 #[cfg(unix)]
