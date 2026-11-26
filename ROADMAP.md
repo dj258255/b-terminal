@@ -1804,12 +1804,58 @@ Ghostty 1.4.0 단위 시험 견주기 다섯째 판([#760](https://github.com/dj
 | [#825](https://github.com/dj258255/b-terminal/issues/825) | 칸 지우기가 OSC 133 줄 표시를 지움 | [#828](https://github.com/dj258255/b-terminal/pull/828) | 11-25 06:48 → 07:22 | 원본 대조(`clearCells`), 고치기 에이전트, 실제 창(출력 고르기)·병합 |
 | [#826](https://github.com/dj258255/b-terminal/issues/826) | OSC 133 상태를 두 화면이 함께 씀 | [#828](https://github.com/dj258255/b-terminal/pull/828) | 11-25 06:48 → 07:22 | 고치기 에이전트(이슈의 첫 입력이 틀린 것을 찾음), 실제 창(출력 고르기)·병합 |
 
+## 0.102.0 (2026-11-26)
+
+Ghostty 1.4.0 단위 시험 견주기 여섯째 판([#760](https://github.com/dj258255/b-terminal/issues/760)). 마일스톤 0.102.
+
+- 견준 시험
+  - `render.zig` 61개: 이미 있음 3, 탐침으로 같음 20, 다름 3, 견줄 수 없음 35
+  - `style.zig` 38개: 21, 8, 0, 9. "이미 있음" 21개 가운데 17개는 시험 이름으로 짝지은 것입니다.
+  - `color.zig` 27개: 11, 11, 2, 3
+  - `c/color.zig` 23개: 10, 4, 3, 6
+  - 시험 밖에서 그리기 코드(`renderer/generic.zig`, `cell.zig`)를 대조해 이슈를 열었습니다.
+- 범위 밖으로 셌습니다: `tmux/*`와 `kitty/dnd*`. Ghostty 1.4.0 앱도 이 기능을 사용자에게 내놓지 않습니다.
+  - kitty 끌어 놓기는 `stream_handler.zig`의 "Unimplemented"에 들어 있습니다.
+  - tmux 제어 모드의 화면 쪽은 `// TODO`입니다.
+  - main에서도 화면 연결 PR은 병합되지 않았습니다.
+- 닫은 이슈: [#832](https://github.com/dj258255/b-terminal/issues/832)(OSC 133 `seen`을 `A`에서만 켜기). Ghostty는 `seen`을 동작에 쓰지 않아 지금 동작이 이미 같았습니다. 이슈 본문의 판단이 틀렸습니다.
+- 사용자가 쓰던 동작이 바뀝니다.
+  - 숨긴 글자는 고르기·찾기·최소 명암비에서도 보이지 않습니다. 복사에는 그대로 들어갑니다(ADR-083).
+  - 흐린 글자의 색이 조금 바뀝니다.
+  - `foreground`·`background`만 정한 설정은 커서·고름 색이 그 색을 따릅니다.
+  - 전에 무시되던 색 설정 줄(`#fff`, `rgb:`, X11 이름)이 먹습니다(ADR-084).
+- 그대로 둔 것
+  - 찾기는 주 스레드에서 100ms 간격으로 다시 셉니다. Ghostty는 따로 둔 스레드에서 24ms 간격입니다(ADR-082).
+  - 터미널 색 OSC의 `#fff`는 xterm처럼 `f0f0f0`입니다(ADR-056).
+  - `selection-*`의 `cell-foreground`·`cell-background`
+  - 밑줄·취소선에는 최소 명암비를 걸지 않습니다.
+- 실제 창 확인: 격리한 창, release 묶음 앱으로 0.92.0과 견줘 한 번씩 확인했습니다.
+  - 그림은 사람 입력이 95초 넘게 없을 때만 찍어 본 뒤 지웠습니다.
+  - 질의 답은 셸 스크립트의 `od -c`로 받았습니다.
+- 진행 중 일
+  - 고치기 에이전트 하나가 API 연결 오류로 멈췄습니다. 같은 에이전트를 이어 받아 마무리했습니다.
+  - 주 세션의 실제 창 스크립트가 하네스에 worktree 경로를 잘못 넘긴 일이 한 번 있었습니다. 앱이 뜨지 않았고, AppleScript는 보내지 않았습니다.
+  - AppleScript 글의 `\n`이 줄바꿈이 되어 붙여넣기 확인 막대가 뜬 일도 한 번 있었습니다. 두 번 모두 시험 명령을 셸 파일로 옮겨 다시 쟀습니다.
+  - 여러 브랜치가 `docs/configuration.md`의 같은 표 줄을 고쳐 rebase 때 줄이 겹쳤습니다. 한 줄로 합쳤습니다.
+  - `docs/troubleshooting.md`를 번호 순으로 다시 놓았습니다.
+- Ghostty main 새 병합분: 2026-11-26 04:14 UTC까지 봤습니다. #15347(HTML 복사 링크 허용 목록)을 다음 판 이슈 [#846](https://github.com/dj258255/b-terminal/issues/846)으로 열었습니다. 나머지는 GTK·번역·valgrind입니다.
+
+| 이슈 | 내용 | PR | 연 때·병합(UTC) | 주 세션이 한 것 |
+|---|---|---|---|---|
+| [#833](https://github.com/dj258255/b-terminal/issues/833) | 찾기 막대가 출력이 와도 개수·강조를 다시 세지 않음 | [#840](https://github.com/dj258255/b-terminal/pull/840) | 11-25 08:00 → 08:24 | 원본 대조(`search/Thread.zig`), 고치기 에이전트, 실제 창(개수·고른 곳 따라가기, 출력 폭주 CPU)·병합 |
+| [#834](https://github.com/dj258255/b-terminal/issues/834) | 숨긴 글자가 고르기·찾기·최소 명암비에서 보임 | [#842](https://github.com/dj258255/b-terminal/pull/842) | 11-25 08:07 → 08:52 | 원본 대조(`generic.zig` 3233줄), 고치기 에이전트, 실제 창(GPU, 0.92와 견줌)·병합 |
+| [#835](https://github.com/dj258255/b-terminal/issues/835) | 흐림과 반전·고르기가 겹치면 색이 다름 | [#842](https://github.com/dj258255/b-terminal/pull/842) | 11-25 08:07 → 08:52 | 원본 대조, 고치기 에이전트, 실제 창·병합 |
+| [#836](https://github.com/dj258255/b-terminal/issues/836) | 넓은 글자 한쪽만 고르면 반 칸만 칠함 | [#841](https://github.com/dj258255/b-terminal/pull/841) | 11-25 08:07 → 08:41 | 원본 대조(`x_compare`), 고치기 에이전트, 검토에서 줄 끝 꼬리 칸 결함을 찾아 시험 먼저 쓰고 고침, 실제 창(마우스 끌기)·병합 |
+| [#837](https://github.com/dj258255/b-terminal/issues/837) | 설정의 색 값을 6자리와 이름 몇 개만 받음 | [#843](https://github.com/dj258255/b-terminal/pull/843) | 11-25 08:07 → 11-26 04:00 | 원본 대조(`RGB.parse` 순서), 고치기 에이전트, 문서 충돌 합침, 실제 창(설정 여섯 줄)·병합 |
+| [#838](https://github.com/dj258255/b-terminal/issues/838) | 커서·고름 기본색이 글자색과 OSC 10·11·12를 따르지 않음 | [#845](https://github.com/dj258255/b-terminal/pull/845) | 11-25 08:07 → 11-26 04:13 | 고치기 에이전트(API 오류로 멈춰 이어 받음), #837과 겹친 `apply_color`를 합치고 빈 값 처리를 더함, 실제 창(OSC 12·112·10, 질의 답)·병합 |
+| [#839](https://github.com/dj258255/b-terminal/issues/839) | 최소 명암비가 그래픽 글자에 걸림, bold-color가 RGB 글자색에 안 걸림 | [#842](https://github.com/dj258255/b-terminal/pull/842) | 11-25 08:07 → 08:52 | 원본 대조(`noMinContrast`, `style.zig`), 고치기 에이전트, 실제 창·병합 |
+
 ## 다음
 
 - 0.91~0.97에서 '범수 님이 확인할 것'의 대부분을 주 세션이 확인했습니다. 무엇을 확인했고 무엇을 못 했는지는 위 0.91.0~0.95.0 절에 있습니다. 남은 것: 데스크톱 알림 띠가 하나만 뜨는지와 VoiceOver 소리, Space, 저전력 모드를 끈 0.42, 외부 모니터, 타자 느낌. 이 가운데 VoiceOver와 저전력 모드는 시스템 설정을 바꿔야 하고, Space 옮기기는 하드웨어 키 입력이 있어야 하며, 외부 모니터는 이 기기에 없어 주 세션이 확인하지 않았습니다. 알림 띠는 시험 앱 묶음에 알림 허락이 없어(알림 설정에 항목이 없음) 뜨지 않고, 허락하려면 시스템 설정을 바꿔야 해서 확인하지 않았습니다. 타자 느낌은 사람이 쳐 봐야 압니다.
 - 0.94 뒤 tmux 3.8을 확인했습니다(격리한 실제 창, 한 번 잼). 받은 병이 의존 라이브러리 경로 때문에 실행되지 않던 것을 의존 병과 함께 이어 실행했습니다. tmux가 알아본 바깥 터미널 기능 목록, 가로 나누기 뒤 왼쪽 칸에 찍은 한글(`가나다라마 끝`)·이모지(`😀🙂 이모지`) 줄과 칸 경계선(경계선 앞 폭이 모든 줄에서 40칸으로 같음), 마우스로 칸 고르기, Shift+Enter가 안쪽 프로그램에 `ESC[27;2;13~`으로 가는 것을 봤습니다.
 - Ctrl+Enter가 아무 바이트도 내지 않는 것처럼 보였으나(#751) 결함이 아니었습니다. 앱이 뒤에 있을 때 보낸 합성 키를 AppKit이 창까지 넘기지 않은 탓이었고, 앱을 앞에 두고 보내면 `ESC[27;5;13~`이 갑니다(한 번 잼).
-- 다음 판 후보: Ghostty 새 병합분(2026-11-25 04:28 UTC까지 봄), Ghostty 단위 시험 가운데 아직 견주지 않은 파일(`render.zig`·`style.zig`·`color.zig`·`tmux/*`·`kitty/dnd_test.zig`, `PageList.zig`·`page.zig`는 대부분 내부 구조), 찾기 막대의 개수를 출력이 오는 대로 다시 세기(Ghostty처럼), OSC 133 `seen`을 `A`에서만 켜기, Ghostty가 글리프를 그리기 시작하면 따라가기, kitty 그림이 대체 화면을 나와도 남는 것(Ghostty는 화면 저장소째 버림).
+- 다음 판 후보: Ghostty 새 병합분(2026-11-26 04:14 UTC까지 봄, #846 HTML 복사 링크), Ghostty 단위 시험 가운데 남은 파일(`PageList.zig`·`page.zig`는 대부분 내부 구조, `tmux/*`·`kitty/dnd*`는 Ghostty 앱도 쓰지 않음), `selection-*`의 `cell-foreground`·`cell-background`, 밑줄·취소선의 최소 명암비, Ghostty가 글리프를 그리기 시작하면 따라가기, kitty 그림이 대체 화면을 나와도 남는 것(Ghostty는 화면 저장소째 버림).
 - 범수 님이 직접 해야 할 것: 키보드·마우스 확인(한글 2벌식 "안녕 하세요⏎", Claude Code의 Shift+Enter, Cmd-D·Cmd-F·Cmd-클릭·Cmd-N·Cmd-Shift-P, 메뉴, 창 닫기 단추, vim·htop, kitty icat·yazi, 투명 창), Developer ID 계정으로 `scripts/bundle-macos.sh --sign … --notarize … --dmg`
 - 정함(0.49·0.50, 주 세션 추천안): `window-colorspace` 기본은 `display-p3` 그대로. 0.50부터 `srgb`도 GPU 길로 그립니다(창마다 약 13.6MB 더, ADR-047). 기본을 Ghostty처럼 `srgb`로 바꾸시려면 알려 주세요
 - 범수 님이 확인할 것(0.6): 퀵 터미널을 실제 전역 단축키로(`keybind = global:ctrl+backquote=toggle_quick_terminal`), 외부 모니터로 창을 옮겼을 때 present 시간(`RUST_LOG=b_terminal=debug`)
