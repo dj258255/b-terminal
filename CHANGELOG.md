@@ -5,6 +5,7 @@
 ## [아직 릴리스하지 않음]
 
 - 깜빡이는 글자(SGR 5·6)를 kitty처럼 그린다: 커서와 같은 0.6초 박자로 글자가 숨었다 보이고(바탕은 그대로), 25가 끈다. 화면에 보이는 깜빡이는 글자가 있고 창을 보고 있을 때만 다시 그리며 없으면 깨우지 않는다. Ghostty 1.4.0은 깜빡이는 글자를 그리지 않는다 (#862)
+- kitty 호환 소품 넷: SGR 221(굵게만 끔)·222(흐림만 끔)(Ghostty 1.4.0은 모르는 속성으로 버립니다), 키 동작 `clear_scrollback`(kitty `clear_terminal scrollback`, 스크롤백만 지우고 화면은 그대로)과 `clear_last_command`(kitty `clear_terminal last_command`, 셸 통합이 알리는 지금 프롬프트 바로 위 명령과 출력을 지우고 아래를 끌어올림). `CSI 22 J`와 그림 질의의 `e` 키는 이미 있었습니다 (#863)
 
 ## [0.104.0] - 2026-11-26
 
@@ -28,7 +29,6 @@ Ghostty 1.4.0과 kitty를 견준 조사에서 빠진 기능을 채운 판입니�
 - 탭 오른쪽 클릭(macOS)으로 탭 색을 고르고 없앱니다(Ghostty 1.4.0 `TerminalTabColor`처럼 없음·파랑·보라·분홍·빨강·주황·노랑·초록·청록·그래파이트). 고른 색은 탭 제목 오른쪽 끝의 작은 점으로 보이고, 탭 옮기기·닫기 되살리기·`window-save-state`를 따라옵니다. 색이 없던 옛 상태 파일도 읽습니다 (#852)
 - macOS에서 트랙패드를 강하게 누르면(force click) 마우스 아래 낱말을 시스템 사전 말풍선으로 띄운다(Ghostty 1.4.0 `quickLook`처럼). 시스템의 "힘주어 클릭"이 꺼졌거나 보안 입력·암호 입력 중이면 하지 않는다. 윈도우 메뉴에 체크 표시가 있는 "항상 위에 띄우기" 항목을 더했다 (#853)
 - XTGETTCAP이 좌우 여백 능력 `Enmg`·`Dsmg`·`Clmg`·`Cmg`에 답합니다(값은 Ghostty 1.4.0 terminfo 그대로, DECLRMM·DECSLRM은 #311에서 넣었음). 전에는 답이 없었습니다. 터미널 이름을 보고 기능을 켜는 프로그램(Claude Code·Codex·snacks.nvim·tmux·Yazi)과 ssh `SendEnv` 안내를 문서에 더했고, Ghostty #15113(세 번 눌러 고른 줄을 빈 줄 위로 끌면 고름이 사라짐)은 b-terminal에 해당하지 않아 시험만 남겼습니다 (#854)
-- kitty 호환 소품 넷: SGR 221(굵게만 끔)·222(흐림만 끔)(Ghostty 1.4.0은 모르는 속성으로 버립니다), 키 동작 `clear_scrollback`(kitty `clear_terminal scrollback`, 스크롤백만 지우고 화면은 그대로)과 `clear_last_command`(kitty `clear_terminal last_command`, 셸 통합이 알리는 지금 프롬프트 바로 위 명령과 출력을 지우고 아래를 끌어올림). `CSI 22 J`와 그림 질의의 `e` 키는 이미 있었습니다 (#863)
 
 ## [0.102.0] - 2026-11-26
 
