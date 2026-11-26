@@ -4,6 +4,7 @@
 //! 암호 입력 중(보안 입력)에는 화면 글을 시스템 사전으로 넘기지 않는다.
 
 /// 마우스 아래 낱말 `word`에서 사전에 넘길 글을 정한다. 보안 입력 중이거나 낱말이 없거나 비어 있으면 `None`
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub fn target(word: Option<&str>, secure: bool) -> Option<String> {
     if secure {
         return None;

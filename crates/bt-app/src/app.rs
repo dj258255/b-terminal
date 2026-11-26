@@ -1193,6 +1193,7 @@ pub struct App {
     #[cfg(target_os = "macos")]
     menu_secure: Option<muda::CheckMenuItem>,
     /// 창 메뉴 "항상 위에 띄우기"(#853). 체크는 앞에 있는 창의 상태를 따른다
+    #[cfg(target_os = "macos")]
     menu_float: Option<muda::CheckMenuItem>,
 }
 
@@ -1273,6 +1274,7 @@ impl App {
             next_secure_poll: Instant::now(),
             #[cfg(target_os = "macos")]
             menu_secure: None,
+            #[cfg(target_os = "macos")]
             menu_float: None,
         }
     }
