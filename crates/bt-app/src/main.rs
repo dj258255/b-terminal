@@ -35,6 +35,7 @@ mod render_path;
 mod script_config;
 mod script_key;
 mod script_mouse;
+mod scrollback_store;
 mod secure_input;
 mod shellint;
 mod split;

@@ -6089,24 +6089,58 @@ impl App {
                 .find(|p| p.id == id)
                 .and_then(|p| p.user_title.clone())
         };
+        // 지난 화면(#861): 켰을 때만 칸마다 글·색을 꺼낸다. 대체 화면(vim 등)은 기본 화면의 것만 나온다
+        let scrollback_on = self.config.window_save_state_scrollback;
+        let scrollback_lines = self.config.window_save_state_scrollback_lines;
+        let mut captured: Vec<(String, Vec<bt_term::saved_screen::SavedLine>)> = Vec::new();
+        let mut wi = 0usize;
         let windows: Vec<crate::state::SavedWindow> = std::iter::once(&self.w)
             .chain(&self.others)
             .filter(|w| !w.tabs.is_empty() && !w.quick)
             .filter_map(|w| {
                 let g = w.gfx.as_ref()?;
                 let size = g.window.inner_size();
+                let win_index = wi;
+                wi += 1;
                 Some(crate::state::SavedWindow {
                     size: (size.width, size.height),
                     position: g.window.outer_position().ok().map(|p| (p.x, p.y)),
                     tabs: w
                         .tabs
                         .iter()
-                        .map(|t| crate::state::SavedTab {
-                            layout: crate::state::SavedNode::from_node(&t.layout, &cwd_of, &title_of),
-                            focus: t.layout.leaves().iter().position(|&id| id == t.focus).unwrap_or(0),
-                            zoomed: t.zoomed,
-                            title: t.title.clone(),
-                            color: (t.color != crate::tabcolor::TabColor::None).then(|| t.color.key().to_string()),
+                        .enumerate()
+                        .map(|(ti, t)| {
+                            let mut layout = crate::state::SavedNode::from_node(&t.layout, &cwd_of, &title_of);
+                            if scrollback_on && scrollback_lines > 0 {
+                                let keys: Vec<Option<String>> = t
+                                    .layout
+                                    .leaves()
+                                    .iter()
+                                    .enumerate()
+                                    .map(|(li, id)| {
+                                        let lines = self
+                                            .panes
+                                            .iter()
+                                            .find(|p| p.id == *id)?
+                                            .session
+                                            .capture_scrollback(scrollback_lines);
+                                        if lines.is_empty() {
+                                            return None;
+                                        }
+                                        let key = format!("w{win_index}t{ti}p{li}");
+                                        captured.push((key.clone(), lines));
+                                        Some(key)
+                                    })
+                                    .collect();
+                                layout.set_scrollback_keys(&mut keys.into_iter());
+                            }
+                            crate::state::SavedTab {
+                                layout,
+                                focus: t.layout.leaves().iter().position(|&id| id == t.focus).unwrap_or(0),
+                                zoomed: t.zoomed,
+                                title: t.title.clone(),
+                                color: (t.color != crate::tabcolor::TabColor::None).then(|| t.color.key().to_string()),
+                            }
                         })
                         .collect(),
                     active: w.active,
@@ -6118,6 +6152,16 @@ impl App {
             version: crate::state::VERSION,
             windows,
         };
+        // 지난 화면 파일을 먼저 적고(상태 파일이 없는 파일을 가리키지 않게), 끄거나 창이 없으면 남은 것을 지운다
+        let sb_dir = crate::scrollback_store::dir_for(&path);
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs());
+        if let Err(e) = crate::scrollback_store::write_all(&sb_dir, &captured, now) {
+            log::warn!("지난 화면을 적지 못했습니다: {e}");
+            crate::scrollback_store::remove_all(&sb_dir);
+            // 파일이 없는데 열쇠만 남지 않게 한다(읽을 때 없으면 건너뛰므로 큰일은 아니다)
+        }
         match crate::state::save(&path, &state) {
             Ok(()) => log::info!("창 상태를 적었습니다: 창 {}개", state.windows.len()),
             Err(e) => log::warn!("창 상태를 적지 못했습니다: {e}"),
@@ -6156,10 +6200,20 @@ impl App {
                 self.ensure_font_size(font_size);
                 let size = self.grid_size_for(self.content_rect(), font_size);
                 let mut ids = Vec::new();
-                for cwd in st.layout.panes() {
+                let sb_dir = crate::state::path().map(|p| crate::scrollback_store::dir_for(&p));
+                let sb_keys = st.layout.pane_scrollback_keys();
+                for (pi, cwd) in st.layout.panes().into_iter().enumerate() {
                     let mut opts = self.default_spawn();
                     if let Some(dir) = cwd.filter(|d| d.is_dir()) {
                         opts.cwd = Some(dir);
+                    }
+                    // 지난 화면(#861): 켜져 있을 때만. 줄은 셸이 뜨기 전에 격자에 직접 놓는다(파서를 거치지 않는다)
+                    if self.config.window_save_state_scrollback
+                        && let (Some(dir), Some(Some(key))) = (&sb_dir, sb_keys.get(pi))
+                        && let Some((lines, at)) = crate::scrollback_store::read(dir, key)
+                    {
+                        opts.restore_lines = lines;
+                        opts.restore_note = Some(crate::scrollback_store::note_for(at));
                     }
                     if let Some(p) = self.spawn_pane(opts, size, font_size) {
                         ids.push(p.id);
@@ -6205,6 +6259,10 @@ impl App {
             self.w.window_title = sw.title.as_deref().and_then(clean_user_title);
             self.last_focused = self.w.id();
             self.resize_all();
+        }
+        // 읽은 지난 화면 파일은 지운다(디스크에 오래 남기지 않는다). 끈 설정으로 남은 것도 함께 지운다
+        if let Some(p) = crate::state::path() {
+            crate::scrollback_store::remove_all(&crate::scrollback_store::dir_for(&p));
         }
         if restored {
             log::info!("창 상태를 되살렸습니다");
@@ -7893,6 +7951,9 @@ impl ApplicationHandler<UserEvent> for App {
         // 끌 때 창 상태를 적는다(#94). 마지막 창을 닫고 꺼진 것이면 창이 없어 파일을 지운다
         if self.config.window_save_state {
             self.save_state();
+        } else if let Some(p) = crate::state::path() {
+            // 복원을 끈 채 끌 때는 앞서 남은 지난 화면 파일도 두지 않는다(#861)
+            crate::scrollback_store::remove_all(&crate::scrollback_store::dir_for(&p));
         }
     }
 

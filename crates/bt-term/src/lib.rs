@@ -24,6 +24,7 @@ pub mod plain;
 pub mod process;
 pub mod program_status;
 pub mod prompt_click;
+pub mod saved_screen;
 pub mod screen;
 pub mod search;
 mod session;

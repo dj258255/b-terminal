@@ -947,6 +947,16 @@ impl<T> Term<T> {
         &mut self.grid
     }
 
+    /// b-terminal(#861): 기본 화면(스크롤백이 있는 쪽)의 격자. 대체 화면(vim 등)이 켜져 있으면 가려진 쪽, 아니면 `grid()`와 같다.
+    /// 창 상태 복원이 대체 화면이 아닌 기본 화면의 글만 저장하려고 읽는다
+    pub fn primary_grid(&self) -> &Grid<Cell> {
+        if self.mode.contains(TermMode::ALT_SCREEN) {
+            &self.inactive_grid
+        } else {
+            &self.grid
+        }
+    }
+
     /// Resize terminal to new dimensions.
     pub fn resize<S: Dimensions>(&mut self, size: S) {
         // b-terminal(#584): 크기 0은 아무것도 바꾸기 전에 거절한다(Ghostty `Terminal.resize`, Terminal.zig 5274줄 `resize rejects zero

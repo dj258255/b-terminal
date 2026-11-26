@@ -61,6 +61,7 @@ softbuffer가 색 공간을 고를 수 있게 되거나, GPU 렌더러로 바꿔
   - (#536) `join_grapheme`이 붙는 글자가 폭에 미치는 영향을 Ghostty `graphemeWidthEffect`처럼 가립니다. VS16으로 넓어지는 글자나 결합으로 넓어지는 글자가 줄 끝(오른쪽 여백 끝)에 있으면 다음 줄 왼쪽 여백으로 옮겨 두 칸으로 쓰고(옛 칸은 화면 끝이면 앞 칸 자리 표시), 자동 줄바꿈이 꺼져 있으면 아무것도 하지 않습니다. VS15는 넓은 글자를 좁히고 대기 중인 줄바꿈을 풉니다. 유효한 이모지 표시 순서가 아닌 VS16·VS15는 버리고, 2027을 끈 길의 VS16·VS15는 앞 글자가 Extended_Pictographic일 때만 붙입니다. 피부색 수식자는 앞 글자가 Emoji_Modifier_Base가 아니면 새 글자입니다.
   - 칸 내용을 바꾸는 `scroll_*_relative`·`insert_blank`·`erase_chars`·`delete_chars`·`clear_line`·`clear_screen`·`swap_alt`·`reset_state`는 `grapheme_anchor`를 지웁니다.
 
+- 더한 곳(#861, ADR-092): `src/term/mod.rs`의 `Term::primary_grid()`(대체 화면이 켜져 있으면 가려진 기본 화면 격자, 아니면 `grid()`) 아홉 줄. `b-terminal(#861)`로 찾을 수 있습니다. 창 상태 복원이 vim 등 대체 화면 안에서 끌 때도 기본 화면의 스크롤백을 저장하려고 더했고, 필드는 그대로 비공개입니다. 되돌릴 조건: alacritty_terminal이 같은 getter를 내놓으면 지웁니다.
 - 더한 곳(#259, ADR-021): 같은 파일에 `Term::scroll_region()`(스크롤 영역 줄 범위를 읽는 getter) 여섯 줄. `b-terminal 패치(#259)`로 찾을 수 있습니다. DECRQCRA(체크섬 보고)가 원점 모드의 위 여백을 읽으려고 더했고, 필드는 그대로 비공개입니다. 되돌릴 조건: alacritty_terminal이 같은 getter를 내놓으면 지웁니다.
 
 - 고친 곳(#264, ADR-022): 같은 파일의 `identify_terminal`(DA1·DA2에 답하던 것)을 답하지 않게 했고, `report_private_mode`가 모드 2048에는 답하지 않게 한 줄을 더했습니다. `b-terminal(#264)`로 찾을 수 있습니다. 이유: DA1·DA2는 Ghostty 값(`?62;22;52c`·`>1;10;0c`)으로, 모드 2048은 켜짐·꺼짐(1·2)으로 bt-term 스캐너가 답합니다. 엔진이 옛 값(`?6c`, `>0;버전;1c`, 모르는 모드 0)으로 또 답하면 PTY에 답이 둘 나갑니다. 되돌릴 조건: alacritty_terminal이 장치 속성 답과 모르는 모드 보고를 이벤트로 바꿔 밖에서 정할 수 있게 하면 지웁니다.
