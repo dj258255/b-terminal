@@ -53,6 +53,8 @@ pub(super) struct ViewLayer {
     pub progress: Option<(u8, u8)>,
     /// 벨 테두리를 두르는가(#687)
     pub bell_border: bool,
+    /// 입력 함께 보내기 묶음의 테두리 색(#860)
+    pub broadcast: Option<bt_core::Rgb>,
 }
 
 /// 층을 그리는 입력 가운데 `Chrome`에 들지 않은 모두. `layer_key`가 빠짐없이 쓰도록 필드를 하나도 `..`로 넘기지 않는다
@@ -147,6 +149,7 @@ pub(super) fn layer_key(i: &LayerInputs<'_>) -> Option<LayerKey> {
                 display_offset: if v.bar_shown { v.display_offset } else { 0 },
                 progress: v.progress.filter(|_| *single_tab),
                 bell_border: v.bell_border,
+                broadcast: v.broadcast,
             })
             .collect(),
     })
@@ -191,6 +194,7 @@ mod tests {
             display_offset: 0,
             progress: Some((1, 40)),
             bell_border: false,
+            broadcast: None,
         }
     }
 

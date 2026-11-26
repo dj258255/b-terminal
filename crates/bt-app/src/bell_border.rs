@@ -18,7 +18,12 @@ const WIDTH_PT: f64 = 3.0;
 
 /// 테두리 두께(픽셀). 칸이 얇아도 가운데가 남게 절반을 넘기지 않는다
 fn thickness(outer: Rect, scale: f64) -> u32 {
-    ((WIDTH_PT * scale).round() as u32)
+    thickness_of(outer, scale, WIDTH_PT)
+}
+
+/// 두께 `width_pt`점의 테두리 두께(픽셀)
+fn thickness_of(outer: Rect, scale: f64, width_pt: f64) -> u32 {
+    ((width_pt * scale).round() as u32)
         .max(1)
         .min(outer.w / 2)
         .min(outer.h / 2)
@@ -26,7 +31,11 @@ fn thickness(outer: Rect, scale: f64) -> u32 {
 
 /// 칸 바깥 사각형 안쪽 네 변: 위, 아래, 왼쪽, 오른쪽(서로 겹치지 않아 알파가 두 번 얹히지 않는다)
 fn edges(outer: Rect, scale: f64) -> [Rect; 4] {
-    let t = thickness(outer, scale);
+    edges_of(outer, thickness(outer, scale))
+}
+
+/// 두께 `t`픽셀의 네 변
+fn edges_of(outer: Rect, t: u32) -> [Rect; 4] {
     let side_h = outer.h - 2 * t;
     [
         Rect::new(outer.x, outer.y, outer.w, t),
@@ -34,6 +43,16 @@ fn edges(outer: Rect, scale: f64) -> [Rect; 4] {
         Rect::new(outer.x, outer.y + t as i32, t, side_h),
         Rect::new(outer.x + (outer.w - t) as i32, outer.y + t as i32, t, side_h),
     ]
+}
+
+/// 입력 함께 보내기 묶음의 테두리(#860). Ghostty PR #13745의 `BroadcastGroupBorderOverlay`처럼 두께 2pt, 묶음 색 그대로(알파 1)
+const BROADCAST_WIDTH_PT: f64 = 2.0;
+
+/// 묶음 색 테두리를 칸 바깥 사각형 안쪽에 얹는다
+pub fn draw_broadcast(canvas: &mut Canvas, outer: Rect, scale: f64, color: Rgb) {
+    for e in edges_of(outer, thickness_of(outer, scale, BROADCAST_WIDTH_PT)) {
+        canvas.blend_rect(e.x, e.y, e.w, e.h, color, 255);
+    }
 }
 
 /// 칸 바깥 사각형 안쪽에 테두리를 얹는다

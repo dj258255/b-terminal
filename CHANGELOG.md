@@ -8,6 +8,7 @@
 - 동아시아 모호 폭(East Asian Ambiguous) 글자(①·※·○·─ 등)를 두 칸으로 세는 설정 `ambiguous-width = wide`를 더했습니다(기본 `narrow`, 한 칸, 지금과 같음. `1`·`2`도 받음). Ghostty·kitty에는 없고 WezTerm·iTerm2·Windows Terminal에 있는 설정입니다. 폭은 엔진 한 곳에서 정해 그리기·커서·줄 끝 접기·고르기·복사·찾기가 따르고, 모드 2027 길과 아닌 길이 같은 값을 따릅니다. 한글·이모지는 그대로이고 그리스·키릴 글자는 `wide`에서도 한 칸입니다. 안의 프로그램(nvim `ambiwidth=double`, tmux)과 맞춰야 합니다. 설정을 다시 읽으면 이 뒤에 찍는 글부터 따릅니다 (#857)
 - macOS 앱 메뉴에 `b-terminal을 기본 터미널로 지정`을 더해(Ghostty 1.4.0처럼) UTType `public.unix-executable`의 기본 앱을 이 앱 묶음으로 정하게 요청한다. 이미 기본이면 항목이 꺼지고, 실패하면 알림 띠로 알린다 (#859)
 - `btctl`에 kitty 원격 조종 같은 명령을 더했다: `close`·`close-tab`·`set-title`·`set-tab-title`·`send-key`(키 이름, 읽기 전용 칸은 거절)·`get-text`(screen·all·selection·last-output)·`scroll`·`resize`. AppleScript와 같은 내부 길을 쓰고 소켓 경계(0700 폴더, 1MiB 상한)는 그대로다 (#858)
+- 입력 함께 보내기: `toggle_broadcast_group:N`(0~15)·`clear_broadcast_groups`와 설정 `broadcast-group-colors`(Ghostty 열린 PR #13745 모양). 같은 묶음의 칸끼리 키(칸마다 그 칸의 모드로 다시 인코딩)·IME 확정 글·붙여넣기(칸마다 따로 감쌈)·`text:` 묶음이 가고, 묶음에 든 칸은 색 테두리로 보인다. 읽기 전용 칸은 주고받지 않고 암호 입력 중인 칸의 글은 퍼지지 않는다. 기본 키·클릭으로 넣기는 없다 (#860)
 
 ## [0.103.0] - 2026-11-26
 

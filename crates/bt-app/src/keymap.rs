@@ -157,6 +157,11 @@ pub enum Action {
     ToggleMouseReporting,
     /// 지금 칸을 읽기 전용으로 하거나 푼다(Ghostty `toggle_readonly`, #209, ADR-018)
     ToggleReadonly,
+    /// 지금 칸을 N번(0~15) 입력 함께 보내기 묶음에 넣거나 뺀다. 이미 그 묶음이면 빠지고, 다른 묶음이면 옮긴다
+    /// (Ghostty 열린 PR #13745 `toggle_broadcast_group`, #860, ADR-091)
+    ToggleBroadcastGroup(u8),
+    /// 모든 칸을 입력 함께 보내기 묶음에서 뺀다(Ghostty 열린 PR #13745 `clear_broadcast_groups`, #860)
+    ClearBroadcastGroups,
     /// 이번 실행 동안의 창 테마. `None`이면 설정의 `window-theme`으로 돌아간다(Ghostty `set_window_theme`, #209)
     SetWindowTheme(Option<bt_core::config::WindowTheme>),
     /// 설정 파일을 기본 편집기로 연다(Ghostty `open_config`, #209)
@@ -532,6 +537,7 @@ const VOID_ACTIONS: &[&str] = &[
     "toggle_background_opacity",
     "toggle_mouse_reporting",
     "toggle_readonly",
+    "clear_broadcast_groups",
 ];
 
 /// 동작 이름을 읽는다. `None`이면 unbind
@@ -759,6 +765,13 @@ pub fn parse_action(s: &str) -> Result<Option<Action>, String> {
         "toggle_background_opacity" => Action::ToggleBackgroundOpacity,
         "toggle_mouse_reporting" => Action::ToggleMouseReporting,
         "toggle_readonly" => Action::ToggleReadonly,
+        // 묶음 번호는 0~15(Ghostty PR의 u4). 범위 밖·글·빠진 값은 오류
+        "toggle_broadcast_group" => Action::ToggleBroadcastGroup(
+            arg.and_then(|a| a.trim().parse::<u8>().ok())
+                .filter(|n| *n < crate::broadcast::GROUPS)
+                .ok_or("toggle_broadcast_group:묶음 번호(0~15)")?,
+        ),
+        "clear_broadcast_groups" => Action::ClearBroadcastGroups,
         "set_window_theme" => {
             use bt_core::config::WindowTheme;
             Action::SetWindowTheme(match arg.map(str::trim) {
@@ -3133,6 +3146,34 @@ mod tests {
     }
 
     /// Ghostty: 정수(`i16`)·실수(`f32`) 값은 틀리면 InvalidFormat. NaN·inf는 받지 않는다. 값 빠뜨림은 전처럼 받는다
+    #[test]
+    fn broadcast_group_actions_parse_like_ghostty_pr_13745() {
+        assert_eq!(
+            parse_action("toggle_broadcast_group:0").unwrap(),
+            Some(Action::ToggleBroadcastGroup(0))
+        );
+        assert_eq!(
+            parse_action("toggle_broadcast_group:15").unwrap(),
+            Some(Action::ToggleBroadcastGroup(15))
+        );
+        assert_eq!(
+            parse_action("clear_broadcast_groups").unwrap(),
+            Some(Action::ClearBroadcastGroups)
+        );
+        // 묶음 번호는 u4: 16·음수·글·빠진 값·소수는 오류
+        for bad in [
+            "toggle_broadcast_group",
+            "toggle_broadcast_group:",
+            "toggle_broadcast_group:16",
+            "toggle_broadcast_group:-1",
+            "toggle_broadcast_group:a",
+            "toggle_broadcast_group:1.5",
+            "clear_broadcast_groups:1",
+        ] {
+            assert!(parse_action(bad).is_err(), "{bad}");
+        }
+    }
+
     #[test]
     fn numeric_parameters_are_strict() {
         for s in [
