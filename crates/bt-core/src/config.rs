@@ -550,6 +550,10 @@ pub struct PaletteEntryConf {
     pub description: String,
 }
 
+/// `window-save-state-scrollback-lines`의 기본과 상한(#861)
+pub const WINDOW_SAVE_SCROLLBACK_LINES_DEFAULT: usize = 1000;
+pub const WINDOW_SAVE_SCROLLBACK_LINES_MAX: usize = 100_000;
+
 /// 읽어 낸 설정
 #[derive(Debug, Clone, PartialEq)]
 pub struct Config {
@@ -767,6 +771,10 @@ pub struct Config {
     pub background_blur: u8,
     /// 끌 때 창·탭·분할·폴더를 적어 두고 켤 때 되살린다(Ghostty `window-save-state`, #94). never면 끔
     pub window_save_state: bool,
+    /// `window-save-state`로 되살릴 때 칸마다 화면·스크롤백의 글과 색도 적어 두고 되살린다(b-terminal 키, kitty `restore_session_after_logout`·Windows Terminal 버퍼 복원처럼, #861). 기본 끔
+    pub window_save_state_scrollback: bool,
+    /// 칸마다 적는 줄 수의 상한(끝에서부터). 0이면 적지 않는다
+    pub window_save_state_scrollback_lines: usize,
     /// 벨(BEL)이 울릴 때 할 일(Ghostty `bell-features`, #107)
     pub bell_features: BellFeatures,
     /// 벨 소리 파일(Ghostty `bell-audio-path`, #165). 빈 값이면 없음
@@ -1787,6 +1795,8 @@ impl Default for Config {
             background_opacity: 1.0,
             background_blur: 0,
             window_save_state: true,
+            window_save_state_scrollback: false,
+            window_save_state_scrollback_lines: WINDOW_SAVE_SCROLLBACK_LINES_DEFAULT,
             bell_features: BellFeatures::default(),
             bell_audio_path: None,
             bell_audio_volume: 0.5,
@@ -3524,6 +3534,14 @@ impl Config {
                 None => bad(warnings),
             },
             "mouse-reset-on-shell" => self.mouse_reset_on_shell = parse_bool(v).unwrap_or(true),
+            "window-save-state-scrollback" => match parse_bool(v) {
+                Some(b) => self.window_save_state_scrollback = b,
+                None => bad(warnings),
+            },
+            "window-save-state-scrollback-lines" => match v.parse::<usize>() {
+                Ok(n) => self.window_save_state_scrollback_lines = n.min(WINDOW_SAVE_SCROLLBACK_LINES_MAX),
+                Err(_) => bad(warnings),
+            },
             "window-save-state" => match v {
                 "default" | "always" => self.window_save_state = true,
                 "never" => self.window_save_state = false,
@@ -5343,6 +5361,34 @@ mod tests {
             true,
         );
         assert!(c.warnings.is_empty(), "{:?}", c.warnings);
+    }
+
+    #[test]
+    fn window_save_state_scrollback_keys() {
+        let d = Config::default();
+        assert!(
+            !d.window_save_state_scrollback,
+            "기본은 끔(디스크에 화면 글이 남으므로)"
+        );
+        assert_eq!(d.window_save_state_scrollback_lines, 1000);
+        let c = Config::from_text(
+            "window-save-state-scrollback = true\nwindow-save-state-scrollback-lines = 250\n",
+            true,
+        );
+        assert!(c.window_save_state_scrollback);
+        assert_eq!(c.window_save_state_scrollback_lines, 250);
+        assert!(c.warnings.is_empty());
+        // 상한을 넘는 값은 상한으로
+        let c = Config::from_text("window-save-state-scrollback-lines = 999999999\n", true);
+        assert_eq!(c.window_save_state_scrollback_lines, 100_000);
+        // 잘못된 값은 경고하고 기본 그대로
+        let c = Config::from_text(
+            "window-save-state-scrollback = maybe\nwindow-save-state-scrollback-lines = -3\n",
+            true,
+        );
+        assert_eq!(c.warnings.len(), 2);
+        assert!(!c.window_save_state_scrollback);
+        assert_eq!(c.window_save_state_scrollback_lines, 1000);
     }
 
     #[test]

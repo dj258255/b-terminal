@@ -9,6 +9,7 @@
 - macOS 앱 메뉴에 `b-terminal을 기본 터미널로 지정`을 더해(Ghostty 1.4.0처럼) UTType `public.unix-executable`의 기본 앱을 이 앱 묶음으로 정하게 요청한다. 이미 기본이면 항목이 꺼지고, 실패하면 알림 띠로 알린다 (#859)
 - `btctl`에 kitty 원격 조종 같은 명령을 더했다: `close`·`close-tab`·`set-title`·`set-tab-title`·`send-key`(키 이름, 읽기 전용 칸은 거절)·`get-text`(screen·all·selection·last-output)·`scroll`·`resize`. AppleScript와 같은 내부 길을 쓰고 소켓 경계(0700 폴더, 1MiB 상한)는 그대로다 (#858)
 - 입력 함께 보내기: `toggle_broadcast_group:N`(0~15)·`clear_broadcast_groups`와 설정 `broadcast-group-colors`(Ghostty 열린 PR #13745 모양). 같은 묶음의 칸끼리 키(칸마다 그 칸의 모드로 다시 인코딩)·IME 확정 글·붙여넣기(칸마다 따로 감쌈)·`text:` 묶음이 가고, 묶음에 든 칸은 색 테두리로 보인다. 읽기 전용 칸은 주고받지 않고 암호 입력 중인 칸의 글은 퍼지지 않는다. 기본 키·클릭으로 넣기는 없다 (#860)
+- 창 상태 복원이 칸마다 화면·스크롤백의 글과 색도 되살립니다(`window-save-state-scrollback`, 기본 끔, `window-save-state-scrollback-lines` 기본 1000). kitty 0.50 `restore_session_after_logout`·Windows Terminal 버퍼 복원처럼 끌 때 적고 켤 때 셸이 뜨기 전에 스크롤백에 놓고, 끝에 저장 시각 줄을 붙입니다. 되살릴 때는 VT 파서를 거치지 않고 셀을 격자에 직접 놓으므로 파일에 OSC 52·DCS·BEL을 심어도 실행되지 않습니다. **평문입니다**(키체인 암호화 없음): 파일은 0600(폴더 0700)이고 칸 4MiB·합 32MiB를 넘으면 오래된 줄부터 버리며, 되살린 뒤 지웁니다. 화면에 찍힌 비밀번호·토큰이 그 사이 디스크에 남을 수 있어 기본은 끕니다 (#861)
 
 ## [0.103.0] - 2026-11-26
 

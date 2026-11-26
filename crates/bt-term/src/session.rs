@@ -141,6 +141,10 @@ pub struct SpawnOptions {
     pub vt_xt_checksum_extension: bt_core::config::XtChecksumExtension,
     /// kitty 클립보드 쓰기 한 번의 상한(설정 clipboard-write-limit-bytes, `None`은 unlimited). 고정 1MiB보다 크게 늘리지 못한다(#325)
     pub clipboard_write_limit_bytes: Option<usize>,
+    /// 창 상태 복원(#861)이 되살릴 지난 화면의 줄들. 셸을 띄우기 전에 스크롤백 맨 아래에 놓는다(VT 파서를 거치지 않고 격자에 직접, ADR-092)
+    pub restore_lines: Vec<crate::saved_screen::SavedLine>,
+    /// 되살린 줄들 끝에 붙일 흐린 안내 줄(저장한 때). 줄이 없으면 쓰지 않는다
+    pub restore_note: Option<String>,
 }
 
 /// 창 크기 바꾸기 요청(CSI 8 ; 행 ; 열 t)이 가리키는 칸 수를 정한다. 인자와 결과는 모두 (열, 행)이다. 0은 그 쪽을 그대로 두고,
@@ -789,7 +793,11 @@ impl Session {
                 .unwrap_or_else(|| Config::default().semantic_escape_chars),
             ..Config::default()
         };
-        let term = Term::new(config, &Dims(size), listener);
+        let mut term = Term::new(config, &Dims(size), listener);
+        // 지난 화면(#861): 읽기 스레드가 돌기 전, 화면이 비어 있을 때 놓는다
+        if !options.restore_lines.is_empty() {
+            crate::saved_screen::restore(&mut term, &options.restore_lines, options.restore_note.as_deref());
+        }
         let inner = Arc::new(Mutex::new(Inner {
             term,
             parser: Processor::new(),
@@ -1812,6 +1820,11 @@ impl Session {
             range.is_block,
             opts,
         ))
+    }
+
+    /// 창 상태 복원(#861)이 적을 글과 색: 기본 화면(대체 화면 제외)의 끝에서부터 `max_lines` 줄
+    pub fn capture_scrollback(&self, max_lines: usize) -> Vec<crate::saved_screen::SavedLine> {
+        crate::saved_screen::capture(&self.inner.lock().term, max_lines)
     }
 
     /// 칸 전체(`scrollback`이면 스크롤백 포함, 아니면 보이는 화면)를 VT 이스케이프 또는 HTML로 만든다

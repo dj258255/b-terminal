@@ -50,6 +50,9 @@ pub enum SavedNode {
         /// 사람이 붙인 칸 제목(`set_surface_title`). 옛 판 파일에는 없다
         #[serde(default)]
         title: Option<String>,
+        /// 지난 화면 파일의 열쇠(`scrollback/<열쇠>.json`, #861). `window-save-state-scrollback`을 켜고 끈 경우에만 있다. 옛 판 파일에는 없다
+        #[serde(default)]
+        scrollback: Option<String>,
     },
     Split {
         /// 좌우로 나란히(참) 또는 위아래(거짓)
@@ -67,6 +70,7 @@ impl SavedNode {
             Node::Leaf(id) => SavedNode::Pane {
                 cwd: cwd(*id),
                 title: title(*id),
+                scrollback: None,
             },
             Node::Split {
                 axis,
@@ -102,6 +106,29 @@ impl SavedNode {
                 let mut v = first.pane_titles();
                 v.extend(second.pane_titles());
                 v
+            }
+        }
+    }
+
+    /// 칸들의 지난 화면 열쇠(잎 차례). 파일에서 읽은 글이라 쓰기 전에 `scrollback_store::valid_key`로 거른다
+    pub fn pane_scrollback_keys(&self) -> Vec<Option<String>> {
+        match self {
+            SavedNode::Pane { scrollback, .. } => vec![scrollback.clone()],
+            SavedNode::Split { first, second, .. } => {
+                let mut v = first.pane_scrollback_keys();
+                v.extend(second.pane_scrollback_keys());
+                v
+            }
+        }
+    }
+
+    /// 칸들(잎 차례)에 지난 화면 열쇠를 단다. 열쇠가 모자라면 나머지 칸은 없다
+    pub fn set_scrollback_keys(&mut self, keys: &mut impl Iterator<Item = Option<String>>) {
+        match self {
+            SavedNode::Pane { scrollback, .. } => *scrollback = keys.next().flatten(),
+            SavedNode::Split { first, second, .. } => {
+                first.set_scrollback_keys(keys);
+                second.set_scrollback_keys(keys);
             }
         }
     }
@@ -198,6 +225,13 @@ mod tests {
         }
         // id가 모자라면 없다
         assert!(saved.to_node(&mut [1u64].into_iter()).is_none());
+        // 지난 화면 열쇠는 잎 차례로 달린다
+        let mut saved = saved;
+        saved.set_scrollback_keys(&mut [Some("a".to_string()), None, Some("c".to_string())].into_iter());
+        assert_eq!(
+            saved.pane_scrollback_keys(),
+            vec![Some("a".to_string()), None, Some("c".to_string())]
+        );
     }
 
     #[test]
@@ -213,6 +247,7 @@ mod tests {
                     layout: SavedNode::Pane {
                         cwd: Some("/tmp".into()),
                         title: Some("서버".into()),
+                        scrollback: Some("w0t0p0".into()),
                     },
                     focus: 0,
                     zoomed: false,
@@ -259,6 +294,11 @@ mod tests {
         assert_eq!(w.tabs[0].title, None);
         assert_eq!(w.tabs[0].color, None, "탭 색이 생기기 전 판(#852)");
         assert_eq!(w.tabs[0].layout.pane_titles(), vec![None, None]);
+        assert_eq!(
+            w.tabs[0].layout.pane_scrollback_keys(),
+            vec![None, None],
+            "지난 화면 열쇠가 생기기 전 판"
+        );
         assert_eq!(w.tabs[0].layout.panes()[0], Some(PathBuf::from("/tmp")));
     }
 
@@ -267,7 +307,11 @@ mod tests {
     fn tab_color_round_trips_and_unknown_names_do_not_drop_the_file() {
         use crate::tabcolor::TabColor;
         let tab = |color: Option<&str>| SavedTab {
-            layout: SavedNode::Pane { cwd: None, title: None },
+            layout: SavedNode::Pane {
+                cwd: None,
+                title: None,
+                scrollback: None,
+            },
             focus: 0,
             zoomed: false,
             title: None,
