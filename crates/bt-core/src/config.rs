@@ -785,6 +785,11 @@ pub struct Config {
     pub bell_audio_path: Option<PathBuf>,
     /// 벨 소리 크기 0.0~1.0(Ghostty `bell-audio-volume`, 기본 0.5)
     pub bell_audio_volume: f32,
+    /// 시각 벨: 벨이 울린 칸 전체를 잠깐 번쩍이는 시간(초, 0이면 끔)과 곡선(kitty `visual_bell_duration`, #893).
+    /// `bell-features`와는 따로다
+    pub visual_bell: crate::visual_bell::VisualBell,
+    /// 시각 벨 색(kitty `visual_bell_color`). 없으면 고른 글의 바탕색(`selection-background`)
+    pub visual_bell_color: Option<Rgb>,
     /// 프로그램이 도는 칸을 닫기 전에 묻는가(Ghostty `confirm-close-surface`, #108)
     pub confirm_close: ConfirmClose,
     /// 퀵 터미널의 자리·크기·화면·자동 숨김·움직임(Ghostty `quick-terminal-*`, #110)
@@ -1873,6 +1878,8 @@ impl Default for Config {
             bell_features: BellFeatures::default(),
             bell_audio_path: None,
             bell_audio_volume: 0.5,
+            visual_bell: crate::visual_bell::VisualBell::default(),
+            visual_bell_color: None,
             key_remap: Vec::new(),
             macos_icon: MacosIcon::Official,
             macos_custom_icon: None,
@@ -3957,6 +3964,28 @@ impl Config {
                 Ok(o) if o.is_finite() => self.bell_audio_volume = o.clamp(0.0, 1.0),
                 _ => bad(warnings),
             },
+            // kitty `visual_bell_duration`(#893): 초와 곡선. 빈 값은 끔
+            "visual-bell-duration" => {
+                if v.is_empty() {
+                    self.visual_bell = crate::visual_bell::VisualBell::default();
+                } else {
+                    match crate::visual_bell::VisualBell::parse(v) {
+                        Some(b) => self.visual_bell = b,
+                        None => bad(warnings),
+                    }
+                }
+            }
+            // kitty `visual_bell_color`: none·빈 값이면 고른 글의 바탕색
+            "visual-bell-color" => {
+                if v.is_empty() || v.eq_ignore_ascii_case("none") {
+                    self.visual_bell_color = None;
+                } else {
+                    match Rgb::parse_color(v) {
+                        Some(c) => self.visual_bell_color = Some(c),
+                        None => bad(warnings),
+                    }
+                }
+            }
             // `background-blur-radius`는 Ghostty 1.1이 `background-blur`로 이름을 바꾼 옛 이름(#238)
             "background-blur" | "background-blur-radius" => match parse_background_blur(v) {
                 Some(r) => self.background_blur = r,
@@ -4403,6 +4432,11 @@ impl Config {
             push("bell-audio-path", p.display().to_string());
         }
         push("bell-audio-volume", self.bell_audio_volume.to_string());
+        push("visual-bell-duration", self.visual_bell.render());
+        push(
+            "visual-bell-color",
+            self.visual_bell_color.map_or_else(|| "none".to_string(), hex),
+        );
         push("term", self.term.clone());
         for (k, v) in &self.env {
             push("env", format!("{k}={v}"));
@@ -6919,6 +6953,46 @@ mod tests {
         let shown = Config::from_text("broadcast-group-colors = 2=#010203\n", true).render();
         assert!(shown.contains("broadcast-group-colors = 2=#010203"), "{shown}");
         assert_eq!(shown.matches("broadcast-group-colors = ").count(), 16);
+    }
+
+    #[test]
+    fn visual_bell_keys_like_kitty() {
+        let d = Config::default();
+        assert!(!d.visual_bell.enabled());
+        assert_eq!(d.visual_bell_color, None);
+        // 기본(끔)은 --show-config에 0과 none으로 보인다
+        let shown = d.render();
+        assert!(shown.contains("visual-bell-duration = 0\n"), "{shown}");
+        assert!(shown.contains("visual-bell-color = none\n"), "{shown}");
+        let c = Config::from_text(
+            "visual-bell-duration = 0.3 ease-in linear\nvisual-bell-color = #112233\n",
+            true,
+        );
+        assert!(c.warnings.is_empty(), "{:?}", c.warnings);
+        assert!(c.visual_bell.enabled());
+        assert_eq!(c.visual_bell.duration, 0.3);
+        assert_eq!(c.visual_bell_color, Some(Rgb::new(0x11, 0x22, 0x33)));
+        let shown = c.render();
+        assert!(shown.contains("visual-bell-duration = 0.3 ease-in linear\n"), "{shown}");
+        assert!(shown.contains("visual-bell-color = #112233\n"), "{shown}");
+        // 색은 none·빈 값으로 되돌린다. 틀린 값은 경고하고 앞 값을 둔다
+        let c = Config::from_text("visual-bell-color = red\nvisual-bell-color = none\n", true);
+        assert_eq!(c.visual_bell_color, None);
+        let c = Config::from_text("visual-bell-color = red\nvisual-bell-color =\n", true);
+        assert_eq!(c.visual_bell_color, None);
+        let c = Config::from_text("visual-bell-color = #112233\nvisual-bell-color = nosuch\n", true);
+        assert_eq!(
+            (c.warnings.len(), c.visual_bell_color),
+            (1, Some(Rgb::new(0x11, 0x22, 0x33)))
+        );
+        let c = Config::from_text("visual-bell-duration = 0.5\nvisual-bell-duration = fast\n", true);
+        assert_eq!((c.warnings.len(), c.visual_bell.duration), (1, 0.5));
+        // 빈 값은 기본(끔)으로 되돌린다
+        let c = Config::from_text("visual-bell-duration = 0.5\nvisual-bell-duration =\n", true);
+        assert!(c.warnings.is_empty() && !c.visual_bell.enabled(), "{:?}", c.warnings);
+        // bell-features와 따로 켠다
+        let c = Config::from_text("visual-bell-duration = 1\nbell-features = no-title,border\n", true);
+        assert!(c.visual_bell.enabled() && c.bell_features.border && !c.bell_features.title);
     }
 
     #[test]
