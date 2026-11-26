@@ -879,3 +879,12 @@
 - 이미 있던 것: `CSI 22 J`(ED 22, #327)와 kitty 그림 질의의 `e` 키(`a=q,e=…`, #515). 시험만 더했다
 - 남긴 것: `clear_last_command`는 주 화면 kitty 그림 자리를 모두 지운다(줄 번호가 밀려 따라가지 못한다). kitty의 `clear_terminal clear`·`scroll`·`to_cursor`·`to_cursor_scroll`·`reset`은 이번에 더하지 않았다(`reset`은 이미 있고 `clear_screen`이 가장 가깝다). 동작 이름은 Ghostty에 없어 정했다
 - 0.102.0에서 풀기: 없음. 스크롤백은 ⌘K(`clear_screen`)로 함께 지운다
+
+## 105. 1MB 글을 붙여넣어도 묻지 않고, 프롬프트에 URL을 붙이면 `&`·`?`가 셸에서 갈린다
+
+- 언제: 2026-11-26, #866. 0.102.0 뒤 main까지의 동작이다. kitty 0.51.1의 `paste_actions`와 견준 조사에서 찾았다
+- 증상: 1MB(1048576바이트) 글을 붙여넣으면 확인 없이 그대로 들어갔다. 줄바꿈이 없는 글이면 `clipboard-paste-protection`도 묻지 않는다. 셸 프롬프트에 `https://example.com/?a=1&b=2`를 붙이면 따옴표가 없어 `&`에서 명령이 갈려 백그라운드 작업이 생기고 `?`는 글롭이 된다(`zsh -f -c 'echo https://example.com/?a=1&b=2'`가 `no matches found`로 끝나는 것을 확인했다)
+- 까닭: 붙여넣기 보호는 줄바꿈·끝 표시만 보고(Ghostty `clipboard-paste-protection`과 같다) 크기는 보지 않았다. 붙여넣는 글을 셸 낱말로 바꾸는 길이 없었다. kitty는 `paste_actions`로 이 둘을 고른다. 다만 kitty도 `confirm-if-large`는 기본이 꺼짐이고(기본 `quote-urls-at-prompt,confirm`, `confirm`은 제어 문자를 묻는 것), 1MB를 묻지 않는 것은 kitty 기본과 같다
+- 고침: 설정 `paste-actions`(kitty 값 이름 그대로)를 더했다. 기본은 모두 꺼짐이라 동작은 그대로다. 켜면 `confirm-if-large`가 16KiB(UTF-8 바이트)를 넘는 글을 먼저 묻고(확인 막대에는 크기만 보인다), `quote-urls-at-prompt`가 셸 프롬프트(OSC 133)에서 URL을 `shlex.quote`처럼 감싸고, `replace-newline`이 줄바꿈을 공백으로 바꾼다(ADR-093). kitty 값마다 우리 동작은 ADR-093의 표에 있다. `filter`는 외부 프로그램을 돌리므로 넣지 않았다
+- 한계: 셸 통합이 없으면(OSC 133이 없으면) `quote-urls-at-prompt`는 하지 않는다. `replace-newline`은 kitty의 `ESC E` 대신 공백이다. 16KiB 상한은 kitty 값을 그대로 옮긴 것이고 b-terminal에서 느려지는 크기를 재지는 않았다. 실제 창에서 붙여넣어 보지 않았다(순수 함수·설정은 단위 시험으로 확인)
+- 0.102.0에서 풀기: 큰 글은 파일로 두고 `cat`으로 읽거나, 프롬프트에서는 URL을 직접 따옴표로 감싼다

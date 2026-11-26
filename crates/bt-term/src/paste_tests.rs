@@ -281,3 +281,194 @@ fn c1_controls_in_utf8_are_kept() {
     // U+0085·U+009B 같은 C1 글자는 UTF-8로 0xC2 0x85처럼 두 바이트라 그대로 간다(xterm·Ghostty와 같음)
     assert_eq!(encode_paste("\u{85}\u{9b}", false), "\u{85}\u{9b}".as_bytes());
 }
+
+// ---- kitty `paste_actions`(#866): confirm-if-large · quote-urls-at-prompt · replace-newline ----
+
+#[test]
+fn large_paste_limit_is_kittys_16kib_in_utf8_bytes() {
+    // kitty window.py: `len(btext) > 16 * 1024`. 같으면 크지 않다
+    assert!(!paste_is_large(&"a".repeat(LARGE_PASTE_BYTES)));
+    assert!(paste_is_large(&"a".repeat(LARGE_PASTE_BYTES + 1)));
+    assert!(paste_is_large(&"a".repeat(1024 * 1024)), "실측 1MB 글");
+    // 글자 수가 아니라 바이트 수다: 한글은 3바이트
+    assert!(paste_is_large(&"가".repeat(LARGE_PASTE_BYTES / 3 + 1)));
+    assert!(!paste_is_large(&"가".repeat(LARGE_PASTE_BYTES / 3)));
+    assert!(!paste_is_large(""));
+}
+
+#[test]
+fn quote_url_follows_kitty_rules() {
+    // 안전한 글자만 있으면 shlex.quote처럼 그대로 둔다
+    assert_eq!(
+        quote_url_for_shell("https://example.com/a/b").as_deref(),
+        Some("https://example.com/a/b")
+    );
+    // 셸이 다르게 읽는 글자가 있으면 작은따옴표로 감싼다
+    assert_eq!(
+        quote_url_for_shell("https://example.com/a?x=1&y=2").as_deref(),
+        Some("'https://example.com/a?x=1&y=2'")
+    );
+    assert_eq!(
+        quote_url_for_shell("http://a.com/(b) c").as_deref(),
+        Some("'http://a.com/(b) c'")
+    );
+    // URL 안의 작은따옴표는 닫고 큰따옴표로 넣고 다시 연다(shlex.quote)
+    assert_eq!(
+        quote_url_for_shell("http://a.com/it's").as_deref(),
+        Some("'http://a.com/it'\"'\"'s'")
+    );
+    // `scheme://`이거나 mailto·irc일 때만 URL이다
+    assert_eq!(quote_url_for_shell("mailto:a@b.com").as_deref(), Some("mailto:a@b.com"));
+    assert_eq!(quote_url_for_shell("irc:#room").as_deref(), Some("'irc:#room'"));
+    assert_eq!(quote_url_for_shell("http:example.com"), None);
+    assert_eq!(quote_url_for_shell("javascript://x"), None);
+    assert_eq!(quote_url_for_shell("echo https://a.com"), None);
+    assert_eq!(
+        quote_url_for_shell("HTTP://a.com"),
+        None,
+        "kitty는 scheme의 대소문자를 가린다"
+    );
+    assert_eq!(quote_url_for_shell("https:"), None);
+    assert_eq!(quote_url_for_shell(""), None);
+    assert_eq!(
+        quote_url_for_shell("file:///tmp/a b").as_deref(),
+        Some("'file:///tmp/a b'")
+    );
+}
+
+#[test]
+fn replace_newlines_makes_every_line_break_a_space() {
+    assert_eq!(replace_newlines("a\nb"), "a b");
+    assert_eq!(replace_newlines("a\r\nb"), "a b", "CRLF는 하나");
+    assert_eq!(replace_newlines("a\rb"), "a b", "CR도 Enter라 바꾼다");
+    assert_eq!(replace_newlines("a\n\nb\n"), "a  b ");
+    assert_eq!(replace_newlines("한글\n줄"), "한글 줄");
+    assert_eq!(replace_newlines("한 줄"), "한 줄");
+    // 줄바꿈이 사라지므로 확인 없이 안전하다(kitty: without confirmation)
+    assert!(paste_is_safe(&replace_newlines("ls\nrm -rf ~\n"), false, true));
+}
+
+#[test]
+fn apply_paste_actions_only_acts_when_asked() {
+    let url = "https://example.com/?a=1&b=2".to_string();
+    assert_eq!(
+        apply_paste_actions(url.clone(), false, true, false),
+        url,
+        "꺼져 있으면 그대로"
+    );
+    assert_eq!(
+        apply_paste_actions(url.clone(), true, false, false),
+        url,
+        "프롬프트가 아니면 그대로"
+    );
+    assert_eq!(
+        apply_paste_actions(url.clone(), true, true, false),
+        "'https://example.com/?a=1&b=2'"
+    );
+    assert_eq!(apply_paste_actions("a\nb".into(), false, true, true), "a b");
+    // 둘 다: URL이 아닌 여러 줄은 줄바꿈만 바뀐다
+    assert_eq!(apply_paste_actions("ls\nls".into(), true, true, true), "ls ls");
+}
+
+/// 적대적인 글 모음: 위험 바이트·끝 표시·작은따옴표·줄바꿈을 URL 꼴 앞뒤에 섞은 것
+fn hostile_texts() -> Vec<String> {
+    let mut v: Vec<String> = Vec::new();
+    for (b, _) in STRIPPED {
+        v.push(format!("http://a.com/{}x", b as char));
+        v.push(format!("{}http://a.com/x", b as char));
+        v.push(format!("mailto:{}a@b", b as char));
+    }
+    for body in [
+        "http://a.com/\x1b[201~rm -rf ~\n",
+        "https://a.com/'\x1b[201~'; rm -rf ~; echo '",
+        "http://a.com/\x1b[200~x\x1b[201~\x03\x15",
+        "ssh://h/\n\x1b[201~\nreboot\r\n",
+        "irc:\x1b[201~",
+        "file:///a'b\x03c\x1b d\nrm -rf ~",
+        "http://a.com/\u{1b}\u{1b}[201~\u{1b}[201~",
+    ] {
+        v.push(body.to_string());
+    }
+    v
+}
+
+/// 최종 바이트에 위험 바이트가 남지 않았나. 괄호 모드면 처음과 끝 표시만 ESC를 가질 수 있다
+fn assert_no_dangerous_bytes(out: &[u8], bracketed: bool, ctx: &str) {
+    let inner = if bracketed {
+        assert!(out.starts_with(START.as_bytes()), "{ctx}: 시작 표시");
+        assert!(out.ends_with(END.as_bytes()), "{ctx}: 끝 표시");
+        &out[START.len()..out.len() - END.len()]
+    } else {
+        out
+    };
+    for &b in inner {
+        assert!(
+            !STRIPPED.iter().any(|(s, _)| *s == b),
+            "{ctx}: 위험 바이트 0x{b:02x}이 남음: {out:?}"
+        );
+    }
+    assert!(
+        !inner.windows(END.len()).any(|w| w == END.as_bytes()),
+        "{ctx}: 끝 표시가 안에 남음"
+    );
+    if !bracketed {
+        assert!(!out.contains(&b'\n'), "{ctx}: LF가 남음");
+    }
+}
+
+#[test]
+fn paste_actions_never_leave_dangerous_bytes_in_final_output() {
+    for text in hostile_texts() {
+        for quote in [false, true] {
+            for replace_nl in [false, true] {
+                for bracketed in [false, true] {
+                    let ctx = format!("quote={quote} nl={replace_nl} bracketed={bracketed} {text:?}");
+                    // 동작을 먼저 적용하고 인코딩한다(앱의 순서)
+                    let acted = apply_paste_actions(text.clone(), quote, true, replace_nl);
+                    assert_no_dangerous_bytes(&encode_paste(&acted, bracketed), bracketed, &ctx);
+                    // 인코딩을 먼저 하고 동작을 뒤에 하는 순서로 바꿔도(방어 깊이) 위험 바이트가 없어야 한다.
+                    // 인코딩이 이미 공백으로 바꾼 글에 동작을 적용해도 새 위험 바이트를 만들지 않는다
+                    let enc = String::from_utf8(encode_paste(&text, false)).unwrap();
+                    let acted2 = apply_paste_actions(enc, quote, true, replace_nl);
+                    assert_no_dangerous_bytes(&encode_paste(&acted2, bracketed), bracketed, &ctx);
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn quoted_url_keeps_a_single_quote_from_breaking_out_of_the_shell_word() {
+    // 실제 /bin/sh와 printf로 확인한다: 따옴표를 빠져나가 명령이 돌면 마커 파일이나 다른 출력이 생긴다
+    let dir = std::env::temp_dir().join(format!("bt-quote-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let marker = dir.join("pwned");
+    let urls = [
+        "http://a.com/x'; touch MARK; echo '".to_string(),
+        "http://a.com/x\"; touch MARK; echo \"".to_string(),
+        "http://a.com/$(touch MARK)`touch MARK`".to_string(),
+        "http://a.com/x';touch MARK;'".to_string(),
+        "https://a.com/a b&c|d>e<f;g(h)*?[i]#j~k\\l!m".to_string(),
+        "ssh://h/'''".to_string(),
+        "http://a.com/it's".to_string(),
+    ];
+    for url in urls {
+        let quoted = quote_url_for_shell(&url).expect("URL이다");
+        let script = format!("printf '%s' {}", quoted.replace("MARK", marker.to_str().unwrap()));
+        let want = url.replace("MARK", marker.to_str().unwrap());
+        let out = std::process::Command::new("/bin/sh")
+            .arg("-c")
+            .arg(&script)
+            .current_dir(&dir)
+            .output()
+            .unwrap();
+        assert_eq!(
+            String::from_utf8_lossy(&out.stdout),
+            want,
+            "한 낱말로 읽혀야 한다: {quoted}"
+        );
+        assert!(!marker.exists(), "명령이 실행됐다: {quoted}");
+        assert!(out.status.success(), "{quoted}");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}

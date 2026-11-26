@@ -754,6 +754,8 @@ pub struct Config {
     pub paste_protection: bool,
     /// 괄호 붙여넣기 모드의 붙여넣기는 안전으로 본다(Ghostty `clipboard-paste-bracketed-safe`)
     pub paste_bracketed_safe: bool,
+    /// 붙여넣기 동작(kitty `paste_actions`, #866). 기본은 모두 꺼짐이라 지금 동작과 같다
+    pub paste_actions: PasteActions,
     /// 분할에서 고르지 않은 칸의 불투명도(0.15~1). 낮을수록 흐리게 덮는다(Ghostty 기본 0.7)
     pub unfocused_split_opacity: f32,
     /// 고르지 않은 칸을 덮는 색. 없으면 바탕색
@@ -965,6 +967,59 @@ impl SplitPreserveZoom {
     /// `goto_split`으로 칸을 옮긴 뒤에도 크게 보기가 남는가. 크게 보던 중이 아니면 거짓
     pub fn keeps_zoom_on_goto(self, zoomed: bool) -> bool {
         zoomed && self.navigation
+    }
+}
+
+/// 붙여넣기 동작(kitty `paste_actions`, #866). kitty의 값 이름을 그대로 읽는다.
+/// 글을 바꾸거나 묻는 동작만 켜고 끈다. 위험한 제어 바이트를 공백으로 바꾸는 것(`replace-dangerous-control-codes`)과
+/// 줄바꿈이 든 글을 묻는 것(`confirm`에 가까운 것은 Ghostty `clipboard-paste-protection`)은 이 값과 상관없이 늘 한다
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct PasteActions {
+    /// 커서가 셸 프롬프트에 있고 글이 URL이면 따옴표로 감싼다(`quote-urls-at-prompt`, 셸 통합 필요)
+    pub quote_urls_at_prompt: bool,
+    /// 줄바꿈을 공백으로 바꾼다(`replace-newline`)
+    pub replace_newline: bool,
+    /// 16KiB가 넘는 글은 먼저 묻는다(`confirm-if-large`)
+    pub confirm_if_large: bool,
+}
+
+impl PasteActions {
+    /// `a,b,c` 꼴을 읽는다. kitty처럼 한 이름이라도 모르면 값 전체를 버린다(`Err`).
+    /// 값은 지금 값 위에 얹지 않고 통째로 바꾼다. 빈 글은 아무 동작도 하지 않음이다.
+    /// `confirm`·`replace-dangerous-control-codes`·`no-op`은 받되 하는 일이 없다(위 설명). `filter`는 외부 프로그램을 돌리는
+    /// 동작이라 넣지 않았다: 받아서 버리고 이름을 `Ok`의 두 번째 값으로 알린다
+    pub fn parse(v: &str) -> Result<(Self, Vec<String>), String> {
+        let mut out = Self::default();
+        let mut unsupported = Vec::new();
+        for item in v.split(',').map(str::trim).filter(|i| !i.is_empty()) {
+            match item.to_ascii_lowercase().as_str() {
+                "quote-urls-at-prompt" => out.quote_urls_at_prompt = true,
+                "replace-newline" => out.replace_newline = true,
+                "confirm-if-large" => out.confirm_if_large = true,
+                "confirm" | "replace-dangerous-control-codes" | "no-op" => {}
+                "filter" => unsupported.push(item.to_string()),
+                _ => return Err(item.to_string()),
+            }
+        }
+        Ok((out, unsupported))
+    }
+
+    /// 설정 글로 되돌린다(`+show-config`)
+    pub fn to_list(self) -> String {
+        let names: Vec<&str> = [
+            (self.quote_urls_at_prompt, "quote-urls-at-prompt"),
+            (self.replace_newline, "replace-newline"),
+            (self.confirm_if_large, "confirm-if-large"),
+        ]
+        .into_iter()
+        .filter(|(on, _)| *on)
+        .map(|(_, n)| n)
+        .collect();
+        if names.is_empty() {
+            "no-op".into()
+        } else {
+            names.join(",")
+        }
     }
 }
 
@@ -1776,6 +1831,7 @@ impl Default for Config {
             clipboard_read: crate::clipboard::ClipboardAccess::Ask,
             paste_protection: true,
             paste_bracketed_safe: true,
+            paste_actions: PasteActions::default(),
             shell_integration: "detect".into(),
             shell_integration_features: ShellFeatures::default(),
             notify_command_seconds: 10,
@@ -3533,6 +3589,23 @@ impl Config {
                 Some(b) => self.paste_bracketed_safe = b,
                 None => bad(warnings),
             },
+            "paste-actions" => match PasteActions::parse(v) {
+                Ok((a, unsupported)) => {
+                    self.paste_actions = a;
+                    for name in unsupported {
+                        warnings.push(format!(
+                            "{}:{}: paste-actions의 {name}은 지원하지 않아 건너뜁니다(외부 프로그램을 돌리는 동작은 넣지 않았습니다)",
+                            e.file.display(),
+                            e.line
+                        ));
+                    }
+                }
+                Err(name) => warnings.push(format!(
+                    "{}:{}: paste-actions의 {name}을 모릅니다. 값 전체를 무시합니다(quote-urls-at-prompt, replace-newline, confirm-if-large 등)",
+                    e.file.display(),
+                    e.line
+                )),
+            },
             "mouse-reset-on-shell" => self.mouse_reset_on_shell = parse_bool(v).unwrap_or(true),
             "window-save-state-scrollback" => match parse_bool(v) {
                 Some(b) => self.window_save_state_scrollback = b,
@@ -4168,6 +4241,7 @@ impl Config {
         );
         push("clipboard-paste-protection", self.paste_protection.to_string());
         push("clipboard-paste-bracketed-safe", self.paste_bracketed_safe.to_string());
+        push("paste-actions", self.paste_actions.to_list());
         push(
             "confirm-close-surface",
             match self.confirm_close {
@@ -6282,6 +6356,47 @@ mod tests {
                 .warnings
                 .len(),
             1
+        );
+    }
+
+    #[test]
+    fn paste_actions_keys() {
+        // 기본은 모두 꺼짐: 지금 동작과 같다(kitty 기본은 `quote-urls-at-prompt,confirm`이지만 앞의 것은 글을 바꾸므로 켜지 않는다)
+        assert_eq!(Config::default().paste_actions, PasteActions::default());
+        assert!(!Config::default().paste_actions.confirm_if_large);
+        let c = Config::from_text("paste-actions = quote-urls-at-prompt,confirm-if-large\n", true);
+        assert!(c.warnings.is_empty(), "{:?}", c.warnings);
+        assert!(c.paste_actions.quote_urls_at_prompt && c.paste_actions.confirm_if_large);
+        assert!(!c.paste_actions.replace_newline);
+        // 값은 얹지 않고 바꾼다(kitty처럼 마지막 줄이 이긴다). 대소문자·공백은 가리지 않는다
+        let c = Config::from_text(
+            "paste-actions = confirm-if-large\npaste-actions = Replace-Newline , no-op\n",
+            true,
+        );
+        assert!(
+            c.paste_actions.replace_newline && !c.paste_actions.confirm_if_large,
+            "{:?}",
+            c.paste_actions
+        );
+        // kitty 기본값을 그대로 옮겨도 경고가 없다: confirm은 받되 하는 일이 없다
+        let c = Config::from_text("paste-actions = quote-urls-at-prompt,confirm\n", true);
+        assert!(c.warnings.is_empty() && c.paste_actions.quote_urls_at_prompt);
+        // 빈 값은 모두 끔
+        let c = Config::from_text("paste-actions = confirm-if-large\npaste-actions =\n", true);
+        assert_eq!(c.paste_actions, PasteActions::default());
+        // filter는 넣지 않았다: 경고하고 나머지는 적용한다
+        let c = Config::from_text("paste-actions = filter,confirm-if-large\n", true);
+        assert_eq!(c.warnings.len(), 1, "{:?}", c.warnings);
+        assert!(c.paste_actions.confirm_if_large);
+        // 모르는 이름이 하나라도 있으면 값 전체를 버린다(kitty)
+        let c = Config::from_text("paste-actions = confirm-if-large,bogus\n", true);
+        assert_eq!(c.warnings.len(), 1, "{:?}", c.warnings);
+        assert_eq!(c.paste_actions, PasteActions::default());
+        // +show-config 왕복
+        let shown = Config::from_text("paste-actions = replace-newline,confirm-if-large\n", true).render();
+        assert!(
+            shown.contains("paste-actions = replace-newline,confirm-if-large"),
+            "{shown}"
         );
     }
 

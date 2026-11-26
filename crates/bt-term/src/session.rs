@@ -1655,6 +1655,12 @@ impl Session {
         modes_of(*self.inner.lock().term.mode())
     }
 
+    /// 커서가 셸 프롬프트에 있는가(셸 통합의 OSC 133 표시, Ghostty `cursorIsAtPrompt`와 같은 판단). 대체 화면이거나 셸 통합이
+    /// 없으면 아니다. 붙여넣기 동작 `quote-urls-at-prompt`(#866)가 본다
+    pub fn cursor_at_prompt(&self) -> bool {
+        cursor_is_at_prompt(&self.inner.lock().term)
+    }
+
     /// 프롬프트 클릭(#338)이 PTY에 보낼 바이트. 셸이 `cl=`·`click_events=`를 밝힌 화면에서, 프롬프트에서 눌렀을 때만 있다
     pub fn prompt_click(&self, col: usize, row: usize) -> Option<Vec<u8>> {
         crate::prompt_click::prompt_click(&self.inner.lock().term, col, row)
@@ -3364,6 +3370,23 @@ mod tests {
         for r in 0..5 {
             assert_eq!(row_text(&e, r), "", "줄 {r}: 화면은 빈다(셸이 FF로 다시 그린다)");
         }
+    }
+
+    /// #866: `quote-urls-at-prompt`가 쓰는 프롬프트 판단. 셸 통합이 없으면 늘 아니고, OSC 133 프롬프트에서는 맞고,
+    /// 명령이 도는 중(133;C 뒤)과 대체 화면에서는 아니다
+    #[test]
+    fn cursor_is_at_prompt_follows_osc_133_and_alt_screen() {
+        let mut e = clear_emu(5);
+        e.feed(b"$ ");
+        assert!(!cursor_is_at_prompt(&e.term), "셸 통합이 없으면 아니다");
+        e.feed(b"\r\n\x1b]133;A\x07$ ");
+        assert!(cursor_is_at_prompt(&e.term));
+        e.feed(b"\x1b]133;C\x07\r\noutput");
+        assert!(!cursor_is_at_prompt(&e.term), "출력 중이다");
+        e.feed(b"\x1b]133;A\x07$ ");
+        assert!(cursor_is_at_prompt(&e.term));
+        e.feed(b"\x1b[?1049h");
+        assert!(!cursor_is_at_prompt(&e.term), "대체 화면이다");
     }
 
     #[test]

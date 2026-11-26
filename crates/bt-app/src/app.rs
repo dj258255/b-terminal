@@ -442,6 +442,16 @@ fn paste_prompt(text: &str, password: bool) -> String {
     format!("붙여넣을 글({n}줄)의 줄바꿈이 바로 실행될 수 있습니다: {first}")
 }
 
+/// 큰 붙여넣기를 물을 글(kitty `confirm-if-large`, #866): 크기만 보인다. 글은 한 글자도 넣지 않으므로 암호 입력 중이어도 새지 않는다
+fn paste_large_prompt(bytes: usize) -> String {
+    let size = if bytes >= 1024 * 1024 {
+        format!("{:.1}MiB", bytes as f64 / (1024.0 * 1024.0))
+    } else {
+        format!("{:.1}KiB", bytes as f64 / 1024.0)
+    };
+    format!("붙여넣을 글이 큽니다({size}). 큰 글을 셸에 붙이면 매우 느릴 수 있습니다")
+}
+
 /// 붙여넣기를 요청한 때 암호 입력으로 볼지(Ghostty #15114): 요청 직전에 termios를 다시 읽은 값을 따르고, 못 읽으면(`None`)
 /// 칸에 적어 둔 마지막 살핀 값을 본다. 살핌은 창에 초점이 있을 때만 하므로 적어 둔 값은 옛 값일 수 있다(#737).
 /// Ghostty는 IO 스레드가 초점과 상관없이 살펴 표시가 늘 새 값이고, 다시 읽은 값이 그와 같다
@@ -2918,6 +2928,14 @@ impl App {
             }
         }
         let id = t.id;
+        // kitty `paste_actions`(#866)의 글을 바꾸는 동작. 바뀐 글도 아래 `paste_to`의 확인과 `paste_into`의 인코딩을 그대로 지난다
+        let a = self.config.paste_actions;
+        let text = bt_term::apply_paste_actions(
+            text,
+            a.quote_urls_at_prompt,
+            t.session.cursor_at_prompt(),
+            a.replace_newline,
+        );
         self.paste_to(id, text);
     }
 
@@ -2930,18 +2948,24 @@ impl App {
         // 요청한 때의 암호 상태. 막대가 떠 있는 동안 바뀌어도 막대 글은 다시 만들지 않는다
         let password = paste_hidden(t.password, t.session.password_input());
         // 같은 묶음의 칸에도 붙여넣으면(#860) 받는 칸마다 모드가 달라, 한 칸이라도 줄바꿈이 바로 실행되면 묻는다
-        let (needs_confirm, others) = {
+        let (risky, others) = {
             let members = self.broadcast_members(id);
             let others = broadcast::targets(id, &members).len();
             let ask = self.config.paste_protection
                 && broadcast::paste_needs_confirm(id, &members, &text, self.config.paste_bracketed_safe);
             (ask, others)
         };
-        if !needs_confirm {
+        // kitty `confirm-if-large`(#866): 줄바꿈 확인과 따로 켜고 끈다. 둘 다 걸리면 막대는 하나만 띄우고 위험한 쪽을 보인다
+        let large = self.config.paste_actions.confirm_if_large && bt_term::paste_is_large(&text);
+        if !risky && !large {
             self.paste_into_group(id, &text);
             return true;
         }
-        let mut message = paste_prompt(&text, password);
+        let mut message = if risky {
+            paste_prompt(&text, password)
+        } else {
+            paste_large_prompt(text.len())
+        };
         if others > 0 {
             message.push_str(&format!(" (같은 묶음의 {others}칸에도 붙여넣습니다)"));
         }
@@ -9384,6 +9408,14 @@ mod tests {
         assert!(!p.contains('\x1b'));
         let long = paste_prompt(&("x".repeat(100) + "\ny"), false);
         assert!(long.ends_with('…'), "{long}");
+    }
+
+    #[test]
+    fn paste_large_prompt_shows_the_size_and_never_the_text() {
+        let m = paste_large_prompt(1024 * 1024);
+        assert!(m.contains("1.0MiB"), "{m}");
+        assert!(paste_large_prompt(20 * 1024).contains("20.0KiB"));
+        assert!(!paste_large_prompt(20 * 1024).contains("ADR"));
     }
 
     #[test]
