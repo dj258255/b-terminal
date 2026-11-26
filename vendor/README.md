@@ -206,4 +206,3 @@ alacritty_terminal이 글자 묶음 폭(mode 2027)을 지원하는 판을 내면
 
 - vte: `src/ansi.rs`의 `Attr::CancelBoldOnly`·`CancelDimOnly`와 SGR `[221]`·`[222]` 갈래. kitty 확장이고 Ghostty 1.4.0은 모르는 속성으로 버린다. `b-terminal(#863)`로 찾을 수 있습니다
 - alacritty_terminal: `src/term/mod.rs`의 `terminal_attribute`가 두 속성을 처리하고, `Term::remove_lines`(+`src/grid/mod.rs`의 `Grid::remove_lines`)가 스크롤백·화면의 줄 구간을 떼어 내고 아래를 끌어올립니다(kitty `erase_last_command`). 되돌릴 조건: upstream이 같은 SGR·줄 삭제를 내놓으면 지웁니다. 시험은 `crates/bt-term/tests/kitty_small863.rs`
-
