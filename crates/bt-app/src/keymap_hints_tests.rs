@@ -3,6 +3,8 @@
 use super::*;
 use bt_term::hints::{HintAction, HintKind};
 
+// 쓰는 시험(기본 키)이 macOS에만 있다
+#[cfg(target_os = "macos")]
 fn tr(s: &str) -> Trigger {
     parse_trigger(s).unwrap()
 }
