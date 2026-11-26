@@ -27,7 +27,7 @@ b-terminal은 Ghostty와 같은 문법으로 설정합니다. Ghostty를 깔지 
 | `+version` | `b-terminal <버전>` 한 줄(`--version`과 같음). Ghostty처럼 빌드 정보를 늘어놓지는 않습니다 |
 | `+help` | 동작 목록 |
 | `+show-config` `[--default] [--changes-only[=false]] [--docs]` | Ghostty처럼 **기본과 다른 키만** 보입니다(`--changes-only`는 기본 true, `--changes-only=false`면 `--show-config`처럼 전부. 키 하나를 한 덩어리로 기본과 견주어, 줄 묶음이 다르면 그 키의 줄을 모두 보입니다(Ghostty `Config.changed`처럼. 그래서 `palette`를 하나만 바꿔도 256줄이 나옵니다). 기본에 있는데 지금 없는 키는 `키 = `로 드러납니다. `theme`을 썼으면 쓴 값 그대로(`light:…,dark:…` 포함) `theme = 값` 줄이 나오고, 테마가 정한 색도 바뀐 키라서 함께 나옵니다(Ghostty도 테마를 설정에 적용한 뒤 견줍니다). 한계: 키 묶음은 Ghostty처럼 기본 묶음까지 풀어 찍지 않고 쓴 `keybind` 줄(`keybind = clear` 포함)을 그대로 보입니다). `--default`는 파일을 읽지 않은 기본값 전체를 보이고 `--changes-only`는 거기에는 효과가 없습니다. `--docs`는 키 위에 이 문서 "지원하는 키" 표의 값·기본·메모를 `# ` 주석으로 답니다(`+explain-config`와 같은 표, 같은 키가 여러 줄이면 첫 줄 위에 한 번, 표에 없는 키는 설명 없이). `--config-file`, `--config-default-files`도 받습니다 |
-| `+list-themes` `[--path] [--color=all\|dark\|light] [--plain]` | `이름 (resources)`(넣어 둔 것)·`이름 (user)`(`~/.config/b-terminal/themes`)를 이름순으로 한 줄씩. 사용자 테마가 이름이 같으면 이깁니다. `--path`는 사용자 테마 줄 끝에 파일 경로를 붙입니다(`이름 (user) /경로`). 넣어 둔 테마는 파일이 없어 경로를 붙이지 않고 `이름 (resources)` 그대로입니다. `--color`는 배경색의 밝기(0.2126 R + 0.7152 G + 0.0722 B, 0.5 미만이면 어두움)로 거릅니다. 배경을 `#rrggbb`로 읽지 못한 테마는 어둡다고 칩니다. `--plain`은 받기만 합니다(늘 목록, 대화형 미리보기 없음) |
+| `+list-themes` `[--path] [--color=all\|dark\|light] [--plain]` | `이름 (resources)`(넣어 둔 것)·`이름 (user)`(`~/.config/b-terminal/themes`)를 이름순으로 한 줄씩. 사용자 테마가 이름이 같으면 이깁니다. `--path`는 사용자 테마 줄 끝에 파일 경로를 붙입니다(`이름 (user) /경로`). 넣어 둔 테마는 파일이 없어 경로를 붙이지 않고 `이름 (resources)` 그대로입니다. `--color`는 배경색의 밝기(0.2126 R + 0.7152 G + 0.0722 B, 0.5 미만이면 어두움)로 거릅니다. 배경을 `#rrggbb`로 읽지 못한 테마는 어둡다고 칩니다. 표준 입력과 출력이 모두 터미널이고 `--plain`이 아니면 **목록 대신 대화형 화면**을 띄웁니다(아래). 파이프로 넘기거나 `--plain`이면 위의 목록을 예전과 같은 바이트로 찍습니다 |
 | `+validate-config` | 설정을 읽어 경고를 한 줄씩 표준 출력에 보이고, 경고가 있으면 종료 코드 1, 없으면 0. `--config-file`, `--config-default-files`와 함께 씁니다. `--config-file`로 준 파일이 없으면 오류(1)입니다 |
 | `+edit-config` | `~/.config/b-terminal/config`(없으면 주석 한 줄로 만들고)를 `$VISUAL`(없거나 비면 `$EDITOR`)로 열고 편집기가 끝나길 기다려 그 종료 코드를 따릅니다. 편집기 값은 셸을 거치지 않고 빈칸·따옴표로 갈라 인자 배열로 넘깁니다(`code -w`는 됩니다. 셸 문법인 `;`·`$(…)`·`~`·환경 변수 풀이는 되지 않습니다). 둘 다 없으면 오류(1)입니다 |
 | `+list-keybinds` `[--default] [--docs] [--plain]` | 지금 쓰는 키 묶음 표를 `keybind = 트리거=동작` 줄로 보입니다(기본 묶음 위에 설정을 얹은 결과, `--default`면 기본만). 표는 늘 평문이라 `--plain`은 받기만 하고, 동작 설명이 없어 `--docs`도 받기만 합니다. |
@@ -36,6 +36,25 @@ b-terminal은 Ghostty와 같은 문법으로 설정합니다. Ghostty를 깔지 
 | `+show-face` `--cp=번호 \| --string=글 [--style=regular\|bold\|italic\|bold_italic] [--presentation=text\|emoji]` | 글자가 어느 글꼴로 그려지는지(앱이 그릴 때의 대체 순서와 같고 설정 파일을 읽습니다). 번호는 10·`0x`·`0o`·`0b`진수. |
 | `+list-colors` `[--plain]` | X11 색 이름 782개와 `#rrggbb`를 원래 대소문자로, 대소문자 무시 이름순으로(Ghostty `rgb.txt`와 같은 표). 설정의 색 값은 이 이름을 모두 받습니다. |
 | `+explain-config` `<키>` (또는 `--option=<키>`, `--keybind=<동작>`) | 이 문서의 "지원하는 키" 표에서 그 키의 값·기본·메모를 보입니다. 모르는 이름이면 `Unknown: '이름'.`과 종료 코드 1. |
+
+### `+list-themes` 대화형 화면
+
+터미널에서 `b-terminal +list-themes`를 돌리면(Ghostty 1.4.0 `+list-themes`와 같은 키) 왼쪽에 테마 이름 목록, 오른쪽에 고른 테마의 미리보기(이름·경로, 팔레트 0~15 색 견본과 번호, 예시 코드, 굵게·기울임·밑줄 모양 문단)를 보입니다. 미리보기 색은 24비트 색으로 찍습니다. 설정 파일은 고치지 않습니다.
+
+| 키 | 동작 |
+|---|---|
+| `k` `-` `↑` 휠 위 / `j` `+` `↓` 휠 아래 | 한 칸 위·아래 |
+| `PgUp` `Ctrl-U` / `PgDn` `Ctrl-D` | 20칸 위·아래 |
+| `Home` `g` / `End` `G` | 맨 위·맨 아래 |
+| `/` | 찾기(낱말마다 흩어진 글자 순서가 맞으면 맞음, 대소문자 무시, 낱말은 빈칸으로 나눔). `Enter`·`Esc`로 닫고 `Ctrl-X`·`Ctrl-/`로 지움 |
+| `f` | 밝음/어둠 거르기를 `all` → `dark` → `light`로 돌림(`--color`가 처음 값). 배경 밝기가 0.5 미만이면 어둡습니다 |
+| `h` `x` / `d` | 팔레트 번호를 16진수·10진수로 |
+| `c` / `C` | 테마 이름·파일 경로를 클립보드로 복사(OSC 52) |
+| `Enter` | 고른 테마를 쓰려면 설정에 더할 `theme = 이름` 줄을 보여 줍니다. 여기서 `w`를 누르면 `auto/theme.ghostty`(설정 파일과 같은 폴더)에 그 한 줄을 쓰고, 설정 파일에 `config-file = ?auto/theme.ghostty`를 더하라고 알려 줍니다. 설정 파일은 건드리지 않습니다 |
+| `?` `F1` `Ctrl-H` | 도움말 |
+| `q` `Esc` `Ctrl-C` | 끝냄. 저장 화면을 열었던 테마가 있으면 끝난 뒤에 `theme = 이름` 줄을 한 번 찍어 줍니다 |
+
+Ghostty와 다른 점: 화면 글은 한국어이고, 이름 위에 링크(OSC 8)를 걸지 않고, 테마 파일의 문제 목록(diagnostics)은 보이지 않고(읽지 못한 파일만 오류 칸을 보임), 밝은/어두운 화면 색은 시스템 모양을 따르고(Ghostty는 터미널의 색 구성표 보고를 구독), 끝난 뒤 `theme = 이름`을 찍습니다. 창 크기가 바뀌면 0.5초 안에 다시 그립니다. 터미널 설정(원시 모드·대체 화면·마우스)은 끝나거나 패닉·SIGTERM·SIGHUP이 와도 원래대로 돌려 놓습니다. 테마 이름과 경로의 제어 문자는 화면에 찍기 전에 지웁니다.
 
 Linux 전용인 `+new-window`·`+ssh-cache`·`+crash-report`·`+boo`는 두지 않습니다.
 
@@ -79,7 +98,7 @@ config-file = ?~/.config/b-terminal/local   # ?가 붙으면 없어도 된다
 | `window-title-font-family` | 글꼴 이름 | 비움(macOS: 시스템 UI 글꼴, 그 밖: 터미널 글꼴) | 탭 줄 제목을 그릴 글꼴입니다. 고정폭이 아니어도 되고, 글자마다 글꼴이 정한 폭으로 자리를 잡아 탭 너비·잘림(`…`)도 그 실제 폭으로 셉니다. 글꼴 크기는 13pt(Ghostty처럼 시스템 기본 크기)이고 터미널 글꼴 크기(`font-size`, 확대·축소)를 따르지 않습니다. 탭 줄의 높이·구분선·안 읽음 점·진행 막대도 이 글꼴 기준이라 터미널 글꼴을 키워도 같습니다(탭 폭에는 상한이 없고 창 폭을 탭 수로 고르게 나눕니다). 제목 글꼴에 없는 글자(한글·기호·이모지)는 터미널 기본 글꼴 다음 터미널과 같은 대체 순서로 찾고, 제목 글꼴이 비례폭이면 한글은 그 대체 글꼴의 폭, 색 이모지는 그려지는 글리프 폭만큼 나아갑니다(고정폭이면 터미널처럼 두 칸). 없는 이름이면 경고하고 터미널 글꼴로 그립니다. 비우면 macOS에서는 시스템 UI 글꼴(SF, `.SF NS`·`System Font` 이름으로 찾습니다)로 그리고, 찾지 못하면 경고 없이 터미널 글꼴로 그립니다. 시스템 글꼴 이름은 `unsafe` 없이 시스템에 물을 수 없어 이름 목록으로 찾습니다. 설정을 다시 읽으면 바뀝니다. macOS 창 제목 막대(AppKit이 그리는 제목)와 확인 막대·팔레트 같은 다른 화면 글은 바뀌지 않습니다. 제목 글꼴을 읽지 못해 터미널 글꼴로 그릴 때는 탭 줄도 터미널 글꼴 기준으로 셉니다 |
 | `font-shaping-break` | `cursor`, `no-cursor`, `true`, `false` | `cursor` | 합자를 끊는 자리. `cursor`는 커서 칸에서 합자를 풀어 보입니다. `no-cursor`면 커서 밑에서도 합자를 유지합니다 |
 | `adjust-icon-height` | `10%` 또는 포인트 | 없음 | Nerd Font 아이콘(사설 영역 글자, 파워라인 도형 U+E0B0~U+E0D7 제외)이 넘지 않을 높이를 셀 높이 기준으로 바꿉니다. 양수는 키우고 음수는 줄이며 원래 자리의 가운데에 둡니다. 키울 때는 칸 폭에서 멈추고, 이미 칸보다 넓은 아이콘은 더 키우지 않습니다(Ghostty의 아이콘 맞춤 표를 그대로 옮기지는 않았습니다) |
-| `theme` | 테마 이름, 절대 경로(`~/`로 시작하면 홈 기준, Ghostty 1.4), `light:…,dark:…` | 없음 | 찾는 곳: `~/.config/b-terminal/themes`, 그다음 앱에 넣어 둔 907개([assets/themes-README.md](../assets/themes-README.md), `b-terminal --list-themes`). 이름은 띄어쓰기·대소문자를 무시합니다(`Tokyo Night` = `TokyoNight`)`light:…,dark:…`는 시스템이 밝음·어두움을 바꾸면 열려 있는 모든 창·칸에서 바로 다시 골라집니다(설정 파일은 다시 읽지 않고, 테마 파일만 다시 읽음). 테마가 하나뿐이면 색은 그대로입니다(모드 2031을 켠 칸에는 시스템 모양이 바뀌었다고 알립니다, 아래 "색 구성표 보고") |
+| `theme` | 테마 이름, 절대 경로(`~/`로 시작하면 홈 기준, Ghostty 1.4), `light:…,dark:…` | 없음 | 찾는 곳: `~/.config/b-terminal/themes`, 그다음 앱에 넣어 둔 914개([assets/themes-README.md](../assets/themes-README.md), `b-terminal --list-themes`). 이름은 띄어쓰기·대소문자를 무시합니다(`Tokyo Night` = `TokyoNight`)`light:…,dark:…`는 시스템이 밝음·어두움을 바꾸면 열려 있는 모든 창·칸에서 바로 다시 골라집니다(설정 파일은 다시 읽지 않고, 테마 파일만 다시 읽음). 테마가 하나뿐이면 색은 그대로입니다(모드 2031을 켠 칸에는 시스템 모양이 바뀌었다고 알립니다, 아래 "색 구성표 보고") |
 | `background` / `foreground` | 색 값 | Ghostty 기본 | 테마 위에 덮습니다. 색 값은 Ghostty처럼 `#rgb`·`#rrggbb`·`#rrrgggbbb`·`#rrrrggggbbbb`, `#` 없는 `rgb`·`rrggbb`, `rgb:r/g/b`, `rgbi:r/g/b`, X11 색 이름(`+list-colors`의 782개, 대소문자 무시, 이름 안 빈칸은 표대로)입니다. 이 문서의 모든 색 키가 같은 값을 받습니다. 읽지 못하는 값은 경고하고 기본값을 둡니다. `#fff`는 `#ffffff`입니다(터미널 색 OSC는 xterm처럼 `#f0f0f0`) |
 | `palette` | `N=색 값`(N은 0~255, 10진수나 `0x`·`0o`·`0b`) | Ghostty 기본 | 16~255번은 xterm 표이고, `palette-generate`를 켜면 만든 색입니다. 직접 정한 번호가 늘 이깁니다 |
 | `broadcast-group-colors` | `N=색 값`(N은 0~15, 되풀이) | 열여섯 색(0번 주황 `#ff7800`, 1번 파랑 `#3584e4` …) | 입력 함께 보내기 묶음 N의 테두리 색입니다. `palette`처럼 되풀이해 정한 번호만 바꿉니다. Ghostty 열린 PR #13745의 같은 이름 설정을 따랐고, 기본 열여섯 색도 그 PR과 같습니다 |
