@@ -1,7 +1,7 @@
 //! kitty 그래픽 프로토콜(#76): <https://sw.kovidgoyal.net/kitty/graphics-protocol/>
 //!
-//! 터미널에 찍힌 글이 보내는 그림이다. 믿지 않는다: 파일·공유 메모리 전송(t=f·t·s)은 받지 않고(터미널이
-//! 임의 파일을 읽게 되는 길), 받는 바이트·그림 크기·저장 총량에 상한을 둔다. 여기서는 VT 엔진과 상관없이
+//! 터미널에 찍힌 글이 보내는 그림이다. 믿지 않는다: 임시 파일·공유 메모리 전송(t=t·s)은 받지 않고, 파일 전송(t=f)은 걸러서만
+//! 받으며(일반 파일, 막는 경로, 크기 상한, ADR-088), 받는 바이트·그림 크기·저장 총량에 상한을 둔다. 여기서는 VT 엔진과 상관없이
 //! 명령을 읽고 그림을 저장하며, 무엇을 답하고 커서를 얼마나 옮길지만 정한다. 줄은 스크롤백 맨 위를 0으로 센다
 
 use alacritty_terminal::term::ScrollEvent;
@@ -17,6 +17,9 @@ use crate::kitty_anim::{self, Animation};
 const MAX_PAYLOAD: usize = 48 * 1024 * 1024;
 /// 그림 한 장을 푼 RGBA 바이트 상한(예: 4096×4096)
 const MAX_IMAGE_BYTES: usize = 64 * 1024 * 1024;
+/// 파일 전송(t=f)으로 읽는 바이트 상한. 명령 하나의 base64 상한과 같은 48MiB다(Ghostty는 400MB). 읽기가 터미널 출력 처리 스레드에서
+/// 돌아 길어지지 않게 낮게 잡았다
+const MAX_FILE_BYTES: usize = 48 * 1024 * 1024;
 /// 그림 한 변의 상한(px)
 const MAX_SIDE: u32 = 10_000;
 /// 저장 상한의 기본(바이트). Ghostty의 `image-storage-limit` 기본과 같다(전에는 256MiB 고정, ADR-013).
@@ -523,6 +526,70 @@ pub fn base64_decode(s: &[u8]) -> Option<Vec<u8>> {
     Some(out)
 }
 
+/// 파일 전송에서 읽지 않는 경로(Ghostty `validatedFilePath`, kitty에서 가져온 것): `/proc/`·`/sys/`·`/dev/`(`/dev/shm/`만 예외).
+/// 열린 파일의 실제(canonical) 경로에 건다
+fn path_is_blocked(path: &std::path::Path) -> bool {
+    let Some(p) = path.to_str() else { return true };
+    p.starts_with("/proc/") || p.starts_with("/sys/") || (p.starts_with("/dev/") && !p.starts_with("/dev/shm/"))
+}
+
+/// `t=f`의 파일을 읽는다(ADR-088). 읽을 수 없으면 이유를 알리지 않고 `None`이다(경로·내용이 답에 새지 않게).
+/// 절대 경로만 받고(상대 경로는 이 앱의 작업 폴더 기준이라 셸이 뜻한 곳이 아니다), 심볼릭 링크는 Ghostty처럼 따라가되
+/// 실제 경로가 막는 곳(`path_is_blocked`)이면 거절한다. 열린 파일이 일반 파일이어야 하고(폴더·장치·FIFO 거절. FIFO가 열기에서 막히지
+/// 않게 `O_NONBLOCK`), 길을 확인한 파일과 같은 파일이어야 한다. `offset`(O)에서 `size`(S)바이트를 정확히 읽고, S가 없으면 끝까지 읽되
+/// `MAX_FILE_BYTES`를 넘으면 읽기 전에 거절한다
+#[cfg(unix)]
+fn read_local_file(raw: &[u8], offset: u64, size: u64) -> Option<Vec<u8>> {
+    use std::io::{Read, Seek, SeekFrom};
+    use std::os::unix::ffi::OsStrExt;
+    use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+    if raw.is_empty() || raw.contains(&0) {
+        return None;
+    }
+    let path = std::path::Path::new(std::ffi::OsStr::from_bytes(raw));
+    if !path.is_absolute() {
+        return None;
+    }
+    let canon = path.canonicalize().ok()?;
+    if path_is_blocked(&canon) {
+        return None;
+    }
+    let flags = nix::fcntl::OFlag::O_NOFOLLOW | nix::fcntl::OFlag::O_NONBLOCK;
+    let mut file = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(flags.bits())
+        .open(&canon)
+        .ok()?;
+    let meta = file.metadata().ok()?;
+    let at = std::fs::metadata(&canon).ok()?;
+    if !meta.is_file() || (meta.dev(), meta.ino()) != (at.dev(), at.ino()) {
+        return None;
+    }
+    let cap = MAX_FILE_BYTES as u64;
+    if offset > 0 {
+        file.seek(SeekFrom::Start(offset)).ok()?;
+    }
+    if size > 0 {
+        if size > cap {
+            return None;
+        }
+        let mut buf = vec![0u8; usize::try_from(size).ok()?];
+        file.read_exact(&mut buf).ok()?;
+        return Some(buf);
+    }
+    if meta.len().saturating_sub(offset) > cap {
+        return None;
+    }
+    let mut buf = Vec::new();
+    file.take(cap + 1).read_to_end(&mut buf).ok()?;
+    (buf.len() as u64 <= cap).then_some(buf)
+}
+
+#[cfg(not(unix))]
+fn read_local_file(_raw: &[u8], _offset: u64, _size: u64) -> Option<Vec<u8>> {
+    None
+}
+
 /// PNG 머리(IHDR)의 폭·높이. 서명과 첫 덩어리가 IHDR이 아니면 없다. 자료는 풀지 않고 앞 24바이트만 본다
 fn png_header_size(data: &[u8]) -> Option<(u32, u32)> {
     const SIG: &[u8; 8] = b"\x89PNG\r\n\x1a\n";
@@ -899,8 +966,8 @@ impl Graphics {
                     put(k, n.to_string());
                 }
             }
-            if val(b't') == Some("d") {
-                put(b't', "d".into());
+            if matches!(val(b't'), Some("d" | "f")) {
+                put(b't', val(b't').unwrap_or("d").into());
             }
         }
         if place {
@@ -1038,11 +1105,32 @@ impl Graphics {
         data: &[u8],
         truncate_extra: bool,
     ) -> Result<Image, (&'static str, &'static str)> {
-        let medium = c.get(&b't').map(String::as_str).unwrap_or("d");
-        if medium != "d" {
-            return Err(("EINVAL", "직접 전송(t=d)만 받습니다"));
+        let r = self.decode_bytes(c, data, truncate_extra);
+        // 파일 전송은 어떤 이유로 실패하든 같은 EINVAL이다: EBADPNG·ENODATA가 "그 파일이 있다"는 것과 크기를 알리지 않게(ADR-088)
+        if c.get(&b't').map(String::as_str) == Some("f") {
+            return r.map_err(|_| ("EINVAL", "파일의 그림을 읽지 못했습니다"));
         }
+        r
+    }
+
+    fn decode_bytes(
+        &self,
+        c: &HashMap<u8, String>,
+        data: &[u8],
+        truncate_extra: bool,
+    ) -> Result<Image, (&'static str, &'static str)> {
+        let medium = c.get(&b't').map(String::as_str).unwrap_or("d");
         let mut data = std::borrow::Cow::Borrowed(data);
+        match medium {
+            "d" => {}
+            // 파일 전송: 자료는 base64로 푼 경로다. 읽은 내용이 이 자리의 자료가 된다. 실패 이유(경로·내용)는 답에 담지 않는다
+            "f" => {
+                let bytes = read_local_file(&data, u64::from(num(c, b'O')), u64::from(num(c, b'S')))
+                    .ok_or(("EINVAL", "파일을 읽지 못했습니다"))?;
+                data = std::borrow::Cow::Owned(bytes);
+            }
+            _ => return Err(("EINVAL", "직접 전송(t=d)과 파일 전송(t=f)만 받습니다")),
+        }
         if c.get(&b'o').map(String::as_str) == Some("z") {
             data = std::borrow::Cow::Owned(
                 miniz_oxide::inflate::decompress_to_vec_zlib_with_limit(&data, MAX_IMAGE_BYTES)
@@ -1951,9 +2039,10 @@ mod tests {
     }
 
     #[test]
-    fn file_and_shared_memory_transmission_are_refused() {
+    fn temporary_file_and_shared_memory_transmission_are_refused() {
+        // 파일 전송(t=f)은 ADR-088부터 걸러서 받는다(kitty_file_tests.rs). 임시 파일(t=t)과 공유 메모리(t=s)는 계속 거절한다
         let mut g = Graphics::default();
-        for t in ["f", "t", "s"] {
+        for t in ["t", "s"] {
             let out = g.handle(format!("a=T,t={t},f=100,i=3;{}", b64(b"/etc/passwd")).as_bytes(), CUR);
             assert_eq!(out.reply.unwrap(), b"\x1b_Gi=3;EINVAL\x1b\\", "t={t}");
         }
@@ -2102,7 +2191,7 @@ mod tests {
     fn failed_retransmit_removes_old_image_and_placement() {
         let bad = [
             (format!("a=T,f=24,s=2,v=2,i=5;{}", b64(&[1, 2, 3])), "ENODATA"),
-            (format!("a=t,t=f,f=24,s=1,v=1,i=5;{}", b64(b"/etc/passwd")), "EINVAL"),
+            (format!("a=t,t=f,f=24,s=1,v=1,i=5;{}", b64(b"/no/such/file")), "EINVAL"),
         ];
         for (cmd, code) in bad {
             let mut g = Graphics::default();
@@ -2259,13 +2348,13 @@ mod tests {
             query(&mut g, "a=q,i=31,e=T,U=2").unwrap(),
             "\x1b_Gi=31,e=T,U=1;OK\x1b\\"
         );
-        // 소문자 a~z, 대문자 A~Z 차례. 모르는 값(f=99, t=f)과 하지 않는 키(x, z)는 빠진다
+        // 소문자 a~z, 대문자 A~Z 차례. 모르는 값(f=99, t=t)과 하지 않는 키(x, z)는 빠진다
         assert_eq!(
             query(&mut g, "a=q,i=1,e=t,t=d,f=100,o=z,s=10,v=10,x=3,z=1,m=0").unwrap(),
             "\x1b_Gi=1,e=t,f=100,o=z,s=10,t=d,v=10;OK\x1b\\"
         );
         assert_eq!(
-            query(&mut g, "a=q,i=1,e=t,t=f,f=99,s=0,v=10001,o=x").unwrap(),
+            query(&mut g, "a=q,i=1,e=t,t=t,f=99,s=0,v=10001,o=x").unwrap(),
             "\x1b_Gi=1,e=t;OK\x1b\\"
         );
         assert_eq!(
@@ -3147,3 +3236,7 @@ mod tests {
 #[cfg(test)]
 #[path = "kitty_anim_tests.rs"]
 mod anim_tests;
+
+#[cfg(test)]
+#[path = "kitty_file_tests.rs"]
+mod file_tests;
