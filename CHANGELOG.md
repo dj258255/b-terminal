@@ -4,6 +4,7 @@
 
 ## [아직 릴리스하지 않음]
 
+- `selection-background`·`selection-foreground`가 `cell-foreground`·`cell-background`를 받아 고른 칸마다 그 칸의 글자색·바탕색을 쓰고(Ghostty 1.4.0 `generic.zig`), 옛 키 `cursor-invert-fg-bg`·`selection-invert-fg-bg`는 `true`일 때 그 자리에서 새 키 값을 바꾼다. 고른 칸은 찾기 맞은 칸보다 앞서고, `--show-config`는 `cell-*`를 그 이름으로 적는다 (#849)
 - 복사 HTML의 링크를 Ghostty main #15347처럼: `http://`·`https://`·`mailto:`·`file://`(대소문자 무시)만 `href`에 쓰고 나머지는 글과 `<a>` 태그를 남긴 채 `href="#"`로 쓴다. 비ASCII·공백·제어 바이트는 `%XX`로 인코딩한다 (#846)
 
 ## [0.102.0] - 2026-11-26

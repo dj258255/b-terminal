@@ -118,6 +118,8 @@ fn gv<'a>(s: &Scene, dc: &'a [DrawCell]) -> GridView<'a> {
         cursor: None,
         selection_bg: s.theme.selection_background,
         selection_fg: s.theme.selection_foreground,
+        selection_bg_cell: Default::default(),
+        selection_fg_cell: Default::default(),
         preedit: None,
         min_contrast: 1.0,
     }
@@ -476,6 +478,8 @@ fn unicode_placeholders_draw_the_image_on_both_paths_and_never_the_glyph() {
             cursor: None,
             selection_bg: theme.selection_background,
             selection_fg: theme.selection_foreground,
+            selection_bg_cell: Default::default(),
+            selection_fg_cell: Default::default(),
             preedit: None,
             min_contrast: 1.0,
         }
@@ -649,6 +653,8 @@ fn scroll_clipped_placement_draws_the_same_on_both_paths() {
         cursor: None,
         selection_bg: theme.selection_background,
         selection_fg: theme.selection_foreground,
+        selection_bg_cell: Default::default(),
+        selection_fg_cell: Default::default(),
         preedit: None,
         min_contrast: 1.0,
     };

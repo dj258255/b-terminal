@@ -1,6 +1,7 @@
 //! 터미널 화면(`bt_term::Screen`과 같은 꼴의 값)을 픽셀로 그린다
 
 use bt_core::Rgb;
+use bt_core::config::CellColor;
 
 use crate::canvas::Canvas;
 use crate::font::{CellMetrics, FontStyle, Fonts};
@@ -65,10 +66,34 @@ pub struct GridView<'a> {
     pub selection_bg: Rgb,
     /// 고른 칸의 글자색. 없으면 칸의 글자색
     pub selection_fg: Option<Rgb>,
+    /// 고른 칸의 바탕·글자색을 그 칸의 색에서 가져온다(Ghostty `selection-* = cell-foreground`·`cell-background`, #849). 없으면 `selection_bg`·`selection_fg`
+    pub selection_bg_cell: Option<CellColor>,
+    pub selection_fg_cell: Option<CellColor>,
     /// IME 조합 중인 글(커서 자리에 덮어 그린다, PTY에는 보내지 않는다)
     pub preedit: Option<&'a str>,
     /// 글자색과 바탕의 최소 명암비(Ghostty `minimum-contrast`, #123). 1이면 끔
     pub min_contrast: f32,
+}
+
+impl GridView<'_> {
+    /// 고른 칸의 바탕색. `selection-background = cell-foreground`면 칸의 글자색, `cell-background`면 칸의 바탕색(#849).
+    /// `cell.fg`·`cell.bg`는 반전(SGR 7)을 이미 반영한 보이는 색이라 Ghostty `generic.zig`의 `inverse` 갈림과 같은 값이다
+    pub fn selected_bg(&self, cell: &DrawCell) -> Rgb {
+        match self.selection_bg_cell {
+            Some(CellColor::Foreground) => cell.fg,
+            Some(CellColor::Background) => cell.bg,
+            None => self.selection_bg,
+        }
+    }
+
+    /// 고른 칸의 글자색(설정이 없으면 `selection_fg`, 그것도 없으면 칸의 글자색)
+    pub fn selected_fg(&self, cell: &DrawCell) -> Rgb {
+        match self.selection_fg_cell {
+            Some(CellColor::Foreground) => cell.fg,
+            Some(CellColor::Background) => cell.bg,
+            None => self.selection_fg.unwrap_or(cell.fg),
+        }
+    }
 }
 
 /// 격자 아래에 끼워 그릴 것: kitty 그림의 "칸 바탕 아래"와 "글자 아래" 층(#547, Ghostty `ImageLayer`).
@@ -173,7 +198,7 @@ fn draw_rows(
             let cell = &view.cells[row * view.cols + col];
             let (cx, w, h) = (x + col as i32 * cw, m.width, m.height);
             if cell.selected {
-                canvas.fill_rect(cx, py, w, h, view.selection_bg);
+                canvas.fill_rect(cx, py, w, h, view.selected_bg(cell));
             } else if under.below_bg.is_some() && under.default_bg == Some(cell.bg) {
                 // 기본 바탕 칸은 그리지 않아 칸 바탕 아래 그림이 비친다
             } else {
@@ -302,11 +327,8 @@ fn draw_rows(
 /// (Ghostty 셰이더 `contrasted_color`가 알파 1짜리 색을 돌려준다).
 /// 이어지는 칸은 같은 (글자색, 바탕) 쌍이 많아 앞 결과(`memo`)를 쓴다. GPU 렌더러도 이 함수를 쓴다(규칙은 한 벌)
 pub fn text_color(view: &GridView, cell: &DrawCell, memo: &mut Option<((Rgb, Rgb), Rgb)>) -> Rgb {
-    let fg = match (cell.selected, view.selection_fg) {
-        (true, Some(c)) => c,
-        _ => cell.fg,
-    };
-    let bg = if cell.selected { view.selection_bg } else { cell.bg };
+    let fg = if cell.selected { view.selected_fg(cell) } else { cell.fg };
+    let bg = if cell.selected { view.selected_bg(cell) } else { cell.bg };
     let contrast = view.min_contrast > 1.0 && !no_min_contrast(cell.ch);
     let adjusted = if contrast {
         match *memo {
@@ -329,9 +351,10 @@ pub fn text_color(view: &GridView, cell: &DrawCell, memo: &mut Option<((Rgb, Rgb
 /// 밑줄(밑줄 색이 없을 때)·윗줄·취소선의 색: 칸의 글자색에 흐림만 건다. 고름 글자색과 최소 명암비는 걸지 않는다(지금까지와 같다)
 pub fn decoration_color(view: &GridView, cell: &DrawCell) -> Rgb {
     match cell.faint {
-        Some(opacity) => cell
-            .fg
-            .mix(if cell.selected { view.selection_bg } else { cell.bg }, 1.0 - opacity),
+        Some(opacity) => cell.fg.mix(
+            if cell.selected { view.selected_bg(cell) } else { cell.bg },
+            1.0 - opacity,
+        ),
         None => cell.fg,
     }
 }

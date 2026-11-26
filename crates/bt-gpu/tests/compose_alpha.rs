@@ -194,6 +194,8 @@ fn run(name: &str, s: Setup, with_upper: bool) {
         cursor: Some(cursor),
         selection_bg: t.selection_background,
         selection_fg: t.selection_foreground,
+        selection_bg_cell: Default::default(),
+        selection_fg_cell: Default::default(),
         preedit: None,
         min_contrast: 1.0,
     };

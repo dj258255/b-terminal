@@ -6663,6 +6663,8 @@ impl App {
                     cursor: *cursor,
                     selection_bg: screen_default_colors(&theme, screen).selection_bg,
                     selection_fg: screen_default_colors(&theme, screen).selection_fg,
+                    selection_bg_cell: self.config.selection_background_cell,
+                    selection_fg_cell: self.config.selection_foreground_cell,
                     preedit: pre.as_deref(),
                     min_contrast: self.config.minimum_contrast,
                 };
@@ -7184,7 +7186,11 @@ pub fn to_draw_cells(s: &Screen, theme: &bt_core::Theme) -> Vec<DrawCell> {
         .cells
         .iter()
         .map(|c| {
-            let (fg, bg) = if c.flags.contains(CellFlags::MATCH_CURRENT) {
+            // 고른 칸이 찾기에 맞은 칸보다 앞선다(Ghostty `generic.zig`의 `selected` 차례). 그래야 `selection-* = cell-*`가 칸 본래 색을 본다
+            let selected = c.flags.contains(CellFlags::SELECTED);
+            let (fg, bg) = if selected {
+                (c.fg, c.bg)
+            } else if c.flags.contains(CellFlags::MATCH_CURRENT) {
                 theme.search.pick(true, c.fg, c.bg)
             } else if c.flags.contains(CellFlags::MATCH) {
                 theme.search.pick(false, c.fg, c.bg)
@@ -8468,6 +8474,22 @@ mod tests {
         let cells = to_draw_cells(&s, &theme);
         assert_eq!((cells[1].fg, cells[1].bg), (theme.background, red));
         assert_eq!((cells[2].fg, cells[2].bg), (Rgb::new(9, 9, 9), Rgb::new(1, 2, 3)));
+    }
+
+    /// #849: 고른 칸은 찾기에 맞은 칸이어도 칸 본래 색을 렌더러에 넘긴다(Ghostty: 고름이 찾기보다 앞선다).
+    /// 반전(SGR 7) 칸의 `fg`·`bg`는 이미 보이는 색이라 `cell-foreground`·`cell-background`가 원본 식의 `inverse` 갈림과 같은 값이 된다
+    #[test]
+    fn selected_cells_keep_their_own_colors_even_when_matched() {
+        use bt_term::{Emulator, GridSize};
+        let theme = bt_core::Theme::default();
+        let mut e = Emulator::new(GridSize::new(3, 1), theme.clone());
+        e.feed(b"\x1b[31;44ma\x1b[7mb\x1b[0m");
+        let mut s = e.snapshot();
+        s.cells[0].flags.insert(CellFlags::MATCH | CellFlags::SELECTED);
+        let (red, blue) = (theme.palette[1], theme.palette[4]);
+        let cells = to_draw_cells(&s, &theme);
+        assert_eq!((cells[0].fg, cells[0].bg, cells[0].selected), (red, blue, true));
+        assert_eq!((cells[1].fg, cells[1].bg), (blue, red), "반전 칸은 보이는 색이 바뀐 채");
     }
 
     /// #834·#835: 숨김·흐림은 칸 색을 섞지 않고 그리는 쪽에 표시로 넘긴다(흐림은 `faint-opacity`와 함께)

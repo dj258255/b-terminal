@@ -194,7 +194,8 @@ impl Scene {
             for col in 0..view.cols {
                 let cell = &view.cells[row * view.cols + col];
                 let (color, alpha) = if cell.selected {
-                    (view.selection_bg, self.solid_alpha(view.selection_bg))
+                    let sel = view.selected_bg(cell);
+                    (sel, self.solid_alpha(sel))
                 } else {
                     (cell.bg, self.cell_alpha(cell.bg))
                 };
@@ -255,7 +256,7 @@ impl Scene {
                     continue;
                 }
                 let px = col as i32 * cw;
-                let under = if cell.selected { view.selection_bg } else { cell.bg };
+                let under = if cell.selected { view.selected_bg(cell) } else { cell.bg };
                 self.glyph_bg = [under.r, under.g, under.b];
                 if let Some(text) = &cell.cluster {
                     let span = cell.cluster_cells.max(1) as i32;

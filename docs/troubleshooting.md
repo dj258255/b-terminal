@@ -752,3 +752,11 @@
 - 남긴 것: `file://호스트/…`는 Windows의 Edge에서 네트워크 경로라 따라가면 그 호스트에 접속한다(Ghostty PR 본문의 설명이고 우리가 재지 않았다)
 - 0.102.0에서 풀기: 없음. 링크가 필요한 쪽에서 붙여넣은 뒤 주소를 직접 고친다
 
+## 90. `selection-*`에 `cell-foreground`·`cell-background`를 쓰면 경고가 뜨고, 옛 키 `*-invert-fg-bg`는 먹지 않는다
+
+- 언제: 2026-11-26, #849. 0.102.0까지의 동작이다. 0.102 ROADMAP의 다음 판 후보를 Ghostty 원본(`Config.zig`, `renderer/generic.zig`)과 견주다 찾았다
+- 증상: `selection-background = cell-foreground`를 적으면 "값을 읽지 못했습니다" 경고가 뜨고 고름 색은 기본(지금 글자색)이었다. `selection-invert-fg-bg = true`·`cursor-invert-fg-bg = true`는 아무 일도 하지 않았다. `cursor-*`·`search-*`는 이미 `cell-*`를 받았다
+- 까닭: `selection-*`는 색 값만 읽었다. 고른 칸의 색은 그리는 쪽이 화면 전체에 한 쌍(`selection_bg`·`selection_fg`)만 받아 칸마다 달라질 수 없었다
+- 고침: `Config.selection_background_cell`·`selection_foreground_cell`을 더하고, `GridView`가 고른 칸의 바탕·글자색을 칸 색에서 고른다(`selected_bg`·`selected_fg`, CPU·GPU가 같은 `text_color`·같은 함수). 칸의 `fg`·`bg`가 반전을 이미 반영한 보이는 색이라 원본의 `inverse` 갈림과 같은 값이 된다. 옛 키는 `true`일 때 그 자리에서 네 키 값을 바꾸고(정함 표시도 켬) `false`는 아무것도 하지 않는다. 고른 칸은 찾기 맞은 칸보다 앞선다(원본의 `selected` 차례)
+- 남긴 것: 숨긴 칸(SGR 8)은 엔진이 글자색을 바탕색으로 두므로 `cell-foreground`가 원본과 다르다(ADR-083). 조합 중인 글(IME)의 바탕은 `cell-*`를 따르지 않고 `selection_bg` 한 색이다. `background-opacity`가 1보다 작을 때 `cell-background`로 고른 기본 바탕 칸은 기본 바탕처럼 반투명하게 칠한다(Ghostty는 고른 칸을 늘 불투명하게 칠한다). 재지 않았다
+- 0.102.0에서 풀기: `selection-background`·`selection-foreground`에 색 값을 쓴다
