@@ -587,15 +587,46 @@ pub fn classify(url: &str, local_host: &dyn Fn(&str) -> bool) -> Option<OpenTarg
     if let Some(rest) = lower.strip_prefix("mailto:") {
         // 받는 사람이 없으면(`mailto:`, `mailto:?subject=x`) 빈 편지를 띄우지 않는다
         let to = rest.split(['?', '#']).next().unwrap_or(rest);
-        return (!to.is_empty()).then(|| OpenTarget::Mail(url.to_string()));
+        if to.is_empty() {
+            return None;
+        }
+        // 질의(`?attach=…`)가 있으면 메일 앱이 로컬 파일을 붙일 수 있어 바로 열지 않고 묻는다
+        return confirmable(url).then(|| {
+            if url.contains('?') {
+                OpenTarget::Confirm(url.to_string())
+            } else {
+                OpenTarget::Mail(url.to_string())
+            }
+        });
     }
     for scheme in CONFIRM_SCHEMES {
         if let Some(rest) = lower.strip_prefix(scheme) {
             let rest = rest.strip_prefix("//").unwrap_or(rest);
-            return (!rest.is_empty()).then(|| OpenTarget::Confirm(url.to_string()));
+            if rest.is_empty() || !confirmable(url) {
+                return None;
+            }
+            // 호스트를 가진 스킴은 사용자 정보(`root@evil.example`)를 받지 않는다. 막대에서 호스트를 속일 수 있다
+            let hosted = !matches!(scheme, "tel:" | "magnet:" | "news:");
+            if hosted && rest.split(['/', '?', '#']).next().is_some_and(|a| a.contains('@')) {
+                return None;
+            }
+            return Some(OpenTarget::Confirm(url.to_string()));
         }
     }
     None
+}
+
+/// 묻는 주소의 길이 상한(`http(s)`와 달리 8KiB까지 보이게 둘 수 없다)
+const CONFIRM_MAX: usize = 2048;
+
+/// 묻거나 바로 여는 비웹 주소의 공통 조건: ASCII뿐이고 너무 길지 않다(비ASCII는 호스트를 흉내 낼 수 있다)
+fn confirmable(url: &str) -> bool {
+    url.is_ascii() && url.len() <= CONFIRM_MAX
+}
+
+/// 확인 막대에 보일 글: 스킴과 호스트는 늘 다 보이고, 넘치면 그 뒤를 `…`로 줄인다(`hint_text`)
+pub fn confirm_text(url: &str, max: usize) -> String {
+    hint_text(url, max)
 }
 
 /// 열기 전에 한 번 묻는 스킴(`url.zig`의 스킴에서 웹·mailto·file을 뺀 것). OSC 8로 온 다른 스킴(`javascript:` 등)은 열지 않는다
@@ -1180,9 +1211,13 @@ mod tests {
     fn classify_mail_and_confirm_schemes() {
         let no = |_: &str| false;
         assert_eq!(
-            classify("mailto:a@b.example?subject=hi", &no),
-            Some(OpenTarget::Mail("mailto:a@b.example?subject=hi".into()))
+            classify("mailto:a@b.example", &no),
+            Some(OpenTarget::Mail("mailto:a@b.example".into()))
         );
+        // 질의가 있으면(`attach=`로 파일을 붙이는 메일 앱이 있다) 바로 열지 않고 묻는다
+        for url in ["mailto:a@b.example?subject=hi", "mailto:a@b.example?attach=/etc/passwd"] {
+            assert_eq!(classify(url, &no), Some(OpenTarget::Confirm(url.into())), "{url}");
+        }
         assert_eq!(
             classify("MAILTO:a@b.example", &no),
             Some(OpenTarget::Mail("MAILTO:a@b.example".into()))
@@ -1191,8 +1226,8 @@ mod tests {
         assert_eq!(classify("mailto:?subject=x", &no), None);
         for url in [
             "ftp://h/x",
-            "ssh://u@h",
-            "ssh:u@h",
+            "ssh://h.example",
+            "ssh:h.example",
             "git://h/r.git",
             "tel:+18005551234",
             "tel://+12123456789",
@@ -1205,6 +1240,20 @@ mod tests {
         ] {
             assert_eq!(classify(url, &no), Some(OpenTarget::Confirm(url.into())), "{url}");
         }
+        // 사용자 정보(`@`)·비ASCII·너무 긴 주소는 묻지도 않는다(막대에서 호스트를 속일 수 있다)
+        assert_eq!(classify("ssh://root@evil.example", &no), None, "사용자 정보");
+        assert_eq!(classify("ssh:root@evil.example", &no), None, "사용자 정보(//없음)");
+        assert_eq!(
+            classify("ssh://git.example/@x", &no),
+            Some(OpenTarget::Confirm("ssh://git.example/@x".into())),
+            "경로의 @는 괜찮다"
+        );
+        assert_eq!(classify("ssh://h\u{43a}.example", &no), None, "비ASCII");
+        assert_eq!(
+            classify(&format!("ssh://h.example/{}", "p".repeat(3000)), &no),
+            None,
+            "너무 긴 주소"
+        );
         // 목록에 없는 스킴과 숨은 글자는 그대로 열지 않는다
         for url in [
             "javascript:alert(1)",
@@ -1215,6 +1264,18 @@ mod tests {
         ] {
             assert_eq!(classify(url, &no), None, "{url}");
         }
+    }
+
+    #[test]
+    fn confirm_text_keeps_scheme_and_host() {
+        let long = format!("ssh://host.example/{}", "p".repeat(300));
+        let t = confirm_text(&long, 80);
+        assert!(t.starts_with("ssh://host.example/"), "{t}");
+        assert!(t.contains('…') && t.chars().count() <= 80, "{t}");
+        assert_eq!(confirm_text("tel:+1800", 80), "tel:+1800");
+        // 호스트가 길어도 자르지 않는다
+        let host = format!("ssh://{}.example/x", "h".repeat(120));
+        assert!(confirm_text(&host, 80).starts_with(&format!("ssh://{}.example", "h".repeat(120))));
     }
 
     #[test]

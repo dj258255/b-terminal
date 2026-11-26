@@ -2703,8 +2703,8 @@ Ghostty와 다른 점이다.
 2. **한국어 조사는 그대로 끊는다**: Ghostty의 `\w`는 한글·CJK도 낱말 글자로 보지만 우리는 `is_wide_script` 글자에서 주소와 경로를 끊는다("…/b-terminal에 올렸다"). 다른 점은 이것 하나로 둔다(아래 "Ghostty와 다른 점").
 3. **열 때 갈래마다 거른다**(`classify`·`classify_text`):
    - `http`·`https`·`file`: ADR-007 그대로(호스트 검사, 허용 목록, 실제 경로).
-   - `mailto:`: 받는 사람이 있으면 바로 연다(`OpenTarget::Mail`). 받는 사람이 없으면(`mailto:`, `mailto:?subject=x`) 열지 않는다(Ghostty `UntrustedURL`과 같다).
-   - `ftp:`·`ssh:`·`git:`·`tel:`·`magnet:`·`ipfs:`·`ipns:`·`gemini:`·`gopher:`·`news:`: 다른 앱(ssh는 터미널 앱, tel은 전화 앱)을 띄울 수 있어 **한 번 묻고** 연다(`OpenTarget::Confirm`, 확인 막대). Ghostty가 사용자 정의 스킴에 쓰는 확인 창과 같은 자리다. 막대는 주소를 보여 주고, 프로그램 출력이 띄우는 막대처럼 Enter로는 허용하지 않는다(ADR-019).
+   - `mailto:`: 받는 사람이 있고 질의(`?`)가 없으면 바로 연다(`OpenTarget::Mail`). 질의가 있으면(`mailto:a@b?attach=/etc/passwd`: 메일 앱 가운데 `attach=`로 로컬 파일을 붙이는 것이 있다) `Confirm`으로 묻는다. 받는 사람이 없으면(`mailto:`, `mailto:?subject=x`) 열지 않는다(Ghostty `UntrustedURL`과 같다).
+   - `ftp:`·`ssh:`·`git:`·`tel:`·`magnet:`·`ipfs:`·`ipns:`·`gemini:`·`gopher:`·`news:`: 다른 앱(ssh는 터미널 앱, tel은 전화 앱)을 띄울 수 있어 **한 번 묻고** 연다(`OpenTarget::Confirm`, 확인 막대). Ghostty가 사용자 정의 스킴에 쓰는 확인 창과 같은 자리다. 막대는 `hint_text` 규칙으로 주소를 보여 준다: 스킴과 호스트는 늘 다 보이고 넘치면 뒤를 `…`로 줄인다(앞에서 자르면 긴 경로 뒤에 진짜 호스트를 숨길 수 있다). 프로그램 출력이 띄우는 막대처럼 Enter로는 허용하지 않는다(ADR-019). 묻는 주소에 사용자 정보(`ssh://root@호스트`의 `@`, 호스트 스킴만), 비ASCII, 2048바이트 초과가 있으면 묻지도 않고 토스트만 띄운다.
    - 이 목록 밖의 스킴(`javascript:`, OSC 8의 `vscode:` 등)은 열지 않는다. Ghostty는 OSC 8의 모든 스킴을 묻고 열지만 우리는 열 수 있는 스킴을 `url.zig`의 것으로 좁힌다.
    - 스킴 없는 글(경로): `~/`는 집 폴더로, 상대 경로는 그 칸의 작업 폴더(OSC 7, `Pane.cwd`)로 풀고(`.`·`..`은 글자로만 접음), 실제로 있는 것만 연다. 작업 폴더를 모르면 상대 경로는 열지 않는다. 그 뒤는 `file` 링크와 같은 허용 목록이다(문서·폴더는 연다, 실행되는 꼴과 앱 묶음은 Finder에서 보이기만 한다). `$HOME/…`는 풀지 않고(Ghostty도 풀지 않는다) `:줄:칸`이 붙은 것은 떼지 않는다(그 이름의 파일이 없으면 열리지 않는다).
    - OSC 8 링크는 이 경로 규칙을 타지 않는다. 스킴이 있는 것만 위 규칙으로 거른다(Ghostty도 스킴 없는 OSC 8을 거부한다).
@@ -2733,4 +2733,6 @@ Ghostty와 다른 점이다.
 - 스킴 글자의 대소문자를 가리지 않는다(`HTTPS://`). Ghostty 정규식은 가리는 쪽이다.
 - 스킴 앞이 글자·숫자면 주소가 아니다(`xhttps://`). Ghostty 정규식은 그 안의 `https://…`를 찾는다.
 - 목록 밖의 OSC 8 스킴은 묻지 않고 열지 않는다(결정 3).
+- 질의가 든 `mailto:`는 바로 열지 않고 묻는다. Ghostty는 받는 사람만 있으면 질의째 바로 연다.
+- 묻는 주소의 사용자 정보·비ASCII·2048바이트 초과를 거부한다. Ghostty는 이 검사 없이 확인 창에 주소를 보여 준다.
 - Ghostty의 막힘 안내 창(`presentBlock`) 대신 토스트("열 수 없는 링크입니다")를 쓴다. 실행되는 파일은 막지 않고 Finder에서 보이기만 하는 것은 ADR-007 그대로다.

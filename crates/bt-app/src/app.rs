@@ -4051,7 +4051,7 @@ impl App {
         };
         match target {
             Some(OpenTarget::Confirm(u)) => {
-                let shown: String = bt_core::proto::printable(&u).chars().take(80).collect();
+                let shown = bt_term::links::confirm_text(&u, 80);
                 self.ask(
                     Pending::OpenLink { url: u },
                     format!("다른 앱으로 이 링크를 열까요? {shown}"),
