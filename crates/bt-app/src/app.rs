@@ -1009,6 +1009,8 @@ struct Win {
     kitty_down: std::collections::HashMap<winit::keyboard::PhysicalKey, u64>,
     /// 열린 찾기 막대(칸 하나에 붙는다)
     search: Option<SearchBar>,
+    /// 힌트 모드(#865): 고른 칸의 화면에 라벨을 붙이고 키로 고르는 중. 칸 하나에 붙는다
+    hints: Option<crate::hints::HintsState>,
     /// 열린 명령 팔레트(#77): 친 글, 고른 줄
     palette: Option<(String, Option<usize>)>,
     /// 창에 마지막으로 적용한 마우스 포인터 모양(#239). 같으면 다시 적용하지 않는다
@@ -1109,6 +1111,7 @@ impl Win {
             focus_click: mouse::FocusClickGuard::default(),
             kitty_down: std::collections::HashMap::new(),
             search: None,
+            hints: None,
             palette: None,
             pointer_icon: CursorIcon::Default,
             pointer_hidden: false,
@@ -1626,6 +1629,11 @@ impl App {
         self.reset_blink();
         // 확인 막대가 떠 있으면 글을 어디에도 보내지 않는다(Enter·Esc만 받는다)
         if self.w.confirm.is_some() {
+            self.request_redraw();
+            return;
+        }
+        // 힌트 모드에서는 확정 글을 어디에도 보내지 않는다(라벨은 `hints_key`가 키로 받는다)
+        if self.w.hints.is_some() {
             self.request_redraw();
             return;
         }
@@ -4332,18 +4340,8 @@ impl App {
     /// 링크를 연다: 열어도 되는 것(웹, mailto, 이 컴퓨터의 파일·경로)만. `ssh:` 같은 다른 앱 주소는 한 번 묻는다(#850).
     /// `explicit`(OSC 8)는 주소만 보고, 화면 글에서 찾은 경로는 `pane`의 작업 폴더(OSC 7)를 기준으로 푼다
     fn open_link(&mut self, url: &str, explicit: bool, pane: u64) {
-        use bt_term::links::{OpenContext, OpenTarget, classify, classify_text};
-        let cwd = self.panes.iter().find(|p| p.id == pane).and_then(|p| p.cwd.clone());
-        let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
-        let ctx = OpenContext {
-            cwd: cwd.as_deref(),
-            home: home.as_deref(),
-        };
-        let target = if explicit {
-            classify(url, &is_local_host)
-        } else {
-            classify_text(url, &is_local_host, &ctx)
-        };
+        use bt_term::links::OpenTarget;
+        let target = self.link_target(url, explicit, pane);
         match target {
             Some(OpenTarget::Confirm(u)) => {
                 // 막대가 주소를 다 그릴 수 없으면(좁은 창) 질의가 가려진 채 허락하게 되므로 묻지 않는다
@@ -4358,6 +4356,22 @@ impl App {
                 let shown: String = bt_core::proto::printable(url).chars().take(60).collect();
                 self.toast(format!("열 수 없는 링크입니다: {shown}"));
             }
+        }
+    }
+
+    /// 링크를 어떻게 열지 정한다(`open_link`와 힌트가 같이 쓴다). `explicit`(OSC 8)는 주소만 보고, 화면 글의 경로는 `pane`의 작업 폴더를 기준으로 푼다
+    fn link_target(&self, url: &str, explicit: bool, pane: u64) -> Option<bt_term::links::OpenTarget> {
+        use bt_term::links::{OpenContext, classify, classify_text};
+        let cwd = self.panes.iter().find(|p| p.id == pane).and_then(|p| p.cwd.clone());
+        let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
+        let ctx = OpenContext {
+            cwd: cwd.as_deref(),
+            home: home.as_deref(),
+        };
+        if explicit {
+            classify(url, &is_local_host)
+        } else {
+            classify_text(url, &is_local_host, &ctx)
         }
     }
 
@@ -4381,6 +4395,124 @@ impl App {
         self.sync_confirm_ime();
         self.toast(NARROW_LINK_TOAST.to_string());
         self.request_redraw();
+    }
+
+    /// 힌트 모드를 시작한다(#865, kitty `hints` kitten): 고른 칸의 보이는 화면에서 `kind`에 맞는 글을 찾아 라벨을 붙인다.
+    /// 열기는 열 수 있는 것(`link_target`이 거르는 것)만 라벨을 받는다. 확인 막대가 떠 있으면 시작하지 않는다
+    fn start_hints(&mut self, kind: bt_term::hints::HintKind, then: bt_term::hints::HintAction) {
+        use bt_term::hints::{HintAction, HintKind, find_marks};
+        if self.w.confirm.is_some() {
+            self.toast("확인할 일이 있어 힌트를 열지 않았습니다".into());
+            return;
+        }
+        let Some(i) = self.active_index() else { return };
+        if then == HintAction::Paste && self.panes[i].session.readonly() {
+            self.toast("읽기 전용 칸에는 붙여넣을 수 없습니다".into());
+            return;
+        }
+        let id = self.panes[i].id;
+        let mut screen = self.panes[i].session.snapshot();
+        screen.crop_columns(self.panes[i].session.size().cols as usize);
+        let mut marks = find_marks(&screen, kind);
+        if then == HintAction::Open && kind != HintKind::Linenum {
+            let explicit = kind == HintKind::Hyperlink;
+            marks.retain(|m| self.link_target(&m.text, explicit, id).is_some());
+        }
+        if marks.is_empty() {
+            self.toast(format!(
+                "고를 수 있는 항목이 없습니다({})",
+                crate::hints::kind_label(kind)
+            ));
+            return;
+        }
+        self.end_search();
+        self.w.palette = None;
+        self.w.title_prompt = None;
+        self.w.hints = Some(crate::hints::HintsState::new(id, kind, then, marks));
+        self.request_redraw();
+    }
+
+    fn end_hints(&mut self) {
+        if self.w.hints.take().is_some() {
+            self.request_redraw();
+        }
+    }
+
+    /// 힌트 모드에서 키를 받는다: 라벨 글자는 고르고, Backspace는 지우고, Enter·Space는 친 라벨을 확정하고, Esc는 그만둔다.
+    /// 키는 PTY로 보내지 않는다. Cmd·Ctrl 조합은 힌트를 닫고 키 묶음에 맡긴다. 받았으면 참
+    fn hints_key(&mut self, event: &winit::event::KeyEvent) -> bool {
+        use crate::hints::Typed;
+        use winit::keyboard::{Key, NamedKey};
+        let Some(pane) = self.w.hints.as_ref().map(|h| h.pane) else {
+            return false;
+        };
+        // 칸이 닫히거나 다른 칸·탭을 골랐으면 힌트는 끝난 것이다
+        if self.focused_id() != Some(pane) || self.mods.super_key() || self.mods.control_key() {
+            self.end_hints();
+            return false;
+        }
+        match &event.logical_key {
+            Key::Named(NamedKey::Escape) => self.end_hints(),
+            Key::Named(NamedKey::Backspace) => {
+                if let Some(h) = self.w.hints.as_mut() {
+                    h.backspace();
+                }
+            }
+            Key::Named(NamedKey::Enter | NamedKey::Space) => {
+                if let Some(i) = self.w.hints.as_ref().and_then(|h| h.confirm()) {
+                    self.choose_hint(i);
+                }
+            }
+            _ if self.mods.alt_key() => {}
+            _ => {
+                for ch in event.text.iter().flat_map(|t| t.chars()) {
+                    let typed = self.w.hints.as_mut().map(|h| h.type_char(ch));
+                    if let Some(Typed::Chosen(i)) = typed {
+                        self.choose_hint(i);
+                        break;
+                    }
+                }
+            }
+        }
+        self.request_redraw();
+        true
+    }
+
+    /// 고른 맞은 곳으로 일한다. 라벨을 붙인 뒤 그 칸 글이 바뀌었으면 하지 않는다. 열기는 `open_link`(확인 막대·허용 목록),
+    /// 붙여넣기는 `paste_to`(괄호 붙여넣기 틀, 위험 바이트 바꾸기, 붙여넣기 보호)를 그대로 지난다
+    fn choose_hint(&mut self, idx: usize) {
+        use crate::hints::Outcome;
+        let Some(h) = self.w.hints.take() else { return };
+        self.request_redraw();
+        let Some(pi) = self.pane_index(h.pane) else { return };
+        let Some(mark) = h.marks.get(idx) else { return };
+        let mut screen = self.panes[pi].session.snapshot();
+        screen.crop_columns(self.panes[pi].session.size().cols as usize);
+        if bt_term::hints::spans_signature(&screen, &mark.spans) != mark.sig {
+            self.toast("화면이 바뀌어 고르지 못했습니다".into());
+            return;
+        }
+        match crate::hints::outcome(h.kind, h.action, mark) {
+            Outcome::Open { text, explicit } => self.open_link(&text, explicit, h.pane),
+            Outcome::Copy(text) => {
+                let shown: String = text.chars().take(60).collect();
+                match self.clipboard.as_mut().map(|cb| cb.set_text(text)) {
+                    Some(Ok(())) => {
+                        if self.config.app_notifications.clipboard_copy {
+                            self.toast(format!("복사했습니다: {shown}"));
+                        }
+                    }
+                    _ => self.toast("클립보드에 쓰지 못했습니다".into()),
+                }
+            }
+            Outcome::Paste(text) => {
+                if self.panes[pi].session.readonly() {
+                    self.toast("읽기 전용 칸에는 붙여넣을 수 없습니다".into());
+                } else {
+                    self.paste_to(h.pane, text);
+                }
+            }
+        }
     }
 
     /// 고른 칸에 찾기 막대를 연다. 이미 열려 있으면 그대로
@@ -5139,6 +5271,7 @@ impl App {
             }
             Action::OpenConfig => self.open_settings(),
             Action::ToggleSecureInput => self.toggle_pane_secure_input(),
+            Action::Hints(kind, then) => self.start_hints(kind, then),
             _ => {}
         }
         self.request_redraw();
@@ -7023,6 +7156,20 @@ impl App {
             self.config.macos_titlebar_proxy_icon,
             self.active_pane().and_then(|p| p.cwd.as_deref()),
         );
+        // 힌트 모드(#865): 맞은 곳 아래 글이 바뀌었거나(출력이 밀었거나 스크롤했거나) 칸이 달라졌으면 닫는다
+        if let Some(h) = &self.w.hints {
+            let valid = self.focused_id() == Some(h.pane)
+                && views
+                    .iter()
+                    .find(|v| v.id == h.pane)
+                    .is_some_and(|v| h.valid_with(|m| bt_term::hints::spans_signature(&v.screen, &m.spans) == m.sig));
+            if !valid {
+                self.w.hints = None;
+                self.toast("화면이 바뀌어 힌트를 닫았습니다".into());
+            }
+        }
+        let hint_plan = self.w.hints.as_ref().map(|h| (h.pane, h.plan()));
+        let hint_style = crate::hints::HintStyle::from_theme(&theme);
         let preedit = self.w.preedit.clone();
         let hover = self.w.hover.clone();
         let link_previews = self.config.link_previews;
@@ -7063,6 +7210,9 @@ impl App {
                 let screen = &v.screen;
                 let mut cells = to_draw_cells(screen, &theme);
                 crate::text_blink::apply(&mut cells, &screen.cells, text_visible);
+                if let Some((_, plan)) = hint_plan.as_ref().filter(|(p, _)| *p == v.id) {
+                    crate::hints::paint(&mut cells, screen.cols, plan, &hint_style);
+                }
                 // Cmd를 누른 채 올라간 링크에 밑줄. 이미 곧은 밑줄이면 이중(#288)
                 if let Some((_, hit)) = hover.as_ref().filter(|(h, _)| *h == v.id) {
                     for sp in &hit.spans {
@@ -7090,7 +7240,8 @@ impl App {
                 );
                 // 암호 입력 중이면 자물쇠(#258). 모양은 Ghostty cursor.zig의 순서를 따른다
                 let password = self.pane_index(v.id).is_some_and(|i| self.panes[i].password);
-                let composing = v.focused && search.is_none() && palette.is_none() && !preedit.is_empty();
+                let composing =
+                    v.focused && search.is_none() && palette.is_none() && hint_plan.is_none() && !preedit.is_empty();
                 let cursor = crate::secure_input::cursor_style(
                     password,
                     composing,
@@ -7109,8 +7260,9 @@ impl App {
                     opacity: self.config.cursor_opacity,
                 });
                 // IME 조합 글은 고른 칸에만 그린다(찾기 막대가 열려 있으면 막대에)
-                let pre = (v.focused && search.is_none() && palette.is_none() && !preedit.is_empty())
-                    .then(|| preedit.clone());
+                let pre =
+                    (v.focused && search.is_none() && palette.is_none() && hint_plan.is_none() && !preedit.is_empty())
+                        .then(|| preedit.clone());
                 (cells, cursor, pre)
             })
             .collect();
@@ -7170,6 +7322,7 @@ impl App {
             overlay: toast.is_some()
                 || secure_badge
                 || hover.is_some()
+                || hint_plan.is_some()
                 || search.is_some()
                 || palette.is_some()
                 || confirm.is_some()
@@ -8281,6 +8434,7 @@ impl ApplicationHandler<UserEvent> for App {
                 Ime::Preedit(text, _) => {
                     // 읽기 전용 칸에 쓸 글은 조합 중인 것도 보이지 않는다. 고른 글도 건드리지 않는다(#209)
                     let overlay = self.w.search.is_some()
+                        || self.w.hints.is_some()
                         || self.w.palette.is_some()
                         || self.w.title_prompt.is_some()
                         || self.w.confirm.is_some();
@@ -8334,6 +8488,7 @@ impl ApplicationHandler<UserEvent> for App {
                 }
                 self.reset_blink();
                 if self.confirm_key(&event, event_loop)
+                    || self.hints_key(&event)
                     || self.title_key(&event)
                     || self.palette_key(&event, event_loop)
                     || self.search_key(&event)

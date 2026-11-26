@@ -172,6 +172,8 @@ pub enum Action {
     OpenConfig,
     /// 초점 칸의 칸 단위 보안 입력을 뒤집는다(Ghostty `toggle_secure_input`, #258). 메뉴 항목(앱 전체)과 다르다
     ToggleSecureInput,
+    /// 화면의 글에 라벨을 붙여 키보드로 고른다(kitty `hints` kitten, #865). Ghostty에는 없는 동작이다
+    Hints(bt_term::hints::HintKind, bt_term::hints::HintAction),
 }
 
 /// 파일로 쓸 글
@@ -780,6 +782,28 @@ pub fn parse_action(s: &str) -> Result<Option<Action>, String> {
                 .ok_or("toggle_broadcast_group:묶음 번호(0~15)")?,
         ),
         "clear_broadcast_groups" => Action::ClearBroadcastGroups,
+        // kitty `kitten hints --type <종류> --program <동작>`을 `hints:<종류>[,<동작>]`으로(#865). 동작을 안 적으면 열 수 있는 종류는
+        // 열기, 아닌 종류는 붙여넣기. 열 수 없는 종류에 `open`을 적으면 오류
+        "hints" => {
+            use bt_term::hints::{HintAction, HintKind};
+            let usage = || {
+                "hints:url·path·linenum·line·hash·word·hyperlink 뒤에 선택으로 ,open·,copy·,paste(열기는 url·path·linenum·hyperlink만)"
+                    .to_string()
+            };
+            let (kind, then) = match arg
+                .map(str::trim)
+                .map(|a| a.split_once(',').map_or((a, None), |(k, t)| (k, Some(t))))
+            {
+                Some(pair) => pair,
+                None => return Err(usage()),
+            };
+            let kind = HintKind::parse(kind.trim()).ok_or_else(usage)?;
+            let then = match then.map(str::trim) {
+                None => kind.default_action(),
+                Some(t) => HintAction::parse(t).filter(|a| kind.allows(*a)).ok_or_else(usage)?,
+            };
+            Action::Hints(kind, then)
+        }
         "set_window_theme" => {
             use bt_core::config::WindowTheme;
             Action::SetWindowTheme(match arg.map(str::trim) {
@@ -968,6 +992,18 @@ pub(crate) fn defaults() -> Vec<(&'static str, &'static str)> {
             ("super+e", "search_selection"),                  // 7358
             ("super+shift+f", "end_search"),                  // 7364
         ]);
+        // kitty의 `hints` kitten 기본 묶음(kitty.conf의 `kitty_mod+e`, `kitty_mod+p>…`, kitty_mod = ctrl+shift, #865). Ghostty 1.4.0 macOS 기본에
+        // 없는 키다(Config.zig 6826줄의 비macOS 갈래에서만 `ctrl+shift+e`=`new_split:down`, 6888줄). Linux는 그 Ghostty Linux 기본과 겹쳐 두지 않는다
+        v.extend([
+            ("ctrl+shift+e", "hints:url"),
+            ("ctrl+shift+p>f", "hints:path,paste"),
+            ("ctrl+shift+p>shift+f", "hints:path,open"),
+            ("ctrl+shift+p>l", "hints:line,paste"),
+            ("ctrl+shift+p>w", "hints:word,paste"),
+            ("ctrl+shift+p>h", "hints:hash,paste"),
+            ("ctrl+shift+p>n", "hints:linenum,open"),
+            ("ctrl+shift+p>y", "hints:hyperlink,open"),
+        ]);
     } else {
         // Ghostty Linux 기본. super를 ctrl+shift로 바꾸는 키가 아니다
         v.push(("shift+insert", "paste_from_selection"));
@@ -1022,6 +1058,16 @@ impl Keymap {
         let mut warnings = Vec::new();
         let swap_super = !cfg!(target_os = "macos");
         for (t, a) in defaults() {
+            // 키 순서 기본(`a>b`, kitty의 `ctrl+shift+p>f`, #865)
+            if t.contains('>') {
+                if let (Ok(keys), Ok(Some(act))) = (
+                    t.split('>').map(parse_trigger).collect::<Result<Vec<_>, _>>(),
+                    parse_action(a),
+                ) {
+                    km.bind(keys, act, BindFlags::default());
+                }
+                continue;
+            }
             if let (Ok(mut trig), Ok(Some(act))) = (parse_trigger(t), parse_action(a)) {
                 if swap_super && trig.mods.sup {
                     trig.mods.sup = false;
@@ -1688,6 +1734,10 @@ mod keymap_names_tests;
 #[cfg(test)]
 #[path = "keymap_chain_tests.rs"]
 mod keymap_chain_tests;
+
+#[cfg(test)]
+#[path = "keymap_hints_tests.rs"]
+mod keymap_hints_tests;
 
 #[cfg(test)]
 mod tests {

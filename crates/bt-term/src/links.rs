@@ -173,6 +173,11 @@ fn scheme_branch(chars: &[char], i: usize) -> Option<usize> {
 }
 
 /// `\w+://`로 시작하는가(공백 뒤 토막이 다른 주소의 시작이면 경로가 이어지지 않는다)
+/// `at`에서 시작하는 글이 찾는 주소 스킴(`SCHEMES`)으로 시작하는가. 힌트가 스킴 주소와 경로를 가를 때 쓴다
+pub(crate) fn starts_with_known_scheme(chars: &[char], at: usize) -> bool {
+    at < chars.len() && SCHEMES.iter().any(|s| starts_with_ci(chars, at, s))
+}
+
 fn starts_with_scheme(chars: &[char], at: usize) -> bool {
     let mut k = at;
     while k < chars.len() && is_word(chars[k]) {
@@ -350,7 +355,7 @@ pub fn find_urls(chars: &[char]) -> Vec<(usize, usize)> {
 }
 
 /// 마지막 칸이 줄 넘김(soft wrap)으로 다음 줄에 이어지는가
-fn wraps(screen: &Screen, row: usize) -> bool {
+pub(crate) fn wraps(screen: &Screen, row: usize) -> bool {
     screen.cols > 0 && screen.cell(screen.cols - 1, row).flags.contains(CellFlags::WRAPLINE)
 }
 
