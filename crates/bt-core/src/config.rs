@@ -3352,11 +3352,8 @@ impl Config {
                 }
             }
             "shell-integration" => match v {
-                "detect" | "none" | "zsh" | "bash" => self.shell_integration = v.to_string(),
-                // fish·elvish는 아직 스크립트가 없다
-                "fish" | "elvish" => {
-                    self.shell_integration = "none".into();
-                    warnings.push(format!("{}:{}: {v} 셸 통합은 아직 없습니다", e.file.display(), e.line));
+                "detect" | "none" | "zsh" | "bash" | "fish" | "nushell" | "elvish" => {
+                    self.shell_integration = v.to_string()
                 }
                 _ => bad(warnings),
             },

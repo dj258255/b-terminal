@@ -14,11 +14,14 @@ autoload -Uz add-zsh-hook
 
 _bt_precmd() {
   local ret=$?
+  (( _bt_widgets_done )) || _bt_install_widgets
   if (( _bt_running )); then
     builtin printf '\e]133;D;%d\a' "$ret"
     _bt_running=0
   fi
-  builtin printf '\e]7;file://%s%s\a' "${HOST}" "${PWD// /%20}"
+  # 폴더 이름은 믿을 수 없는 글이다(Ghostty main #14859): 제어 문자를 지워 이름 안의 ESC·BEL이 OSC를 끊고 다른 OSC를 끼우지 못하게 한다.
+  # printf의 %s는 역슬래시를 풀지 않는다. 터미널은 퍼센트 해독 없이 그대로 읽는 kitty-shell-cwd 모양을 받는다
+  builtin printf '\e]7;kitty-shell-cwd://%s%s\a' "${HOST//[[:cntrl:]]}" "${PWD//[[:cntrl:]]}"
   # path: 사용자의 .zprofile·.zshrc가 PATH를 다시 쓴 뒤인 첫 프롬프트에서 한 번, 없을 때만 끝에 더한다
   if (( _bt_f_path && ! _bt_path_done )); then
     _bt_path_done=1
@@ -78,6 +81,38 @@ _bt_precmd_prompt() {
   elif ! builtin zle 2>/dev/null; then
     # prompt_percent가 꺼져 있으면 PS1에 못 넣는다. 프롬프트 시작만 찍는다
     builtin printf '\e]133;A;cl=line\a'
+  fi
+}
+
+# 프롬프트를 그린 뒤 다른 훅(zinit·oh-my-posh 따위)이 PS1을 다시 만들면 표지가 빠진다. 줄 편집기가 시작할 때(zle-line-init) PS1에 표지가 없으면
+# B(와 A 대신 fresh-line을 하지 않는 P)를 따로 찍는다(Ghostty zsh). 이미 그려진 프롬프트라 A는 쓰지 않는다
+_bt_zle_line_init() {
+  if [[ $PS1 != *$'%{\e]133;A'* ]]; then
+    builtin printf '\e]133;P;k=i\a\e]133;B\a'
+  fi
+}
+
+# 위젯은 사용자의 .zshrc가 끝난 뒤 첫 프롬프트에서 건다(.zshenv에서는 아직 사용자의 위젯이 없다). 사용자의 zle-line-init이 있으면
+# 이름을 옮겨 두고 우리 함수가 그것을 끝에서 부른다(Ghostty 방식). add-zle-hook-widget으로 걸린 것은 감싸면 그 도구가 깨지므로 그 도구로 더한다
+typeset -gi _bt_widgets_done=0
+_bt_install_widgets() {
+  builtin emulate -L zsh -o no_warn_create_global -o no_aliases
+  _bt_widgets_done=1
+  # zle이 없는 셸(스크립트)에서는 할 일이 없다
+  builtin zmodload zsh/zle 2>/dev/null || return 0
+  builtin local widget=zle-line-init orig flag
+  if [[ $widgets[$widget] == user:azhw:* && $+functions[add-zle-hook-widget] -eq 1 ]]; then
+    add-zle-hook-widget line-init _bt_zle_line_init
+  else
+    if (( $+widgets[$widget] )); then
+      orig=._bt_orig_$widget
+      builtin zle -A $widget $orig
+      # 사용자 위젯이면 -w 없이 불러 $WIDGET을 지킨다
+      if [[ $widgets[$widget] == user:* ]]; then flag=; else flag=w; fi
+      functions[_bt_zle_line_init]+="
+        builtin zle $orig -N$flag -- \"\$@\""
+    fi
+    builtin zle -N $widget _bt_zle_line_init
   fi
 }
 

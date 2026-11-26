@@ -923,6 +923,10 @@ fn parse_osc(s: &str) -> Option<Signal> {
                 // N(#329)은 A와 같고, I는 B와 같다(Ghostty `new_command`·`end_prompt_start_input_terminate_eol`)
                 "A" => Signal::Prompt(PromptMark::PromptStart),
                 "N" if code == "133" => Signal::Prompt(PromptMark::PromptStart),
+                // P도 Ghostty처럼 프롬프트 시작이다. 다만 k=c·s·r(이어지는·두 번째·오른쪽 프롬프트)은 새 프롬프트 줄로 세지 않는다
+                "P" if code == "133" && parts.clone().all(|o| o.strip_prefix("k=").is_none_or(|k| k == "i")) => {
+                    Signal::Prompt(PromptMark::PromptStart)
+                }
                 "B" => Signal::Prompt(PromptMark::CommandStart),
                 "I" if code == "133" => Signal::Prompt(PromptMark::CommandStart),
                 "C" => Signal::Prompt(PromptMark::CommandExecuted),
@@ -1544,6 +1548,21 @@ mod tests {
             vec![Signal::Prompt(PromptMark::PromptStart)]
         );
         assert!(Scanner::default().feed(b"\x1b]633;N\x07").is_empty());
+    }
+
+    #[test]
+    fn osc133_p_primary_is_a_prompt_start_like_ghostty() {
+        // Ghostty stream_terminal.zig: A·N·P 모두 prompt_start. zsh 보강(#851)이 내는 133;P;k=i가 셸 통합으로 잡혀야 한다
+        let start = Signal::Prompt(PromptMark::PromptStart);
+        assert!(Scanner::default().feed(b"\x1b]133;P;k=i\x07").contains(&start));
+        assert!(Scanner::default().feed(b"\x1b]133;P\x07").contains(&start));
+        // 이어지는·두 번째·오른쪽 프롬프트는 새 프롬프트 줄로 세지 않는다
+        for k in ["c", "s", "r"] {
+            let seq = format!("\x1b]133;P;k={k}\x07");
+            assert!(!Scanner::default().feed(seq.as_bytes()).contains(&start), "k={k}");
+        }
+        // 633은 예전 그대로 P를 읽지 않는다
+        assert!(!Scanner::default().feed(b"\x1b]633;P\x07").contains(&start));
     }
 
     #[test]

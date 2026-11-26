@@ -787,3 +787,13 @@
 - 고침: 탭 줄 오른쪽 누름이 그 탭을 고르고 메뉴(탭 제목 바꾸기, 색 열 가지)를 띄운다. 색은 `TabGroup.color`에 들고 탭 줄이 제목 오른쪽 끝에 점으로 그린다. 탭 옮기기·닫기 되살리기(`Closed::Tab`)·`window-save-state`(`SavedTab.color`, 이름 글자, 없으면 키를 적지 않음)에 실린다. 모르는 색 이름이 든 파일은 그 탭만 색 없이 열고 파일을 버리지 않는다. 상태 파일 판 번호는 1 그대로다(제목 필드를 더할 때와 같음)
 - 남긴 것: 키 동작·설정 키는 없다(Ghostty `Binding.zig`에도 탭 색 동작이 없다). Ghostty는 오른쪽 클릭한 탭을 고르지 않고 메뉴를 띄우지만 여기서는 그 탭을 먼저 고른다. 팔레트 `Focus:` 항목의 색 아이콘은 없다. 색 값은 Apple의 시스템 색 공개 값이고 재지 않았다. 메뉴의 어두운 모양 여부는 터미널 바탕색으로 정한다(시스템 모양이 아님). 실제 창에서는 확인하지 않았다
 - 0.102.0에서 풀기: 없음. `set_tab_title`로 제목 앞에 표시를 붙여 구별한다
+
+## 92. fish에서 명령 끝 알림·`btctl run`·프롬프트 이동이 안 되고, 폴더 이름에 ESC·BEL이 있으면 OSC 7이 끊긴다
+
+- 언제: 2026-11-26, #851. 0.102.0(과 #848)까지의 동작이다. Ghostty 1.4.0 `src/shell-integration`과 견준 조사에서 찾았다
+- 증상: `shell = fish`(또는 `$SHELL`이 fish)로 띄우면 명령 끝 알림이 없고 `btctl run`이 "이 탭은 셸 통합이 없습니다"로 끝나고 Cmd-↑·↓가 움직이지 않았다. nushell·elvish도 같았다. zsh에서는 다른 훅(zinit·oh-my-posh 따위)이 PS1을 다시 만든 프롬프트에 `133;B`가 없어 프롬프트 클릭 이동이 입력 칸을 못 셌다. 그리고 `mkdir $'x\a\e]52;c;SGVsbG8=\a'; cd` 한 폴더에 들어가면 zsh·bash가 그 이름을 그대로 OSC 7에 실어 OSC 52(클립보드 쓰기)가 끼었다
+- 까닭: 번들 스크립트가 zsh·bash뿐이었다. zsh는 PS1에만 B를 넣고 줄 편집기 시작에서 보강하지 않았다. OSC 7은 공백만 `%20`으로 바꾸고 제어 문자를 지우지 않았다
+- 고침: fish·nushell·elvish 스크립트를 더하고 `XDG_DATA_DIRS`로 싣는다. zsh는 `zle-line-init`에서 B를 보강한다. zsh·bash의 OSC 7은 제어 문자를 지운다(ADR-087). 설정 `shell-integration`이 `fish`·`nushell`·`elvish`를 받는다. 엔진은 `133;P`(`k`가 없거나 `k=i`)도 Ghostty `stream_terminal.zig`처럼 프롬프트 시작으로 센다. 전에는 `A`·`N`만 셌기 때문에, PS1을 다시 만드는 zsh에서 보강한 `133;P;k=i`·`133;B`가 와도 탭이 셸 통합으로 잡히지 않았다(격리한 실제 창에서 찾음). `k=c`·`s`·`r`은 새 프롬프트 줄로 세지 않는다
+- 한계: 이 개발 기계에 fish·nushell·elvish가 없어 스크립트를 실제로 돌려 보지 못했다(Ghostty 스크립트를 우리 이름·기능 목록에 맞춘 것이라 문법·동작은 Ghostty 원본과 견준 것뿐이다). elvish는 사용자가 `rc.elv`에 한 줄을 적어야 켜진다. nushell은 명령 경계·폴더를 셸의 `$env.config.shell_integration`(기본 켬)에 맡기므로 사용자가 끄면 보내지 않는다. fish·nushell·elvish에는 `title` 기능이 없다(셸이 제목을 직접 정한다). elvish는 `133;B`가 없다
+- 0.102.0에서 풀기: zsh·bash 탭을 쓴다. 폴더 이름에 제어 문자가 든 곳에는 들어가지 않는다
+
