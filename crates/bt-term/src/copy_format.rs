@@ -355,17 +355,26 @@ impl<T> Writer<'_, T> {
                     self.out.push_str(&format!("\x1b]8;id={id};{}\x1b\\", link.uri()));
                 }
             }
-            // 안전한 scheme(http·https·mailto)일 때만 앵커를 만든다. 아니면 링크 글만 낸다.
-            // 주소는 글자마다 이스케이프한다(Ghostty는 바이트마다 해서 비ASCII가 깨지고 scheme도 거르지 않는다)
+            // 앵커 태그는 늘 낸다. 허용 목록(`html_href_allowed`) 밖의 주소는 `href="#"`로 쓴다(Ghostty main #15347).
+            // 허용한 주소는 0x00~0x20·0x7F 이상 바이트를 `%XX`로 쓰고 나머지는 이스케이프한다
             Emit::Html => {
-                if is_safe_scheme(link.uri()) {
+                if !html_href_allowed(link.uri()) {
+                    self.out.push_str("<a href=\"#\">");
+                } else {
                     self.out.push_str("<a href=\"");
+                    let mut buf = [0u8; 4];
                     for c in link.uri().chars() {
-                        self.codepoint(c);
+                        if c as u32 <= 0x20 || c as u32 >= 0x7F {
+                            for b in c.encode_utf8(&mut buf).bytes() {
+                                self.out.push_str(&format!("%{b:02X}"));
+                            }
+                        } else {
+                            self.codepoint(c);
+                        }
                     }
                     self.out.push_str("\">");
-                    self.anchor_open = true;
                 }
+                self.anchor_open = true;
             }
         }
     }
@@ -384,11 +393,14 @@ impl<T> Writer<'_, T> {
     }
 }
 
-/// HTML 앵커로 만들어도 되는 주소인가: scheme이 http·https·mailto(대소문자 무시)일 때만.
-/// `javascript:`·`data:`·`vbscript:` 같은 주소는 붙여넣은 편집기에서 실행될 수 있다
-fn is_safe_scheme(uri: &str) -> bool {
-    let lower = uri.to_ascii_lowercase();
-    ["http:", "https:", "mailto:"].iter().any(|p| lower.starts_with(p))
+/// 주소를 HTML `href`에 쓸 수 있는가(Ghostty main #15347 `htmlHrefAllowed`): `http://`·`https://`·`mailto:`·`file://`로
+/// 시작할 때만, 대소문자 무시. 브라우저는 scheme을 읽기 전에 앞의 공백·제어 문자를 건너뛰므로 다듬지 않고 정확히 맞춘다
+/// (그런 주소와 scheme 없는 주소는 막는다). `file://`은 호스트가 있어도 허용한다(`ls --hyperlink`)
+fn html_href_allowed(uri: &str) -> bool {
+    let b = uri.as_bytes();
+    ["http://", "https://", "mailto:", "file://"]
+        .iter()
+        .any(|p| b.len() >= p.len() && b[..p.len()].eq_ignore_ascii_case(p.as_bytes()))
 }
 
 /// 엔진이 id 없는 OSC 8에 붙이는 번호 id(`<숫자>_alacritty`)
@@ -1015,50 +1027,96 @@ mod tests {
         );
     }
 
-    // 보안: 프로그램이 심은 주소가 붙여넣은 편집기에서 실행되지 않게 http·https·mailto만 앵커로 만든다(Ghostty는 거르지 않는다)
+    // 보안(Ghostty main #15347 `htmlHrefAllowed` 시험 표): http·https·mailto·file:// (대소문자 무시)만 href에 쓴다.
+    // 나머지는 글과 `<a>` 태그를 남기고 `href="#"`
     #[test]
-    fn html_anchor_only_for_safe_schemes() {
-        for uri in [
-            "http://a.example/x",
-            "https://a.example/x",
-            "mailto:a@b.example",
-            "HTTPS://A.EXAMPLE",
-            "MailTo:a@b",
-        ] {
-            let out = html(&format!("\x1b]8;;{uri}\x1b\\link\x1b]8;;\x1b\\"));
-            assert_eq!(out, format!("{WRAP}<a href=\"{uri}\">link</a></div>"), "{uri}");
+    fn html_href_only_for_allowed_uris() {
+        let allowed = [
+            "http://example.com",
+            "https://example.com",
+            "HTTPS://example.com",
+            "mailto:a@example.com",
+            "file:///home/user/a.txt",
+            "file://localhost/home/user/a.txt",
+            "file://myhost/home/user/a.txt",
+            "FILE:///C:/Users/a.txt",
+        ];
+        for uri in allowed {
+            let out = html(&format!("\x1b]8;;{uri}\x1b\\link\x1b]8;;\x1b\\ normal"));
+            assert_eq!(out, format!("{WRAP}<a href=\"{uri}\">link</a> normal</div>"), "{uri}");
         }
-        for uri in [
+        let refused = [
             "javascript:alert(1)",
             "JaVaScRiPt:alert(1)",
-            "data:text/html,<b>x</b>",
-            "vbscript:x",
-            "file:///etc/passwd",
-            "//evil.example/x",
-            "/relative",
+            "vbscript:msgbox(1)",
+            "data:text/html,<script>alert(1)</script>",
+            "blob:https://example.com/1",
             " javascript:alert(1)",
-        ] {
-            let out = html(&format!("\x1b]8;;{uri}\x1b\\link\x1b]8;;\x1b\\ ok"));
-            assert_eq!(out, format!("{WRAP}link ok</div>"), "앵커 없이 글만: {uri}");
+            " https://example.com",
+            "\tjavascript:alert(1)",
+            "ssh://example.com",
+            "x-custom://example.com",
+            "//example.com/a",
+            "/etc/passwd",
+            "example.com",
+            "https:example.com",
+            "file:/home/user/a.txt",
+            "file:home/user/a.txt",
+            "http",
+        ];
+        for uri in refused {
+            let out = html(&format!("\x1b]8;;{uri}\x1b\\link\x1b]8;;\x1b\\ normal"));
+            assert_eq!(out, format!("{WRAP}<a href=\"#\">link</a> normal</div>"), "{uri}");
         }
         // 막힌 링크가 스타일과 섞여도 짝이 맞는다
         assert_eq!(
             html("\x1b]8;;javascript:x\x1b\\\x1b[1mb\x1b[0m\x1b]8;;\x1b\\"),
-            format!("{WRAP}<div style=\"display: inline;font-weight: bold;\">b</div></div>")
+            format!("{WRAP}<div style=\"display: inline;font-weight: bold;\"><a href=\"#\">b</div></a></div>")
         );
     }
 
-    // 주소가 비ASCII여도 글자가 깨지지 않고, 속성값 안의 특수 문자는 이스케이프된다
+    // 비ASCII·공백·제어 바이트는 퍼센트 인코딩하고 속성값 안의 특수 문자는 이스케이프한다(Ghostty 시험의 같은 입력)
     #[test]
-    fn html_anchor_uri_keeps_unicode_and_escapes_attribute_characters() {
+    fn html_href_percent_encodes_non_printable_ascii() {
+        assert_eq!(
+            html("\x1b]8;;https://example.com/caf\u{e9} a\u{7f}?a=\"1\"&b=<2>\x1b\\link\x1b]8;;\x1b\\"),
+            format!(
+                "{WRAP}<a href=\"https://example.com/caf%C3%A9%20a%7F?a=&quot;1&quot;&amp;b=&lt;2&gt;\">link</a></div>"
+            )
+        );
         assert_eq!(
             html("\x1b]8;;https://a.example/한글\x1b\\x\x1b]8;;\x1b\\"),
-            format!("{WRAP}<a href=\"https://a.example/&#54620;&#44544;\">x</a></div>")
+            format!("{WRAP}<a href=\"https://a.example/%ED%95%9C%EA%B8%80\">x</a></div>")
         );
+        // %는 그대로(이미 인코딩된 주소를 두 번 인코딩하지 않는다)
         assert_eq!(
-            html("\x1b]8;;https://a.example/?q=\"><script>'&\x1b\\x\x1b]8;;\x1b\\"),
-            format!("{WRAP}<a href=\"https://a.example/?q=&quot;&gt;&lt;script&gt;&#39;&amp;\">x</a></div>")
+            html("\x1b]8;;https://a.example/%20a\x1b\\x\x1b]8;;\x1b\\"),
+            format!("{WRAP}<a href=\"https://a.example/%20a\">x</a></div>")
         );
+    }
+
+    // 인코딩 뒤에도 href 속성을 빠져나갈 수 없다: 따옴표·꺾쇠·줄바꿈·NUL·ESC가 든 주소
+    #[test]
+    fn html_href_cannot_escape_the_attribute() {
+        for uri in [
+            "https://a.example/\"><script>alert(1)</script>",
+            "https://a.example/'><img src=x onerror=alert(1)>",
+            "https://a.example/a\nb\" onclick=\"x",
+            "https://a.example/a\0b",
+            "https://a.example/a\rb\tc",
+            "https://a.example/a\u{85}b\u{2028}c",
+        ] {
+            let out = html(&format!("\x1b]8;;{uri}\x1b\\x\x1b]8;;\x1b\\"));
+            let href = out
+                .strip_prefix(&format!("{WRAP}<a href=\""))
+                .and_then(|r| r.strip_suffix("\">x</a></div>"))
+                .unwrap_or_else(|| panic!("꼴이 다르다: {out:?}"));
+            for bad in ['"', '\'', '<', '>', ' ', '\n', '\r', '\t', '\0', '\x1b'] {
+                assert!(!href.contains(bad), "{bad:?} 남음: {href}");
+            }
+            // &는 엔티티(&amp; 등)로만 남는다
+            assert!(href.is_ascii(), "{href}");
+        }
     }
 
     // "Page VT single line plain text"
