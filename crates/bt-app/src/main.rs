@@ -11,6 +11,7 @@ mod cliinfo;
 mod context_menu;
 mod control;
 mod copy;
+mod default_terminal;
 mod desktop;
 mod divider_drag;
 mod dock_open;

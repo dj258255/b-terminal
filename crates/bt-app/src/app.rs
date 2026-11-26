@@ -109,6 +109,9 @@ pub enum UserEvent {
     /// 칸이 낸 데스크톱 알림을 눌렀다(칸 번호, #625). macOS 앱 묶음에서만 온다
     #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     NoteClicked(u64),
+    /// "기본 터미널로 지정" 요청이 끝났다(성공인가, #859). 시스템이 다른 스레드에서 알린다. macOS에만 온다
+    #[cfg(target_os = "macos")]
+    DefaultTerminalDone(bool),
     /// AppleScript 명령(#634). vendor가 주 스레드에서 넘기고 답을 기다린다. macOS 앱 묶음에서만 온다
     #[cfg(target_os = "macos")]
     Script(
@@ -1170,6 +1173,9 @@ pub struct App {
     /// 메뉴 막대(살려 두어야 메뉴가 남는다)
     #[cfg(target_os = "macos")]
     menu: Option<muda::Menu>,
+    /// 앱 메뉴의 "기본 터미널로 지정" 항목. 이미 기본이면 끈다(#859)
+    #[cfg(target_os = "macos")]
+    menu_default_terminal: Option<muda::MenuItem>,
     control: Option<crate::control::ControlServer>,
     keymap: Keymap,
     /// 명령줄의 설정 인자. 설정을 다시 읽을 때도 같은 것을 쓴다
@@ -1261,6 +1267,8 @@ impl App {
             next_poll: Instant::now(),
             #[cfg(target_os = "macos")]
             menu: None,
+            #[cfg(target_os = "macos")]
+            menu_default_terminal: None,
             shell_integration_dir: None,
             run_waiters: std::collections::HashMap::new(),
             text_waiters: Vec::new(),
@@ -6058,6 +6066,53 @@ impl App {
         self.request_redraw_all();
     }
 
+    /// 이 실행 파일이 든 앱 묶음. 묶음 밖(cargo run 등)이면 없다
+    #[cfg(target_os = "macos")]
+    fn own_bundle() -> Option<std::path::PathBuf> {
+        crate::default_terminal::bundle_of(&std::env::current_exe().ok()?)
+    }
+
+    /// 메뉴 항목을 켜고 끈다: 묶음이고 아직 기본 터미널이 아닐 때만 켠다(Ghostty `validateMenuItem`). 읽기만 한다
+    #[cfg(target_os = "macos")]
+    fn refresh_default_terminal_item(&self) {
+        if let Some(item) = &self.menu_default_terminal {
+            let on = crate::default_terminal::menu_enabled(
+                Self::own_bundle().as_deref(),
+                crate::default_terminal::current_default().as_deref(),
+            );
+            item.set_enabled(on);
+        }
+    }
+
+    /// 메뉴 "기본 터미널로 지정": 이 묶음을 실행 파일의 기본 앱으로 정하게 시스템에 요청한다(#859).
+    /// 시스템이 확인 창을 띄울 수 있다. 실패하면 알림 띠로 알린다
+    fn set_default_terminal(&mut self) {
+        #[cfg(target_os = "macos")]
+        {
+            let Some(bundle) = Self::own_bundle() else {
+                self.toast("앱 묶음으로 실행한 b-terminal만 기본 터미널로 지정할 수 있습니다".into());
+                return;
+            };
+            let proxy = self.proxy.clone();
+            let asked = crate::default_terminal::set_default(&bundle, move |ok| {
+                let _ = proxy.send_event(UserEvent::DefaultTerminalDone(ok));
+            });
+            if !asked {
+                self.toast("기본 터미널로 지정하지 못했습니다".into());
+            }
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    fn on_default_terminal_done(&mut self, ok: bool) {
+        self.refresh_default_terminal_item();
+        if ok {
+            self.toast("b-terminal을 기본 터미널로 지정했습니다".into());
+        } else {
+            self.toast("기본 터미널로 지정하지 못했습니다. 서명하지 않은 앱이면 시스템이 거부할 수 있습니다".into());
+        }
+    }
+
     fn windowless(&self) -> bool {
         self.w.gfx.is_none() && self.others.is_empty()
     }
@@ -7399,7 +7454,8 @@ impl ApplicationHandler<UserEvent> for App {
         self.w.gfx = Some(gfx);
         #[cfg(target_os = "macos")]
         if self.menu.is_none() {
-            let (menu, secure_item, float_item) = crate::menu::build(self.secure.global());
+            let (menu, secure_item, float_item, default_item) = crate::menu::build(self.secure.global());
+            self.menu_default_terminal = Some(default_item);
             menu.init_for_nsapp();
             self.menu_secure = Some(secure_item);
             float_item.set_checked(self.w.float_on_top);
@@ -7409,6 +7465,7 @@ impl ApplicationHandler<UserEvent> for App {
                 let _ = proxy.send_event(UserEvent::Menu(e.id.0.clone()));
             }));
             self.menu = Some(menu);
+            self.refresh_default_terminal_item();
         }
         apply_hidden_from_dock(self.config.macos_hidden);
         icon::apply(self.config.macos_icon, self.config.macos_custom_icon.as_deref());
@@ -7522,8 +7579,11 @@ impl ApplicationHandler<UserEvent> for App {
                 Some(crate::menu::MenuCommand::Action(a)) => self.handle_action(a, event_loop),
                 Some(crate::menu::MenuCommand::OpenSettings) => self.open_settings(),
                 Some(crate::menu::MenuCommand::ToggleSecureKeyboardEntry) => self.toggle_global_secure_input(),
+                Some(crate::menu::MenuCommand::SetDefaultTerminal) => self.set_default_terminal(),
                 None => {}
             },
+            #[cfg(target_os = "macos")]
+            UserEvent::DefaultTerminalDone(ok) => self.on_default_terminal_done(ok),
             UserEvent::OpenFile(path) => self.on_open_file(event_loop, path),
             UserEvent::OpenFolders(want_tab, paths) => self.on_open_folders(event_loop, want_tab, paths),
             UserEvent::NoteClicked(pane) => self.on_note_clicked(event_loop, pane),
@@ -7712,6 +7772,11 @@ impl ApplicationHandler<UserEvent> for App {
                 }
                 // 보안 입력: 앱이 앞이면 켜고(창 어느 하나라도 초점이면), 아니면 끈다. 앞으로 오면 바로 칸을 살핀다(#258)
                 self.update_secure_active();
+                // 다른 앱에서 기본 터미널을 바꿨을 수 있으니 앞으로 올 때 메뉴 항목을 다시 맞춘다(#859)
+                #[cfg(target_os = "macos")]
+                if focused && !was_focused {
+                    self.refresh_default_terminal_item();
+                }
                 if focused {
                     self.next_secure_poll = Instant::now();
                     // 시스템 설정의 스크롤 막대(보기·클릭 시)는 앱이 앞으로 올 때 다시 읽는다(#630)
