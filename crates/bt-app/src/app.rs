@@ -2315,7 +2315,7 @@ impl App {
                     if !t.session.has_shell_integration() {
                         return Response::err(
                             id,
-                            "이 탭은 셸 통합이 없습니다(zsh·bash 탭에서 쓰세요. shell-integration 설정을 보세요)",
+                            "이 탭은 셸 통합이 없습니다(zsh·bash·fish·nushell 탭에서 쓰세요. shell-integration 설정을 보세요)",
                         );
                     }
                     if t.running.is_some() || self.run_waiters.contains_key(&t.id) {

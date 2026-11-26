@@ -15,6 +15,19 @@ const FILES: &[(&str, &str)] = &[
         include_str!("../../../assets/shell-integration/zsh/b-terminal.zsh"),
     ),
     ("bash/rc", include_str!("../../../assets/shell-integration/bash/rc")),
+    // fish·nushell·elvish는 XDG_DATA_DIRS 아래에서 찾는 이름 그대로 둔다(fish/vendor_conf.d, nushell/vendor/autoload, elvish/lib)
+    (
+        "fish/vendor_conf.d/b-terminal-shell-integration.fish",
+        include_str!("../../../assets/shell-integration/fish/vendor_conf.d/b-terminal-shell-integration.fish"),
+    ),
+    (
+        "nushell/vendor/autoload/b-terminal.nu",
+        include_str!("../../../assets/shell-integration/nushell/vendor/autoload/b-terminal.nu"),
+    ),
+    (
+        "elvish/lib/b-terminal-integration.elv",
+        include_str!("../../../assets/shell-integration/elvish/lib/b-terminal-integration.elv"),
+    ),
     (
         "bash/b-terminal.bash",
         include_str!("../../../assets/shell-integration/bash/b-terminal.bash"),
@@ -26,6 +39,9 @@ const FILES: &[(&str, &str)] = &[
 pub enum Shell {
     Zsh,
     Bash,
+    Fish,
+    Nushell,
+    Elvish,
 }
 
 impl Shell {
@@ -33,6 +49,9 @@ impl Shell {
         match Path::new(program).file_name()?.to_str()?.trim_start_matches('-') {
             "zsh" => Some(Shell::Zsh),
             "bash" => Some(Shell::Bash),
+            "fish" => Some(Shell::Fish),
+            "nu" => Some(Shell::Nushell),
+            "elvish" => Some(Shell::Elvish),
             _ => None,
         }
     }
@@ -65,7 +84,21 @@ pub fn bin_dir_of(exe: &Path) -> Option<PathBuf> {
     dir.join("btctl").is_file().then(|| dir.to_path_buf())
 }
 
-/// 기본 셸을 띄우는 탭에 셸 통합을 싣는다. `mode`는 설정 shell-integration(detect·none·zsh·bash)
+/// 셸이 `XDG_DATA_DIRS`에서 읽는 값: 우리 폴더를 맨 앞에 두고 원래 목록을 그대로 잇는다(Ghostty `setupXdgDataDirs`).
+/// 변수가 없으면 XDG 규격의 기본값을 함께 둬 기본 폴더를 잃지 않게 한다. 절대 경로가 아니거나 `:`·제어 문자가 든 폴더는
+/// 목록을 깨므로 쓰지 않는다(`None`)
+pub fn xdg_data_dirs_with(existing: Option<&str>, dir: &Path) -> Option<String> {
+    let text = dir.to_str()?;
+    if !dir.is_absolute() || text.chars().any(|c| c == ':' || c.is_control()) {
+        return None;
+    }
+    Some(match existing.unwrap_or("/usr/local/share:/usr/share") {
+        "" => text.to_string(),
+        cur => format!("{text}:{cur}"),
+    })
+}
+
+/// 기본 셸을 띄우는 탭에 셸 통합을 싣는다. `mode`는 설정 shell-integration(detect·none·zsh·bash·fish·nushell·elvish)
 pub fn apply(opts: &mut SpawnOptions, dir: &Path, mode: &str, features: &ShellFeatures, bin_dir: Option<&Path>) {
     if opts.program.is_some() || mode == "none" {
         return;
@@ -77,9 +110,22 @@ pub fn apply(opts: &mut SpawnOptions, dir: &Path, mode: &str, features: &ShellFe
     let shell = match mode {
         "zsh" => Some(Shell::Zsh),
         "bash" => Some(Shell::Bash),
+        "fish" => Some(Shell::Fish),
+        "nushell" => Some(Shell::Nushell),
+        "elvish" => Some(Shell::Elvish),
         _ => Shell::detect(&shell_path),
     };
     let Some(shell) = shell else { return };
+    // fish·nushell·elvish는 환경 변수 하나(XDG_DATA_DIRS)로만 싣는다. 폴더가 목록을 깨면 아무것도 싣지 않는다
+    let xdg = match shell {
+        Shell::Fish | Shell::Nushell | Shell::Elvish => {
+            match xdg_data_dirs_with(std::env::var("XDG_DATA_DIRS").ok().as_deref(), dir) {
+                Some(v) => Some(v),
+                None => return,
+            }
+        }
+        _ => None,
+    };
     opts.env
         .push(("BT_SHELL_INTEGRATION_DIR".into(), dir.to_string_lossy().into_owned()));
     // 스크립트는 이 목록의 이름과 정확히 맞는 것만 켠다(eval하지 않는다). 비어 있어도 싣는다
@@ -105,6 +151,14 @@ pub fn apply(opts: &mut SpawnOptions, dir: &Path, mode: &str, features: &ShellFe
             ];
             opts.env.push(("BT_BASH_LOGIN".into(), "1".into()));
         }
+        Shell::Fish | Shell::Nushell | Shell::Elvish => {
+            // 셸이 시작할 때 XDG_DATA_DIRS 아래의 스크립트를 읽는다. 스크립트가 처음에 이 변수에서 우리 폴더를 빼 하위 프로세스에 새지 않게 한다
+            opts.env.push((
+                "BT_SHELL_INTEGRATION_XDG_DIR".into(),
+                dir.to_string_lossy().into_owned(),
+            ));
+            opts.env.push(("XDG_DATA_DIRS".into(), xdg.unwrap_or_default()));
+        }
     }
 }
 
@@ -117,7 +171,7 @@ mod tests {
         assert_eq!(Shell::detect("/bin/zsh"), Some(Shell::Zsh));
         assert_eq!(Shell::detect("-zsh"), Some(Shell::Zsh));
         assert_eq!(Shell::detect("/opt/homebrew/bin/bash"), Some(Shell::Bash));
-        assert_eq!(Shell::detect("/usr/bin/fish"), None);
+        assert_eq!(Shell::detect("/usr/bin/tcsh"), None);
     }
 
     #[test]
@@ -195,10 +249,21 @@ mod tests {
 
     /// 스크립트를 읽고 `body`를 돌린 표준 출력
     fn run_script(shell: Shell, features: Option<&str>, bin_dir: Option<&str>, body: &str) -> String {
+        run_script_in(shell, features, bin_dir, None, body)
+    }
+
+    /// `run_script`를 `cwd` 폴더에서 돌린다
+    fn run_script_in(
+        shell: Shell,
+        features: Option<&str>,
+        bin_dir: Option<&str>,
+        cwd: Option<&Path>,
+        body: &str,
+    ) -> String {
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/shell-integration");
         let (prog, args, script): (&str, &[&str], &str) = match shell {
             Shell::Zsh => ("zsh", &["-f", "-c"], "zsh/b-terminal.zsh"),
-            Shell::Bash => ("bash", &["--norc", "--noprofile", "-c"], "bash/b-terminal.bash"),
+            _ => ("bash", &["--norc", "--noprofile", "-c"], "bash/b-terminal.bash"),
         };
         let code = format!(". '{}'\n{body}", root.join(script).canonicalize().unwrap().display());
         let mut cmd = std::process::Command::new(prog);
@@ -207,6 +272,9 @@ mod tests {
             .env_clear()
             .env("PATH", "/usr/bin:/bin")
             .env("HOME", "/nonexistent");
+        if let Some(d) = cwd {
+            cmd.current_dir(d);
+        }
         if let Some(f) = features {
             cmd.env("BT_SHELL_FEATURES", f);
         }
@@ -236,7 +304,7 @@ mod tests {
     fn prompt_then_command(shell: Shell) -> &'static str {
         match shell {
             Shell::Zsh => "_bt_precmd; _bt_precmd_prompt; _bt_preexec 'ls -l'",
-            Shell::Bash => "_bt_precmd; : ls -l",
+            _ => "_bt_precmd; : ls -l",
         }
     }
 
@@ -293,7 +361,7 @@ mod tests {
             // 명령 글에 든 제어 문자는 공백으로: 제목 OSC를 끊고 다른 OSC를 끼우지 못한다
             let body = match sh {
                 Shell::Zsh => "_bt_precmd; _bt_precmd_prompt; _bt_preexec $'x\\e]0;evil\\a\\ey'",
-                Shell::Bash => "_bt_precmd; : $'x\\e]0;evil\\ay'",
+                _ => "_bt_precmd; : $'x\\e]0;evil\\ay'",
             };
             let out = run_script(sh, Some("title"), None, body);
             assert!(!out.contains("\x1b]0;"), "{sh:?}: {out:?}");
@@ -365,7 +433,7 @@ mod tests {
         let show = match sh {
             Shell::Zsh => "print -r -- \"PS1=$PS1\"",
             // 찍는 명령이 사람이 친 명령으로 읽혀 PS1이 되돌려지지 않게 덫이 부르는 함수를 먼저 비운다(함수 정의는 덫에 걸리지 않는다)
-            Shell::Bash => "_bt_preexec() { :; }\nprintf 'PS1=%s\\n' \"$PS1\"",
+            _ => "_bt_preexec() { :; }\nprintf 'PS1=%s\\n' \"$PS1\"",
         };
         let out = run_script(sh, Some(""), None, &format!("PS1='{ps1}'; {body}; {show}"));
         // PS1 안에 줄바꿈이 있을 수 있으니 마지막 `PS1=` 뒤를 통째로 읽는다
@@ -377,7 +445,7 @@ mod tests {
     fn precmd_only(sh: Shell) -> &'static str {
         match sh {
             Shell::Zsh => "_bt_precmd; _bt_precmd_prompt",
-            Shell::Bash => "_bt_precmd",
+            _ => "_bt_precmd",
         }
     }
 
@@ -388,7 +456,7 @@ mod tests {
             let ps1 = ps1_after(sh, "$ ", precmd_only(sh));
             match sh {
                 Shell::Zsh => assert_eq!(ps1, "%{\x1b]133;A;cl=line\x07%}$ %{\x1b]133;B\x07%}"),
-                Shell::Bash => assert_eq!(ps1, "\\[\\e]133;P;k=i\\a\\]$ \\[\\e]133;B\\a\\]"),
+                _ => assert_eq!(ps1, "\\[\\e]133;P;k=i\\a\\]$ \\[\\e]133;B\\a\\]"),
             }
         });
     }
@@ -403,7 +471,7 @@ mod tests {
             // 명령 앞에서는 표지를 더하기 전의 PS1로 돌아간다
             let body = match sh {
                 Shell::Zsh => "_bt_precmd; _bt_precmd_prompt; _bt_preexec 'ls'",
-                Shell::Bash => "_bt_precmd; : ls",
+                _ => "_bt_precmd; : ls",
             };
             assert_eq!(ps1_after(sh, "$ ", body), "$ ", "{sh:?}");
         });
@@ -416,7 +484,7 @@ mod tests {
                 let ps1 = ps1_after(sh, "~\n$ ", precmd_only(sh));
                 assert!(ps1.contains("~\n%{\x1b]133;P;k=s\x07%}$ "), "{ps1:?}");
             }
-            Shell::Bash => {
+            _ => {
                 // bash는 글자 그대로의 `\n`(프롬프트 이스케이프)만 바꾼다
                 let ps1 = ps1_after(sh, "~\\n$ ", precmd_only(sh));
                 assert!(ps1.contains("\\n\\[\\e]133;P;k=s\\a\\]$ "), "{ps1:?}");
@@ -457,5 +525,135 @@ mod tests {
         let out = run_script(Shell::Bash, Some(""), None, &format!("{empty_enter}; : ls"));
         assert_eq!(out.matches("\x1b]133;C").count(), 1, "{out:?}");
         assert!(out.contains("\x1b]633;E;: ls\x07"), "{out:?}");
+    }
+
+    /// 폴더 이름은 믿을 수 없는 글이다(Ghostty main #14859). 이름 안의 ESC·BEL이 OSC 7을 일찍 끝내고 다른 OSC(52 클립보드 쓰기 등)를 끼우면 안 된다
+    #[test]
+    fn cwd_report_drops_control_bytes_from_the_directory_name() {
+        each_shell(|sh| {
+            let base = std::env::temp_dir().join(format!("bt-cwd-{}-{sh:?}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&base);
+            // 진짜 BEL·ESC가 든 이름과, 글자 그대로의 역슬래시 이름
+            for (name, shown) in [
+                ("x\u{7}\u{1b}]52;c;SGVsbG8=\u{7}", "x]52;c;SGVsbG8="),
+                ("x\\a\\e]52;c;SGVsbG8=\\a", "x\\a\\e]52;c;SGVsbG8=\\a"),
+            ] {
+                let dir = base.join(name);
+                std::fs::create_dir_all(&dir).unwrap();
+                let out = run_script_in(sh, Some(""), None, Some(&dir), "_bt_precmd");
+                assert!(!out.contains("\x1b]52"), "{sh:?} {name:?}: 다른 OSC가 끼었다: {out:?}");
+                let (_, after) = out
+                    .split_once("\x1b]7;")
+                    .unwrap_or_else(|| panic!("{sh:?}: OSC 7 없음: {out:?}"));
+                let (seg, _) = after.split_once('\x07').unwrap_or_else(|| panic!("{sh:?}: {out:?}"));
+                assert!(seg.starts_with("kitty-shell-cwd://"), "{sh:?}: {seg:?}");
+                assert!(seg.ends_with(shown), "{sh:?} {name:?}: {seg:?}");
+                assert!(!seg.chars().any(char::is_control), "{sh:?}: {seg:?}");
+            }
+            let _ = std::fs::remove_dir_all(&base);
+        });
+    }
+
+    /// zsh: 다른 훅이 PS1을 다시 만들어 표지가 빠져도 줄 편집기가 시작할 때(zle-line-init) B를 보강한다(Ghostty zsh). 사용자의 같은 이름 위젯은 그대로 부른다
+    #[test]
+    fn zsh_line_init_adds_b_when_ps1_has_no_marks_and_keeps_user_widgets() {
+        if !have("zsh") {
+            return;
+        }
+        let z = |body: &str| run_script(Shell::Zsh, Some(""), None, &format!("zmodload zsh/zle\n{body}"));
+        // 사용자의 위젯이 없을 때: 우리 함수를 위젯으로 건다
+        let out = z("_bt_precmd; print -r -- \"W=$widgets[zle-line-init]\"");
+        assert!(out.contains("W=user:_bt_zle_line_init"), "{out:?}");
+        // 사용자의 위젯이 있을 때: 이름을 옮겨 두고 우리 함수가 끝에 부른다
+        let out = z("zle-line-init() { :; }; zle -N zle-line-init; _bt_precmd; \
+                     print -r -- \"W=$widgets[zle-line-init]\"; print -r -- \"O=$widgets[._bt_orig_zle-line-init]\"; \
+                     print -r -- \"F=$functions[_bt_zle_line_init]\"");
+        assert!(out.contains("W=user:_bt_zle_line_init"), "{out:?}");
+        assert!(out.contains("O=user:zle-line-init"), "{out:?}");
+        assert!(out.contains("._bt_orig_zle-line-init"), "{out:?}");
+        // add-zle-hook-widget으로 걸린 위젯이면 같은 방식으로 더한다(위젯을 감싸면 그 도구가 깨진다)
+        let out = z(
+            "autoload -Uz add-zle-hook-widget; f() { :; }; add-zle-hook-widget line-init f; _bt_precmd; \
+                     print -r -- \"W=$widgets[zle-line-init]\"; print -r -- \"H=$zle_hook_widgets\"; \
+                     print -r -- \"L=${(j: :)${(k)widgets[(R)*_bt_zle_line_init*]}}\"",
+        );
+        assert!(out.contains("W=user:azhw:zle-line-init"), "{out:?}");
+        // 두 번째 프롬프트에서 다시 걸지 않는다(두 번 감싸면 B가 두 번 나간다)
+        let out = z("zle-line-init() { :; }; zle -N zle-line-init; _bt_precmd; _bt_precmd; \
+                     print -r -- \"F=$functions[_bt_zle_line_init]\"");
+        assert_eq!(out.matches("._bt_orig_zle-line-init").count(), 1, "{out:?}");
+        // 위젯 본문: PS1에 표지가 없으면 P와 B를 보내고, 있으면 보내지 않는다
+        let out = z("PS1='$ '; _bt_zle_line_init");
+        assert!(out.contains("\x1b]133;P;k=i\x07\x1b]133;B\x07"), "{out:?}");
+        let out = z("PS1='$ '; _bt_precmd; _bt_precmd_prompt; _bt_zle_line_init");
+        assert!(!out.contains("\x1b]133;B"), "표지가 있는데 B를 또 보냈다: {out:?}");
+    }
+
+    // ---- fish·nushell·elvish: XDG_DATA_DIRS로 싣는다(Ghostty setupXdgDataDirs) ----
+
+    #[test]
+    fn detects_fish_nushell_elvish() {
+        assert_eq!(Shell::detect("/opt/homebrew/bin/fish"), Some(Shell::Fish));
+        assert_eq!(Shell::detect("-fish"), Some(Shell::Fish));
+        assert_eq!(Shell::detect("/opt/homebrew/bin/nu"), Some(Shell::Nushell));
+        assert_eq!(Shell::detect("/usr/local/bin/elvish"), Some(Shell::Elvish));
+        assert_eq!(Shell::detect("/usr/bin/nushell"), None);
+    }
+
+    #[test]
+    fn xdg_data_dirs_gets_our_dir_first_and_keeps_the_rest() {
+        let d = Path::new("/tmp/bt-x/shell-integration/0.1");
+        assert_eq!(
+            xdg_data_dirs_with(Some("/opt/share:/usr/share"), d).as_deref(),
+            Some("/tmp/bt-x/shell-integration/0.1:/opt/share:/usr/share")
+        );
+        // 변수가 없으면 기본값(XDG 규격)을 잃지 않게 함께 둔다
+        assert_eq!(
+            xdg_data_dirs_with(None, d).as_deref(),
+            Some("/tmp/bt-x/shell-integration/0.1:/usr/local/share:/usr/share")
+        );
+        // 빈 값이면 우리 폴더만(Ghostty prependEnv)
+        assert_eq!(
+            xdg_data_dirs_with(Some(""), d).as_deref(),
+            Some("/tmp/bt-x/shell-integration/0.1")
+        );
+        // 목록 구분자(:)나 제어 문자가 든 폴더, 절대 경로가 아닌 폴더는 목록을 깨므로 싣지 않는다
+        for bad in ["/tmp/a:b", "/tmp/a\nb", "/tmp/a\u{1b}b", "rel/dir"] {
+            assert_eq!(xdg_data_dirs_with(Some("/opt/share"), Path::new(bad)), None, "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn fish_nushell_elvish_get_xdg_data_dirs_and_no_other_changes() {
+        let f = ShellFeatures::default();
+        for mode in ["fish", "nushell", "elvish"] {
+            let mut o = SpawnOptions::default();
+            apply(&mut o, Path::new("/x/si"), mode, &f, Some(Path::new("/opt/bt")));
+            let xdg = env_of(&o, "XDG_DATA_DIRS").unwrap_or_else(|| panic!("{mode}: XDG_DATA_DIRS 없음"));
+            assert!(xdg.starts_with("/x/si"), "{mode}: 우리 폴더가 맨 앞: {xdg}");
+            assert_eq!(env_of(&o, "BT_SHELL_INTEGRATION_XDG_DIR"), Some("/x/si"), "{mode}");
+            assert_eq!(env_of(&o, "BT_SHELL_INTEGRATION_DIR"), Some("/x/si"), "{mode}");
+            assert_eq!(env_of(&o, "BT_SHELL_FEATURES"), Some("cursor,title,path"), "{mode}");
+            assert_eq!(env_of(&o, "BT_BIN_DIR"), Some("/opt/bt"), "{mode}");
+            // 사용자의 시작 파일은 건드리지 않는다: ZDOTDIR·bash 인자도, 셸 프로그램·인자도 그대로
+            assert!(env_of(&o, "ZDOTDIR").is_none(), "{mode}");
+            assert!(o.program.is_none() && o.args.is_empty(), "{mode}");
+        }
+        // 목록을 깨는 폴더면 아무것도 싣지 않는다
+        let mut o = SpawnOptions::default();
+        apply(&mut o, Path::new("/x:y"), "fish", &f, None);
+        assert!(o.env.is_empty(), "{:?}", o.env);
+    }
+
+    /// 파일이 모두 풀리고, 셸이 XDG_DATA_DIRS 아래에서 찾는 이름 그대로 놓인다
+    #[test]
+    fn fish_nushell_elvish_scripts_sit_where_the_shells_look() {
+        for rel in [
+            "fish/vendor_conf.d/b-terminal-shell-integration.fish",
+            "nushell/vendor/autoload/b-terminal.nu",
+            "elvish/lib/b-terminal-integration.elv",
+        ] {
+            assert!(FILES.iter().any(|(r, t)| *r == rel && !t.is_empty()), "{rel}");
+        }
     }
 }

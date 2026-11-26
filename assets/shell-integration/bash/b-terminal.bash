@@ -39,7 +39,9 @@ _bt_precmd() {
   else
     printf '\e]133;A;redraw=last;cl=line\a'
   fi
-  printf '\e]7;file://%s%s\a' "$HOSTNAME" "${PWD// /%20}"
+  # 폴더 이름은 믿을 수 없는 글이다(Ghostty main #14859): 제어 문자를 지워 이름 안의 ESC·BEL이 OSC를 끊고 다른 OSC를 끼우지 못하게 한다.
+  # printf의 %s는 역슬래시를 풀지 않는다. 터미널은 퍼센트 해독 없이 그대로 읽는 kitty-shell-cwd 모양을 받는다
+  printf '\e]7;kitty-shell-cwd://%s%s\a' "${HOSTNAME//[[:cntrl:]]/}" "${PWD//[[:cntrl:]]/}"
   # path: 사용자의 rc가 PATH를 다시 쓴 뒤인 첫 프롬프트에서 한 번, 없을 때만 끝에 더한다
   if [ -n "$_bt_f_path" ] && [ -z "$_bt_path_done" ]; then
     _bt_path_done=1

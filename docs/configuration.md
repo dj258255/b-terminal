@@ -172,7 +172,7 @@ config-file = ?~/.config/b-terminal/local   # ?가 붙으면 없어도 된다
 | `import-ghostty` | `true` / `false` | `false` | b-terminal 키. Ghostty 설정을 옮겨 올 때 |
 | `clipboard-write` | `allow` / `deny` / `ask` | `allow` | 프로그램이 OSC 52로 클립보드에 쓰기(AI CLI의 `/copy`). iTerm2의 `OSC 1337 ; Copy=:base64`(`it2copy`)도 OSC 52 쓰기와 같은 길이라 이 설정과 크기 상한을 똑같이 따릅니다(Ghostty처럼 `=` 바로 뒤 `:`만 받고 `?`는 읽기가 아니라 버립니다). kitty 클립보드 프로토콜(OSC 5522)의 쓰기도 같은 정책입니다(`deny`는 `EPERM`, 글 종류(`text/plain`)만 쓰고 다른 종류만 있으면 `ENOSYS`). 보고 있는 창의 고른 칸(화면을 나눴으면 키 입력을 받는 칸)에서 온 것만 받습니다. `ask`는 쓸 글 앞부분을 창 안 막대로 보이고 묻습니다(`y` 허용, `n`·Esc 거절, Enter는 허용 아님). 터미널이 DA1(`CSI c`)에 답하는 `?62;22;52c`의 52(클립보드 접근)는 `deny`일 때만 빠집니다 |
 | `clipboard-read` | `allow` / `deny` / `ask` | `ask` | 프로그램이 OSC 52로 클립보드 읽기. kitty 클립보드 프로토콜(OSC 5522)의 읽기와 붙여넣기 이벤트(모드 5522)의 일회용 암호 읽기도 같은 정책입니다(`deny`는 `EPERM`입니다. 종류 목록만 묻는 요청과 비어 있는 클립보드는 `ask`에서도 묻지 않습니다. 보고 있지 않은 칸·읽기 전용 칸·다른 확인이 떠 있을 때의 요청은 묻지 않고 거절합니다). `ask`는 읽어 갈 글 앞부분을 창 안 막대로 보이고 묻습니다(`y` 허용, `n`·Esc 거절, Enter는 허용 아님). Ghostty처럼 기본은 `ask`입니다. 읽기를 아예 막으려면 `clipboard-read = deny` |
-| `shell-integration` | `detect` `none` `zsh` `bash` | `detect` | 탭의 셸에 셸 통합을 싣습니다(아래 "셸 통합") |
+| `shell-integration` | `detect` `none` `zsh` `bash` `fish` `nushell` `elvish` | `detect` | 탭의 셸에 셸 통합을 싣습니다(아래 "셸 통합") |
 | `shell-integration-features` | `cursor` `sudo` `title` `ssh-env` `ssh-terminfo` `path`(쉼표로, 앞에 `no-`면 끔), `true` `false` | `cursor,title,path` | Ghostty 키. 셸 통합의 기능별 켜고 끄기. 적지 않은 기능은 기본값을 따르고, `true`·`false`는 모두 켜고 끕니다. 아래 "셸 통합 기능" |
 | `notify-command-seconds` | 초 | `10` | b-terminal 키(옛 키). 셸 통합으로 안 명령이 이만큼 넘게 걸려 끝나면 창을 보지 않을 때 데스크톱 알림. `0`이면 끔. `notify-on-command-finish`를 적으면 무시합니다 |
 | `notify-on-command-finish` | `never` `unfocused` `always` | 적지 않음 | Ghostty 키. 명령이 끝났을 때 알릴 때. `unfocused`는 그 칸을 보고 있지 않을 때만. 적으면 아래 두 키를 따르고 `notify-command-seconds`는 무시합니다. 적지 않으면 옛 `notify-command-seconds` 동작(10초 넘게, 창을 보지 않을 때 데스크톱 알림만)입니다. Ghostty 기본은 `never`인데 b-terminal은 이미 있던 동작을 지키려고 이렇게 둡니다. 셸 통합(OSC 133)이 있어야 합니다 |
@@ -455,7 +455,7 @@ Ghostty 설정에 흔한 아래 동작은 `keybind`에 써도 경고가 나지 �
 
 ## 셸 통합
 
-탭에서 띄우는 zsh·bash에 셸 통합을 자동으로 싣습니다(Ghostty와 같은 방식, 사용자 설정은 그대로 읽힘. [assets/shell-integration](../assets/shell-integration/README.md)). 셸이 명령의 시작·끝·종료 코드(OSC 133)와 명령 글(OSC 633;E)을 알려 주면 터미널이 이렇게 씁니다.
+탭에서 띄우는 zsh·bash·fish·nushell에 셸 통합을 자동으로 싣습니다(Ghostty와 같은 방식, 사용자 설정은 그대로 읽힘. [assets/shell-integration](../assets/shell-integration/README.md)). 셸이 명령의 시작·끝·종료 코드(OSC 133)와 명령 글(OSC 633;E)을 알려 주면 터미널이 이렇게 씁니다.
 
 - Cmd-↑ / Cmd-↓: 앞·뒤 프롬프트로 스크롤
 - 프롬프트에서 화면 지우기(`clear`·Ctrl-L이 보내는 `CSI 2 J`): 지우기 전에 화면을 스크롤백으로 올립니다(Ghostty와 같음). 마지막 글 줄이 프롬프트(OSC 133;A·P)일 때만이고, 명령 출력이 아래에 있거나 셸 통합이 없으면 스크롤백에 쌓지 않고 지웁니다
@@ -464,7 +464,15 @@ Ghostty 설정에 흔한 아래 동작은 `keybind`에 써도 경고가 나지 �
 - 기본은 창을 보지 않을 때 10초(`notify-command-seconds`) 넘게 걸린 명령이 끝나면 데스크톱 알림. 실패하면 "명령이 실패했습니다". `notify-on-command-finish`를 적으면 Ghostty처럼 그 키들(`-action`, `-after`)을 따릅니다
 - `btctl run -- <명령>`: 그 탭에서 명령을 돌리고 끝날 때까지 기다려 출력을 찍고 그 종료 코드로 끝납니다. 에이전트가 다른 탭을 도구로 쓰는 길입니다. `btctl last`는 마지막으로 끝난 명령
 
-fish·elvish는 아직 스크립트가 없습니다. 끄려면 `shell-integration = none`.
+셸마다 싣는 방법과 하는 일이 다릅니다. 끄려면 `shell-integration = none`.
+
+- zsh: `ZDOTDIR`을 바꿔 싣습니다. 다른 훅이 PS1을 다시 만들어 표지가 빠진 프롬프트에는 줄 편집기가 시작할 때(`zle-line-init`) `133;B`를 보강합니다(사용자의 `zle-line-init`은 그대로 부름)
+- bash: `--rcfile`로 싣습니다
+- fish: 환경 변수 `XDG_DATA_DIRS` 맨 앞에 폴더를 더해 싣습니다(`config.fish`는 그대로). 명령 경계(A·C·D)·명령 글·폴더(OSC 7)와 `cursor`·`path`를 합니다. `title`은 fish가 제목을 직접 정합니다
+- nushell: 같은 방식으로 싣습니다. 명령 경계·폴더는 nushell이 `$env.config.shell_integration`으로 직접 보내므로(기본 켬) 여기서는 `cursor`·`path`만 합니다
+- elvish: `XDG_DATA_DIRS`로 모듈만 보이게 하고, 켜려면 `rc.elv`에 `if (has-env BT_SHELL_INTEGRATION_DIR) { try { use b-terminal-integration } catch { } }`를 적습니다(Ghostty와 같음, b-terminal이 `rc.elv`를 고치지 않습니다). `133;B`(입력 시작)는 못 보냅니다
+- 설정 `env`로 `XDG_DATA_DIRS`를 정하면 그 값이 이겨 fish·nushell·elvish 통합이 꺼집니다
+- 셸이 폴더를 알리는 OSC 7은 폴더 이름의 제어 문자를 지워 보냅니다(이름이 OSC를 끊지 못하게)
 
 ### 셸 통합 기능
 
