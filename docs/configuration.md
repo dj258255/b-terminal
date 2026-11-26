@@ -386,6 +386,10 @@ Ghostty 설정에 흔한 아래 동작은 `keybind`에 써도 경고가 나지 �
 
 설정 다시 읽기는 글꼴·색(이미 열린 탭 포함)·키 묶음(전역 단축키 포함)·여백·Option 키를 바꿉니다. 바깥에서 부르려면 `btctl reload-config`. 퀵 터미널은 `btctl quick`.
 
+## 앱 메뉴: 기본 터미널로 지정
+
+macOS 앱 메뉴의 `b-terminal을 기본 터미널로 지정`(`보안 키보드 입력` 아래)은 Ghostty 1.4.0처럼 UTType `public.unix-executable`(`.command` 같은 실행 파일을 여는 앱)의 기본 앱을 이 앱 묶음으로 정하게 시스템에 요청합니다(`NSWorkspace.setDefaultApplication(at:toOpen:)`). 이미 기본이면 항목이 꺼집니다(앱이 앞으로 올 때마다 다시 읽습니다). 앱 묶음이 아니면(`cargo run`) 지정하지 못하고 알림 띠가 이유를 알립니다. 설정 키는 없습니다. 시스템이 거부하거나 실패하면 알림 띠로 알립니다(Ghostty는 경고 창). 시스템이 거부한 이유 글은 읽지 않고 성공 여부만 씁니다. 확인 창은 시스템이 띄울 수 있고 앱은 따로 묻지 않습니다(Ghostty도 같음).
+
 ## 색 구성표 보고
 
 설정 키는 없고, Ghostty처럼 프로그램(nvim 등)이 밝음·어두움을 알 수 있게 합니다.

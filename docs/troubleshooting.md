@@ -824,3 +824,12 @@
 - 맞출 것: 안에서 도는 프로그램도 같은 폭이어야 한다(nvim `ambiwidth=double`, tmux, `RUNEWIDTH_EASTASIAN=1` 같은 폭 라이브러리 설정). 한쪽만 바꾸면 줄이 어긋난다. `wide`에서는 상자 그림(─│)도 두 칸이라 TUI 테두리가 넓어진다
 - 남긴 것: 그리스·키릴 글자는 `unicode-width`의 `width_cjk()`가 한 칸으로 두어 `wide`에서도 한 칸이다(nvim `ambiwidth=double`은 두 칸). 설정을 다시 읽으면 이미 찍힌 글은 그대로이고 새 글부터 따른다. 이때 이미 찍힌 한 칸 모호 폭 글자의 글꼴 배율(넓은 글자용 대체 글꼴 확대)은 새 설정을 따라 달라질 수 있다. IME 조합 글과 탭·상태 줄의 글은 셀이 없어 렌더러의 폭 함수가 같은 규칙으로 센다(전역 값 하나). 실제 창 확인은 하지 않았다
 - 풀기: `ambiguous-width = wide`
+
+## 99. 앱 메뉴에 "기본 터미널로 지정"이 없다
+
+- 언제: 2026-11-26, #859. 0.102.0까지의 동작이다. Ghostty 1.4.0 `AppDelegate.setAsDefaultTerminal`과 견주다 찾았다
+- 증상: 앱 메뉴에 b-terminal을 기본 터미널(실행 파일을 여는 앱)로 정하는 항목이 없었다. Finder에서 쓰는 `.command` 같은 실행 파일이 다른 터미널로 열렸다
+- 까닭: 만들지 않았다. objc2에서 unsafe가 필요할까 걱정했으나 `NSWorkspace::setDefaultApplicationAtURL_toOpenContentType_completionHandler`와 `UTType::typeWithIdentifier`, `block2::RcBlock::new`가 모두 safe라 unsafe 없이 된다
+- 고침: 앱 메뉴 `보안 키보드 입력` 아래에 `b-terminal을 기본 터미널로 지정`을 더했다(`src/default_terminal.rs`). 읽기(`URLForApplicationToOpenContentType`)로 지금 기본이 이 묶음이면 항목을 끄고, 앱이 앞으로 올 때마다 다시 맞춘다. 요청이 끝나면(시스템이 다른 스레드에서 알림) `UserEvent`로 창 스레드에 넘겨 알림 띠를 띄운다
+- 남긴 것: 오류 개체는 raw 포인터로 오고 읽으려면 unsafe라 성공 여부(널인가)만 쓴다. 그래서 거부 이유 글은 알림 띠에 없다. 실패를 Ghostty는 경고 창으로, 우리는 알림 띠로 알린다. 서명·공증이 없는 묶음에서 시스템이 거부하는지, 확인 창이 뜨는지는 이 기계의 설정을 바꾸게 되어 재지 않았다
+- 0.102.0에서 풀기: Finder에서 실행 파일 → 정보 → 다음으로 열기에서 b-terminal을 고르고 모두 변경

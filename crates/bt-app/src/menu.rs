@@ -38,6 +38,7 @@ pub fn action_for(id: &str) -> Option<MenuCommand> {
         "quit" => MenuCommand::Action(Action::Quit),
         // 앱 전체의 보안 키보드 입력(#258). 키 묶음 `toggle_secure_input`(초점 칸 하나)과 다르다
         "secure_input" => MenuCommand::ToggleSecureKeyboardEntry,
+        "default_terminal" => MenuCommand::SetDefaultTerminal,
         // 오른쪽 클릭 메뉴(#278)만 쓰는 항목
         "split_left" => MenuCommand::Action(Action::NewSplit(Some(Direction::Left))),
         "split_up" => MenuCommand::Action(Action::NewSplit(Some(Direction::Up))),
@@ -56,14 +57,17 @@ pub enum MenuCommand {
     OpenSettings,
     /// 앱 메뉴의 보안 키보드 입력(앱 전체로 켜고 끈다)
     ToggleSecureKeyboardEntry,
+    /// 앱 메뉴의 "기본 터미널로 지정"(#859)
+    SetDefaultTerminal,
 }
 
 #[cfg(target_os = "macos")]
-/// 메뉴와, 체크 표시를 맞추려고 따로 들고 있을 보안 키보드 입력 항목·항상 위에 띄우기 항목
-pub fn build(secure_on: bool) -> (muda::Menu, muda::CheckMenuItem, muda::CheckMenuItem) {
+/// 메뉴와, 상태를 맞추려고 따로 들고 있을 보안 키보드 입력 항목·항상 위에 띄우기 항목·"기본 터미널로 지정" 항목
+pub fn build(secure_on: bool) -> (muda::Menu, muda::CheckMenuItem, muda::CheckMenuItem, muda::MenuItem) {
     use muda::{AboutMetadata, CheckMenuItem, Menu, MenuItem, PredefinedMenuItem, Submenu};
     let secure = CheckMenuItem::with_id("secure_input", "보안 키보드 입력", true, secure_on, None);
     let float = CheckMenuItem::with_id("float_on_top", "항상 위에 띄우기", true, false, None);
+    let default_terminal = MenuItem::with_id("default_terminal", "b-terminal을 기본 터미널로 지정", true, None);
     let item = |id: &str, text: &str| MenuItem::with_id(id, text, true, None);
     let menu = Menu::new();
     let about = AboutMetadata {
@@ -81,6 +85,7 @@ pub fn build(secure_on: bool) -> (muda::Menu, muda::CheckMenuItem, muda::CheckMe
             &item("settings", "설정…"),
             &item("reload_config", "설정 다시 읽기"),
             &secure,
+            &default_terminal,
             &PredefinedMenuItem::separator(),
             &PredefinedMenuItem::services(Some("서비스")),
             &PredefinedMenuItem::separator(),
@@ -157,7 +162,7 @@ pub fn build(secure_on: bool) -> (muda::Menu, muda::CheckMenuItem, muda::CheckMe
     for sub in [&app, &shell, &edit, &view, &window] {
         let _ = sub.as_ref().map(|s| menu.append(s));
     }
-    (menu, secure, float)
+    (menu, secure, float, default_terminal)
 }
 
 /// 설정 파일이 없으면 예시가 담긴 파일을 만들고 그 경로를 돌려준다
@@ -200,6 +205,7 @@ mod tests {
         );
         assert_eq!(action_for("quit"), Some(MenuCommand::Action(Action::Quit)));
         assert_eq!(action_for("secure_input"), Some(MenuCommand::ToggleSecureKeyboardEntry));
+        assert_eq!(action_for("default_terminal"), Some(MenuCommand::SetDefaultTerminal));
         assert_eq!(
             action_for("paste_selection"),
             Some(MenuCommand::Action(Action::PasteSelection))
