@@ -53,6 +53,8 @@ pub(super) struct ViewLayer {
     pub progress: Option<(u8, u8)>,
     /// 벨 테두리를 두르는가(#687)
     pub bell_border: bool,
+    /// 시각 벨 번쩍임의 색과 알파(#893). 알파가 바뀔 때마다 층이 달라진다
+    pub bell_flash: Option<(bt_core::Rgb, u8)>,
     /// 입력 함께 보내기 묶음의 테두리 색(#860)
     pub broadcast: Option<bt_core::Rgb>,
 }
@@ -149,6 +151,7 @@ pub(super) fn layer_key(i: &LayerInputs<'_>) -> Option<LayerKey> {
                 display_offset: if v.bar_shown { v.display_offset } else { 0 },
                 progress: v.progress.filter(|_| *single_tab),
                 bell_border: v.bell_border,
+                bell_flash: v.bell_flash,
                 broadcast: v.broadcast,
             })
             .collect(),
@@ -194,6 +197,7 @@ mod tests {
             display_offset: 0,
             progress: Some((1, 40)),
             bell_border: false,
+            bell_flash: None,
             broadcast: None,
         }
     }
@@ -239,6 +243,19 @@ mod tests {
         let (v1, mut v2) = ([view()], [view()]);
         v2[0].progress = Some((1, 41));
         assert!(layer_key(&inputs(&v1)) != layer_key(&inputs(&v2)));
+    }
+
+    #[test]
+    fn a_changed_visual_bell_alpha_changes_the_key_and_the_same_alpha_does_not() {
+        let white = Rgb { r: 255, g: 255, b: 255 };
+        let (mut v1, mut v2, mut v3) = ([view()], [view()], [view()]);
+        v1[0].bell_flash = Some((white, 80));
+        v2[0].bell_flash = Some((white, 80));
+        v3[0].bell_flash = Some((white, 81));
+        assert!(layer_key(&inputs(&v1)) == layer_key(&inputs(&v2)));
+        assert!(layer_key(&inputs(&v1)) != layer_key(&inputs(&v3)));
+        // 번쩍임이 끝나면(없음) 층이 달라져 다시 그린다
+        assert!(layer_key(&inputs(&v1)) != layer_key(&inputs(&[view()])));
     }
 
     #[test]

@@ -5,6 +5,7 @@ pub mod config;
 pub mod kitty_geom;
 pub mod proto;
 pub mod theme;
+pub mod visual_bell;
 
 pub use config::{AlphaBlending, Config, LinkPreviews, PaletteEntryConf};
 pub use theme::{Rgb, Theme};

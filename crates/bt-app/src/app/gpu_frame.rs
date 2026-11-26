@@ -173,6 +173,7 @@ impl App {
                     display_offset: v.screen.display_offset,
                     progress: v.progress,
                     bell_border: v.bell_border,
+                    bell_flash: v.bell_flash,
                     broadcast: v.broadcast,
                 })
                 .collect::<Vec<_>>(),
@@ -408,6 +409,11 @@ impl App {
                 }
                 for v in views.iter().filter(|v| v.bell_border) {
                     crate::bell_border::draw(ui!(), v.outer, scale);
+                }
+                for v in views.iter() {
+                    if let Some((color, alpha)) = v.bell_flash {
+                        crate::bell_border::draw_flash(ui!(), v.outer, color, alpha);
+                    }
                 }
                 for v in views.iter() {
                     if let Some(color) = v.broadcast {

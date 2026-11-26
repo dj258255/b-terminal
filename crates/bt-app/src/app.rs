@@ -197,6 +197,8 @@ pub struct Pane {
     /// 벨이 울려 테두리를 두르고 있다(`bell-features = border`, #687). 🔔와 달리 보고 있어도 켜고,
     /// 그 칸이 키를 받는 칸이 되거나 키를 받으면 뗀다
     pub bell_border: bool,
+    /// 시각 벨이 번쩍이기 시작한 때(`visual-bell-duration`, #893). 벨이 또 울리면 다시 시작한다(쌓이지 않는다). 끝나면 지운다
+    visual_bell_at: Option<Instant>,
     /// 입력 함께 보내기 묶음 번호(0~15, #860). 같은 번호의 칸끼리 사람의 입력이 서로 간다. 없으면 어느 묶음에도 없다
     pub broadcast: Option<u8>,
     /// 사람이 붙인 제목(`prompt_surface_title`·`set_surface_title`, #124). 프로그램이 정한 제목보다 먼저
@@ -832,6 +834,8 @@ struct PaneView {
     progress: Option<(u8, u8)>,
     /// 벨 테두리를 두르는가(`bell-features = border`, #687)
     bell_border: bool,
+    /// 시각 벨로 칸 전체에 얹을 색과 알파(`visual-bell-duration`, #893). 번쩍이지 않으면 없다
+    bell_flash: Option<(bt_core::Rgb, u8)>,
     /// 입력 함께 보내기 묶음의 테두리 색(#860). 묶음에 없으면 없다
     broadcast: Option<bt_core::Rgb>,
     /// 이 칸의 글자 크기(pt)와 그 크기의 칸 크기: 격자·커서·그림·스크롤 막대가 이 칸 크기를 쓴다(#422)
@@ -1224,6 +1228,8 @@ pub struct App {
     hotkeys: Option<global_hotkey::GlobalHotKeyManager>,
     /// 마지막 경고음(벨이 몰려도 0.1초에 한 번만, #107)
     last_beep: Option<Instant>,
+    /// 시각 벨이 번쩍이는 동안 다음에 다시 그릴 때(#893). 번쩍이는 칸이 없으면 없다
+    visual_bell_next: Option<Instant>,
     /// write_*_file로 쓴 파일들. 앱이 끝날 때 지운다(#125)
     written_files: Vec<std::path::PathBuf>,
     /// 풀어 둔 배경 그림(background-image, #134)
@@ -1313,6 +1319,7 @@ impl App {
             spawn_overrides: None,
             hotkeys: None,
             last_beep: None,
+            visual_bell_next: None,
             bell_sound: None,
             last_bell_audio: None,
             dock_applied: None,
@@ -1871,6 +1878,37 @@ impl App {
         self.request_redraw();
     }
 
+    /// 칸에 얹을 시각 벨의 색과 알파(#893). 번쩍이는 중이 아니면 없다. 색은 `visual-bell-color`, 없으면 고른 글의 바탕색(kitty와 같다)
+    fn bell_flash_of(&self, p: &Pane, screen: &bt_term::Screen) -> Option<(bt_core::Rgb, u8)> {
+        let at = p.visual_bell_at?;
+        let vb = &self.config.visual_bell;
+        let intensity = vb.intensity(at.elapsed().as_secs_f64());
+        let color = self
+            .config
+            .visual_bell_color
+            .unwrap_or_else(|| screen_default_colors(&self.config.theme, screen).selection_bg);
+        let alpha = bt_core::visual_bell::flash_alpha(intensity, color);
+        (alpha > 0).then_some((color, alpha))
+    }
+
+    /// 시각 벨이 번쩍이는 동안만 창을 다시 그리게 하고(`FLASH_FRAME`마다), 끝난 칸은 지운 뒤 한 번 더 그려 번쩍임을 걷는다.
+    /// 번쩍이는 칸이 없으면 깨울 때를 남기지 않는다(#893)
+    fn tick_visual_bell(&mut self, now: Instant) {
+        if self.panes.iter().all(|p| p.visual_bell_at.is_none()) {
+            self.visual_bell_next = None;
+            return;
+        }
+        if self.visual_bell_next.is_some_and(|t| now < t) {
+            return;
+        }
+        let mut starts: Vec<Option<Instant>> = self.panes.iter().map(|p| p.visual_bell_at).collect();
+        self.visual_bell_next = crate::bell_border::flash_step(&mut starts, &self.config.visual_bell, now);
+        for (p, at) in self.panes.iter_mut().zip(starts) {
+            p.visual_bell_at = at;
+        }
+        self.request_redraw_all();
+    }
+
     /// 칸이 벨을 울렸다(`bell-features`, #107). 지금 창은 그 칸의 창이다(switch_to_pane 뒤)
     fn on_bell(&mut self, idx: usize) {
         let watching = self.w.focused && self.is_visible(idx);
@@ -1890,6 +1928,12 @@ impl App {
         if r.border && !self.panes[idx].bell_border {
             self.panes[idx].bell_border = true;
             self.request_redraw();
+        }
+        // 시각 벨(#893): `bell-features`와 따로 켠다. 벨이 또 울리면 처음부터 다시 시작해 쌓이지 않는다(kitty `screen_bell`)
+        if self.config.visual_bell.enabled() {
+            self.panes[idx].visual_bell_at = Some(Instant::now());
+            self.visual_bell_next = None;
+            self.request_redraw_all();
         }
         if r.attention {
             if let Some(g) = &self.w.gfx {
@@ -2120,6 +2164,7 @@ impl App {
                 unread: false,
                 bell: false,
                 bell_border: false,
+                visual_bell_at: None,
                 broadcast: None,
                 user_title: None,
                 created: Instant::now(),
@@ -7071,20 +7116,20 @@ impl App {
             .iter()
             .filter_map(|(id, outer)| {
                 let p = &self.panes[self.pane_index(*id)?];
+                // 격자가 창보다 넓으면(DECCOLM 132열, #324) 창 밖은 잘라 그린다. 좁으면 그대로 그리고 오른쪽은 바탕이다
+                let mut screen = p.session.snapshot();
+                screen.crop_columns(p.session.size().cols as usize);
+                let bell_flash = self.bell_flash_of(p, &screen);
                 Some(PaneView {
                     id: *id,
                     outer: *outer,
                     inner: self.inner_rect(*outer, p.font_size),
                     font_size: p.font_size,
                     metrics: self.metrics_at(p.font_size)?,
-                    screen: {
-                        // 격자가 창보다 넓으면(DECCOLM 132열, #324) 창 밖은 잘라 그린다. 좁으면 그대로 그리고 오른쪽은 바탕이다
-                        let mut screen = p.session.snapshot();
-                        screen.crop_columns(p.session.size().cols as usize);
-                        screen
-                    },
+                    screen,
                     focused: Some(*id) == focus,
                     bell_border: p.bell_border,
+                    bell_flash,
                     broadcast: p
                         .broadcast
                         .map(|g| crate::broadcast::color_of(&self.config.broadcast_group_colors, g)),
@@ -7439,7 +7484,7 @@ impl App {
                 || title_prompt.is_some()
                 || views.iter().any(|v| resize_overlays.contains(&v.id))
                 // 벨 테두리는 칸 위에 겹쳐 그린다(#687)
-                || views.iter().any(|v| v.bell_border || v.broadcast.is_some())
+                || views.iter().any(|v| v.bell_border || v.bell_flash.is_some() || v.broadcast.is_some())
                 // kitty 그림은 칸 위에 겹쳐 그린다(#76)
                 || views.iter().any(|v| !v.screen.images.is_empty())
                 || bars.iter().any(|b| b.0)
@@ -7723,6 +7768,12 @@ impl App {
                 }
                 for v in views.iter().filter(|v| v.bell_border) {
                     crate::bell_border::draw(&mut canvas, v.outer, self.scale);
+                }
+                // 시각 벨(#893): 칸 전체를 번쩍인다. 테두리보다 위, 글자 위
+                for v in &views {
+                    if let Some((color, alpha)) = v.bell_flash {
+                        crate::bell_border::draw_flash(&mut canvas, v.outer, color, alpha);
+                    }
                 }
                 // 입력 함께 보내기 묶음의 테두리(#860). 어두워진 안 고른 칸 위에도 묶음 색이 보이게 마지막에 얹는다
                 for v in &views {
@@ -9003,6 +9054,8 @@ impl ApplicationHandler<UserEvent> for App {
                 }
             }
         }
+        // 시각 벨(#893): 번쩍이는 동안만 깨우고, 끝나면 깨우지 않는다
+        self.tick_visual_bell(now);
         // kitty 애니메이션(#554): 다음 프레임 때가 된 창을 다시 그린다. 가려진 창은 깨우지 않는다
         self.fire_kitty_wakes(now);
         // 미뤄 둔 GPU 프레임을 다시 그릴 때가 됐다(ADR-038)
@@ -9113,6 +9166,7 @@ impl ApplicationHandler<UserEvent> for App {
             .chain(self.a11y_next_wake())
             .chain(self.any_window_focused().then_some(self.next_secure_poll))
             .chain(self.dock_next)
+            .chain(self.visual_bell_next)
             .min();
         match deadline {
             Some(d) if d <= Instant::now() => {

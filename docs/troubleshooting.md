@@ -944,3 +944,14 @@
 - 고침: Ghostty 규칙을 그대로 옮겼다. 기본 글꼴과 대체 글꼴의 지표(水 advance, ex·cap 높이, ASCII 높이, 칸 폭, 줄 높이)를 em 단위로 재서 위 차례로 배율을 정하고, 넓은 글자뿐 아니라 그 글꼴로 그리는 모든 글자에 곱한다. Nerd 기호 글꼴만 빼고 모두 맞춘다(Apple Symbols 같은 다른 기호 글꼴은 맞춘다). 넓은 글자가 두 칸이라는 규칙은 그대로다(폭은 VT 엔진의 `WIDE_CHAR`를 따르고 글리프만 키운다). 기본 설정에서 배율이 1.214가 되어 `가`가 14x15px(배율 2에서 26x29px)로 커졌다. CPU·GPU 길은 같은 `Fonts::glyph`를 써서 같은 픽셀이고(`가나다 abc 漢字 Hx` 줄에서 다른 픽셀 0), `crates/bt-gpu/tests/parity.rs`가 지킨다
 - 남긴 것: 세로 위치는 Ghostty처럼 셀 기준선에 두고 따로 가운데로 옮기지 않는다. 글자가 셀 높이를 넘을 때 어떻게 되는지는 재지 않았다(이 기계의 기본 설정에서는 29px < 셀 35px로 넘지 않았다). 다른 대체 글꼴·큰 글꼴 크기에서 넘는지는 재지 않았다. Ghostty와 눈으로 나란히 견주지는 않았다
 - 0.105.0에서 풀기: 없음(`adjust-cell-height`로 셀을 키우는 것이 비슷한 효과를 주지만 글자 크기는 그대로다)
+
+## 111. 벨이 울려도 화면이 번쩍이지 않는다(칸 테두리만 있다)
+
+- 언제: 2026-11-27, #893. 0.105.0까지의 동작이다. 화면 모양을 kitty·Ghostty와 견준 조사에서 찾았다
+- 증상: 소리를 끈 채 `printf '\a'`를 치면 `bell-features = title`이 탭에 🔔만 붙일 뿐 화면에는 아무것도 보이지 않았다. `border`를 켜도 칸 둘레의 띠만 두르고, 칸 전체를 번쩍이는 길은 없었다
+- 까닭: 벨에 응답하는 길이 제목·Dock·소리·테두리뿐이었고 화면을 시간에 따라 바꾸는 길이 없었다. kitty는 `visual_bell_duration`으로 칸 위에 색을 얹는다(`shaders.c`의 `draw_visual_bell_flash`)
+- 고침: 설정 `visual-bell-duration`(초와 easing 곡선, 기본 0=끔)·`visual-bell-color`(기본 none=고른 글의 바탕색)를 더했다. 세기 곡선은 kitty `get_visual_bell_intensity`처럼 앞 절반 0→1(`fade_in`), 뒤 절반 1→0(`1 - fade_out`)이고, 색 × 세기 × 0.4(선형 값 0.45가 넘는 밝은 색은 0.6)를 칸 전체에 얹는다. 곡선 문법은 kitty `parse_animation` 그대로 읽는다(`cubic-bezier()`·`steps()`·`linear()`와 CSS 낱말). 번쩍임 세기 계산은 `bt-core`의 순수 함수(시간 → 세기)다. CPU 길과 GPU 길은 같은 위층 그리기를 쓰고, GPU 프레임이 CPU 프레임과 같은 픽셀인지 `crates/bt-gpu/tests/compose.rs`가 세기 일곱 단계 × 색 둘로 견준다(어댑터 Apple M2 Pro, 최대 차이 1). 번쩍이는 동안만 16ms마다 깨우고 끝나면 한 번 더 그려 걷은 뒤 깨우지 않는다. 벨이 쏟아지면(`yes $'\a'`) 칸마다 시작 때 하나만 두고 벨마다 처음부터 다시 시작해 쌓이지 않는다(kitty `screen_bell`과 같다). 쏟아지는 동안은 세기가 0 근처에서 다시 시작해 거의 밝아지지 않는다
+- 정한 것: macOS "동작 줄이기"(Reduce Motion)를 읽지 않는다. kitty 0.44.0과 Ghostty 1.4.0 소스 모두 이 설정을 찾는 글이 없다(`reduce motion`·`ReduceMotion`·`prefers-reduced-motion`을 소스 전체에서 찾아 0건). 읽으려면 `unsafe` 없이는 길이 없어 읽지 않는다. 기본이 꺼짐이라 켠 사람이 고른 것이고, 빛에 민감하면 끄면 된다
+- kitty 문서와 다른 점: kitty 소스는 `duration / 2` 안에 오르고 내리는 두 구간을 모두 끝내, `visual_bell_duration = 0.2`일 때 실제 번쩍임이 0.1초에 끝난다(문서는 "지정한 시간 동안 들어오고 나간다"고 적는다). 같은 설정이 kitty와 같은 모양이 되게 소스 동작을 따랐다(적은 시간의 절반 동안 번쩍임). kitty와 다른 점: kitty는 색을 선형 공간에서 섞고 우리는 sRGB 값에 알파로 섞어 같은 알파에서 색이 조금 다를 수 있다. 둘 다 kitty 창을 띄워 견주지 않았다
+- 남긴 것: `visual-bell-duration`은 `bell-features`와 따로라서 `border`를 꺼도 켜진다. 창이 앞에 없거나 가려진 창에서는 다시 그리지 않는다(가려진 창은 건너뜀). 실제 창에서 번쩍이는 모양·속도는 이 일을 한 세션에서 보지 못했다
+- 0.105.0에서 풀기: `bell-features = border`로 칸 둘레 띠를 쓴다

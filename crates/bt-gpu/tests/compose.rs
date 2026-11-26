@@ -1004,3 +1004,58 @@ fn big_uploads_go_in_row_chunks_and_small_uploads_reuse_the_scratch() {
         "같은 크기의 작은 올리기는 그대로 쓴다"
     );
 }
+
+/// 시각 벨(#893): 칸 위 번쩍임(색 × 세기 × 감쇠)을 위층에 얹은 GPU 프레임 = CPU 프레임. 세기가 바뀔 때마다,
+/// 그리고 번쩍임이 끝나 위층이 비었을 때 옛 번쩍임이 남지 않아야 한다
+#[test]
+fn visual_bell_flash_in_upper_layer_equals_the_cpu_frame() {
+    use bt_core::visual_bell::{VisualBell, flash_alpha};
+    let Some(mut g) = gpu() else { return };
+    let mut fx = fixture();
+    let (va, vb) = (view(&fx.sa, &fx.ca, &fx.t), view(&fx.sb, &fx.cb, &fx.t));
+    let panes = [
+        PaneDraw {
+            font: 0,
+            x: fx.l.a.0,
+            y: fx.l.a.1,
+            view: &va,
+            clear: fx.sa.background,
+        },
+        PaneDraw {
+            font: 0,
+            x: fx.l.b.0,
+            y: fx.l.b.1,
+            view: &vb,
+            clear: fx.sb.background,
+        },
+    ];
+    let size = (fx.l.w, fx.l.h);
+    // 0.8초를 적으면 실제 번쩍임은 0.4초(kitty 코드처럼 절반)
+    let bell = VisualBell::parse("0.8 linear").unwrap();
+    // 번쩍임이 칸 A 전체를 덮는다. 색은 선택 바탕(밝은 쪽)과 어두운 쪽 둘
+    let flash = |c: &mut Canvas, l: &Layout, t: f64, color: Rgb| {
+        let a = flash_alpha(bell.intensity(t), color);
+        if a > 0 {
+            c.blend_rect(l.a.0, l.a.1, l.grid.0, l.grid.1, color, a);
+        }
+    };
+    for color in [Rgb::new(235, 235, 235), Rgb::new(30, 60, 160)] {
+        // 시작(0) → 올라가는 중 → 꼭대기 → 내려가는 중 → 끝(위층 빔)
+        for (i, t) in [0.0, 0.05, 0.1, 0.2, 0.3, 0.39, 0.4].into_iter().enumerate() {
+            let mut upper = vec![0u32; (fx.l.w * fx.l.h) as usize];
+            flash(&mut Canvas::new(&mut upper, fx.l.w, fx.l.h), &fx.l, t, color);
+            let got = g.compose(
+                &mut fx.f,
+                size,
+                LayerUpdate {
+                    lower: Some(&fx.lower),
+                    upper: Some(&upper),
+                },
+                &panes,
+            );
+            let mut want = cpu_reference(&mut fx.f, &fx.l, fx.sa.background, [&va, &vb], false);
+            flash(&mut Canvas::new(&mut want, fx.l.w, fx.l.h), &fx.l, t, color);
+            assert_close(&format!("번쩍임 {color:?} {i}번째(t={t})"), &want, &got);
+        }
+    }
+}
