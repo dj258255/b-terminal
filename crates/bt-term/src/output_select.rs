@@ -153,6 +153,18 @@ fn output_of_prompt<T>(term: &Term<T>, prompt: Line) -> Option<(Point, Point)> {
     found
 }
 
+/// kitty `erase_last_command`(#863)가 지울 줄 구간 `start..end`(`end`는 포함하지 않음).
+/// 커서가 있는 지금 프롬프트 바로 위의 프롬프트 블록(프롬프트·입력·출력 전부, 출력이 없는 명령도 한 덩어리)이다.
+/// 셸 통합 표시가 없거나 지금 프롬프트 위에 프롬프트가 없으면 None
+pub fn last_command_block<T>(term: &Term<T>) -> Option<(Line, Line)> {
+    let live = prompt_up(term, term.grid().cursor.point.line)?;
+    if live <= term.topmost_line() {
+        return None;
+    }
+    let start = prompt_up(term, live - 1)?;
+    Some((start, live))
+}
+
 /// `at` 칸이 출력이면 그 명령의 출력 구간(첫 칸, 끝 칸, 둘 다 포함). 출력이 아니거나 고를 것이 없으면 None
 pub fn select_output<T>(term: &Term<T>, at: Point) -> Option<(Point, Point)> {
     // 끄는 사이 스크롤백이 지워지거나 크기가 줄어 남은 옛 좌표는 고르지 않는다(격자 밖을 읽으면 죽는다)

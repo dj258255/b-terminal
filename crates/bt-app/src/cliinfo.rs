@@ -29,6 +29,8 @@ const ACTIONS: &[&str] = &[
     "reset_font_size",
     "set_font_size",
     "clear_screen",
+    "clear_scrollback",
+    "clear_last_command",
     "select_all",
     "scroll_to_top",
     "scroll_to_bottom",

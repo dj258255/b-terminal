@@ -185,6 +185,37 @@ impl<T: GridCell + Default + PartialEq> Grid<T> {
         self.max_scroll_limit = history_size;
     }
 
+    /// b-terminal(#863): `start..end` 줄(스크롤백은 음수 줄, `end <= 0`이 아니면 화면 줄 포함)을 떼어 내고 아래 줄을 끌어올린다.
+    /// 스크롤백 몫은 더 오래된 줄을 그만큼 내려 채우고 가장 오래된 줄을 버린다(화면 줄은 그대로).
+    /// 화면 몫은 화면 줄을 올려 맨 아래를 비운다(스크롤백을 만들지 않는다). `(스크롤백에서 뗀 줄, 화면에서 뗀 줄)`을 돌려준다
+    pub fn remove_lines<D>(&mut self, start: Line, end: Line) -> (usize, usize)
+    where
+        T: ResetDiscriminant<D>,
+        D: PartialEq,
+    {
+        let top = Line(-(self.history_size() as i32));
+        let start = max(start, top);
+        let end = min(end, Line(self.lines as i32));
+        if end <= start {
+            return (0, 0);
+        }
+        let history_part = (min(end, Line(0)).0 - start.0).max(0) as usize;
+        let screen_part = (end.0 - max(start, Line(0)).0).max(0) as usize;
+        if screen_part > 0 {
+            let region = max(start, Line(0))..Line(self.lines as i32);
+            self.scroll_up_in_place(&region, screen_part);
+        }
+        if history_part > 0 {
+            // 더 오래된 줄을 떼어 낸 만큼 아래로 내리고, 맨 오래된 쪽에 밀려난 줄을 버린다
+            let n = history_part as i32;
+            for i in (top.0..start.0).rev() {
+                self.raw.swap(Line(i), Line(i + n));
+            }
+            self.decrease_scroll_limit(history_part);
+        }
+        (history_part, screen_part)
+    }
+
     pub fn scroll_display(&mut self, scroll: Scroll) {
         self.display_offset = match scroll {
             Scroll::Delta(count) => {

@@ -71,6 +71,10 @@ pub enum Action {
     ScrollTop,
     ScrollBottom,
     ClearScreen,
+    /// kitty `clear_terminal scrollback`(#863): 스크롤백만 지운다
+    ClearScrollback,
+    /// kitty `clear_terminal last_command`(#863): 지금 프롬프트 위 명령과 출력을 지운다(셸 통합)
+    ClearLastCommand,
     ReloadConfig,
     SelectAll,
     /// 앞(-1)·뒤(+1) 프롬프트로(셸 통합)
@@ -510,6 +514,8 @@ const VOID_ACTIONS: &[&str] = &[
     "scroll_to_bottom",
     "scroll_to_selection",
     "clear_screen",
+    "clear_scrollback",
+    "clear_last_command",
     "reload_config",
     "quit",
     "toggle_fullscreen",
@@ -623,6 +629,8 @@ pub fn parse_action(s: &str) -> Result<Option<Action>, String> {
         "scroll_to_top" => Action::ScrollTop,
         "scroll_to_bottom" => Action::ScrollBottom,
         "clear_screen" => Action::ClearScreen,
+        "clear_scrollback" => Action::ClearScrollback,
+        "clear_last_command" => Action::ClearLastCommand,
         "reload_config" => Action::ReloadConfig,
         "quit" => Action::Quit,
         "toggle_fullscreen" => Action::ToggleFullscreen,

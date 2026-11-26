@@ -779,6 +779,27 @@ impl<T> Term<T> {
         self.damage.full = true;
     }
 
+    /// b-terminal(#863): 격자 줄 `start..end`(스크롤백은 음수)를 떼어 내고 아래를 끌어올린다(kitty `erase_last_command`).
+    /// 커서는 화면에서 뗀 줄 수만큼 올라가고, 떼어 낸 구간 바로 윗줄은 아래로 이어지지 않는다(WRAPLINE을 푼다).
+    /// 고른 영역은 풀고 `(스크롤백에서 뗀 줄, 화면에서 뗀 줄)`을 돌려준다
+    pub fn remove_lines(&mut self, start: Line, end: Line) -> (usize, usize) {
+        let (from_history, from_screen) = self.grid.remove_lines(start, end);
+        if from_history + from_screen == 0 {
+            return (0, 0);
+        }
+        self.selection = None;
+        self.grapheme_anchor = None;
+        let cursor = &mut self.grid.cursor;
+        cursor.point.line = Line((cursor.point.line.0 - from_screen as i32).max(0));
+        cursor.input_needs_wrap = false;
+        if start > self.topmost_line() {
+            let last = Column(self.columns() - 1);
+            self.grid[Line(start.0 - 1)][last].flags.remove(Flags::WRAPLINE);
+        }
+        self.mark_fully_damaged();
+        (from_history, from_screen)
+    }
+
     /// Set new options for the [`Term`].
     /// b-terminal 패치(#857): 모호 폭을 두 칸으로 세는지 바꾼다. 이미 찍힌 칸은 그대로 두고 이 뒤에 찍는 글자부터 따른다
     pub fn set_ambiguous_wide(&mut self, on: bool) {
@@ -3396,6 +3417,9 @@ impl<T: EventListener> Handler for Term<T> {
             Attr::CancelBold => cursor.template.flags.remove(Flags::BOLD),
             Attr::Dim => cursor.template.flags.insert(Flags::DIM),
             Attr::CancelBoldDim => cursor.template.flags.remove(Flags::BOLD | Flags::DIM),
+            // b-terminal(#863): kitty SGR 221·222
+            Attr::CancelBoldOnly => cursor.template.flags.remove(Flags::BOLD),
+            Attr::CancelDimOnly => cursor.template.flags.remove(Flags::DIM),
             Attr::Italic => cursor.template.flags.insert(Flags::ITALIC),
             Attr::CancelItalic => cursor.template.flags.remove(Flags::ITALIC),
             Attr::Underline => {

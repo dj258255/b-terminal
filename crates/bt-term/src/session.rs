@@ -477,6 +477,42 @@ impl Inner {
 }
 
 impl Inner {
+    /// `clear_scrollback`의 엔진 몫(#863). 고른 끝점·명령 출력 고르기를 풀고 남은 줄의 프롬프트 번호를 맞춘다
+    fn clear_scrollback(&mut self) -> bool {
+        let Inner {
+            term,
+            parser,
+            graphics,
+            cell,
+            prompts,
+            ..
+        } = self;
+        if !clear_scrollback_op(term, parser, graphics, *cell, Some(prompts)) {
+            return false;
+        }
+        self.sel_end = None;
+        self.output_click = None;
+        true
+    }
+
+    /// `clear_last_command`의 엔진 몫(#863)
+    fn clear_last_command(&mut self) -> bool {
+        let Inner {
+            term,
+            parser,
+            graphics,
+            cell,
+            prompts,
+            ..
+        } = self;
+        if !clear_last_command_op(term, parser, graphics, *cell, Some(prompts)) {
+            return false;
+        }
+        self.sel_end = None;
+        self.output_click = None;
+        true
+    }
+
     /// ⌘K(`clear_screen`)의 엔진 몫(#821). 고른 끝점·명령 출력 고르기·프롬프트 기억도 함께 맞춘다
     fn clear_screen(&mut self) -> ClearScreen {
         let before = self.term.grid().history_size() as i64;
@@ -1493,6 +1529,17 @@ impl Session {
         self.inner.lock().clear_screen()
     }
 
+    /// kitty `clear_terminal scrollback`(#863): 스크롤백만 지우고 보이는 화면은 그대로 둔다. 대체 화면이면 하지 않고 거짓
+    pub fn clear_scrollback(&self) -> bool {
+        self.inner.lock().clear_scrollback()
+    }
+
+    /// kitty `clear_terminal last_command`(#863): 지금 프롬프트 바로 위 명령(프롬프트·입력·출력)을 지우고 아래를 끌어올린다.
+    /// 셸 통합이 없거나 대체 화면이거나 지울 명령이 없으면 하지 않고 거짓
+    pub fn clear_last_command(&self) -> bool {
+        self.inner.lock().clear_last_command()
+    }
+
     /// 스크롤 막대를 그리고 누르는 데 쓰는 값: (보이는 줄 수, 스크롤백 줄 수, 맨 아래에서 올라간 줄 수).
     /// 대체 화면은 스크롤백이 없어 0이다. 화면 전체를 풀지 않아 마우스 움직임마다 불러도 가볍다
     pub fn scroll_metrics(&self) -> (usize, usize, usize) {
@@ -1968,6 +2015,75 @@ fn clear_screen_op<T: EventListener>(
     Handler::clear_screen(term, ClearMode::All);
     erase_screen_graphics(term, graphics);
     ClearScreen::Redraw
+}
+
+/// kitty `clear_terminal scrollback`(#863): 스크롤백(ED 3)만 지운다. 보이는 화면과 커서는 그대로다.
+/// 대체 화면이면 하지 않는다. 스크롤백에 걸친 그림은 지운다. 프롬프트 번호(절대 줄)는 지운 줄 수만큼 당긴다
+fn clear_scrollback_op<T: EventListener>(
+    term: &mut Term<T>,
+    parser: &mut Processor,
+    graphics: &mut crate::graphics::Graphics,
+    cell: (u32, u32),
+    prompts: Option<&mut std::collections::VecDeque<i64>>,
+) -> bool {
+    use alacritty_terminal::vte::ansi::{ClearMode, Handler};
+    if term.mode().contains(TermMode::ALT_SCREEN) {
+        return false;
+    }
+    release_sync(term, parser);
+    sync_graphics(term, graphics, cell);
+    let before = term.grid().history_size() as i64;
+    term.selection = None;
+    Handler::clear_screen(term, ClearMode::Saved);
+    graphics.erase(false, true);
+    if let Some(prompts) = prompts {
+        let rows = term.screen_lines() as i64;
+        let old = std::mem::take(prompts);
+        *prompts = old
+            .into_iter()
+            .filter_map(|p| Some(p - before).filter(|&n| n >= 0 && n < rows))
+            .collect();
+    }
+    true
+}
+
+/// kitty `clear_terminal last_command`(#863, `screen.c` `erase_last_command`): 지금 프롬프트 바로 위 프롬프트 블록을 지우고
+/// 아래 줄을 끌어올린다. 대체 화면·셸 통합 표시 없음·위에 명령 없음이면 거짓.
+/// 줄 번호가 밀리므로 프롬프트 기억은 지운 구간을 빼고 당기며, 놓인 kitty 그림 자리는 줄을 따라가지 못해 주 화면 것을 모두 지운다
+fn clear_last_command_op<T: EventListener>(
+    term: &mut Term<T>,
+    parser: &mut Processor,
+    graphics: &mut crate::graphics::Graphics,
+    cell: (u32, u32),
+    prompts: Option<&mut std::collections::VecDeque<i64>>,
+) -> bool {
+    if term.mode().contains(TermMode::ALT_SCREEN) {
+        return false;
+    }
+    release_sync(term, parser);
+    sync_graphics(term, graphics, cell);
+    let Some((start, end)) = crate::output_select::last_command_block(term) else {
+        return false;
+    };
+    let history = term.grid().history_size() as i64;
+    let (abs_start, abs_end) = (history + start.0 as i64, history + end.0 as i64);
+    let (from_history, from_screen) = term.remove_lines(start, end);
+    if from_history + from_screen == 0 {
+        return false;
+    }
+    let removed = (abs_end - abs_start).max(0);
+    if let Some(prompts) = prompts {
+        let rows_total = term.grid().history_size() as i64 + term.screen_lines() as i64;
+        let old = std::mem::take(prompts);
+        *prompts = old
+            .into_iter()
+            .filter(|&p| p < abs_start || p >= abs_end)
+            .map(|p| if p >= abs_end { p - removed } else { p })
+            .filter(|&p| p >= 0 && p < rows_total)
+            .collect();
+    }
+    graphics.lost_scrolls(false);
+    true
 }
 
 /// ED 2를 엔진이 처리한 뒤의 그림 정리(#329): 스크롤백에 다 들어간 그림만 남기고 보이는 자리의 그림은 지운다
@@ -2888,6 +3004,32 @@ impl Emulator {
             ..
         } = self;
         clear_screen_op(term, parser, graphics, *cell)
+    }
+}
+
+impl Emulator {
+    /// kitty `clear_terminal scrollback`(#863). `Session::clear_scrollback`과 같다
+    pub fn clear_scrollback(&mut self) -> bool {
+        let Emulator {
+            term,
+            parser,
+            graphics,
+            cell,
+            ..
+        } = self;
+        clear_scrollback_op(term, parser, graphics, *cell, None)
+    }
+
+    /// kitty `clear_terminal last_command`(#863). `Session::clear_last_command`와 같다
+    pub fn clear_last_command(&mut self) -> bool {
+        let Emulator {
+            term,
+            parser,
+            graphics,
+            cell,
+            ..
+        } = self;
+        clear_last_command_op(term, parser, graphics, *cell, None)
     }
 }
 
