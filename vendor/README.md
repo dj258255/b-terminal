@@ -202,3 +202,7 @@ alacritty_terminal이 글자 묶음 폭(mode 2027)을 지원하는 판을 내면
 
 - 고친 곳: `Config::ambiguous_wide`와 `Term::set_ambiguous_wide`를 더했고, `Term::input`·`join_grapheme`이 글자 폭을 `unicode-width`의 `width()`로 직접 세던 두 곳을 `char_width`·`str_width`로 바꿨다(켜면 `width_cjk()`). 폭을 세는 곳은 이 두 함수뿐이다. 이모지 표시 선택자의 유효 순서 판단(`is_valid_variation`)과 시험용 `mock_term`은 원래 폭 그대로 둔다. 엔진 판을 올릴 때 이 둘을 다시 얹는다.
 
+## vte·alacritty_terminal: SGR 221·222, 줄 떼어 내기(#863)
+
+- vte: `src/ansi.rs`의 `Attr::CancelBoldOnly`·`CancelDimOnly`와 SGR `[221]`·`[222]` 갈래. kitty 확장이고 Ghostty 1.4.0은 모르는 속성으로 버린다. `b-terminal(#863)`로 찾을 수 있습니다
+- alacritty_terminal: `src/term/mod.rs`의 `terminal_attribute`가 두 속성을 처리하고, `Term::remove_lines`(+`src/grid/mod.rs`의 `Grid::remove_lines`)가 스크롤백·화면의 줄 구간을 떼어 내고 아래를 끌어올립니다(kitty `erase_last_command`). 되돌릴 조건: upstream이 같은 SGR·줄 삭제를 내놓으면 지웁니다. 시험은 `crates/bt-term/tests/kitty_small863.rs`

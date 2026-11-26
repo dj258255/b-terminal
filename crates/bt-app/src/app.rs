@@ -4743,7 +4743,9 @@ impl App {
             // Ghostty Surface.zig: 찾는 중이 아니면 다음·앞 찾기를 하지 않고 키를 프로그램에 넘긴다
             Action::EndSearch | Action::NavigateSearch(_) => self.w.search.is_some(),
             // Ghostty Surface.zig: 대체 화면(vim·less 등)에서는 화면 지우기를 하지 않고 키를 프로그램에 넘긴다
-            Action::ClearScreen => self.active_pane().is_some_and(|t| !t.session.modes().alt_screen),
+            Action::ClearScreen | Action::ClearScrollback | Action::ClearLastCommand => {
+                self.active_pane().is_some_and(|t| !t.session.modes().alt_screen)
+            }
             Action::Undo => self.undo.has_alive(Instant::now()),
             Action::Redo => self.redo.has_alive(Instant::now()),
             _ => true,
@@ -4979,6 +4981,20 @@ impl App {
                     .is_some_and(|t| t.session.clear_screen() == bt_term::ClearScreen::Redraw);
                 if redraw {
                     self.write_active(b"\x0c");
+                }
+                self.request_redraw();
+            }
+            // kitty `clear_terminal scrollback`(#863): 스크롤백만 지운다. 보이는 화면과 셸은 건드리지 않는다
+            Action::ClearScrollback => {
+                if let Some(t) = self.active_pane() {
+                    t.session.clear_scrollback();
+                }
+                self.request_redraw();
+            }
+            // kitty `clear_terminal last_command`(#863): 지금 프롬프트 위 명령과 출력을 지운다. 셸에는 아무것도 보내지 않는다
+            Action::ClearLastCommand => {
+                if let Some(t) = self.active_pane() {
+                    t.session.clear_last_command();
                 }
                 self.request_redraw();
             }

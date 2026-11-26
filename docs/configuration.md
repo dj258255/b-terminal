@@ -348,6 +348,8 @@ HTML은 `<div style="font-family: monospace; white-space: pre;">` 안에 칸의 
 | `navigate_search:next` / `navigate_search:previous` | 위(오래된 쪽) / 아래 맞은 곳으로 | `super+g` / `super+shift+g` |
 | `toggle_command_palette` | 명령 팔레트 열기·닫기 | `super+shift+p` |
 | `clear_screen` | 화면 지우기(Ghostty 1.4.0의 `clear_screen`). 대체 화면이면 아무것도 하지 않고 키를 프로그램에 넘깁니다(기본 묶음의 `performable`). 아니면 스크롤백과 고른 글을 지웁니다. 커서가 프롬프트가 아니면(셸 통합이 없으면 늘 이쪽입니다) 커서 윗줄까지만 지우고 남은 줄을 맨 위로 올리며 kitty 그림을 지우고, PTY에는 아무것도 보내지 않습니다. 커서가 프롬프트이면(OSC 133으로 커서 줄에 프롬프트 표시가 있거나 커서 칸이 프롬프트·입력) 화면을 지우고 PTY에 FF(Ctrl-L)를 보내 셸이 다시 그리게 합니다. 읽기 전용 칸은 지우되 FF는 보내지 않습니다 | `super+k` |
+| `clear_scrollback` | 스크롤백만 지웁니다(kitty `clear_terminal scrollback`. Ghostty에는 없는 동작). 보이는 화면·커서·셸은 그대로이고 PTY에는 아무것도 보내지 않습니다. 고른 글과 스크롤백에 걸친 kitty 그림은 지웁니다. 대체 화면이면 아무것도 하지 않고 키를 프로그램에 넘깁니다 | (없음) |
+| `clear_last_command` | 지금 프롬프트 바로 위 명령 하나(프롬프트·입력·출력 전부)를 지우고 아래 줄을 끌어올립니다(kitty `clear_terminal last_command`). 셸 통합(OSC 133)이 줄마다 알리는 프롬프트 표시가 있어야 하고, 없거나 위에 명령이 없으면 아무것도 하지 않습니다. 이어서 누르면 한 명령씩 더 지웁니다. 스크롤백 안의 줄도 지웁니다. 셸에는 아무것도 보내지 않아 프롬프트는 그대로 남습니다. 지우면 주 화면에 놓인 kitty 그림은 줄을 따라가지 못해 모두 지웁니다. 대체 화면이면 아무것도 하지 않고 키를 프로그램에 넘깁니다 | (없음) |
 | `select_all` | 스크롤백까지 모두 고르기. 글이 있는 첫 칸부터 마지막 칸까지이고 앞뒤의 빈 줄·빈칸·탭은 뺍니다(Ghostty `Screen.selectAll`). 글이 하나도 없으면 아무것도 바꾸지 않습니다. 고른 글을 `copy-on-select`로 복사하지는 않습니다(Ghostty는 복사합니다, 아직 같지 않음) | `super+a` |
 | `reload_config` | 설정 다시 읽기 | `super+shift+comma` |
 | `quit` | 앱 끝내기(프로그램이 도는 칸이 있으면 묻습니다) | `super+q` |

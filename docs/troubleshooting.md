@@ -869,3 +869,13 @@
 - 고침: 화면 값에 `CellFlags::BLINK`를 더하고, 커서 깜빡임과 같은 위상(0.6초, 키를 치는 동안 멈춤)에서 꺼짐 박자이면 깜빡이는 칸에 숨김(SGR 8과 같은 `DrawCell::hidden`)을 건다. 바탕은 그대로 두고 글자·밑줄·윗줄·취소선을 그리지 않는다. CPU·GPU가 `hidden`만 보므로 판단이 같다. 보이는 깜빡임 칸(글자나 줄 꾸밈이 있고 숨김이 아닌 칸)이 없으면 깜빡임 때문에 깨우지 않는다. 창을 보고 있지 않으면(초점 없음) 커서처럼 멈추고 글자는 보인 채 둔다
 - 남긴 것: Ghostty 1.4.0은 깜빡이는 글자를 그리지 않는다(커서만 깜빡임). kitty는 `cursor_stop_blinking_after`(기본 15초)가 지나면 멈추고 초점 없는 창에서도 글자는 계속 깜빡이지만, b-terminal은 설정을 더하지 않고 커서와 같은 규칙을 쓴다. 고른 칸·커서 칸에서 kitty 셰이더가 어떻게 하는지는 확인하지 못했다(셰이더 원본을 받지 못함): 고른 칸도 같이 숨긴다. 깜빡임 박자를 바꾸는 설정(kitty `cursor_blink_interval`)은 없다
 - 0.102.0에서 풀기: 없음
+
+## 103. SGR 221·222가 아무 일도 하지 않고, 스크롤백만 지우기·마지막 명령 지우기 동작이 없었다
+
+- 언제: 2026-11-26, #863. 0.102.0까지의 동작이다. kitty 0.51 조사에서 찾았다
+- 증상: `printf '\033[1;2mx\033[221my\033[0m\n'`의 `y`가 굵기도 흐림도 그대로 남았다(221은 굵게만, 222는 흐림만 끄는 kitty 확장). 스크롤백만 지우는 키(kitty `clear_terminal scrollback`)와 마지막 명령과 출력을 지우는 키(`clear_terminal last_command`)가 없어 `clear_screen`(스크롤백과 화면을 함께 지움)뿐이었다
+- 까닭: vte가 `221`·`222`를 모르는 속성으로 버렸다(Ghostty 1.4.0 `sgr.zig`도 같다). 키 동작은 만든 적이 없었다
+- 고침: `Attr::CancelBoldOnly`·`CancelDimOnly`(vendor/vte와 alacritty_terminal). 키 동작 `clear_scrollback`·`clear_last_command`. 뒤의 것은 셸 통합의 프롬프트 표시(`output_select::last_command_block`)로 지금 프롬프트 위 블록을 찾아 `Term::remove_lines`로 스크롤백·화면 줄을 떼어 낸다(kitty `erase_last_command`와 같은 규칙: 출력이 없는 명령도 한 덩어리)
+- 이미 있던 것: `CSI 22 J`(ED 22, #327)와 kitty 그림 질의의 `e` 키(`a=q,e=…`, #515). 시험만 더했다
+- 남긴 것: `clear_last_command`는 주 화면 kitty 그림 자리를 모두 지운다(줄 번호가 밀려 따라가지 못한다). kitty의 `clear_terminal clear`·`scroll`·`to_cursor`·`to_cursor_scroll`·`reset`은 이번에 더하지 않았다(`reset`은 이미 있고 `clear_screen`이 가장 가깝다). 동작 이름은 Ghostty에 없어 정했다
+- 0.102.0에서 풀기: 없음. 스크롤백은 ⌘K(`clear_screen`)로 함께 지운다

@@ -1409,6 +1409,10 @@ pub enum Attr {
     CancelBold,
     /// Cancel bold and dim.
     CancelBoldDim,
+    /// b-terminal(#863): kitty SGR 221, cancel bold only (dim stays).
+    CancelBoldOnly,
+    /// b-terminal(#863): kitty SGR 222, cancel dim only (bold stays).
+    CancelDimOnly,
     /// Cancel italic.
     CancelItalic,
     /// Cancel all underlines.
@@ -2278,6 +2282,9 @@ fn attrs_from_sgr_parameters<H: Handler>(handler: &mut H, params: &mut ParamsIte
             [9] => Some(Attr::Strike),
             [21] => Some(Attr::CancelBold),
             [22] => Some(Attr::CancelBoldDim),
+            // b-terminal(#863): kitty 확장. 221은 굵게만, 222는 흐림만 끈다(Ghostty 1.4.0은 모르는 속성으로 버린다)
+            [221] => Some(Attr::CancelBoldOnly),
+            [222] => Some(Attr::CancelDimOnly),
             [23] => Some(Attr::CancelItalic),
             [24] => Some(Attr::CancelUnderline),
             [25] => Some(Attr::CancelBlink),
