@@ -696,7 +696,10 @@ mod tests {
         let wide = bt_render::text_cells(&super::toast_layout(1000, 8, &long).0);
         assert!((46..=48).contains(&wide), "넓은 창은 48칸까지: {wide}");
         // 좁은 창 링크 토스트 문구는 40칸 창에 줄이지 않고 다 들어간다
-        assert_eq!(super::toast_layout(40 * 8, 8, crate::app::NARROW_LINK_TOAST).0, crate::app::NARROW_LINK_TOAST);
+        assert_eq!(
+            super::toast_layout(40 * 8, 8, crate::app::NARROW_LINK_TOAST).0,
+            crate::app::NARROW_LINK_TOAST
+        );
     }
 
     #[test]
