@@ -825,6 +825,15 @@
 - 남긴 것: 그리스·키릴 글자는 `unicode-width`의 `width_cjk()`가 한 칸으로 두어 `wide`에서도 한 칸이다(nvim `ambiwidth=double`은 두 칸). 설정을 다시 읽으면 이미 찍힌 글은 그대로이고 새 글부터 따른다. 이때 이미 찍힌 한 칸 모호 폭 글자의 글꼴 배율(넓은 글자용 대체 글꼴 확대)은 새 설정을 따라 달라질 수 있다. IME 조합 글과 탭·상태 줄의 글은 셀이 없어 렌더러의 폭 함수가 같은 규칙으로 센다(전역 값 하나). 실제 창 확인은 하지 않았다
 - 풀기: `ambiguous-width = wide`
 
+## 98. `btctl`로 칸을 닫거나 제목을 바꾸거나 키 이름으로 보내거나 고른 글을 읽을 수 없다
+
+- 언제: 2026-11-26, #858. 0.102.0까지의 동작이다. 빠진 것을 조사하다 범수 님이 kitty의 원격 조종 기능도 넣기로 정했다
+- 증상: `btctl close`는 "모르는 명령"이었다. 칸·탭 닫기, 제목 바꾸기, 키 이름(`enter`·`arrowUp`)으로 보내기, 고른 글 읽기, 스크롤, 나뉜 칸의 경계 밀기는 AppleScript(macOS)나 사람의 키로만 되고 스크립트·에이전트가 소켓으로는 할 수 없었다
+- 까닭: 제어 프로토콜(`bt-core::proto::Call`)에 그 요청이 없었다
+- 고침: `close`·`close-tab`·`set-title`·`set-tab-title`·`send-key`·`get-text`·`scroll`·`resize`를 더했다(ADR-090). AppleScript와 같은 내부 길을 쓴다. 읽기 전용 칸에는 `send-key`를 거절한다
+- 남긴 것: kitty의 `--match` 식 고르기와 비밀번호 권한은 없다. `set-colors`·`set-font-size`·`screenshot`은 넣지 않았다. `resize`는 나뉜 칸이 없거나 크게 보는 중이면 오류다. 격리한 실제 창에서 `scroll`을 뺀 명령을 한 번씩 불러 확인했다(2026-11-26)
+- 0.102.0에서 풀기: AppleScript(macOS)나 키 묶음으로 같은 동작을 한다
+
 ## 99. 앱 메뉴에 "기본 터미널로 지정"이 없다
 
 - 언제: 2026-11-26, #859. 0.102.0까지의 동작이다. Ghostty 1.4.0 `AppDelegate.setAsDefaultTerminal`과 견주다 찾았다

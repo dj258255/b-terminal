@@ -386,33 +386,6 @@ impl App {
             .map(u64::from)
     }
 
-    /// `send key`: 해석한 키를 사람이 누른 키와 같은 인코더로 바이트로 만들어 그 칸에 쓴다. 붙여넣기 보호는 거치지 않는다.
-    /// 키 묶음(`keybind`)과 `key-remap`을 사람이 누른 키와 같게 거친다(Ghostty `surface.sendKeyEvent`가 코어의 `keyCallback`을 거치는 것처럼)
-    fn send_script_key(&mut self, event_loop: &ActiveEventLoop, pane: u64, prepared: crate::script_key::Prepared) {
-        use crate::keys;
-        let Some(input) = prepared.input else { return };
-        let Some(i) = self.pane_index(pane) else { return };
-        let modes = self.panes[i].session.modes();
-        let sided = keys::sided_from_state(prepared.mods);
-        let mods = keys::remapped_state(&self.config.key_remap, sided);
-        let raw = keys::to_state(sided);
-        let meta = keys::option_counts_as_alt(self.config.option_as_alt, sided);
-        let bytes = keys::encode_input(&input, mods, raw, modes, meta);
-        if !input.pressed {
-            // 뗌: 사람이 뗄 때와 같다. 프로그램이 이벤트 종류 보고(kitty 2)를 켰고 이 키의 누름을 프로그램에 보냈을 때만 보낸다
-            if self.w.kitty_down.remove(&input.physical) == Some(pane) && modes.kitty.report_events {
-                if let Some(t) = self.pane_index(pane).map(|i| &self.panes[i]) {
-                    t.session.write_input(&bytes, false);
-                }
-            }
-            return;
-        }
-        let report_release = modes.kitty.report_events;
-        // 키 묶음 판단도 `key-remap`을 거친 수식 키로 한다(`keys::trigger`가 `self.mods`로 하는 것과 같다)
-        let trigger = keys::trigger_of(&input.without_modifiers, mods);
-        self.feed_key(event_loop, trigger, bytes, input.physical, report_release, Some(pane));
-    }
-
     /// 레코드(`with configuration`)를 검사해 새 칸 하나용 덮어쓰기로 만든다. 레코드가 없으면 `None`.
     /// 오류는 창이나 칸을 만들기 전에 알리려고 호출하는 쪽이 맨 앞에서 부른다
     fn script_overrides(config: Option<ScriptConfig>) -> Result<Option<SpawnOverrides>, String> {

@@ -15,6 +15,8 @@ use winit::keyboard::ModifiersState;
 use winit::window::{CursorIcon, Window, WindowId};
 
 mod backdrop;
+/// 제어 소켓의 칸 다루기 명령의 순수 판단(#858)
+mod ctl_cmd;
 mod gpu_frame;
 mod gpu_pace;
 mod input_latency;
@@ -2169,6 +2171,33 @@ impl App {
         o
     }
 
+    /// `send key`: 해석한 키를 사람이 누른 키와 같은 인코더로 바이트로 만들어 그 칸에 쓴다. 붙여넣기 보호는 거치지 않는다.
+    /// 키 묶음(`keybind`)과 `key-remap`을 사람이 누른 키와 같게 거친다(Ghostty `surface.sendKeyEvent`가 코어의 `keyCallback`을 거치는 것처럼)
+    fn send_script_key(&mut self, event_loop: &ActiveEventLoop, pane: u64, prepared: crate::script_key::Prepared) {
+        use crate::keys;
+        let Some(input) = prepared.input else { return };
+        let Some(i) = self.pane_index(pane) else { return };
+        let modes = self.panes[i].session.modes();
+        let sided = keys::sided_from_state(prepared.mods);
+        let mods = keys::remapped_state(&self.config.key_remap, sided);
+        let raw = keys::to_state(sided);
+        let meta = keys::option_counts_as_alt(self.config.option_as_alt, sided);
+        let bytes = keys::encode_input(&input, mods, raw, modes, meta);
+        if !input.pressed {
+            // 뗌: 사람이 뗄 때와 같다. 프로그램이 이벤트 종류 보고(kitty 2)를 켰고 이 키의 누름을 프로그램에 보냈을 때만 보낸다
+            if self.w.kitty_down.remove(&input.physical) == Some(pane) && modes.kitty.report_events {
+                if let Some(t) = self.pane_index(pane).map(|i| &self.panes[i]) {
+                    t.session.write_input(&bytes, false);
+                }
+            }
+            return;
+        }
+        let report_release = modes.kitty.report_events;
+        // 키 묶음 판단도 `key-remap`을 거친 수식 키로 한다(`keys::trigger`가 `self.mods`로 하는 것과 같다)
+        let trigger = keys::trigger_of(&input.without_modifiers, mods);
+        self.feed_key(event_loop, trigger, bytes, input.physical, report_release, Some(pane));
+    }
+
     /// 제어 소켓 요청 하나를 처리한다
     fn handle_call(&mut self, req: bt_core::proto::Request, event_loop: &ActiveEventLoop) -> bt_core::proto::Response {
         use bt_core::proto::{Call, Response, TabInfo};
@@ -2183,6 +2212,14 @@ impl App {
             | Call::Run { tab, .. }
             | Call::LastCommand { tab }
             | Call::Notify { tab, .. }
+            | Call::Close { tab }
+            | Call::CloseTab { tab }
+            | Call::SetTitle { tab, .. }
+            | Call::SetTabTitle { tab, .. }
+            | Call::SendKey { tab, .. }
+            | Call::GetText { tab, .. }
+            | Call::Scroll { tab, .. }
+            | Call::Resize { tab, .. }
             | Call::New { tab, .. } => *tab,
             _ => None,
         };
@@ -2376,6 +2413,149 @@ impl App {
                     id,
                     json!({ "warnings": self.config.warnings, "sources": self.config.sources }),
                 )
+            }
+            // 닫기는 AppleScript `close`·`close tab`과 같다: 확인 막대 없이, 되살리기 목록에도 넣지 않는다
+            Call::Close { tab } => match pick(self, tab) {
+                Ok(i) => {
+                    drop(self.redo.clear());
+                    self.close_pane(i, event_loop, false);
+                    Response::ok(id, json!({}))
+                }
+                Err(r) => r,
+            },
+            Call::CloseTab { tab } => match pick(self, tab) {
+                Ok(i) => {
+                    let Some(gi) = self.group_of(self.panes[i].id) else {
+                        return Response::err(id, "탭을 찾지 못했습니다");
+                    };
+                    let leaves = self.w.tabs[gi].layout.leaves();
+                    drop(self.redo.clear());
+                    // 칸을 하나씩 닫는다. 마지막 칸이 닫히면 탭이, 창의 마지막 탭이면 창이 닫힌다
+                    for pid in leaves {
+                        if let Some(i) = self.pane_index(pid) {
+                            self.close_pane(i, event_loop, false);
+                        }
+                    }
+                    Response::ok(id, json!({}))
+                }
+                Err(r) => r,
+            },
+            // 제목 덮어쓰기는 PTY에 쓰지 않으므로 읽기 전용 칸도 막지 않는다(AppleScript와 같다)
+            Call::SetTitle { tab, title } => match pick(self, tab) {
+                Ok(i) => {
+                    let pid = self.panes[i].id;
+                    self.set_user_title(pid, &title);
+                    Response::ok(id, json!({}))
+                }
+                Err(r) => r,
+            },
+            Call::SetTabTitle { tab, title } => match pick(self, tab) {
+                Ok(i) => {
+                    let pid = self.panes[i].id;
+                    match self.group_of(pid) {
+                        Some(gi) => {
+                            self.w.tabs[gi].title = clean_user_title(&title);
+                            self.request_redraw_all();
+                            Response::ok(id, json!({}))
+                        }
+                        None => Response::err(id, "탭을 찾지 못했습니다"),
+                    }
+                }
+                Err(r) => r,
+            },
+            Call::SendKey { tab, key, modifiers } => match pick(self, tab) {
+                Ok(i) => {
+                    if let Some(why) = ctl_cmd::input_refusal(self.panes[i].session.readonly()) {
+                        return Response::err(id, why);
+                    }
+                    // 키 이름·수식 키가 틀렸으면 아무것도 건드리기 전에 알린다(키는 눌렀다 떼는 한 쌍으로 보낸다)
+                    let down = match crate::script_key::prepare(&key, modifiers.as_deref(), false) {
+                        Ok(p) => p,
+                        Err(e) => return Response::err(id, e),
+                    };
+                    let up = crate::script_key::prepare(&key, modifiers.as_deref(), true).ok();
+                    let pid = self.panes[i].id;
+                    let other_bar =
+                        self.w.search.is_some() || self.w.palette.is_some() || self.w.title_prompt.is_some();
+                    if let Some(why) = ctl_cmd::key_overlay_refusal(self.w.confirm.is_some(), other_bar) {
+                        return Response::err(id, why);
+                    }
+                    self.send_script_key(event_loop, pid, down);
+                    if let Some(up) = up {
+                        self.send_script_key(event_loop, pid, up);
+                    }
+                    Response::ok(id, json!({}))
+                }
+                Err(r) => r,
+            },
+            Call::GetText { tab, extent } => match (pick(self, tab), ctl_cmd::parse_extent(&extent)) {
+                (Err(r), _) => r,
+                (_, Err(e)) => Response::err(id, e),
+                (Ok(i), Ok(extent)) => {
+                    use ctl_cmd::Extent;
+                    let s = &self.panes[i].session;
+                    let text = match extent {
+                        Extent::Screen => Ok(s.snapshot().text()),
+                        Extent::All => Ok(s.tail_text(READ_MAX_LINES)),
+                        Extent::Selection => s.selection_text().ok_or("고른 글이 없습니다".to_string()),
+                        Extent::LastOutput => self.panes[i]
+                            .last_command
+                            .as_ref()
+                            .map(|r| command_result(r).output)
+                            .ok_or("이 칸에서 셸 통합으로 끝난 명령이 아직 없습니다".to_string()),
+                    };
+                    match text {
+                        Ok(text) => {
+                            let (text, truncated) = keep_tail(text, READ_MAX_BYTES);
+                            Response::ok(id, json!({ "text": text, "truncated": truncated }))
+                        }
+                        Err(e) => Response::err(id, e),
+                    }
+                }
+            },
+            Call::Scroll { tab, to, lines } => match (pick(self, tab), ctl_cmd::parse_scroll(&to, lines)) {
+                (Err(r), _) => r,
+                (_, Err(e)) => Response::err(id, e),
+                (Ok(i), Ok(mv)) => {
+                    use ctl_cmd::ScrollMove;
+                    let s = &self.panes[i].session;
+                    match mv {
+                        ScrollMove::Lines(n) => s.scroll(n),
+                        ScrollMove::PageUp => s.scroll(s.size().rows as i32 - 1),
+                        ScrollMove::PageDown => s.scroll(-(s.size().rows as i32 - 1)),
+                        ScrollMove::Top => s.scroll(i32::MAX / 2),
+                        ScrollMove::Bottom => s.scroll_to_bottom(),
+                    }
+                    self.request_redraw();
+                    Response::ok(id, json!({}))
+                }
+            },
+            Call::Resize { tab, direction, points } => {
+                match (pick(self, tab), ctl_cmd::parse_resize(&direction, points)) {
+                    (Err(r), _) => r,
+                    (_, Err(e)) => Response::err(id, e),
+                    (Ok(i), Ok((dir, points))) => {
+                        let pid = self.panes[i].id;
+                        self.focus_pane(pid);
+                        let area = self.content_rect();
+                        let divider = self.divider_px();
+                        let px = (points as f64 * self.scale).round() as u32;
+                        let moved = match self.w.tabs.get_mut(self.w.active) {
+                            // 크게 보는 중에는 경계가 보이지 않으니 밀지 않는다
+                            Some(g) if g.zoomed => return Response::err(id, "크게 보는 중에는 경계를 밀 수 없습니다"),
+                            Some(g) => {
+                                let focus = g.focus;
+                                g.layout.resize(area, divider, focus, dir, px)
+                            }
+                            None => false,
+                        };
+                        if !moved {
+                            return Response::err(id, "그 방향으로 밀 경계가 없습니다");
+                        }
+                        self.resize_all();
+                        Response::ok(id, json!({}))
+                    }
+                }
             }
             Call::Notify { tab, title, body } => match pick(self, tab) {
                 Ok(i) => {

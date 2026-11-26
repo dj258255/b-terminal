@@ -458,6 +458,22 @@ macOS 앱 메뉴의 `b-terminal을 기본 터미널로 지정`(`보안 키보드
 - 설정한 색은 OSC 4·10·11·12와 같은 자리에 남습니다. 설정을 다시 읽어도 남고, 초기화(RIS)와 소프트 리셋은 팔레트만 되돌립니다(전경·바탕·커서는 그대로).
 - 요청 하나는 항목 526개(`(255+8)*2`)까지입니다. 넘으면 요청 전체를 버리고, 스캐너의 OSC 상한(8KiB)을 넘는 요청도 버립니다.
 
+## btctl 명령
+
+`btctl`은 제어 소켓으로 터미널을 조종합니다. 칸은 `--tab 칸번호`로 고르고(없으면 `BT_TAB_ID`, 탭 밖이면 고른 칸) 번호는 `btctl list`에 나옵니다. 모든 명령은 `btctl --help`에 있습니다.
+
+| 명령 | 하는 일 |
+|---|---|
+| `ping` `list` `new` `focus` `quick` `reload-config` | 살아 있는지, 칸 목록, 새 탭·칸·창, 칸으로 가기, 퀵 터미널, 설정 다시 읽기 |
+| `send` `run` `last` | 글 넣기, 명령 돌리고 결과 받기, 마지막 명령 결과(읽기 전용 칸은 `send`·`run` 거절) |
+| `read` `wait` `notify` | 화면 읽기, 글이 나올 때까지 기다리기, 알림 달기 |
+| `close` `close-tab` | 칸 / 칸이 든 탭(나뉜 칸 모두)을 확인 없이 닫기(AppleScript `close`·`close tab`과 같음) |
+| `set-title` `set-tab-title` | 칸 / 탭 제목 덮어쓰기. 글이 없으면 지움. 제어 문자는 지우고 200자로 자름 |
+| `send-key [--mods shift,control,option,command] 키` | 키 이름(`enter`·`a`·`arrowUp`, AppleScript `send key`와 같은 이름)으로 키 보내기. 사람이 누른 키와 같은 인코더·키 묶음을 지남. 읽기 전용 칸과 확인·검색·팔레트·제목 막대가 열린 창에는 거절 |
+| `get-text [--extent screen\|all\|selection\|last-output]` | 글 읽기(읽기 전용). `all`은 스크롤백 포함, `selection`은 고른 글, `last-output`은 마지막 명령 출력(셸 통합 필요) |
+| `scroll up\|down [줄]\|page-up\|page-down\|top\|bottom` | 스크롤백 움직이기 |
+| `resize [--amount 점] left\|right\|up\|down` | 나뉜 칸의 경계 밀기(키 묶음 `resize_split`과 같음, 기본 20점) |
+
 ## 셸 통합
 
 탭에서 띄우는 zsh·bash·fish·nushell에 셸 통합을 자동으로 싣습니다(Ghostty와 같은 방식, 사용자 설정은 그대로 읽힘. [assets/shell-integration](../assets/shell-integration/README.md)). 셸이 명령의 시작·끝·종료 코드(OSC 133)와 명령 글(OSC 633;E)을 알려 주면 터미널이 이렇게 씁니다.
