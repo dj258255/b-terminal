@@ -1904,12 +1904,37 @@ Ghostty 1.4.0·kitty 견주기 둘째 판. 범수 님이 "kitty에 있는 기능
 | [#860](https://github.com/dj258255/b-terminal/issues/860) | 입력 함께 보내기 | [#878](https://github.com/dj258255/b-terminal/pull/878) | 11-26 06:36 → 14:05 | 고치기 에이전트, 실제 창 두 번(읽기 전용 칸 빠짐), #858과의 코드 충돌 합침·병합 |
 | [#861](https://github.com/dj258255/b-terminal/issues/861) | 창 복원 때 화면·스크롤백 되살리기 | [#879](https://github.com/dj258255/b-terminal/pull/879) | 11-26 06:36 → 14:13 | 고치기 에이전트, 상태 파일 합침, 실제 창 두 번(파일에 심은 OSC가 실행되지 않음, 0600), 보안 경계 검토·병합 |
 
+## 0.105.0 (2026-11-27)
+
+Ghostty 1.4.0·kitty 견주기 셋째 판. kitty에 있는 화면·입력 소품 다섯을 넣었습니다. 마일스톤 0.105.
+
+- 사용자가 쓰던 동작이 바뀝니다.
+  - 깜빡이는 글자(SGR 5·6)가 커서와 같은 박자로 숨었다 보입니다. 전에는 늘 보였습니다. 창에 초점이 없으면 멈춥니다.
+  - macOS에서 `ctrl+shift+e`와 `ctrl+shift+p`가 키보드 힌트에 묶입니다(kitty와 같음). 이 키를 쓰던 프로그램에는 가지 않습니다. `keybind = ctrl+shift+e=unbind`로 풉니다.
+  - Dock 아이콘에 진행 막대가 나오고(`macos-dock-progress`, 기본 켬), 앱이 뒤에 있을 때 벨이 울리면 배지가 달립니다(`bell-features`의 `attention`).
+  - `paste-actions`는 기본 꺼짐이라 붙여넣기는 그대로입니다. 큰 글 확인(`confirm-if-large`)을 기본으로 켤지는 범수 님 판단으로 남겼습니다(kitty 기본도 꺼짐).
+- 실제 창 확인: 격리한 창, release 묶음 앱, 한 번씩. Dock은 System Events로 찾은 항목 자리만 찍어 본 뒤 지웠고, 배지는 `lsappinfo`로 읽었습니다. 키는 앱 프로세스에 직접 보냈습니다.
+- 실제 창에서 찾은 것: AppleScript `input text`가 큰 글 확인 막대에 걸렸을 때 받는 오류 문구가 "여러 줄이거나 위험한 글"만 말해, 시험을 먼저 쓰고 고쳤습니다(#866).
+- 진행 중 일
+  - 다섯 브랜치가 같은 함수를 고쳐 코드 충돌이 셋 났습니다: #866의 큰 글 확인과 #860의 묶음 붙여넣기 판단(`paste_to`), #865의 힌트 라벨과 #862의 깜빡임(그리는 순서: 깜빡임 먼저, 라벨 나중), #864와 #859의 objc2 기능 목록.
+  - #865는 Linux에서만 쓰지 않게 되는 시험 도움 함수가 CI clippy에서 걸려 한 번 더 올렸습니다(이 기계에 Linux 대상이 없어 올리기 전에 못 봄).
+  - #864 Dock 막대는 첫 실제 창에서 주 세션 스크립트의 AppleScript 문장 우선순위 실수로 Dock 항목을 못 찾았고, 고쳐 다시 쟀습니다.
+- 그대로 둔 것: Dock은 오류 상태만 있으면 막대를 그리지 않습니다(kitty와 같음, 탭에는 빨간 막대). 끝 모름 막대는 퍼센트 막대를 오가게 그립니다(`startAnimation`이 objc2에서 `unsafe`).
+
+| 이슈 | 내용 | PR | 연 때·병합(UTC) | 주 세션이 한 것 |
+|---|---|---|---|---|
+| [#862](https://github.com/dj258255/b-terminal/issues/862) | 깜빡이는 글자 | [#882](https://github.com/dj258255/b-terminal/pull/882) | 11-26 06:44 → 14:29 | 고치기 에이전트, 실제 창(초점 있을 때·없을 때)·병합 |
+| [#863](https://github.com/dj258255/b-terminal/issues/863) | SGR 221·222, 지우기 동작 | [#883](https://github.com/dj258255/b-terminal/pull/883) | 11-26 06:44 → 14:39 | 고치기 에이전트, 실제 창 두 번(첫 번은 셸 뜨기 전에 찍음), vendor 패치 목록 합침, 엔진 패치 검토·병합 |
+| [#866](https://github.com/dj258255/b-terminal/issues/866) | 붙여넣기 동작 `paste-actions` | [#884](https://github.com/dj258255/b-terminal/pull/884) | 11-26 06:44 → 14:49 | 고치기 에이전트, 실제 창(오류 문구 찾아 고침), #860과의 코드 충돌 합침·병합 |
+| [#865](https://github.com/dj258255/b-terminal/issues/865) | 키보드 힌트 | [#885](https://github.com/dj258255/b-terminal/pull/885) | 11-26 06:44 → 15:03 | 고치기 에이전트, 실제 창, #860·#862와의 충돌 합침, Linux clippy 고침, 열기·붙여넣기 길 검토·병합 |
+| [#864](https://github.com/dj258255/b-terminal/issues/864) | Dock 진행 막대·벨 배지 | [#886](https://github.com/dj258255/b-terminal/pull/886) | 11-26 06:44 → 15:11 | 고치기 에이전트, 실제 창 두 번(Dock 찾기 고침), #859와의 충돌 합침·병합 |
+
 ## 다음
 
 - 0.91~0.97에서 '범수 님이 확인할 것'의 대부분을 주 세션이 확인했습니다. 무엇을 확인했고 무엇을 못 했는지는 위 0.91.0~0.95.0 절에 있습니다. 남은 것: 데스크톱 알림 띠가 하나만 뜨는지와 VoiceOver 소리, Space, 저전력 모드를 끈 0.42, 외부 모니터, 타자 느낌. 이 가운데 VoiceOver와 저전력 모드는 시스템 설정을 바꿔야 하고, Space 옮기기는 하드웨어 키 입력이 있어야 하며, 외부 모니터는 이 기기에 없어 주 세션이 확인하지 않았습니다. 알림 띠는 시험 앱 묶음에 알림 허락이 없어(알림 설정에 항목이 없음) 뜨지 않고, 허락하려면 시스템 설정을 바꿔야 해서 확인하지 않았습니다. 타자 느낌은 사람이 쳐 봐야 압니다.
 - 0.94 뒤 tmux 3.8을 확인했습니다(격리한 실제 창, 한 번 잼). 받은 병이 의존 라이브러리 경로 때문에 실행되지 않던 것을 의존 병과 함께 이어 실행했습니다. tmux가 알아본 바깥 터미널 기능 목록, 가로 나누기 뒤 왼쪽 칸에 찍은 한글(`가나다라마 끝`)·이모지(`😀🙂 이모지`) 줄과 칸 경계선(경계선 앞 폭이 모든 줄에서 40칸으로 같음), 마우스로 칸 고르기, Shift+Enter가 안쪽 프로그램에 `ESC[27;2;13~`으로 가는 것을 봤습니다.
 - Ctrl+Enter가 아무 바이트도 내지 않는 것처럼 보였으나(#751) 결함이 아니었습니다. 앱이 뒤에 있을 때 보낸 합성 키를 AppKit이 창까지 넘기지 않은 탓이었고, 앱을 앞에 두고 보내면 `ESC[27;5;13~`이 갑니다(한 번 잼).
-- 다음 판: 0.105(깜빡이는 글자, SGR 221·222와 지우기 동작, Dock 진행·벨 배지, 키보드 힌트, 붙여넣기 안전). 그 밖의 후보: Ghostty 새 병합분(2026-11-26 04:14 UTC까지 봄), Ghostty 단위 시험 가운데 남은 파일(`PageList.zig`·`page.zig`는 대부분 내부 구조, `tmux/*`·`kitty/dnd*`는 Ghostty 앱도 쓰지 않음), 밑줄·취소선의 최소 명암비, Ghostty가 글리프를 그리기 시작하면 따라가기, kitty 그림이 대체 화면을 나와도 남는 것(Ghostty는 화면 저장소째 버림).
+- 다음 판: 화면 모양(범수 님 "터미널이 예뻐야 한다", 2026-11-26 조사). 효과 큰 순서: 기본 창 여백 키우기와 `window-padding-balance` 기본, 대화형 테마 미리보기(Ghostty `+list-themes`·kitty `themes`), 기본 밝음/어둠 테마 짝, 한글 대체 글꼴 크기 맞춤·서브픽셀 정렬 실측(Ghostty 1.2·1.3), 커서 흔적 `cursor-trail`(kitty), `macos-glass-*` 실제 유리 효과(Ghostty 1.3), 탭 막대 모양·탭 색(kitty·Ghostty 1.3), 픽셀 스크롤·관성(kitty), 앱 아이콘 변형(Ghostty 1.2), 시각 벨 번쩍임(kitty). 그 밖의 후보: Ghostty 새 병합분(2026-11-26 04:14 UTC까지 봄), Ghostty 단위 시험 가운데 남은 파일(`PageList.zig`·`page.zig`는 대부분 내부 구조, `tmux/*`·`kitty/dnd*`는 Ghostty 앱도 쓰지 않음), 밑줄·취소선의 최소 명암비, Ghostty가 글리프를 그리기 시작하면 따라가기, kitty 그림이 대체 화면을 나와도 남는 것(Ghostty는 화면 저장소째 버림).
 - 범수 님이 직접 해야 할 것: 키보드·마우스 확인(한글 2벌식 "안녕 하세요⏎", Claude Code의 Shift+Enter, Cmd-D·Cmd-F·Cmd-클릭·Cmd-N·Cmd-Shift-P, 메뉴, 창 닫기 단추, vim·htop, kitty icat·yazi, 투명 창), Developer ID 계정으로 `scripts/bundle-macos.sh --sign … --notarize … --dmg`
 - 정함(0.49·0.50, 주 세션 추천안): `window-colorspace` 기본은 `display-p3` 그대로. 0.50부터 `srgb`도 GPU 길로 그립니다(창마다 약 13.6MB 더, ADR-047). 기본을 Ghostty처럼 `srgb`로 바꾸시려면 알려 주세요
 - 범수 님이 확인할 것(0.6): 퀵 터미널을 실제 전역 단축키로(`keybind = global:ctrl+backquote=toggle_quick_terminal`), 외부 모니터로 창을 옮겼을 때 present 시간(`RUST_LOG=b_terminal=debug`)
