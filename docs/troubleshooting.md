@@ -733,3 +733,12 @@
 - 고침: `Rgb::parse_color`(Ghostty `RGB.parse`)와 `parse_palette_entry`(Ghostty `parsePaletteEntry`)를 더해 색 키 전부(`background`·`foreground`·`cursor-color`·`cursor-text`·`selection-*`·`bold-color`·`palette`·`search-*`·`unfocused-split-fill`·`split-divider-color`)가 쓰게 했다. 못 읽는 값은 경고하고 기본값을 둔다. X11 표는 `vendor/vte/src/x11_rgb.txt`(782개) 하나로 합쳐 `+list-colors`와 kitty 색 프로토콜도 같은 표를 읽는다. 터미널 색 OSC의 `#rgb`는 xterm 규칙 그대로다(ADR-084)
 - 한계: 같은 `#fff`가 OSC로 오면 `f0f0f0`, 설정에서는 `ffffff`다. `palette` 번호의 `_` 둘레 세부는 Zig 표준 라이브러리를 읽지 못해 추정이다. `+list-colors`의 색 입힌 대화형 출력(Ghostty tty 모드)은 없고 평문만 낸다
 - 0.101.0에서 풀기: 색 값을 `#rrggbb`로 쓴다
+
+## 88. 커서·고름 기본색이 정한 글자색·바탕색과 OSC 10·11·12를 따르지 않는다
+
+- 언제: 2026-11-25, #838. 0.102 조사에서 찾았다. 0.101.0까지의 동작이다
+- 증상: `foreground = #00ff00`만 정해도 커서와 고름 바탕이 흰색(`ffffff`), 블록 커서 위 글자가 `282c34`였다. `printf '\033]12;red\007'` 뒤에도 커서가 빨갛지 않았고, OSC 10·11로 바꾼 색도 커서·고름에 닿지 않았다
+- 까닭: 테마가 이 네 색을 기본값(흰색, `282c34`)으로 채워 두고 정했는지를 남기지 않았다. 앱은 `theme`만 읽어 엔진이 받아 둔 OSC 12 값과 지금 글자색·바탕색을 쓰지 않았다. Ghostty `renderer/generic.zig`는 커서색을 OSC 12 → `cursor-color` → 지금 글자색, 커서 글자·고름 글자를 지금 바탕색, 고름 바탕을 지금 글자색에서 낸다
+- 고침: `Theme.explicit`이 설정이 직접 정한 색을 기억하고, 설정을 다 읽은 뒤 정하지 않은 색은 `foreground`·`background`에서 채운다. `Screen`에 지금 기본 글자색(`foreground`)과 OSC 12 커서색(`cursor_color`)을 실어 앱이 그릴 때마다 `default_colors`로 정한다(CPU·GPU가 같은 `GridView`·`DrawCursor` 값을 쓴다). OSC 4·10·11·12 질의 답은 같은 규칙으로 맞췄고 값은 Ghostty와 같다(커서색을 정하지 않았으면 지금 글자색)
+- 남긴 것: `selection-foreground`가 잘못된 값이면 이제 앞 값(기본은 바탕색)을 그대로 둔다. 전에는 칸 글자색이 되었다
+- 0.101.0에서 풀기: `cursor-color`·`cursor-text`·`selection-background`·`selection-foreground`를 직접 적는다

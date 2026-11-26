@@ -18,7 +18,8 @@ pub(crate) fn named(theme: &Theme, overrides: &Colors, name: NamedColor) -> Rgb 
     match name {
         NamedColor::Foreground | NamedColor::BrightForeground => theme.foreground,
         NamedColor::Background => theme.background,
-        NamedColor::Cursor => theme.cursor,
+        // 정하지 않은 커서 색은 지금 글자색(OSC 10 반영)이다(#838)
+        NamedColor::Cursor => theme.cursor_or(named(theme, overrides, NamedColor::Foreground)),
         NamedColor::DimForeground => theme.foreground.mix(theme.background, 0.35),
         _ if idx < 16 => theme.palette[idx],
         _ => {

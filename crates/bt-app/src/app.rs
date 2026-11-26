@@ -270,24 +270,44 @@ fn cursor_colors(
     (pick(color, theme.0), pick(text, theme.1))
 }
 
-/// 화면 반전(DECSCNM, #302)일 때 커서 기본 색. Ghostty는 커서 색을 따로 정하지 않았으면 (맞바뀐) 기본 글자색,
-/// 커서 위 글자는 (맞바뀐) 기본 바탕색을 쓴다. 설정(cursor-color·cursor-text)으로 정한 색은 그대로다.
-/// 테마에는 정했는지가 남지 않아 기본값(커서 = 글자색, 커서 글자 = 바탕색)과 같은 값이면 정하지 않은 것으로 본다
-fn reversed_cursor_defaults(theme: &bt_core::Theme, reversed: bool) -> (bt_core::Rgb, bt_core::Rgb) {
-    if !reversed {
-        return (theme.cursor, theme.cursor_text);
+/// 커서·고름의 기본 색(#838)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct DefaultColors {
+    cursor: bt_core::Rgb,
+    cursor_text: bt_core::Rgb,
+    selection_bg: bt_core::Rgb,
+    selection_fg: Option<bt_core::Rgb>,
+}
+
+/// 커서색, 커서 위 글자색, 고름 바탕·글자색의 기본값. Ghostty `generic.zig`처럼 커서색은 OSC 12 → `cursor-color` → 지금 글자색 차례이고,
+/// 커서 글자색·고름 글자색은 설정이 없으면 지금 바탕색, 고름 바탕은 지금 글자색이다. 설정이 정한 값(`theme.explicit`)은 그대로 쓴다.
+/// `fg`·`bg`는 화면의 지금 기본 글자색·바탕색(OSC 10·11과 화면 반전(DECSCNM, #302)을 반영한 값)
+fn default_colors(
+    theme: &bt_core::Theme,
+    fg: bt_core::Rgb,
+    bg: bt_core::Rgb,
+    osc_cursor: Option<bt_core::Rgb>,
+) -> DefaultColors {
+    let e = theme.explicit;
+    DefaultColors {
+        cursor: osc_cursor.unwrap_or(theme.cursor_or(fg)),
+        cursor_text: if e.cursor_text { theme.cursor_text } else { bg },
+        selection_bg: if e.selection_background {
+            theme.selection_background
+        } else {
+            fg
+        },
+        selection_fg: if e.selection_foreground {
+            theme.selection_foreground
+        } else {
+            Some(bg)
+        },
     }
-    let color = if theme.cursor == theme.foreground {
-        theme.background
-    } else {
-        theme.cursor
-    };
-    let text = if theme.cursor_text == theme.background {
-        theme.foreground
-    } else {
-        theme.cursor_text
-    };
-    (color, text)
+}
+
+/// 한 칸 화면의 기본 색(`default_colors`에 화면의 지금 색을 넣는다)
+fn screen_default_colors(theme: &bt_core::Theme, screen: &bt_term::Screen) -> DefaultColors {
+    default_colors(theme, screen.foreground, screen.background, screen.cursor_color)
 }
 
 /// 화면 반전(DECSCNM) 중 투명 제목 막대 영역을 칠할 색(#302). Ghostty의 제목 막대 색은 `surface.backgroundColor ?? 설정 바탕색`이라
@@ -6423,7 +6443,10 @@ impl App {
                 let cursor_color = cursor_colors(
                     self.config.cursor_color_cell,
                     self.config.cursor_text_cell,
-                    reversed_cursor_defaults(&theme, screen.modes.reverse_colors),
+                    {
+                        let d = screen_default_colors(&theme, screen);
+                        (d.cursor, d.cursor_text)
+                    },
                     under,
                 );
                 // 암호 입력 중이면 자물쇠(#258). 모양은 Ghostty cursor.zig의 순서를 따른다
@@ -6638,8 +6661,8 @@ impl App {
                     rows: screen.rows,
                     cells,
                     cursor: *cursor,
-                    selection_bg: theme.selection_background,
-                    selection_fg: theme.selection_foreground,
+                    selection_bg: screen_default_colors(&theme, screen).selection_bg,
+                    selection_fg: screen_default_colors(&theme, screen).selection_fg,
                     preedit: pre.as_deref(),
                     min_contrast: self.config.minimum_contrast,
                 };
@@ -8335,29 +8358,44 @@ mod tests {
     }
 
     #[test]
-    fn reversed_screen_swaps_only_the_default_cursor_colors() {
+    fn unset_cursor_and_selection_colors_come_from_the_current_fg_and_bg() {
         use bt_core::Rgb;
-        let theme = bt_core::Theme::default();
-        // 반전이 아니면 테마 그대로
+        let (fg, bg) = (Rgb::new(0, 255, 0), Rgb::new(0, 0, 0x80));
+        let mut theme = bt_core::Theme::default();
+        // 정하지 않았으면 지금 글자색·바탕색에서 나온다. 테마에 남은 값(흰색·282c34)은 쓰지 않는다
         assert_eq!(
-            reversed_cursor_defaults(&theme, false),
-            (theme.cursor, theme.cursor_text)
+            default_colors(&theme, fg, bg, None),
+            DefaultColors {
+                cursor: fg,
+                cursor_text: bg,
+                selection_bg: fg,
+                selection_fg: Some(bg)
+            }
         );
-        // 반전이면 정하지 않은 커서(= 글자색)는 바탕색, 커서 글자(= 바탕색)는 글자색(#302)
-        assert_eq!(
-            reversed_cursor_defaults(&theme, true),
-            (theme.background, theme.foreground)
-        );
-        // 설정으로 정한 색은 그대로
-        let set = bt_core::Theme {
-            cursor: Rgb::new(9, 9, 9),
-            cursor_text: Rgb::new(8, 8, 8),
-            ..theme
+        // OSC 12로 정한 커서색이 가장 앞선다
+        let red = Rgb::new(255, 0, 0);
+        assert_eq!(default_colors(&theme, fg, bg, Some(red)).cursor, red);
+        // 설정이 정한 색은 지금 색이 바뀌어도 그대로, OSC 12는 그 위에서도 앞선다
+        theme.cursor = Rgb::new(9, 9, 9);
+        theme.cursor_text = Rgb::new(8, 8, 8);
+        theme.selection_background = Rgb::new(7, 7, 7);
+        theme.selection_foreground = Some(Rgb::new(6, 6, 6));
+        theme.explicit = bt_core::theme::ExplicitColors {
+            cursor: true,
+            cursor_text: true,
+            selection_background: true,
+            selection_foreground: true,
         };
         assert_eq!(
-            reversed_cursor_defaults(&set, true),
-            (Rgb::new(9, 9, 9), Rgb::new(8, 8, 8))
+            default_colors(&theme, fg, bg, None),
+            DefaultColors {
+                cursor: Rgb::new(9, 9, 9),
+                cursor_text: Rgb::new(8, 8, 8),
+                selection_bg: Rgb::new(7, 7, 7),
+                selection_fg: Some(Rgb::new(6, 6, 6))
+            }
         );
+        assert_eq!(default_colors(&theme, fg, bg, Some(red)).cursor, red);
     }
 
     #[test]
