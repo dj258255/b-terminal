@@ -831,7 +831,7 @@
 - 증상: `btctl close`는 "모르는 명령"이었다. 칸·탭 닫기, 제목 바꾸기, 키 이름(`enter`·`arrowUp`)으로 보내기, 고른 글 읽기, 스크롤, 나뉜 칸의 경계 밀기는 AppleScript(macOS)나 사람의 키로만 되고 스크립트·에이전트가 소켓으로는 할 수 없었다
 - 까닭: 제어 프로토콜(`bt-core::proto::Call`)에 그 요청이 없었다
 - 고침: `close`·`close-tab`·`set-title`·`set-tab-title`·`send-key`·`get-text`·`scroll`·`resize`를 더했다(ADR-090). AppleScript와 같은 내부 길을 쓴다. 읽기 전용 칸에는 `send-key`를 거절한다
-- 남긴 것: kitty의 `--match` 식 고르기와 비밀번호 권한은 없다. `set-colors`·`set-font-size`·`screenshot`은 넣지 않았다. `resize`는 나뉜 칸이 없거나 크게 보는 중이면 오류다. 실제 창에서 모든 명령을 사람이 눈으로 확인하는 것은 이 항목을 쓴 시점에 하지 않았다
+- 남긴 것: kitty의 `--match` 식 고르기와 비밀번호 권한은 없다. `set-colors`·`set-font-size`·`screenshot`은 넣지 않았다. `resize`는 나뉜 칸이 없거나 크게 보는 중이면 오류다. 격리한 실제 창에서 `scroll`을 뺀 명령을 한 번씩 불러 확인했다(2026-11-26)
 - 0.102.0에서 풀기: AppleScript(macOS)나 키 묶음으로 같은 동작을 한다
 
 ## 99. 앱 메뉴에 "기본 터미널로 지정"이 없다
