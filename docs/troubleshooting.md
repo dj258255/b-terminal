@@ -760,3 +760,12 @@
 - 고침: `Config.selection_background_cell`·`selection_foreground_cell`을 더하고, `GridView`가 고른 칸의 바탕·글자색을 칸 색에서 고른다(`selected_bg`·`selected_fg`, CPU·GPU가 같은 `text_color`·같은 함수). 칸의 `fg`·`bg`가 반전을 이미 반영한 보이는 색이라 원본의 `inverse` 갈림과 같은 값이 된다. 옛 키는 `true`일 때 그 자리에서 네 키 값을 바꾸고(정함 표시도 켬) `false`는 아무것도 하지 않는다. 고른 칸은 찾기 맞은 칸보다 앞선다(원본의 `selected` 차례)
 - 남긴 것: 숨긴 칸(SGR 8)은 엔진이 글자색을 바탕색으로 두므로 `cell-foreground`가 원본과 다르다(ADR-083). 조합 중인 글(IME)의 바탕은 `cell-*`를 따르지 않고 `selection_bg` 한 색이다. `background-opacity`가 1보다 작을 때 `cell-background`로 고른 기본 바탕 칸은 기본 바탕처럼 반투명하게 칠한다(Ghostty는 고른 칸을 늘 불투명하게 칠한다). 재지 않았다
 - 0.102.0에서 풀기: `selection-background`·`selection-foreground`에 색 값을 쓴다
+
+## 95. XTGETTCAP이 `Enmg`·`Dsmg`·`Clmg`·`Cmg`(좌우 여백)에 답하지 않는다
+
+- 언제: 2026-11-26, #854. 0.102.0까지의 동작이다. 빠진 것 조사에서 찾았다
+- 증상: `printf '\033P+q456e6d67\033\\'`(`Enmg`)로 물으면 답이 없었다. DECLRMM·DECSLRM(좌우 여백)은 #311에서 넣었는데 능력 이름으로는 알려지지 않았다. `docs/decisions.md`는 "DECSLRM: 없다", `dcs.rs` 시험 주석은 "아직 답하지 않는다"로 남아 있었다
+- 까닭: XTGETTCAP 목록을 #265에서 만들 때 DECSLRM이 없었고, #311이 좌우 여백을 넣을 때 목록과 글을 다시 보지 않았다
+- 고침: Ghostty 1.4.0 `src/terminfo/ghostty.zig` 148~151줄 값(`Enmg=\E[?69h`, `Dsmg=\E[?69l`, `Clmg=\E[s`, `Cmg=\E[%i%p1%d;%p2%ds`)으로 답한다. 결정문(ADR-023)과 주석을 사실에 맞게 고쳤다
+- 남긴 것: `fullkbd` 같은 것은 여전히 답하지 않는다(kitty 키보드 프로토콜의 모든 단계를 확인하지 않았다)
+- 0.102.0에서 풀기: 없음. 프로그램이 좌우 여백을 질의에 기대 켜는지는 확인하지 않았다

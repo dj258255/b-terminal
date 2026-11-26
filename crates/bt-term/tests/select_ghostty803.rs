@@ -514,13 +514,36 @@ fn drag_by_word_and_line() {
         drag(&s, SelectKind::Line, (5, 1), (1, 0), 20, 5),
         Some(((0, 0), (10, 1))),
     );
-    // 빈 줄을 누르면 고르지 않는다. 글 있는 줄에서 빈 줄로 끌면 Ghostty는 앞서 고른 것을 두지만(`dragSelectionLine`의 null),
-    // 우리는 앞서 값이 없어 그 빈 줄 전체까지 고른다(알려진 차이)
+    // 빈 줄을 누르면 고르지 않는다. 글 있는 줄에서 빈 줄로 끌면 그 빈 줄 전체까지 고른다
+    // (Ghostty는 1.4.0의 null을 main #15113에서 "공백을 안 줄이고 고름"으로 고쳤고 우리는 처음부터 같다, #854)
     d.eq("blank press", drag(&s, SelectKind::Line, (0, 2), (0, 2), 20, 5), None);
     d.eq(
         "drag onto blank",
         drag(&s, SelectKind::Line, (1, 0), (3, 2), 20, 5),
         Some(((0, 0), (19, 2))),
+    );
+    d.done();
+}
+
+// Ghostty #15113 재현 절차(`printf 'alpha beta\n\nthree four\n'`): 세 번 눌러 고른 줄을 빈 줄 위로 끌어도 고름이 사라지지 않는다(#854)
+#[test]
+fn line_drag_over_blank_line_keeps_selection() {
+    let mut d = Diffs::default();
+    let s = mk(20, 5, "alpha beta\n\nthree four");
+    d.eq(
+        "onto blank",
+        drag(&s, SelectKind::Line, (1, 0), (2, 1), 20, 5),
+        Some(((0, 0), (19, 1))),
+    );
+    d.eq(
+        "through blank",
+        drag(&s, SelectKind::Line, (1, 0), (2, 2), 20, 5),
+        Some(((0, 0), (9, 2))),
+    );
+    d.eq(
+        "back onto blank",
+        drag(&s, SelectKind::Line, (2, 2), (2, 1), 20, 5),
+        Some(((0, 1), (9, 2))),
     );
     d.done();
 }
