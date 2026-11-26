@@ -935,3 +935,12 @@
 - 다른 점(kitty와): 흔적은 칸(분할) 하나의 격자 픽셀에서 계산하고 칸 안에만 그린다. kitty는 창 전체의 정규화 좌표에서 계산하고 칸을 넘는 흔적도 그리며, 탭을 바꿀 때 이전 탭의 흔적을 이어받는다. 여기는 칸·탭을 바꾸면 이전 칸의 흔적을 지우고 새 칸은 커서에 붙는다. 처음 본 커서에도 붙는다(kitty는 0에서 시작해 원점에서 날아올 수 있다). "옮긴 때"는 프레임에서 처음 본 때라 PTY 구문 분석 시각(`position_changed_by_client_at`)과 최대 한 프레임 다를 수 있다
 - 남긴 것: kitty의 끝 낱말 `prompt`(셸 통합이 있을 때 명령 출력 속 이동·다음 프롬프트로의 이동에 흔적 없음), 사용자 셰이더 흔적(`cursor-trail-*.slang`), 꼭짓점 이력. 흔적이 사라지는 곡선·색 모양을 kitty 화면과 나란히 눈으로 견주지는 않았다(규칙을 원본에서 옮기고 단위 시험으로 고정했다)
 - 0.105.0에서 풀기: 없음(`custom-shader`로 커뮤니티 커서 흔적 셰이더를 GPU 길에서 쓸 수 있다)
+
+## 110. 대체 글꼴(한글·한자)이 기본 글꼴보다 작게 그려진다
+
+- 언제: 2026-11-27, #892. 0.105.0까지의 동작이다. 화면 모양을 Ghostty·kitty와 견준 조사에서 골랐다
+- 증상: 기본 설정(JetBrains Mono 13pt)에서 `printf '가나다 abc 漢字\n'`를 찍으면 한글·한자 글리프가 Ghostty 1.2.0 이후보다 조금 작다. 전에는 재지 않았다. 이번에 소프트웨어 그리기 길에서 `Fonts::glyph`가 돌려주는 잉크 크기를 한 번 쟀다(이 기계, macOS 26, Apple SD Gothic Neo): 배율 1에서 `가` 13x15px·`水` 13x13px, 배율 2에서 `가` 24x27px·`水` 23x25px
+- 까닭: Ghostty 1.2.0 릴리스 노트의 "Fallback Font Size Adjustment" 절("These fonts are now adjusted in size to better match the primary font.")처럼, Ghostty는 대체 글꼴을 열 때 `Collection.scaleFactor`(`src/font/Collection.zig` 593~660줄)로 기본 글꼴과 지표를 맞춘다. 기본은 `ic_width`(`src/font/main.zig` 73줄 `default_fallback_adjustment`)다. 대체 글꼴의 水(U+6C34) advance가 기본 글꼴의 ic 폭과 같아지게 하고(대체 글꼴에 水가 없거나 윤곽이 advance보다 넓으면 ex 높이, cap 높이, 줄 높이 차례, `coretext.zig` 807~845줄), 기본 글꼴에 水가 없으면 ic 폭을 `min(ASCII 높이, 2 * 칸 폭)`으로 어림한다(`Metrics.zig` 182~185줄). 기본 글꼴 쪽(`size_adjustment = .none`)과 Nerd 기호 글꼴·이모지는 맞추지 않고, 찾아낸 대체 글꼴과 `font-codepoint-map` 글꼴(`CodepointResolver.zig` 210·276줄)은 맞춘다. b-terminal은 한글에만 "두 칸 폭의 92%, 셀 높이까지"의 어림 배율(1.154)을 썼다. 같은 기준으로 Ghostty 규칙을 계산하면 1.214(JetBrains Mono ic 1.05em, Apple SD Gothic Neo 水 0.865em)라, 水의 advance가 12.98px로 기본 글꼴의 ic 폭 13.65px보다 0.67px 짧았다
+- 고침: Ghostty 규칙을 그대로 옮겼다. 기본 글꼴과 대체 글꼴의 지표(水 advance, ex·cap 높이, ASCII 높이, 칸 폭, 줄 높이)를 em 단위로 재서 위 차례로 배율을 정하고, 넓은 글자뿐 아니라 그 글꼴로 그리는 모든 글자에 곱한다. Nerd 기호 글꼴만 빼고 모두 맞춘다(Apple Symbols 같은 다른 기호 글꼴은 맞춘다). 넓은 글자가 두 칸이라는 규칙은 그대로다(폭은 VT 엔진의 `WIDE_CHAR`를 따르고 글리프만 키운다). 기본 설정에서 배율이 1.214가 되어 `가`가 14x15px(배율 2에서 26x29px)로 커졌다. CPU·GPU 길은 같은 `Fonts::glyph`를 써서 같은 픽셀이고(`가나다 abc 漢字 Hx` 줄에서 다른 픽셀 0), `crates/bt-gpu/tests/parity.rs`가 지킨다
+- 남긴 것: 세로 위치는 Ghostty처럼 셀 기준선에 두고 따로 가운데로 옮기지 않는다. 글자가 셀 높이를 넘을 때 어떻게 되는지는 재지 않았다(이 기계의 기본 설정에서는 29px < 셀 35px로 넘지 않았다). 다른 대체 글꼴·큰 글꼴 크기에서 넘는지는 재지 않았다. Ghostty와 눈으로 나란히 견주지는 않았다
+- 0.105.0에서 풀기: 없음(`adjust-cell-height`로 셀을 키우는 것이 비슷한 효과를 주지만 글자 크기는 그대로다)
