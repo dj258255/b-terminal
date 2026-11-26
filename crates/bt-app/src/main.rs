@@ -15,6 +15,7 @@ mod copy;
 mod default_terminal;
 mod desktop;
 mod divider_drag;
+mod dock;
 mod dock_open;
 mod dump;
 mod file_drop;

@@ -31,6 +31,7 @@ Ghostty 1.4.0과 kitty를 견준 조사에서 빠진 기능을 채운 판입니�
 - 탭 오른쪽 클릭(macOS)으로 탭 색을 고르고 없앱니다(Ghostty 1.4.0 `TerminalTabColor`처럼 없음·파랑·보라·분홍·빨강·주황·노랑·초록·청록·그래파이트). 고른 색은 탭 제목 오른쪽 끝의 작은 점으로 보이고, 탭 옮기기·닫기 되살리기·`window-save-state`를 따라옵니다. 색이 없던 옛 상태 파일도 읽습니다 (#852)
 - macOS에서 트랙패드를 강하게 누르면(force click) 마우스 아래 낱말을 시스템 사전 말풍선으로 띄운다(Ghostty 1.4.0 `quickLook`처럼). 시스템의 "힘주어 클릭"이 꺼졌거나 보안 입력·암호 입력 중이면 하지 않는다. 윈도우 메뉴에 체크 표시가 있는 "항상 위에 띄우기" 항목을 더했다 (#853)
 - XTGETTCAP이 좌우 여백 능력 `Enmg`·`Dsmg`·`Clmg`·`Cmg`에 답합니다(값은 Ghostty 1.4.0 terminfo 그대로, DECLRMM·DECSLRM은 #311에서 넣었음). 전에는 답이 없었습니다. 터미널 이름을 보고 기능을 켜는 프로그램(Claude Code·Codex·snacks.nvim·tmux·Yazi)과 ssh `SendEnv` 안내를 문서에 더했고, Ghostty #15113(세 번 눌러 고른 줄을 빈 줄 위로 끌면 고름이 사라짐)은 b-terminal에 해당하지 않아 시험만 남겼습니다 (#854)
+- macOS Dock 아이콘에 OSC 9;4 진행 막대를 그리고(kitty처럼: 여러 칸은 퍼센트가 있는 칸의 평균, 없으면 끝 모름, 오류만 있으면 안 그림, 설정 `macos-dock-progress`, 기본 켬), 앱이 앞에 없을 때 벨이 울리면 Dock 아이콘에 벨이 울린 칸 수를 배지로 단다(`bell-features`의 `attention`을 따름, Ghostty 1.4.0 `setDockBadge`처럼 99 넘으면 `99+`, 앱이 앞에 오면 지움). 전에는 `printf '\033]9;4;1;50\a'`가 탭에만 보이고 Dock 아이콘은 그대로였고 벨 배지는 없었다 (#864)
 
 ## [0.102.0] - 2026-11-26
 
