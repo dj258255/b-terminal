@@ -617,3 +617,24 @@ fn cursor_trail_matches_cpu() {
         },
     );
 }
+
+/// #892: 대체 글꼴(한글·한자)을 기본 글꼴에 맞춰 키운 글리프를 GPU도 CPU와 같은 픽셀로 그린다
+#[test]
+fn fallback_size_adjusted_glyphs_match_cpu() {
+    let Some(mut g) = gpu() else { return };
+    for scale in [1.0, 2.0] {
+        let mut f = fonts(scale);
+        let mut cells = row_cells("가나다 abc 漢字 Hx", 24);
+        cells.extend(row_cells("한글 mixed 水 ok", 24));
+        // 글자 없는 화면과 견줘 글리프가 실제로 그려졌는지 본다
+        let plain = vec![cell(' '); cells.len()];
+        check(
+            &mut g,
+            &mut f,
+            &format!("대체 글꼴 크기 맞춤 x{scale}"),
+            &grid(&cells, 24),
+            &grid(&plain, 24),
+            Alpha::default(),
+        );
+    }
+}

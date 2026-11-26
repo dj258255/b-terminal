@@ -246,7 +246,8 @@ struct Mapped {
     start: u32,
     end: u32,
     fonts: [Rc<Font>; 4],
-    wide_scale: f32,
+    /// 대체 글꼴 크기 배율(`fallback_scale`)
+    size_scale: f32,
 }
 
 /// 다듬은 묶음 캐시의 상한. 넘으면 비운다(화면에 보이는 글은 곧 다시 찬다)
@@ -457,6 +458,60 @@ impl Font {
     fn advance(&self, c: char, px: f32) -> f32 {
         let f = self.font();
         f.glyph_metrics(&[]).scale(px).advance_width(f.charmap().map(c))
+    }
+
+    /// 대체 글꼴 크기 맞춤에 쓰는 지표(em 단위, Ghostty의 `FaceMetrics`). `ascii`가 참이면 ASCII 글리프 묶음의 높이도 잰다(기본 글꼴만 필요)
+    fn face_metrics(&self, ascii: bool) -> FaceMetrics {
+        const REF: f32 = 1000.0;
+        let f = self.font();
+        let m = f.metrics(&[]).scale(REF);
+        let pos = |v: f32| (v > 0.0).then_some(v / REF);
+        let mut cell_width = 0.0f32;
+        for c in ' '..='~' {
+            cell_width = cell_width.max(self.advance(c, REF));
+        }
+        let mut ctx = swash::scale::ScaleContext::new();
+        let mut scaler = ctx.builder(f).size(REF).hint(false).build();
+        let ascii_height = if ascii {
+            let (mut lo, mut hi) = (f32::MAX, f32::MIN);
+            for c in ' '..='~' {
+                let gid = self.glyph_id(c);
+                if gid == 0 {
+                    continue;
+                }
+                if let Some(o) = scaler.scale_outline(gid).filter(|o| !o.is_empty()) {
+                    let b = o.bounds();
+                    lo = lo.min(b.min.y);
+                    hi = hi.max(b.max.y);
+                }
+            }
+            (hi > lo).then(|| (hi - lo) / REF)
+        } else {
+            None
+        };
+        // 水(U+6C34)의 advance. 윤곽이 advance보다 넓으면 잘못된 값이라 버린다(Ghostty와 같다)
+        let ic_width = (|| {
+            let gid = self.glyph_id('水');
+            if gid == 0 {
+                return None;
+            }
+            let adv = f.glyph_metrics(&[]).scale(REF).advance_width(gid);
+            let w = scaler
+                .scale_outline(gid)
+                .map(|o| o.bounds())
+                .map(|b| b.max.x - b.min.x)?;
+            (adv > 0.0 && w <= adv).then_some(adv / REF)
+        })();
+        FaceMetrics {
+            cell_width: cell_width / REF,
+            ascent: m.ascent / REF,
+            descent: m.descent.abs() / REF,
+            line_gap: m.leading / REF,
+            cap_height: pos(m.cap_height),
+            ex_height: pos(m.x_height),
+            ascii_height,
+            ic_width,
+        }
     }
 
     /// (위로 올라가는 높이, 아래로 내려가는 깊이(음수), 줄 사이) px
@@ -677,17 +732,23 @@ impl Fonts {
             &config.adjust,
             config.scale,
         );
+        let primary_metrics = regular.face_metrics(true);
         let fallbacks = config
             .fallbacks
             .iter()
             .filter(|n| !n.eq_ignore_ascii_case(&family))
             .filter_map(|n| load(db, n, Weight::NORMAL, Style::Normal).map(|f| (n, f)))
             .map(|(n, f)| {
-                let k = wide_scale(&f, px, metrics);
                 let pua = is_symbol_font(n);
+                // Nerd 기호 글꼴은 맞추지 않는다(Ghostty도 `.none`). 나머지 대체 글꼴은 모두 맞춘다
+                let k = if is_nerd_font(n) {
+                    1.0
+                } else {
+                    fallback_scale(&primary_metrics, &f.face_metrics(false))
+                };
                 Fallback {
                     font: f,
-                    wide_scale: k,
+                    size_scale: k,
                     pua,
                 }
             })
@@ -701,7 +762,7 @@ impl Fonts {
                 Some(Mapped {
                     start: m.start,
                     end: m.end,
-                    wide_scale: wide_scale(&normal, px, metrics),
+                    size_scale: fallback_scale(&primary_metrics, &normal.face_metrics(false)),
                     fonts: [
                         normal.clone(),
                         face(Weight::BOLD, Style::Normal),
@@ -789,12 +850,7 @@ impl Fonts {
         let primary = &self.regular[idx];
         let mut synth = Synth::default();
         let (font, px, vars) = if let Some(m) = mapped {
-            let wide = crate::text::char_cells(ch) == 2;
-            (
-                m.fonts[idx].clone(),
-                if wide { self.px * m.wide_scale } else { self.px },
-                &[][..],
-            )
+            (m.fonts[idx].clone(), self.px * m.size_scale, &[][..])
         } else if primary.has(ch) {
             synth = self.synth[idx];
             (primary.clone(), self.px, &self.variations[idx][..])
@@ -804,12 +860,7 @@ impl Fonts {
             // 사설 영역(Nerd Font 아이콘)은 기호 글꼴에서만 찾는다. 한글 글꼴이 같은 번호에 엉뚱한 글자를 둔 경우가 있다
             let pua = is_private_use(ch);
             let fb = self.fallbacks.iter().find(|f| (!pua || f.pua) && f.font.has(ch))?;
-            let wide = crate::text::char_cells(ch) == 2;
-            (
-                fb.font.clone(),
-                if wide { self.px * fb.wide_scale } else { self.px },
-                &[][..],
-            )
+            (fb.font.clone(), self.px * fb.size_scale, &[][..])
         };
         let mut ctx = self.context.borrow_mut();
         let gid = font.glyph_id(ch);
@@ -1109,8 +1160,8 @@ fn fit_rgba(data: &[u8], w: usize, h: usize, max_w: usize, max_h: usize) -> (usi
 
 struct Fallback {
     font: Rc<Font>,
-    /// 넓은 글자를 그릴 때의 크기 배율
-    wide_scale: f32,
+    /// 이 글꼴의 글자를 그릴 때의 크기 배율(`fallback_scale`). 넓은 글자와 좁은 글자 모두
+    size_scale: f32,
     /// 사설 영역 글자를 찾아도 되는 기호 글꼴
     pua: bool,
 }
@@ -1118,6 +1169,12 @@ struct Fallback {
 fn is_symbol_font(name: &str) -> bool {
     let n = name.to_ascii_lowercase();
     n.contains("nerd") || n.contains("symbols") || n.contains("powerline")
+}
+
+/// Nerd Font 기호 글꼴: 크기를 맞추지 않는 글꼴(아이콘은 `adjust-icon-height`가 따로 다룬다)
+fn is_nerd_font(name: &str) -> bool {
+    let n = name.to_ascii_lowercase();
+    n.contains("nerd") || n.contains("powerline")
 }
 
 /// 파워라인 도형(U+E0B0~U+E0D7): 칸에 꽉 차게 그려야 해서 아이콘 높이 보정을 받지 않는다
@@ -1130,20 +1187,57 @@ pub fn is_private_use(c: char) -> bool {
     matches!(c as u32, 0xE000..=0xF8FF | 0xF0000..=0xFFFFD | 0x100000..=0x10FFFD)
 }
 
-/// 대체 글꼴의 넓은 글자(한글)를 두 칸에 맞추는 배율. 기본 글꼴의 두 칸보다 좁으면 벌어져 보인다.
-/// 폭으로는 두 칸의 92%까지, 높이로는 셀 높이까지 키운다(Ghostty의 대체 글꼴 크기 맞춤과 같은 생각)
-fn wide_scale(font: &Font, px: f32, m: CellMetrics) -> f32 {
-    if !font.has('가') {
-        return 1.0;
+/// 글꼴 지표(em 단위). Ghostty의 `Metrics.FaceMetrics`에서 크기 맞춤에 쓰는 것만
+#[derive(Debug, Clone, Copy)]
+struct FaceMetrics {
+    cell_width: f32,
+    ascent: f32,
+    /// 양수
+    descent: f32,
+    line_gap: f32,
+    cap_height: Option<f32>,
+    ex_height: Option<f32>,
+    ascii_height: Option<f32>,
+    /// 水(U+6C34)의 advance. 글꼴에 없거나 잘못된 값이면 없다
+    ic_width: Option<f32>,
+}
+
+impl FaceMetrics {
+    fn line_height(&self) -> f32 {
+        self.ascent + self.descent + self.line_gap
     }
-    let adv = font.advance('가', px);
-    if adv <= 0.0 {
-        return 1.0;
+    /// 글꼴이 알리지 않으면 ascent의 75%(Ghostty `capHeight`)
+    fn cap(&self) -> f32 {
+        self.cap_height.unwrap_or(0.75 * self.ascent)
     }
-    let by_width = (m.width as f32 * 2.0 * 0.92) / adv;
-    let (ascent, descent, _) = font.line(px);
-    let by_height = m.height as f32 / (ascent - descent).max(1.0);
-    by_width.min(by_height).clamp(1.0, 1.35)
+    /// 글꼴이 알리지 않으면 cap 높이의 75%
+    fn ex(&self) -> f32 {
+        self.ex_height.unwrap_or(0.75 * self.cap())
+    }
+    /// 재지 못했으면 cap 높이의 1.5배
+    fn ascii(&self) -> f32 {
+        self.ascii_height.unwrap_or(1.5 * self.cap())
+    }
+    /// 없으면 ASCII 높이와 두 칸 폭 중 작은 쪽
+    fn ic(&self) -> f32 {
+        self.ic_width.unwrap_or_else(|| self.ascii().min(2.0 * self.cell_width))
+    }
+}
+
+/// 대체 글꼴을 기본 글꼴에 맞추는 크기 배율(Ghostty `Collection.scaleFactor`, 기본 `ic_width`).
+/// 대체 글꼴이 水의 폭을 알리면 그 폭을, 아니면 ex 높이, cap 높이, 줄 높이 차례로 기본 글꼴과 같게 맞춘다
+fn fallback_scale(primary: &FaceMetrics, face: &FaceMetrics) -> f32 {
+    let (p, f) = if let Some(ic) = face.ic_width {
+        (primary.ic(), ic)
+    } else if let Some(ex) = face.ex_height {
+        (primary.ex(), ex)
+    } else if let Some(cap) = face.cap_height {
+        (primary.cap(), cap)
+    } else {
+        (primary.line_height(), face.line_height())
+    };
+    let k = p / f;
+    if k.is_finite() && k > 0.0 { k } else { 1.0 }
 }
 
 /// 꼴 하나의 가변 글꼴 축: 모든 꼴 공통 값 위에 꼴별 값을 얹는다(같은 축이면 꼴별 값이 이긴다)
@@ -1469,7 +1563,7 @@ impl Fonts {
         let pua = is_private_use(ch);
         match self.fallbacks.iter().find(|f| (!pua || f.pua) && f.font.has(ch)) {
             Some(_) if cells == 2 && monospace => slot,
-            Some(fb) => fb.font.advance(ch, self.px),
+            Some(fb) => fb.font.advance(ch, self.px * fb.size_scale),
             None => slot,
         }
     }
@@ -1802,5 +1896,110 @@ mod shared_font_tests {
             subset_cache_get(&cache, &key(109)).is_some(),
             "가장 나중에 넣은 것은 남는다"
         );
+    }
+}
+
+#[cfg(test)]
+mod fallback_size_tests {
+    use super::*;
+
+    fn m(ic: Option<f32>, ex: Option<f32>, cap: Option<f32>) -> FaceMetrics {
+        FaceMetrics {
+            cell_width: 0.6,
+            ascent: 1.0,
+            descent: 0.3,
+            line_gap: 0.0,
+            cap_height: cap,
+            ex_height: ex,
+            ascii_height: Some(1.05),
+            ic_width: ic,
+        }
+    }
+
+    /// Ghostty `Collection.scaleFactor`: 水 폭 → ex 높이 → cap 높이 → 줄 높이 차례
+    #[test]
+    fn scale_factor_falls_through_ic_ex_cap_line() {
+        let primary = m(None, Some(0.55), Some(0.73));
+        // 기본 글꼴에 水가 없으면 ASCII 높이(1.05)와 두 칸 폭(1.2) 중 작은 쪽
+        assert_eq!(primary.ic(), 1.05);
+        let k = |face| fallback_scale(&primary, &face);
+        assert!(
+            (k(m(Some(0.875), Some(0.5), Some(0.7))) - 1.2).abs() < 1e-6,
+            "水 폭이 먼저"
+        );
+        assert!((k(m(None, Some(0.5), Some(0.7))) - 1.1).abs() < 1e-6, "ex 높이");
+        assert!((k(m(None, None, Some(0.73 / 2.0))) - 2.0).abs() < 1e-6, "cap 높이");
+        let line = FaceMetrics {
+            ascent: 0.8,
+            ..m(None, None, None)
+        };
+        assert!(
+            (k(line) - primary.line_height() / line.line_height()).abs() < 1e-6,
+            "줄 높이"
+        );
+    }
+
+    /// 기본 글꼴 지표가 비어 있으면 Ghostty의 어림값(ascent의 75%, 75%, 1.5배)을 쓴다
+    #[test]
+    fn primary_estimators_match_ghostty() {
+        let p = FaceMetrics {
+            ascii_height: None,
+            ..m(None, None, None)
+        };
+        assert!((p.cap() - 0.75).abs() < 1e-6);
+        assert!((p.ex() - 0.5625).abs() < 1e-6);
+        assert!((p.ascii() - 1.125).abs() < 1e-6);
+        assert!((p.ic() - 1.125).abs() < 1e-6, "두 칸 폭 1.2보다 작다");
+    }
+
+    /// 지표 계산 전체를 거친다: 넣어 둔 JetBrains Mono는 水가 없고 ASCII 높이를 잴 수 있다
+    #[test]
+    fn default_primary_measures_ascii_height_and_no_ic() {
+        let f = Fonts::new(&FontConfig::default()).unwrap();
+        let pm = f.regular[0].face_metrics(true);
+        assert!(pm.ic_width.is_none(), "JetBrains Mono에는 水가 없다");
+        let a = pm.ascii_height.expect("ASCII 높이를 잰다");
+        assert!((1.0..1.2).contains(&a), "{a}");
+        assert!((pm.cell_width - 0.6).abs() < 0.01, "{}", pm.cell_width);
+    }
+
+    /// #892: 한글 대체 글꼴은 기본 글꼴과 같은 ic 폭이 되게 키운다. 이전에는 칸 폭의 92%·셀 높이로 어림해 한글이 작았다(macOS)
+    #[test]
+    fn korean_fallback_ic_width_matches_primary() {
+        let f = Fonts::new(&FontConfig::default()).unwrap();
+        let Some(fb) = f
+            .fallbacks
+            .iter()
+            .find(|fb| !fb.pua && fb.font.has('水') && fb.font.has('가'))
+        else {
+            eprintln!("건너뜀: 水와 한글이 있는 대체 글꼴이 없다");
+            return;
+        };
+        let primary = f.regular[0].face_metrics(true);
+        let face = fb.font.face_metrics(false);
+        let Some(ic) = face.ic_width else {
+            eprintln!("건너뜀: 이 글꼴의 水 폭이 잘못된 값이다");
+            return;
+        };
+        // Ghostty 자신의 시험과 같은 허용치: 반 픽셀
+        let drawn = ic * fb.size_scale * f.px;
+        let want = primary.ic() * f.px;
+        assert!(
+            (drawn - want).abs() < 0.5,
+            "대체 글꼴 水 폭 {drawn}px, 기본 글꼴 ic {want}px"
+        );
+    }
+
+    /// Nerd 기호 글꼴은 맞추지 않는다(다른 기호 글꼴 Apple Symbols는 맞춘다)
+    #[test]
+    fn nerd_font_is_not_adjusted_and_every_other_fallback_is() {
+        let f = Fonts::new(&FontConfig::default()).unwrap();
+        for fb in &f.fallbacks {
+            let name = face_name(&fb.font);
+            if is_nerd_font(&name) {
+                assert_eq!(fb.size_scale, 1.0, "{name}");
+            }
+        }
+        assert!(is_nerd_font("Symbols Nerd Font Mono") && !is_nerd_font("Apple Symbols"));
     }
 }

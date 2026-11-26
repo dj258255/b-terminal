@@ -1410,11 +1410,15 @@ fn codepoint_map_forces_a_font_for_a_range() {
         Some(want.clone())
     );
     let mut mapped = symbols(map("JetBrains Mono"));
-    assert_eq!(
-        bitmap(&mut mapped, 'A', FontStyle::Regular),
-        Some(want.clone()),
-        "범위 안: 정한 글꼴"
+    // 글자 범위로 고른 글꼴도 Ghostty처럼 기본 글꼴(여기서는 기호 글꼴)에 크기를 맞춘다(#892)
+    // 그래서 JetBrains Mono 단독 그림과 크기가 다를 수 있다. 같은 글꼴의 모양(비슷한 크기)인지만 본다
+    let in_range = bitmap(&mut mapped, 'A', FontStyle::Regular).expect("범위 안: 정한 글꼴");
+    assert_ne!(
+        Some(in_range.clone()),
+        bitmap(&mut symbols(vec![]), 'A', FontStyle::Regular)
     );
+    let k = in_range.1 as f32 / want.1 as f32;
+    assert!((0.5..2.0).contains(&k), "범위 안: 정한 글꼴의 모양이어야 한다 {k}");
     assert!(
         !mapped.primary_has('A', FontStyle::Regular),
         "정한 글꼴로 그리는 글자는 합자로 묶지 않는다"
@@ -1437,7 +1441,7 @@ fn codepoint_map_forces_a_font_for_a_range() {
     // 뒤에 쓴 것이 이긴다
     let mut later = map("Symbols Nerd Font Mono");
     later.extend(map("JetBrains Mono"));
-    assert_eq!(bitmap(&mut symbols(later), 'A', FontStyle::Regular), Some(want));
+    assert_eq!(bitmap(&mut symbols(later), 'A', FontStyle::Regular), Some(in_range));
 }
 
 /// `adjust-icon-height`: 없으면 셀 높이, 있으면 Nerd 아이콘의 높이를 그만큼으로. 파워라인 도형은 건드리지 않는다
