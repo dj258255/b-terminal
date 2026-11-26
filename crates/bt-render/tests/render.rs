@@ -105,6 +105,8 @@ fn render(fonts: &mut Fonts, bytes: &[u8], cols: u16, rows: u16, cursor: bool) -
         }),
         selection_bg: t.selection_background,
         selection_fg: t.selection_foreground,
+        selection_bg_cell: Default::default(),
+        selection_fg_cell: Default::default(),
         preedit: None,
         min_contrast: 1.0,
     };
@@ -278,6 +280,8 @@ fn view_of<'a>(s: &Screen, dc: &'a [DrawCell], t: &Theme) -> GridView<'a> {
         }),
         selection_bg: t.selection_background,
         selection_fg: t.selection_foreground,
+        selection_bg_cell: Default::default(),
+        selection_fg_cell: Default::default(),
         preedit: None,
         min_contrast: 1.0,
     }
@@ -662,6 +666,8 @@ fn minimum_contrast_turns_unreadable_text_white() {
             cursor: None,
             selection_bg: t.selection_background,
             selection_fg: t.selection_foreground,
+            selection_bg_cell: Default::default(),
+            selection_fg_cell: Default::default(),
             preedit: None,
             min_contrast: min,
         };
@@ -709,6 +715,8 @@ fn half_transparent_block_cursor_mixes_with_the_cell() {
             }),
             selection_bg: t.selection_background,
             selection_fg: t.selection_foreground,
+            selection_bg_cell: Default::default(),
+            selection_fg_cell: Default::default(),
             preedit: None,
             min_contrast: 1.0,
         };
@@ -744,6 +752,8 @@ fn paint_theme(f: &mut Fonts, theme: &Theme, bytes: &[u8], edit: impl FnOnce(&mu
         cursor: None,
         selection_bg: theme.selection_background,
         selection_fg: theme.selection_foreground,
+        selection_bg_cell: Default::default(),
+        selection_fg_cell: Default::default(),
         preedit: None,
         min_contrast: 1.0,
     };
@@ -970,6 +980,8 @@ fn draw_row(f: &mut Fonts, cells: &[DrawCell], cursor: Option<DrawCursor>) -> (V
         cursor,
         selection_bg: t.selection_background,
         selection_fg: t.selection_foreground,
+        selection_bg_cell: Default::default(),
+        selection_fg_cell: Default::default(),
         preedit: None,
         min_contrast: 1.0,
     };
@@ -1233,6 +1245,8 @@ fn translucent_corners(f: &mut Fonts, cells_on: bool) -> (u32, u32) {
         cursor: None,
         selection_bg: t.selection_background,
         selection_fg: t.selection_foreground,
+        selection_bg_cell: Default::default(),
+        selection_fg_cell: Default::default(),
         preedit: None,
         min_contrast: 1.0,
     };
@@ -1936,6 +1950,8 @@ fn two_panes_of_different_font_sizes_draw_like_their_own_frames() {
             cursor: None,
             selection_bg: t.selection_background,
             selection_fg: t.selection_foreground,
+            selection_bg_cell: Default::default(),
+            selection_fg_cell: Default::default(),
             preedit: None,
             min_contrast: 1.0,
         };
@@ -1998,6 +2014,8 @@ fn block_selection_paints_a_rectangle_of_cells() {
         cursor: None,
         selection_bg: t.selection_background,
         selection_fg: t.selection_foreground,
+        selection_bg_cell: Default::default(),
+        selection_fg_cell: Default::default(),
         preedit: None,
         min_contrast: 1.0,
     };
@@ -2030,6 +2048,8 @@ fn paint_ink(f: &mut Fonts, cell: &DrawCell, tweak: impl Fn(&mut GridView)) -> (
         cursor: None,
         selection_bg: Rgb::new(10, 60, 120),
         selection_fg: Some(Rgb::new(250, 250, 100)),
+        selection_bg_cell: Default::default(),
+        selection_fg_cell: Default::default(),
         preedit: None,
         min_contrast: 1.0,
     };
@@ -2049,6 +2069,49 @@ fn styled(ch: char) -> DrawCell {
         bg: Rgb::new(30, 32, 40),
         ..blank(ch)
     }
+}
+
+/// #849: `selection-* = cell-foreground·cell-background`면 고른 칸의 바탕·글자색이 그 칸의 글자색·바탕색에서 나온다
+/// (Ghostty `generic.zig` 3115~3182줄). 왼쪽 반 블록 `▌`은 왼쪽이 글자색, 오른쪽이 바탕색이다
+#[test]
+fn selected_cell_takes_its_colors_from_the_cell_when_configured() {
+    use bt_core::config::CellColor::{Background as CB, Foreground as CF};
+    let Some(mut f) = fonts(1.0) else { return };
+    let (red, blue) = (Rgb::new(255, 0, 0), Rgb::new(0, 0, 255));
+    let (sel_bg, sel_fg) = (Rgb::new(10, 60, 120), Rgb::new(250, 250, 100));
+    let cell = DrawCell {
+        fg: red,
+        bg: blue,
+        selected: true,
+        ..blank('▌')
+    };
+    let w = f.metrics().width;
+    let sides = |px: &[Rgb]| (px[0], px[w as usize - 1]);
+    // (바탕 설정, 글자 설정) → (왼쪽 = 글자 자리, 오른쪽 = 바탕 자리)
+    let cases = [
+        (None, None, (sel_fg, sel_bg)),
+        (Some(CF), Some(CB), (blue, red)),
+        (Some(CB), Some(CF), (red, blue)),
+        (Some(CF), None, (sel_fg, red)),
+        (None, Some(CB), (blue, sel_bg)),
+    ];
+    for (bg_cell, fg_cell, want) in cases {
+        let (_, px) = paint_ink(&mut f, &cell, |v| {
+            v.selection_bg_cell = bg_cell;
+            v.selection_fg_cell = fg_cell;
+        });
+        assert_eq!(sides(&px), want, "bg={bg_cell:?} fg={fg_cell:?}");
+    }
+    // 고르지 않은 칸은 설정과 상관없이 그대로
+    let plain = DrawCell {
+        selected: false,
+        ..cell.clone()
+    };
+    let (_, px) = paint_ink(&mut f, &plain, |v| {
+        v.selection_bg_cell = Some(CB);
+        v.selection_fg_cell = Some(CB);
+    });
+    assert_eq!(sides(&px), (red, blue));
 }
 
 #[test]
@@ -2158,6 +2221,8 @@ fn min_contrast_skips_box_block_legacy_and_powerline_glyphs_but_not_letters() {
                 cursor: None,
                 selection_bg: bg,
                 selection_fg: None,
+                selection_bg_cell: Default::default(),
+                selection_fg_cell: Default::default(),
                 preedit: None,
                 min_contrast: 3.0,
             },
@@ -2183,6 +2248,8 @@ fn faint_color_is_applied_last_after_selection_and_min_contrast() {
         cursor: None,
         selection_bg: sel_bg,
         selection_fg: Some(sel_fg),
+        selection_bg_cell: Default::default(),
+        selection_fg_cell: Default::default(),
         preedit: None,
         min_contrast: min,
     };

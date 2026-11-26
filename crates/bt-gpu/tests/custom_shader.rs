@@ -111,6 +111,8 @@ impl Scene {
             cursor: None,
             selection_bg: Rgb::new(60, 60, 120),
             selection_fg: None,
+            selection_bg_cell: Default::default(),
+            selection_fg_cell: Default::default(),
             preedit: None,
             min_contrast: 1.0,
         };

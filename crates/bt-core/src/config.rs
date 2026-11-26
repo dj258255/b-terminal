@@ -726,6 +726,9 @@ pub struct Config {
     /// 커서 색·커서 위 글자색을 칸 색에서(Ghostty `cursor-color = cell-foreground` 등). 없으면 테마 색
     pub cursor_color_cell: Option<CellColor>,
     pub cursor_text_cell: Option<CellColor>,
+    /// 고른 칸의 바탕·글자색을 칸 색에서(Ghostty `selection-background = cell-foreground` 등, #849). 없으면 테마 색
+    pub selection_background_cell: Option<CellColor>,
+    pub selection_foreground_cell: Option<CellColor>,
     /// 크기 표시(Ghostty `resize-overlay`·`-position`·`-duration`, #122)
     pub resize_overlay: ResizeOverlay,
     pub resize_overlay_position: OverlayPosition,
@@ -1717,6 +1720,8 @@ impl Default for Config {
             cursor_opacity: 1.0,
             cursor_color_cell: None,
             cursor_text_cell: None,
+            selection_background_cell: None,
+            selection_foreground_cell: None,
             resize_overlay: ResizeOverlay::AfterFirst,
             resize_overlay_position: OverlayPosition::Center,
             resize_overlay_duration: std::time::Duration::from_millis(750),
@@ -2420,6 +2425,15 @@ pub fn parse_background_blur(v: &str) -> Option<u8> {
     }
 }
 
+/// Ghostty `cli.args.parseBool`: `1 t T true` / `0 f F false`
+fn parse_ghostty_bool(v: &str) -> Option<bool> {
+    match v {
+        "1" | "t" | "T" | "true" => Some(true),
+        "0" | "f" | "F" | "false" => Some(false),
+        _ => None,
+    }
+}
+
 fn parse_bool(v: &str) -> Option<bool> {
     match v.trim() {
         "true" => Some(true),
@@ -2624,11 +2638,15 @@ impl Config {
         let changed = fresh.theme != self.theme
             || fresh.palette_set != self.palette_set
             || fresh.cursor_color_cell != self.cursor_color_cell
-            || fresh.cursor_text_cell != self.cursor_text_cell;
+            || fresh.cursor_text_cell != self.cursor_text_cell
+            || fresh.selection_background_cell != self.selection_background_cell
+            || fresh.selection_foreground_cell != self.selection_foreground_cell;
         self.theme = fresh.theme;
         self.palette_set = fresh.palette_set;
         self.cursor_color_cell = fresh.cursor_color_cell;
         self.cursor_text_cell = fresh.cursor_text_cell;
+        self.selection_background_cell = fresh.selection_background_cell;
+        self.selection_foreground_cell = fresh.selection_foreground_cell;
         changed
     }
 
@@ -2762,28 +2780,70 @@ impl Config {
                     }
                 }
             },
-            "selection-background" => match color() {
+            // cell-foreground·cell-background(Ghostty 1.2): 고른 칸의 글자색·바탕색을 따른다(#849)
+            "selection-background" => match CellColor::parse(v) {
                 Some(c) => {
-                    t.selection_background = c;
+                    self.selection_background_cell = Some(c);
                     t.explicit.selection_background = true;
                 }
-                // 빈 값은 정하지 않은 것으로 되돌린다(지금 글자색·바탕색을 따름)
-                None => {
-                    t.explicit.selection_background &= !v.is_empty();
-                    bad_color(warnings)
-                }
+                None => match color() {
+                    Some(c) => {
+                        self.selection_background_cell = None;
+                        t.selection_background = c;
+                        t.explicit.selection_background = true;
+                    }
+                    // 빈 값은 정하지 않은 것으로 되돌린다(지금 글자색·바탕색을 따름)
+                    None => {
+                        if v.is_empty() {
+                            self.selection_background_cell = None;
+                        }
+                        t.explicit.selection_background &= !v.is_empty();
+                        bad_color(warnings)
+                    }
+                },
             },
             // 읽지 못하면 경고하고 앞 값을 둔다
-            "selection-foreground" => match color() {
+            "selection-foreground" => match CellColor::parse(v) {
                 Some(c) => {
-                    t.selection_foreground = Some(c);
+                    self.selection_foreground_cell = Some(c);
                     t.explicit.selection_foreground = true;
                 }
-                // 빈 값은 정하지 않은 것으로 되돌린다(지금 글자색·바탕색을 따름)
-                None => {
-                    t.explicit.selection_foreground &= !v.is_empty();
-                    bad_color(warnings)
+                None => match color() {
+                    Some(c) => {
+                        self.selection_foreground_cell = None;
+                        t.selection_foreground = Some(c);
+                        t.explicit.selection_foreground = true;
+                    }
+                    None => {
+                        if v.is_empty() {
+                            self.selection_foreground_cell = None;
+                        }
+                        t.explicit.selection_foreground &= !v.is_empty();
+                        bad_color(warnings)
+                    }
+                },
+            },
+            // 옛 키(Ghostty 1.2 호환): true면 그 자리에서 새 키 값을 바꾸고, false면 아무것도 하지 않는다(#849)
+            "cursor-invert-fg-bg" | "selection-invert-fg-bg" => match parse_ghostty_bool(v) {
+                Some(true) if e.key == "cursor-invert-fg-bg" => {
+                    self.cursor_color_cell = Some(CellColor::Foreground);
+                    self.cursor_text_cell = Some(CellColor::Background);
+                    t.explicit.cursor = false;
+                    t.explicit.cursor_text = false;
                 }
+                Some(true) => {
+                    self.selection_foreground_cell = Some(CellColor::Background);
+                    self.selection_background_cell = Some(CellColor::Foreground);
+                    t.explicit.selection_foreground = true;
+                    t.explicit.selection_background = true;
+                }
+                Some(false) => {}
+                None => warnings.push(format!(
+                    "{}:{}: {} 값을 읽지 못했습니다: {v}",
+                    e.file.display(),
+                    e.line,
+                    e.key
+                )),
             },
             "palette" => {
                 // 번호는 10진수나 `0x`·`0o`·`0b`, 색은 `RGB.parse`(Ghostty `parsePaletteEntry`, #837)
@@ -3737,10 +3797,18 @@ impl Config {
         if t.explicit.cursor_text {
             push("cursor-text", hex(t.cursor_text));
         }
-        if t.explicit.selection_background {
+        let cell_name = |c: CellColor| match c {
+            CellColor::Foreground => "cell-foreground".to_string(),
+            CellColor::Background => "cell-background".to_string(),
+        };
+        if let Some(c) = self.selection_background_cell {
+            push("selection-background", cell_name(c));
+        } else if t.explicit.selection_background {
             push("selection-background", hex(t.selection_background));
         }
-        if let (true, Some(c)) = (t.explicit.selection_foreground, t.selection_foreground) {
+        if let Some(c) = self.selection_foreground_cell {
+            push("selection-foreground", cell_name(c));
+        } else if let (true, Some(c)) = (t.explicit.selection_foreground, t.selection_foreground) {
             push("selection-foreground", hex(c));
         }
         for (i, c) in t.palette.iter().enumerate() {
@@ -5624,6 +5692,88 @@ mod tests {
         assert_eq!((c.cursor_color_cell, c.theme.cursor), (None, Rgb::new(255, 0, 0)));
         assert_eq!(Config::from_text("cursor-opacity = 7\n", true).cursor_opacity, 1.0);
         assert_eq!(Config::from_text("cursor-opacity = half\n", true).warnings.len(), 1);
+    }
+
+    /// #849: `selection-*`는 `cell-foreground`·`cell-background`를 받는다(Ghostty 1.4.0 `TerminalColor`)
+    #[test]
+    fn selection_keys_accept_cell_colors_like_ghostty() {
+        let d = Config::default();
+        assert_eq!((d.selection_background_cell, d.selection_foreground_cell), (None, None));
+        let c = Config::from_text(
+            "selection-background = cell-foreground\nselection-foreground = cell-background\n",
+            true,
+        );
+        assert!(c.warnings.is_empty(), "{:?}", c.warnings);
+        assert_eq!(c.selection_background_cell, Some(CellColor::Foreground));
+        assert_eq!(c.selection_foreground_cell, Some(CellColor::Background));
+        assert!(c.theme.explicit.selection_background && c.theme.explicit.selection_foreground);
+        // 나중 줄이 이긴다: 색을 주면 칸 색 따르기가 풀리고, 반대도 마찬가지
+        let c = Config::from_text(
+            "selection-background = cell-foreground\nselection-background = #112233\n\
+             selection-foreground = #445566\nselection-foreground = cell-foreground\n",
+            true,
+        );
+        assert_eq!(c.selection_background_cell, None);
+        assert_eq!(c.theme.selection_background, Rgb::new(0x11, 0x22, 0x33));
+        assert_eq!(c.selection_foreground_cell, Some(CellColor::Foreground));
+        // 빈 값은 정하지 않은 것으로, 잘못된 값은 경고하고 앞 값을 둔다
+        let c = Config::from_text("selection-background = cell-foreground\nselection-background =\n", true);
+        assert_eq!(c.selection_background_cell, None);
+        assert!(!c.theme.explicit.selection_background && c.warnings.is_empty());
+        let c = Config::from_text(
+            "selection-foreground = cell-background\nselection-foreground = nosuch\n",
+            true,
+        );
+        assert_eq!(c.selection_foreground_cell, Some(CellColor::Background));
+        assert_eq!(c.warnings.len(), 1, "{:?}", c.warnings);
+    }
+
+    /// #849: 옛 키는 그 자리에서 새 키 값을 바꾼다(Ghostty `compatCursorInvertFgBg`·`compatSelectionInvertFgBg`)
+    #[test]
+    fn invert_fg_bg_compat_keys_rewrite_the_new_keys_in_place() {
+        for v in ["true", "t", "T", "1"] {
+            let c = Config::from_text(
+                &format!("cursor-invert-fg-bg = {v}\nselection-invert-fg-bg = {v}\n"),
+                true,
+            );
+            assert!(c.warnings.is_empty(), "{v}: {:?}", c.warnings);
+            assert_eq!(c.cursor_color_cell, Some(CellColor::Foreground), "{v}");
+            assert_eq!(c.cursor_text_cell, Some(CellColor::Background), "{v}");
+            assert_eq!(c.selection_background_cell, Some(CellColor::Foreground), "{v}");
+            assert_eq!(c.selection_foreground_cell, Some(CellColor::Background), "{v}");
+            assert!(c.theme.explicit.selection_background && c.theme.explicit.selection_foreground);
+        }
+        // false는 아무것도 하지 않는다(앞에 정한 값도 그대로)
+        let c = Config::from_text(
+            "selection-background = #112233\nselection-invert-fg-bg = false\ncursor-color = #445566\ncursor-invert-fg-bg = 0\n",
+            true,
+        );
+        assert!(c.warnings.is_empty(), "{:?}", c.warnings);
+        assert_eq!((c.selection_background_cell, c.selection_foreground_cell), (None, None));
+        assert_eq!(c.theme.selection_background, Rgb::new(0x11, 0x22, 0x33));
+        assert_eq!(
+            (c.cursor_color_cell, c.theme.cursor),
+            (None, Rgb::new(0x44, 0x55, 0x66))
+        );
+        // 줄 순서: 옛 키 뒤의 새 키가 이기고, 새 키 뒤의 옛 키(true)가 이긴다
+        let c = Config::from_text("selection-invert-fg-bg = true\nselection-background = #112233\n", true);
+        assert_eq!(c.selection_background_cell, None);
+        assert_eq!(c.selection_foreground_cell, Some(CellColor::Background));
+        let c = Config::from_text("selection-background = #112233\nselection-invert-fg-bg = true\n", true);
+        assert_eq!(c.selection_background_cell, Some(CellColor::Foreground));
+        // 잘못된 값은 경고하고 아무것도 바꾸지 않는다
+        let c = Config::from_text("selection-invert-fg-bg = maybe\n", true);
+        assert_eq!(c.warnings.len(), 1, "{:?}", c.warnings);
+        assert_eq!(c.selection_background_cell, None);
+    }
+
+    /// #849: `--show-config`는 칸 색 따르기를 그 이름으로 적는다
+    #[test]
+    fn show_config_prints_selection_cell_colors() {
+        let c = Config::from_text("selection-invert-fg-bg = true\n", true);
+        let out = c.render();
+        assert!(out.contains("selection-background = cell-foreground\n"), "{out}");
+        assert!(out.contains("selection-foreground = cell-background\n"), "{out}");
     }
 
     #[test]

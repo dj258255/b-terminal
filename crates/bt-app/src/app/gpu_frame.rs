@@ -495,6 +495,8 @@ impl App {
                     cursor: *cursor,
                     selection_bg: super::screen_default_colors(&theme, &v.screen).selection_bg,
                     selection_fg: super::screen_default_colors(&theme, &v.screen).selection_fg,
+                    selection_bg_cell: self.config.selection_background_cell,
+                    selection_fg_cell: self.config.selection_foreground_cell,
                     preedit: pre.as_deref(),
                     min_contrast: self.config.minimum_contrast,
                 })
