@@ -537,12 +537,27 @@ pub fn draw_palette(
 }
 
 /// 닫기·끝내기 확인 막대(#108)를 창 위쪽 가운데에 그린다: 묻는 글 한 줄, 그 아래 키 안내
+/// 확인 막대에 그릴 수 있는 앞말+글의 칸 수(`draw_confirm`이 이 길이로 자른다). 창 폭(픽셀)과 칸 너비로 정한다
+pub fn confirm_message_room(canvas_width: u32, cell_w: u32) -> usize {
+    bar_cells(canvas_width, cell_w).saturating_sub(4)
+}
+
+/// 막대 자체의 최대 칸 수: 창 칸 수에서 좌우 여백 4를 빼고, 아주 좁아도 10은 둔다
+fn bar_cells(canvas_width: u32, cell_w: u32) -> usize {
+    ((canvas_width / cell_w.max(1)) as usize).saturating_sub(4).max(10)
+}
+
+/// 글이 막대에 잘리지 않고 다 들어가는가. 링크를 묻는 막대는 주소가 잘리면 묻지 않는다(질의가 가려진 채 허락하게 된다)
+pub fn confirm_message_fits(message: &str, canvas_width: u32, cell_w: u32) -> bool {
+    text_cells(message) <= confirm_message_room(canvas_width, cell_w)
+}
+
 pub fn draw_confirm(canvas: &mut Canvas, fonts: &mut Fonts, theme: &Theme, message: &str, hint: &str) {
     let m = fonts.metrics();
     let cw = m.width as i32;
     let line_h = m.height + m.height / 3;
-    let max_cells = ((canvas.width / m.width.max(1)) as usize).saturating_sub(4).max(10);
-    let message = truncate(message, max_cells.saturating_sub(4));
+    let max_cells = bar_cells(canvas.width, m.width);
+    let message = truncate(message, confirm_message_room(canvas.width, m.width));
     let cells = text_cells(&message).max(text_cells(hint)) + 4;
     let w = cells.min(max_cells) as u32 * m.width;
     let h = line_h * 2 + m.height / 2;
@@ -1102,6 +1117,29 @@ mod tests {
         assert_eq!(at(BottomLeft), (110, 320));
         assert_eq!(at(BottomCenter), (260, 320));
         assert_eq!(at(BottomRight), (410, 320));
+    }
+
+    #[test]
+    fn confirm_message_fits_only_when_the_bar_can_draw_it_whole() {
+        // 창 800px, 칸 10px: 80칸 → 막대 칸 76 → 글 칸 72
+        assert_eq!(confirm_message_room(800, 10), 72);
+        assert!(confirm_message_fits(&"a".repeat(72), 800, 10));
+        assert!(!confirm_message_fits(&"a".repeat(73), 800, 10));
+        // 넓은 글자는 두 칸으로 센다
+        assert!(!confirm_message_fits(&"한".repeat(37), 800, 10));
+        // 좁은 창: 막대 칸이 최소 10이라 글은 6칸까지
+        assert_eq!(confirm_message_room(100, 10), 6);
+        assert!(!confirm_message_fits(
+            "다른 앱으로 이 링크를 열까요? ssh://h.example/x",
+            300,
+            10
+        ));
+        // draw_confirm은 못 넣는 글을 `…`로 자르므로 이 판단과 같은 길이를 쓴다
+        assert!(confirm_message_fits(
+            "다른 앱으로 이 링크를 열까요? ssh://h.example/x",
+            1200,
+            10
+        ));
     }
 
     #[test]

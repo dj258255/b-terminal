@@ -38,6 +38,13 @@ use crate::tabbar;
 use crate::undo::UndoStack;
 use bt_core::config::NotifyOnFinish;
 
+/// 링크 확인 막대의 글(앞말과 줄이지 않은 주소)
+fn link_confirm_message(url: &str) -> String {
+    format!("다른 앱으로 이 링크를 열까요? {}", bt_term::links::confirm_text(url))
+}
+
+const NARROW_LINK_TOAST: &str = "창이 좁아 주소를 다 보일 수 없어 열지 않았습니다";
+
 fn truncate_chars(s: &str, n: usize) -> String {
     if s.chars().count() <= n {
         return s.to_string();
@@ -3023,7 +3030,14 @@ impl App {
             Pending::ClipboardRead { pane, reply, text } => self.answer_clipboard_read(pane, &reply, &text),
             Pending::ClipboardWrite { pane, text } => self.answer_clipboard_write(pane, text),
             Pending::OpenFile { cwd, input } => self.open_dropped(event_loop, cwd, Some(input)),
-            Pending::OpenLink { url } => crate::desktop::open_link(&bt_term::links::OpenTarget::Confirm(url)),
+            Pending::OpenLink { url } => {
+                // 허락하는 순간에도 같은 판단: 그 사이 창이 좁아졌으면 열지 않는다
+                if self.link_confirm_fits(&url) {
+                    crate::desktop::open_link(&bt_term::links::OpenTarget::Confirm(url));
+                } else {
+                    self.toast(NARROW_LINK_TOAST.to_string());
+                }
+            }
             Pending::KittyRead { pane, req, text } => self.answer_kitty_read(pane, &req, &text),
             Pending::KittyWrite { pane, req, text } => self.answer_kitty_write(pane, &req, text),
         }
@@ -4051,12 +4065,12 @@ impl App {
         };
         match target {
             Some(OpenTarget::Confirm(u)) => {
-                let shown = bt_term::links::confirm_text(&u);
-                self.ask(
-                    Pending::OpenLink { url: u },
-                    format!("다른 앱으로 이 링크를 열까요? {shown}"),
-                    "열기",
-                );
+                // 막대가 주소를 다 그릴 수 없으면(좁은 창) 질의가 가려진 채 허락하게 되므로 묻지 않는다
+                if !self.link_confirm_fits(&u) {
+                    self.toast(NARROW_LINK_TOAST.to_string());
+                    return;
+                }
+                self.ask(Pending::OpenLink { url: u.clone() }, link_confirm_message(&u), "열기");
             }
             Some(target) => crate::desktop::open_link(&target),
             None => {
@@ -4064,6 +4078,28 @@ impl App {
                 self.toast(format!("열 수 없는 링크입니다: {shown}"));
             }
         }
+    }
+
+    /// 지금 창에서 확인 막대가 이 링크의 앞말과 주소를 잘리지 않게 그릴 수 있는가
+    fn link_confirm_fits(&self, url: &str) -> bool {
+        let (Some(m), Some(g)) = (self.chrome_metrics(), &self.w.gfx) else {
+            return false;
+        };
+        tabbar::confirm_message_fits(&link_confirm_message(url), g.window.inner_size().width, m.width)
+    }
+
+    /// 창이 좁아져 열린 링크 확인 막대가 주소를 다 못 그리면 막대를 닫고 열지 않는다
+    fn recheck_link_confirm(&mut self) {
+        let Some(Pending::OpenLink { url }) = self.w.confirm.as_ref().map(|c| &c.pending) else {
+            return;
+        };
+        if self.link_confirm_fits(&url.clone()) {
+            return;
+        }
+        self.w.confirm = None;
+        self.sync_confirm_ime();
+        self.toast(NARROW_LINK_TOAST.to_string());
+        self.request_redraw();
     }
 
     /// 고른 칸에 찾기 막대를 연다. 이미 열려 있으면 그대로
@@ -7605,7 +7641,10 @@ impl ApplicationHandler<UserEvent> for App {
         }
         match event {
             WindowEvent::CloseRequested => self.request(Pending::CloseWindow, event_loop),
-            WindowEvent::Resized(_) => self.resize_all(),
+            WindowEvent::Resized(_) => {
+                self.resize_all();
+                self.recheck_link_confirm();
+            }
             // 다른 화면으로 옮겨 갔을 수 있다. 다시 그리지 않고 올리기만 해 softbuffer가 그 화면의 색 공간을 고르게 한다(#97)
             WindowEvent::Moved(_) => {
                 self.w.force_present = true;
@@ -7619,6 +7658,7 @@ impl ApplicationHandler<UserEvent> for App {
                 self.scale = scale_factor;
                 self.load_fonts();
                 self.resize_all();
+                self.recheck_link_confirm();
             }
             WindowEvent::RedrawRequested => self.redraw(),
             // 파일마다 사건이 따로 온다. 같은 차례 것을 모아 `about_to_wait`에서 한 번에 넣는다(#566)
