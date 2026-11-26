@@ -955,3 +955,12 @@
 - kitty 문서와 다른 점: kitty 소스는 `duration / 2` 안에 오르고 내리는 두 구간을 모두 끝내, `visual_bell_duration = 0.2`일 때 실제 번쩍임이 0.1초에 끝난다(문서는 "지정한 시간 동안 들어오고 나간다"고 적는다). 같은 설정이 kitty와 같은 모양이 되게 소스 동작을 따랐다(적은 시간의 절반 동안 번쩍임). kitty와 다른 점: kitty는 색을 선형 공간에서 섞고 우리는 sRGB 값에 알파로 섞어 같은 알파에서 색이 조금 다를 수 있다. 둘 다 kitty 창을 띄워 견주지 않았다
 - 남긴 것: `visual-bell-duration`은 `bell-features`와 따로라서 `border`를 꺼도 켜진다. 창이 앞에 없거나 가려진 창에서는 다시 그리지 않는다(가려진 창은 건너뜀). 실제 창에서 번쩍이는 모양·속도는 이 일을 한 세션에서 보지 못했다
 - 0.105.0에서 풀기: `bell-features = border`로 칸 둘레 띠를 쓴다
+
+## 115. `minimum-contrast`를 켜도 밑줄·취소선은 바탕과 비슷한 색으로 남는다
+
+- 언제: 2026-11-27, #904. 0.106.0까지의 동작이다. 0.102 판에서 최소 명암비를 Ghostty처럼 바꿀 때 장식선을 남겨 두었다(ROADMAP 다음 판 후보)
+- 증상: 설정에 `minimum-contrast = 3`을 적고 `printf '\033[4;38;2;40;44;52mlow\033[0m\n'`를 찍으면 글자는 밝게 바뀌는데 밑줄은 바탕과 비슷한 색으로 남아 잘 보이지 않았다. 고른 칸의 밑줄·윗줄·취소선도 `selection-foreground`가 아니라 칸의 글자색이었다
+- 까닭: `decoration_color`가 칸의 글자색에 흐림만 걸었고 밑줄 색(SGR 58)은 그대로 썼다. Ghostty 1.4.0은 장식선을 글자와 같은 `cell_text` 길로 얹는다: 색은 `fg`(고른 칸이면 `selection-foreground`)이고 밑줄만 밑줄 색이 우선이다(`src/renderer/generic.zig` 3264·3277·3359줄), 알파는 흐림(`faint-opacity`)이다. 장식선 셀에는 `no_min_contrast`가 서지 않아(`generic.zig` 3527줄은 글자 셀만 `noMinContrast`를 넣는다) 정점 셰이더가 늘 최소 명암비를 건다(`src/renderer/shaders/shaders.metal` 653~656줄). 바탕은 그 칸의 바탕색(고른 칸이면 고름 바탕)이고, 바꾸면 알파 없는 흰색·검은색이다
+- 고침: `text_color`와 `decoration_color`가 한 함수(`shaded_color`)를 써서 최소 명암비 → 흐림 차례를 한 벌로 가진다. 장식선은 그래픽 글자 예외 없이 늘 명암비를 받고, 글자색 결과는 바뀌지 않는다. CPU·GPU 길이 같은 함수를 쓰고 `crates/bt-gpu/tests/parity.rs`가 같은 픽셀(다른 픽셀 0)을 지킨다. `minimum-contrast = 1`(기본)이면 픽셀이 전과 같다
+- 남긴 것: 블록 커서 아래 칸의 밑줄·윗줄·취소선은 Ghostty에서 커서 글자색(`cursor-text`)으로 보이지만(`shaders.metal` 658~673줄, 커서 칸의 모든 `cell_text` 정점 색을 바꾼다) 여기서는 블록 커서가 장식선을 덮는다. 그 차이는 이 일에서 고치지 않았다. 실제 창에서 눈으로 견주지는 않았다
+- 0.106.0에서 풀기: 장식선 색은 설정으로 바꿀 길이 없다(밑줄 색 SGR 58로 따로 정할 수 있었지만 명암비는 그 색에도 걸리지 않았다)

@@ -222,7 +222,7 @@ config-file = ?~/.config/b-terminal/local   # ?가 붙으면 없어도 된다
 | `resize-overlay-position` | `center` `top-left` `top-center` `top-right` `bottom-left` `bottom-center` `bottom-right` | `center` | 크기 표시 자리 |
 | `resize-overlay-duration` | 기간(`750ms`, `2s`, `1m30s`; 단위 `y` `d` `h` `m` `s` `ms` `us` `ns`) | `750ms` | 크기 표시가 보이는 시간 |
 | `undo-timeout` | 기간(`5s`, `1m30s` 등 `resize-overlay-duration`과 같은 문법) | `5s` | 닫은 칸·탭을 되살릴 수 있는 시간(Ghostty와 같은 뜻). 칸·탭을 직접 닫으면(⌘W, ⌥⌘W) 셸을 바로 끝내지 않고 이 시간 동안 들고 있다가 `undo`(⌘Z, ⇧⌘T)로 원래 자리에 되살립니다. 시간이 지나면 그때 셸이 끊깁니다. 일마다 따로 셉니다. `0s`면 끕니다(바로 끊음). 셸이 스스로 끝나 닫힌 칸·창 닫기·앱 끝내기는 되살리지 않습니다. 들고 있는 동안 셸은 계속 돌며 출력을 받습니다 |
-| `minimum-contrast` | `1`~`21` | `1` | 글자색과 바탕의 명암비(WCAG)가 이보다 낮으면 글자를 흰색이나 검은색(바탕과 명암비가 큰 쪽)으로 그립니다. `1`이면 끔. 3이면 대개 읽힙니다. 상자 그림·블록·레거시 컴퓨팅 기호·파워라인 글자에는 걸지 않습니다(Ghostty처럼) |
+| `minimum-contrast` | `1`~`21` | `1` | 글자색과 바탕의 명암비(WCAG)가 이보다 낮으면 글자를 흰색이나 검은색(바탕과 명암비가 큰 쪽)으로 그립니다. `1`이면 끔. 3이면 대개 읽힙니다. 상자 그림·블록·레거시 컴퓨팅 기호·파워라인 글자에는 걸지 않습니다(Ghostty처럼). 밑줄·윗줄·취소선(밑줄 색을 정한 것도)에는 걸립니다 |
 | `focus-follows-mouse` | `true` `false` | `false` | 화면을 나눴을 때 마우스가 올라간 칸을 고릅니다(끌어 고르는 중에는 바꾸지 않음) |
 | `mouse-scroll-multiplier` | 수, `discrete:수`, `precision:수`(쉼표로 둘) | `discrete:3,precision:1` | 휠 배율. `discrete`는 줄 단위 기기(마우스 휠), `precision`은 픽셀 단위 기기(트랙패드). 접두 없는 수는 둘 다. 0.01~10000 |
 | `selection-word-chars` | 글자들(`\t`·`\\` 풂) | `` \t'"│`\|:;,()[]{}<>$``(맨 앞 공백 포함) | 두 번 눌러 단어를 고를 때 끊는 글자. 공백을 넣으려면 큰따옴표로 감쌉니다. 글을 찍지 않은 칸은 늘 경계입니다. 경계 글자 위를 누르면 이어진 경계 글자 구간만 고릅니다([두 번·세 번 누르기](#두-번세-번-누르기-고르기)) |
