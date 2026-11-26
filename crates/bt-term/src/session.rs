@@ -500,6 +500,14 @@ impl Inner {
     }
 }
 
+/// `Session::word_at`의 결과: 낱말 글과 시작 칸(화면 좌표)
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WordHit {
+    pub text: String,
+    pub col: usize,
+    pub row: usize,
+}
+
 /// PTY 하나와 그 화면 상태
 pub struct Session {
     inner: Arc<Mutex<Inner>>,
@@ -1587,6 +1595,38 @@ impl Session {
     /// 프롬프트 클릭(#338)이 PTY에 보낼 바이트. 셸이 `cl=`·`click_events=`를 밝힌 화면에서, 프롬프트에서 눌렀을 때만 있다
     pub fn prompt_click(&self, col: usize, row: usize) -> Option<Vec<u8>> {
         crate::prompt_click::prompt_click(&self.inner.lock().term, col, row)
+    }
+
+    /// 화면 좌표 칸의 낱말과 그 시작 칸(사전 조회, #853). 고른 글은 건드리지 않는다. 칸이 비었으면 None
+    pub fn word_at(&self, col: usize, row: usize) -> Option<WordHit> {
+        let theme = self.theme.lock().clone();
+        let g = self.inner.lock();
+        let point = viewport_point(&g.term, col, row);
+        let range = Selection::new(SelectionType::Semantic, point, Side::Left).to_range(&g.term)?;
+        let opts = crate::copy_format::Options {
+            emit: crate::copy_format::Emit::Plain,
+            trim: false,
+            background: None,
+            foreground: None,
+            codepoint_map: &[],
+        };
+        let text = crate::copy_format::format_range(&g.term, &theme, range.start, range.end, range.is_block, opts);
+        if text.trim().is_empty() {
+            return None;
+        }
+        // 접힌 줄의 낱말은 시작이 화면 위로 나갈 수 있다. 화면 안 첫 칸으로 맞춘다
+        let offset = g.term.grid().display_offset() as i32;
+        let start_row = (range.start.line.0 + offset).max(0) as usize;
+        let start_col = if range.start.line.0 + offset < 0 {
+            0
+        } else {
+            range.start.column.0
+        };
+        Some(WordHit {
+            text,
+            col: start_col,
+            row: start_row,
+        })
     }
 
     /// 프로그램이 XTSHIFTESCAPE로 정한 Shift 마우스 보고 여부. 정한 적이 없으면 `None`(#327)

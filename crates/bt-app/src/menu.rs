@@ -42,6 +42,8 @@ pub fn action_for(id: &str) -> Option<MenuCommand> {
         "split_left" => MenuCommand::Action(Action::NewSplit(Some(Direction::Left))),
         "split_up" => MenuCommand::Action(Action::NewSplit(Some(Direction::Up))),
         "reset_terminal" => MenuCommand::Action(Action::Reset),
+        // 창 메뉴의 "항상 위에 띄우기"(#853, Ghostty `floatOnTop`). 키 묶음 `toggle_window_float_on_top`과 같은 동작이다
+        "float_on_top" => MenuCommand::Action(Action::ToggleFloatOnTop),
         "toggle_readonly" => MenuCommand::Action(Action::ToggleReadonly),
         _ => return None,
     })
@@ -56,10 +58,11 @@ pub enum MenuCommand {
 }
 
 #[cfg(target_os = "macos")]
-/// 메뉴와, 체크 표시를 맞추려고 따로 들고 있을 보안 키보드 입력 항목
-pub fn build(secure_on: bool) -> (muda::Menu, muda::CheckMenuItem) {
+/// 메뉴와, 체크 표시를 맞추려고 따로 들고 있을 보안 키보드 입력 항목·항상 위에 띄우기 항목
+pub fn build(secure_on: bool) -> (muda::Menu, muda::CheckMenuItem, muda::CheckMenuItem) {
     use muda::{AboutMetadata, CheckMenuItem, Menu, MenuItem, PredefinedMenuItem, Submenu};
     let secure = CheckMenuItem::with_id("secure_input", "보안 키보드 입력", true, secure_on, None);
+    let float = CheckMenuItem::with_id("float_on_top", "항상 위에 띄우기", true, false, None);
     let item = |id: &str, text: &str| MenuItem::with_id(id, text, true, None);
     let menu = Menu::new();
     let about = AboutMetadata {
@@ -146,12 +149,14 @@ pub fn build(secure_on: bool) -> (muda::Menu, muda::CheckMenuItem) {
             &item("split_equalize", "칸 크기 고르게"),
             &PredefinedMenuItem::separator(),
             &item("quick_terminal", "퀵 터미널"),
+            &PredefinedMenuItem::separator(),
+            &float,
         ],
     );
     for sub in [&app, &shell, &edit, &view, &window] {
         let _ = sub.as_ref().map(|s| menu.append(s));
     }
-    (menu, secure)
+    (menu, secure, float)
 }
 
 /// 설정 파일이 없으면 예시가 담긴 파일을 만들고 그 경로를 돌려준다
@@ -197,6 +202,10 @@ mod tests {
         assert_eq!(
             action_for("paste_selection"),
             Some(MenuCommand::Action(Action::PasteSelection))
+        );
+        assert_eq!(
+            action_for("float_on_top"),
+            Some(MenuCommand::Action(Action::ToggleFloatOnTop))
         );
         assert_eq!(action_for("nope"), None);
     }
