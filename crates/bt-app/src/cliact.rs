@@ -731,6 +731,29 @@ mod tests {
         assert!(out.contains("font-size"), "{out}");
     }
 
+    /// #889: 기본 여백이 Ghostty(2·false)와 달라진 값이 기본값 출력에 보이고, 설정에 적은 값(0 포함)은 바뀐 것으로 나온다
+    #[test]
+    fn show_config_default_shows_roomy_padding_and_changes_only_shows_explicit_values() {
+        let d = tmpdir("padding889");
+        let (code, def, _, _) = go("show-config", &["--default"], &env(&d));
+        assert_eq!(code, 0);
+        assert!(def.contains("window-padding-x = 10,10\n"), "{def}");
+        assert!(def.contains("window-padding-y = 8,8\n"), "{def}");
+        assert!(def.contains("window-padding-balance = true\n"), "{def}");
+        let f = d.join("c");
+        std::fs::write(
+            &f,
+            "window-padding-x = 0\nwindow-padding-y = 2\nwindow-padding-balance = false\n",
+        )
+        .unwrap();
+        let a = ["--config-default-files=false", "--config-file", f.to_str().unwrap()];
+        let (code, out, _, _) = go("show-config", &a, &env(&d));
+        assert_eq!(code, 0);
+        assert!(out.contains("window-padding-x = 0,0\n"), "{out}");
+        assert!(out.contains("window-padding-y = 2,2\n"), "{out}");
+        assert!(out.contains("window-padding-balance = false\n"), "{out}");
+    }
+
     fn show(d: &Path, extra: &[&str]) -> (i32, String, String) {
         let f = d.join("c");
         std::fs::write(&f, "font-size = 23\n").unwrap();

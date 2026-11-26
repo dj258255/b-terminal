@@ -4,6 +4,8 @@
 
 ## [아직 릴리스하지 않음]
 
+- **기본 창 여백이 넓어지고 남는 자리가 고르게 나뉩니다(바뀐 기본값).** `window-padding-x` 기본이 2에서 10포인트, `window-padding-y`가 2에서 8포인트가 되고, `window-padding-balance` 기본이 `false`에서 `true`가 됩니다(Ghostty 1.4.0 기본은 2·2·`false`라 일부러 달라집니다). 글자가 창 가장자리에 붙지 않고, 칸 크기로 나누어떨어지지 않는 남는 픽셀이 오른쪽·아래에만 몰리지 않습니다. 설정에 적은 값(0 포함)은 그대로 따릅니다. 예전 모양으로 돌리려면 `window-padding-x = 2`, `window-padding-y = 2`, `window-padding-balance = false`를 적습니다. `+show-config`가 `window-padding-balance`도 보입니다 (#889)
+
 ## [0.105.0] - 2026-11-27
 
 kitty에 있는 화면·입력 소품을 넣은 판입니다. **깜빡이는 글자(SGR 5·6)를 그리고**, 화면의 주소·경로·파일:줄·해시에 라벨을 덮어 키보드로 열거나 붙여넣는 힌트(kitty `hints`, macOS 기본 `ctrl+shift+e`·`ctrl+shift+p`), 붙여넣기 동작을 고르는 `paste-actions`(기본 꺼짐), Dock 아이콘의 진행 막대와 벨 배지, SGR 221·222와 `clear_scrollback`·`clear_last_command` 키 동작을 더했습니다. 마일스톤 0.105.

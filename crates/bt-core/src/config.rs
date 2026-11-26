@@ -1292,6 +1292,12 @@ pub enum BgPosition {
     BottomRight,
 }
 
+/// 기본 창 여백(포인트, #889). 가로(왼·오른)와 세로(위·아래) 각각. Ghostty 기본은 2·2라 달라진다. 값을 바꾸려면 여기 한 곳만 고친다
+pub const DEFAULT_PADDING_X: f32 = 10.0;
+pub const DEFAULT_PADDING_Y: f32 = 8.0;
+/// 기본 남는 자리 나누기(#889). Ghostty 기본은 `false`라 달라진다
+pub const DEFAULT_PADDING_BALANCE: PaddingBalance = PaddingBalance::True;
+
 /// 남는 자리 나누기(Ghostty `window-padding-balance`, renderer/size.zig `PaddingBalance`)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PaddingBalance {
@@ -1763,8 +1769,8 @@ impl Default for Config {
             theme: Theme::ghostty_default(),
             cursor_style: CursorStyle::Block,
             cursor_blink: None,
-            padding_x: (2.0, 2.0),
-            padding_y: (2.0, 2.0),
+            padding_x: (DEFAULT_PADDING_X, DEFAULT_PADDING_X),
+            padding_y: (DEFAULT_PADDING_Y, DEFAULT_PADDING_Y),
             window_width: None,
             window_height: None,
             maximize: false,
@@ -1886,7 +1892,7 @@ impl Default for Config {
             clipboard_codepoint_map: Vec::new(),
             grapheme_width_method: GraphemeWidthMethod::Unicode,
             ambiguous_width: AmbiguousWidth::Narrow,
-            padding_balance: PaddingBalance::False,
+            padding_balance: DEFAULT_PADDING_BALANCE,
             padding_color: PaddingColor::Background,
             cursor_opacity: 1.0,
             cursor_color_cell: None,
@@ -4062,6 +4068,15 @@ impl Config {
         push("window-padding-x", format!("{},{}", self.padding_x.0, self.padding_x.1));
         push("window-padding-y", format!("{},{}", self.padding_y.0, self.padding_y.1));
         push(
+            "window-padding-balance",
+            match self.padding_balance {
+                PaddingBalance::False => "false",
+                PaddingBalance::True => "true",
+                PaddingBalance::Equal => "equal",
+            }
+            .into(),
+        );
+        push(
             "macos-option-as-alt",
             match self.option_as_alt {
                 OptionAsAlt::None => "false",
@@ -5807,12 +5822,41 @@ mod tests {
         );
     }
 
+    /// #889: 기본 여백은 가로 10·세로 8, 남는 자리 나누기는 `true`(Ghostty 기본 2·false와 다름). 설정에 적은 값은 0까지 그대로 따른다
+    #[test]
+    fn default_padding_is_roomy_and_balanced_but_explicit_values_win() {
+        let d = Config::default();
+        assert_eq!(d.padding_x, (10.0, 10.0));
+        assert_eq!(d.padding_y, (8.0, 8.0));
+        assert_eq!(d.padding_balance, PaddingBalance::True);
+        let r = d.render();
+        assert!(r.contains("window-padding-x = 10,10\n"), "{r}");
+        assert!(r.contains("window-padding-y = 8,8\n"), "{r}");
+        assert!(r.contains("window-padding-balance = true\n"), "{r}");
+        // 예전 모양으로 돌리는 설정
+        let old = Config::from_text(
+            "window-padding-x = 2\nwindow-padding-y = 2\nwindow-padding-balance = false\n",
+            true,
+        );
+        assert!(old.warnings.is_empty(), "{:?}", old.warnings);
+        assert_eq!((old.padding_x, old.padding_y), ((2.0, 2.0), (2.0, 2.0)));
+        assert_eq!(old.padding_balance, PaddingBalance::False);
+        assert!(old.render().contains("window-padding-balance = false\n"));
+        // 0도 그대로(기본값으로 되돌리지 않는다)
+        let z = Config::from_text("window-padding-x = 0\nwindow-padding-y = 0,0\n", true);
+        assert_eq!((z.padding_x, z.padding_y), ((0.0, 0.0), (0.0, 0.0)));
+        // 한쪽만 적어도 다른 쪽은 기본
+        let x = Config::from_text("window-padding-x = 3\n", true);
+        assert_eq!((x.padding_x, x.padding_y), ((3.0, 3.0), (8.0, 8.0)));
+        assert_eq!(x.padding_balance, PaddingBalance::True);
+    }
+
     #[test]
     fn padding_keys_like_ghostty() {
         let d = Config::default();
         assert_eq!(
             (d.padding_balance, d.padding_color),
-            (PaddingBalance::False, PaddingColor::Background)
+            (DEFAULT_PADDING_BALANCE, PaddingColor::Background)
         );
         let c = Config::from_text(
             "window-padding-balance = true\nwindow-padding-color = extend-always\n",
