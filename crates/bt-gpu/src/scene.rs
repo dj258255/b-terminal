@@ -344,6 +344,13 @@ impl Scene {
                 }
             }
         }
+
+        // 5) 커서 흔적(#891): CPU와 같은 `trail_rects`가 쪼갠 사각형을 알파로 덮는다
+        if let Some(t) = &view.trail {
+            for r in bt_render::trail::trail_rects(t, view.cols as i32 * cw, view.rows as i32 * ch) {
+                self.rect(r.x, r.y, r.w, r.h, t.color, t.alpha);
+            }
+        }
     }
 
     /// 조합 중 글(CPU `draw_preedit`): 글자마다 `selection_bg` 칸, 글자, 아래 줄(커서색)

@@ -198,6 +198,7 @@ fn run(name: &str, s: Setup, with_upper: bool) {
         selection_fg_cell: Default::default(),
         preedit: None,
         min_contrast: 1.0,
+        trail: None,
     };
     let layer = s.image.map(|a| backdrop(&l, a));
     let n = (l.w * l.h) as usize;

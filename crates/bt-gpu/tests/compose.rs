@@ -86,6 +86,7 @@ fn view<'a>(s: &Screen, dc: &'a [DrawCell], t: &Theme) -> GridView<'a> {
         selection_fg_cell: Default::default(),
         preedit: None,
         min_contrast: 1.0,
+        trail: None,
     }
 }
 

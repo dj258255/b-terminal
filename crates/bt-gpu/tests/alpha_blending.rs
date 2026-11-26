@@ -73,6 +73,7 @@ fn view(cells: &[DrawCell]) -> GridView<'_> {
         selection_fg_cell: Default::default(),
         preedit: None,
         min_contrast: 1.0,
+        trail: None,
     }
 }
 
@@ -346,6 +347,7 @@ fn frame_time_by_alpha_blending() {
         selection_fg_cell: Default::default(),
         preedit: None,
         min_contrast: 1.0,
+        trail: None,
     };
     let m = f.metrics();
     let (w, h) = (m.width * cols as u32, m.height * rows as u32);

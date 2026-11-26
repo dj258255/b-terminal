@@ -40,6 +40,8 @@ pub(super) struct GpuFrame<'a> {
     /// 끌어다 놓을 자리 미리 보기: 놓일 칸의 바깥 사각형과 쪽
     pub drop_preview: Option<(Rect, crate::split::Direction)>,
     pub dividers: &'a [Rect],
+    /// 커서 흔적(`cursor-trail`, #891): 칸마다 그릴 흔적과 다시 그릴 칸
+    pub trail: &'a crate::cursor_trail::Step,
     pub divider_color: bt_core::Rgb,
     pub dim_alpha: u8,
     pub dim_fill: bt_core::Rgb,
@@ -127,6 +129,7 @@ impl App {
             handles,
             drop_preview,
             dividers,
+            trail,
             divider_color,
             dim_alpha,
             dim_fill,
@@ -469,6 +472,12 @@ impl App {
                     .iter()
                     .filter(|d| **d)
                     .count();
+                // 흔적이 있거나 방금 끝난 칸은 줄이 같아도 다시 그린다(GPU는 격자를 늘 통째로 그린다, #891)
+                let rows = if trail.repaint[i] {
+                    rows.max(v.screen.rows)
+                } else {
+                    rows
+                };
                 pane_dirty[i] = rows > 0;
                 repainted_rows += rows;
             }
@@ -494,7 +503,8 @@ impl App {
             let grid_views: Vec<GridView> = views
                 .iter()
                 .zip(&drawn)
-                .map(|(v, (cells, cursor, pre))| GridView {
+                .zip(&trail.paints)
+                .map(|((v, (cells, cursor, pre)), paint)| GridView {
                     cols: v.screen.cols,
                     rows: v.screen.rows,
                     cells,
@@ -505,6 +515,7 @@ impl App {
                     selection_fg_cell: self.config.selection_foreground_cell,
                     preedit: pre.as_deref(),
                     min_contrast: self.config.minimum_contrast,
+                    trail: *paint,
                 })
                 .collect();
             // 격자 칸 바탕의 알파도 CPU 길과 같게(#359)

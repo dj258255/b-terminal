@@ -122,6 +122,7 @@ fn gv<'a>(s: &Scene, dc: &'a [DrawCell]) -> GridView<'a> {
         selection_fg_cell: Default::default(),
         preedit: None,
         min_contrast: 1.0,
+        trail: None,
     }
 }
 
@@ -482,6 +483,7 @@ fn unicode_placeholders_draw_the_image_on_both_paths_and_never_the_glyph() {
             selection_fg_cell: Default::default(),
             preedit: None,
             min_contrast: 1.0,
+            trail: None,
         }
     }
     let render_cpu = |f: &mut Fonts, dc: &[DrawCell], with_images: bool| -> Vec<u32> {
@@ -657,6 +659,7 @@ fn scroll_clipped_placement_draws_the_same_on_both_paths() {
         selection_fg_cell: Default::default(),
         preedit: None,
         min_contrast: 1.0,
+        trail: None,
     };
     // CPU 길
     let mut want = vec![0u32; n];

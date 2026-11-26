@@ -12,6 +12,7 @@ mod cliinfo;
 mod context_menu;
 mod control;
 mod copy;
+mod cursor_trail;
 mod default_terminal;
 mod desktop;
 mod divider_drag;

@@ -1056,6 +1056,9 @@ struct Win {
     blink_on: bool,
     blink_next: Instant,
     blink_wanted: bool,
+    /// 커서 흔적(`cursor-trail`, #891): 칸마다의 상태와, 움직이는 동안·지연을 세는 동안 다시 그릴 때
+    trails: crate::cursor_trail::Book,
+    trail_wake: Option<Instant>,
     /// 이 창의 바탕이 `toggle_background_opacity`로 불투명해졌다(#209)
     opaque: bool,
     /// 제목 막대 폴더 아이콘에 마지막으로 올린 폴더(#279). 같으면 다시 올리지 않는다
@@ -1137,6 +1140,8 @@ impl Win {
             blink_on: true,
             blink_next: Instant::now(),
             blink_wanted: false,
+            trails: Default::default(),
+            trail_wake: None,
             opaque: false,
             proxy_icon: None,
             occluded: false,
@@ -7344,6 +7349,53 @@ impl App {
                 ))
             })
             .collect();
+        // 커서 흔적(`cursor-trail`, #891): 고른 칸의 커서 이동을 따라가는 사각형. 움직이는 동안만 다시 그리게 깨운다
+        let trail = {
+            let settings = crate::cursor_trail::Settings::from_config(&self.config);
+            let inputs: Vec<crate::cursor_trail::PaneInput> = views
+                .iter()
+                .zip(&drawn)
+                .map(|(v, (cells, _, _))| {
+                    let screen = &v.screen;
+                    let (col, row) = (screen.cursor.col, screen.cursor.row);
+                    let under = cells
+                        .get(row * screen.cols + col)
+                        .map(|c| (c.fg, c.bg))
+                        .unwrap_or((theme.foreground, theme.background));
+                    let d = screen_default_colors(&theme, screen);
+                    let cursor_color = cursor_colors(
+                        self.config.cursor_color_cell,
+                        self.config.cursor_text_cell,
+                        (d.cursor, d.cursor_text),
+                        under,
+                    )
+                    .0;
+                    let style = match screen.cursor.shape {
+                        bt_term::CursorShape::Block => bt_render::CursorStyle::Block,
+                        bt_term::CursorShape::Beam => bt_render::CursorStyle::Beam,
+                        bt_term::CursorShape::Underline => bt_render::CursorStyle::Underline,
+                        bt_term::CursorShape::HollowBlock => bt_render::CursorStyle::Hollow,
+                    };
+                    crate::cursor_trail::PaneInput {
+                        id: v.id,
+                        focused: v.focused,
+                        cell: (col, row),
+                        rect: bt_render::trail::cursor_target(style, &v.metrics, col, row, screen.cursor.wide),
+                        // 스크롤해 올라가 있으면 커서는 보이지 않는다(kitty `rendered_scrolled_by`)
+                        visible: screen.cursor.visible && screen.display_offset == 0,
+                        layout: bt_render::trail::TrailLayout {
+                            cell: (v.metrics.width, v.metrics.height),
+                            grid: (screen.cols, screen.rows),
+                        },
+                        cursor_color,
+                    }
+                })
+                .collect();
+            self.w
+                .trails
+                .step(crate::cursor_trail::now(), settings.as_ref(), &inputs)
+        };
+        self.w.trail_wake = trail.wake.map(|d| Instant::now() + d);
         let Some(gfx) = self.w.gfx.as_mut() else { return };
         let Some(mut fonts) = self.w.fonts.parts_mut() else {
             return;
@@ -7422,6 +7474,7 @@ impl App {
                 handles: &handles,
                 drop_preview,
                 dividers: &dividers,
+                trail: &trail,
                 divider_color,
                 dim_alpha,
                 dim_fill,
@@ -7497,7 +7550,9 @@ impl App {
                     );
                 }
             }
-            for (((v, (cells, cursor, pre)), pad), bar) in views.iter().zip(&drawn).zip(&pads).zip(&bars) {
+            for (i, (((v, (cells, cursor, pre)), pad), bar)) in
+                views.iter().zip(&drawn).zip(&pads).zip(&bars).enumerate()
+            {
                 let screen = &v.screen;
                 let vm = v.metrics;
                 let grid_rect = Rect::new(
@@ -7517,6 +7572,7 @@ impl App {
                     selection_fg_cell: self.config.selection_foreground_cell,
                     preedit: pre.as_deref(),
                     min_contrast: self.config.minimum_contrast,
+                    trail: trail.paints[i],
                 };
                 if full {
                     canvas.fill_rect(v.outer.x, v.outer.y, v.outer.w, v.outer.h, screen.background);
@@ -7553,6 +7609,10 @@ impl App {
                         .as_ref()
                         .and_then(|f| f.panes.iter().find(|p| p.0 == v.id));
                     let mut dirty = dirty_rows(screen.cols, screen.rows, cells, *cursor, pre, prev);
+                    // 커서 흔적은 칸 전체에 걸치니 흔적이 있거나 방금 끝난 칸은 줄을 모두 다시 그린다(#891)
+                    if trail.repaint[i] {
+                        dirty.fill(true);
+                    }
                     if !dirty.iter().any(|d| *d) {
                         continue;
                     }
@@ -8934,6 +8994,15 @@ impl ApplicationHandler<UserEvent> for App {
                 }
             }
         }
+        // 커서 흔적(#891): 움직이는 동안과 이동 지연을 세는 동안만 깨운다. 가려진 창은 깨우지 않는다
+        for w in std::iter::once(&mut self.w).chain(self.others.iter_mut()) {
+            if !w.occluded && w.trail_wake.is_some_and(|t| now >= t) {
+                w.trail_wake = None;
+                if let Some(g) = &w.gfx {
+                    g.window.request_redraw();
+                }
+            }
+        }
         // kitty 애니메이션(#554): 다음 프레임 때가 된 창을 다시 그린다. 가려진 창은 깨우지 않는다
         self.fire_kitty_wakes(now);
         // 미뤄 둔 GPU 프레임을 다시 그릴 때가 됐다(ADR-038)
@@ -9008,6 +9077,11 @@ impl ApplicationHandler<UserEvent> for App {
             .filter(|w| w.blink_wanted)
             .map(|w| w.blink_next)
             .min();
+        let trail_next = std::iter::once(&self.w)
+            .chain(&self.others)
+            .filter(|w| !w.occluded)
+            .filter_map(|w| w.trail_wake)
+            .min();
         let kitty_next = std::iter::once(&self.w)
             .chain(&self.others)
             .filter(|w| !w.occluded)
@@ -9021,6 +9095,7 @@ impl ApplicationHandler<UserEvent> for App {
             .chain([self.next_poll])
             .chain(blink_next)
             .chain(kitty_next)
+            .chain(trail_next)
             .chain(anim_next)
             .chain(shader_next)
             .chain(overlay_next)

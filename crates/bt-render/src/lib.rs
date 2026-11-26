@@ -12,6 +12,7 @@ pub mod scrollbar;
 mod sfnt;
 pub mod sprite;
 pub mod text;
+pub mod trail;
 pub mod underline;
 
 pub use canvas::{Canvas, cells_alpha};

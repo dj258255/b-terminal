@@ -835,6 +835,14 @@ pub struct Config {
     pub padding_color: PaddingColor,
     /// 커서 불투명도(0~1, Ghostty `cursor-opacity`, #135)
     pub cursor_opacity: f32,
+    /// 커서 흔적(kitty `cursor_trail`, #891): 커서가 이 밀리초 넘게 가만히 있은 뒤의 이동만 따라간다. 0이면 끔(기본)
+    pub cursor_trail_ms: u32,
+    /// 흔적이 따라붙는 가장 빠른·가장 느린 모서리의 감쇠 시간(초, kitty `cursor_trail_decay`). 느린 쪽이 더 작지 않다
+    pub cursor_trail_decay: (f32, f32),
+    /// 흔적을 시작하는 최소 이동 칸 수(가로, 세로, kitty `cursor_trail_start_threshold`). 둘 다 이 값 이하로 옮기면 흔적이 없다
+    pub cursor_trail_start_threshold: (u32, u32),
+    /// 흔적 색(kitty `cursor_trail_color`). 없으면 커서 색
+    pub cursor_trail_color: Option<Rgb>,
     /// 커서 색·커서 위 글자색을 칸 색에서(Ghostty `cursor-color = cell-foreground` 등). 없으면 테마 색
     pub cursor_color_cell: Option<CellColor>,
     pub cursor_text_cell: Option<CellColor>,
@@ -1895,6 +1903,10 @@ impl Default for Config {
             padding_balance: DEFAULT_PADDING_BALANCE,
             padding_color: PaddingColor::Background,
             cursor_opacity: 1.0,
+            cursor_trail_ms: 0,
+            cursor_trail_decay: (0.1, 0.4),
+            cursor_trail_start_threshold: (2, 2),
+            cursor_trail_color: None,
             cursor_color_cell: None,
             cursor_text_cell: None,
             selection_background_cell: None,
@@ -2628,6 +2640,32 @@ fn parse_pair(v: &str) -> Option<(f32, f32)> {
         None => a,
     };
     Some((a.max(0.0), b.max(0.0)))
+}
+
+/// kitty `cursor_trail_decay`: 공백으로 가른 두 수(초). 음수는 0, 느린 쪽이 빠른 쪽보다 작으면 빠른 쪽에 맞춘다
+/// (`kitty/options/utils.py`의 `cursor_trail_decay`)
+fn parse_trail_decay(v: &str) -> Option<(f32, f32)> {
+    let mut it = v
+        .split_whitespace()
+        .map(|s| s.parse::<f32>().ok().filter(|n| n.is_finite()));
+    let fast = it.next()??.max(0.0);
+    let slow = it.next()??.max(0.0);
+    if it.next().is_some() {
+        return None;
+    }
+    Some((fast, slow.max(fast)))
+}
+
+/// kitty `cursor_trail_start_threshold`: 정수 하나(가로·세로 같이)나 둘(가로 세로). 음수는 0.
+/// kitty의 끝 낱말 `prompt`(셸 통합 있는 프롬프트에서만 흔적)는 아직 받지 않는다
+fn parse_trail_threshold(v: &str) -> Option<(u32, u32)> {
+    let n = |s: &str| s.parse::<i64>().ok().map(|n| n.clamp(0, u32::MAX as i64) as u32);
+    let parts: Vec<&str> = v.split_whitespace().collect();
+    match parts.as_slice() {
+        [a] => n(a).map(|a| (a, a)),
+        [a, b] => Some((n(a)?, n(b)?)),
+        _ => None,
+    }
 }
 
 /// Ghostty 설정 파일 자리(먼저 찾은 것 하나). macOS는 Application Support도 본다
@@ -3780,6 +3818,29 @@ impl Config {
                 Ok(o) if o.is_finite() => self.cursor_opacity = o.clamp(0.0, 1.0),
                 _ => bad(warnings),
             },
+            // kitty `positive_int`: 음수는 0
+            "cursor-trail" => match v.parse::<i64>() {
+                Ok(n) => self.cursor_trail_ms = n.clamp(0, u32::MAX as i64) as u32,
+                Err(_) => bad(warnings),
+            },
+            "cursor-trail-decay" => match parse_trail_decay(v) {
+                Some(d) => self.cursor_trail_decay = d,
+                None => bad(warnings),
+            },
+            "cursor-trail-start-threshold" => match parse_trail_threshold(v) {
+                Some(t) => self.cursor_trail_start_threshold = t,
+                None => bad(warnings),
+            },
+            "cursor-trail-color" => {
+                if v.eq_ignore_ascii_case("none") || v.is_empty() {
+                    self.cursor_trail_color = None;
+                } else {
+                    match Rgb::parse_color(v) {
+                        Some(c) => self.cursor_trail_color = Some(c),
+                        None => bad(warnings),
+                    }
+                }
+            }
             "resize-overlay" => match v {
                 "always" => self.resize_overlay = ResizeOverlay::Always,
                 "never" => self.resize_overlay = ResizeOverlay::Never,
@@ -6027,6 +6088,73 @@ mod tests {
         assert_eq!((c.cursor_color_cell, c.theme.cursor), (None, Rgb::new(255, 0, 0)));
         assert_eq!(Config::from_text("cursor-opacity = 7\n", true).cursor_opacity, 1.0);
         assert_eq!(Config::from_text("cursor-opacity = half\n", true).warnings.len(), 1);
+    }
+
+    /// #891: kitty `cursor_trail*` 네 키. 기본은 끔(0)이고 값은 kitty처럼 읽는다(`kitty/options/utils.py`)
+    #[test]
+    fn cursor_trail_keys_like_kitty() {
+        let d = Config::default();
+        assert_eq!(
+            (
+                d.cursor_trail_ms,
+                d.cursor_trail_decay,
+                d.cursor_trail_start_threshold,
+                d.cursor_trail_color
+            ),
+            (0, (0.1, 0.4), (2, 2), None)
+        );
+        let c = Config::from_text(
+            "cursor-trail = 10\ncursor-trail-decay = 0.2 0.5\ncursor-trail-start-threshold = 1 3\ncursor-trail-color = #ff0000\n",
+            true,
+        );
+        assert!(c.warnings.is_empty(), "{:?}", c.warnings);
+        assert_eq!(c.cursor_trail_ms, 10);
+        assert_eq!(c.cursor_trail_decay, (0.2, 0.5));
+        assert_eq!(c.cursor_trail_start_threshold, (1, 3));
+        assert_eq!(c.cursor_trail_color, Some(Rgb::new(255, 0, 0)));
+        // 문턱 하나는 가로·세로 둘 다, 색 이름과 none, 빈 값은 처음으로
+        let c = Config::from_text("cursor-trail-start-threshold = 4\ncursor-trail-color = red\n", true);
+        assert_eq!(
+            (c.cursor_trail_start_threshold, c.cursor_trail_color),
+            ((4, 4), Some(Rgb::new(255, 0, 0)))
+        );
+        let c = Config::from_text("cursor-trail-color = red\ncursor-trail-color = none\n", true);
+        assert_eq!(c.cursor_trail_color, None);
+        // 느린 쪽이 빠른 쪽보다 작으면 빠른 쪽에 맞춘다(kitty `max(slow, fast)`), 음수는 0(`positive_int`·`positive_float`)
+        let c = Config::from_text(
+            "cursor-trail-decay = 0.5 0.2\ncursor-trail = -5\ncursor-trail-start-threshold = -1\n",
+            true,
+        );
+        assert_eq!(
+            (c.cursor_trail_decay, c.cursor_trail_ms, c.cursor_trail_start_threshold),
+            ((0.5, 0.5), 0, (0, 0))
+        );
+        // 잘못된 값은 경고하고 기본값을 둔다
+        for bad in [
+            "cursor-trail = fast",
+            "cursor-trail = 1.5",
+            "cursor-trail-decay = 0.3",
+            "cursor-trail-decay = 0.1 0.2 0.3",
+            "cursor-trail-decay = a b",
+            "cursor-trail-decay = nan 1",
+            "cursor-trail-start-threshold = 1 2 3",
+            "cursor-trail-start-threshold = x",
+            "cursor-trail-start-threshold = 2 prompt",
+            "cursor-trail-color = nosuchcolor",
+        ] {
+            let c = Config::from_text(&format!("{bad}\n"), true);
+            assert_eq!(c.warnings.len(), 1, "{bad}: {:?}", c.warnings);
+            assert_eq!(
+                (
+                    c.cursor_trail_ms,
+                    c.cursor_trail_decay,
+                    c.cursor_trail_start_threshold,
+                    c.cursor_trail_color
+                ),
+                (0, (0.1, 0.4), (2, 2), None),
+                "{bad}"
+            );
+        }
     }
 
     /// #849: `selection-*`는 `cell-foreground`·`cell-background`를 받는다(Ghostty 1.4.0 `TerminalColor`)

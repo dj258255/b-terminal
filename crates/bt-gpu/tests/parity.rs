@@ -3,6 +3,7 @@
 
 use bt_core::{Rgb, Theme};
 use bt_gpu::GpuRenderer;
+use bt_render::trail::{RectF, TrailPaint, TrailQuad};
 use bt_render::{Canvas, CursorStyle, DrawCell, DrawCursor, FontConfig, Fonts, GridView, Underline, draw_grid};
 
 fn fonts(scale: f32) -> Fonts {
@@ -81,6 +82,7 @@ fn grid(cells: &[DrawCell], cols: usize) -> GridView<'_> {
         selection_fg_cell: Default::default(),
         preedit: None,
         min_contrast: 1.0,
+        trail: None,
     }
 }
 
@@ -548,4 +550,70 @@ fn graphics_elements_skip_min_contrast_like_cpu() {
     // 'ab'만 흰색으로 바뀌고 그래픽 글자는 그대로여야 한다(최소 명암비를 끈 화면과는 'ab'만 다르다)
     p.min_contrast = 1.0;
     check(&mut g, &mut f, "그래픽 글자 최소 명암비", &v, &p, Alpha::default());
+}
+
+/// #891: 커서 흔적(비스듬한 사각형, 커서 자리는 비움)을 GPU도 CPU와 같은 픽셀로 그린다
+#[test]
+fn cursor_trail_matches_cpu() {
+    let Some(mut g) = gpu() else { return };
+    let mut f = fonts(2.0);
+    let m = f.metrics();
+    let (cw, ch) = (m.width as f32, m.height as f32);
+    let mut cells = row_cells("cursor trail 가나다 gy", 24);
+    for _ in 0..5 {
+        cells.extend(row_cells("trail goes over text 한글", 24));
+    }
+    let t = Theme::default();
+    let cursor = DrawCursor {
+        col: 18,
+        row: 4,
+        style: CursorStyle::Block,
+        wide: false,
+        color: t.cursor,
+        text_color: t.cursor_text,
+        opacity: 1.0,
+    };
+    let (cx, cy) = (18.0 * cw, 4.0 * ch);
+    let mask = RectF::new(cx, cy, cx + cw, cy + ch);
+    // 왼쪽 위(1칸, 0줄)에서 커서까지 뻗은 늘어진 사각형: 앞 모서리는 커서 쪽, 뒤 모서리는 처음 자리 가까이
+    let quad = TrailQuad {
+        x: [cx + cw, cx + cw, 6.0 * cw, 4.5 * cw],
+        y: [cy, cy + ch, 2.7 * ch, 0.6 * ch],
+    };
+    let trail = |alpha| TrailPaint {
+        quad,
+        mask,
+        color: t.cursor,
+        alpha,
+    };
+    let mut plain_view = grid(&cells, 24);
+    plain_view.cursor = Some(cursor);
+    for alpha in [255u8, 180, 60] {
+        let mut v = grid(&cells, 24);
+        v.cursor = Some(cursor);
+        v.trail = Some(trail(alpha));
+        check(
+            &mut g,
+            &mut f,
+            &format!("커서 흔적 알파 {alpha}"),
+            &v,
+            &plain_view,
+            Alpha::default(),
+        );
+    }
+    // 투명 창에서도 같다
+    let mut v = grid(&cells, 24);
+    v.cursor = Some(cursor);
+    v.trail = Some(trail(180));
+    check(
+        &mut g,
+        &mut f,
+        "커서 흔적 투명 창",
+        &v,
+        &plain_view,
+        Alpha {
+            window: Some(128),
+            cells: None,
+        },
+    );
 }
