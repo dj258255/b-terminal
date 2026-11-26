@@ -522,6 +522,85 @@ pub fn paste_is_safe(text: &str, bracketed: bool, bracketed_safe: bool) -> bool 
     !has_end && !text.contains(['\n', '\r'])
 }
 
+/// kitty `paste_actions`의 `confirm-if-large` 상한(kitty `window.py`, 16KiB). 이 값을 넘는 글(UTF-8 바이트 수)이 크다
+pub const LARGE_PASTE_BYTES: usize = 16 * 1024;
+
+/// 큰 붙여넣기인가(kitty `confirm-if-large`, `len(btext) > 16 * 1024`). 글자 수가 아니라 UTF-8 바이트 수로 센다
+pub fn paste_is_large(text: &str) -> bool {
+    text.len() > LARGE_PASTE_BYTES
+}
+
+/// kitty `url_prefixes` 기본값(kitty `options/definition.py`). `quote-urls-at-prompt`가 URL로 보는 scheme이다
+const URL_PREFIXES: [&str; 15] = [
+    "file", "ftp", "ftps", "gemini", "git", "gopher", "http", "https", "irc", "ircs", "kitty", "mailto", "news",
+    "sftp", "ssh",
+];
+
+/// 글이 URL이면 셸 낱말 하나가 되게 감싼다(kitty `quote-urls-at-prompt`, `window.py` `paste_with_actions`).
+/// URL은 `scheme:` 뒤에 `//`가 오거나 scheme이 `mailto`·`irc`인 글이다(kitty 코드 그대로
+/// `scheme in ('mailto', 'irc')`, `ircs`는 `//`가 있어야 한다). scheme은 대소문자를 가린다. 첫 줄 뒤에 다른 글이 있어도 글 전체를 감싼다.
+/// 감싸는 방식은 Python `shlex.quote`와 같다: 글자가 모두 `[A-Za-z0-9_@%+=:,./-]`이면 그대로, 아니면 작은따옴표로 감싸고
+/// 안의 작은따옴표는 `'"'"'`로 바꾼다. 작은따옴표 안에서는 셸이 어떤 글자도 해석하지 않으므로 `;`·`$()`·백틱이 명령이 되지 않는다.
+/// 위험한 제어 바이트는 여기서 지우지 않는다. 이어서 `encode_paste`가 공백으로 바꾼다
+pub fn quote_url_for_shell(text: &str) -> Option<String> {
+    let (scheme, rest) = text.split_once(':')?;
+    if !URL_PREFIXES.contains(&scheme) {
+        return None;
+    }
+    // Python `.`은 줄바꿈을 먹지 않는다: `.+`는 첫 줄까지만이다
+    let first_line = rest.split('\n').next().unwrap_or("");
+    if first_line.is_empty() || !(first_line.starts_with("//") || matches!(scheme, "mailto" | "irc")) {
+        return None;
+    }
+    Some(shell_quote(text))
+}
+
+/// Python `shlex.quote`
+fn shell_quote(s: &str) -> String {
+    if s.is_empty() {
+        return "''".into();
+    }
+    if s.bytes().all(|b| {
+        b.is_ascii_alphanumeric() || matches!(b, b'_' | b'@' | b'%' | b'+' | b'=' | b':' | b',' | b'.' | b'/' | b'-')
+    }) {
+        return s.into();
+    }
+    format!("'{}'", s.replace('\'', "'\"'\"'"))
+}
+
+/// 줄바꿈(CRLF·LF·CR)을 공백 하나로 바꾼다(kitty `replace-newline`). kitty는 LF를 `ESC E`(NEL)로 바꾸지만 이 저장소는
+/// 붙여넣는 글의 ESC를 공백으로 바꾸므로(`encode_paste`) 공백이 된다. CR도 Enter라 같이 바꾼다
+pub fn replace_newlines(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '\r' => {
+                if chars.peek() == Some(&'\n') {
+                    chars.next();
+                }
+                out.push(' ');
+            }
+            '\n' => out.push(' '),
+            c => out.push(c),
+        }
+    }
+    out
+}
+
+/// 붙여넣기 동작을 글에 적용한다(kitty `paste_actions`의 글을 바꾸는 동작). `encode_paste` 앞에서 부른다.
+/// `quote_urls`는 `at_prompt`일 때만 한다. 여기서 바뀐 글도 이어서 `paste_is_safe`와 `encode_paste`를 지나므로
+/// 위험 바이트 공백 바꾸기·끝 표시 깨기·줄바꿈 확인은 그대로다
+pub fn apply_paste_actions(text: String, quote_urls: bool, at_prompt: bool, replace_newline: bool) -> String {
+    let quoted = if quote_urls && at_prompt {
+        quote_url_for_shell(&text)
+    } else {
+        None
+    };
+    let text = quoted.unwrap_or(text);
+    if replace_newline { replace_newlines(&text) } else { text }
+}
+
 /// 복사하는 글의 줄 끝 공백·탭을 지운다(Ghostty `clipboard-trim-trailing-spaces`).
 /// 글자가 있는 줄의 끝 공백도, 공백뿐인 줄도 비운다. 줄 가운데 공백과 줄바꿈 자체는 그대로 둔다
 pub fn trim_trailing_spaces(text: &str) -> String {

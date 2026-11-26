@@ -667,10 +667,7 @@ impl App {
                 if self.paste_to(pane, text) {
                     Ok(None)
                 } else {
-                    Err(
-                        "붙여넣기 보호가 확인을 요청했습니다. 사용자가 허용하면 들어갑니다(여러 줄이거나 위험한 글)"
-                            .into(),
-                    )
+                    Err(SCRIPT_PASTE_HELD.into())
                 }
             }
         }
@@ -812,8 +809,19 @@ pub fn install(proxy: winit::event_loop::EventLoopProxy<UserEvent>, enabled: boo
     }));
 }
 
+/// `input text`가 확인 막대에 걸렸을 때 스크립트가 받는 오류
+const SCRIPT_PASTE_HELD: &str = "붙여넣기 확인 막대를 띄웠습니다. 사용자가 허용하면 들어갑니다(여러 줄이거나 위험한 글, `paste-actions = confirm-if-large`면 큰 글)";
+
 #[cfg(test)]
 mod tests {
+    /// AppleScript `input text`가 확인 막대에 걸렸을 때 받는 오류는 막대를 띄운 까닭을 모두 말한다(#866: 큰 글도 묻는다)
+    #[test]
+    fn held_paste_error_names_every_reason_the_bar_asks() {
+        assert!(SCRIPT_PASTE_HELD.contains("여러 줄"));
+        assert!(SCRIPT_PASTE_HELD.contains("위험한 글"));
+        assert!(SCRIPT_PASTE_HELD.contains("큰 글"));
+    }
+
     use super::*;
 
     /// 명령을 로그에 찍어도 `input text`의 글은 나오지 않는다(암호나 비밀이 들어 있을 수 있다)
