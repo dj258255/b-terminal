@@ -118,8 +118,8 @@ config-file = ?~/.config/b-terminal/local   # ?가 붙으면 없어도 된다
 | `macos-secure-input-indication` | `true` / `false` | `true` | 보안 입력이 켜져 있는 동안 창 오른쪽 위에 자물쇠 표시를 그립니다(누르면 설명이 뜨는 것은 없음) |
 | `cursor-style` | `block` `bar` `underline` `block_hollow` | `block` | 프로그램이 바꾸면 그쪽이 이깁니다. 암호 입력 중에는 자물쇠입니다 |
 | `cursor-style-blink` | `true` / `false` | 끔 | 0.6초마다 깜빡입니다. 프로그램이 DECSCUSR(`ESC[1 q` 등)로 바꾸면 그쪽을 따르고, 키를 치는 동안과 창을 보지 않을 때는 깜빡이지 않습니다. 깜빡이는 글자(SGR 5·6)도 같은 박자로 숨었다 보이며(kitty처럼), 이 값이 꺼져 있어도 글자는 깜빡입니다 |
-| `window-padding-x` / `window-padding-y` | `2` 또는 `왼,오른`(`위,아래`) | `2` | 포인트 |
-| `window-padding-balance` | `false` `true` `equal` | `false` | 칸의 크기가 글자 칸 크기로 나누어떨어지지 않아 남는 자리를 네 변에 나눕니다(끄면 오른쪽·아래에 몰림). `true`는 Ghostty처럼 위 여백을 (왼쪽 + 오른쪽 여백 + 칸 너비) / 2까지로 묶고 넘는 것은 아래로 보내고, `equal`(Ghostty 1.4)은 위아래를 똑같이 나눕니다. 나눌 때는 `window-padding-x`·`-y`까지 합친 남는 자리를 반씩 나누므로 두 값이 좌우·위아래로 다르면 그 차이는 남지 않습니다(Ghostty와 같음) |
+| `window-padding-x` / `window-padding-y` | `2` 또는 `왼,오른`(`위,아래`) | 가로 `10`, 세로 `8` | 포인트. Ghostty 기본은 둘 다 `2`라 달라집니다. 적은 값(`0` 포함)은 그대로 따르고, 예전 모양은 `2`·`2`입니다 |
+| `window-padding-balance` | `false` `true` `equal` | `true` | 칸의 크기가 글자 칸 크기로 나누어떨어지지 않아 남는 자리를 네 변에 나눕니다(끄면 오른쪽·아래에 몰림). Ghostty 기본은 `false`라 달라집니다. `true`는 Ghostty처럼 위 여백을 (왼쪽 + 오른쪽 여백 + 칸 너비) / 2까지로 묶고 넘는 것은 아래로 보내고, `equal`(Ghostty 1.4)은 위아래를 똑같이 나눕니다. 나눌 때는 `window-padding-x`·`-y`까지 합친 남는 자리를 반씩 나누므로 두 값이 좌우·위아래로 다르면 그 차이는 남지 않습니다(Ghostty와 같음) |
 | `window-padding-color` | `background` `extend` `extend-always` | `background` | 여백 색. `extend`는 가장 가까운 칸의 바탕색으로 늘이되, 주 화면에서 가장 가까운 줄에 기본 바탕색 칸·프롬프트·powerline 꼭 맞춤 글자가 있으면 위아래로는 늘이지 않습니다(Ghostty와 같은 규칙). `extend-always`는 따지지 않고 늘입니다 |
 | `window-width` / `window-height` | 셀 수 | 없음 | 둘 다 있을 때 처음 창 크기. 격자의 칸·줄 수이고, 제목 막대 아래 비움·탭 줄·`window-padding-*`은 따로 더합니다(Ghostty와 같음) |
 | `maximize` | `true` `false` | `false` | 새 창을 최대화로 띄웁니다(Ghostty처럼 첫 창만이 아니라 새 창 모두. 탭·분할·퀵 터미널 창은 해당 없음). 창 상태 복원으로 되살린 창은 복원한 크기가 이깁니다 |

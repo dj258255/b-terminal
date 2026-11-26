@@ -190,6 +190,40 @@ mod tests {
         );
     }
 
+    /// #889: 기본 여백(가로 10·세로 8, 2배 화면 20·16픽셀)에 `true`를 쓰면 남는 자리가 양옆에 고르게 나뉘고,
+    /// 격자는 항상 창 안에 들어가며, 설정으로 2·false를 적으면 예전처럼 왼쪽 위에 붙는다
+    #[test]
+    fn default_padding_balances_leftover_and_old_values_still_hug_the_corner() {
+        use bt_core::config::{Config, PaddingBalance};
+        let d = Config::default();
+        assert_eq!(d.padding_balance, PaddingBalance::True);
+        let px = |pt: f32| (pt as f64 * 2.0).round() as i32;
+        let pad = (
+            px(d.padding_x.0),
+            px(d.padding_x.1),
+            px(d.padding_y.0),
+            px(d.padding_y.1),
+        );
+        assert_eq!(pad, (20, 20, 16, 16));
+        // 창 1000×700, 칸 17×34: 격자는 (960/17=56열=952, 668/34=19줄=646). 남는 48·54를 반씩
+        let r = Rect::new(0, 0, 1000, 700);
+        let g = balance_in(r, pad, 17, 34, d.padding_balance);
+        assert_eq!((g.w, g.h), (952, 646));
+        assert_eq!(g.x, 24);
+        // 위는 (20+20+17)/2=28로 묶이고 27이므로 그대로
+        assert_eq!(g.y, 27);
+        assert!(g.x + g.w as i32 <= 1000 && g.y + g.h as i32 <= 700);
+        // 양옆 남는 자리 차이는 1픽셀 이하
+        assert!(((1000 - g.x - g.w as i32) - g.x).abs() <= 1);
+        // 예전 모양(2pt, false): 격자가 여백 4픽셀 자리에 붙는다
+        assert_eq!(
+            balance_in(r, (4, 4, 4, 4), 17, 34, PaddingBalance::False),
+            Rect::new(4, 4, 992, 692)
+        );
+        // 여백 0, false: 창 전체
+        assert_eq!(balance_in(r, (0, 0, 0, 0), 17, 34, PaddingBalance::False), r);
+    }
+
     #[test]
     fn extend_uses_edge_cells_but_not_vertically_over_default_or_prompt_rows() {
         let (bg, red, blue) = (Rgb::new(0, 0, 0), Rgb::new(200, 0, 0), Rgb::new(0, 0, 200));
