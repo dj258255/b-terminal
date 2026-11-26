@@ -551,3 +551,18 @@ fn kitty_animation_off_screen_does_not_run_the_clock() {
     assert_eq!(*s.images[0].rgba, vec![0u8, 0, 255, 255]);
     assert_eq!(e.kitty_next_frame(), Some(t0 + ms(120)));
 }
+
+/// #862: SGR 5·6은 화면 값의 칸에 BLINK로 실리고, 25가 끈다(렌더러가 깜빡임을 그리려면 칸이 알아야 한다)
+#[test]
+fn sgr_blink_reaches_the_cell_flags() {
+    let mut e = Emulator::new(GridSize::new(8, 1), bt_core::Theme::default());
+    e.feed(b"\x1b[5ma\x1b[25mb\x1b[6mc\x1b[0md");
+    let s = e.snapshot();
+    let b: Vec<bool> = s
+        .cells
+        .iter()
+        .take(4)
+        .map(|c| c.flags.contains(bt_term::CellFlags::BLINK))
+        .collect();
+    assert_eq!(b, [true, false, true, false]);
+}
