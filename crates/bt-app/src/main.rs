@@ -6,6 +6,7 @@ mod appearance;
 mod bell_border;
 mod bell_sound;
 mod blur;
+mod broadcast;
 mod cliact;
 mod cliinfo;
 mod context_menu;

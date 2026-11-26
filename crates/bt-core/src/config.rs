@@ -277,6 +277,90 @@ pub struct CodepointRule {
 }
 
 /// OSC 52 클립보드 쓰기 한 번의 고정 상한(바이트). `clipboard-write-limit-bytes`는 이보다 크게 늘리지 못하고 줄이기만 한다(ADR-013)
+/// 입력 함께 보내기 묶음의 테두리 색 기본값(Ghostty 열린 PR #13745의 `BroadcastGroupColors`와 같다. 이웃한 번호끼리 헷갈리지 않게 늘어놓은 순서다)
+pub const BROADCAST_GROUP_COLORS: [Rgb; 16] = [
+    Rgb {
+        r: 0xff,
+        g: 0x78,
+        b: 0x00,
+    },
+    Rgb {
+        r: 0x35,
+        g: 0x84,
+        b: 0xe4,
+    },
+    Rgb {
+        r: 0xf6,
+        g: 0xd3,
+        b: 0x2d,
+    },
+    Rgb {
+        r: 0x91,
+        g: 0x41,
+        b: 0xac,
+    },
+    Rgb {
+        r: 0x33,
+        g: 0xd1,
+        b: 0x7a,
+    },
+    Rgb {
+        r: 0xe0,
+        g: 0x1b,
+        b: 0x24,
+    },
+    Rgb {
+        r: 0x33,
+        g: 0xc7,
+        b: 0xde,
+    },
+    Rgb {
+        r: 0xdc,
+        g: 0x8a,
+        b: 0xdd,
+    },
+    Rgb {
+        r: 0xb5,
+        g: 0x83,
+        b: 0x5a,
+    },
+    Rgb {
+        r: 0x99,
+        g: 0xc1,
+        b: 0xf1,
+    },
+    Rgb {
+        r: 0xa5,
+        g: 0x1d,
+        b: 0x2d,
+    },
+    Rgb {
+        r: 0x8f,
+        g: 0xf0,
+        b: 0xa4,
+    },
+    Rgb {
+        r: 0x61,
+        g: 0x35,
+        b: 0x83,
+    },
+    Rgb {
+        r: 0x9a,
+        g: 0x99,
+        b: 0x96,
+    },
+    Rgb {
+        r: 0x1a,
+        g: 0x5f,
+        b: 0xb4,
+    },
+    Rgb {
+        r: 0xff,
+        g: 0xbe,
+        b: 0x6f,
+    },
+];
+
 pub const OSC52_WRITE_CAP: usize = 1024 * 1024;
 
 /// OSC 52로 온 글(바이트 수 `len`)을 클립보드에 넣어도 되는가. 고정 상한과 설정(`None`은 `unlimited`) 중 작은 쪽을 넘으면 안 된다
@@ -565,6 +649,8 @@ pub struct Config {
     pub palette_harmonious: bool,
     /// `palette = 100=#...`로 사용자가 정한 16~255번 색. 만든 색이 덮지 않는다
     pub palette_set: Vec<(u8, Rgb)>,
+    /// `broadcast-group-colors`(Ghostty 열린 PR #13745, #860): 입력 함께 보내기 묶음 0~15번의 테두리 색
+    pub broadcast_group_colors: [Rgb; 16],
     /// `background-opacity-cells`(Ghostty 1.2, 기본 끔): 색이 있는 바탕 칸도 `background-opacity`로 비친다
     pub background_opacity_cells: bool,
     /// `link-url`(기본 켬): 화면 글의 URL 자동 인식
@@ -1638,6 +1724,7 @@ impl Default for Config {
             palette_generate: false,
             palette_harmonious: false,
             palette_set: Vec::new(),
+            broadcast_group_colors: BROADCAST_GROUP_COLORS,
             background_opacity_cells: false,
             link_url: true,
             link_osc8: true,
@@ -3679,6 +3766,17 @@ impl Config {
                 "always" => self.confirm_close = ConfirmClose::Always,
                 _ => bad(warnings),
             },
+            // `N=색`을 되풀이해 묶음마다 덮는다(palette와 같다). N은 0~15(Ghostty PR의 u4)
+            "broadcast-group-colors" => match v.split_once('=') {
+                Some((n, c)) => match (
+                    n.trim_matches([' ', '\t']).parse::<u8>(),
+                    Rgb::parse_color(c.trim_matches([' ', '\t'])),
+                ) {
+                    (Ok(n), Some(c)) if n < 16 => self.broadcast_group_colors[usize::from(n)] = c,
+                    _ => bad(warnings),
+                },
+                None => bad(warnings),
+            },
             "bell-features" => {
                 if !self.bell_features.apply(v) {
                     bad(warnings)
@@ -3833,6 +3931,9 @@ impl Config {
         }
         for (i, c) in &self.palette_set {
             push("palette", format!("{i}={}", hex(*c)));
+        }
+        for (i, c) in self.broadcast_group_colors.iter().enumerate() {
+            push("broadcast-group-colors", format!("{i}={}", hex(*c)));
         }
         push("bold-is-bright", t.bold_is_bright.to_string());
         if let Some(c) = t.bold_color {
@@ -6441,6 +6542,32 @@ mod tests {
                 .render()
                 .contains("bell-features = system,attention,title")
         );
+    }
+
+    #[test]
+    fn broadcast_group_colors_override_single_groups_like_palette() {
+        let d = Config::default();
+        assert_eq!(d.broadcast_group_colors, BROADCAST_GROUP_COLORS);
+        let c = Config::from_text(
+            "broadcast-group-colors = 3=#AABBCC\nbroadcast-group-colors = 0 = black\nbroadcast-group-colors = 15=white\n",
+            true,
+        );
+        assert!(c.warnings.is_empty(), "{:?}", c.warnings);
+        assert_eq!(c.broadcast_group_colors[3], Rgb::new(0xaa, 0xbb, 0xcc));
+        assert_eq!(c.broadcast_group_colors[0], Rgb::new(0, 0, 0));
+        assert_eq!(c.broadcast_group_colors[15], Rgb::new(255, 255, 255));
+        // 정하지 않은 묶음은 기본색 그대로
+        assert_eq!(c.broadcast_group_colors[1], BROADCAST_GROUP_COLORS[1]);
+        // 번호 16은 범위 밖, 번호나 색이 없거나 틀리면 경고하고 그 줄은 무시한다
+        for bad in ["16=#aabbcc", "#aabbcc", "x=#aabbcc", "2=nocolor", ""] {
+            let c = Config::from_text(&format!("broadcast-group-colors = {bad}\n"), true);
+            assert_eq!(c.warnings.len(), 1, "{bad:?}: {:?}", c.warnings);
+            assert_eq!(c.broadcast_group_colors, BROADCAST_GROUP_COLORS, "{bad:?}");
+        }
+        // --show-config는 열여섯 줄을 `N=#rrggbb`로 찍는다
+        let shown = Config::from_text("broadcast-group-colors = 2=#010203\n", true).render();
+        assert!(shown.contains("broadcast-group-colors = 2=#010203"), "{shown}");
+        assert_eq!(shown.matches("broadcast-group-colors = ").count(), 16);
     }
 
     #[test]

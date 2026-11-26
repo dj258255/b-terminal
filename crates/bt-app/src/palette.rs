@@ -149,6 +149,19 @@ const ENTRIES: &[(&str, &str)] = &[
     ("탭을 왼쪽으로 옮기기", "move_tab:-1"),
     ("창 크기 처음대로", "reset_window_size"),
     ("창 꾸밈 켜고 끄기", "toggle_window_decorations"),
+    (
+        "입력 함께 보내기: 이 칸을 묶음 0에 넣고 빼기",
+        "toggle_broadcast_group:0",
+    ),
+    (
+        "입력 함께 보내기: 이 칸을 묶음 1에 넣고 빼기",
+        "toggle_broadcast_group:1",
+    ),
+    (
+        "입력 함께 보내기: 이 칸을 묶음 2에 넣고 빼기",
+        "toggle_broadcast_group:2",
+    ),
+    ("입력 함께 보내기: 모든 묶음 풀기", "clear_broadcast_groups"),
     ("b-terminal 종료", "quit"),
 ];
 
@@ -325,6 +338,20 @@ mod tests {
     #[test]
     fn every_entry_parses_to_a_command() {
         assert_eq!(entries(&[], true).len(), ENTRIES.len() + 1, "동작 글이 모두 풀린다");
+    }
+
+    #[test]
+    fn broadcast_entries_are_in_the_palette() {
+        let e = entries(&[], true);
+        let by = |name: &str| e.iter().find(|x| x.name == name).map(|x| x.command.clone());
+        assert_eq!(
+            by("toggle_broadcast_group:0"),
+            Some(Command::Action(Action::ToggleBroadcastGroup(0)))
+        );
+        assert_eq!(
+            by("clear_broadcast_groups"),
+            Some(Command::Action(Action::ClearBroadcastGroups))
+        );
     }
 
     #[test]

@@ -89,6 +89,8 @@ const ACTIONS: &[&str] = &[
     "toggle_visibility",
     "toggle_background_opacity",
     "toggle_readonly",
+    "toggle_broadcast_group",
+    "clear_broadcast_groups",
     "set_window_theme",
     "goto_window",
     "check_for_updates",

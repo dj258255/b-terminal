@@ -30,6 +30,7 @@ mod script;
 pub use script::install as install_scripting;
 mod shader_inputs;
 
+use crate::broadcast;
 use crate::icon;
 use crate::keymap::{Action, Keymap, SplitTarget};
 use crate::keys;
@@ -196,6 +197,8 @@ pub struct Pane {
     /// 벨이 울려 테두리를 두르고 있다(`bell-features = border`, #687). 🔔와 달리 보고 있어도 켜고,
     /// 그 칸이 키를 받는 칸이 되거나 키를 받으면 뗀다
     pub bell_border: bool,
+    /// 입력 함께 보내기 묶음 번호(0~15, #860). 같은 번호의 칸끼리 사람의 입력이 서로 간다. 없으면 어느 묶음에도 없다
+    pub broadcast: Option<u8>,
     /// 사람이 붙인 제목(`prompt_surface_title`·`set_surface_title`, #124). 프로그램이 정한 제목보다 먼저
     pub user_title: Option<String>,
     /// 칸을 만든 때와 크기 표시를 지울 때(#122)
@@ -817,6 +820,8 @@ struct PaneView {
     progress: Option<(u8, u8)>,
     /// 벨 테두리를 두르는가(`bell-features = border`, #687)
     bell_border: bool,
+    /// 입력 함께 보내기 묶음의 테두리 색(#860). 묶음에 없으면 없다
+    broadcast: Option<bt_core::Rgb>,
     /// 이 칸의 글자 크기(pt)와 그 크기의 칸 크기: 격자·커서·그림·스크롤 막대가 이 칸 크기를 쓴다(#422)
     font_size: f32,
     metrics: bt_render::font::CellMetrics,
@@ -1626,6 +1631,10 @@ impl App {
             self.search_push(text);
         } else {
             self.write_active(text.as_bytes());
+            // 확정 글만 같은 묶음의 다른 칸에도 간다(조합 중인 글은 이 칸에서 그리기만 한다, #860)
+            if let Some(id) = self.focused_id() {
+                self.broadcast_bytes(id, text.as_bytes());
+            }
         }
     }
 
@@ -2034,6 +2043,7 @@ impl App {
                 unread: false,
                 bell: false,
                 bell_border: false,
+                broadcast: None,
                 user_title: None,
                 created: Instant::now(),
                 overlay_until: None,
@@ -2183,19 +2193,37 @@ impl App {
         let raw = keys::to_state(sided);
         let meta = keys::option_counts_as_alt(self.config.option_as_alt, sided);
         let bytes = keys::encode_input(&input, mods, raw, modes, meta);
+        // 같은 묶음의 다른 칸에도 칸마다 그 칸의 모드로 다시 인코딩해 보낸다(입력 함께 보내기, #860)
+        let ctx = crate::broadcast::KeyCtx {
+            input: input.clone(),
+            mods,
+            raw,
+            meta,
+        };
         if !input.pressed {
             // 뗌: 사람이 뗄 때와 같다. 프로그램이 이벤트 종류 보고(kitty 2)를 켰고 이 키의 누름을 프로그램에 보냈을 때만 보낸다
-            if self.w.kitty_down.remove(&input.physical) == Some(pane) && modes.kitty.report_events {
-                if let Some(t) = self.pane_index(pane).map(|i| &self.panes[i]) {
-                    t.session.write_input(&bytes, false);
+            if self.w.kitty_down.remove(&input.physical) == Some(pane) {
+                if modes.kitty.report_events {
+                    if let Some(t) = self.pane_index(pane).map(|i| &self.panes[i]) {
+                        t.session.write_input(&bytes, false);
+                    }
                 }
+                self.broadcast_release(pane, &ctx);
             }
             return;
         }
         let report_release = modes.kitty.report_events;
         // 키 묶음 판단도 `key-remap`을 거친 수식 키로 한다(`keys::trigger`가 `self.mods`로 하는 것과 같다)
         let trigger = keys::trigger_of(&input.without_modifiers, mods);
-        self.feed_key(event_loop, trigger, bytes, input.physical, report_release, Some(pane));
+        self.feed_key(
+            event_loop,
+            trigger,
+            bytes,
+            input.physical,
+            report_release,
+            Some(pane),
+            Some(&ctx),
+        );
     }
 
     /// 제어 소켓 요청 하나를 처리한다
@@ -2899,16 +2927,35 @@ impl App {
         let Some(t) = self.pane_index(id).map(|i| &self.panes[i]) else {
             return false;
         };
-        let bracketed = t.session.modes().bracketed_paste;
         // 요청한 때의 암호 상태. 막대가 떠 있는 동안 바뀌어도 막대 글은 다시 만들지 않는다
         let password = paste_hidden(t.password, t.session.password_input());
-        if !self.config.paste_protection || bt_term::paste_is_safe(&text, bracketed, self.config.paste_bracketed_safe) {
-            self.paste_into(id, &text);
+        // 같은 묶음의 칸에도 붙여넣으면(#860) 받는 칸마다 모드가 달라, 한 칸이라도 줄바꿈이 바로 실행되면 묻는다
+        let (needs_confirm, others) = {
+            let members = self.broadcast_members(id);
+            let others = broadcast::targets(id, &members).len();
+            let ask = self.config.paste_protection
+                && broadcast::paste_needs_confirm(id, &members, &text, self.config.paste_bracketed_safe);
+            (ask, others)
+        };
+        if !needs_confirm {
+            self.paste_into_group(id, &text);
             return true;
         }
-        let message = paste_prompt(&text, password);
+        let mut message = paste_prompt(&text, password);
+        if others > 0 {
+            message.push_str(&format!(" (같은 묶음의 {others}칸에도 붙여넣습니다)"));
+        }
         self.ask(Pending::Paste { pane: id, text }, message, "붙여넣기");
         false
+    }
+
+    /// 그 칸에 붙여넣고, 그 칸이 입력 함께 보내기 묶음에 있으면 같은 묶음의 다른 칸에도 칸마다 그 칸의 모드로 붙여넣는다(#860).
+    /// 붙여넣기 보호는 호출하기 전에 끝났다(받는 칸의 모드까지 본 `paste_needs_confirm`)
+    fn paste_into_group(&mut self, pane: u64, text: &str) {
+        self.paste_into(pane, text);
+        let scroll = self.config.scroll_to_bottom.keystroke;
+        let members = self.broadcast_members(pane);
+        broadcast::send_paste(pane, &members, text, scroll);
     }
 
     /// 창에 끌어다 놓은 파일 경로를 놓은 창의 지금 칸에 붙여넣는다(#566). 글은 `paste`를 거쳐
@@ -3217,7 +3264,7 @@ impl App {
             }
             // 끌 때 창 상태는 exiting에서 적는다
             Pending::Quit => event_loop.exit(),
-            Pending::Paste { pane, text } => self.paste_into(pane, &text),
+            Pending::Paste { pane, text } => self.paste_into_group(pane, &text),
             Pending::ClipboardRead { pane, reply, text } => self.answer_clipboard_read(pane, &reply, &text),
             Pending::ClipboardWrite { pane, text } => self.answer_clipboard_write(pane, text),
             Pending::OpenFile { cwd, input } => self.open_dropped(event_loop, cwd, Some(input)),
@@ -3762,22 +3809,28 @@ impl App {
     }
 
     /// 키를 뗐다. 프로그램이 kitty 키보드 프로토콜 2(키 뗌 보고)를 켰고, 그 키의 누름을 프로그램에 보냈을 때만 뗌을 보낸다.
-    /// 켜지 않았으면 뗌은 버린다(옛 바이트 그대로). 뗌은 글을 치는 것이 아니라 고른 영역을 지우거나 맨 아래로 돌리지 않는다
+    /// 켜지 않았으면 뗌은 버린다(옛 바이트 그대로). 뗌은 글을 치는 것이 아니라 고른 영역을 지우거나 맨 아래로 돌리지 않는다.
+    /// 같은 묶음의 칸 가운데 키 뗌 보고를 켠 칸에는 그 칸의 모드로 뗌을 보낸다(#860)
     fn kitty_key_release(&mut self, event: &winit::event::KeyEvent) {
         let Some(pane) = self.w.kitty_down.remove(&event.physical_key) else {
             return;
         };
-        let Some(modes) = self.active_pane().filter(|t| t.id == pane).map(|t| t.session.modes()) else {
-            return;
-        };
-        if !modes.kitty.report_events {
-            return;
-        }
         let meta = keys::option_counts_as_alt(self.config.option_as_alt, self.raw_mods);
-        let bytes = keys::encode(event, self.mods, keys::to_state(self.raw_mods), modes, meta);
-        if let Some(t) = self.active_pane() {
-            t.session.write_input(&bytes, false);
+        if let Some(modes) = self.active_pane().filter(|t| t.id == pane).map(|t| t.session.modes()) {
+            if modes.kitty.report_events {
+                let bytes = keys::encode(event, self.mods, keys::to_state(self.raw_mods), modes, meta);
+                if let Some(t) = self.active_pane() {
+                    t.session.write_input(&bytes, false);
+                }
+            }
         }
+        let key = broadcast::KeyCtx {
+            input: keys::KeyInput::from_event(event),
+            mods: self.mods,
+            raw: keys::to_state(self.raw_mods),
+            meta,
+        };
+        self.broadcast_release(pane, &key);
     }
 
     fn write_active(&mut self, bytes: &[u8]) {
@@ -3811,6 +3864,7 @@ impl App {
     /// 인코딩한 키 하나를 키 묶음에 먹이고, 묶음이 먹지 않은 바이트를 칸에 쓰고, 묶음이 고른 동작을 한다.
     /// 사람이 누른 키(`script_pane`이 없다: 고른 칸에 쓴다)와 스크립트의 `send key`(그 칸에 쓴다, #650)가 같은 길을 지난다.
     /// 스크립트의 키는 동작이 나올 때만 그 칸을 고른 칸으로 만든 뒤 한다(동작은 고른 칸에 한다)
+    #[allow(clippy::too_many_arguments)]
     fn feed_key(
         &mut self,
         event_loop: &ActiveEventLoop,
@@ -3819,6 +3873,7 @@ impl App {
         physical: winit::keyboard::PhysicalKey,
         report_release: bool,
         script_pane: Option<u64>,
+        key: Option<&broadcast::KeyCtx>,
     ) {
         // performable: 묶음은 동작을 지금 할 수 있을 때만 키를 먹는다
         // 사람의 키 순서와 스크립트의 키 순서는 나눈다: 한쪽이 쌓은 앞 키가 다른 쪽 칸으로 새지 않게(#650)
@@ -3833,6 +3888,9 @@ impl App {
             }
         };
         let keymap = std::mem::take(&mut self.keymap);
+        // 입력 함께 보내기(#860): 키 묶음이 먹지 않고 그대로 프로그램에 가는 키만 같은 묶음의 다른 칸에 보낸다.
+        // 앞 키 순서를 풀어 쌓인 키까지 한꺼번에 나오는 경우(`out.send`가 이 키 하나가 아님)는 보내지 않는다
+        let own_bytes = (key.is_some() && self.broadcasting()).then(|| bytes.clone());
         // 숫자 패드 키는 물리 이름(`kp_1`)으로도 맞춘다
         let alt = trigger.as_ref().and_then(|t| keys::numpad_trigger(physical, t.mods));
         let out = seq.feed_with_alt(&keymap, trigger, alt, bytes, &mut |a| self.can_perform(a));
@@ -3853,7 +3911,15 @@ impl App {
                 None => self.write_active(&out.send),
             }
             let down = script_pane.or_else(|| self.active_pane().map(|t| t.id));
-            if let (true, Some(id)) = (report_release, down) {
+            let mut peers_release = false;
+            if let (Some(key), Some(own), Some(id), true) =
+                (key, &own_bytes, down, out.action.is_none() && out.chained.is_empty())
+            {
+                if *own == out.send {
+                    peers_release = self.broadcast_key(id, key);
+                }
+            }
+            if let (true, Some(id)) = (report_release || peers_release, down) {
                 self.w.kitty_down.insert(physical, id);
             }
         }
@@ -4505,6 +4571,85 @@ impl App {
         );
     }
 
+    /// 어느 칸이든 입력 함께 보내기 묶음에 들어 있는가(없으면 입력 길에서 아무것도 하지 않는다)
+    fn broadcasting(&self) -> bool {
+        self.panes.iter().any(|p| p.broadcast.is_some())
+    }
+
+    /// 입력 함께 보내기(#860)에 쓸 칸 목록. 암호 입력 중인지는 원본 칸만 termios로 다시 읽는다(`paste_hidden`과 같은 판단)
+    fn broadcast_members(&self, origin: u64) -> Vec<broadcast::Member<'_>> {
+        self.panes
+            .iter()
+            .map(|p| broadcast::Member {
+                id: p.id,
+                group: p.broadcast,
+                session: &p.session,
+                gone: p.exited.is_some() || p.held_after_exit,
+                password: p.id == origin
+                    && p.broadcast.is_some()
+                    && paste_hidden(p.password, p.session.password_input()),
+            })
+            .collect()
+    }
+
+    /// 사람이 누른 키(또는 스크립트 `send key`)를 같은 묶음의 다른 칸에 그 칸의 모드로 보낸다. 키 뗌을 받고 싶은 칸이 있으면 참
+    fn broadcast_key(&self, origin: u64, key: &broadcast::KeyCtx) -> bool {
+        if !self.broadcasting() {
+            return false;
+        }
+        let clear = self.config.selection_clear_on_typing;
+        let members = self.broadcast_members(origin);
+        broadcast::send_key(origin, &members, key, self.config.scroll_to_bottom.keystroke, &|b| {
+            clears_selection_on_write(clear, b)
+        })
+    }
+
+    fn broadcast_release(&self, origin: u64, key: &broadcast::KeyCtx) {
+        if self.broadcasting() {
+            broadcast::send_release(origin, &self.broadcast_members(origin), key);
+        }
+    }
+
+    /// 모드와 상관없는 바이트(IME 확정 글, `text:` 묶음)를 같은 묶음의 다른 칸에 그대로 보낸다
+    fn broadcast_bytes(&self, origin: u64, bytes: &[u8]) {
+        if !self.broadcasting() {
+            return;
+        }
+        let clear = self.config.selection_clear_on_typing;
+        let members = self.broadcast_members(origin);
+        broadcast::send_bytes(origin, &members, bytes, self.config.scroll_to_bottom.keystroke, &|b| {
+            clears_selection_on_write(clear, b)
+        });
+    }
+
+    /// 지금 칸을 N번 입력 함께 보내기 묶음에 넣거나 뺀다(Ghostty 열린 PR #13745 `toggle_broadcast_group`, #860, ADR-091)
+    fn toggle_broadcast_group(&mut self, n: u8) {
+        let Some(i) = self.active_index() else { return };
+        let next = broadcast::toggled(self.panes[i].broadcast, n);
+        self.panes[i].broadcast = next;
+        let msg = match next {
+            Some(g) => {
+                let count = self.panes.iter().filter(|p| p.broadcast == Some(g)).count();
+                format!("입력 함께 보내기: 묶음 {g}에 넣었습니다({count}칸)")
+            }
+            None => format!("입력 함께 보내기: 묶음 {n}에서 뺐습니다"),
+        };
+        self.toast(msg);
+        self.request_redraw();
+    }
+
+    /// 모든 칸을 입력 함께 보내기 묶음에서 뺀다(Ghostty 열린 PR #13745 `clear_broadcast_groups`, #860)
+    fn clear_broadcast_groups(&mut self) {
+        let any = self.broadcasting();
+        for p in &mut self.panes {
+            p.broadcast = None;
+        }
+        if any {
+            self.toast("입력 함께 보내기: 모든 묶음을 풀었습니다".into());
+        }
+        self.request_redraw();
+    }
+
     /// 지금 칸을 읽기 전용으로 하거나 푼다(Ghostty `toggle_readonly`, #209, ADR-018)
     fn toggle_readonly(&mut self) {
         let Some(i) = self.active_index() else { return };
@@ -4927,6 +5072,10 @@ impl App {
                 if let Some(t) = self.active_pane() {
                     t.session.write_input(text.as_bytes(), scroll);
                 }
+                // `text:`·`csi:`·`esc:` 묶음의 글도 같은 묶음의 다른 칸에 그대로 간다(모드와 상관없는 바이트, #860)
+                if let Some(id) = self.focused_id() {
+                    self.broadcast_bytes(id, text.as_bytes());
+                }
             }
             // 키 묶음에서 온 키 테이블 동작은 키 판단에서 이미 했다. 여기는 명령 팔레트(`command-palette-entry`)에서 오는 길이다
             Action::ActivateKeyTable(_)
@@ -4942,6 +5091,8 @@ impl App {
             Action::ToggleBackgroundOpacity => self.toggle_background_opacity(),
             Action::ToggleMouseReporting => self.toggle_mouse_reporting(),
             Action::ToggleReadonly => self.toggle_readonly(),
+            Action::ToggleBroadcastGroup(n) => self.toggle_broadcast_group(n),
+            Action::ClearBroadcastGroups => self.clear_broadcast_groups(),
             Action::SetWindowTheme(theme) => {
                 self.theme_override = theme;
                 self.apply_window_look();
@@ -6640,6 +6791,9 @@ impl App {
                     },
                     focused: Some(*id) == focus,
                     bell_border: p.bell_border,
+                    broadcast: p
+                        .broadcast
+                        .map(|g| crate::broadcast::color_of(&self.config.broadcast_group_colors, g)),
                     progress: p
                         .status_summary()
                         .and_then(|s| tabbar::status_bar(s, self.config.progress_style))
@@ -6919,7 +7073,7 @@ impl App {
                 || title_prompt.is_some()
                 || views.iter().any(|v| resize_overlays.contains(&v.id))
                 // 벨 테두리는 칸 위에 겹쳐 그린다(#687)
-                || views.iter().any(|v| v.bell_border)
+                || views.iter().any(|v| v.bell_border || v.broadcast.is_some())
                 // kitty 그림은 칸 위에 겹쳐 그린다(#76)
                 || views.iter().any(|v| !v.screen.images.is_empty())
                 || bars.iter().any(|b| b.0)
@@ -7195,6 +7349,12 @@ impl App {
                 }
                 for v in views.iter().filter(|v| v.bell_border) {
                     crate::bell_border::draw(&mut canvas, v.outer, self.scale);
+                }
+                // 입력 함께 보내기 묶음의 테두리(#860). 어두워진 안 고른 칸 위에도 묶음 색이 보이게 마지막에 얹는다
+                for v in &views {
+                    if let Some(color) = v.broadcast {
+                        crate::bell_border::draw_broadcast(&mut canvas, v.outer, self.scale, color);
+                    }
                 }
                 // 실제 주소를 창 왼쪽 아래에 보인다(OSC 8 링크는 보이는 글과 주소가 다를 수 있다)
                 // `link-previews`가 끈 링크는 띠 없이 밑줄만 보인다
@@ -8084,7 +8244,21 @@ impl ApplicationHandler<UserEvent> for App {
                 let meta = keys::option_counts_as_alt(self.config.option_as_alt, self.raw_mods);
                 let report_release = modes.kitty.report_events;
                 let bytes = keys::encode(&event, self.mods, keys::to_state(self.raw_mods), modes, meta);
-                self.feed_key(event_loop, trigger, bytes, event.physical_key, report_release, None);
+                let key = broadcast::KeyCtx {
+                    input: keys::KeyInput::from_event(&event),
+                    mods: self.mods,
+                    raw: keys::to_state(self.raw_mods),
+                    meta,
+                };
+                self.feed_key(
+                    event_loop,
+                    trigger,
+                    bytes,
+                    event.physical_key,
+                    report_release,
+                    None,
+                    Some(&key),
+                );
             }
             WindowEvent::CursorMoved { position, .. } => {
                 self.w.cursor_pos = position;

@@ -20,6 +20,7 @@ Ghostty 1.4.0과 kitty를 견준 조사에서 빠진 기능을 채운 판입니�
 - 탭 오른쪽 클릭(macOS)으로 탭 색을 고르고 없앱니다(Ghostty 1.4.0 `TerminalTabColor`처럼 없음·파랑·보라·분홍·빨강·주황·노랑·초록·청록·그래파이트). 고른 색은 탭 제목 오른쪽 끝의 작은 점으로 보이고, 탭 옮기기·닫기 되살리기·`window-save-state`를 따라옵니다. 색이 없던 옛 상태 파일도 읽습니다 (#852)
 - macOS에서 트랙패드를 강하게 누르면(force click) 마우스 아래 낱말을 시스템 사전 말풍선으로 띄운다(Ghostty 1.4.0 `quickLook`처럼). 시스템의 "힘주어 클릭"이 꺼졌거나 보안 입력·암호 입력 중이면 하지 않는다. 윈도우 메뉴에 체크 표시가 있는 "항상 위에 띄우기" 항목을 더했다 (#853)
 - XTGETTCAP이 좌우 여백 능력 `Enmg`·`Dsmg`·`Clmg`·`Cmg`에 답합니다(값은 Ghostty 1.4.0 terminfo 그대로, DECLRMM·DECSLRM은 #311에서 넣었음). 전에는 답이 없었습니다. 터미널 이름을 보고 기능을 켜는 프로그램(Claude Code·Codex·snacks.nvim·tmux·Yazi)과 ssh `SendEnv` 안내를 문서에 더했고, Ghostty #15113(세 번 눌러 고른 줄을 빈 줄 위로 끌면 고름이 사라짐)은 b-terminal에 해당하지 않아 시험만 남겼습니다 (#854)
+- 입력 함께 보내기: `toggle_broadcast_group:N`(0~15)·`clear_broadcast_groups`와 설정 `broadcast-group-colors`(Ghostty 열린 PR #13745 모양). 같은 묶음의 칸끼리 키(칸마다 그 칸의 모드로 다시 인코딩)·IME 확정 글·붙여넣기(칸마다 따로 감쌈)·`text:` 묶음이 가고, 묶음에 든 칸은 색 테두리로 보인다. 읽기 전용 칸은 주고받지 않고 암호 입력 중인 칸의 글은 퍼지지 않는다. 기본 키·클릭으로 넣기는 없다 (#860)
 
 ## [0.102.0] - 2026-11-26
 
