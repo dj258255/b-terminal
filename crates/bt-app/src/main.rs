@@ -40,6 +40,7 @@ mod startup;
 mod state;
 mod status_note;
 mod tabbar;
+mod tabcolor;
 mod toggles;
 mod undo;
 mod winact;

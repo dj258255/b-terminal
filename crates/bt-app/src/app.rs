@@ -638,6 +638,8 @@ struct TabGroup {
     zoomed: bool,
     /// `prompt_tab_title`·`set_tab_title`로 덮어쓴 탭 제목(#207). 칸 제목보다 먼저다
     title: Option<String>,
+    /// 탭 오른쪽 단추 메뉴로 고른 탭 색(#852)
+    color: crate::tabcolor::TabColor,
 }
 
 /// 제목 입력 막대가 정할 곳(#207)
@@ -672,6 +674,7 @@ enum Closed {
         focus: u64,
         zoomed: bool,
         title: Option<String>,
+        color: crate::tabcolor::TabColor,
     },
 }
 
@@ -2061,6 +2064,7 @@ impl App {
                 focus: id,
                 zoomed: false,
                 title: None,
+                color: Default::default(),
             },
         );
         self.w.active = at;
@@ -2609,6 +2613,15 @@ impl App {
                 None => return,
             };
             crate::context_menu::popup(&crate::context_menu::entries(has_selection, readonly));
+        }
+    }
+
+    /// 지금 탭의 메뉴를 띄운다(macOS, 모달, #852)
+    fn tab_menu_popup(&mut self) {
+        #[cfg(target_os = "macos")]
+        if let Some(g) = self.w.tabs.get(self.w.active) {
+            let dark = crate::tabcolor::is_dark(self.config.theme.background);
+            crate::context_menu::popup_tab(&crate::context_menu::tab_entries(g.color), dark);
         }
     }
 
@@ -3332,6 +3345,7 @@ impl App {
                         focus: was.1,
                         zoomed: was.0,
                         title: removed.title,
+                        color: removed.color,
                     });
                 }
             }
@@ -3360,7 +3374,7 @@ impl App {
             }
             return;
         }
-        let (layout, focus, zoomed, title) = (g.layout.clone(), g.focus, g.zoomed, g.title.clone());
+        let (layout, focus, zoomed, title, color) = (g.layout.clone(), g.focus, g.zoomed, g.title.clone(), g.color);
         let before = self.focused_id();
         self.w.tabs.remove(gi);
         if gi < self.w.active || self.w.active >= self.w.tabs.len() {
@@ -3389,6 +3403,7 @@ impl App {
             focus,
             zoomed,
             title,
+            color,
         });
         self.focus_changed(before);
         self.clear_visible_unread();
@@ -3416,7 +3431,7 @@ impl App {
                     Ok(()) => Redo::Pane(id),
                     // 원래 자리의 이웃이 사라졌다: 새 탭 끝에 되살린다
                     Err(pane) => {
-                        self.restore_tab(vec![*pane], Node::Leaf(id), usize::MAX, id, false, None);
+                        self.restore_tab(vec![*pane], Node::Leaf(id), usize::MAX, id, false, Default::default());
                         Redo::Tab(id)
                     }
                 }
@@ -3428,8 +3443,9 @@ impl App {
                 focus,
                 zoomed,
                 title,
+                color,
             } => {
-                self.restore_tab(panes, layout, index, focus, zoomed, title);
+                self.restore_tab(panes, layout, index, focus, zoomed, (title, color));
                 Redo::Tab(focus)
             }
         };
@@ -3470,7 +3486,7 @@ impl App {
         index: usize,
         focus: u64,
         zoomed: bool,
-        title: Option<String>,
+        (title, color): (Option<String>, crate::tabcolor::TabColor),
     ) {
         let before = self.focused_id();
         let at = index.min(self.w.tabs.len());
@@ -3481,6 +3497,7 @@ impl App {
                 focus,
                 zoomed,
                 title,
+                color,
             },
         );
         self.w.active = at;
@@ -4462,6 +4479,12 @@ impl App {
                     let (id, now) = (g.focus, g.title.clone().unwrap_or_default());
                     self.w.palette = None;
                     self.w.title_prompt = Some((TitleTarget::Tab(id), now));
+                }
+            }
+            Action::SetTabColor(color) => {
+                if let Some(g) = self.w.tabs.get_mut(self.w.active) {
+                    g.color = color;
+                    self.request_redraw();
                 }
             }
             Action::PromptWindowTitle => {
@@ -5668,6 +5691,7 @@ impl App {
                             focus: t.layout.leaves().iter().position(|&id| id == t.focus).unwrap_or(0),
                             zoomed: t.zoomed,
                             title: t.title.clone(),
+                            color: (t.color != crate::tabcolor::TabColor::None).then(|| t.color.key().to_string()),
                         })
                         .collect(),
                     active: w.active,
@@ -5744,6 +5768,7 @@ impl App {
                     zoomed: st.zoomed && leaves.len() > 1,
                     // 상태 파일은 보안 경계는 아니지만 믿지 않는다: 읽은 제목도 사람이 친 제목과 같은 규칙을 다시 거친다
                     title: st.title.as_deref().and_then(clean_user_title),
+                    color: crate::tabcolor::TabColor::from_saved(st.color.as_deref()),
                 });
                 for (id, t) in leaves.iter().zip(st.layout.pane_titles()) {
                     if let Some(t) = t.as_deref().and_then(clean_user_title) {
@@ -6418,6 +6443,7 @@ impl App {
                                     .or_else(|| panes.iter().find_map(|p| p.live_progress()))
                                     .filter(|_| self.config.progress_style)
                             }),
+                        color: g.color,
                     }
                 })
                 .collect()
@@ -7851,6 +7877,15 @@ impl ApplicationHandler<UserEvent> for App {
                 }
                 // 탭 줄을 누르면 그 탭으로
                 if (self.w.cursor_pos.y as u32) < top_inset + self.tabbar_height() {
+                    // 탭 오른쪽 단추: 그 탭을 고르고 메뉴(제목 바꾸기·색)를 띄운다(#852, macOS). Ghostty는 고르지 않고 그 탭에 메뉴를 띄운다
+                    if state == ElementState::Pressed && button == MouseButton::Right && self.w.confirm.is_none() {
+                        let width = self.w.gfx.as_ref().map(|g| g.window.inner_size().width).unwrap_or(0);
+                        if let Some(i) = tabbar::hit(width, self.w.cursor_pos.x, self.w.tabs.len()) {
+                            self.activate(i);
+                            self.tab_menu_popup();
+                        }
+                        return;
+                    }
                     if state == ElementState::Pressed && matches!(button, MouseButton::Left | MouseButton::Middle) {
                         let width = self.w.gfx.as_ref().map(|g| g.window.inner_size().width).unwrap_or(0);
                         let hit = tabbar::hit(width, self.w.cursor_pos.x, self.w.tabs.len());

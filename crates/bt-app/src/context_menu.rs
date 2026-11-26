@@ -118,6 +118,55 @@ pub fn entries(has_selection: bool, readonly: bool) -> Vec<Entry> {
     v
 }
 
+/// 탭 오른쪽 단추 메뉴의 한 줄(#852)
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TabEntry {
+    /// 탭 제목 바꾸기
+    Rename,
+    Separator,
+    /// 색 한 가지. 지금 탭의 색이면 `selected`
+    Color {
+        color: crate::tabcolor::TabColor,
+        selected: bool,
+    },
+}
+
+/// 탭 메뉴 항목. Ghostty 1.4.0처럼 "탭 제목 바꾸기" 밑에 구분선과 색 팔레트가 온다
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub fn tab_entries(current: crate::tabcolor::TabColor) -> Vec<TabEntry> {
+    let mut v = vec![TabEntry::Rename, TabEntry::Separator];
+    v.extend(crate::tabcolor::TabColor::ALL.map(|color| TabEntry::Color {
+        color,
+        selected: color == current,
+    }));
+    v
+}
+
+/// 탭 메뉴를 마우스 자리에 띄운다(`popup`처럼 모달). 색 항목은 동그란 견본 그림이 붙고, 고른 색은 고리와 뒤의 표시로 구별한다
+#[cfg(target_os = "macos")]
+pub fn popup_tab(entries: &[TabEntry], dark: bool) {
+    use crate::tabcolor::{SWATCH_PX, swatch_rgba};
+    use muda::{ContextMenu, Icon, IconMenuItem, Menu, MenuItem, PredefinedMenuItem};
+    let menu = Menu::new();
+    for e in entries {
+        let _ = match e {
+            TabEntry::Rename => menu.append(&MenuItem::with_id("tab_title", "탭 제목 바꾸기…", true, None)),
+            TabEntry::Separator => menu.append(&PredefinedMenuItem::separator()),
+            TabEntry::Color { color, selected } => {
+                let icon = Icon::from_rgba(swatch_rgba(*color, *selected, dark), SWATCH_PX, SWATCH_PX).ok();
+                let text = if *selected {
+                    format!("{} ✓", color.label())
+                } else {
+                    color.label().to_string()
+                };
+                menu.append(&IconMenuItem::with_id(color.menu_id(), text, true, icon, None))
+            }
+        };
+    }
+    winit::platform::macos::popup_context_menu(menu.ns_menu());
+}
+
 /// 메뉴를 마우스 자리에 띄운다. 항목을 고르면 앱 메뉴와 같은 길(`muda::MenuEvent` → `UserEvent::Menu`)로 동작이 온다.
 /// 메뉴를 닫을 때까지 돌아오지 않는다(AppKit 메뉴 추적). vendor winit의 안전한 함수로 띄운다(unsafe는 vendor 안에만 있다)
 #[cfg(target_os = "macos")]
@@ -278,6 +327,46 @@ mod tests {
                 assert_eq!(action_for(id), Some(MenuCommand::Action(want(id))), "{id}");
             }
         }
+    }
+
+    /// 탭 메뉴(#852): 제목 바꾸기, 구분선, 색 열 가지(Ghostty 순서). 지금 색만 고른 표시이고 색이 없으면 "없음"이 고른 것이다
+    #[test]
+    fn tab_menu_has_rename_then_the_ten_colors_with_one_selected() {
+        use crate::tabcolor::TabColor;
+        for current in TabColor::ALL {
+            let e = tab_entries(current);
+            assert_eq!(e.len(), 2 + 10, "{current:?}");
+            assert_eq!(e[0], TabEntry::Rename);
+            assert_eq!(e[1], TabEntry::Separator);
+            let colors: Vec<_> = e[2..]
+                .iter()
+                .map(|x| match x {
+                    TabEntry::Color { color, selected } => (*color, *selected),
+                    other => panic!("{other:?}"),
+                })
+                .collect();
+            let order: Vec<_> = colors.iter().map(|c| c.0).collect();
+            assert_eq!(order, TabColor::ALL);
+            let selected: Vec<_> = colors.iter().filter(|c| c.1).map(|c| c.0).collect();
+            assert_eq!(selected, [current]);
+        }
+    }
+
+    /// 탭 메뉴의 색 항목 id가 모두 `SetTabColor`로 가고, 모르는 id는 계속 없다. 탭 제목 항목은 지금 탭의 제목 막대를 연다
+    #[test]
+    fn tab_menu_items_map_to_actions() {
+        use crate::tabcolor::TabColor;
+        for color in TabColor::ALL {
+            assert_eq!(
+                action_for(&color.menu_id()),
+                Some(MenuCommand::Action(Action::SetTabColor(color)))
+            );
+        }
+        assert_eq!(action_for("tab_color_magenta"), None);
+        assert_eq!(
+            action_for("tab_title"),
+            Some(MenuCommand::Action(Action::PromptTabTitle))
+        );
     }
 
     #[test]

@@ -103,6 +103,8 @@ pub enum Action {
     Text(String),
     /// 입력 막대로 지금 탭의 제목을 묻는다(Ghostty `prompt_tab_title`, #207)
     PromptTabTitle,
+    /// 탭 오른쪽 단추 메뉴로 지금 탭의 색을 정한다(#852). Ghostty에는 이 키 동작이 없어(메뉴로만 고른다) 키 묶음 이름은 없다
+    SetTabColor(crate::tabcolor::TabColor),
     /// 입력 막대로 지금 창의 제목을 묻는다(Ghostty `prompt_window_title`, #207)
     PromptWindowTitle,
     /// 지금 탭의 제목을 덮어쓴다. 빈 글이면 덮어쓴 제목을 지운다(Ghostty `set_tab_title`, #207)

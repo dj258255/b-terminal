@@ -14,6 +14,8 @@ pub struct TabLabel {
     /// 진행 표시(OSC 9;4): (상태 1 보통·2 오류·3 끝 모름·4 멈춤, 퍼센트).
     /// 프로그램 상태(OSC 7501)도 같은 막대로 보인다: 5는 사용자를 기다림, 6은 끝남(`status_bar`)
     pub progress: Option<(u8, u8)>,
+    /// 사람이 고른 탭 색(#852). 있으면 제목 오른쪽에 작은 점
+    pub color: crate::tabcolor::TabColor,
 }
 
 /// 막대 상태 코드: 프로그램 상태(OSC 7501)에서 온 것(`status_bar`)
@@ -190,6 +192,16 @@ pub fn draw_with_title_font(
         }
         if tab.unread {
             dot(canvas, x + cw, top + h as i32 / 2, (cw / 3).max(2), theme.palette[3]);
+        }
+        // 탭 색(#852): Ghostty처럼 탭 오른쪽 끝(제목 뒤)의 작은 점. 고른 탭과 아닌 탭이 같다. 제목 자리(양쪽 두 칸)의 오른쪽 칸 가운데
+        if let Some(rgb) = tab.color.rgb(crate::tabcolor::is_dark(theme.background)) {
+            dot(
+                canvas,
+                x + w as i32 - cw - cw / 2,
+                top + h as i32 / 2,
+                (cw * 3 / 8).max(2),
+                rgb,
+            );
         }
     }
 }
@@ -758,6 +770,7 @@ mod tests {
             active: false,
             unread: false,
             progress: None,
+            color: Default::default(),
         };
         let tabs = [mk(&"안녕 W".repeat(30)), mk("")];
         draw_with_title_font(&mut c, &mut fonts, title.as_mut(), &theme, &tabs, 0);
@@ -799,6 +812,7 @@ mod tests {
             active: false,
             unread: false,
             progress: None,
+            color: Default::default(),
         };
         let tabs = [mk(&"Hgjpq안녕 Ég ".repeat(10)), mk("")];
         draw_with_title_font(&mut c, &mut fonts, title.as_mut(), &theme, &tabs, 0);
@@ -977,6 +991,54 @@ mod tests {
         assert_eq!(buf[2 * 30 + 15] & 0xFF_FFFF, red);
     }
 
+    /// 탭 색(#852): Ghostty처럼 제목 오른쪽의 작은 점이다. 고른 탭이든 아니든 같은 색이고, 색이 없는 탭에는 점이 없다
+    #[test]
+    fn tab_color_is_a_dot_right_of_the_title_on_active_and_inactive_tabs() {
+        use crate::tabcolor::TabColor;
+        let Ok(mut fonts) = Fonts::new(&bt_render::FontConfig::default()) else {
+            return;
+        };
+        let theme = Theme::ghostty_default();
+        let (w, h) = (400u32, 60u32);
+        let mk = |active: bool, color: TabColor| TabLabel {
+            title: "a".into(),
+            active,
+            unread: false,
+            progress: None,
+            color,
+        };
+        let mut buf = vec![0u32; (w * h) as usize];
+        let mut c = Canvas::new(&mut buf, w, h);
+        c.clear(theme.background);
+        let tabs = [
+            mk(true, TabColor::Blue),
+            mk(false, TabColor::Red),
+            mk(false, TabColor::None),
+        ];
+        draw_with_title_font(&mut c, &mut fonts, None, &theme, &tabs, 0);
+        let bh = bar_height(&fonts, None);
+        let dark = crate::tabcolor::is_dark(theme.background);
+        let count = |c: &Canvas, x0: u32, x1: u32, want: Rgb| {
+            (0..bh)
+                .flat_map(|y| (x0..x1).map(move |x| (x, y)))
+                .filter(|&(x, y)| c.pixel(x, y) == want)
+                .count()
+        };
+        let blue = TabColor::Blue.rgb(dark).unwrap();
+        let red = TabColor::Red.rgb(dark).unwrap();
+        // 탭 폭은 400/3: 133, 133, 134
+        assert!(count(&c, 0, 133, blue) >= 6, "고른 탭에 파란 점이 없다");
+        assert!(count(&c, 133, 266, red) >= 6, "고르지 않은 탭에 빨간 점이 없다");
+        assert_eq!(
+            count(&c, 266, 400, blue) + count(&c, 266, 400, red),
+            0,
+            "색 없는 탭에 점이 생겼다"
+        );
+        // 점은 탭 오른쪽 절반에 있다(제목은 가운데, 안 읽음 점은 왼쪽)
+        assert_eq!(count(&c, 0, 66, blue), 0);
+        assert_eq!(count(&c, 133, 199, red), 0);
+    }
+
     #[test]
     fn tab_bar_starts_below_the_top_offset() {
         let Ok(mut fonts) = Fonts::new(&bt_render::FontConfig::default()) else {
@@ -992,6 +1054,7 @@ mod tests {
             active: false,
             unread: false,
             progress: None,
+            color: Default::default(),
         }];
         let top = 40;
         draw_with_title_font(&mut c, &mut fonts, None, &theme, &tabs, top);

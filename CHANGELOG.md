@@ -6,6 +6,7 @@
 
 - 복사 HTML의 링크를 Ghostty main #15347처럼: `http://`·`https://`·`mailto:`·`file://`(대소문자 무시)만 `href`에 쓰고 나머지는 글과 `<a>` 태그를 남긴 채 `href="#"`로 쓴다. 비ASCII·공백·제어 바이트는 `%XX`로 인코딩한다 (#846)
 - `selection-background`·`selection-foreground`가 `cell-foreground`·`cell-background`를 받아 고른 칸마다 그 칸의 글자색·바탕색을 쓰고(Ghostty 1.4.0 `generic.zig`), 옛 키 `cursor-invert-fg-bg`·`selection-invert-fg-bg`는 `true`일 때 그 자리에서 새 키 값을 바꾼다. 고른 칸은 찾기 맞은 칸보다 앞서고, `--show-config`는 `cell-*`를 그 이름으로 적는다 (#849)
+- 탭 오른쪽 클릭(macOS)으로 탭 색을 고르고 없앱니다(Ghostty 1.4.0 `TerminalTabColor`처럼 없음·파랑·보라·분홍·빨강·주황·노랑·초록·청록·그래파이트). 고른 색은 탭 제목 오른쪽 끝의 작은 점으로 보이고, 탭 옮기기·닫기 되살리기·`window-save-state`를 따라옵니다. 색이 없던 옛 상태 파일도 읽습니다 (#852)
 - macOS에서 트랙패드를 강하게 누르면(force click) 마우스 아래 낱말을 시스템 사전 말풍선으로 띄운다(Ghostty 1.4.0 `quickLook`처럼). 시스템의 "힘주어 클릭"이 꺼졌거나 보안 입력·암호 입력 중이면 하지 않는다. 윈도우 메뉴에 체크 표시가 있는 "항상 위에 띄우기" 항목을 더했다 (#853)
 - XTGETTCAP이 좌우 여백 능력 `Enmg`·`Dsmg`·`Clmg`·`Cmg`에 답합니다(값은 Ghostty 1.4.0 terminfo 그대로, DECLRMM·DECSLRM은 #311에서 넣었음). 전에는 답이 없었습니다. 터미널 이름을 보고 기능을 켜는 프로그램(Claude Code·Codex·snacks.nvim·tmux·Yazi)과 ssh `SendEnv` 안내를 문서에 더했고, Ghostty #15113(세 번 눌러 고른 줄을 빈 줄 위로 끌면 고름이 사라짐)은 b-terminal에 해당하지 않아 시험만 남겼습니다 (#854)
 
