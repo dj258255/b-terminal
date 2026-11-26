@@ -60,6 +60,7 @@ impl TabColor {
     }
 
     /// 메뉴에 보이는 이름
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     pub fn label(self) -> &'static str {
         match self {
             TabColor::None => "없음",
@@ -76,6 +77,7 @@ impl TabColor {
     }
 
     /// 메뉴 항목 id
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     pub fn menu_id(self) -> String {
         format!("tab_color_{}", self.key())
     }
@@ -105,15 +107,18 @@ impl TabColor {
 }
 
 /// 바탕이 어두운가(상대 휘도 0.18 아래, 대략 중간 회색보다 어둡다)
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub fn is_dark(background: Rgb) -> bool {
     background.luminance() < 0.18
 }
 
 /// 메뉴 견본 그림의 한 변(픽셀). 메뉴에는 18pt로 걸려 레티나에서 또렷하다
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub const SWATCH_PX: u32 = 36;
 
 /// 메뉴 견본(Ghostty `swatchImage`): 색 동그라미. 없음은 속이 빈 회색 고리에 빗금이고, 고른 것은 바깥에 강조 고리가 붙는다.
 /// RGBA 8비트(곱하지 않은 알파)를 `SWATCH_PX`의 제곱으로 돌려준다
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub fn swatch_rgba(color: TabColor, selected: bool, dark: bool) -> Vec<u8> {
     let n = SWATCH_PX as usize;
     let mut out = vec![0u8; n * n * 4];
