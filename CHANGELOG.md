@@ -4,6 +4,10 @@
 
 ## [아직 릴리스하지 않음]
 
+## [0.103.0] - 2026-11-26
+
+Ghostty 1.4.0과 kitty를 견준 조사에서 빠진 기능을 채운 판입니다. **화면 글 속 경로(`./src/main.rs`, `~/x`)와 `mailto:`·`ssh:` 같은 주소도 ⌘클릭으로 열고**(다른 앱을 띄우는 주소는 확인 막대로 한 번 묻습니다), fish·nushell·elvish 셸 통합을 더했습니다. 탭 색, force click 사전 조회, 창 메뉴의 "항상 위에 띄우기", `selection-*`의 `cell-foreground`·`cell-background`, 복사 HTML 링크 규칙(Ghostty main #15347)도 Ghostty처럼 했습니다. zsh·bash의 OSC 7은 폴더 이름의 제어 문자를 지워 `kitty-shell-cwd://`로 보냅니다. 마일스톤 0.103.
+
 - 복사 HTML의 링크를 Ghostty main #15347처럼: `http://`·`https://`·`mailto:`·`file://`(대소문자 무시)만 `href`에 쓰고 나머지는 글과 `<a>` 태그를 남긴 채 `href="#"`로 쓴다. 비ASCII·공백·제어 바이트는 `%XX`로 인코딩한다 (#846)
 - `selection-background`·`selection-foreground`가 `cell-foreground`·`cell-background`를 받아 고른 칸마다 그 칸의 글자색·바탕색을 쓰고(Ghostty 1.4.0 `generic.zig`), 옛 키 `cursor-invert-fg-bg`·`selection-invert-fg-bg`는 `true`일 때 그 자리에서 새 키 값을 바꾼다. 고른 칸은 찾기 맞은 칸보다 앞서고, `--show-config`는 `cell-*`를 그 이름으로 적는다 (#849)
 - 화면 글의 링크 찾기를 Ghostty 1.4.0 `url.zig`처럼: `mailto:`·`ssh:`·`tel:`·`magnet:` 등 스킴 주소와 `./src/main.rs`·`~/x`·`/usr/bin/env`·`src/a.rs` 같은 경로도 링크로 찾는다. `mailto:`(질의 없는 것)·경로(작업 폴더(OSC 7) 기준)는 바로 열고 `ssh:`·`tel:` 같은 다른 앱 스킴과 질의가 든 `mailto:`는 확인 막대로 한 번 묻는다. 한국어 조사에서 끊는 규칙은 그대로 (#850)

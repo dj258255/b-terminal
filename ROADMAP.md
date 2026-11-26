@@ -1850,12 +1850,40 @@ Ghostty 1.4.0 단위 시험 견주기 여섯째 판([#760](https://github.com/dj
 | [#838](https://github.com/dj258255/b-terminal/issues/838) | 커서·고름 기본색이 글자색과 OSC 10·11·12를 따르지 않음 | [#845](https://github.com/dj258255/b-terminal/pull/845) | 11-25 08:07 → 11-26 04:13 | 고치기 에이전트(API 오류로 멈춰 이어 받음), #837과 겹친 `apply_color`를 합치고 빈 값 처리를 더함, 실제 창(OSC 12·112·10, 질의 답)·병합 |
 | [#839](https://github.com/dj258255/b-terminal/issues/839) | 최소 명암비가 그래픽 글자에 걸림, bold-color가 RGB 글자색에 안 걸림 | [#842](https://github.com/dj258255/b-terminal/pull/842) | 11-25 08:07 → 08:52 | 원본 대조(`noMinContrast`, `style.zig`), 고치기 에이전트, 실제 창·병합 |
 
+## 0.103.0 (2026-11-26)
+
+Ghostty 1.4.0·kitty 견주기 판. 범수 님이 "빠진 게 있는지 웹서칭 확실하게"를 맡기셔서 kitty·foot·WezTerm 등과 견준 조사를 하고, Ghostty에 있는 것부터 채웠습니다(kitty에만 있는 것은 0.104·0.105로 나눔). 마일스톤 0.103.
+
+- 사용자가 쓰던 동작이 바뀝니다.
+  - 화면 글 속 경로와 `mailto:`·`ssh:` 같은 주소에 ⌘를 누르면 밑줄이 생기고 열립니다. 다른 앱을 띄우는 주소는 확인 막대로 한 번 묻고, 막대에 다 보일 수 없으면 묻지 않습니다(ADR-086).
+  - zsh·bash의 OSC 7은 `kitty-shell-cwd://`로, 폴더 이름의 제어 문자를 지워 보냅니다(ADR-087).
+- 실제 창에서 찾아 고친 것
+  - PS1을 덮어쓰는 zsh에서 탭이 셸 통합으로 잡히지 않았습니다. 엔진이 `133;P`를 프롬프트 시작으로 세지 않았습니다(Ghostty `stream_terminal.zig`처럼 고침).
+  - 좁은 창 토스트의 왼쪽이 창 밖으로 잘렸습니다.
+  - 두 PR(#853·#852)이 macOS 전용 필드에 `cfg`가 없어 Linux CI에서 실패했습니다. #853은 한 번 실패한 뒤 고쳤고 #852는 올리기 전에 같은 고침을 넣었습니다.
+- 진행 중 일
+  - 실제 창 확인에서 주 세션이 키를 앱의 AppleScript `send key`로 보내 확인 막대에 닿지 않은 일이 있었습니다(그 결과 "Esc 뒤 열리지 않음"은 아무것도 확인하지 못함). 키 사건으로 보내 다시 쟀습니다. AppleScript 글의 `\n`으로 붙여넣기 확인이 뜬 일도 한 번 더 있었습니다.
+  - `btctl list`가 제어 문자를 그대로 낸다고 본 것은 잘못 읽은 것이었습니다(이미 `^G`처럼 보이는 글로 바꿔 냄).
+  - 사용량 한도로 한 번 멈췄다가 이어 받았습니다.
+  - rebase 때 문서 충돌을 양쪽 남기기로 풀면서 같은 CHANGELOG 줄의 옛 판이 남은 일이 여러 번 있었습니다. 올린 뒤 겹친 줄을 지웠습니다.
+- 실제 창 확인: 격리한 창, release 묶음 앱, 한 번씩. 그림은 사람 입력이 95초 넘게 없을 때 찍거나 창을 앞으로 올리지 않고 그 창만 찍었고, 본 뒤 지웠습니다.
+
+| 이슈 | 내용 | PR | 연 때·병합(UTC) | 주 세션이 한 것 |
+|---|---|---|---|---|
+| [#846](https://github.com/dj258255/b-terminal/issues/846) | 복사 HTML 링크 규칙(Ghostty main #15347) | [#848](https://github.com/dj258255/b-terminal/pull/848) | 11-26 04:14 → 04:56 | 원본 대조, 고치기, 실제 창(HTML 파일)·병합 |
+| [#849](https://github.com/dj258255/b-terminal/issues/849) | `selection-*`의 `cell-foreground`·`cell-background`, 옛 키 | [#855](https://github.com/dj258255/b-terminal/pull/855) | 11-26 04:57 → 06:07 | 원본 대조(`generic.zig`), 고치기, 병합 |
+| [#850](https://github.com/dj258255/b-terminal/issues/850) | 화면 글 속 경로·`mailto:`·`ssh:` 링크 | [#871](https://github.com/dj258255/b-terminal/pull/871) | 11-26 06:00 → 11:41 | 고치기 에이전트, 검토(질의 있는 mailto·사용자 정보·막대 표시·80칸·좁은 창), 실제 창 두 번(첫 번은 방법이 틀림), 토스트 잘림 고침, 보안 경계 검토·병합 |
+| [#851](https://github.com/dj258255/b-terminal/issues/851) | fish·nushell·elvish 셸 통합, zsh B 보강, OSC 7 제어 문자 | [#870](https://github.com/dj258255/b-terminal/pull/870) | 11-26 06:00 → 11:20 | 고치기 에이전트, 실제 창에서 `133;P` 결함을 찾아 시험 먼저 쓰고 고침, OSC 52 기록으로 견줌, 보안 경계 검토·병합 |
+| [#852](https://github.com/dj258255/b-terminal/issues/852) | 탭 색 | [#869](https://github.com/dj258255/b-terminal/pull/869) | 11-26 06:00 → 11:08 | 고치기 에이전트, Linux 빌드 고침, 실제 창(점, 상태 파일)·병합 |
+| [#853](https://github.com/dj258255/b-terminal/issues/853) | force click 사전 조회, "항상 위에 띄우기" 메뉴 | [#868](https://github.com/dj258255/b-terminal/pull/868) | 11-26 06:00 → 08:52 | 고치기 에이전트, 실제 창(메뉴 체크, 창 층), Linux CI 실패 고침·병합 |
+| [#854](https://github.com/dj258255/b-terminal/issues/854) | XTGETTCAP 여백 능력, 문서 묶음 | [#867](https://github.com/dj258255/b-terminal/pull/867) | 11-26 06:00 → 08:35 | 고치기, 실제 창(질의 답)·병합 |
+
 ## 다음
 
 - 0.91~0.97에서 '범수 님이 확인할 것'의 대부분을 주 세션이 확인했습니다. 무엇을 확인했고 무엇을 못 했는지는 위 0.91.0~0.95.0 절에 있습니다. 남은 것: 데스크톱 알림 띠가 하나만 뜨는지와 VoiceOver 소리, Space, 저전력 모드를 끈 0.42, 외부 모니터, 타자 느낌. 이 가운데 VoiceOver와 저전력 모드는 시스템 설정을 바꿔야 하고, Space 옮기기는 하드웨어 키 입력이 있어야 하며, 외부 모니터는 이 기기에 없어 주 세션이 확인하지 않았습니다. 알림 띠는 시험 앱 묶음에 알림 허락이 없어(알림 설정에 항목이 없음) 뜨지 않고, 허락하려면 시스템 설정을 바꿔야 해서 확인하지 않았습니다. 타자 느낌은 사람이 쳐 봐야 압니다.
 - 0.94 뒤 tmux 3.8을 확인했습니다(격리한 실제 창, 한 번 잼). 받은 병이 의존 라이브러리 경로 때문에 실행되지 않던 것을 의존 병과 함께 이어 실행했습니다. tmux가 알아본 바깥 터미널 기능 목록, 가로 나누기 뒤 왼쪽 칸에 찍은 한글(`가나다라마 끝`)·이모지(`😀🙂 이모지`) 줄과 칸 경계선(경계선 앞 폭이 모든 줄에서 40칸으로 같음), 마우스로 칸 고르기, Shift+Enter가 안쪽 프로그램에 `ESC[27;2;13~`으로 가는 것을 봤습니다.
 - Ctrl+Enter가 아무 바이트도 내지 않는 것처럼 보였으나(#751) 결함이 아니었습니다. 앱이 뒤에 있을 때 보낸 합성 키를 AppKit이 창까지 넘기지 않은 탓이었고, 앱을 앞에 두고 보내면 `ESC[27;5;13~`이 갑니다(한 번 잼).
-- 다음 판 후보: Ghostty 새 병합분(2026-11-26 04:14 UTC까지 봄, #846 HTML 복사 링크), Ghostty 단위 시험 가운데 남은 파일(`PageList.zig`·`page.zig`는 대부분 내부 구조, `tmux/*`·`kitty/dnd*`는 Ghostty 앱도 쓰지 않음), `selection-*`의 `cell-foreground`·`cell-background`, 밑줄·취소선의 최소 명암비, Ghostty가 글리프를 그리기 시작하면 따라가기, kitty 그림이 대체 화면을 나와도 남는 것(Ghostty는 화면 저장소째 버림).
+- 다음 판: 0.104(kitty 그림 `t=f`, 모호 폭, btctl 넓히기, 기본 터미널 메뉴, 입력 함께 보내기 묶음, 스크롤백 복원)·0.105(깜빡이는 글자, SGR 221·222와 지우기 동작, Dock 진행·벨 배지, 키보드 힌트, 붙여넣기 안전). 그 밖의 후보: Ghostty 새 병합분(2026-11-26 04:14 UTC까지 봄), Ghostty 단위 시험 가운데 남은 파일(`PageList.zig`·`page.zig`는 대부분 내부 구조, `tmux/*`·`kitty/dnd*`는 Ghostty 앱도 쓰지 않음), 밑줄·취소선의 최소 명암비, Ghostty가 글리프를 그리기 시작하면 따라가기, kitty 그림이 대체 화면을 나와도 남는 것(Ghostty는 화면 저장소째 버림).
 - 범수 님이 직접 해야 할 것: 키보드·마우스 확인(한글 2벌식 "안녕 하세요⏎", Claude Code의 Shift+Enter, Cmd-D·Cmd-F·Cmd-클릭·Cmd-N·Cmd-Shift-P, 메뉴, 창 닫기 단추, vim·htop, kitty icat·yazi, 투명 창), Developer ID 계정으로 `scripts/bundle-macos.sh --sign … --notarize … --dmg`
 - 정함(0.49·0.50, 주 세션 추천안): `window-colorspace` 기본은 `display-p3` 그대로. 0.50부터 `srgb`도 GPU 길로 그립니다(창마다 약 13.6MB 더, ADR-047). 기본을 Ghostty처럼 `srgb`로 바꾸시려면 알려 주세요
 - 범수 님이 확인할 것(0.6): 퀵 터미널을 실제 전역 단축키로(`keybind = global:ctrl+backquote=toggle_quick_terminal`), 외부 모니터로 창을 옮겼을 때 present 시간(`RUST_LOG=b_terminal=debug`)
