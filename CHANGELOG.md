@@ -17,6 +17,7 @@ Ghostty 1.4.0과 kitty를 견준 조사에서 빠진 기능을 채운 판입니�
 - 탭 오른쪽 클릭(macOS)으로 탭 색을 고르고 없앱니다(Ghostty 1.4.0 `TerminalTabColor`처럼 없음·파랑·보라·분홍·빨강·주황·노랑·초록·청록·그래파이트). 고른 색은 탭 제목 오른쪽 끝의 작은 점으로 보이고, 탭 옮기기·닫기 되살리기·`window-save-state`를 따라옵니다. 색이 없던 옛 상태 파일도 읽습니다 (#852)
 - macOS에서 트랙패드를 강하게 누르면(force click) 마우스 아래 낱말을 시스템 사전 말풍선으로 띄운다(Ghostty 1.4.0 `quickLook`처럼). 시스템의 "힘주어 클릭"이 꺼졌거나 보안 입력·암호 입력 중이면 하지 않는다. 윈도우 메뉴에 체크 표시가 있는 "항상 위에 띄우기" 항목을 더했다 (#853)
 - XTGETTCAP이 좌우 여백 능력 `Enmg`·`Dsmg`·`Clmg`·`Cmg`에 답합니다(값은 Ghostty 1.4.0 terminfo 그대로, DECLRMM·DECSLRM은 #311에서 넣었음). 전에는 답이 없었습니다. 터미널 이름을 보고 기능을 켜는 프로그램(Claude Code·Codex·snacks.nvim·tmux·Yazi)과 ssh `SendEnv` 안내를 문서에 더했고, Ghostty #15113(세 번 눌러 고른 줄을 빈 줄 위로 끌면 고름이 사라짐)은 b-terminal에 해당하지 않아 시험만 남겼습니다 (#854)
+- 동아시아 모호 폭(East Asian Ambiguous) 글자(①·※·○·─ 등)를 두 칸으로 세는 설정 `ambiguous-width = wide`를 더했습니다(기본 `narrow`, 한 칸, 지금과 같음. `1`·`2`도 받음). Ghostty·kitty에는 없고 WezTerm·iTerm2·Windows Terminal에 있는 설정입니다. 폭은 엔진 한 곳에서 정해 그리기·커서·줄 끝 접기·고르기·복사·찾기가 따르고, 모드 2027 길과 아닌 길이 같은 값을 따릅니다. 한글·이모지는 그대로이고 그리스·키릴 글자는 `wide`에서도 한 칸입니다. 안의 프로그램(nvim `ambiwidth=double`, tmux)과 맞춰야 합니다. 설정을 다시 읽으면 이 뒤에 찍는 글부터 따릅니다 (#857)
 
 ## [0.102.0] - 2026-11-26
 

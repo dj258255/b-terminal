@@ -1236,6 +1236,7 @@ impl App {
         first: SpawnOptions,
     ) -> Self {
         let mut config = config;
+        bt_render::set_ambiguous_wide(config.ambiguous_width == bt_core::config::AmbiguousWidth::Wide);
         let font_size = config.font_size;
         let (keymap, mut kw) = Keymap::build(&config.keybinds);
         kw.extend(crate::palette::user_warnings(&config.palette_entries));
@@ -1972,6 +1973,7 @@ impl App {
             image_storage_limit: Some(self.config.image_storage_limit),
             color_scheme_light: !self.scheme_dark(),
             grapheme_width_method: self.config.grapheme_width_method,
+            ambiguous_wide: self.config.ambiguous_width == bt_core::config::AmbiguousWidth::Wide,
             ..options
         };
         // 칸 안의 btctl이 이 터미널과 이 칸을 찾게 한다
@@ -4882,9 +4884,13 @@ impl App {
         for w in std::iter::once(&mut self.w).chain(&mut self.others) {
             w.font_size = bt_core::config::font_size_after_reload(old_size, new_size, w.font_size);
         }
+        // 모호 폭: 이미 찍힌 글은 그대로 두고 이 뒤에 찍는 글부터 따른다(#857). 셀 밖에서 폭을 세는 곳(조합 글 등)도 맞춘다
+        let ambiguous_wide = next.ambiguous_width == bt_core::config::AmbiguousWidth::Wide;
+        bt_render::set_ambiguous_wide(ambiguous_wide);
         for t in &self.panes {
             t.session.set_theme(next.theme.clone());
             t.session.set_scroll_on_output(next.scroll_to_bottom.output);
+            t.session.set_ambiguous_wide(ambiguous_wide);
         }
         #[cfg(target_os = "macos")]
         for w in std::iter::once(&self.w).chain(&self.others) {

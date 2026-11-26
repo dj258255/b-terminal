@@ -43,7 +43,8 @@
 |---|---|---|
 | [ADR-001](#adr-001-vt-엔진은-alacritty_terminal로-시작하고-bt-term-밖으로-엔진-타입을-내보내지-않는다) | VT 엔진은 alacritty_terminal로 시작하고, bt-term 밖으로 엔진 타입을 내보내지 않는다 | 유효 |
 | [ADR-003](#adr-003-크레이트를-여섯으로-나누고-창-라이브러리는-bt-app만-쓴다) | 크레이트를 여섯으로 나누고 창 라이브러리는 bt-app만 쓴다 | 일부 바뀜: `bt-studio`와 에이전트 상태 모델은 ADR-005가 걷어냄, `bt-gpu`는 ADR-035가 더함. 창 라이브러리는 `bt-app`만 쓴다는 원칙은 그대로 |
-| [ADR-014](#adr-014-글자-묶음-폭mode-2027을-위해-alacritty_terminal을-vendor로-고쳐-쓴다) | 글자 묶음 폭(mode 2027)을 위해 alacritty_terminal을 vendor로 고쳐 쓴다 | 유효 |
+| [ADR-014](#adr-014-글자-묶음-폭mode-2027을-위해-alacritty_terminal을-vendor로-고쳐-쓴다) | 글자 묶음 폭(mode 2027)을 위해 alacritty_terminal을 vendor로 고쳐 쓴다 | 유효. 모호 폭 선택을 ADR-089가 더함 |
+| [ADR-089](#adr-089-동아시아-모호-폭-글자를-두-칸으로-세는-설정은-엔진의-폭-함수-하나로-정하고-기본은-끈다) | 동아시아 모호 폭 글자를 두 칸으로 세는 설정(`ambiguous-width`)은 엔진의 폭 함수 하나로 정하고 기본은 끈다 | 유효. ADR-014의 폭 규칙에 선택 하나를 더함 |
 | [ADR-025](#adr-025-윗줄sgr-5355은-vte를-vendor로-들여와-해석하고-격자-빈-비트-하나로-들고-글자색으로-긋는다) | 윗줄(SGR 53·55)은 vte를 vendor로 들여와 해석하고, 격자 빈 비트 하나로 들고, 글자색으로 긋는다 | 유효 |
 | [ADR-052](#adr-052-접근성은-accesskit로-보이는-화면만-늦춰서-내놓고-요청은-포커스만-받는다) | 접근성은 accesskit로, 보이는 화면만 늦춰서 내놓고 요청은 포커스만 받는다 | 유효 |
 | [ADR-056](#adr-056-한-칸에-덧붙는-글자는-64개까지만-두고-엔진이-ghostty와-다른-곳은-xterm과-같은-쪽이-아니면-ghostty를-따른다) | 한 칸에 덧붙는 글자는 64개까지만 두고, 엔진이 Ghostty와 다른 곳은 xterm과 같은 쪽이 아니면 Ghostty를 따른다 | 일부 바뀜(줄 이음 표지: DL이 영역 끝까지 풀던 것을 이웃이 바뀐 줄만 풀고 IL·SU·SD·RI도 같게, Ghostty main #15309, #815) |
@@ -470,7 +471,7 @@
 
 ## ADR-014 글자 묶음 폭(mode 2027)을 위해 alacritty_terminal을 vendor로 고쳐 쓴다
 
-상태: 채택
+상태: 채택(모호 폭 선택을 ADR-089가 더함. 결정 자체는 그대로)
 관련: [#180](https://github.com/dj258255/b-terminal/issues/180), ADR-001, ADR-004
 
 ### 맥락
@@ -2786,3 +2787,35 @@ Ghostty와 다른 점이다.
 
 ### 보안
 - 이 결정은 터미널에 찍힌 글이 이 컴퓨터의 파일을 읽게 하는 새 입구를 연다(보안 경계를 바꾼다). 막는 것: 원시 형식으로 아무 파일이나 해석하는 길(`f≠100`), 임시 파일을 지우는 길(`t=t`)·공유 메모리, `/proc`·`/sys`·`/dev`, 일반 파일이 아닌 것(폴더·장치·FIFO), 상대 경로, 상한 초과, 링크 바꿔치기. 시험이 각각을 본다(`f=24`·`32`·생략은 있는 파일·없는 파일이 같은 답, 폴더·`/dev/zero`·`/dev/null`·장치로의 링크·FIFO·없는 파일·PNG 아님·상대 경로·NUL·상한 초과·답에 경로·내용 없음).
+## ADR-089 동아시아 모호 폭 글자를 두 칸으로 세는 설정은 엔진의 폭 함수 하나로 정하고, 기본은 끈다
+
+상태: 채택
+관련: [#857](https://github.com/dj258255/b-terminal/issues/857), ADR-014(엔진 폭), ADR-005(범위)
+
+### 맥락
+- 동아시아 모호 폭(East Asian Ambiguous, UAX #11 `A`) 글자(①, ※, ○, ─, ¡ 등)는 문맥에 따라 한 칸이나 두 칸이다. 엔진은 `unicode-width`의 `width()`로 늘 한 칸으로 센다. 두 칸으로 세는 CJK 콘솔 프로그램이나 nvim `ambiwidth=double`과 어긋난다.
+- **범위 근거**: Ghostty 1.4.0과 kitty에는 이 설정이 없다(kitty는 `kitty.conf` 옵션 정의 `definition.py`에서 ambiguous를 찾지 못했다. 이 파일 전체를 읽은 것은 아니고 낱말 검색이다). 범수 님이 2026-11-26에 빠진 기능 조사 뒤 넣기로 정했다. AGENTS.md의 기준은 "Ghostty나 kitty에 있는 기능인가"였으므로 이것은 그 기준 밖에서 사람이 정해 넣은 예외다. AI 작업 화면(ADR-005)과는 무관하다.
+- 다른 터미널(2026-11-26 확인): WezTerm `treat_east_asian_ambiguous_width_as_wide = false`(bool, 20220624부터, 문서는 "레이아웃이 깨질 수 있다"고 경고). 터미널 설정으로 넘기는 것은 `config/src/lib.rs`의 `ambiguous_are_wide`까지 읽었고 엔진 안의 쓰임은 읽지 않았다. iTerm2는 프로필 → Text의 "Ambiguous characters are double-width"(프로필 키 `Ambiguous Double Width`, 기본 끔). Windows Terminal은 PR #19864가 2026-02-27에 `compatibility.ambiguousWidth`(`narrow`|`wide`, 기본 `narrow`)를 병합했다. 어느 판에 들었는지는 확인하지 못했다.
+
+### 결정
+1. 키는 `ambiguous-width`, 값은 `narrow`(기본)·`wide`이고 `1`·`2`도 받는다. 우리 문법(`grapheme-width-method = unicode|legacy`처럼 이름이 방법을 말하는 값)에 맞추고, WezTerm의 긴 bool 이름과 Windows Terminal의 중첩 키는 따르지 않는다. 값 낱말은 Windows Terminal과 같다. 끄면 지금과 같은 동작이다.
+2. **폭은 엔진 한 곳에서 정한다.** vendor `alacritty_terminal`에 `Config::ambiguous_wide`를 두고, `Term`의 `char_width`·`str_width` 두 함수가 켜면 `unicode-width`의 `width_cjk()`로 센다. 글자를 찍는 길(`input`)과 모드 2027의 묶음 길(`join_grapheme`)이 같은 두 함수를 쓰므로 2027을 켠 채든 끈 채든 모호 폭이 같은 값을 따른다. 찍힌 셀의 `WIDE_CHAR`·`WIDE_CHAR_SPACER` 표시가 결과이고, 그리기·커서·줄 끝 접기·고르기·복사·찾기는 AGENTS.md대로 이 표시를 따른다(새로 세는 코드 없음).
+3. 이모지 표시 선택자(U+FE0E·U+FE0F)의 유효 순서 판단(`is_valid_variation`)은 폭 설정과 무관하게 원래 폭으로 한다. 이것은 "이모지 변형 순서 표"를 묻는 것이지 칸 수를 정하는 것이 아니다.
+4. 셀이 없어 엔진 표시를 못 따르는 곳(IME 조합 글, 탭·상태 줄·팔레트의 글, 넓은 글자용 대체 글꼴 확대)은 렌더러의 `char_cells` 한 함수가 같은 규칙으로 센다. 값은 앱이 설정을 읽을 때 바꾸는 전역 하나다. 그리는 칸 수는 여전히 셀 표시가 정한다.
+5. 적용 시점: 새 칸은 설정으로 시작하고, 설정을 다시 읽으면 열려 있는 칸에도 `Term::set_ambiguous_wide`로 건다. **이미 찍힌 칸은 다시 세지 않고** 이 뒤에 찍는 글부터 따른다(다시 세려면 격자를 다시 쌓아야 하고, 줄바꿈 표시와 커서가 어긋난다). 다른 터미널이 열린 화면을 다시 세는지는 확인하지 않았다.
+6. 폭 표는 새로 만들지 않고 `unicode-width`(0.2)의 `width_cjk()`를 그대로 쓴다. 이 함수는 그리스·키릴 글자를 모호 폭이어도 한 칸으로 둔다(`Ω`·`Ж`·`α`는 `wide`에서도 한 칸). nvim `ambiwidth=double`은 이 글자도 두 칸으로 세므로 둘이 어긋날 수 있다. 문서에 적는다.
+
+### 검토한 선택지
+- 렌더러나 선택·복사 쪽에서 따로 폭을 세기: AGENTS.md가 금지한다. 엔진과 어긋나면 옆 글자를 덮는다.
+- 바이트를 바꾸는 앞단: ADR-014가 이미 기각한 길이다.
+- 자체 모호 폭 표(UAX #11 `A` 전체)를 두기: 표를 유지할 짐이 생긴다. 지금은 `unicode-width`를 따르고, 그리스·키릴을 두 칸으로 세는 요구가 실제로 나오면 그때 정한다.
+- 설정을 다시 읽을 때 새 칸에만 적용: 열려 있는 칸이 늘 옛 값이라 설정을 바꿔도 확인할 수 없다. 새 글부터 적용하는 쪽이 단순하고 예측된다.
+
+### 감수한 트레이드오프
+- `wide`로 바꾸면 TUI의 상자 그림(─│┌)과 불릿(•)이 두 칸이 되어 안의 프로그램이 한 칸으로 세면 테두리가 어긋난다. 그래서 기본은 끈다. 안의 프로그램(nvim `ambiwidth`, tmux, `RUNEWIDTH_EASTASIAN`)과 맞춰야 한다고 `docs/configuration.md`에 적는다.
+- 같은 화면에서 설정을 바꾼 앞뒤 글이 폭이 달라진다(위 5).
+- 렌더러의 전역 값은 창이 여럿이어도 하나다. 설정이 하나라 문제가 없지만 칸마다 다른 값은 지원하지 않는다.
+
+### 보안
+- 입력 경로·제어 소켓·파일·디스크를 건드리지 않는다. 화면 배치만 바뀐다. 폭이 어긋난 프로그램이 글자를 덮어 쓰는 길은 설정을 켠 사용자가 고른 것이다.
+

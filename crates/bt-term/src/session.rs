@@ -133,6 +133,8 @@ pub struct SpawnOptions {
     pub color_scheme_light: bool,
     /// 글자 묶음 폭을 세는 방식(설정 grapheme-width-method, #180). `Unicode`면 mode 2027이 처음부터 켜져 있다
     pub grapheme_width_method: bt_core::config::GraphemeWidthMethod,
+    /// 동아시아 모호 폭 글자를 두 칸으로 셀지(설정 `ambiguous-width = wide`, #857). 기본 끔
+    pub ambiguous_wide: bool,
     /// DECRQCRA(화면 영역 체크섬 묻기)에 답할지(설정 vt-xt-checksum-report, 기본 끔, #259). 꺼져 있으면 XTCHECKSUM도 무시한다
     pub vt_xt_checksum_report: bool,
     /// 체크섬 계산 방식의 기본(설정 vt-xt-checksum-extension, #259). 프로그램이 XTCHECKSUM으로 바꾼 것은 초기화(RIS·DECSTR)에서 이 값으로 돌아온다
@@ -771,6 +773,7 @@ impl Session {
             // Claude Code 등이 Shift+Enter를 받으려고 켠다(#41)
             kitty_keyboard: true,
             grapheme_cluster: options.grapheme_width_method == bt_core::config::GraphemeWidthMethod::Unicode,
+            ambiguous_wide: options.ambiguous_wide,
             default_cursor_style: VtCursorStyle {
                 shape: match options.cursor_shape {
                     Some(CursorShape::Beam) => VtCursorShape::Beam,
@@ -1390,6 +1393,11 @@ impl Session {
     }
 
     /// 새 출력이 오면 맨 아래로 스크롤할지 바꾼다(설정을 다시 읽을 때)
+    /// 설정을 다시 읽었을 때 모호 폭 설정을 바꾼다(#857). 이미 찍힌 글은 그대로 두고 이 뒤에 찍는 글부터 따른다
+    pub fn set_ambiguous_wide(&self, on: bool) {
+        self.inner.lock().term.set_ambiguous_wide(on);
+    }
+
     pub fn set_scroll_on_output(&self, on: bool) {
         self.scroll_on_output.store(on, std::sync::atomic::Ordering::Relaxed);
     }

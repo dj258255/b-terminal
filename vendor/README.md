@@ -196,3 +196,8 @@ alacritty_terminal이 글자 묶음 폭(mode 2027)을 지원하는 판을 내면
 ## vte의 `x11_rgb.txt`를 vte 밖에서도 읽습니다(#837)
 
 `vendor/vte/src/x11_rgb.txt`(Ghostty `rgb.txt` 782줄)를 `bt-core`(`theme.rs`, 설정의 색 값과 `+list-colors`)와 `bt-term`(`kitty_color.rs`, 시험)도 `include_str!`로 읽습니다. 파일을 옮기거나 지우면 이들도 고쳐야 합니다. vte 코드는 이 일로 바꾸지 않았습니다.
+
+## alacritty_terminal: 모호 폭을 두 칸으로 세는 설정(#857)
+
+- 고친 곳: `Config::ambiguous_wide`와 `Term::set_ambiguous_wide`를 더했고, `Term::input`·`join_grapheme`이 글자 폭을 `unicode-width`의 `width()`로 직접 세던 두 곳을 `char_width`·`str_width`로 바꿨다(켜면 `width_cjk()`). 폭을 세는 곳은 이 두 함수뿐이다. 이모지 표시 선택자의 유효 순서 판단(`is_valid_variation`)과 시험용 `mock_term`은 원래 폭 그대로 둔다. 엔진 판을 올릴 때 이 둘을 다시 얹는다.
+
