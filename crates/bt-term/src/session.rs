@@ -341,11 +341,8 @@ impl EventListener for Listener {
                         i if i < 256 => theme.indexed(i as u8),
                         i if i == NamedColor::Foreground as usize => theme.foreground,
                         i if i == NamedColor::Background as usize => theme.background,
-                        // 커서 색을 정하지 않았으면 지금 글자색(#286). 테마가 커서 색을 따로 정했으면 그 색
-                        _ => match changed_fg {
-                            Some(c) if theme.cursor == theme.foreground => bt_core::Rgb::new(c.r, c.g, c.b),
-                            _ => theme.cursor,
-                        },
+                        // 커서 색을 정하지 않았으면 지금 글자색(#286). 설정이 커서 색을 따로 정했으면 그 색
+                        _ => theme.cursor_or(changed_fg.map_or(theme.foreground, |c| bt_core::Rgb::new(c.r, c.g, c.b))),
                     },
                     |c| bt_core::Rgb::new(c.r, c.g, c.b),
                 );
@@ -2475,6 +2472,8 @@ fn snapshot_of<T: EventListener>(
         display_offset: content.display_offset,
         history: term.grid().history_size(),
         background,
+        foreground,
+        cursor_color: overrides[NamedColor::Cursor].map(|c| bt_core::Rgb::new(c.r, c.g, c.b)),
         chrome_background,
         links,
         images: graphics.map(|g| visible_images(term, g, now)).unwrap_or_default(),

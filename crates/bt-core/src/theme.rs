@@ -190,6 +190,16 @@ impl SearchColors {
     }
 }
 
+/// 설정이나 테마 파일이 직접 정한 색(#838). 정하지 않은 커서색·커서 글자색·고름 바탕·고름 글자는
+/// 그릴 때 지금 글자색·바탕색(OSC 10·11 반영)에서 나온다(Ghostty `generic.zig`: `cursor-color`·`cursor-text`·`selection-*`의 기본은 정하지 않음)
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ExplicitColors {
+    pub cursor: bool,
+    pub cursor_text: bool,
+    pub selection_background: bool,
+    pub selection_foreground: bool,
+}
+
 /// 터미널 색 테마
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Theme {
@@ -215,6 +225,9 @@ pub struct Theme {
     /// `palette = 100=#...`로 바꾼 값이 있을 때만 채운다
     #[serde(default)]
     pub extended: Vec<Rgb>,
+    /// 위 색 가운데 설정이 직접 정한 것(#838)
+    #[serde(default)]
+    pub explicit: ExplicitColors,
 }
 
 impl Default for Theme {
@@ -258,6 +271,7 @@ impl Theme {
             faint_opacity: 0.5,
             search: SearchColors::default(),
             extended: Vec::new(),
+            explicit: ExplicitColors::default(),
         }
     }
 }
@@ -384,6 +398,28 @@ impl Theme {
     /// 16~255번 색을 정한다: `generate`면 기본 16색에서 만들고, 아니면 xterm 표에서 시작한다.
     /// `set`에 있는 번호(사용자가 `palette`로 정한 값)는 어느 쪽이든 덮어쓰지 않고 그 값을 쓴다.
     /// 만들 것도 바꿀 것도 없으면 비워 둔다
+    /// 정하지 않은 커서색·커서 글자색·고름 바탕·고름 글자를 지금 글자색·바탕색에서 채운다(#838).
+    /// 설정을 다 읽은 뒤에 불러서 `foreground`·`background`가 어느 순서로 와도 같은 결과다
+    pub fn settle_unset_colors(&mut self) {
+        if !self.explicit.cursor {
+            self.cursor = self.foreground;
+        }
+        if !self.explicit.cursor_text {
+            self.cursor_text = self.background;
+        }
+        if !self.explicit.selection_background {
+            self.selection_background = self.foreground;
+        }
+        if !self.explicit.selection_foreground {
+            self.selection_foreground = Some(self.background);
+        }
+    }
+
+    /// 커서 색: 정했으면 그 색, 아니면 `foreground`(지금 글자색, OSC 10이 바꿨을 수 있다)
+    pub fn cursor_or(&self, foreground: Rgb) -> Rgb {
+        if self.explicit.cursor { self.cursor } else { foreground }
+    }
+
     pub fn build_extended(&mut self, generate: bool, harmonious: bool, set: &[(u8, Rgb)]) {
         if !generate && set.is_empty() {
             self.extended.clear();

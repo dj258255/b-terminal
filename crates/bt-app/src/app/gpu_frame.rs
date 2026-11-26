@@ -493,8 +493,8 @@ impl App {
                     rows: v.screen.rows,
                     cells,
                     cursor: *cursor,
-                    selection_bg: theme.selection_background,
-                    selection_fg: theme.selection_foreground,
+                    selection_bg: super::screen_default_colors(&theme, &v.screen).selection_bg,
+                    selection_fg: super::screen_default_colors(&theme, &v.screen).selection_fg,
                     preedit: pre.as_deref(),
                     min_contrast: self.config.minimum_contrast,
                 })

@@ -218,11 +218,11 @@ fn current<L: EventListener>(term: &Term<L>, theme: &Theme, key: Key) -> Option<
         Key::Palette(n) => theme.indexed(n),
         Key::Special(Special::Foreground) => theme.foreground,
         Key::Special(Special::Background) => theme.background,
-        // 커서 색을 정하지 않았으면 지금 글자색(OSC 12 질의와 같다, #286). 테마가 커서 색을 따로 정했으면 그 색
-        _ => match term.colors()[NamedColor::Foreground as usize] {
-            Some(c) if theme.cursor == theme.foreground => bt_core::Rgb::new(c.r, c.g, c.b),
-            _ => theme.cursor,
-        },
+        // 커서 색을 정하지 않았으면 지금 글자색(OSC 12 질의와 같다, #286). 설정이 커서 색을 따로 정했으면 그 색
+        _ => theme.cursor_or(
+            term.colors()[NamedColor::Foreground as usize]
+                .map_or(theme.foreground, |c| bt_core::Rgb::new(c.r, c.g, c.b)),
+        ),
     };
     Some((c.r, c.g, c.b))
 }

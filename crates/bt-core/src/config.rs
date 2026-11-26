@@ -2694,6 +2694,7 @@ impl Config {
             self.apply(e, warnings);
         }
         // 키를 다 읽은 뒤에 정한다: 바탕·글자색과 palette가 어느 순서로 와도 같은 결과(#177)
+        self.theme.settle_unset_colors();
         self.theme
             .build_extended(self.palette_generate, self.palette_harmonious, &self.palette_set);
         self.scrollback_lines = scrollback_rows(self.scrollback_limit_bytes, self.scrollback_limit_lines);
@@ -2722,35 +2723,68 @@ impl Config {
             },
             // cell-foreground·cell-background(Ghostty 1.2): 커서 칸의 글자색·바탕색을 따른다(#135)
             "cursor-color" => match CellColor::parse(v) {
-                Some(c) => self.cursor_color_cell = Some(c),
+                Some(c) => {
+                    self.cursor_color_cell = Some(c);
+                    t.explicit.cursor = false;
+                }
                 None => {
                     self.cursor_color_cell = None;
                     match color() {
-                        Some(c) => t.cursor = c,
-                        None => bad_color(warnings),
+                        Some(c) => {
+                            t.cursor = c;
+                            t.explicit.cursor = true;
+                        }
+                        // 빈 값은 정하지 않은 것으로 되돌린다(지금 글자색·바탕색을 따름)
+                        None => {
+                            t.explicit.cursor &= !v.is_empty();
+                            bad_color(warnings)
+                        }
                     }
                 }
             },
             "cursor-text" => match CellColor::parse(v) {
-                Some(c) => self.cursor_text_cell = Some(c),
+                Some(c) => {
+                    self.cursor_text_cell = Some(c);
+                    t.explicit.cursor_text = false;
+                }
                 None => {
                     self.cursor_text_cell = None;
                     match color() {
-                        Some(c) => t.cursor_text = c,
-                        None => bad_color(warnings),
+                        Some(c) => {
+                            t.cursor_text = c;
+                            t.explicit.cursor_text = true;
+                        }
+                        // 빈 값은 정하지 않은 것으로 되돌린다(지금 글자색·바탕색을 따름)
+                        None => {
+                            t.explicit.cursor_text &= !v.is_empty();
+                            bad_color(warnings)
+                        }
                     }
                 }
             },
             "selection-background" => match color() {
-                Some(c) => t.selection_background = c,
-                None => bad_color(warnings),
-            },
-            "selection-foreground" => {
-                t.selection_foreground = color();
-                if t.selection_foreground.is_none() {
-                    bad_color(warnings);
+                Some(c) => {
+                    t.selection_background = c;
+                    t.explicit.selection_background = true;
                 }
-            }
+                // 빈 값은 정하지 않은 것으로 되돌린다(지금 글자색·바탕색을 따름)
+                None => {
+                    t.explicit.selection_background &= !v.is_empty();
+                    bad_color(warnings)
+                }
+            },
+            // 읽지 못하면 경고하고 앞 값을 둔다
+            "selection-foreground" => match color() {
+                Some(c) => {
+                    t.selection_foreground = Some(c);
+                    t.explicit.selection_foreground = true;
+                }
+                // 빈 값은 정하지 않은 것으로 되돌린다(지금 글자색·바탕색을 따름)
+                None => {
+                    t.explicit.selection_foreground &= !v.is_empty();
+                    bad_color(warnings)
+                }
+            },
             "palette" => {
                 // 번호는 10진수나 `0x`·`0o`·`0b`, 색은 `RGB.parse`(Ghostty `parsePaletteEntry`, #837)
                 match crate::theme::parse_palette_entry(v) {
@@ -3696,10 +3730,17 @@ impl Config {
         }
         push("background", hex(t.background));
         push("foreground", hex(t.foreground));
-        push("cursor-color", hex(t.cursor));
-        push("cursor-text", hex(t.cursor_text));
-        push("selection-background", hex(t.selection_background));
-        if let Some(c) = t.selection_foreground {
+        // 정하지 않은 커서·고름 색은 지금 글자색·바탕색을 따르므로 찍지 않는다(#838)
+        if t.explicit.cursor {
+            push("cursor-color", hex(t.cursor));
+        }
+        if t.explicit.cursor_text {
+            push("cursor-text", hex(t.cursor_text));
+        }
+        if t.explicit.selection_background {
+            push("selection-background", hex(t.selection_background));
+        }
+        if let (true, Some(c)) = (t.explicit.selection_foreground, t.selection_foreground) {
             push("selection-foreground", hex(c));
         }
         for (i, c) in t.palette.iter().enumerate() {
@@ -5497,6 +5538,70 @@ mod tests {
         }
         let c = Config::from_text("search-background = nope\n", true);
         assert_eq!(c.theme.search, Config::default().theme.search);
+    }
+
+    /// #838: 커서색·커서 글자색·고름 바탕·고름 글자를 정하지 않으면 정한 글자색·바탕색을 따른다(Ghostty `generic.zig`)
+    #[test]
+    fn unset_cursor_and_selection_colors_follow_foreground_and_background() {
+        let green = Rgb::new(0, 255, 0);
+        let navy = Rgb::new(0, 0, 0x80);
+        for text in [
+            "foreground = #00ff00\nbackground = #000080\n",
+            "background = #000080\nforeground = #00ff00\n",
+        ] {
+            let t = Config::from_text(text, true).theme;
+            assert_eq!(t.cursor, green, "{text:?}");
+            assert_eq!(t.cursor_text, navy, "{text:?}");
+            assert_eq!(t.selection_background, green, "{text:?}");
+            assert_eq!(t.selection_foreground, Some(navy), "{text:?}");
+            assert_eq!(t.explicit, bt_core_explicit_none());
+        }
+        // 정한 값은 순서와 상관없이 그대로
+        let t = Config::from_text(
+            "cursor-color = #ff0000\nforeground = #00ff00\ncursor-text = #111111\nselection-background = #222222\nselection-foreground = #333333\n",
+            true,
+        )
+        .theme;
+        assert_eq!(t.cursor, Rgb::new(255, 0, 0));
+        assert_eq!(t.cursor_text, Rgb::new(0x11, 0x11, 0x11));
+        assert_eq!(t.selection_background, Rgb::new(0x22, 0x22, 0x22));
+        assert_eq!(t.selection_foreground, Some(Rgb::new(0x33, 0x33, 0x33)));
+        assert!(
+            t.explicit.cursor
+                && t.explicit.cursor_text
+                && t.explicit.selection_background
+                && t.explicit.selection_foreground
+        );
+        // 칸 색 따르기로 바꾸면 앞에 정한 색은 더는 정한 것이 아니다
+        let t = Config::from_text(
+            "cursor-color = #ff0000\ncursor-color = cell-foreground\nforeground = #00ff00\n",
+            true,
+        )
+        .theme;
+        assert!(!t.explicit.cursor);
+        assert_eq!(t.cursor, green);
+    }
+
+    /// #838: 빈 값은 정한 색을 지워 다시 글자색·바탕색을 따르게 하고, 잘못된 값은 경고하고 앞 값을 둔다
+    #[test]
+    fn empty_cursor_and_selection_values_unset_and_bad_ones_keep_the_previous() {
+        let green = Rgb::new(0, 255, 0);
+        let t = Config::from_text(
+            "foreground = #00ff00\ncursor-color = #ff0000\ncursor-color =\nselection-foreground = #333333\nselection-foreground =\n",
+            true,
+        )
+        .theme;
+        assert!(!t.explicit.cursor && !t.explicit.selection_foreground);
+        assert_eq!(t.cursor, green);
+        assert_eq!(t.selection_foreground, Some(Config::default().theme.background));
+        let c = Config::from_text("selection-background = #222222\nselection-background = nosuch\n", true);
+        assert!(c.theme.explicit.selection_background);
+        assert_eq!(c.theme.selection_background, Rgb::new(0x22, 0x22, 0x22));
+        assert_eq!(c.warnings.len(), 1, "{:?}", c.warnings);
+    }
+
+    fn bt_core_explicit_none() -> crate::theme::ExplicitColors {
+        crate::theme::ExplicitColors::default()
     }
 
     #[test]

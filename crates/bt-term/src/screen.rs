@@ -194,6 +194,10 @@ pub struct Screen {
     /// 스크롤백 줄 수
     pub history: usize,
     pub background: Rgb,
+    /// 지금 기본 글자색(OSC 10으로 바꿨으면 그 색, 화면 반전이면 맞바뀐 색). 정하지 않은 커서·고름 색이 여기서 나온다(#838)
+    pub foreground: Rgb,
+    /// 프로그램이 OSC 12로 정한 커서색(OSC 112로 되돌리면 없음). 있으면 커서 색 설정보다 앞선다(#838)
+    pub cursor_color: Option<Rgb>,
     /// 화면 반전(DECSCNM) 전의 기본 바탕색(OSC 11로 바꿨으면 그 색). 제목 막대가 쓴다. Ghostty의 제목 막대 색은 반전을 따르지 않는다(#302)
     pub chrome_background: Rgb,
     /// 화면에 보이는 OSC 8 링크 주소들(칸의 `link`가 가리킨다)
