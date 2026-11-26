@@ -1669,7 +1669,14 @@ fn session_answers_da1_after_interrupted_strings() {
 #[test]
 fn x11_names_resolve_like_the_linear_scan() {
     use bt_term::kitty_color::parse_color;
-    let table = include_str!("../../bt-app/src/x11_colors.txt");
+    // 빈칸 없는 이름만(#837 전 표와 같다): 찾는 쪽이 입력의 빈칸을 빼므로 빈칸 든 이름은 닿지 않는다
+    let full = include_str!("../../../vendor/vte/src/x11_rgb.txt");
+    let table: String = full
+        .lines()
+        .filter(|l| l.split_whitespace().count() == 4)
+        .map(|l| format!("{l}\n"))
+        .collect();
+    assert_eq!(table.lines().count(), 676);
     // 줄마다 훑던 옛 방식(첫 줄이 이긴다)
     let old = |name: &str| -> Option<(u8, u8, u8)> {
         let squeezed: String = name.chars().filter(|&c| c != ' ').collect();

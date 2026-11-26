@@ -11,9 +11,6 @@ use crate::keymap::{self, Mods};
 /// 설정 문서. `+explain-config`가 키 표에서 설명을 뽑는다(키 설명 데이터가 따로 없다)
 const CONFIG_DOC: &str = include_str!("../../../docs/configuration.md");
 
-/// X11 색 이름 표(Ghostty `src/terminal/res/rgb.txt`에서 공백 없는 이름만 옮긴 것). `r g b 이름`
-const X11_COLORS: &str = include_str!("x11_colors.txt");
-
 /// 키 묶음 동작 이름(`keymap::parse_action`이 아는 것). 인자는 `:` 뒤에 붙는다
 const ACTIONS: &[&str] = &[
     "ignore",
@@ -241,19 +238,12 @@ pub fn keybind_lines(user: &[String], defaults_only: bool) -> Vec<String> {
     sorted.into_values().flatten().collect()
 }
 
-/// `+list-colors` 줄: `이름 = #rrggbb`. 이름은 소문자, 이름순(대소문자 무시), 같은 이름은 한 번
+/// `+list-colors` 줄(Ghostty `list_colors.zig`): `이름 = #rrggbb`. `rgb.txt` 782개를 원래 대소문자로, 대소문자 무시 이름순(#837)
 pub fn color_lines() -> Vec<String> {
-    let mut m: BTreeMap<String, (u8, u8, u8)> = BTreeMap::new();
-    for l in X11_COLORS.lines() {
-        let f: Vec<&str> = l.split_whitespace().collect();
-        let [r, g, b, name] = f[..] else { continue };
-        let (Ok(r), Ok(g), Ok(b)) = (r.parse(), g.parse(), b.parse()) else {
-            continue;
-        };
-        m.insert(name.to_ascii_lowercase(), (r, g, b));
-    }
-    m.into_iter()
-        .map(|(n, (r, g, b))| format!("{n} = #{r:02x}{g:02x}{b:02x}"))
+    let mut all: Vec<_> = bt_core::theme::x11_colors().collect();
+    all.sort_by_key(|(n, _)| n.to_ascii_lowercase());
+    all.into_iter()
+        .map(|(n, c)| format!("{n} = #{:02x}{:02x}{:02x}", c.r, c.g, c.b))
         .collect()
 }
 
@@ -782,18 +772,29 @@ mod tests {
     }
 
     #[test]
-    fn 색_목록은_이름순_소문자이고_16진수_세_바이트다() {
+    fn 색_목록은_이름순이고_16진수_세_바이트다() {
         let lines = color_lines();
         assert!(lines.len() > 600, "{}", lines.len());
-        assert!(lines.contains(&"aliceblue = #f0f8ff".to_string()));
+        assert!(lines.contains(&"AliceBlue = #f0f8ff".to_string()));
         assert!(lines.contains(&"gray50 = #7f7f7f".to_string()));
-        assert!(lines.contains(&"rebeccapurple = #663399".to_string()));
-        assert!(lines.contains(&"x11gray = #bebebe".to_string()));
+        assert!(lines.contains(&"RebeccaPurple = #663399".to_string()));
+        assert!(lines.contains(&"x11 gray = #bebebe".to_string()));
         let names: Vec<&str> = lines.iter().map(|l| l.split(" = ").next().unwrap()).collect();
         let mut sorted = names.clone();
-        sorted.sort();
-        sorted.dedup();
+        sorted.sort_by_key(|n| n.to_ascii_lowercase());
+        sorted.dedup_by_key(|n| n.to_ascii_lowercase());
         assert_eq!(sorted, names, "정렬과 중복");
+    }
+
+    /// #837: Ghostty `+list-colors`처럼 `rgb.txt` 782개를 원래 대소문자로, 대소문자 무시 이름순으로 낸다
+    #[test]
+    fn 색_목록은_ghostty처럼_782개를_원래_대소문자로_낸다() {
+        let lines = color_lines();
+        assert_eq!(lines.len(), 782);
+        assert_eq!(lines[0], "alice blue = #f0f8ff");
+        assert_eq!(lines[1], "AliceBlue = #f0f8ff");
+        assert!(lines.contains(&"LawnGreen = #7cfc00".to_string()));
+        assert_eq!(lines.last().unwrap(), "YellowGreen = #9acd32");
     }
 
     #[test]

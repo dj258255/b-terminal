@@ -115,6 +115,7 @@
 
 | ADR | 결정 | 상태 |
 |---|---|---|
+| [ADR-084](#adr-084-설정-파일의-색-값은-ghostty-config의-rgbparse로-읽고-터미널-색-osc는-xterm-규칙을-그대로-둔다) | 설정 파일의 색 값은 Ghostty `Config`의 `RGB.parse`로 읽고, 터미널 색 OSC는 xterm 규칙을 그대로 둔다 | 유효 |
 | [ADR-013](#adr-013-터미널-출력이-할-수-있는-일을-넓히는-vt-설정은-ghostty처럼-기본을-끈다) | 터미널 출력이 할 수 있는 일을 넓히는 VT 설정은 Ghostty처럼 기본을 끈다 | 일부 바뀜: `clipboard-codepoint-map` 범위가 vt·html·mixed의 HTML까지(#787) |
 | [ADR-016](#adr-016-설정이-칸의-환경과-시작-입력을-정한다-term은-xterm-256color를-지키고-input에는-상한을-둔다) | 설정이 칸의 환경과 시작 입력을 정한다: TERM은 xterm-256color를 지키고, input에는 상한을 둔다 | 유효 |
 | [ADR-075](#adr-075-명령줄-설정-덮어쓰기는-기본-설정-파일-다음에-적용하고-설정-키가-아닌-인자는-경고로-남기고-뜬다) | 명령줄 설정 덮어쓰기(`--키=값`)는 기본 설정 파일 다음, `--config-file` 앞에 적용하고, 설정 키가 아닌 인자는 경고로 남기고 뜬다 | 유효 |
@@ -800,7 +801,7 @@ macOS의 Carbon `EnableSecureEventInput`은 켜 있는 동안 키 입력이 다�
 4. **답에는 요청의 글을 넣지 않는다.** 알아본 키를 코드의 이름 표로 다시 적고(팔레트는 `u8`을 10진수로 다시 적어 `02`가 `2`가 된다), 색은 `u8` 세 개를 16진수로 적는다. 제어 문자가 든 키는 알아보지 못해 버려진다.
 5. 칸이 색을 들고 있지 않은 키(`selection_*`, `cursor_text`, `visual_bell`, `second_transparent_background`)는 설정·되돌리기를 무시한다. 질의에는 Ghostty 원문대로 그 키를 빼고 답한다: 이 키들만 물으면 `ESC ] 21 끝맺음`만 간다(Ghostty는 첫 질의 항목에서 접두사를 쓴 뒤 색을 찾기 때문이다).
 6. 답은 읽기 전용 칸(ADR-018 결정 4)에서도 막지 않는다. `osc-color-report-format`은 OSC 21에 쓰지 않는다. Ghostty 설명이 그 설정의 범위를 OSC 4/10/11 질의로 정해 두었다(에이전트는 `none`이면 OSC 21도 막게 했으나 주 세션이 Ghostty에 맞췄다). 답에는 색 값과 다시 적은 키 이름만 들어가므로 끄지 않아도 요청의 글이 입력으로 돌아오지 않는다.
-7. 색 글 형식: `#rgb`(칸당 1~4자리)·`rgb:r/g/b`(칸당 1~4자리)·`rgbi:r/g/b`(0~1 소수)·X11 색 이름(`+list-colors`와 같은 표). Ghostty `terminal/color.zig`의 `RGB.parse` 원문과 그 테스트 값에 맞췄다: 앞뒤 공백을 자르고, `#` 없는 3·6자리 16진수도 받고, X11 이름은 대소문자를 가리지 않으며(빈칸 든 이름은 빈칸을 빼고 찾는다. rgb.txt의 빈칸 든 이름은 모두 붙인 이름과 같은 값이지만, Ghostty가 받지 않는 `medium springgreen` 같은 띄어쓰기도 받는 차이가 있다), `rgb:` 칸은 `값*255/최댓값`을 버림으로, `rgbi:`는 부호 없는 0~1 소수를 버림으로 8비트로 만든다.
+7. 색 글 형식: `#rgb`(칸당 1~4자리)·`rgb:r/g/b`(칸당 1~4자리)·`rgbi:r/g/b`(0~1 소수)·X11 색 이름(`+list-colors`와 같은 표). Ghostty `terminal/color.zig`의 `RGB.parse` 원문과 그 테스트 값에 맞췄다: 앞뒤 공백을 자르고, `#` 없는 3·6자리 16진수도 받고, X11 이름은 대소문자를 가리지 않으며(빈칸 든 이름은 빈칸을 빼고 찾는다. rgb.txt의 빈칸 든 이름은 모두 붙인 이름과 같은 값이지만, Ghostty가 받지 않는 `medium springgreen` 같은 띄어쓰기도 받는 차이가 있다. #837: 표는 `+list-colors`·설정과 같은 782개 한 벌로 합쳤고, 빈칸 든 이름은 입력의 빈칸을 빼므로 이 길에서는 닿지 않는다), `rgb:` 칸은 `값*255/최댓값`을 버림으로, `rgbi:`는 부호 없는 0~1 소수를 버림으로 8비트로 만든다.
 
 ### 결과
 - 찍힌 글이 터미널 색 세 가지와 팔레트를 바꾸거나 읽을 수 있다. 읽은 값은 숫자 세 개뿐이고 요청의 글은 돌아오지 않는다.
@@ -1788,7 +1789,7 @@ E8의 실제 창 로그에서 10ms 넘는 GPU 프레임은 세 가지였다. (1)
 ## ADR-056 한 칸에 덧붙는 글자는 64개까지만 두고, 엔진이 Ghostty와 다른 곳은 xterm과 같은 쪽이 아니면 Ghostty를 따른다
 
 상태: 일부 바뀜(줄 이음 표지: DL이 영역 끝까지 풀던 것을 이웃이 바뀐 줄만 풀고 IL·SU·SD·RI도 같게, Ghostty main #15309, #815)
-관련: [#577](https://github.com/dj258255/b-terminal/issues/577), [#579](https://github.com/dj258255/b-terminal/issues/579), [#580](https://github.com/dj258255/b-terminal/issues/580), [#581](https://github.com/dj258255/b-terminal/issues/581), [#582](https://github.com/dj258255/b-terminal/issues/582), [#583](https://github.com/dj258255/b-terminal/issues/583), [#584](https://github.com/dj258255/b-terminal/issues/584), [#585](https://github.com/dj258255/b-terminal/issues/585), ADR-001(엔진), ADR-014(엔진 사본), ADR-010(그림 상한)
+관련: [#577](https://github.com/dj258255/b-terminal/issues/577), [#579](https://github.com/dj258255/b-terminal/issues/579), [#580](https://github.com/dj258255/b-terminal/issues/580), [#581](https://github.com/dj258255/b-terminal/issues/581), [#582](https://github.com/dj258255/b-terminal/issues/582), [#583](https://github.com/dj258255/b-terminal/issues/583), [#584](https://github.com/dj258255/b-terminal/issues/584), [#585](https://github.com/dj258255/b-terminal/issues/585), ADR-001(엔진), ADR-014(엔진 사본), ADR-010(그림 상한), ADR-084(설정의 색 값은 이 원칙의 밖)
 
 ### 맥락
 - 0.62·0.63에 이어 Ghostty `Terminal.zig`(main 7fa26e8b675f)의 시험 가운데 번역기가 건너뛴 197개를 손으로 옮겨 우리 엔진과 견줬다(#577). 같음 145, 다름 21(원인 14가지), 옮길 수 없음 31이었고 panic은 없었다.
@@ -2594,3 +2595,28 @@ Ghostty와 다른 점이다.
 ### 보안
 - 숨긴 출력이 마우스 고르기·찾기·설정만으로 화면에 드러나는 길을 막는다. 화면을 읽는 쪽(화면 공유·녹화)은 이제 숨긴 칸에서 바탕색만 본다.
 - 복사·VT 복사에는 여전히 숨긴 글자가 들어가므로, 복사한 글을 다른 곳에 붙이면 드러난다. 이 경계는 바꾸지 않았다.
+
+## ADR-084 설정 파일의 색 값은 Ghostty `Config`의 `RGB.parse`로 읽고, 터미널 색 OSC는 xterm 규칙을 그대로 둔다
+
+상태: 채택
+관련: [#837](https://github.com/dj258255/b-terminal/issues/837), [#765](https://github.com/dj258255/b-terminal/issues/765), ADR-006(설정 문법은 Ghostty와 같게), ADR-024(kitty 색 프로토콜), ADR-056(Ghostty와 다른 곳의 원칙)
+
+### 맥락
+- 설정의 색 키(`background`·`foreground`·`cursor-color`·`cursor-text`·`selection-*`·`bold-color`·`palette`·`search-*`·`unfocused-split-fill`·`split-divider-color`)는 `#rrggbb`와 이름 다섯 개(black·white·red·green·blue)만 읽었고, 나머지는 경고 없이 기본값으로 남았다. Ghostty 설정을 옮겨 온 사용자의 `#fff`·`rgb:ff/00/00`·`LawnGreen`·`palette = 0xF=…`이 조용히 먹지 않았다.
+- 같은 문자열 모양(`#rgb` 등)을 읽는 길이 둘이다. 터미널 출력으로 오는 색 OSC(4·10~12 등)와 설정 파일. Ghostty는 둘 다 `RGB.parse` 하나로 읽지만, 우리 OSC 쪽은 #765에서 `#rgb`의 낮은 자리를 0으로 채우는 xterm 규칙을 남기기로 했다(`#fff`가 `f0f0f0`, ADR-056의 "xterm과 같은 쪽이 아니면 Ghostty를 따른다"에서 xterm 쪽).
+
+### 결정
+1. **설정 파일의 색 값은 Ghostty 1.4.0 `terminal/color.zig`의 `RGB.parse`·`parsePaletteEntry`와 같게 읽는다.** 설정은 Ghostty 설정과 같은 문법을 받는 곳이다(ADR-006). `#rgb`·`#rrggbb`·`#rrrgggbbb`·`#rrrrggggbbbb`, `#` 없는 3·6자리, `rgb:`·`rgbi:`, X11 이름 782개. 칸의 비트 수는 `값*255/최댓값`(버림)이라 `#fff`는 `ffffff`다. `palette`의 번호는 10진수와 `0x`·`0o`·`0b`다.
+2. **터미널 색 OSC는 바꾸지 않는다.** `vendor/vte`의 `xparse_color`는 그대로 xterm 규칙이다(`osc_ghostty765.rs`가 지킨다). 두 규칙은 함수가 나뉘어 있다: 설정은 `bt_core::theme::Rgb::parse_color`, OSC는 `vendor/vte`.
+3. **X11 이름 표는 `vendor/vte/src/x11_rgb.txt` 하나만 쓴다.** Ghostty `rgb.txt` 782줄과 같은 파일이다. 설정(`parse_color`), `+list-colors`, kitty 색 프로토콜(OSC 21)이 같은 표를 읽는다. 전에 `+list-colors`와 OSC 21이 쓰던 676개짜리 소문자 표(빈칸 든 이름을 뺀 것)는 없앴다.
+4. **이름의 빈칸은 설정에서 표대로다.** `medium spring green`과 `MediumSpringGreen`은 받고 `medium springgreen`은 받지 않는다(Ghostty와 같다). 입력의 빈칸을 모두 빼고 찾는 규칙(ADR-024 7번)은 kitty 색 프로토콜(OSC 21)에만 남는다. 그쪽은 더 받아 주는 쪽이라 그대로 두었다.
+5. **읽지 못하는 값은 경고하고 기본값을 둔다.** 빈 값은 전과 같이 경고 없이 둔다. `palette` 번호가 0~255를 넘으면 범위 경고, 모양이 틀리면 읽지 못함 경고다.
+6. **`+list-colors`는 Ghostty처럼** 782개를 원래 대소문자로, 대소문자 무시 이름순으로 낸다.
+
+### 검토한 선택지
+- OSC와 설정이 같은 함수를 쓰게 합치기: OSC의 `#fff`가 바뀌어 xterm과 달라진다. 버렸다.
+- `vendor/vte`의 `xparse_color`를 bt-core가 쓰게 하기: bt-core가 엔진 사본에 기대게 된다. 표 파일만 나눠 쓴다.
+
+### 감수한 트레이드오프
+- OSC로 `#fff`를 칠하면 `f0f0f0`, 설정에서 `#fff`는 `ffffff`다. 같은 글이 길에 따라 다른 색이 된다. 설정은 Ghostty 설정을 옮겨 오는 길이라 Ghostty 값을 우선했다.
+- Ghostty의 `palette` 번호 읽기는 Zig `std.fmt.parseInt(u8, s, 0)`이다. 부호(`+5`)와 숫자 사이 `_`(`1_0`)도 받도록 옮겼는데, `_` 둘레의 세부(`0x_f` 등)는 Zig 표준 라이브러리 원본을 읽지 못해 추정이다(거절로 두었다).
