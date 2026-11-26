@@ -271,8 +271,8 @@ impl App {
         let dragged = !pressed && place.is_some_and(|(i, (_, c, r))| self.panes[i].session.selection_contains(c, r));
         let step = mouse::link_step(link, pressed, place.map(|(_, at)| at), reporting, clicks, dragged);
         if matches!(step, mouse::LinkStep::OpenPass | mouse::LinkStep::OpenSwallow) {
-            if let Some((_, h)) = &hit {
-                self.open_link(&h.url);
+            if let Some((id, h)) = &hit {
+                self.open_link(&h.url, h.explicit, *id);
             }
         }
         matches!(step, mouse::LinkStep::Swallow | mouse::LinkStep::OpenSwallow)

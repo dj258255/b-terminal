@@ -324,13 +324,22 @@ fn dot(canvas: &mut Canvas, cx: i32, cy: i32, r: i32, color: Rgb) {
     }
 }
 
+/// 토스트의 글(줄인 것), 왼쪽 x, 폭. 창 오른쪽에 한 칸 띄워 붙인다.
+/// 글은 48칸까지, 창이 좁으면 창 안(양옆 안쪽 여백과 바깥 한 칸을 뺀 칸)에 들어가게 줄인다. 왼쪽은 창 밖으로 나가지 않는다
+pub fn toast_layout(canvas_w: u32, cell_w: u32, text: &str) -> (String, i32, u32) {
+    let cell_w = cell_w.max(1);
+    let room = ((canvas_w / cell_w) as usize).saturating_sub(3).clamp(1, 48);
+    let text = truncate(text, room);
+    let w = cell_w * text_cells(&text) as u32 + cell_w * 2;
+    let x = (canvas_w as i32 - w as i32 - cell_w as i32).max(0);
+    (text, x, w)
+}
+
 /// 창 오른쪽 아래의 알림 띠(클립보드 복사 같은 일을 사람에게 보인다)
 pub fn draw_toast(canvas: &mut Canvas, fonts: &mut Fonts, theme: &Theme, text: &str) {
     let m = fonts.metrics();
-    let text = truncate(text, 48);
-    let tw = m.width * text_cells(&text) as u32;
-    let (w, h) = (tw + m.width * 2, m.height + m.height / 2);
-    let x = canvas.width as i32 - w as i32 - m.width as i32;
+    let (text, x, w) = toast_layout(canvas.width, m.width, text);
+    let h = m.height + m.height / 2;
     let y = canvas.height as i32 - h as i32 - m.height as i32 / 2;
     let bg = theme.background.mix(theme.foreground, 0.85);
     canvas.fill_rect(x, y, w, h, bg);
@@ -537,12 +546,27 @@ pub fn draw_palette(
 }
 
 /// 닫기·끝내기 확인 막대(#108)를 창 위쪽 가운데에 그린다: 묻는 글 한 줄, 그 아래 키 안내
+/// 확인 막대에 그릴 수 있는 앞말+글의 칸 수(`draw_confirm`이 이 길이로 자른다). 창 폭(픽셀)과 칸 너비로 정한다
+pub fn confirm_message_room(canvas_width: u32, cell_w: u32) -> usize {
+    bar_cells(canvas_width, cell_w).saturating_sub(4)
+}
+
+/// 막대 자체의 최대 칸 수: 창 칸 수에서 좌우 여백 4를 빼고, 아주 좁아도 10은 둔다
+fn bar_cells(canvas_width: u32, cell_w: u32) -> usize {
+    ((canvas_width / cell_w.max(1)) as usize).saturating_sub(4).max(10)
+}
+
+/// 글이 막대에 잘리지 않고 다 들어가는가. 링크를 묻는 막대는 주소가 잘리면 묻지 않는다(질의가 가려진 채 허락하게 된다)
+pub fn confirm_message_fits(message: &str, canvas_width: u32, cell_w: u32) -> bool {
+    text_cells(message) <= confirm_message_room(canvas_width, cell_w)
+}
+
 pub fn draw_confirm(canvas: &mut Canvas, fonts: &mut Fonts, theme: &Theme, message: &str, hint: &str) {
     let m = fonts.metrics();
     let cw = m.width as i32;
     let line_h = m.height + m.height / 3;
-    let max_cells = ((canvas.width / m.width.max(1)) as usize).saturating_sub(4).max(10);
-    let message = truncate(message, max_cells.saturating_sub(4));
+    let max_cells = bar_cells(canvas.width, m.width);
+    let message = truncate(message, confirm_message_room(canvas.width, m.width));
     let cells = text_cells(&message).max(text_cells(hint)) + 4;
     let w = cells.min(max_cells) as u32 * m.width;
     let h = line_h * 2 + m.height / 2;
@@ -655,6 +679,28 @@ pub fn draw_resize_overlay(
 #[cfg(test)]
 mod tests {
     use std::time::{Duration, Instant};
+
+    /// 좁은 창(#850 "창이 좁아…" 토스트를 띄우는 바로 그때)에서 토스트 왼쪽이 창 밖으로 잘리지 않는다. 넓은 창에서는 예전처럼 48칸까지, 오른쪽에 붙는다
+    #[test]
+    fn toast_stays_inside_a_narrow_window() {
+        let long = "가".repeat(30); // 60칸
+        for cols in [20u32, 40, 60] {
+            let (text, x, w) = super::toast_layout(cols * 8, 8, &long);
+            assert!(x >= 0, "{cols}칸: x={x}");
+            assert!(x as u32 + w <= cols * 8, "{cols}칸: x={x} w={w}");
+            assert!(text.ends_with('…'), "{cols}칸: {text}");
+        }
+        let (text, x, w) = super::toast_layout(1000, 8, "짧은 알림");
+        assert_eq!(text, "짧은 알림");
+        assert_eq!((x, w), (1000 - (9 * 8 + 16) - 8, 9 * 8 + 16));
+        let wide = bt_render::text_cells(&super::toast_layout(1000, 8, &long).0);
+        assert!((46..=48).contains(&wide), "넓은 창은 48칸까지: {wide}");
+        // 좁은 창 링크 토스트 문구는 40칸 창에 줄이지 않고 다 들어간다
+        assert_eq!(
+            super::toast_layout(40 * 8, 8, crate::app::NARROW_LINK_TOAST).0,
+            crate::app::NARROW_LINK_TOAST
+        );
+    }
 
     #[test]
     fn short_press_is_a_click_not_a_drag() {
@@ -1102,6 +1148,29 @@ mod tests {
         assert_eq!(at(BottomLeft), (110, 320));
         assert_eq!(at(BottomCenter), (260, 320));
         assert_eq!(at(BottomRight), (410, 320));
+    }
+
+    #[test]
+    fn confirm_message_fits_only_when_the_bar_can_draw_it_whole() {
+        // 창 800px, 칸 10px: 80칸 → 막대 칸 76 → 글 칸 72
+        assert_eq!(confirm_message_room(800, 10), 72);
+        assert!(confirm_message_fits(&"a".repeat(72), 800, 10));
+        assert!(!confirm_message_fits(&"a".repeat(73), 800, 10));
+        // 넓은 글자는 두 칸으로 센다
+        assert!(!confirm_message_fits(&"한".repeat(37), 800, 10));
+        // 좁은 창: 막대 칸이 최소 10이라 글은 6칸까지
+        assert_eq!(confirm_message_room(100, 10), 6);
+        assert!(!confirm_message_fits(
+            "다른 앱으로 이 링크를 열까요? ssh://h.example/x",
+            300,
+            10
+        ));
+        // draw_confirm은 못 넣는 글을 `…`로 자르므로 이 판단과 같은 길이를 쓴다
+        assert!(confirm_message_fits(
+            "다른 앱으로 이 링크를 열까요? ssh://h.example/x",
+            1200,
+            10
+        ));
     }
 
     #[test]

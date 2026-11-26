@@ -167,7 +167,8 @@ pub fn open_link(target: &bt_term::links::OpenTarget) {
         Command::new("xdg-open")
     };
     match target {
-        OpenTarget::Web(url) => cmd.arg(url),
+        // mailto·묻고 난 다른 앱 주소도 같다: 기본 앱에 주소를 인자로 넘긴다
+        OpenTarget::Web(url) | OpenTarget::Mail(url) | OpenTarget::Confirm(url) => cmd.arg(url),
         OpenTarget::Open(path) => cmd.arg(path),
         // 열면 실행되는 파일은 Finder에서 보이기만 한다(Linux는 그 폴더를 연다)
         OpenTarget::Reveal(path) if cfg!(target_os = "macos") => cmd.arg("-R").arg(path),

@@ -38,6 +38,14 @@ use crate::tabbar;
 use crate::undo::UndoStack;
 use bt_core::config::NotifyOnFinish;
 
+/// 링크 확인 막대의 글(앞말과 줄이지 않은 주소)
+fn link_confirm_message(url: &str) -> String {
+    format!("다른 앱으로 이 링크를 열까요? {}", bt_term::links::confirm_text(url))
+}
+
+/// 좁은 창(#850)이라 링크를 열지 않을 때의 알림. 40칸 창에도 줄이지 않고 다 들어가는 길이로 둔다
+pub(crate) const NARROW_LINK_TOAST: &str = "창이 좁아 링크를 열지 않았습니다";
+
 fn truncate_chars(s: &str, n: usize) -> String {
     if s.chars().count() <= n {
         return s.to_string();
@@ -488,6 +496,10 @@ enum Pending {
         req: bt_term::kitty_clip::WriteRequest,
         text: String,
     },
+    /// 글이나 OSC 8이 가리킨 `ssh:`·`tel:` 같은 주소를 연다(#850). 다른 앱을 띄울 수 있어 한 번 묻는다(Ghostty처럼). 막대에 보인 `url`을 그대로 연다
+    OpenLink {
+        url: String,
+    },
 }
 
 impl Pending {
@@ -499,6 +511,7 @@ impl Pending {
             Pending::ClipboardRead { .. }
                 | Pending::ClipboardWrite { .. }
                 | Pending::OpenFile { .. }
+                | Pending::OpenLink { .. }
                 | Pending::KittyRead { .. }
                 | Pending::KittyWrite { .. }
         )
@@ -517,7 +530,11 @@ impl Pending {
             | Pending::ClipboardWrite { pane: id, .. }
             | Pending::KittyRead { pane: id, .. }
             | Pending::KittyWrite { pane: id, .. } => leaves.contains(id),
-            Pending::CloseWindow | Pending::CloseAllWindows | Pending::Quit | Pending::OpenFile { .. } => false,
+            Pending::CloseWindow
+            | Pending::CloseAllWindows
+            | Pending::Quit
+            | Pending::OpenFile { .. }
+            | Pending::OpenLink { .. } => false,
         }
     }
 }
@@ -2394,6 +2411,7 @@ impl App {
             | Pending::ClipboardRead { .. }
             | Pending::ClipboardWrite { .. }
             | Pending::OpenFile { .. }
+            | Pending::OpenLink { .. }
             | Pending::KittyRead { .. }
             | Pending::KittyWrite { .. } => Vec::new(),
         };
@@ -2436,6 +2454,7 @@ impl App {
             | Pending::ClipboardRead { .. }
             | Pending::ClipboardWrite { .. }
             | Pending::OpenFile { .. }
+            | Pending::OpenLink { .. }
             | Pending::KittyRead { .. }
             | Pending::KittyWrite { .. } => return,
         };
@@ -3012,6 +3031,14 @@ impl App {
             Pending::ClipboardRead { pane, reply, text } => self.answer_clipboard_read(pane, &reply, &text),
             Pending::ClipboardWrite { pane, text } => self.answer_clipboard_write(pane, text),
             Pending::OpenFile { cwd, input } => self.open_dropped(event_loop, cwd, Some(input)),
+            Pending::OpenLink { url } => {
+                // 허락하는 순간에도 같은 판단: 그 사이 창이 좁아졌으면 열지 않는다
+                if self.link_confirm_fits(&url) {
+                    crate::desktop::open_link(&bt_term::links::OpenTarget::Confirm(url));
+                } else {
+                    self.toast(NARROW_LINK_TOAST.to_string());
+                }
+            }
             Pending::KittyRead { pane, req, text } => self.answer_kitty_read(pane, &req, &text),
             Pending::KittyWrite { pane, req, text } => self.answer_kitty_write(pane, &req, text),
         }
@@ -4022,15 +4049,58 @@ impl App {
         }
     }
 
-    /// 링크를 연다: 열어도 되는 것(http·https, 이 컴퓨터의 파일)만
-    fn open_link(&mut self, url: &str) {
-        match bt_term::links::classify(url, &is_local_host) {
+    /// 링크를 연다: 열어도 되는 것(웹, mailto, 이 컴퓨터의 파일·경로)만. `ssh:` 같은 다른 앱 주소는 한 번 묻는다(#850).
+    /// `explicit`(OSC 8)는 주소만 보고, 화면 글에서 찾은 경로는 `pane`의 작업 폴더(OSC 7)를 기준으로 푼다
+    fn open_link(&mut self, url: &str, explicit: bool, pane: u64) {
+        use bt_term::links::{OpenContext, OpenTarget, classify, classify_text};
+        let cwd = self.panes.iter().find(|p| p.id == pane).and_then(|p| p.cwd.clone());
+        let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
+        let ctx = OpenContext {
+            cwd: cwd.as_deref(),
+            home: home.as_deref(),
+        };
+        let target = if explicit {
+            classify(url, &is_local_host)
+        } else {
+            classify_text(url, &is_local_host, &ctx)
+        };
+        match target {
+            Some(OpenTarget::Confirm(u)) => {
+                // 막대가 주소를 다 그릴 수 없으면(좁은 창) 질의가 가려진 채 허락하게 되므로 묻지 않는다
+                if !self.link_confirm_fits(&u) {
+                    self.toast(NARROW_LINK_TOAST.to_string());
+                    return;
+                }
+                self.ask(Pending::OpenLink { url: u.clone() }, link_confirm_message(&u), "열기");
+            }
             Some(target) => crate::desktop::open_link(&target),
             None => {
                 let shown: String = bt_core::proto::printable(url).chars().take(60).collect();
                 self.toast(format!("열 수 없는 링크입니다: {shown}"));
             }
         }
+    }
+
+    /// 지금 창에서 확인 막대가 이 링크의 앞말과 주소를 잘리지 않게 그릴 수 있는가
+    fn link_confirm_fits(&self, url: &str) -> bool {
+        let (Some(m), Some(g)) = (self.chrome_metrics(), &self.w.gfx) else {
+            return false;
+        };
+        tabbar::confirm_message_fits(&link_confirm_message(url), g.window.inner_size().width, m.width)
+    }
+
+    /// 창이 좁아져 열린 링크 확인 막대가 주소를 다 못 그리면 막대를 닫고 열지 않는다
+    fn recheck_link_confirm(&mut self) {
+        let Some(Pending::OpenLink { url }) = self.w.confirm.as_ref().map(|c| &c.pending) else {
+            return;
+        };
+        if self.link_confirm_fits(&url.clone()) {
+            return;
+        }
+        self.w.confirm = None;
+        self.sync_confirm_ime();
+        self.toast(NARROW_LINK_TOAST.to_string());
+        self.request_redraw();
     }
 
     /// 고른 칸에 찾기 막대를 연다. 이미 열려 있으면 그대로
@@ -7572,7 +7642,10 @@ impl ApplicationHandler<UserEvent> for App {
         }
         match event {
             WindowEvent::CloseRequested => self.request(Pending::CloseWindow, event_loop),
-            WindowEvent::Resized(_) => self.resize_all(),
+            WindowEvent::Resized(_) => {
+                self.resize_all();
+                self.recheck_link_confirm();
+            }
             // 다른 화면으로 옮겨 갔을 수 있다. 다시 그리지 않고 올리기만 해 softbuffer가 그 화면의 색 공간을 고르게 한다(#97)
             WindowEvent::Moved(_) => {
                 self.w.force_present = true;
@@ -7586,6 +7659,7 @@ impl ApplicationHandler<UserEvent> for App {
                 self.scale = scale_factor;
                 self.load_fonts();
                 self.resize_all();
+                self.recheck_link_confirm();
             }
             WindowEvent::RedrawRequested => self.redraw(),
             // 파일마다 사건이 따로 온다. 같은 차례 것을 모아 `about_to_wait`에서 한 번에 넣는다(#566)

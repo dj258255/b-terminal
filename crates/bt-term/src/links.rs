@@ -26,76 +26,325 @@ pub struct LinkHit {
     pub explicit: bool,
 }
 
-const SCHEMES: [&str; 3] = ["https://", "http://", "file://"];
+/// 글에서 찾는 주소 꼴(Ghostty 1.4.0 `url.zig`의 `url_schemes`): 앞 글자 하나만 보고 고른다.
+/// 열 때는 `classify`가 따로 거른다(웹·mailto·file은 바로, 나머지는 한 번 묻고, 그 밖의 것은 열지 않는다)
+const SCHEMES: [&str; 15] = [
+    "https://",
+    "http://",
+    "mailto:",
+    "ftp://",
+    "file:",
+    "ssh:",
+    "git://",
+    "ssh://",
+    "tel:",
+    "magnet:",
+    "ipfs://",
+    "ipns://",
+    "gemini://",
+    "gopher://",
+    "news:",
+];
 
-/// 한글·한자·전각 글자. URL 바로 뒤에 조사가 붙는 한국어 글("…/b-terminal에 올렸다")에서 URL을 끊는다
+/// 한글·한자·전각 글자. URL 바로 뒤에 조사가 붙는 한국어 글("…/b-terminal에 올렸다")에서 URL을 끊는다.
+/// Ghostty의 `\w`는 이런 글자도 낱말 글자로 보지만 우리는 여기서 끊는다(ADR-086)
 fn is_wide_script(c: char) -> bool {
     matches!(c as u32,
         0x1100..=0x11FF | 0x2E80..=0xA4CF | 0xAC00..=0xD7A3 | 0xF900..=0xFAFF
         | 0xFE30..=0xFE4F | 0xFF00..=0xFF60 | 0xFFE0..=0xFFE6 | 0x1F000..=0x1FAFF)
 }
 
-/// URL 안에 올 수 있는 글자
-fn url_char(c: char) -> bool {
-    !c.is_whitespace()
-        && !c.is_control()
-        && !matches!(c, '<' | '>' | '"' | '`' | '{' | '}' | '|' | '\\' | '^')
-        // 상자 선·블록 글자(TUI 테두리 │ 등)
-        && !('\u{2500}'..='\u{259F}').contains(&c)
-        && !is_wide_script(c)
+/// Ghostty 정규식의 `\w`(글자·숫자·밑줄)에서 넓은 글자를 뺀 것
+fn is_word(c: char) -> bool {
+    (c.is_alphanumeric() || c == '_') && !is_wide_script(c)
+}
+
+/// 경로 글자(`path_chars`): `\w`와 `-.~:/?#@!$&*+;=%`. 쉼표는 없다
+fn is_path_char(c: char) -> bool {
+    is_word(c)
+        || matches!(
+            c,
+            '-' | '.' | '~' | ':' | '/' | '?' | '#' | '@' | '!' | '$' | '&' | '*' | '+' | ';' | '=' | '%'
+        )
+}
+
+/// 스킴 주소 글자(`scheme_url_chars`): 경로 글자와 쉼표. 따옴표·꺾쇠·괄호·대괄호는 없다
+fn is_scheme_char(c: char) -> bool {
+    is_path_char(c) || c == ','
 }
 
 fn starts_with_ci(chars: &[char], at: usize, prefix: &str) -> bool {
-    let p: Vec<char> = prefix.chars().collect();
-    chars.len() >= at + p.len()
-        && chars[at..at + p.len()]
-            .iter()
-            .zip(&p)
-            .all(|(a, b)| a.eq_ignore_ascii_case(b))
+    let mut it = chars[at..].iter();
+    prefix
+        .chars()
+        .all(|p| it.next().is_some_and(|c| c.eq_ignore_ascii_case(&p)))
 }
 
-/// 글자 배열에서 URL 구간들(글자 자리 `start..end`)
-pub fn find_urls(chars: &[char]) -> Vec<(usize, usize)> {
-    let mut out = Vec::new();
-    let mut i = 0;
-    while i < chars.len() {
-        let scheme = SCHEMES.iter().find(|s| starts_with_ci(chars, i, s));
-        // 낱말 가운데에서 시작하는 것은 URL이 아니다(xhttps://…)
-        let boundary = i == 0 || !chars[i - 1].is_alphanumeric();
-        let Some(scheme) = scheme.filter(|_| boundary) else {
-            i += 1;
-            continue;
+/// `find_urls`가 한 번에 미리 센 값: 글자 자리마다 이어진 경로 글자의 끝, 그 안의 `.` 유무, 이어진 `[\w\-.]`의 끝
+struct Runs {
+    path_end: Vec<usize>,
+    has_dot: Vec<bool>,
+    seg_end: Vec<usize>,
+    /// 이 자리 뒤 처음 나오는 `$`의 자리(없으면 글자 수)
+    next_dollar: Vec<usize>,
+}
+
+impl Runs {
+    fn new(chars: &[char]) -> Runs {
+        let n = chars.len();
+        let mut r = Runs {
+            path_end: vec![n; n + 1],
+            has_dot: vec![false; n + 1],
+            seg_end: vec![n; n + 1],
+            next_dollar: vec![n; n + 1],
         };
-        let body = i + scheme.len();
-        let mut j = body;
-        while j < chars.len() && url_char(chars[j]) {
+        for i in (0..n).rev() {
+            let c = chars[i];
+            let pc = is_path_char(c);
+            r.path_end[i] = if pc { r.path_end[i + 1] } else { i };
+            r.has_dot[i] = pc && (c == '.' || r.has_dot[i + 1]);
+            r.next_dollar[i] = if c == '$' { i } else { r.next_dollar[i + 1] };
+            r.seg_end[i] = if is_word(c) || c == '-' || c == '.' {
+                r.seg_end[i + 1]
+            } else {
+                i
+            };
+        }
+        r
+    }
+}
+
+/// 한 번 시도에서 `$VAR/` 앞에 올 수 있는 `이름/` 토막 수. 긴 줄에서 시도마다 줄 끝까지 가지 않게 한다
+const MAX_SEGS: usize = 32;
+
+/// 가지 1: 스킴 주소. 스킴 뒤에 `[::1]:80` 꼴 IPv6나 주소 글자가 이어지고, 낱말 끝의 `(abc)`·`[abc]`는 한 번 들어간다.
+/// 끝의 `.`·`,`는 뺀다(끝의 `)`는 괄호 짝이 아니면 애초에 주소 글자가 아니다)
+fn scheme_branch(chars: &[char], i: usize) -> Option<usize> {
+    // 낱말 가운데에서 시작하는 것은 URL이 아니다(xhttps://…)
+    if i > 0 && chars[i - 1].is_alphanumeric() {
+        return None;
+    }
+    let scheme = SCHEMES.iter().find(|s| starts_with_ci(chars, i, s))?;
+    let body = i + scheme.len();
+    let n = chars.len();
+    let mut j = body;
+    loop {
+        if j < n && chars[j] == '[' {
+            // IPv6: `[` 16진수·`:` 한 글자 이상 `]` 그리고 `:포트`
+            let mut k = j + 1;
+            while k < n && (chars[k] == ':' || chars[k].is_ascii_hexdigit()) {
+                k += 1;
+            }
+            if k > j + 1 && k < n && chars[k] == ']' {
+                k += 1;
+                if k + 1 < n && chars[k] == ':' && chars[k + 1].is_ascii_digit() {
+                    k += 1;
+                    while k < n && chars[k].is_ascii_digit() {
+                        k += 1;
+                    }
+                }
+                j = k;
+                continue;
+            }
+            break;
+        }
+        let start = j;
+        while j < n && is_scheme_char(chars[j]) {
             j += 1;
         }
-        // 끝의 문장 부호와 짝이 없는 닫는 괄호는 URL이 아니다("(https://a.b/c)."에서 ")." 빼기).
-        // 괄호 수는 한 번만 세고 벗긴 닫는 괄호만큼 줄인다. 벗기는 글자에 여는 괄호는 없어 여는 수는 그대로다.
-        // 전에는 한 글자 벗길 때마다 구간 전체를 다시 세어 긴 닫는 괄호에 제곱 시간이 걸렸다(#597)
-        let count = |c: char| chars[i..j].iter().filter(|&&x| x == c).count();
-        let (paren_open, bracket_open) = (count('('), count('['));
-        let (mut paren_close, mut bracket_close) = (count(')'), count(']'));
-        while j > body {
-            let last = chars[j - 1];
-            let strip = matches!(last, '.' | ',' | ';' | ':' | '!' | '?' | '\'' | '*')
-                || (last == ')' && paren_close > paren_open)
-                || (last == ']' && bracket_close > bracket_open);
-            if !strip {
+        if j == start {
+            break;
+        }
+        // 낱말 끝의 `(abc)`·`[abc]`
+        if j < n && matches!(chars[j], '(' | '[') {
+            let mut k = j + 1;
+            while k < n && is_word(chars[k]) {
+                k += 1;
+            }
+            if k < n && matches!(chars[k], ')' | ']') {
+                j = k + 1;
+            }
+        }
+    }
+    while j > body && matches!(chars[j - 1], '.' | ',') {
+        j -= 1;
+    }
+    (j > body).then_some(j)
+}
+
+/// `\w+://`로 시작하는가(공백 뒤 토막이 다른 주소의 시작이면 경로가 이어지지 않는다)
+fn starts_with_scheme(chars: &[char], at: usize) -> bool {
+    let mut k = at;
+    while k < chars.len() && is_word(chars[k]) {
+        k += 1;
+    }
+    k > at && chars.get(k..k + 3).is_some_and(|s| s == [':', '/', '/'])
+}
+
+/// 공백 뒤 토막이 이어질 수 있는가: 다른 주소·`/`·`./`·`../`·`~/`로 시작하지 않고, 앞 글자가 `:`가 아니다
+fn space_segment_allowed(chars: &[char], space: usize) -> bool {
+    if chars[space] != ' ' || space == 0 || chars[space - 1] == ':' {
+        return false;
+    }
+    let at = space + 1;
+    if starts_with_scheme(chars, at) {
+        return false;
+    }
+    let dots = chars[at..].iter().take(2).take_while(|&&c| c == '.').count();
+    // `\.{0,2}/`: 점 0~2개 뒤 `/`
+    for d in 0..=dots {
+        if chars.get(at + d) == Some(&'/') {
+            return false;
+        }
+    }
+    !(chars.get(at) == Some(&'~') && chars.get(at + 1) == Some(&'/'))
+}
+
+/// 가지 2의 몸통: `/`·`./`·`../`·`~/`·`$VAR/`·`.dir/` 뒤. 점이 든 이름이면 파일처럼 보고 공백 토막은 `/`나 `.`로 끝나는 것만 잇고,
+/// 점이 없으면 디렉터리처럼 보고 공백 든 이름을 이어 붙인다. 끝의 `:`는 뺀다
+fn path_body(chars: &[char], runs: &Runs, p: usize) -> Option<usize> {
+    let n = chars.len();
+    if p >= n || !is_path_char(chars[p]) {
+        return None;
+    }
+    let mut end = runs.path_end[p];
+    if runs.has_dot[p] {
+        while end < n && space_segment_allowed(chars, end) {
+            let from = end + 1;
+            let run_end = runs.path_end[from.min(n)];
+            // `[경로 글자]*[/.]`: 이어진 글자 중 마지막 `/`·`.`까지
+            match (from..run_end).rev().find(|&k| matches!(chars[k], '/' | '.')) {
+                Some(k) => {
+                    end = k + 1;
+                }
+                None => break,
+            }
+        }
+    } else {
+        while end < n && space_segment_allowed(chars, end) && from_is_path(chars, end + 1) {
+            end = runs.path_end[end + 1];
+        }
+    }
+    let mut stripped = false;
+    while end > p && chars[end - 1] == ':' {
+        end -= 1;
+        stripped = true;
+    }
+    // 토막이 `:`만 남아 비면 그 앞 공백도 뺀다
+    if stripped && end > p && chars[end - 1] == ' ' {
+        end -= 1;
+    }
+    (end > p).then_some(end)
+}
+
+fn from_is_path(chars: &[char], at: usize) -> bool {
+    chars.get(at).is_some_and(|&c| is_path_char(c))
+}
+
+/// 가지 2: `/`·`./`·`../`·`~/`·`$VAR/`·`.dir/`로 시작하는 경로
+fn path_branch(chars: &[char], runs: &Runs, i: usize) -> Option<usize> {
+    let n = chars.len();
+    let prev = i.checked_sub(1).map(|k| chars[k]);
+    let mut starts: Vec<usize> = Vec::new();
+    if chars[i..].starts_with(&['.', '.', '/']) {
+        starts.push(i + 3);
+    }
+    if chars[i..].starts_with(&['.', '/']) {
+        starts.push(i + 2);
+    }
+    if chars[i..].starts_with(&['~', '/']) && !prev.is_some_and(is_word) {
+        starts.push(i + 2);
+    }
+    // `이름/…$VAR/`: `$`는 낱말 가운데가 아니어야 한다. 같은 경로 글자 덩어리에 `$`가 없으면 볼 것이 없다
+    if runs.next_dollar[i] < runs.path_end[i] {
+        let mut p = i;
+        let mut segs = 0;
+        while segs < MAX_SEGS && p < n && is_word(chars[p]) {
+            let e = runs.seg_end[p];
+            if e < n && chars[e] == '/' {
+                p = e + 1;
+                segs += 1;
+            } else {
                 break;
             }
-            match last {
-                ')' => paren_close -= 1,
-                ']' => bracket_close -= 1,
-                _ => {}
+        }
+        let word_before = p.checked_sub(1).is_some_and(|k| is_word(chars[k]));
+        if p + 1 < n && chars[p] == '$' && !word_before && (chars[p + 1].is_ascii_alphabetic() || chars[p + 1] == '_') {
+            let mut q = p + 2;
+            while q < n && is_word(chars[q]) {
+                q += 1;
             }
-            j -= 1;
+            if q < n && chars[q] == '/' {
+                starts.push(q + 1);
+            }
         }
-        if j > body {
-            out.push((i, j));
+    }
+    // `.dir/`
+    if chars[i] == '.' && i + 1 < n && is_word(chars[i + 1]) {
+        let e = runs.seg_end[i + 1];
+        if e < n && chars[e] == '/' {
+            starts.push(e + 1);
         }
-        i = j.max(i + 1);
+    }
+    // 홀로 선 `/`(`//`로 시작하는 주석은 경로가 아니다)
+    if chars[i] == '/' && !prev.is_some_and(|c| is_word(c) || c == '~' || c == '/') && chars.get(i + 1) != Some(&'/') {
+        starts.push(i + 1);
+    }
+    starts.into_iter().find_map(|p| path_body(chars, runs, p))
+}
+
+/// 가지 3: `src/config/url.zig` 같은, 점이 든 맨 상대 경로. 점이 없으면(`input/output`) 경로가 아니다
+fn bare_branch(chars: &[char], runs: &Runs, i: usize) -> Option<usize> {
+    let n = chars.len();
+    if !is_word(chars[i]) || !runs.has_dot[i] {
+        return None;
+    }
+    if i > 0 && is_word(chars[i - 1]) {
+        return None;
+    }
+    // `$` 뒤에 숫자만 있는 자리(`$10/bar.txt`)는 경로가 아니다
+    let mut k = i;
+    while k > 0 && chars[k - 1].is_ascii_digit() {
+        k -= 1;
+    }
+    if k > 0 && chars[k - 1] == '$' {
+        return None;
+    }
+    let e = runs.seg_end[i];
+    if e >= n || chars[e] != '/' {
+        return None;
+    }
+    let p = e + 1;
+    if p >= n || !is_path_char(chars[p]) {
+        return None;
+    }
+    let mut end = runs.path_end[p];
+    while end > p && chars[end - 1] == ':' {
+        end -= 1;
+    }
+    (end > p).then_some(end)
+}
+
+/// 글자 배열에서 링크 구간들(글자 자리 `start..end`): Ghostty 1.4.0 `url.zig`의 정규식(스킴 주소, `/`·`./`·`../`·`~/`·`$VAR/`로 시작하는 경로,
+/// 점이 든 맨 상대 경로)을 손으로 짠 스캐너로 옮긴 것이다. 정규식이 아니므로 시간이 글자 수에 거의 비례한다
+pub fn find_urls(chars: &[char]) -> Vec<(usize, usize)> {
+    let mut out = Vec::new();
+    if chars.is_empty() {
+        return out;
+    }
+    let runs = Runs::new(chars);
+    let mut i = 0;
+    while i < chars.len() {
+        let found = scheme_branch(chars, i)
+            .or_else(|| path_branch(chars, &runs, i))
+            .or_else(|| bare_branch(chars, &runs, i));
+        match found {
+            Some(end) if end > i => {
+                out.push((i, end));
+                i = end;
+            }
+            _ => i += 1,
+        }
     }
     out
 }
@@ -211,6 +460,10 @@ pub fn link_at_with(screen: &Screen, col: usize, row: usize, opts: LinkOptions) 
 pub enum OpenTarget {
     /// 브라우저로(http·https)
     Web(String),
+    /// 메일 앱으로(`mailto:`, 받는 사람이 있는 것만)
+    Mail(String),
+    /// 다른 앱을 띄울 수 있는 주소(`ssh:`·`tel:`·`magnet:` 등). 앱이 한 번 물은 뒤에만 연다(Ghostty처럼)
+    Confirm(String),
     /// 기본 앱으로 연다(이 컴퓨터의 폴더·알려진 문서)
     Open(PathBuf),
     /// 열지 않고 Finder에서 보이기만 한다(그 밖의 모든 파일, 앱 묶음)
@@ -331,7 +584,121 @@ pub fn classify(url: &str, local_host: &dyn Fn(&str) -> bool) -> Option<OpenTarg
             OpenTarget::Reveal(real)
         });
     }
+    if let Some(rest) = lower.strip_prefix("mailto:") {
+        // 받는 사람이 없으면(`mailto:`, `mailto:?subject=x`) 빈 편지를 띄우지 않는다
+        let to = rest.split(['?', '#']).next().unwrap_or(rest);
+        if to.is_empty() {
+            return None;
+        }
+        // 질의(`?attach=…`)가 있으면 메일 앱이 로컬 파일을 붙일 수 있어 바로 열지 않고 묻는다
+        if !confirmable(url) {
+            return None;
+        }
+        if !url.contains('?') {
+            return Some(OpenTarget::Mail(url.to_string()));
+        }
+        return ask_if_visible(url);
+    }
+    for scheme in CONFIRM_SCHEMES {
+        if let Some(rest) = lower.strip_prefix(scheme) {
+            let rest = rest.strip_prefix("//").unwrap_or(rest);
+            if rest.is_empty() || !confirmable(url) {
+                return None;
+            }
+            // 호스트를 가진 스킴은 사용자 정보(`root@evil.example`)를 받지 않는다. 막대에서 호스트를 속일 수 있다
+            let hosted = !matches!(scheme, "tel:" | "magnet:" | "news:");
+            if hosted && rest.split(['/', '?', '#']).next().is_some_and(|a| a.contains('@')) {
+                return None;
+            }
+            return ask_if_visible(url);
+        }
+    }
     None
+}
+
+/// 묻는 주소는 막대에 전부 보이는 길이(`CONFIRM_SHOW`)일 때만 묻는다. 넘으면 뒤쪽(질의·받는 사람)이 가려지므로 묻지 않고 막는다
+fn ask_if_visible(url: &str) -> Option<OpenTarget> {
+    (url.chars().count() <= CONFIRM_SHOW).then(|| OpenTarget::Confirm(url.to_string()))
+}
+
+/// 묻는 주소의 길이 상한(`http(s)`와 달리 8KiB까지 보이게 둘 수 없다)
+const CONFIRM_MAX: usize = 2048;
+
+/// 묻거나 바로 여는 비웹 주소의 공통 조건: ASCII뿐이고 너무 길지 않다(비ASCII는 호스트를 흉내 낼 수 있다)
+fn confirmable(url: &str) -> bool {
+    url.is_ascii() && url.len() <= CONFIRM_MAX
+}
+
+/// 확인 막대에 보이는 글의 칸 수. 묻는 주소(`Confirm`)는 이 길이까지만 묻는다. 줄여 보이면 뒤쪽(질의)이 가려지기 때문이다
+pub const CONFIRM_SHOW: usize = 80;
+
+/// 확인 막대에 보일 글: 주소를 줄이지 않고 그대로 보이되 제어 문자·글 순서를 바꾸는 문자는 보이는 글로 바꾼다
+pub fn confirm_text(url: &str) -> String {
+    bt_core::proto::printable(url)
+}
+
+/// 열기 전에 한 번 묻는 스킴(`url.zig`의 스킴에서 웹·mailto·file을 뺀 것). OSC 8로 온 다른 스킴(`javascript:` 등)은 열지 않는다
+const CONFIRM_SCHEMES: [&str; 10] = [
+    "ftp:", "ssh:", "git:", "tel:", "magnet:", "ipfs:", "ipns:", "gemini:", "gopher:", "news:",
+];
+
+/// 글에서 찾은 경로를 열 때 필요한 것(Ghostty는 터미널의 작업 폴더로 상대 경로를 풀고 `~/`를 집으로 푼다)
+#[derive(Debug, Clone, Copy, Default)]
+pub struct OpenContext<'a> {
+    /// 칸의 작업 폴더(OSC 7). 없으면 상대 경로는 열지 않는다
+    pub cwd: Option<&'a Path>,
+    /// 집 폴더(`~/`용)
+    pub home: Option<&'a Path>,
+}
+
+/// `.`·`..`을 글자로만 접는다(Ghostty `std.fs.path.resolve`처럼 심볼릭 링크는 따라가지 않는다)
+fn lexical_normalize(p: &Path) -> PathBuf {
+    use std::path::Component;
+    let mut out = PathBuf::new();
+    for c in p.components() {
+        match c {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                if !out.pop() {
+                    out.push("..");
+                }
+            }
+            other => out.push(other.as_os_str()),
+        }
+    }
+    out
+}
+
+/// 화면 글에서 찾은 링크(OSC 8이 아닌 것)를 어떻게 열지. 스킴이 있으면 `classify`와 같고, 없으면 경로다:
+/// `~/`는 집 폴더로, 상대 경로는 `ctx.cwd`(OSC 7) 기준으로 풀어 실제로 있는 것만 연다. 그 뒤는 `file` 링크와 같은 허용 목록이다.
+/// `:줄:칸`은 떼지 않는다(Ghostty도 그대로 열려 해서 없는 파일이 된다)
+pub fn classify_text(text: &str, local_host: &dyn Fn(&str) -> bool, ctx: &OpenContext) -> Option<OpenTarget> {
+    let lower = text.to_ascii_lowercase();
+    if SCHEMES.iter().any(|s| lower.starts_with(s)) {
+        return classify(text, local_host);
+    }
+    // 경로의 이름에는 공백이 들 수 있다. 그 밖의 공백·제어·보이지 않는 서식 문자는 안 된다
+    if text.is_empty()
+        || text.len() > 8192
+        || text
+            .chars()
+            .any(|c| (c != ' ' && c.is_whitespace()) || c.is_control() || is_invisible_format(c))
+    {
+        return None;
+    }
+    let path = if let Some(rest) = text.strip_prefix("~/") {
+        ctx.home?.join(rest)
+    } else if text.starts_with('/') {
+        PathBuf::from(text)
+    } else {
+        ctx.cwd.filter(|c| c.is_absolute())?.join(text)
+    };
+    let real = lexical_normalize(&path).canonicalize().ok()?;
+    Some(if safe_to_open(&real) {
+        OpenTarget::Open(real)
+    } else {
+        OpenTarget::Reveal(real)
+    })
 }
 
 /// 주소 띠에 보일 글: 스킴과 호스트는 늘 다 보이고, 넘치면 그 뒤 가운데를 `…`로 줄인다
@@ -371,68 +738,6 @@ mod tests {
             .collect()
     }
 
-    /// 0.73까지의 끝 벗기기(글자를 벗길 때마다 구간 전체를 다시 셈). #597 고침이 결과를 바꾸지 않는지 견주는 기준
-    fn reference_find_urls(chars: &[char]) -> Vec<(usize, usize)> {
-        let mut out = Vec::new();
-        let mut i = 0;
-        while i < chars.len() {
-            let scheme = SCHEMES.iter().find(|s| starts_with_ci(chars, i, s));
-            let boundary = i == 0 || !chars[i - 1].is_alphanumeric();
-            let Some(scheme) = scheme.filter(|_| boundary) else {
-                i += 1;
-                continue;
-            };
-            let body = i + scheme.len();
-            let mut j = body;
-            while j < chars.len() && url_char(chars[j]) {
-                j += 1;
-            }
-            while j > body {
-                let last = chars[j - 1];
-                let unbalanced = |open: char, close: char| {
-                    last == close && {
-                        let s = &chars[i..j];
-                        s.iter().filter(|&&c| c == close).count() > s.iter().filter(|&&c| c == open).count()
-                    }
-                };
-                if matches!(last, '.' | ',' | ';' | ':' | '!' | '?' | '\'' | '*')
-                    || unbalanced('(', ')')
-                    || unbalanced('[', ']')
-                {
-                    j -= 1;
-                } else {
-                    break;
-                }
-            }
-            if j > body {
-                out.push((i, j));
-            }
-            i = j.max(i + 1);
-        }
-        out
-    }
-
-    #[test]
-    fn trimming_matches_the_reference_on_generated_text() {
-        // 끝 벗기기에 걸리는 글자만으로 만든 꼬리를 URL 뒤에 붙여 옛 방식과 견준다(#597)
-        let parts = [
-            "(", ")", "[", "]", ".", ",", ";", ":", "!", "?", "'", "*", "a", "/", " ", "https://", "x",
-        ];
-        let mut seed: u64 = 0x5975_9759;
-        for _ in 0..4000 {
-            let mut s = String::from("https://a.b/");
-            for _ in 0..(seed % 24) {
-                seed ^= seed << 13;
-                seed ^= seed >> 7;
-                seed ^= seed << 17;
-                s.push_str(parts[(seed % parts.len() as u64) as usize]);
-            }
-            seed = seed.wrapping_add(0x9E37_79B9);
-            let chars: Vec<char> = s.chars().collect();
-            assert_eq!(find_urls(&chars), reference_find_urls(&chars), "{s:?}");
-        }
-    }
-
     #[test]
     fn long_run_of_closers_is_trimmed() {
         // 끝의 긴 닫는 괄호: 짝이 있는 하나만 남기고 벗긴다(#597, 전에는 벗길 때마다 구간을 다시 세어 제곱 시간)
@@ -458,7 +763,195 @@ mod tests {
             vec!["http://x.y/z", "file:///tmp/a%20b"]
         );
         assert_eq!(urls("│ https://box.example/x │"), vec!["https://box.example/x"]);
-        assert!(urls("xhttps://no.pe https:// mailto:a@b").is_empty());
+        // 낱말 가운데의 스킴과 빈 스킴은 아니다. mailto는 이제 링크다(#850, Ghostty처럼)
+        assert_eq!(urls("xhttps://no.pe https:// mailto:a@b"), vec!["mailto:a@b"]);
+    }
+
+    /// Ghostty 1.4.0 `src/config/url.zig`의 시험 표 그대로(#850). 입력의 첫 일치가 기대와 같아야 한다
+    #[test]
+    fn ghostty_url_table() {
+        let cases: &[(&str, &str)] = &[
+            ("hello https://example.com world", "https://example.com"),
+            ("https://example.com/foo(bar) more", "https://example.com/foo(bar)"),
+            (
+                "https://example.com/foo(bar)baz more",
+                "https://example.com/foo(bar)baz",
+            ),
+            ("Link inside (https://example.com) parens", "https://example.com"),
+            ("Link period https://example.com. More text.", "https://example.com"),
+            (
+                "Link trailing comma https://example.com, more text.",
+                "https://example.com",
+            ),
+            (
+                "Link in double quotes \"https://example.com\" and more",
+                "https://example.com",
+            ),
+            (
+                "Link in single quotes 'https://example.com' and more",
+                "https://example.com",
+            ),
+            (
+                "some file with https://google.com https://duckduckgo.com links.",
+                "https://google.com",
+            ),
+            (
+                "and links in it. links https://yahoo.com mailto:test@example.com ssh://1.2.3.4",
+                "https://yahoo.com",
+            ),
+            ("also match http://example.com non-secure links", "http://example.com"),
+            ("match tel://+12123456789 phone numbers", "tel://+12123456789"),
+            (
+                "match with query url https://example.com?query=1&other=2 and more text.",
+                "https://example.com?query=1&other=2",
+            ),
+            (
+                "url with dashes [mode 2027](https://github.com/contour-terminal/terminal-unicode-core) for better unicode support",
+                "https://github.com/contour-terminal/terminal-unicode-core",
+            ),
+            ("dot.http://example.com", "http://example.com"),
+            (
+                "weird characters https://example.com/~user/?query=1&other=2#hash and more",
+                "https://example.com/~user/?query=1&other=2#hash",
+            ),
+            (
+                "square brackets https://example.com/[foo] and more",
+                "https://example.com/[foo]",
+            ),
+            (
+                "[13]:TooManyStatements: TempFile#assign_temp_file_to_entity has approx 7 statements [https://example.com/docs/Too-Many-Statements.md]",
+                "https://example.com/docs/Too-Many-Statements.md",
+            ),
+            ("match ftp://example.com ftp links", "ftp://example.com"),
+            ("match file://example.com file links", "file://example.com"),
+            ("match ssh://example.com ssh links", "ssh://example.com"),
+            ("match git://example.com git links", "git://example.com"),
+            ("/tmp/test.txt http://www.google.com", "/tmp/test.txt"),
+            ("match tel:+18005551234 tel links", "tel:+18005551234"),
+            (
+                "match magnet:?xt=urn:btih:1234567890 magnet links",
+                "magnet:?xt=urn:btih:1234567890",
+            ),
+            ("match ipfs://QmSomeHashValue ipfs links", "ipfs://QmSomeHashValue"),
+            ("match ipns://QmSomeHashValue ipns links", "ipns://QmSomeHashValue"),
+            ("match gemini://example.com gemini links", "gemini://example.com"),
+            ("match gopher://example.com gopher links", "gopher://example.com"),
+            (
+                "match news:comp.infosystems.www.servers.unix news links",
+                "news:comp.infosystems.www.servers.unix",
+            ),
+            (
+                "/Users/ghostty.user/code/example.py",
+                "/Users/ghostty.user/code/example.py",
+            ),
+            (
+                "/Users/ghostty.user/code/../example.py",
+                "/Users/ghostty.user/code/../example.py",
+            ),
+            (
+                "/Users/ghostty.user/code/../example.py hello world",
+                "/Users/ghostty.user/code/../example.py",
+            ),
+            ("../example.py", "../example.py"),
+            ("../example.py ", "../example.py"),
+            ("first time ../example.py contributor ", "../example.py"),
+            (
+                "[link](/home/user/ghostty.user/example)",
+                "/home/user/ghostty.user/example",
+            ),
+            ("Serving HTTP on :: port 8000 (http://[::]:8000/)", "http://[::]:8000/"),
+            (
+                "IPv6 address https://[2001:db8::1]:8080/path",
+                "https://[2001:db8::1]:8080/path",
+            ),
+            ("IPv6 localhost http://[::1]:3000", "http://[::1]:3000"),
+            (
+                "Complex IPv6 https://[2001:db8:85a3:8d3:1319:8a2e:370:7348]:443/",
+                "https://[2001:db8:85a3:8d3:1319:8a2e:370:7348]:443/",
+            ),
+            (
+                "IPv6 with path https://[2001:db8::1]/path/to/resource",
+                "https://[2001:db8::1]/path/to/resource",
+            ),
+            (
+                "IPv6 with query https://[2001:db8::1]:8080/api?param=value&other=123",
+                "https://[2001:db8::1]:8080/api?param=value&other=123",
+            ),
+            ("IPv6 compressed http://[2001:db8::]:80/", "http://[2001:db8::]:80/"),
+            (
+                "IPv6 multiple zeros http://[2001:0:0:0:0:0:0:1]",
+                "http://[2001:0:0:0:0:0:0:1]",
+            ),
+            (
+                "IPv6 link-local https://[fe80::1234:5678:9abc]",
+                "https://[fe80::1234:5678:9abc]",
+            ),
+            ("IPv6 multicast http://[ff02::1]/stream", "http://[ff02::1]/stream"),
+            (
+                "IPv6 in markdown [link](http://[2001:db8::1]/docs)",
+                "http://[2001:db8::1]/docs",
+            ),
+            ("./spaces-end.   ", "./spaces-end."),
+            ("./space middle", "./space middle"),
+            ("../test folder/file.txt", "../test folder/file.txt"),
+            ("/tmp/test folder/file.txt", "/tmp/test folder/file.txt"),
+            ("/tmp/test  folder/file.txt", "/tmp/test"),
+            (
+                "diff --git a/src/font/shaper/harfbuzz.zig b/src/font/shaper/harfbuzz.zig",
+                "a/src/font/shaper/harfbuzz.zig",
+            ),
+            ("/tmp/foo /tmp/bar", "/tmp/foo"),
+            ("/tmp/foo.txt /tmp/bar.txt", "/tmp/foo.txt"),
+            ("src/config/url.zig", "src/config/url.zig"),
+            ("app/folder/file.rb:1", "app/folder/file.rb:1"),
+            ("modified:   src/config/url.zig", "src/config/url.zig"),
+            ("lib/ghostty/terminal.zig:42:10", "lib/ghostty/terminal.zig:42:10"),
+            ("some-pkg/src/file.txt more text", "some-pkg/src/file.txt"),
+            ("src/foo.c,baz.txt", "src/foo.c"),
+            ("~/foo/bar.txt", "~/foo/bar.txt"),
+            ("open ~/Documents/notes.md please", "~/Documents/notes.md"),
+            ("~/.config/ghostty/config", "~/.config/ghostty/config"),
+            ("directory: ~/src/ghostty-org/ghostty", "~/src/ghostty-org/ghostty"),
+            ("$HOME/src/config/url.zig", "$HOME/src/config/url.zig"),
+            ("project dir: $PWD/src/ghostty/main.zig", "$PWD/src/ghostty/main.zig"),
+            ("foo/$BAR/baz", "foo/$BAR/baz"),
+            (".foo/bar/$VAR", ".foo/bar/$VAR"),
+            (".config/ghostty/config", ".config/ghostty/config"),
+            (
+                "loaded from .local/share/ghostty/state.db now",
+                ".local/share/ghostty/state.db",
+            ),
+            ("../some/where", "../some/where"),
+            (
+                "  - shared/src/foo/SomeItem.m:12, shared/src/",
+                "shared/src/foo/SomeItem.m:12",
+            ),
+            ("foo.local/share", "foo.local/share"),
+            ("2024/report.txt", "2024/report.txt"),
+            ("./foo bar,baz", "./foo bar"),
+            ("/tmp/foo bar,baz", "/tmp/foo bar"),
+            ("./.config/ghostty: Needs upstream (main)", "./.config/ghostty"),
+            ("./Downloads: Operation not permitted", "./Downloads"),
+        ];
+        for (input, expect) in cases {
+            let found = urls(input);
+            assert_eq!(found.first().map(String::as_str), Some(*expect), "입력 {input:?}");
+        }
+        let none: &[&str] = &[
+            "input/output",
+            "foo/bar",
+            "$10/bar",
+            "$10/$20",
+            "$10/bar.txt",
+            "foo/bar,baz.txt",
+            "foo$BAR/baz.txt",
+            "foo~/bar.txt",
+            "// foo bar",
+            "//foo",
+        ];
+        for input in none {
+            assert!(urls(input).is_empty(), "입력 {input:?}: {:?}", urls(input));
+        }
     }
 
     /// 글을 칸에 채운 화면. `wrap`에 든 줄은 다음 줄로 접힌다
@@ -536,7 +1029,9 @@ mod tests {
         assert_eq!(link_at(&s, 3, 2), None, "URL 밖");
         // 접히지 않은 줄은 잇지 않는다
         let s = screen(&["go https:/", "/a.b/cdefg"], 10, &[]);
-        assert_eq!(link_at(&s, 4, 1), None);
+        // (둘째 줄 `/a.b/cdefg`는 그 자체로 절대 경로라 링크다. 앞 줄과 이어지지 않는다는 것만 본다, #850)
+        assert_eq!(link_at(&s, 4, 1).map(|h| h.url), Some("/a.b/cdefg".to_string()));
+        assert_eq!(link_at(&s, 4, 0), None, "첫 줄의 `https:/`는 주소가 아니다");
     }
 
     #[test]
@@ -720,6 +1215,219 @@ mod tests {
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
+    #[test]
+    fn classify_mail_and_confirm_schemes() {
+        let no = |_: &str| false;
+        assert_eq!(
+            classify("mailto:a@b.example", &no),
+            Some(OpenTarget::Mail("mailto:a@b.example".into()))
+        );
+        // 질의가 있으면(`attach=`로 파일을 붙이는 메일 앱이 있다) 바로 열지 않고 묻는다
+        for url in ["mailto:a@b.example?subject=hi", "mailto:a@b.example?attach=/etc/passwd"] {
+            assert_eq!(classify(url, &no), Some(OpenTarget::Confirm(url.into())), "{url}");
+        }
+        assert_eq!(
+            classify("MAILTO:a@b.example", &no),
+            Some(OpenTarget::Mail("MAILTO:a@b.example".into()))
+        );
+        assert_eq!(classify("mailto:", &no), None);
+        assert_eq!(classify("mailto:?subject=x", &no), None);
+        for url in [
+            "ftp://h/x",
+            "ssh://h.example",
+            "ssh:h.example",
+            "git://h/r.git",
+            "tel:+18005551234",
+            "tel://+12123456789",
+            "magnet:?xt=urn:btih:1",
+            "ipfs://Qm",
+            "ipns://Qm",
+            "gemini://h",
+            "gopher://h",
+            "news:comp.lang.c",
+        ] {
+            assert_eq!(classify(url, &no), Some(OpenTarget::Confirm(url.into())), "{url}");
+        }
+        // 사용자 정보(`@`)·비ASCII·너무 긴 주소는 묻지도 않는다(막대에서 호스트를 속일 수 있다)
+        assert_eq!(classify("ssh://root@evil.example", &no), None, "사용자 정보");
+        assert_eq!(classify("ssh:root@evil.example", &no), None, "사용자 정보(//없음)");
+        assert_eq!(
+            classify("ssh://git.example/@x", &no),
+            Some(OpenTarget::Confirm("ssh://git.example/@x".into())),
+            "경로의 @는 괜찮다"
+        );
+        assert_eq!(classify("ssh://h\u{43a}.example", &no), None, "비ASCII");
+        assert_eq!(
+            classify(&format!("ssh://h.example/{}", "p".repeat(3000)), &no),
+            None,
+            "너무 긴 주소"
+        );
+        // 묻는 주소는 어떤 스킴이든 막대에 다 보이는 길이(80)까지만 묻는다. 넘으면 묻지 않는다
+        for long in [
+            format!("ssh://host.example/{}?x=1", "p".repeat(100)),
+            format!("gemini://h.example/q?{}", "p".repeat(100)),
+            format!("ftp://h.example/{}", "p".repeat(100)),
+        ] {
+            assert_eq!(classify(&long, &no), None, "{long}");
+        }
+        let at80 = format!("ssh://h.example/{}", "p".repeat(80 - "ssh://h.example/".len()));
+        assert_eq!(classify(&at80, &no), Some(OpenTarget::Confirm(at80.clone())));
+        // `://`가 없는 주소(받는 사람·질의가 곧 내용)도 같다
+        let fits = format!("tel:+{}", "1".repeat(70));
+        assert_eq!(classify(&fits, &no), Some(OpenTarget::Confirm(fits.clone())));
+        for long in [
+            format!("tel:+{}", "1".repeat(100)),
+            format!("magnet:?xt=urn:btih:{}", "a".repeat(100)),
+            format!("news:{}", "a".repeat(100)),
+            format!("mailto:a@b.example?subject=hi&attach=/{}", "p".repeat(100)),
+        ] {
+            assert_eq!(classify(&long, &no), None, "{long}");
+        }
+        assert!(classify("mailto:a@b.example?attach=/etc/hosts", &no).is_some());
+        // 목록에 없는 스킴과 숨은 글자는 그대로 열지 않는다
+        for url in [
+            "javascript:alert(1)",
+            "vscode://x",
+            "x-man-page://ls",
+            "ssh://h/\u{202e}x",
+            "tel:1 2",
+        ] {
+            assert_eq!(classify(url, &no), None, "{url}");
+        }
+    }
+
+    #[test]
+    fn confirm_text_shows_the_whole_address() {
+        // 묻는 주소는 80칸 이하라 줄이지 않고 그대로 보인다
+        for url in ["tel:+1800", "mailto:a@b.example?subject=hi", "gemini://h.example/q?a=1"] {
+            assert_eq!(confirm_text(url), url);
+        }
+        let at_limit = format!(
+            "ssh://host.example/{}",
+            "p".repeat(CONFIRM_SHOW - "ssh://host.example/".len())
+        );
+        assert_eq!(at_limit.chars().count(), CONFIRM_SHOW);
+        assert_eq!(confirm_text(&at_limit), at_limit);
+        assert!(!confirm_text(&at_limit).contains('…'));
+        // 제어 문자·방향 바꾸기 문자는 보이는 글로 바꾼다
+        assert_eq!(confirm_text("ssh://h\u{1b}[2J.example"), "ssh://h [2J.example");
+        assert_eq!(confirm_text("ssh://h.example/\u{202e}x"), "ssh://h.example/x");
+    }
+
+    #[test]
+    fn classify_text_paths_follow_ghostty() {
+        let no = |_: &str| false;
+        let dir = std::env::temp_dir().join(format!("bt-links-path-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("home/sub dir")).unwrap();
+        std::fs::create_dir_all(dir.join("work/src")).unwrap();
+        let dir = dir.canonicalize().unwrap();
+        let (home, work) = (dir.join("home"), dir.join("work"));
+        std::fs::write(home.join("notes.txt"), "x").unwrap();
+        std::fs::write(home.join("sub dir/a b.md"), "x").unwrap();
+        std::fs::write(work.join("src/main.rs"), "x").unwrap();
+        std::fs::write(work.join("run.sh"), "x").unwrap();
+        let ctx = OpenContext {
+            cwd: Some(&work),
+            home: Some(&home),
+        };
+        let at = |t: &str| classify_text(t, &no, &ctx);
+        assert_eq!(at("~/notes.txt"), Some(OpenTarget::Open(home.join("notes.txt"))));
+        assert_eq!(
+            at("~/sub dir/a b.md"),
+            Some(OpenTarget::Open(home.join("sub dir/a b.md"))),
+            "공백 든 이름"
+        );
+        assert_eq!(at("./src/main.rs"), Some(OpenTarget::Open(work.join("src/main.rs"))));
+        assert_eq!(
+            at("src/main.rs"),
+            Some(OpenTarget::Open(work.join("src/main.rs"))),
+            "맨 상대 경로"
+        );
+        assert_eq!(
+            at("../work/src/main.rs"),
+            Some(OpenTarget::Open(work.join("src/main.rs")))
+        );
+        assert_eq!(
+            at(&work.join("src/main.rs").display().to_string()),
+            Some(OpenTarget::Open(work.join("src/main.rs")))
+        );
+        assert_eq!(
+            at("./run.sh"),
+            Some(OpenTarget::Reveal(work.join("run.sh"))),
+            "스크립트는 보이기만"
+        );
+        assert_eq!(at("./src"), Some(OpenTarget::Open(work.join("src"))), "폴더");
+        // 없는 파일, 줄·칸이 붙은 것, $VAR는 열지 않는다(Ghostty도 풀지 않는다)
+        assert_eq!(at("./src/none.rs"), None);
+        assert_eq!(at("./src/main.rs:42:10"), None);
+        assert_eq!(at("$HOME/notes.txt"), None);
+        // 작업 폴더를 모르면 상대 경로는 열지 않는다. 집 폴더를 모르면 `~/`도
+        let blind = OpenContext::default();
+        assert_eq!(classify_text("./src/main.rs", &no, &blind), None);
+        assert_eq!(classify_text("~/notes.txt", &no, &blind), None);
+        // 숨은 글자·줄바꿈이 든 경로
+        assert_eq!(at("./src/main.rs\u{202e}"), None);
+        assert_eq!(at("./src/main.rs\n"), None);
+        // 스킴이 있으면 classify와 같다
+        assert_eq!(
+            at("mailto:a@b.example"),
+            Some(OpenTarget::Mail("mailto:a@b.example".into()))
+        );
+        assert_eq!(at("ssh://h"), Some(OpenTarget::Confirm("ssh://h".into())));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn screen_text_paths_and_mail_are_links() {
+        // 이슈 #850의 재현: `printf './src/main.rs ~/notes.txt mailto:a@b.example\n'`
+        let s = screen(&["./src/main.rs ~/notes.txt mailto:a@b.example"], 60, &[]);
+        assert_eq!(link_at(&s, 3, 0).map(|h| h.url).as_deref(), Some("./src/main.rs"));
+        assert_eq!(link_at(&s, 13, 0), None, "사이 공백");
+        // Ghostty 정규식 그대로: 점이 든 경로 뒤 공백 토막이 `.`로 끝나면(`mailto:a@b.`) 이어 붙는다. 앞에 두면 따로 잡힌다
+        assert_eq!(
+            link_at(&s, 16, 0).map(|h| h.url).as_deref(),
+            Some("~/notes.txt mailto:a@b.")
+        );
+        let s = screen(&["mailto:a@b.example ./src/main.rs ~/notes.txt"], 60, &[]);
+        assert_eq!(link_at(&s, 3, 0).map(|h| h.url).as_deref(), Some("mailto:a@b.example"));
+        assert_eq!(link_at(&s, 22, 0).map(|h| h.url).as_deref(), Some("./src/main.rs"));
+        assert_eq!(link_at(&s, 36, 0).map(|h| h.url).as_deref(), Some("~/notes.txt"));
+    }
+
+    #[test]
+    fn korean_particles_still_end_links() {
+        // Ghostty의 `\w`는 한글도 먹지만 우리는 조사에서 끊는다(ADR-086)
+        assert_eq!(urls("메일은 mailto:a@b.example로 보냈다"), vec!["mailto:a@b.example"]);
+        assert_eq!(urls("파일은 ~/notes.txt에 있다"), vec!["~/notes.txt"]);
+        assert_eq!(urls("경로 ./src/main.rs를 보자"), vec!["./src/main.rs"]);
+        assert_eq!(urls("a/b.rs에서"), vec!["a/b.rs"]);
+    }
+
+    /// 긴 줄에서 느려지지 않는다(손으로 짠 스캐너라 줄 길이에 거의 비례한다)
+    #[test]
+    fn scanner_is_fast_on_hostile_long_lines() {
+        let t = std::time::Instant::now();
+        let cases = [
+            "a".repeat(200_000),
+            "a/".repeat(100_000),
+            "./a ".repeat(50_000),
+            format!("{}$X/", "a/".repeat(50_000)),
+            "https://".repeat(25_000),
+            "a.".repeat(100_000),
+            "/ ".repeat(100_000),
+            format!("./{}:", "a b ".repeat(50_000)),
+            "$1/".repeat(60_000),
+            "https://a.b/(".repeat(20_000),
+        ];
+        for (n, c) in cases.iter().enumerate() {
+            let chars: Vec<char> = c.chars().collect();
+            let t1 = std::time::Instant::now();
+            let _ = find_urls(&chars);
+            assert!(t1.elapsed().as_millis() < 1000, "경우 {n}: {:?}", t1.elapsed());
+        }
+        assert!(t.elapsed().as_secs() < 5, "{:?}", t.elapsed());
+    }
+
     /// 보안 검토 #54: 주소 띠는 호스트까지 늘 다 보이고 가운데를 줄인다
     #[test]
     fn hint_keeps_the_whole_host() {
@@ -745,7 +1453,11 @@ mod tests {
         assert_eq!(classify("HTTP://A.B", &no), Some(OpenTarget::Web("HTTP://A.B".into())));
         assert_eq!(classify("https://", &no), None);
         assert_eq!(classify("javascript:alert(1)", &no), None);
-        assert_eq!(classify("ssh://host", &no), None);
+        assert_eq!(
+            classify("ssh://host", &no),
+            Some(OpenTarget::Confirm("ssh://host".into()))
+        );
+        assert_eq!(classify("ssh://", &no), None, "받는 곳이 없다");
         assert_eq!(classify("https://a.b/\u{1b}[2J", &no), None, "제어 문자");
         assert_eq!(classify("https://a.b/ x", &no), None, "공백");
 
