@@ -324,13 +324,22 @@ fn dot(canvas: &mut Canvas, cx: i32, cy: i32, r: i32, color: Rgb) {
     }
 }
 
+/// 토스트의 글(줄인 것), 왼쪽 x, 폭. 창 오른쪽에 한 칸 띄워 붙인다.
+/// 글은 48칸까지, 창이 좁으면 창 안(양옆 안쪽 여백과 바깥 한 칸을 뺀 칸)에 들어가게 줄인다. 왼쪽은 창 밖으로 나가지 않는다
+pub fn toast_layout(canvas_w: u32, cell_w: u32, text: &str) -> (String, i32, u32) {
+    let cell_w = cell_w.max(1);
+    let room = ((canvas_w / cell_w) as usize).saturating_sub(3).clamp(1, 48);
+    let text = truncate(text, room);
+    let w = cell_w * text_cells(&text) as u32 + cell_w * 2;
+    let x = (canvas_w as i32 - w as i32 - cell_w as i32).max(0);
+    (text, x, w)
+}
+
 /// 창 오른쪽 아래의 알림 띠(클립보드 복사 같은 일을 사람에게 보인다)
 pub fn draw_toast(canvas: &mut Canvas, fonts: &mut Fonts, theme: &Theme, text: &str) {
     let m = fonts.metrics();
-    let text = truncate(text, 48);
-    let tw = m.width * text_cells(&text) as u32;
-    let (w, h) = (tw + m.width * 2, m.height + m.height / 2);
-    let x = canvas.width as i32 - w as i32 - m.width as i32;
+    let (text, x, w) = toast_layout(canvas.width, m.width, text);
+    let h = m.height + m.height / 2;
     let y = canvas.height as i32 - h as i32 - m.height as i32 / 2;
     let bg = theme.background.mix(theme.foreground, 0.85);
     canvas.fill_rect(x, y, w, h, bg);
@@ -670,6 +679,25 @@ pub fn draw_resize_overlay(
 #[cfg(test)]
 mod tests {
     use std::time::{Duration, Instant};
+
+    /// 좁은 창(#850 "창이 좁아…" 토스트를 띄우는 바로 그때)에서 토스트 왼쪽이 창 밖으로 잘리지 않는다. 넓은 창에서는 예전처럼 48칸까지, 오른쪽에 붙는다
+    #[test]
+    fn toast_stays_inside_a_narrow_window() {
+        let long = "가".repeat(30); // 60칸
+        for cols in [20u32, 40, 60] {
+            let (text, x, w) = super::toast_layout(cols * 8, 8, &long);
+            assert!(x >= 0, "{cols}칸: x={x}");
+            assert!(x as u32 + w <= cols * 8, "{cols}칸: x={x} w={w}");
+            assert!(text.ends_with('…'), "{cols}칸: {text}");
+        }
+        let (text, x, w) = super::toast_layout(1000, 8, "짧은 알림");
+        assert_eq!(text, "짧은 알림");
+        assert_eq!((x, w), (1000 - (9 * 8 + 16) - 8, 9 * 8 + 16));
+        let wide = bt_render::text_cells(&super::toast_layout(1000, 8, &long).0);
+        assert!((46..=48).contains(&wide), "넓은 창은 48칸까지: {wide}");
+        // 좁은 창 링크 토스트 문구는 40칸 창에 줄이지 않고 다 들어간다
+        assert_eq!(super::toast_layout(40 * 8, 8, crate::app::NARROW_LINK_TOAST).0, crate::app::NARROW_LINK_TOAST);
+    }
 
     #[test]
     fn short_press_is_a_click_not_a_drag() {

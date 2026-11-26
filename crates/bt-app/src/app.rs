@@ -43,7 +43,8 @@ fn link_confirm_message(url: &str) -> String {
     format!("다른 앱으로 이 링크를 열까요? {}", bt_term::links::confirm_text(url))
 }
 
-const NARROW_LINK_TOAST: &str = "창이 좁아 주소를 다 보일 수 없어 열지 않았습니다";
+/// 좁은 창(#850)이라 링크를 열지 않을 때의 알림. 40칸 창에도 줄이지 않고 다 들어가는 길이로 둔다
+pub(crate) const NARROW_LINK_TOAST: &str = "창이 좁아 링크를 열지 않았습니다";
 
 fn truncate_chars(s: &str, n: usize) -> String {
     if s.chars().count() <= n {
