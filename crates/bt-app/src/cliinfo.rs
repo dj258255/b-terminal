@@ -93,6 +93,7 @@ const ACTIONS: &[&str] = &[
     "toggle_readonly",
     "toggle_broadcast_group",
     "clear_broadcast_groups",
+    "hints",
     "set_window_theme",
     "goto_window",
     "check_for_updates",
@@ -152,6 +153,17 @@ pub fn keybind_lines(user: &[String], defaults_only: bool) -> Vec<String> {
     let mut chain_parent: Option<Key> = None;
     let swap_super = !cfg!(target_os = "macos");
     for (t, a) in keymap::defaults() {
+        // 키 순서 기본(`a>b`)은 트리거 하나로 읽지 못하므로 순서째 적는다(`Keymap::build`와 같다)
+        if t.contains('>') {
+            if let (Some(text), Ok(Some(_))) = (chain_text(t), keymap::parse_action(a)) {
+                put(
+                    &mut entries,
+                    (String::new(), false, text.clone()),
+                    Some(format!("keybind = {text}={a}")),
+                );
+            }
+            continue;
+        }
         let (Ok(mut trig), Ok(Some(act))) = (keymap::parse_trigger(t), keymap::parse_action(a)) else {
             continue;
         };

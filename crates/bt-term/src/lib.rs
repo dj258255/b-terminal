@@ -6,6 +6,7 @@ pub mod csi_query;
 pub mod dcs;
 pub mod glyph;
 pub mod graphics;
+pub mod hints;
 pub mod input;
 pub mod kitty_anim;
 pub mod kitty_clip;
