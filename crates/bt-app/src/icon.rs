@@ -14,6 +14,19 @@ pub fn custom_icon_file(icon: MacosIcon, path: Option<&Path>) -> Option<&Path> {
     if icon == MacosIcon::Custom { path } else { None }
 }
 
+#[cfg(target_os = "macos")]
+thread_local! {
+    /// 지금 Dock에 올린 사용자 그림(없으면 앱 꾸러미의 아이콘). 진행 막대(`dock`)가 같은 그림 위에 막대를 얹는다
+    static CUSTOM: std::cell::RefCell<Option<objc2::rc::Retained<objc2_app_kit::NSImage>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// 지금 Dock에 올린 사용자 그림. `custom`이 아니면 없다
+#[cfg(target_os = "macos")]
+pub fn custom_image() -> Option<objc2::rc::Retained<objc2_app_kit::NSImage>> {
+    CUSTOM.with(|c| c.borrow().clone())
+}
+
 /// 설정대로 Dock 아이콘을 정한다. 바꿨던 것을 되돌릴 때는 앱 꾸러미의 아이콘으로 돌아간다. macOS 밖에서는 하는 일이 없다
 #[cfg(target_os = "macos")]
 pub fn apply(icon: MacosIcon, path: Option<&Path>) {
@@ -43,9 +56,11 @@ pub fn apply(icon: MacosIcon, path: Option<&Path>) {
             view.setImageScaling(NSImageScaling::ScaleProportionallyUpOrDown);
             tile.setContentView(Some(&view));
             tile.display();
+            CUSTOM.with(|c| *c.borrow_mut() = Some(image));
             SET.store(true, Ordering::Relaxed);
         }
         None => {
+            CUSTOM.with(|c| *c.borrow_mut() = None);
             if SET.swap(false, Ordering::Relaxed) {
                 tile.setContentView(None);
                 tile.display();

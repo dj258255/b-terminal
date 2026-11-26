@@ -740,6 +740,8 @@ pub struct Config {
     pub desktop_notifications: bool,
     /// OSC 9;4 진행 표시를 그린다(Ghostty `progress-style`, 기본 켬). 끄면 조용히 버린다
     pub progress_style: bool,
+    /// OSC 9;4 진행을 Dock 아이콘에도 그린다(kitty처럼, macOS 전용 b-terminal 키, 기본 켬). 끄면 Dock 아이콘은 그대로다
+    pub macos_dock_progress: bool,
     /// 스크롤 막대(Ghostty `scrollbar`, 기본 system)
     pub scrollbar: Scrollbar,
     /// 크게 보는 칸을 지키는 때(Ghostty `split-preserve-zoom`, 기본 아무 때도 아님)
@@ -1840,6 +1842,7 @@ impl Default for Config {
             notify_on_command_finish_after: std::time::Duration::from_secs(5),
             desktop_notifications: true,
             progress_style: true,
+            macos_dock_progress: true,
             scrollbar: Scrollbar::System,
             split_preserve_zoom: SplitPreserveZoom::default(),
             app_notifications: AppNotifications::default(),
@@ -3558,6 +3561,10 @@ impl Config {
                 Some(b) => self.progress_style = b,
                 None => bad(warnings),
             },
+            "macos-dock-progress" => match parse_bool(v) {
+                Some(b) => self.macos_dock_progress = b,
+                None => bad(warnings),
+            },
             "scrollbar" => match v {
                 "system" => self.scrollbar = Scrollbar::System,
                 "never" => self.scrollbar = Scrollbar::Never,
@@ -4281,6 +4288,7 @@ impl Config {
         });
         push("desktop-notifications", self.desktop_notifications.to_string());
         push("progress-style", self.progress_style.to_string());
+        push("macos-dock-progress", self.macos_dock_progress.to_string());
         push(
             "scrollbar",
             match self.scrollbar {
@@ -4652,6 +4660,16 @@ mod tests {
         assert!(on.keeps_zoom_on_goto(true));
         assert!(!on.keeps_zoom_on_goto(false));
         assert!(!SplitPreserveZoom::default().keeps_zoom_on_goto(true));
+    }
+
+    #[test]
+    fn macos_dock_progress_key() {
+        assert!(Config::default().macos_dock_progress);
+        let c = Config::from_text("macos-dock-progress = false\n", true);
+        assert!(!c.macos_dock_progress);
+        assert!(c.render().contains("macos-dock-progress = false"));
+        let bad = Config::from_text("macos-dock-progress = x\n", true);
+        assert!(bad.macos_dock_progress, "읽지 못하면 기본값");
     }
 
     #[test]

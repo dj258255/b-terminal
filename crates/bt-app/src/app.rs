@@ -219,6 +219,8 @@ pub struct Pane {
     pub last_command: Option<bt_term::CommandRecord>,
     /// 진행 표시(OSC 9;4): (상태, 퍼센트, 받은 때). 15초 동안 새 소식이 없으면 지운다(Ghostty와 같다)
     pub progress: Option<(u8, u8, Instant)>,
+    /// 앱이 뒤에 있을 때 벨이 울렸다: Dock 아이콘 배지에 센다(`bell-features`의 `attention`, #864). 앱이 앞에 오면 지운다
+    dock_bell: bool,
     /// 스크롤 막대: 마지막으로 본 스크롤 위치(맨 아래에서 올라간 줄 수)와 막대를 보일 때까지의 기한
     scroll_seen: usize,
     scrollbar_until: Option<Instant>,
@@ -1184,6 +1186,11 @@ pub struct App {
     bell_sound: Option<crate::bell_sound::BellSound>,
     /// 마지막으로 벨 소리 파일을 울린 때
     last_bell_audio: Option<Instant>,
+    /// Dock 아이콘에 마지막으로 그린 것(진행 막대, 끝 모름 채움, 배지). `None`이면 다시 그린다(#864)
+    dock_applied: Option<(crate::dock::DockProgress, u8, Option<String>)>,
+    /// 끝 모름 막대가 시작된 때(채움의 위상)와 다음 프레임 때
+    dock_sweep_start: Option<Instant>,
+    dock_next: Option<Instant>,
     /// 같은 이벤트 고리 차례에 온 `DroppedFile`을 모은다. `about_to_wait`에서 한 번에 붙여넣는다(#566)
     drop_batch: crate::file_drop::DropBatch<WindowId>,
     /// Space를 옮겨 초점을 잃은 퀵 터미널 창. `about_to_wait`에서 다시 앞으로 띄운다(Ghostty처럼 초점 처리 밖으로 미룬다, #727)
@@ -1303,6 +1310,9 @@ impl App {
             last_beep: None,
             bell_sound: None,
             last_bell_audio: None,
+            dock_applied: None,
+            dock_sweep_start: None,
+            dock_next: None,
             drop_batch: Default::default(),
             quick_reshow: None,
             written_files: Vec::new(),
@@ -1865,6 +1875,9 @@ impl App {
             watching,
             self.w.focused,
         );
+        if crate::dock::bell_counts_for_badge(self.config.bell_features.attention, self.any_window_focused()) {
+            self.panes[idx].dock_bell = true;
+        }
         if r.title && !self.panes[idx].bell {
             self.panes[idx].bell = true;
             self.request_redraw();
@@ -1887,6 +1900,47 @@ impl App {
             #[cfg(target_os = "macos")]
             objc2_app_kit::NSBeep();
         }
+    }
+
+    /// Dock 아이콘을 지금 상태에 맞춘다(#864): 모든 칸의 OSC 9;4 진행을 하나로 합쳐 막대로 그리고(`macos-dock-progress`),
+    /// 앱이 뒤에 있을 때 벨이 울린 칸 수를 배지로 단다(`bell-features`의 `attention`). 앱이 앞에 오면 배지를 지운다.
+    /// 바뀐 것만 그린다. 끝 모름 막대가 움직이는 동안은 다음 프레임 때를 `dock_next`에 남긴다
+    fn sync_dock(&mut self, now: Instant) {
+        use crate::dock::{DockProgress, badge_for, merge_progress, sweep_percent};
+        let active = self.any_window_focused();
+        if active {
+            for p in &mut self.panes {
+                p.dock_bell = false;
+            }
+        }
+        let progress = if self.config.macos_dock_progress {
+            merge_progress(self.panes.iter().filter_map(|p| p.live_progress()))
+        } else {
+            DockProgress::None
+        };
+        let sweep = if progress == DockProgress::Indeterminate {
+            let start = *self.dock_sweep_start.get_or_insert(now);
+            self.dock_next = Some(now + crate::dock::SWEEP_FRAME);
+            sweep_percent(now.saturating_duration_since(start).as_millis() as u64)
+        } else {
+            self.dock_sweep_start = None;
+            self.dock_next = None;
+            0
+        };
+        let bells = self.panes.iter().filter(|p| p.dock_bell).count();
+        let badge = badge_for(self.config.bell_features.attention, active, bells);
+        let now_state = (progress, sweep, badge);
+        if self.dock_applied.as_ref() == Some(&now_state) {
+            return;
+        }
+        let prev = self.dock_applied.take();
+        if prev.as_ref().is_none_or(|(p, s, _)| (*p, *s) != (progress, sweep)) {
+            crate::dock::tile::set_progress(progress, sweep);
+        }
+        if prev.as_ref().is_none_or(|(_, _, b)| *b != now_state.2) {
+            crate::dock::tile::set_badge(now_state.2.as_deref());
+        }
+        self.dock_applied = Some(now_state);
     }
 
     /// 벨 소리 파일을 울린다(#165). 파일은 처음 울릴 때(또는 경로가 바뀌었을 때) 읽는다.
@@ -2071,6 +2125,7 @@ impl App {
                 last_status_note: None,
                 notes: Vec::new(),
                 progress: None,
+                dock_bell: false,
                 scroll_seen: 0,
                 scrollbar_until: None,
                 mouse_reporting_over: None,
@@ -5424,6 +5479,9 @@ impl App {
         self.refresh_mods();
         apply_hidden_from_dock(self.config.macos_hidden);
         icon::apply(self.config.macos_icon, self.config.macos_custom_icon.as_deref());
+        // 아이콘을 바꾸면 Dock 위의 막대도 사라지므로 다시 그린다(#864)
+        crate::dock::tile::forget_bar();
+        self.dock_applied = None;
         self.load_background();
         self.load_shaders();
         // 열려 있는 GPU 창은 다음 프레임부터 새 섞기 공간으로 그린다(#405)
@@ -8065,6 +8123,9 @@ impl ApplicationHandler<UserEvent> for App {
         }
         apply_hidden_from_dock(self.config.macos_hidden);
         icon::apply(self.config.macos_icon, self.config.macos_custom_icon.as_deref());
+        // 아이콘을 바꾸면 Dock 위의 막대도 사라지므로 다시 그린다(#864)
+        crate::dock::tile::forget_bar();
+        self.dock_applied = None;
         self.load_fonts();
         if self.w.fonts.chrome().is_none() {
             event_loop.exit();
@@ -8861,6 +8922,8 @@ impl ApplicationHandler<UserEvent> for App {
             }
         }
         self.sync_secure_focus();
+        // Dock 아이콘의 진행 막대·벨 배지(#864)
+        self.sync_dock(now);
         // 커서 깜빡임(창마다)
         for w in std::iter::once(&mut self.w).chain(self.others.iter_mut()) {
             if w.blink_wanted && now >= w.blink_next {
@@ -8974,6 +9037,7 @@ impl ApplicationHandler<UserEvent> for App {
             .chain(self.search_next_wake())
             .chain(self.a11y_next_wake())
             .chain(self.any_window_focused().then_some(self.next_secure_poll))
+            .chain(self.dock_next)
             .min();
         match deadline {
             Some(d) if d <= Instant::now() => {

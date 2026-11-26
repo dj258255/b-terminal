@@ -880,6 +880,15 @@
 - 남긴 것: `clear_last_command`는 주 화면 kitty 그림 자리를 모두 지운다(줄 번호가 밀려 따라가지 못한다). kitty의 `clear_terminal clear`·`scroll`·`to_cursor`·`to_cursor_scroll`·`reset`은 이번에 더하지 않았다(`reset`은 이미 있고 `clear_screen`이 가장 가깝다). 동작 이름은 Ghostty에 없어 정했다
 - 0.102.0에서 풀기: 없음. 스크롤백은 ⌘K(`clear_screen`)로 함께 지운다
 
+## 104. OSC 9;4 진행이 Dock 아이콘에 보이지 않고, 앱이 뒤에 있을 때 벨이 울려도 Dock 배지가 없다
+
+- 언제: 2026-11-26, #864. 0.102.0까지의 동작이다. kitty·Ghostty 1.4.0과 견준 조사에서 찾았다
+- 증상: `printf '\033]9;4;1;50\a'`를 쳐도 진행은 탭 줄·칸 위 막대에만 나오고 Dock 아이콘은 그대로였다. 앱을 뒤로 보낸 채 `printf '\a'`를 치면 Dock 아이콘이 튀기만 하고(`attention`) 배지는 없었다
+- 까닭: Dock 아이콘(`NSDockTile`)은 사용자 그림(`macos-icon = custom`)을 올리는 데만 썼다. 진행 상태는 칸마다 탭에만 그렸고 Dock으로 합치는 길이 없었다. 벨은 창을 튀기는 일만 했고 벨이 울린 칸을 세는 곳이 없었다
+- 고침: `dock.rs`가 칸마다의 진행을 kitty 규칙(`boss.py` `update_progress_in_dock`)으로 하나로 합친다: 퍼센트가 있는 칸(보통·멈춤)의 평균, 그런 칸이 없으면 끝 모름, 오류만 있으면 없음. 아이콘 위에 `NSProgressIndicator`를 얹어 그린다(`macos-dock-progress`). 배지는 `bell-features`의 `attention`이 켜져 있고 앱 어느 창에도 초점이 없을 때 울린 칸 수를 적고(99 초과는 `99+`), 앱이 앞에 오면 지운다
+- 남긴 것: 끝 모름 막대는 `startAnimation`이 objc2에서 `unsafe fn`이라 쓰지 못해 퍼센트 막대를 1.6초 주기로 0에서 100을 오가게 80ms마다 다시 그린다(kitty의 좌우로 오가는 조각과 모양이 다르다). 오류 상태는 Dock에 그리지 않는다(kitty와 같다. 탭에는 빨간 막대가 나온다). 멈춤은 값이 없으면 100%로 센다(탭 막대와 같은 값을 쓴다). 배지에 알림 권한(`UNUserNotificationCenter`)이 필요한지 재지 않았다(Ghostty는 요청하고 우리는 요청하지 않는다). 실제 Dock에서 어떻게 보이는지는 이 환경에서 창을 띄우지 못해 보지 않았다
+- 0.102.0에서 풀기: 없음(Dock이 아니라 탭의 막대를 본다)
+
 ## 105. 1MB 글을 붙여넣어도 묻지 않고, 프롬프트에 URL을 붙이면 `&`·`?`가 셸에서 갈린다
 
 - 언제: 2026-11-26, #866. 0.102.0 뒤 main까지의 동작이다. kitty 0.51.1의 `paste_actions`와 견준 조사에서 찾았다
