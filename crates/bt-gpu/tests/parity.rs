@@ -535,6 +535,51 @@ fn faint_cells_match_cpu() {
     check(&mut g, &mut f, "흐림+최소 명암비", &v, &p, Alpha::default());
 }
 
+/// #904: 밑줄·윗줄·취소선도 최소 명암비와 고름 글자색을 따른다. CPU와 GPU가 같은 픽셀을 낸다
+#[test]
+fn decoration_colors_match_cpu_under_min_contrast_selection_and_faint() {
+    let Some(mut g) = gpu() else { return };
+    let mut f = fonts(2.0);
+    let mut cells = row_cells("deco under 가나 ab", 20);
+    cells.extend(row_cells("second row text 123", 20));
+    for (i, c) in cells.iter_mut().enumerate() {
+        // 바탕과 비슷한 글자색과 밝은 바탕에 밝은 글자색을 섞는다
+        c.fg = if i % 4 == 0 {
+            Rgb::new(40, 44, 52)
+        } else {
+            Rgb::new(220, 200, 90)
+        };
+        if i >= 20 && i % 3 == 0 {
+            c.bg = Rgb::new(230, 230, 225);
+            c.fg = Rgb::new(245, 245, 245);
+        }
+        c.selected = (4..9).contains(&i) || (24..28).contains(&i);
+        c.faint = (i % 5 == 1).then_some(0.5);
+        c.overline = i % 3 == 0;
+        c.strike = i % 2 == 0 && !c.selected;
+        c.underline = if i % 3 == 1 { Underline::Single } else { Underline::None };
+        // 밑줄 색을 정한 칸: 바탕과 비슷한 색과 선명한 색
+        if i % 6 == 1 {
+            c.underline_color = Some(if i % 12 == 1 {
+                Rgb::new(42, 46, 55)
+            } else {
+                Rgb::new(255, 40, 60)
+            });
+        }
+    }
+    let plain = cells.clone();
+    let mut v = grid(&cells, 20);
+    v.min_contrast = 3.0;
+    v.selection_fg = Some(Rgb::new(250, 250, 100));
+    let mut p = grid(&plain, 20);
+    p.selection_fg = v.selection_fg;
+    // 명암비를 끈 화면과 달라야 한다(장식선이 명암비를 받았다는 뜻). 같은 화면의 CPU·GPU가 같은지는 check가 본다
+    check(&mut g, &mut f, "장식선 최소 명암비·고름·흐림", &v, &p, Alpha::default());
+    let off = cpu_frame(&mut f, &p, Alpha::default());
+    let on = cpu_frame(&mut f, &v, Alpha::default());
+    assert!(diff(&off, &on).0 > 0);
+}
+
 /// #839: 상자·블록·레거시·파워라인 글자는 최소 명암비를 걸지 않는다
 #[test]
 fn graphics_elements_skip_min_contrast_like_cpu() {

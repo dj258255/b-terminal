@@ -2326,3 +2326,137 @@ fn hidden_cell_is_left_out_of_ligature_runs() {
     let hidden = bt_render::ligatures(&mut f, &row(true), None);
     assert!(hidden.iter().all(|&g| g == 0), "숨긴 `>`가 합자에 끼었다: {hidden:?}");
 }
+
+// ---- 밑줄·윗줄·취소선도 글자와 같은 길로 색을 정한다(#904, Ghostty `cell_text` 정점 셰이더) ----
+
+/// 칸 하나(공백, 장식선만)를 그려 바탕이 아닌 픽셀의 서로 다른 색을 모은다
+fn deco_colors(f: &mut Fonts, cell: &DrawCell, tweak: impl Fn(&mut GridView)) -> Vec<Rgb> {
+    let bg = if cell.selected { Rgb::new(10, 60, 120) } else { cell.bg };
+    let (_, px) = paint_ink(f, cell, tweak);
+    let mut out: Vec<Rgb> = Vec::new();
+    for p in px {
+        if p != bg && !out.contains(&p) {
+            out.push(p);
+        }
+    }
+    out
+}
+
+fn deco_cell(kind: &str, fg: Rgb, ul: Option<Rgb>) -> DrawCell {
+    let mut c = DrawCell {
+        fg,
+        bg: Rgb::new(30, 32, 40),
+        underline_color: ul,
+        ..blank(' ')
+    };
+    match kind {
+        "underline" => c.underline = bt_render::Underline::Single,
+        "overline" => c.overline = true,
+        _ => c.strike = true,
+    }
+    c
+}
+
+#[test]
+fn min_contrast_reaches_underline_overline_and_strikethrough() {
+    let Some(mut f) = fonts(1.0) else { return };
+    let near = Rgb::new(40, 44, 52);
+    let white = Rgb::new(255, 255, 255);
+    for kind in ["underline", "overline", "strike"] {
+        let cell = deco_cell(kind, near, None);
+        assert_eq!(
+            deco_colors(&mut f, &cell, |_| {}),
+            vec![near],
+            "{kind}: 기본(1)은 그대로"
+        );
+        assert_eq!(
+            deco_colors(&mut f, &cell, |v| v.min_contrast = 3.0),
+            vec![white],
+            "{kind}: 바탕과 비슷한 색은 흰색으로"
+        );
+        // 이미 대비가 충분한 색은 그대로
+        let far = deco_cell(kind, Rgb::new(220, 200, 90), None);
+        assert_eq!(
+            deco_colors(&mut f, &far, |v| v.min_contrast = 3.0),
+            vec![Rgb::new(220, 200, 90)],
+            "{kind}"
+        );
+    }
+}
+
+#[test]
+fn min_contrast_reaches_an_explicit_underline_color() {
+    let Some(mut f) = fonts(1.0) else { return };
+    let near = Rgb::new(40, 44, 52);
+    let cell = deco_cell("underline", Rgb::new(255, 255, 255), Some(near));
+    assert_eq!(deco_colors(&mut f, &cell, |_| {}), vec![near]);
+    assert_eq!(
+        deco_colors(&mut f, &cell, |v| v.min_contrast = 3.0),
+        vec![Rgb::new(255, 255, 255)]
+    );
+    let red = deco_cell("underline", Rgb::new(255, 255, 255), Some(Rgb::new(255, 0, 0)));
+    assert_eq!(
+        deco_colors(&mut f, &red, |v| v.min_contrast = 3.0),
+        vec![Rgb::new(255, 0, 0)]
+    );
+    // 밝은 바탕에서는 검은색으로
+    let mut light = deco_cell("underline", Rgb::new(0, 0, 0), Some(Rgb::new(235, 235, 230)));
+    light.bg = Rgb::new(240, 240, 235);
+    assert_eq!(
+        deco_colors(&mut f, &light, |v| v.min_contrast = 3.0),
+        vec![Rgb::new(0, 0, 0)]
+    );
+}
+
+#[test]
+fn selected_cell_decorations_follow_selection_foreground_and_selection_background() {
+    let Some(mut f) = fonts(1.0) else { return };
+    let sel_fg = Rgb::new(250, 250, 100);
+    for kind in ["underline", "overline", "strike"] {
+        let mut cell = deco_cell(kind, Rgb::new(200, 60, 60), None);
+        cell.selected = true;
+        assert_eq!(deco_colors(&mut f, &cell, |_| {}), vec![sel_fg], "{kind}: 고름 글자색");
+        // 밑줄 색을 정했으면 그 색(고름 글자색이 아니라)
+        let mut own = deco_cell(kind, Rgb::new(200, 60, 60), Some(Rgb::new(0, 255, 0)));
+        own.selected = true;
+        if kind == "underline" {
+            assert_eq!(deco_colors(&mut f, &own, |_| {}), vec![Rgb::new(0, 255, 0)]);
+        }
+        // 고름 바탕(10,60,120)과 비슷한 고름 글자색은 명암비가 바꾼다
+        let near_sel = Rgb::new(14, 64, 124);
+        assert_eq!(
+            deco_colors(&mut f, &cell, |v| {
+                v.selection_fg = Some(near_sel);
+                v.min_contrast = 3.0;
+            }),
+            vec![Rgb::new(255, 255, 255)],
+            "{kind}: 명암비는 고름 바탕과 잰다"
+        );
+    }
+}
+
+#[test]
+fn faint_decoration_keeps_its_alpha_unless_min_contrast_replaced_the_color() {
+    let Some(mut f) = fonts(1.0) else { return };
+    let bg = Rgb::new(30, 32, 40);
+    let fg = Rgb::new(200, 200, 200);
+    for kind in ["underline", "overline", "strike"] {
+        let mut cell = deco_cell(kind, fg, None);
+        cell.faint = Some(0.5);
+        assert_eq!(deco_colors(&mut f, &cell, |_| {}), vec![fg.mix(bg, 0.5)], "{kind}");
+        // 명암비가 충분하면(알파 앞 색으로 잰다) 알파는 그대로
+        assert_eq!(
+            deco_colors(&mut f, &cell, |v| v.min_contrast = 3.0),
+            vec![fg.mix(bg, 0.5)],
+            "{kind}"
+        );
+        // 명암비가 색을 흰색으로 바꾸면 알파 없이
+        let mut low = deco_cell(kind, Rgb::new(40, 44, 52), None);
+        low.faint = Some(0.5);
+        assert_eq!(
+            deco_colors(&mut f, &low, |v| v.min_contrast = 3.0),
+            vec![Rgb::new(255, 255, 255)],
+            "{kind}"
+        );
+    }
+}

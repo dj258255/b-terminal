@@ -208,6 +208,7 @@ impl Scene {
         }
         self.rects_bg = self.rects.len();
         // 2) 윗줄·취소선(글자색 줄)
+        let mut contrast_memo: Option<((Rgb, Rgb), Rgb)> = None;
         for row in 0..view.rows {
             let py = row as i32 * ch;
             for col in 0..view.cols {
@@ -215,7 +216,7 @@ impl Scene {
                 if cell.spacer || cell.hidden || !(cell.overline || cell.strike) {
                     continue;
                 }
-                let deco = decoration_color(view, cell);
+                let deco = decoration_color(view, cell, None, &mut contrast_memo);
                 let span = if cell.wide { 2 } else { 1 };
                 let px = col as i32 * cw;
                 if cell.overline {
@@ -243,7 +244,6 @@ impl Scene {
         self.rects_pre = self.rects.len();
 
         // 3) 글자와 밑줄
-        let mut contrast_memo: Option<((Rgb, Rgb), Rgb)> = None;
         for row in 0..view.rows {
             let py = row as i32 * ch;
             let mut skip_until = 0;
@@ -270,10 +270,9 @@ impl Scene {
                 }
                 let span = if cell.wide { 2 } else { 1 };
                 let fg = text_color(view, cell, &mut contrast_memo);
-                let deco = decoration_color(view, cell);
                 // 밑줄은 글자 밑에 깐다. 넓은 글자는 칸마다 따로 긋는다(CPU와 같다)
                 if cell.underline != Underline::None {
-                    let color = cell.underline_color.unwrap_or(deco);
+                    let color = decoration_color(view, cell, cell.underline_color, &mut contrast_memo);
                     let e = cache.get_mask(
                         Key::Underline(
                             cell.underline as u8,
