@@ -1192,6 +1192,8 @@ pub struct App {
     /// 앱 메뉴의 보안 키보드 입력 항목(체크 표시를 맞춘다)
     #[cfg(target_os = "macos")]
     menu_secure: Option<muda::CheckMenuItem>,
+    /// 창 메뉴 "항상 위에 띄우기"(#853). 체크는 앞에 있는 창의 상태를 따른다
+    menu_float: Option<muda::CheckMenuItem>,
 }
 
 /// 명령줄에서 온 설정 인자(설정을 다시 읽을 때 Ghostty처럼 같은 것을 다시 쓴다)
@@ -1271,6 +1273,7 @@ impl App {
             next_secure_poll: Instant::now(),
             #[cfg(target_os = "macos")]
             menu_secure: None,
+            menu_float: None,
         }
     }
 
@@ -4587,6 +4590,7 @@ impl App {
                     g.window
                         .set_window_level(crate::startup::window_level(self.w.float_on_top));
                 }
+                self.sync_float_menu();
             }
             Action::ScrollTop => {
                 if let Some(t) = self.active_pane() {
@@ -5894,6 +5898,45 @@ impl App {
             self.secure.set_scoped(id, true);
         }
         self.request_redraw_all();
+    }
+
+    /// force click이면 마우스 아래 낱말을 시스템 사전 말풍선으로 띄운다(Ghostty `quickLook`, #853).
+    /// 설정 "힘주어 클릭"이 꺼졌거나 보안 입력 중이거나 낱말이 없으면 아무것도 하지 않는다. 말풍선은 낱말 시작 칸의 글자 기준선에 붙인다
+    #[cfg(target_os = "macos")]
+    fn quick_look_under_mouse(&self, idx: usize) {
+        if !crate::lookup::force_click_enabled() {
+            return;
+        }
+        let pos = self.w.cursor_pos;
+        let Some(pane) = self.panes.get(idx) else { return };
+        let Some((col, row)) = self.cell_in(idx, pos) else {
+            return;
+        };
+        let Some(hit) = pane.session.word_at(col, row) else {
+            return;
+        };
+        let secure = self.secure.enabled() || pane.session.password_input() == Some(true);
+        let Some(text) = crate::lookup::target(Some(&hit.text), secure) else {
+            return;
+        };
+        let (Some(m), Some(r)) = (self.metrics_at(pane.font_size), self.pane_inner(pane.id)) else {
+            return;
+        };
+        let scale = self.scale.max(0.1);
+        let x = (r.x as f64 + hit.col as f64 * m.width as f64) / scale;
+        let y = (r.y as f64 + hit.row as f64 * m.height as f64 + m.baseline as f64) / scale;
+        crate::lookup::show_definition(&text, x, y);
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    fn quick_look_under_mouse(&self, _idx: usize) {}
+
+    /// 창 메뉴 "항상 위에 띄우기"의 체크를 앞에 있는 창의 상태에 맞춘다(Ghostty `syncFloatOnTopMenu`, #853)
+    fn sync_float_menu(&self) {
+        #[cfg(target_os = "macos")]
+        if let Some(item) = &self.menu_float {
+            item.set_checked(self.w.float_on_top);
+        }
     }
 
     /// 메뉴 `보안 키보드 입력`: 앱 전체로 켜고 끈다. 다음 실행에도 남긴다
@@ -7252,9 +7295,11 @@ impl ApplicationHandler<UserEvent> for App {
         self.w.gfx = Some(gfx);
         #[cfg(target_os = "macos")]
         if self.menu.is_none() {
-            let (menu, secure_item) = crate::menu::build(self.secure.global());
+            let (menu, secure_item, float_item) = crate::menu::build(self.secure.global());
             menu.init_for_nsapp();
             self.menu_secure = Some(secure_item);
+            float_item.set_checked(self.w.float_on_top);
+            self.menu_float = Some(float_item);
             let proxy = self.proxy.clone();
             muda::MenuEvent::set_event_handler(Some(move |e: muda::MenuEvent| {
                 let _ = proxy.send_event(UserEvent::Menu(e.id.0.clone()));
@@ -7549,6 +7594,9 @@ impl ApplicationHandler<UserEvent> for App {
                 }
                 let was_focused = self.w.focused;
                 self.w.focused = focused;
+                if focused {
+                    self.sync_float_menu();
+                }
                 if !focused {
                     self.w.tab_drag.cancel();
                     self.w.focus_click.clear();
@@ -7910,6 +7958,7 @@ impl ApplicationHandler<UserEvent> for App {
                 let mut st = state.clone();
                 self.pointer_deep_press(idx, &mut st);
                 self.store_human_ptr(Some(idx), &state, &st);
+                self.quick_look_under_mouse(idx);
             }
             WindowEvent::MouseWheel { delta, .. } => {
                 // 휠 배율(mouse-scroll-multiplier, #126): 줄 단위 기기(마우스 휠)와 픽셀 단위 기기(트랙패드)

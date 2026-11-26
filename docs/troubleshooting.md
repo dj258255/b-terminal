@@ -769,3 +769,12 @@
 - 고침: Ghostty 1.4.0 `src/terminfo/ghostty.zig` 148~151줄 값(`Enmg=\E[?69h`, `Dsmg=\E[?69l`, `Clmg=\E[s`, `Cmg=\E[%i%p1%d;%p2%ds`)으로 답한다. 결정문(ADR-023)과 주석을 사실에 맞게 고쳤다
 - 남긴 것: `fullkbd` 같은 것은 여전히 답하지 않는다(kitty 키보드 프로토콜의 모든 단계를 확인하지 않았다)
 - 0.102.0에서 풀기: 없음. 프로그램이 좌우 여백을 질의에 기대 켜는지는 확인하지 않았다
+
+## 94. force click으로 낱말 사전이 뜨지 않고, 창 메뉴에 "항상 위에 띄우기"가 없다
+
+- 언제: 2026-11-26, #853. 0.102.0까지의 동작이다. Ghostty 1.4.0 macOS(`SurfaceView_AppKit.swift`의 `pressureChange`·`quickLook`, `AppDelegate.swift`의 `floatOnTop`)와 견준 조사에서 찾았다
+- 증상: 낱말 위에서 트랙패드를 세게 누르면 낱말이 골라지기만 하고 시스템 사전 말풍선이 뜨지 않았다. `toggle_window_float_on_top` 키는 있었지만 창 메뉴에 항목이 없어 마우스로 켜고 끌 수 없었다
+- 까닭: force click 처리(#807)가 낱말 고르기까지만 했고 AppKit의 `showDefinitionForAttributedString:atPoint:`를 부르지 않았다. 메뉴에는 항목과 체크 표시가 없었다
+- 고침: force click이 강한 단계(2)로 처음 바뀔 때 마우스 아래 낱말(`Session::word_at`, 두 번 누르기와 같은 낱말 규칙)을 사전 말풍선으로 띄운다. 말풍선은 낱말 시작 칸의 글자 기준선에 붙인다(Ghostty `tl_px_y`와 같다). 시스템 설정의 "힘주어 클릭"(`com.apple.trackpad.forceClick`)이 꺼져 있거나, 보안 입력 중이거나, 암호 입력 중으로 보이는 칸이거나, 낱말이 비었으면 하지 않는다. 창 메뉴에 "항상 위에 띄우기" 항목을 더하고 체크는 앞에 있는 창의 상태를 따른다. 작업 공간이 unsafe를 금지하므로 `NSApplication.keyWindow.contentView`로 뷰를 얻는 safe 호출만 쓴다
+- 남긴 것: 사전 글자 모양(Ghostty는 터미널 글꼴을 넘긴다)은 시스템 기본이다. 세 손가락 탭은 winit이 이벤트를 주지 않아 하지 않는다. 실제 트랙패드의 force click으로는 확인하지 못했다
+- 0.102.0에서 풀기: 낱말을 고른 뒤 Control-Command-D(시스템 사전 단축키)를 쓰거나, 키 묶음으로 `toggle_window_float_on_top`을 건다

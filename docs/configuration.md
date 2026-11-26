@@ -332,7 +332,7 @@ HTML은 `<div style="font-family: monospace; white-space: pre;">` 안에 칸의 
 | `scroll_page_lines:N` / `scroll_page_fractional:F` | N줄 / 화면의 F배만큼 스크롤(양수면 아래로, 음수면 위로) | (없음) |
 | `toggle_fullscreen` | 전체 화면 켜고 끄기 | `super+ctrl+f` `super+enter`(macOS) |
 | `toggle_maximize` | 지금 창 최대화 켜고 끄기(Ghostty와 같이 기본 키 없음) | (없음) |
-| `toggle_window_float_on_top` | 지금 창을 다른 창 위에 항상 띄우기 켜고 끄기(Ghostty는 macOS만 구현) | (없음) |
+| `toggle_window_float_on_top` | 지금 창을 다른 창 위에 항상 띄우기 켜고 끄기(Ghostty는 macOS만 구현). 윈도우 메뉴의 "항상 위에 띄우기"(체크 표시, 앞에 있는 창의 상태를 따름)와 같은 동작입니다 | (없음) |
 | `close_window` / `close_all_windows` | 지금 창 / 모든 창 닫기. 프로그램이 도는 칸이 있으면 `confirm-close-surface`에 따라 확인 막대로 묻습니다(`close_all_windows`는 Ghostty 문서가 "효과 없음, `all:close_window`를 쓰라"고 한 동작인데 b-terminal은 닫습니다) | `super+shift+w` / `super+shift+alt+w`(macOS) |
 | `goto_window:previous` / `goto_window:next` | 창을 만든 차례대로 앞·뒤 창에 포커스(끝에서 돌아감, 퀵 터미널은 건너뜀) | (없음) |
 | `move_tab:N` | 지금 탭을 N칸 옮김(양수는 오른쪽, 음수는 왼쪽, 끝을 넘으면 돌아감) | (없음) |
@@ -434,7 +434,7 @@ Ghostty 설정에 흔한 아래 동작은 `keybind`에 써도 경고가 나지 �
 
 - 수식 키: macOS는 Option 하나, 그 밖에는 Ctrl(또는 Super)과 Alt를 함께 누릅니다(Ghostty `surface_mouse.zig`의 `isRectangleSelectState`). 누르는 동안 포인터는 십자입니다([마우스 포인터 모양](#마우스-포인터-모양osc-22)).
 - 같은 자리를 빠르게 이어 누르면 두 번은 낱말, 세 번은 줄을 고르고 네 번째 이후에도 줄 그대로입니다(한 번으로 돌아가지 않음). 이어지는 누름인지는 `click-repeat-interval` 안이고 처음 누른 자리에서 픽셀 거리가 칸 너비(그 칸의 글자 너비) 이하인지로 가르며, 칸이 다르더라도 그 거리 안이면 이어집니다(Ghostty `Surface.zig`의 `max_distance`).
-- macOS 트랙패드를 강하게 누르면(force click) 왼쪽 단추를 누른 채일 때 처음 누른 칸의 낱말을 고르고 그 끌기는 끝납니다. 단추를 놓을 때까지 더 움직여도 고르기를 늘리지 않습니다(Ghostty `mousePressureCallback`). 마우스 보고 중인 프로그램 안에서는 누름이 프로그램에 가므로 하지 않습니다. 실제 트랙패드로 확인하지는 못했습니다.
+- macOS 트랙패드를 강하게 누르면(force click) 왼쪽 단추를 누른 채일 때 처음 누른 칸의 낱말을 고르고 그 끌기는 끝납니다. 단추를 놓을 때까지 더 움직여도 고르기를 늘리지 않습니다(Ghostty `mousePressureCallback`). 마우스 보고 중인 프로그램 안에서는 누름이 프로그램에 가므로 하지 않습니다. 이어서 시스템 사전 말풍선을 마우스 아래 낱말(낱말 시작 칸의 글자 기준선)에 띄웁니다(Ghostty `quickLook`). 시스템 설정의 "힘주어 클릭"(`com.apple.trackpad.forceClick`)이 꺼져 있거나 보안 입력 중이거나 암호 입력 중으로 보이는 칸이거나 낱말이 비어 있으면 띄우지 않습니다. 말풍선 글자는 터미널 글꼴이 아니라 시스템 기본입니다(Ghostty는 터미널 글꼴). 세 손가락 탭 조회는 winit이 이벤트를 주지 않아 없습니다. 실제 트랙패드로 확인하지는 못했습니다.
 - 끌 때마다 그 순간의 수식 키로 사각 여부를 정합니다. 끄는 도중에 수식 키를 누르거나 떼면 다음 움직임부터 사각과 글자 고르기가 바뀝니다. 두 번(낱말)·세 번(줄) 누르기는 사각을 보지 않습니다.
 - 누른 칸과 끝 칸을 넣을지는 칸 안의 자리가 정합니다(글자 고르기와 같고 Ghostty `SelectionGesture.zig`의 `dragSelection`과 같은 규칙입니다). 칸 너비의 60% 왼쪽이 칸의 왼쪽, 나머지가 오른쪽이고, 오른쪽으로 끌면 누른 칸은 왼쪽을 눌러야, 끝 칸은 오른쪽에서 끌어야 들어갑니다(왼쪽으로 끌면 반대). 한 칸 안에서 끌 때는 그 경계를 가로지르면 그 칸 하나를 고르고, 가로지르지 않거나 붙은 두 칸 사이 경계만 지나면 고른 것이 없습니다. 사각은 열만 봅니다. 한 번 누르고 끌지 않으면 고른 것이 없는 것은 그대로입니다. 끌 때 포인터가 칸의 위·아래 가장자리 밖(위 끝 1픽셀 안이거나 그 위, 아래 끝 1픽셀 안이거나 그 아래)에 있으면 15ms마다 한 줄씩 스크롤하며 그 자리의 칸까지 고르기를 늘리고(Ghostty `autoscrollTick`과 같음, 포인터가 멈춰 있어도 계속), 칸 안으로 돌아오거나 단추를 놓으면 멈춥니다. 왼쪽·오른쪽 밖은 가장자리 칸에 붙습니다. 마우스 보고 중인 프로그램 안에서는 누름이 프로그램에 가므로 고르지 않아 해당이 없고, 대체 화면은 스크롤백이 없어 스크롤하지 않습니다. 실제 창에서 사람이 끌어 본 것은 아닙니다.
 - 사각 가장자리에 넓은 글자(한글·이모지)가 걸치면 그 글자를 통째로 가져옵니다. 줄마다 직접 친 줄 끝 공백은 남기고(`clipboard-trim-trailing-spaces`가 켜져 있으면 복사하는 글에서 지웁니다), 끝의 빈 줄은 내지 않습니다.

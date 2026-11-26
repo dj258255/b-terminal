@@ -20,6 +20,7 @@ mod icon;
 mod keymap;
 mod keys;
 mod lifecycle;
+mod lookup;
 mod menu;
 mod mouse;
 mod padding;
