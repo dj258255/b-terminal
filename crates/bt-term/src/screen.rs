@@ -36,6 +36,8 @@ impl CellFlags {
     pub const PLACEHOLDER: Self = Self(1 << 16);
     /// 흐림(SGR 2). 글자색은 그대로 두고 그릴 때 `faint-opacity`를 건다(#835)
     pub const FAINT: Self = Self(1 << 17);
+    /// 깜빡임(SGR 5·6, #862). 렌더러가 커서 깜빡임과 같은 박자로 글자를 숨겼다 보인다
+    pub const BLINK: Self = Self(1 << 18);
 
     pub const fn empty() -> Self {
         Self(0)

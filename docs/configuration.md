@@ -117,7 +117,7 @@ config-file = ?~/.config/b-terminal/local   # ?가 붙으면 없어도 된다
 | `macos-auto-secure-input` | `true` / `false` | `true` | macOS에서 암호 입력을 알아채면(PTY의 termios가 줄 단위 입력이고 되울림이 꺼짐, 200ms마다 살핌) 그 칸이 초점일 때 보안 키보드 입력을 켭니다. 앱이 뒤로 가면 끄고 앞으로 오면 다시 켭니다. 끄면 칸 단위로는 켜지 않고 `toggle_secure_input`도 아무 일이 없습니다. 자물쇠 커서는 이 값과 상관없이 그려집니다. ssh 너머의 암호는 알아채지 못합니다(Ghostty도 같음). 앱 메뉴 `보안 키보드 입력`(앱 전체로 켬, 다음 실행에도 남음)은 이 값과 상관없습니다. macOS 밖에서는 자물쇠 커서만 있습니다 |
 | `macos-secure-input-indication` | `true` / `false` | `true` | 보안 입력이 켜져 있는 동안 창 오른쪽 위에 자물쇠 표시를 그립니다(누르면 설명이 뜨는 것은 없음) |
 | `cursor-style` | `block` `bar` `underline` `block_hollow` | `block` | 프로그램이 바꾸면 그쪽이 이깁니다. 암호 입력 중에는 자물쇠입니다 |
-| `cursor-style-blink` | `true` / `false` | 끔 | 0.6초마다 깜빡입니다. 프로그램이 DECSCUSR(`ESC[1 q` 등)로 바꾸면 그쪽을 따르고, 키를 치는 동안과 창을 보지 않을 때는 깜빡이지 않습니다 |
+| `cursor-style-blink` | `true` / `false` | 끔 | 0.6초마다 깜빡입니다. 프로그램이 DECSCUSR(`ESC[1 q` 등)로 바꾸면 그쪽을 따르고, 키를 치는 동안과 창을 보지 않을 때는 깜빡이지 않습니다. 깜빡이는 글자(SGR 5·6)도 같은 박자로 숨었다 보이며(kitty처럼), 이 값이 꺼져 있어도 글자는 깜빡입니다 |
 | `window-padding-x` / `window-padding-y` | `2` 또는 `왼,오른`(`위,아래`) | `2` | 포인트 |
 | `window-padding-balance` | `false` `true` `equal` | `false` | 칸의 크기가 글자 칸 크기로 나누어떨어지지 않아 남는 자리를 네 변에 나눕니다(끄면 오른쪽·아래에 몰림). `true`는 Ghostty처럼 위 여백을 (왼쪽 + 오른쪽 여백 + 칸 너비) / 2까지로 묶고 넘는 것은 아래로 보내고, `equal`(Ghostty 1.4)은 위아래를 똑같이 나눕니다. 나눌 때는 `window-padding-x`·`-y`까지 합친 남는 자리를 반씩 나누므로 두 값이 좌우·위아래로 다르면 그 차이는 남지 않습니다(Ghostty와 같음) |
 | `window-padding-color` | `background` `extend` `extend-always` | `background` | 여백 색. `extend`는 가장 가까운 칸의 바탕색으로 늘이되, 주 화면에서 가장 가까운 줄에 기본 바탕색 칸·프롬프트·powerline 꼭 맞춤 글자가 있으면 위아래로는 늘이지 않습니다(Ghostty와 같은 규칙). `extend-always`는 따지지 않고 늘입니다 |

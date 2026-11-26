@@ -44,6 +44,7 @@ mod state;
 mod status_note;
 mod tabbar;
 mod tabcolor;
+mod text_blink;
 mod toggles;
 mod undo;
 mod winact;

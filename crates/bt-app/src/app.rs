@@ -7011,13 +7011,18 @@ impl App {
             )
         });
         // 칸마다 렌더러 셀과 커서를 미리 만든다(앞 프레임과 견주려고)
-        let blink_hidden = self.blink_wanted_for(&views) && !self.w.blink_on;
-        self.w.blink_wanted = self.blink_wanted_for(&views);
+        let cursor_blink = self.blink_wanted_for(&views);
+        let blink_hidden = cursor_blink && !self.w.blink_on;
+        // 깜빡이는 글자(SGR 5·6, #862): 커서와 같은 박자·같은 멈춤 규칙(창을 보고 있을 때만). 보이는 깜빡임이 없으면 깨우지 않는다
+        let text_blink = self.w.focused && views.iter().any(|v| crate::text_blink::wanted(&v.screen.cells));
+        let text_visible = !text_blink || self.w.blink_on;
+        self.w.blink_wanted = cursor_blink || text_blink;
         let drawn: Vec<(Vec<DrawCell>, Option<DrawCursor>, Option<String>)> = views
             .iter()
             .map(|v| {
                 let screen = &v.screen;
                 let mut cells = to_draw_cells(screen, &theme);
+                crate::text_blink::apply(&mut cells, &screen.cells, text_visible);
                 // Cmd를 누른 채 올라간 링크에 밑줄. 이미 곧은 밑줄이면 이중(#288)
                 if let Some((_, hit)) = hover.as_ref().filter(|(h, _)| *h == v.id) {
                     for sp in &hit.spans {
