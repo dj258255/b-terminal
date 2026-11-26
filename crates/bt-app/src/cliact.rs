@@ -24,6 +24,8 @@ pub struct Env {
     pub dark: bool,
     /// 사용자 테마 폴더
     pub theme_dirs: Vec<PathBuf>,
+    /// 표준 입출력이 모두 터미널일 때 `+list-themes`가 띄우는 대화형 화면. 터미널이 아니면 `None`(목록만 찍는다)
+    pub pick: Option<crate::themepick::PickFn>,
 }
 
 impl Env {
@@ -34,6 +36,7 @@ impl Env {
             editor: std::env::var("EDITOR").ok(),
             dark: crate::system_is_dark(),
             theme_dirs: bt_core::config::theme_dirs(),
+            pick: crate::themepick::is_interactive().then_some(crate::themepick::run as crate::themepick::PickFn),
         }
     }
 }
@@ -48,7 +51,7 @@ const ACTIONS: &[(&str, &str)] = &[
     ),
     (
         "list-themes",
-        "테마 이름과 자리를 보입니다 (--path, --color=dark|light, --plain)",
+        "테마를 보입니다. 터미널이면 미리 보며 고르는 화면 (--path, --color=dark|light, --plain)",
     ),
     (
         "validate-config",
@@ -312,7 +315,7 @@ fn background_luminance(theme_text: &str) -> Option<f64> {
 }
 
 fn list_themes(args: &[String], env: &Env, io: &mut Io) -> i32 {
-    let (mut path, mut color) = (false, "all".to_string());
+    let (mut path, mut color, mut plain) = (false, "all".to_string(), false);
     for a in args {
         if let Some(r) = bool_arg(a, "path") {
             match r {
@@ -331,7 +334,9 @@ fn list_themes(args: &[String], env: &Env, io: &mut Io) -> i32 {
                 return 1;
             }
             color = v.to_string();
-        } else if a != "--plain" {
+        } else if a == "--plain" {
+            plain = true;
+        } else {
             return unsupported("list-themes", a, io);
         }
     }
@@ -352,6 +357,10 @@ fn list_themes(args: &[String], env: &Env, io: &mut Io) -> i32 {
         }
     }
     themes.sort_by_key(|(n, ..)| n.to_lowercase());
+    // 터미널에서 `--plain` 없이 부르면 대화형 화면(Ghostty와 같다). `--path`는 화면에서 쓰지 않는다
+    if let (Some(pick), false) = (env.pick, plain) {
+        return pick_theme(pick, &themes, &color, env, io);
+    }
     for (n, loc, file) in themes {
         if color != "all" {
             let text = match &file {
@@ -374,6 +383,53 @@ fn list_themes(args: &[String], env: &Env, io: &mut Io) -> i32 {
         }
     }
     0
+}
+
+/// 대화형 화면을 띄운다. 고른 테마는 `theme = 이름` 줄로 알려 준다(설정 파일은 고치지 않는다)
+fn pick_theme(
+    pick: crate::themepick::PickFn,
+    themes: &[(String, &str, Option<PathBuf>)],
+    color: &str,
+    env: &Env,
+    io: &mut Io,
+) -> i32 {
+    use crate::themepick::{ColorFilter, Entry};
+    let entries: Vec<Entry> = themes
+        .iter()
+        .map(|(name, _, file)| match file {
+            Some(p) => {
+                let text = std::fs::read_to_string(p).map_err(|e| e.to_string());
+                Entry::new(name, file.clone(), text.as_deref().map_err(String::clone))
+            }
+            None => Entry::new(
+                name,
+                None,
+                Ok(bt_core::config::bundled_theme_text(name).unwrap_or_default()),
+            ),
+        })
+        .collect();
+    let filter = match color {
+        "dark" => ColorFilter::Dark,
+        "light" => ColorFilter::Light,
+        _ => ColorFilter::All,
+    };
+    let auto = env
+        .edit_path
+        .parent()
+        .unwrap_or(Path::new("."))
+        .join(crate::themepick::AUTO_FILE);
+    match pick(entries, filter, env.dark, auto) {
+        Ok(out) => {
+            if let Some(name) = out.picked {
+                let _ = writeln!(io.out, "theme = {name}");
+            }
+            out.code
+        }
+        Err(e) => {
+            let _ = writeln!(io.err, "+list-themes: 화면을 띄울 수 없습니다: {e}");
+            1
+        }
+    }
 }
 
 fn validate_config(args: &[String], env: &Env, io: &mut Io) -> i32 {
@@ -577,6 +633,7 @@ mod tests {
             editor: None,
             dark: true,
             theme_dirs: vec![dir.join("themes")],
+            pick: None,
         }
     }
 
@@ -925,6 +982,138 @@ mod tests {
         assert_eq!(names, sorted, "이름순(대소문자 무시)");
         assert_eq!(go("list-themes", &["--plain"], &env(&d)).0, 0);
         assert_eq!(go("list-themes", &["--bogus"], &env(&d)).0, 1);
+    }
+
+    use crate::themepick::{ColorFilter, Entry, Outcome};
+    use std::path::PathBuf;
+
+    /// 가짜 대화형 화면이 받은 것(스레드마다 따로라 시험끼리 섞이지 않는다)
+    struct Seen {
+        names: Vec<String>,
+        labels: Vec<String>,
+        filter: ColorFilter,
+        ui_dark: bool,
+        auto_path: PathBuf,
+    }
+
+    thread_local! {
+        static SEEN: RefCell<Option<Seen>> = const { RefCell::new(None) };
+    }
+
+    fn fake_pick(
+        entries: Vec<Entry>,
+        filter: ColorFilter,
+        ui_dark: bool,
+        auto_path: PathBuf,
+    ) -> std::io::Result<Outcome> {
+        SEEN.with(|s| {
+            *s.borrow_mut() = Some(Seen {
+                names: entries.iter().map(|e| e.name.clone()).collect(),
+                labels: entries.iter().map(|e| e.label.clone()).collect(),
+                filter,
+                ui_dark,
+                auto_path,
+            })
+        });
+        Ok(Outcome {
+            code: 0,
+            picked: Some("Dracula".into()),
+        })
+    }
+
+    fn interactive_env(dir: &Path) -> Env {
+        Env {
+            pick: Some(fake_pick),
+            ..env(dir)
+        }
+    }
+
+    /// 파이프나 `--plain`일 때 출력은 바이트 단위로 예전과 같다: 넣어 둔 테마와 사용자 테마를 이름순(대소문자 무시)으로
+    /// `이름 (자리)` 한 줄씩. 아래는 같은 출력을 따로 다시 만든 것(대화형 화면을 더하기 전부터의 규칙)
+    fn expected_plain(d: &Path) -> String {
+        let mut all: Vec<(String, &str)> = vec![("Zzz My Theme".into(), "user")];
+        all.extend(bt_core::config::bundled_theme_names().map(|n| (n.to_string(), "resources")));
+        let _ = d;
+        all.sort_by_key(|(n, _)| n.to_lowercase());
+        all.iter().map(|(n, l)| format!("{n} ({l})\n")).collect()
+    }
+
+    #[test]
+    fn list_themes_plain_output_is_unchanged_by_the_interactive_screen() {
+        let d = tmpdir("plainbytes");
+        std::fs::create_dir_all(d.join("themes")).unwrap();
+        std::fs::write(d.join("themes/Zzz My Theme"), "background = #000000\n").unwrap();
+        let want = expected_plain(&d);
+        // 표준 출력이 터미널이 아니면(화면 함수가 없으면) 목록
+        let (code, out, err, _) = go("list-themes", &[], &env(&d));
+        assert_eq!((code, err.as_str()), (0, ""));
+        assert_eq!(out, want);
+        // 터미널이어도 --plain이면 같은 목록이고 화면 함수는 부르지 않는다
+        SEEN.with(|s| *s.borrow_mut() = None);
+        let (code, out, _, _) = go("list-themes", &["--plain"], &interactive_env(&d));
+        assert_eq!(code, 0);
+        assert_eq!(out, want, "--plain은 터미널에서도 목록");
+        assert!(SEEN.with(|s| s.borrow().is_none()), "--plain이면 화면을 띄우지 않는다");
+        // `--plain=false`는 아직 인자가 아니다(Ghostty의 불리언 인자와 같게 받지 않는다 — 지금과 같다)
+        assert_eq!(go("list-themes", &["--plain=false"], &env(&d)).0, 1);
+    }
+
+    #[test]
+    fn list_themes_plain_prints_names_as_they_are_even_with_control_bytes() {
+        // 지금까지의 동작(바이트 그대로)을 지킨다. 화면에 찍는 쪽 닦기는 대화형 화면이 한다
+        let d = tmpdir("plainesc");
+        std::fs::create_dir_all(d.join("themes")).unwrap();
+        std::fs::write(d.join("themes/Evil\u{1b}[31mX"), "background = #000000\n").unwrap();
+        let (_, out, _, _) = go("list-themes", &[], &env(&d));
+        assert!(out.lines().any(|l| l == "Evil\u{1b}[31mX (user)"));
+    }
+
+    #[test]
+    fn list_themes_on_a_terminal_hands_sorted_entries_to_the_screen() {
+        let d = tmpdir("tty");
+        std::fs::create_dir_all(d.join("themes")).unwrap();
+        std::fs::write(d.join("themes/Zzz My Theme"), "background = #ffffff\n").unwrap();
+        std::fs::write(d.join("themes/Evil\u{1b}[31mX"), "background = #000000\n").unwrap();
+        let mut e = interactive_env(&d);
+        e.dark = false;
+        let (code, out, err, _) = go("list-themes", &["--color=light", "--path"], &e);
+        assert_eq!((code, err.as_str()), (0, ""));
+        let seen = SEEN.with(|s| s.borrow_mut().take()).expect("화면 함수를 불렀다");
+        assert_eq!(seen.filter, ColorFilter::Light, "--color가 처음 거르기");
+        assert!(!seen.ui_dark);
+        assert_eq!(
+            seen.auto_path,
+            d.join("home/auto/theme.ghostty"),
+            "설정 파일 옆 auto 폴더"
+        );
+        let mut sorted = seen.names.clone();
+        sorted.sort_by_key(|n| n.to_lowercase());
+        assert_eq!(seen.names, sorted, "이름순");
+        assert_eq!(seen.names.len(), bt_core::config::bundled_theme_names().count() + 2);
+        let evil = seen.names.iter().position(|n| n.contains('\u{1b}')).unwrap();
+        assert_eq!(seen.labels[evil], "Evil[31mX", "화면에 찍을 이름은 제어 문자를 지운다");
+        // 고른 테마는 적을 줄로 알려 준다(설정 파일은 고치지 않는다)
+        assert_eq!(out, "theme = Dracula\n");
+        assert!(!d.join("home/config").exists());
+    }
+
+    #[test]
+    fn list_themes_screen_exit_code_and_no_pick() {
+        fn quit_with_3(_: Vec<Entry>, _: ColorFilter, _: bool, _: PathBuf) -> std::io::Result<Outcome> {
+            Ok(Outcome { code: 3, picked: None })
+        }
+        let d = tmpdir("ttyexit");
+        let mut e = interactive_env(&d);
+        e.pick = Some(quit_with_3);
+        let (code, out, _, _) = go("list-themes", &[], &e);
+        assert_eq!((code, out.as_str()), (3, ""));
+        fn broken(_: Vec<Entry>, _: ColorFilter, _: bool, _: PathBuf) -> std::io::Result<Outcome> {
+            Err(std::io::Error::other("원시 모드를 켤 수 없습니다"))
+        }
+        e.pick = Some(broken);
+        let (code, out, err, _) = go("list-themes", &[], &e);
+        assert_eq!((code, out.as_str()), (1, ""));
+        assert!(err.contains("원시 모드를 켤 수 없습니다"), "{err}");
     }
 
     #[test]

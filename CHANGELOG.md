@@ -5,6 +5,7 @@
 ## [아직 릴리스하지 않음]
 
 - **기본 창 여백이 넓어지고 남는 자리가 고르게 나뉩니다(바뀐 기본값).** `window-padding-x` 기본이 2에서 10포인트, `window-padding-y`가 2에서 8포인트가 되고, `window-padding-balance` 기본이 `false`에서 `true`가 됩니다(Ghostty 1.4.0 기본은 2·2·`false`라 일부러 달라집니다). 글자가 창 가장자리에 붙지 않고, 칸 크기로 나누어떨어지지 않는 남는 픽셀이 오른쪽·아래에만 몰리지 않습니다. 설정에 적은 값(0 포함)은 그대로 따릅니다. 예전 모양으로 돌리려면 `window-padding-x = 2`, `window-padding-y = 2`, `window-padding-balance = false`를 적습니다. `+show-config`가 `window-padding-balance`도 보입니다 (#889)
+- `b-terminal +list-themes`를 터미널에서 돌리면 테마를 미리 보며 고르는 화면을 띄웁니다(Ghostty 1.4.0처럼): 왼쪽 목록, 오른쪽에 팔레트 16색·예시 코드·글 모양을 24비트 색으로, `/` 찾기, `f` 밝음/어둠 거르기, `Enter`로 설정에 더할 `theme = 이름` 줄 보기와 `w`로 `auto/theme.ghostty` 쓰기. 파이프나 `--plain`이면 목록을 예전과 같은 바이트로 찍고, 설정 파일은 고치지 않습니다. 문서의 넣어 둔 테마 수를 914개로 바로잡았습니다 (#890)
 
 ## [0.105.0] - 2026-11-27
 

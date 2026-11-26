@@ -24,9 +24,11 @@ env_logger.workspace = true
 gethostname = "1.1.0"
 global-hotkey = "0.9.0"
 log.workspace = true
-rustix = { version = "1", features = ["process"] }
+rustix = { version = "1", features = ["process", "stdio", "termios"] }
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
+# `+list-themes` 대화형 화면이 SIGTERM·SIGHUP에도 터미널을 되돌리려고(안전한 flag 등록만 쓴다). alacritty_terminal이 이미 같은 판을 쓴다
+signal-hook = "0.4"
 softbuffer = "0.4"
 winit = "0.30"
 
