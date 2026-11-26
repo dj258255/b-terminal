@@ -488,6 +488,10 @@ enum Pending {
         req: bt_term::kitty_clip::WriteRequest,
         text: String,
     },
+    /// 글이나 OSC 8이 가리킨 `ssh:`·`tel:` 같은 주소를 연다(#850). 다른 앱을 띄울 수 있어 한 번 묻는다(Ghostty처럼). 막대에 보인 `url`을 그대로 연다
+    OpenLink {
+        url: String,
+    },
 }
 
 impl Pending {
@@ -499,6 +503,7 @@ impl Pending {
             Pending::ClipboardRead { .. }
                 | Pending::ClipboardWrite { .. }
                 | Pending::OpenFile { .. }
+                | Pending::OpenLink { .. }
                 | Pending::KittyRead { .. }
                 | Pending::KittyWrite { .. }
         )
@@ -517,7 +522,11 @@ impl Pending {
             | Pending::ClipboardWrite { pane: id, .. }
             | Pending::KittyRead { pane: id, .. }
             | Pending::KittyWrite { pane: id, .. } => leaves.contains(id),
-            Pending::CloseWindow | Pending::CloseAllWindows | Pending::Quit | Pending::OpenFile { .. } => false,
+            Pending::CloseWindow
+            | Pending::CloseAllWindows
+            | Pending::Quit
+            | Pending::OpenFile { .. }
+            | Pending::OpenLink { .. } => false,
         }
     }
 }
@@ -2394,6 +2403,7 @@ impl App {
             | Pending::ClipboardRead { .. }
             | Pending::ClipboardWrite { .. }
             | Pending::OpenFile { .. }
+            | Pending::OpenLink { .. }
             | Pending::KittyRead { .. }
             | Pending::KittyWrite { .. } => Vec::new(),
         };
@@ -2436,6 +2446,7 @@ impl App {
             | Pending::ClipboardRead { .. }
             | Pending::ClipboardWrite { .. }
             | Pending::OpenFile { .. }
+            | Pending::OpenLink { .. }
             | Pending::KittyRead { .. }
             | Pending::KittyWrite { .. } => return,
         };
@@ -3012,6 +3023,7 @@ impl App {
             Pending::ClipboardRead { pane, reply, text } => self.answer_clipboard_read(pane, &reply, &text),
             Pending::ClipboardWrite { pane, text } => self.answer_clipboard_write(pane, text),
             Pending::OpenFile { cwd, input } => self.open_dropped(event_loop, cwd, Some(input)),
+            Pending::OpenLink { url } => crate::desktop::open_link(&bt_term::links::OpenTarget::Confirm(url)),
             Pending::KittyRead { pane, req, text } => self.answer_kitty_read(pane, &req, &text),
             Pending::KittyWrite { pane, req, text } => self.answer_kitty_write(pane, &req, text),
         }
@@ -4022,9 +4034,30 @@ impl App {
         }
     }
 
-    /// 링크를 연다: 열어도 되는 것(http·https, 이 컴퓨터의 파일)만
-    fn open_link(&mut self, url: &str) {
-        match bt_term::links::classify(url, &is_local_host) {
+    /// 링크를 연다: 열어도 되는 것(웹, mailto, 이 컴퓨터의 파일·경로)만. `ssh:` 같은 다른 앱 주소는 한 번 묻는다(#850).
+    /// `explicit`(OSC 8)는 주소만 보고, 화면 글에서 찾은 경로는 `pane`의 작업 폴더(OSC 7)를 기준으로 푼다
+    fn open_link(&mut self, url: &str, explicit: bool, pane: u64) {
+        use bt_term::links::{OpenContext, OpenTarget, classify, classify_text};
+        let cwd = self.panes.iter().find(|p| p.id == pane).and_then(|p| p.cwd.clone());
+        let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
+        let ctx = OpenContext {
+            cwd: cwd.as_deref(),
+            home: home.as_deref(),
+        };
+        let target = if explicit {
+            classify(url, &is_local_host)
+        } else {
+            classify_text(url, &is_local_host, &ctx)
+        };
+        match target {
+            Some(OpenTarget::Confirm(u)) => {
+                let shown: String = bt_core::proto::printable(&u).chars().take(80).collect();
+                self.ask(
+                    Pending::OpenLink { url: u },
+                    format!("다른 앱으로 이 링크를 열까요? {shown}"),
+                    "열기",
+                );
+            }
             Some(target) => crate::desktop::open_link(&target),
             None => {
                 let shown: String = bt_core::proto::printable(url).chars().take(60).collect();
