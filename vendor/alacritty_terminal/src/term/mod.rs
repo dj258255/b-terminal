@@ -595,6 +595,10 @@ pub struct Config {
     /// b-terminal 패치(#180): 글자 묶음 폭(mode 2027)의 처음 값. Ghostty의
     /// `grapheme-width-method = unicode`면 켠다(기본). 프로그램이 DECSET/DECRST 2027로 바꿀 수 있다.
     pub grapheme_cluster: bool,
+
+    /// b-terminal 패치(#857): 동아시아 모호 폭(East Asian Ambiguous) 글자를 두 칸으로 센다(`ambiguous-width = wide`).
+    /// 기본은 끔(한 칸). 켜면 `unicode-width`의 `width_cjk`로 센다
+    pub ambiguous_wide: bool,
 }
 
 impl Default for Config {
@@ -607,6 +611,7 @@ impl Default for Config {
             kitty_keyboard: Default::default(),
             osc52: Default::default(),
             grapheme_cluster: true,
+            ambiguous_wide: false,
         }
     }
 }
@@ -775,6 +780,11 @@ impl<T> Term<T> {
     }
 
     /// Set new options for the [`Term`].
+    /// b-terminal 패치(#857): 모호 폭을 두 칸으로 세는지 바꾼다. 이미 찍힌 칸은 그대로 두고 이 뒤에 찍는 글자부터 따른다
+    pub fn set_ambiguous_wide(&mut self, on: bool) {
+        self.config.ambiguous_wide = on;
+    }
+
     pub fn set_options(&mut self, options: Config)
     where
         T: EventListener,
@@ -2053,6 +2063,18 @@ impl<T> Term<T> {
         cell.flags = keep;
     }
 
+    /// b-terminal 패치(#857): 글자 하나가 차지하는 칸 수. 폭을 세는 곳은 이 함수와 `str_width` 둘뿐이다.
+    /// `ambiguous-width = wide`면 동아시아 모호 폭 글자를 두 칸으로 센다(`unicode-width`의 `width_cjk`).
+    /// 렌더러·고르기·복사·찾기는 따로 세지 않고 이 폭으로 찍힌 셀의 `WIDE_CHAR` 표시를 따른다
+    fn char_width(&self, c: char) -> Option<usize> {
+        if self.config.ambiguous_wide { c.width_cjk() } else { c.width() }
+    }
+
+    /// b-terminal 패치(#857): 글 한 묶음의 칸 수(`char_width`와 같은 규칙)
+    fn str_width(&self, s: &str) -> usize {
+        if self.config.ambiguous_wide { s.width_cjk() } else { s.width() }
+    }
+
     /// b-terminal 패치(#180): `c`가 방금 찍은 글자와 한 글자 묶음(extended grapheme cluster)이면
     /// 그 칸에 이어 붙이고 `true`. 커서가 방금 찍은 자리 그대로일 때만 본다(CR·커서 이동·지우기·스크롤 뒤에는
     /// 앞 칸과 이어지지 않는다). 이어 붙인 결과가 U+FE0F로 두 칸이 되는 글자(❤️)면 뒤 칸을 채운다.
@@ -2114,7 +2136,7 @@ impl<T> Term<T> {
             } else {
                 Effect::NoChange
             }
-        } else if !was_wide && (text.width() == 2 || c.width().is_some_and(|w| w > 0)) {
+        } else if !was_wide && (self.str_width(&text) == 2 || self.char_width(c).is_some_and(|w| w > 0)) {
             // b-terminal(#581): 묶음에 덧붙는 글자가 폭을 가지면(묶음 안에서 폭 0이 아니면) 묶음은 폭 2다
             // (Ghostty `graphemeWidthEffect`, grapheme.zig 66줄: `!width_zero_in_grapheme`면 `.wide`). 묶음 전체의
             // 합산 폭만 보면 ❤+ZWJ+👍처럼 ZWJ 뒤의 넓은 이모지를 놓친다
@@ -2254,7 +2276,7 @@ impl<T: EventListener> Handler for Term<T> {
         }
 
         // Number of cells the char will occupy.
-        let width = match c.width() {
+        let width = match self.char_width(c) {
             Some(width) => width,
             None => return,
         };

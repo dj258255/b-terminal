@@ -245,6 +245,18 @@ pub enum AlphaBlending {
     LinearCorrected,
 }
 
+/// 동아시아 모호 폭(East Asian Ambiguous) 글자를 몇 칸으로 세는지(`ambiguous-width`, #857).
+/// Ghostty·kitty에는 없고 WezTerm `treat_east_asian_ambiguous_width_as_wide`·iTerm2 "Ambiguous characters are double-width"
+/// ·Windows Terminal `compatibility.ambiguousWidth`에 있다
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum AmbiguousWidth {
+    /// 한 칸(기본). `1`도 같은 뜻
+    #[default]
+    Narrow,
+    /// 두 칸. `2`도 같은 뜻
+    Wide,
+}
+
 /// 색 질의(OSC 4·10·11)에 답하는 꼴(Ghostty `osc-color-report-format`, #151)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum OscColorReportFormat {
@@ -717,6 +729,8 @@ pub struct Config {
     pub clipboard_codepoint_map: Vec<CodepointRule>,
     /// 글자 묶음의 폭을 세는 방식(Ghostty `grapheme-width-method`, #180). 새로 연 칸부터 적용
     pub grapheme_width_method: GraphemeWidthMethod,
+    /// 동아시아 모호 폭 글자의 칸 수(`ambiguous-width`, #857). 설정을 다시 읽으면 이 뒤에 찍는 글부터 따른다
+    pub ambiguous_width: AmbiguousWidth,
     /// 남는 자리를 네 변에 고르게(Ghostty `window-padding-balance`, #136·#675)
     pub padding_balance: PaddingBalance,
     /// 여백 색(Ghostty `window-padding-color`)
@@ -1715,6 +1729,7 @@ impl Default for Config {
             clipboard_write_limit_bytes: Some(64 * 1024 * 1024),
             clipboard_codepoint_map: Vec::new(),
             grapheme_width_method: GraphemeWidthMethod::Unicode,
+            ambiguous_width: AmbiguousWidth::Narrow,
             padding_balance: PaddingBalance::False,
             padding_color: PaddingColor::Background,
             cursor_opacity: 1.0,
@@ -3547,6 +3562,11 @@ impl Config {
                 "unicode" => self.grapheme_width_method = GraphemeWidthMethod::Unicode,
                 _ => bad(warnings),
             },
+            "ambiguous-width" => match v {
+                "narrow" | "1" => self.ambiguous_width = AmbiguousWidth::Narrow,
+                "wide" | "2" => self.ambiguous_width = AmbiguousWidth::Wide,
+                _ => bad(warnings),
+            },
             "cursor-click-to-move" => match parse_bool(v) {
                 Some(b) => self.cursor_click_to_move = b,
                 None => bad(warnings),
@@ -4180,6 +4200,14 @@ impl Config {
             match self.quick.space {
                 QuickSpace::Move => "move",
                 QuickSpace::Remain => "remain",
+            }
+            .into(),
+        );
+        push(
+            "ambiguous-width",
+            match self.ambiguous_width {
+                AmbiguousWidth::Narrow => "narrow",
+                AmbiguousWidth::Wide => "wide",
             }
             .into(),
         );
@@ -5501,6 +5529,33 @@ mod tests {
         let c = Config::from_text("grapheme-width-method = wide\n", true);
         assert_eq!(c.warnings.len(), 1);
         assert_eq!(c.grapheme_width_method, GraphemeWidthMethod::Unicode);
+    }
+
+    #[test]
+    fn ambiguous_width_key() {
+        assert_eq!(Config::default().ambiguous_width, AmbiguousWidth::Narrow);
+        for (text, want) in [
+            ("narrow", AmbiguousWidth::Narrow),
+            ("1", AmbiguousWidth::Narrow),
+            ("wide", AmbiguousWidth::Wide),
+            ("2", AmbiguousWidth::Wide),
+        ] {
+            let c = Config::from_text(&format!("ambiguous-width = {text}\n"), true);
+            assert_eq!(c.ambiguous_width, want, "{text}");
+            assert!(c.warnings.is_empty(), "{text}");
+        }
+        let c = Config::from_text("ambiguous-width = 3\n", true);
+        assert_eq!(c.warnings.len(), 1);
+        assert_eq!(c.ambiguous_width, AmbiguousWidth::Narrow);
+        // --show-config가 적은 글을 다시 읽으면 같은 값
+        let c = Config::from_text("ambiguous-width = 2\n", true);
+        assert!(c.render().lines().any(|l| l == "ambiguous-width = wide"));
+        assert!(
+            Config::default()
+                .render()
+                .lines()
+                .any(|l| l == "ambiguous-width = narrow")
+        );
     }
 
     #[test]
