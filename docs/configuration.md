@@ -476,7 +476,7 @@ fish·elvish는 아직 스크립트가 없습니다. 끄려면 `shell-integratio
 | `title` | 켬 | 프롬프트에서는 창 제목을 지금 폴더(`~` 줄임, 길면 `…/뒤 세 마디`)로, 명령이 도는 동안은 그 명령 글(200자까지)로 정합니다. 제어 문자는 공백으로 바꿉니다. 설정 `title`로 제목을 고정했으면 그 값이 먼저입니다 |
 | `path` | 켬 | b-terminal 실행 파일이 있는 폴더(`btctl`이 함께 있을 때만)를 첫 프롬프트에서 PATH **끝**에 한 번 더합니다. 이미 있으면 더하지 않습니다. 앱 묶음 밖에서 `btctl`을 바로 부르게 하려는 것입니다. Ghostty의 `path`와 같은 뜻입니다 |
 | `sudo` | 끔 | 받기만 합니다. Ghostty에서는 `sudo`가 terminfo(`TERMINFO`)를 지키게 감싸는 기능인데, b-terminal은 `TERM=xterm-256color`라 지킬 terminfo가 없어 하는 일이 없습니다 |
-| `ssh-env` | 끔 | 받기만 합니다. Ghostty에서는 TERM을 `xterm-ghostty`에서 `xterm-256color`로 바꾸고 `COLORTERM`·`TERM_PROGRAM` 등을 원격에 보내는 기능인데, b-terminal은 처음부터 `xterm-256color`라 바꿀 TERM이 없습니다. `ssh`를 감싸지 않습니다 |
+| `ssh-env` | 끔 | 받기만 합니다. Ghostty 1.4.0에서는 `ssh`를 `ghostty +ssh`로 감싸 `COLORTERM`·`TERM_PROGRAM`·`TERM_PROGRAM_VERSION` 셋을 `-o SendEnv=…`로 원격에 보내는 기능입니다(`src/cli/ssh.zig`. 원격 sshd가 `AcceptEnv`로 받아야 닿습니다). b-terminal은 `ssh`를 감싸지 않으므로(원격으로 가는 길을 만들지 않습니다) 이 셋은 로컬 셸에만 있고 ssh 너머로는 가지 않습니다. 원격에서 `COLORTERM`을 쓰려면 직접 맞춥니다: 로컬 `~/.ssh/config`에 `Host *` 아래 `SendEnv COLORTERM TERM_PROGRAM TERM_PROGRAM_VERSION`, 원격 `sshd_config`에 `AcceptEnv COLORTERM TERM_PROGRAM TERM_PROGRAM_VERSION`(원격 서버 설정이 필요하고, 이 안내는 Ghostty 소스에서 읽은 것이며 b-terminal에서 ssh로 돌려 보지 않았습니다). `TERM`은 처음부터 `xterm-256color`라 바꿀 것이 없습니다 |
 | `ssh-terminfo` | 끔 | 받기만 합니다. b-terminal은 자기 terminfo가 없고, 원격 호스트에 무엇을 설치하는 동작은 하지 않습니다 |
 
 `cursor`와 `title`은 zsh·bash 모두에서 `precmd`·`preexec`(bash는 `PROMPT_COMMAND`·DEBUG 덫) 훅으로 보냅니다. zsh의 `zle` 위젯(줄 편집 중 모양 바꾸기)은 쓰지 않아, 줄 편집 도중 프로그램이 모양을 바꾸면 다음 프롬프트까지 그대로입니다.

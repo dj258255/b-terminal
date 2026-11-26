@@ -134,6 +134,20 @@ Codex 0.168.0부터는 `notification_method = "osc777"`도 됩니다(b-terminal�
 
 Codex는 터미널을 보고 있지 않을 때만 알립니다(포커스 보고, 모드 1004). 앱 묶음으로 돌면 b-terminal이 낸 알림을 눌러 그 탭·칸으로 바로 갑니다(그 밖에는 스크립트 편집기가 열립니다, [troubleshooting 23번](docs/troubleshooting.md#23-데스크톱-알림을-누르면-b-terminal이-아니라-스크립트-편집기가-열린다)).
 
+### 터미널 이름을 보고 기능을 켜는 프로그램
+
+b-terminal은 kitty 그림 프로토콜을 받지만(`TERM_PROGRAM=b-terminal`, XTVERSION 답은 `b-terminal <버전>`), 몇몇 프로그램은 터미널 이름이 아는 이름과 같을 때만 그림 같은 기능을 씁니다. 아래는 각 프로그램의 소스와 이슈 본문을 2026-11-26에 읽은 것입니다. **b-terminal에서 실행해 보지는 않았고 소스에서 읽었습니다.** 이름을 맞추려고 b-terminal을 다른 터미널로 속이지는 않습니다. 필요하면 프로그램 쪽 우회를 직접 켭니다.
+
+| 프로그램 | 읽은 것 | 우회 |
+| --- | --- | --- |
+| Claude Code | 그림은 질의에 답이 오고 XTVERSION 이름이 `kitty`·`ghostty`일 때만(anthropics/claude-code 이슈 #101306 본문이 2.1.296의 코드를 인용) | `CLAUDE_CODE_FORCE_TERMINAL_IMAGES=1`(같은 이슈 본문이 우회로 적음) |
+| Codex CLI(pets) | `codex-rs/tui/src/terminal_capabilities/images.rs`가 알아본 터미널 이름이나 `TERM`·`TERM_PROGRAM`에 `kitty`·`ghostty`·`wezterm`이 들어 있을 때, 또는 환경 변수 `KITTY_WINDOW_ID`·`WEZTERM_EXECUTABLE`·`WEZTERM_VERSION`이 있을 때 kitty 그림을 씀. tmux·Zellij 안에서는 끔 | 같은 파일이 보는 환경 변수를 직접 설정하는 길뿐입니다(해 보지 않았고, b-terminal을 다른 터미널로 알리는 일이라 권하지 않습니다) |
+| snacks.nvim | `lua/snacks/image/terminal.lua`가 터미널 이름에서 kitty·ghostty·wezterm을 찾고, 환경 변수 `SNACKS_KITTY`·`SNACKS_GHOSTTY`·`SNACKS_WEZTERM`이 있으면 그 값(`0`·`false`가 아니면 켬)이 우선 | `SNACKS_GHOSTTY=1`처럼. 이 이름들은 유니코드 자리표시 그림을 쓰는 것으로 적혀 있습니다(b-terminal이 그 방식을 받는지는 이 문서에서 확인하지 못했습니다) |
+| tmux | master(2026-11-25)의 `tty-keys.c`가 XTVERSION 답을 `kitty(`·`ghostty `·`WezTerm `·`foot(` 같은 앞부분으로 가려 기능 묶음을 켬(1793~1800줄, `tty-features.c`의 표). `b-terminal`은 이 목록에 없습니다. 그림이 되는 빌드는 따로 kitty 질의(`a=q`, `i=31`)를 보내 `OK`가 오면 `kittygraphics`를 켬(질의는 `tty.c` 475줄, 답 읽기는 `tty-keys.c` 1611줄) | `terminal-features`(예: `set -as terminal-features ',b-terminal*:kittygraphics'`, 이 예는 `tmux.1`의 기능 이름 표와 옵션 설명에서 만든 것이고 실행해 보지 않았습니다) |
+| Yazi | 이름을 모르면(`Brand::Unknown`) 환경 변수·XTVERSION 대신 kitty 질의(`a=q`)와 sixel 질의의 답으로 그림 방식을 정함(`yazi-emulator`, `yazi-adapter/src/drivers/drivers.rs`) | 필요 없음(소스로 읽은 것) |
+
+Codex의 알림처럼 바깥 프로그램이 이름만 보는 경우가 더 있을 수 있습니다. 위 표에 없는 것은 확인하지 않았습니다. 이름이 맞지 않아 그림이 안 나오면 먼저 위 우회를 시험해 보세요.
+
 b-terminal은 다른 터미널인 척하지 않습니다(`TERM_PROGRAM=b-terminal`). 에이전트 목록이나 상태 모아 보기 같은 작업 화면은 터미널이 아닌 별도 도구의 일로 둡니다.
 
 ## 문서

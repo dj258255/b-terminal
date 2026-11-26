@@ -92,7 +92,7 @@
 | [ADR-015](#adr-015-링크-키는-끄는-방향만-열고-주소-띠를-끄면-보이지-않는-주소를-여는-길이-생김을-받아들인다) | 링크 키는 끄는 방향만 열고, 주소 띠를 끄면 보이지 않는 주소를 여는 길이 생김을 받아들인다 | 유효 |
 | [ADR-021](#adr-021-decrqcra-체크섬-보고는-기본-꺼짐이고-켜도-터미널이-가진-화면만-답하며-계산은-ghostty와-같다) | DECRQCRA 체크섬 보고는 기본 꺼짐이고, 켜도 터미널이 가진 화면만 답하며 계산은 Ghostty와 같다 | 유효 |
 | [ADR-022](#adr-022-csi-질의는-고정-바이트와-검사한-숫자로만-늘-답하고-da는-ghostty-값으로-바꾸며-엔진의-옛-답은-끈다) | CSI 질의는 고정 바이트와 검사한 숫자로만 늘 답하고, DA는 Ghostty 값으로 바꾸며 엔진의 옛 답은 끈다 | 유효 |
-| [ADR-023](#adr-023-dcs-질의decrqssxtgettcap는-터미널-상태와-고정-목록으로만-답하고-요청-글은-답에-넣지-않는다) | DCS 질의(DECRQSS·XTGETTCAP)는 터미널 상태와 고정 목록으로만 답하고, 요청 글은 답에 넣지 않는다 | 유효 |
+| [ADR-023](#adr-023-dcs-질의decrqssxtgettcap는-터미널-상태와-고정-목록으로만-답하고-요청-글은-답에-넣지-않는다) | DCS 질의(DECRQSS·XTGETTCAP)는 터미널 상태와 고정 목록으로만 답하고, 요청 글은 답에 넣지 않는다 | 일부 바뀜(XTGETTCAP 목록에 좌우 여백 능력을 더함, #854) |
 | [ADR-026](#adr-026-dock에-놓은-파일은-확인-막대에서-y를-눌러야-실행하고-경로-글자는-허용-목록으로-좁히고-목록-밖이면-거부하며-통과한-경로만-작은따옴표로-감싼다) | Dock에 놓은 파일은 확인 막대에서 y를 눌러야 실행하고, 경로 글자는 허용 목록으로 좁히고 목록 밖이면 거부하며, 통과한 경로만 작은따옴표로 감싼다 | 유효 |
 | [ADR-053](#adr-053-kitty-알림osc-99은-kitty-명세대로-조각을-합치고-질의-답에-되돌리는-식별자는-검사한다) | kitty 알림(OSC 99)은 kitty 명세대로 조각을 합치고, 질의 답에 되돌리는 식별자는 검사한다 | 일부 바뀜(CAN·SUB로 끊긴 OSC는 버림, ADR-076. 페이로드의 DEL·C1은 명령 전체를 버림, #822) |
 | [ADR-058](#adr-058-macos-앱-묶음의-데스크톱-알림은-unusernotificationcenter로-내고-누르면-그-칸으로-간다-프레임워크-호출은-vendor-winit-안에만-둔다) | macOS 앱 묶음의 데스크톱 알림은 UNUserNotificationCenter로 내고, 누르면 그 칸으로 간다. 프레임워크 호출은 vendor winit 안에만 둔다 | 유효 |
@@ -756,7 +756,7 @@ macOS의 Carbon `EnableSecureEventInput`은 켜 있는 동안 키 입력이 다�
 
 ## ADR-023 DCS 질의(DECRQSS·XTGETTCAP)는 터미널 상태와 고정 목록으로만 답하고, 요청 글은 답에 넣지 않는다
 
-상태: 채택
+상태: 일부 바뀜(XTGETTCAP 목록에 좌우 여백 `Enmg`·`Dsmg`·`Clmg`·`Cmg`를 더함, #854)
 관련: [#265](https://github.com/dj258255/b-terminal/issues/265), ADR-022
 
 ### 맥락
@@ -776,7 +776,8 @@ macOS의 Carbon `EnableSecureEventInput`은 켜 있는 동안 키 입력이 다�
 - 답한다(#277): `Smol`·`Rmol`(윗줄 켜기·끄기, 값은 Ghostty terminfo 그대로).
 - 답한다(#264가 XTVERSION·DA2에 답하게 된 뒤 주 세션이 더함): `XR`·`xr`·`RV`·`rv`(값은 Ghostty terminfo 그대로).
 - 답한다(#276이 밑줄 모양·색을 그리게 된 뒤 더함): `Su`(불리언)·`Setulc`(값은 Ghostty terminfo 그대로).
-- 뺀다: `Enmg`·`Dsmg`·`Clmg`·`Cmg`(DECSLRM: 없다), `fullkbd`(kitty 키보드 프로토콜의 모든 단계를 확인하지 않았다), `cols`·`lines`·`it`·`pairs`(크기·정적 값은 terminfo 파일의 일이다), `kcuu1` 같은 키 능력(키는 설정으로 바뀐다), 나머지 `bold`·`cup` 등 정적 문자열 능력(`xterm-256color` terminfo 파일이 답한다. Ghostty의 목록은 자기 terminfo 전체다).
+- 답한다(#311이 DECLRMM·DECSLRM을 넣은 뒤 #854가 더함): `Enmg`·`Dsmg`·`Clmg`·`Cmg`(좌우 여백, 값은 Ghostty terminfo 그대로).
+- 뺀다: `fullkbd`(kitty 키보드 프로토콜의 모든 단계를 확인하지 않았다), `cols`·`lines`·`it`·`pairs`(크기·정적 값은 terminfo 파일의 일이다), `kcuu1` 같은 키 능력(키는 설정으로 바뀐다), 나머지 `bold`·`cup` 등 정적 문자열 능력(`xterm-256color` terminfo 파일이 답한다. Ghostty의 목록은 자기 terminfo 전체다).
 - `Smulx`의 `4:2`~`4:5`(이중·물결·점·파선)와 `Setulc`의 밑줄 색은 모두 그린다(#276). `Ms`는 `clipboard-write`가 `deny`여도 답한다(능력은 있고 허용은 별개다).
 
 ### 결과

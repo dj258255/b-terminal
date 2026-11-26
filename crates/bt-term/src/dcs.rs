@@ -198,6 +198,11 @@ const CAPS: &[(&str, Val)] = &[
     ("rv", Val::Str("\\E\\\\[[0-9]+;[0-9]+;[0-9]+c")),
     ("XR", Val::Str("\\E[>0q")),
     ("xr", Val::Str("\\EP>\\\\|[ -~]+a\\E\\\\")),
+    // 좌우 여백 DECLRMM·DECSLRM(#311이 넣었다, #854). 값은 Ghostty terminfo/ghostty.zig 148~151줄 그대로
+    ("Enmg", Val::Str("\\E[?69h")),
+    ("Dsmg", Val::Str("\\E[?69l")),
+    ("Clmg", Val::Str("\\E[s")),
+    ("Cmg", Val::Str("\\E[%i%p1%d;%p2%ds")),
     // 윗줄(SGR 53·55, #277). 값은 Ghostty terminfo/ghostty.zig 110~111줄 그대로
     ("Smol", Val::Str("\\E[53m")),
     ("Rmol", Val::Str("\\E[55m")),
@@ -535,11 +540,27 @@ mod tests {
     }
 
     #[test]
-    fn xtgettcap_does_not_list_what_bterminal_cannot_do() {
-        // DECSLRM 능력 이름(Enmg 등)은 아직 답하지 않는다(#311은 DECRQSS만 더했다)
-        for name in ["Enmg", "Dsmg", "Cmg"] {
-            assert_eq!(tcap(&hex(name)), "", "{name}");
+    fn xtgettcap_answers_margin_caps_like_ghostty() {
+        // #854: DECLRMM·DECSLRM은 #311에서 넣었으므로 Ghostty terminfo/ghostty.zig 148~151줄 값으로 답한다.
+        // `%`가 없는 값은 `\E`를 ESC로 바꾸고, Cmg는 `%`가 있어 글자 그대로다(Smulx·Setulc과 같다)
+        for (name, v) in [
+            ("Enmg", "\x1b[?69h"),
+            ("Dsmg", "\x1b[?69l"),
+            ("Clmg", "\x1b[s"),
+            ("Cmg", "\\E[%i%p1%d;%p2%ds"),
+        ] {
+            assert_eq!(
+                tcap(&hex(name)),
+                format!("\x1bP1+r{}={}\x1b\\", hex(name), hex(v)),
+                "{name}"
+            );
         }
+    }
+
+    #[test]
+    fn xtgettcap_does_not_list_what_bterminal_cannot_do() {
+        // 능력이 없는 것(kitty 키보드 프로토콜 전체 확인 전의 fullkbd 등)은 답하지 않는다
+        assert_eq!(tcap(&hex("fullkbd")), "");
     }
 
     #[test]
