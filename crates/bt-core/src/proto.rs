@@ -86,6 +86,58 @@ pub enum Call {
     },
     /// 설정 파일을 다시 읽는다(키 묶음 reload_config와 같다)
     ReloadConfig,
+    /// 칸을 닫는다(AppleScript `close`와 같게 확인 막대 없이, 되살리기 목록에도 넣지 않는다, #858)
+    Close {
+        #[serde(default)]
+        tab: Option<u64>,
+    },
+    /// 칸이 든 탭(나뉜 칸 모두)을 닫는다(AppleScript `close tab`과 같다, #858)
+    CloseTab {
+        #[serde(default)]
+        tab: Option<u64>,
+    },
+    /// 칸의 제목을 덮어쓴다. 빈 글이면 지운다. PTY에 아무것도 쓰지 않는다(#858)
+    SetTitle {
+        #[serde(default)]
+        tab: Option<u64>,
+        title: String,
+    },
+    /// 칸이 든 탭의 제목을 덮어쓴다. 빈 글이면 지운다(#858)
+    SetTabTitle {
+        #[serde(default)]
+        tab: Option<u64>,
+        title: String,
+    },
+    /// 키 이름으로 키를 보낸다(AppleScript `send key`와 같은 이름·같은 길, 읽기 전용 칸은 거절, #858)
+    SendKey {
+        #[serde(default)]
+        tab: Option<u64>,
+        key: String,
+        /// 쉼표로 가른 `shift`·`control`·`option`·`command`
+        #[serde(default)]
+        modifiers: Option<String>,
+    },
+    /// 칸의 글을 읽는다(읽기 전용). `extent`는 screen·all·selection·last-output(#858)
+    GetText {
+        #[serde(default)]
+        tab: Option<u64>,
+        extent: String,
+    },
+    /// 스크롤백을 움직인다. `to`는 up·down·page-up·page-down·top·bottom, `lines`는 up·down의 줄 수(없으면 1)(#858)
+    Scroll {
+        #[serde(default)]
+        tab: Option<u64>,
+        to: String,
+        #[serde(default)]
+        lines: Option<u32>,
+    },
+    /// 나뉜 칸의 경계를 `direction`(left·right·up·down)으로 `points`만큼 민다(키 묶음 `resize_split`과 같다, #858)
+    Resize {
+        #[serde(default)]
+        tab: Option<u64>,
+        direction: String,
+        points: u16,
+    },
     /// 탭에 알림을 단다(OSC 알림과 같게 다룬다)
     Notify {
         #[serde(default)]
@@ -294,6 +346,57 @@ mod tests {
         // 가족 이모지(ZWJ로 이음)와 ZWNJ는 그대로
         assert_eq!(printable("👨\u{200D}👩\u{200D}👧"), "👨\u{200D}👩\u{200D}👧");
         assert_eq!(printable("می\u{200C}خواهم"), "می\u{200C}خواهم");
+    }
+
+    /// #858: 새 명령의 요청 형식. 한 줄 JSON으로 왕복하고, 칸을 주지 않아도 읽힌다
+    #[test]
+    fn extended_requests_round_trip() {
+        let calls = [
+            Call::Close { tab: Some(3) },
+            Call::CloseTab { tab: None },
+            Call::SetTitle {
+                tab: Some(1),
+                title: "빌드".into(),
+            },
+            Call::SetTabTitle {
+                tab: None,
+                title: String::new(),
+            },
+            Call::SendKey {
+                tab: Some(2),
+                key: "enter".into(),
+                modifiers: Some("control".into()),
+            },
+            Call::GetText {
+                tab: None,
+                extent: "selection".into(),
+            },
+            Call::Scroll {
+                tab: None,
+                to: "up".into(),
+                lines: Some(5),
+            },
+            Call::Resize {
+                tab: Some(4),
+                direction: "left".into(),
+                points: 20,
+            },
+        ];
+        for call in calls {
+            let req = Request { id: 9, call };
+            let line = serde_json::to_string(&req).unwrap();
+            assert!(!line.contains('\n'));
+            assert_eq!(serde_json::from_str::<Request>(&line).unwrap(), req);
+        }
+        let k: Request = serde_json::from_str(r#"{"method":"send_key","params":{"key":"a"}}"#).unwrap();
+        assert_eq!(
+            k.call,
+            Call::SendKey {
+                tab: None,
+                key: "a".into(),
+                modifiers: None
+            }
+        );
     }
 
     #[test]

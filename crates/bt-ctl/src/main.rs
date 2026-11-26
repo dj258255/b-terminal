@@ -19,6 +19,17 @@ const USAGE: &str = "사용: btctl <명령> [인자]
                                     탭 글(화면과 최근 스크롤백 500줄)에 그 글이 나올 때까지 기다림. 기한이 지나면 1로 끝남
   notify [--tab N] <제목> [본문]    알림 달기(OSC 알림과 같게 다룸)
   reload-config                     설정 파일을 다시 읽기
+  close [--tab N]                   칸 닫기(확인 없이)
+  close-tab [--tab N]               칸이 든 탭(나뉜 칸 모두) 닫기(확인 없이)
+  set-title [--tab N] [글...]       칸 제목 덮어쓰기(글이 없으면 지움)
+  set-tab-title [--tab N] [글...]   탭 제목 덮어쓰기(글이 없으면 지움)
+  send-key [--tab N] [--mods 수식키] <키>
+                                    키 이름으로 키 보내기(AppleScript send key와 같은 이름: enter, a, arrowUp. 수식키는 shift·control·option·command를 쉼표로)
+  get-text [--tab N] [--extent 범위]
+                                    칸의 글 읽기(읽기 전용). 범위: screen(기본)·all(스크롤백 포함)·selection(고른 글)·last-output(마지막 명령 출력, 셸 통합 필요)
+  scroll [--tab N] <방향> [줄 수]   스크롤백 움직이기. 방향: up·down(줄 수 기본 1)·page-up·page-down·top·bottom
+  resize [--tab N] [--amount 점] <방향>
+                                    나뉜 칸의 경계 밀기(left·right·up·down, 점 기본 20)
   quick                             퀵 터미널 보이기·숨기기(전역 단축키와 같음)
   run [--tab N] [--timeout 초] [--json] -- <명령...>
                                     탭에서 명령을 돌리고 끝날 때까지 기다려 출력을 찍고 그 종료 코드로 끝남(셸 통합 필요)
@@ -99,6 +110,125 @@ fn finish_command(v: serde_json::Value, json: bool) -> Result<String, Error> {
     std::process::exit(r.exit_code.unwrap_or(0).clamp(0, 255));
 }
 
+/// 칸 하나를 다루는 새 명령(#858)의 요청을 만든다. 이 명령이 아니면 `None`
+fn build_call(cmd: &str, rest: &[String]) -> Result<Option<Call>, Error> {
+    if !matches!(
+        cmd,
+        "close" | "close-tab" | "set-title" | "set-tab-title" | "send-key" | "get-text" | "scroll" | "resize"
+    ) {
+        return Ok(None);
+    }
+    let (tab, rest) = take_tab(rest)?;
+    let no_extra = |rest: &[String]| match rest.first() {
+        Some(a) => Err(usage(format!("모르는 인자: {a}"))),
+        None => Ok(()),
+    };
+    let call = match cmd {
+        "close" => {
+            no_extra(&rest)?;
+            Call::Close { tab }
+        }
+        "close-tab" => {
+            no_extra(&rest)?;
+            Call::CloseTab { tab }
+        }
+        // 글이 없으면 제목을 지운다
+        "set-title" => Call::SetTitle {
+            tab,
+            title: rest.join(" "),
+        },
+        "set-tab-title" => Call::SetTabTitle {
+            tab,
+            title: rest.join(" "),
+        },
+        "send-key" => {
+            let mut modifiers = None;
+            let mut key = None;
+            let mut it = rest.iter();
+            while let Some(a) = it.next() {
+                if a == "--mods" {
+                    modifiers = Some(
+                        it.next()
+                            .ok_or_else(|| usage("--mods 뒤에 shift·control·option·command(쉼표로 가름)가 필요합니다"))?
+                            .clone(),
+                    );
+                } else if key.is_none() {
+                    key = Some(a.clone());
+                } else {
+                    return Err(usage(format!("키 이름은 하나만 줍니다: {a}")));
+                }
+            }
+            Call::SendKey {
+                tab,
+                key: key.ok_or_else(|| usage("키 이름이 필요합니다(예: enter, a, arrowUp)"))?,
+                modifiers,
+            }
+        }
+        "get-text" => {
+            let mut extent = "screen".to_string();
+            let mut it = rest.iter();
+            while let Some(a) = it.next() {
+                match a.as_str() {
+                    "--extent" => {
+                        let v = it.next().ok_or_else(|| usage("--extent 뒤에 범위가 필요합니다"))?;
+                        if !["screen", "all", "selection", "last-output"].contains(&v.as_str()) {
+                            return Err(usage(format!("--extent는 screen·all·selection·last-output입니다: {v}")));
+                        }
+                        extent = v.clone();
+                    }
+                    other => return Err(usage(format!("모르는 인자: {other}"))),
+                }
+            }
+            Call::GetText { tab, extent }
+        }
+        "scroll" => {
+            let to = rest.first().ok_or_else(|| usage("방향이 필요합니다"))?;
+            if !["up", "down", "page-up", "page-down", "top", "bottom"].contains(&to.as_str()) {
+                return Err(usage(format!(
+                    "방향은 up·down·page-up·page-down·top·bottom입니다: {to}"
+                )));
+            }
+            let lines = match rest.get(1) {
+                Some(n) => Some(n.parse::<u32>().map_err(|_| usage(format!("줄 수가 아닙니다: {n}")))?),
+                None => None,
+            };
+            if rest.len() > 2 {
+                return Err(usage(format!("모르는 인자: {}", rest[2])));
+            }
+            Call::Scroll {
+                tab,
+                to: to.clone(),
+                lines,
+            }
+        }
+        _ => {
+            let mut points = 20u16;
+            let mut direction = None;
+            let mut it = rest.iter();
+            while let Some(a) = it.next() {
+                if a == "--amount" {
+                    let v = it.next().ok_or_else(|| usage("--amount 뒤에 점 수가 필요합니다"))?;
+                    points = v
+                        .parse::<u16>()
+                        .ok()
+                        .filter(|p| *p > 0)
+                        .ok_or_else(|| usage(format!("점 수는 1 이상의 정수여야 합니다: {v}")))?;
+                } else if ["left", "right", "up", "down"].contains(&a.as_str()) && direction.is_none() {
+                    direction = Some(a.clone());
+                } else {
+                    return Err(usage(format!("방향은 left·right·up·down 하나입니다: {a}")));
+                }
+            }
+            Call::Resize {
+                tab,
+                direction: direction.ok_or_else(|| usage("방향이 필요합니다"))?,
+                points,
+            }
+        }
+    };
+    Ok(Some(call))
+}
+
 fn run(args: &[String]) -> Result<String, Error> {
     let Some((cmd, rest)) = args.split_first() else {
         return Err(usage("명령이 필요합니다"));
@@ -108,6 +238,19 @@ fn run(args: &[String]) -> Result<String, Error> {
     }
     if cmd == "--version" {
         return Ok(format!("btctl {}", env!("CARGO_PKG_VERSION")));
+    }
+    if let Some(c) = build_call(cmd, rest)? {
+        let socket = find_socket()?;
+        let v = call(&socket, c)?;
+        return Ok(match cmd.as_str() {
+            "get-text" => {
+                if v["truncated"].as_bool() == Some(true) {
+                    eprintln!("btctl: 글이 길어 앞부분을 버렸습니다");
+                }
+                v["text"].as_str().unwrap_or_default().to_string()
+            }
+            _ => String::new(),
+        });
     }
     let socket = find_socket()?;
     match cmd.as_str() {
@@ -337,5 +480,143 @@ mod tests {
         assert_eq!(tab, Some(3));
         assert_eq!(rest, vec!["hello", "world"]);
         assert!(take_tab(&["--tab".to_string()]).is_err());
+    }
+
+    fn v(a: &[&str]) -> Vec<String> {
+        a.iter().map(|s| s.to_string()).collect()
+    }
+
+    fn build(cmd: &str, a: &[&str]) -> Result<Option<Call>, Error> {
+        build_call(cmd, &v(a))
+    }
+
+    fn is_usage<T: std::fmt::Debug>(r: Result<T, Error>) -> bool {
+        matches!(r, Err(Error::Usage(_)))
+    }
+
+    #[test]
+    fn close_and_close_tab_take_a_pane() {
+        assert_eq!(
+            build("close", &["--tab", "3"]).unwrap(),
+            Some(Call::Close { tab: Some(3) })
+        );
+        assert_eq!(
+            build("close-tab", &["--tab", "3"]).unwrap(),
+            Some(Call::CloseTab { tab: Some(3) })
+        );
+        assert!(is_usage(build("close", &["남는", "인자"])));
+    }
+
+    #[test]
+    fn titles_join_words_and_may_be_empty() {
+        assert_eq!(
+            build("set-title", &["--tab", "2", "빌드", "중"]).unwrap(),
+            Some(Call::SetTitle {
+                tab: Some(2),
+                title: "빌드 중".into()
+            })
+        );
+        assert_eq!(
+            build("set-tab-title", &["--tab", "2"]).unwrap(),
+            Some(Call::SetTabTitle {
+                tab: Some(2),
+                title: String::new()
+            })
+        );
+    }
+
+    #[test]
+    fn send_key_needs_a_name_and_reads_mods() {
+        assert_eq!(
+            build("send-key", &["--tab", "1", "--mods", "control,shift", "c"]).unwrap(),
+            Some(Call::SendKey {
+                tab: Some(1),
+                key: "c".into(),
+                modifiers: Some("control,shift".into())
+            })
+        );
+        assert!(is_usage(build("send-key", &["--tab", "1"])));
+        assert!(is_usage(build("send-key", &["a", "b"])));
+        assert!(is_usage(build("send-key", &["--mods"])));
+    }
+
+    #[test]
+    fn get_text_extent_is_checked() {
+        assert_eq!(
+            build("get-text", &["--tab", "1", "--extent", "selection"]).unwrap(),
+            Some(Call::GetText {
+                tab: Some(1),
+                extent: "selection".into()
+            })
+        );
+        assert_eq!(
+            build("get-text", &["--tab", "1"]).unwrap(),
+            Some(Call::GetText {
+                tab: Some(1),
+                extent: "screen".into()
+            })
+        );
+        assert!(is_usage(build("get-text", &["--extent", "nope"])));
+    }
+
+    #[test]
+    fn scroll_and_resize_arguments() {
+        assert_eq!(
+            build("scroll", &["--tab", "1", "up", "5"]).unwrap(),
+            Some(Call::Scroll {
+                tab: Some(1),
+                to: "up".into(),
+                lines: Some(5)
+            })
+        );
+        assert_eq!(
+            build("scroll", &["--tab", "1", "top"]).unwrap(),
+            Some(Call::Scroll {
+                tab: Some(1),
+                to: "top".into(),
+                lines: None
+            })
+        );
+        assert!(is_usage(build("scroll", &["sideways"])));
+        assert!(is_usage(build("scroll", &["up", "많이"])));
+        assert_eq!(
+            build("resize", &["--tab", "1", "--amount", "40", "left"]).unwrap(),
+            Some(Call::Resize {
+                tab: Some(1),
+                direction: "left".into(),
+                points: 40
+            })
+        );
+        assert_eq!(
+            build("resize", &["--tab", "1", "down"]).unwrap(),
+            Some(Call::Resize {
+                tab: Some(1),
+                direction: "down".into(),
+                points: 20
+            })
+        );
+        assert!(is_usage(build("resize", &["diagonal"])));
+        assert!(is_usage(build("resize", &["--amount", "0", "left"])));
+    }
+
+    #[test]
+    fn other_commands_are_not_built_here() {
+        assert_eq!(build("ping", &[]).unwrap(), None);
+    }
+
+    #[test]
+    fn usage_lists_the_new_commands() {
+        for c in [
+            "close",
+            "close-tab",
+            "set-title",
+            "set-tab-title",
+            "send-key",
+            "get-text",
+            "scroll",
+            "resize",
+        ] {
+            assert!(USAGE.contains(c), "{c}");
+        }
     }
 }

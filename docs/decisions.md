@@ -33,7 +33,7 @@
 
 | ADR | 결정 | 상태 |
 |---|---|---|
-| [ADR-005](#adr-005-b-terminal은-순수-터미널이고-ai-작업-화면은-b-studio가-맡는다) | b-terminal은 순수 터미널이고, AI 작업 화면은 b-studio가 맡는다 | 유효. ADR-003의 `bt-studio`를 대체 |
+| [ADR-005](#adr-005-b-terminal은-순수-터미널이고-ai-작업-화면은-b-studio가-맡는다) | b-terminal은 순수 터미널이고, AI 작업 화면은 b-studio가 맡는다 | 일부 바뀜(결정 3의 btctl 명령 범위가 넓어짐, ADR-090). ADR-003의 `bt-studio`를 대체 |
 | [ADR-006](#adr-006-ghostty는-본보기일-뿐-기대지-않는다-ai-cli가-가장-잘-도는-우리-터미널) | Ghostty는 본보기일 뿐 기대지 않는다: AI CLI가 가장 잘 도는 우리 터미널 | 유효. ADR-005를 보탬 |
 | [ADR-057](#adr-057-프로그램-상태osc-7501는-받아서-탭-막대와-데스크톱-알림으로만-보이고-질의-답에는-기록을-넣지-않는다) | 프로그램 상태(OSC 7501)는 받아서 탭 막대와 데스크톱 알림으로만 보이고, 질의 답에는 기록을 넣지 않는다 | 유효. ADR-006 결정 3을 따름 |
 
@@ -114,6 +114,7 @@
 | [ADR-085](#adr-085-복사-html의-링크-규칙을-ghostty-main-15347처럼-httphttpsmailtofile만-href에-쓰고-나머지는-href-비ascii는-퍼센트-인코딩한다) | 복사 HTML의 링크 규칙을 Ghostty main #15347처럼: http·https·mailto·file://만 href에 쓰고 나머지는 `href="#"`, 비ASCII는 퍼센트 인코딩 | 유효. ADR-051 결정 2를 바꿈 |
 | [ADR-086](#adr-086-화면-글의-링크는-ghostty-urlzig-범위로-찾고-열-때는-갈래마다-따로-거른다) | 화면 글의 링크는 Ghostty `url.zig` 범위(스킴 주소·경로)로 찾고, 열 때는 웹·mailto·file·다른 앱 스킴·경로로 갈라 거른다 | 유효. ADR-007 결정 3을 바꿈 |
 | [ADR-088](#adr-088-kitty-그림-파일-전송tf는-걸러서-받고-임시-파일공유-메모리는-계속-거절한다) | kitty 그림 파일 전송(t=f)은 걸러서 받고 임시 파일·공유 메모리는 계속 거절한다 | 유효. ADR-010 결정 1을 일부 바꿈 |
+| [ADR-090](#adr-090-제어-소켓-명령을-kitty-원격-조종-범위로-넓히되-새-명령도-같은-경계0700-폴더1mib-상한읽기-전용-칸을-지킨다) | 제어 소켓 명령을 kitty 원격 조종 범위로 넓히되, 새 명령도 같은 경계(0700 폴더·1MiB 상한·읽기 전용 칸)를 지킨다 | 유효. ADR-005 결정 3의 btctl 명령 범위를 넓힘 |
 
 ### 설정 기본값
 
@@ -267,7 +268,7 @@
 
 ## ADR-005 b-terminal은 순수 터미널이고, AI 작업 화면은 b-studio가 맡는다
 
-상태: 채택(ADR-003의 `bt-studio` 크레이트를 대체)
+상태: 일부 바뀜(결정 3의 btctl 명령 범위가 넓어짐, ADR-090. ADR-003의 `bt-studio` 크레이트를 대체)
 관련: [#25](https://github.com/dj258255/b-terminal/issues/25), [#12](https://github.com/dj258255/b-terminal/issues/12)(닫음), b-studio [#1009](https://github.com/dj258255/b-studio/issues/1009)
 
 ### 맥락
@@ -2819,3 +2820,35 @@ Ghostty와 다른 점이다.
 ### 보안
 - 입력 경로·제어 소켓·파일·디스크를 건드리지 않는다. 화면 배치만 바뀐다. 폭이 어긋난 프로그램이 글자를 덮어 쓰는 길은 설정을 켠 사용자가 고른 것이다.
 
+## ADR-090 제어 소켓 명령을 kitty 원격 조종 범위로 넓히되, 새 명령도 같은 경계(0700 폴더·1MiB 상한·읽기 전용 칸)를 지킨다
+
+상태: 채택
+관련: [#858](https://github.com/dj258255/b-terminal/issues/858), ADR-005(결정 3의 btctl 명령 범위를 넓힘), ADR-018(읽기 전용 칸), ADR-063(AppleScript `send key`·`close`), ADR-066(`with configuration`은 소켓에 넣지 않음)
+
+### 맥락
+- `btctl`의 명령은 `ping list new quick focus send read wait notify run last reload-config`였다. 칸·탭 닫기, 제목 바꾸기, 키 이름으로 보내기, 고른 글 읽기, 스크롤, 경계 밀기는 없었다. AppleScript에는 `send key`·`close`·`close tab`·제목 덮어쓰기가 이미 있다.
+- 범수 님이 2026-11-26에 범위 기준을 "Ghostty나 kitty에 있는 기능인가"로 넓혔다. AI 작업 화면(ADR-005)은 여전히 밖이다.
+- kitty `kitten @`(remote control) 문서(https://sw.kovidgoyal.net/kitty/remote-control/)를 읽었다. 명령은 `close-window`·`close-tab`·`set-window-title`·`set-tab-title`·`send-key`·`send-text`·`get-text`(`--extent` screen·all·selection·마지막 명령 출력 등)·`scroll-window`·`resize-window`·`focus-tab`·`launch`·`set-colors` 같은 것이고, 창은 `--match field:query`(id·title·cwd·state…)로 고른다. 권한은 `allow_remote_control`(전체·창별)과 `remote_control_password`(이름별로 허용 명령을 글로브로 제한)다. 문서의 뒷부분(`send-key`·`scroll-window`·`set-colors`의 옵션 표)은 읽지 못했고, 아래 문법은 우리가 정한 것이다.
+
+### 결정
+1. 새 명령 여덟을 더한다: `close`(칸), `close-tab`(칸이 든 탭 전체), `set-title`(칸 제목), `set-tab-title`(탭 제목), `send-key`(키 이름), `get-text`(범위 screen·all·selection·last-output), `scroll`(up·down·page-up·page-down·top·bottom), `resize`(나뉜 칸의 경계). 요청 이름은 `close`·`close_tab`·`set_title`·`set_tab_title`·`send_key`·`get_text`·`scroll`·`resize`다.
+2. 같은 일을 하는 AppleScript 동작과 **같은 내부 길**을 쓴다. 닫기는 `close_pane`(확인 막대 없이, 되살리기 목록에도 넣지 않음), 제목은 `set_user_title`과 탭의 `title`(같은 `clean_user_title` 거르기), `send-key`는 `script_key::prepare`와 `send_script_key`(사람이 누른 키와 같은 인코더·키 묶음·`key-remap`), 경계 밀기는 `resize_split`과 같은 `layout.resize`다.
+3. 칸 고르기는 지금 btctl과 같다: `--tab N`(칸 번호), 없으면 `BT_TAB_ID`, 탭 밖이면 고른 칸. kitty의 `--match` 식 문법은 넣지 않는다.
+4. 경계는 모두 그대로다. 소켓은 0700 폴더, 요청 한 줄은 읽기 전에 1MiB 상한을 본다(새 명령도 같은 한 줄 JSON이다). **읽기 전용 칸에는 입력을 만드는 명령(`send-key`)을 거절한다**(`send`·`run`과 같은 문구). `close`·`set-title`·`get-text`·`scroll`·`resize`는 PTY에 쓰지 않으므로 읽기 전용 칸에도 된다(AppleScript의 `close`·`name override`와 같다). `send-key`는 확인·검색·팔레트·제목 막대가 열린 창에도 보내지 않는다.
+5. 제목 글은 믿지 않는 글로 본다: 제어 문자·방향 서식 문자를 지우고 200자로 자른다(`clean_user_title`).
+6. `get-text`의 글은 `read`와 같은 상한(줄 100000, 900KiB, 넘으면 앞을 버리고 `truncated`)이다. `selection`은 고른 글이 없으면, `last-output`은 셸 통합으로 끝난 명령이 없으면 오류다.
+7. 넣지 않는다: `set-colors`(실행 중에 색을 덮는 길이 없고, 설정 다시 읽기와 OSC 4·10·11이 이미 있다), `focus-tab`(`btctl focus`가 칸의 탭으로 이미 간다), `launch`(`btctl new`가 새 탭·칸·창을 이미 연다), `set-font-size`·`set-background-opacity`·`set-spacing`·`screenshot`·`create-marker`·`env`·`signal-child`(터미널 제어 범위를 넘거나 새 보안 경계(디스크·프로세스 신호)를 열어 별도 결정이 필요하다), `kitten`·`action`(임의 동작 실행), 비밀번호 권한(`remote_control_password`).
+
+### 검토한 선택지
+- kitty처럼 `--match`와 비밀번호 권한을 넣기: 소켓 폴더가 이미 같은 사용자 전용이고 소켓에 붙는 것은 그 사용자의 셸 권한과 같다(SECURITY.md). 이름별 권한은 같은 사용자 안의 프로세스끼리 나누는 것이라 이득이 작고 새 설정 표면이 크다.
+- `close`가 확인 막대를 띄우게 하기: 스크립트·에이전트가 사용자 없이 쓰는 길이다. AppleScript `close`와 같이 묻지 않는다.
+- `send-key`를 `send`의 이스케이프로 대신하기: 방향키·수식 키는 DECCKM·kitty 키보드 프로토콜에 따라 바이트가 달라서 인코더를 지나야 맞다.
+
+### 감수한 트레이드오프
+- 소켓에 붙는 같은 사용자의 프로세스는 이제 확인 없이 칸·탭을 닫고 제목을 바꿀 수 있다. 이미 그 사용자는 `send`로 칸의 셸에 명령을 넣을 수 있어 새 힘은 아니다(칸의 프로그램을 끝내는 것은 `send`로 `exit`를 쳐도 된다).
+- `send-key`는 붙여넣기 보호를 거치지 않는다(AppleScript `send key`와 같다). `send`가 이미 거치지 않는다.
+- `get-text selection`은 사용자가 고른 글을 소켓으로 읽어 간다. `read`가 화면 전체를 이미 읽어 가므로 새 정보는 아니다.
+
+### 보안
+- 막는 길: 읽기 전용 칸에 키가 들어가는 것(`send-key` 거절), 믿지 않는 제목 글이 탭 줄·창 제목을 속이는 것(거르기), 상한 없는 요청·답.
+- 막지 않는 것: 같은 사용자의 프로세스가 칸을 닫는 것. 이 경계는 소켓 폴더(0700, 주인·링크 검사)다.
