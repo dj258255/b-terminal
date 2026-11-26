@@ -38,6 +38,9 @@ pub struct SavedTab {
     /// 사람이 붙인 탭 제목(`set_tab_title`). 옛 판 파일에는 없다
     #[serde(default)]
     pub title: Option<String>,
+    /// 사람이 고른 탭 색의 이름(`tabcolor::TabColor::key`, #852). 옛 판 파일에는 없고, 모르는 이름은 읽을 때 없는 것으로 본다
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub color: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -214,6 +217,7 @@ mod tests {
                     focus: 0,
                     zoomed: false,
                     title: Some("빌드".into()),
+                    color: Some("teal".into()),
                 }],
                 active: 0,
                 title: Some("작업".into()),
@@ -253,7 +257,53 @@ mod tests {
         let w = &state.windows[0];
         assert_eq!(w.title, None);
         assert_eq!(w.tabs[0].title, None);
+        assert_eq!(w.tabs[0].color, None, "탭 색이 생기기 전 판(#852)");
         assert_eq!(w.tabs[0].layout.pane_titles(), vec![None, None]);
         assert_eq!(w.tabs[0].layout.panes()[0], Some(PathBuf::from("/tmp")));
+    }
+
+    /// 탭 색(#852): 이름으로 적고 되살린다. 모르는 이름이 든 파일도 통째로 버리지 않고 그 탭만 색 없이 연다. 색이 없으면 키를 적지 않는다
+    #[test]
+    fn tab_color_round_trips_and_unknown_names_do_not_drop_the_file() {
+        use crate::tabcolor::TabColor;
+        let tab = |color: Option<&str>| SavedTab {
+            layout: SavedNode::Pane { cwd: None, title: None },
+            focus: 0,
+            zoomed: false,
+            title: None,
+            color: color.map(str::to_string),
+        };
+        let state = SavedState {
+            version: VERSION,
+            windows: vec![SavedWindow {
+                size: (800, 600),
+                position: None,
+                tabs: vec![tab(Some("teal")), tab(None)],
+                active: 0,
+                title: None,
+            }],
+        };
+        let json = serde_json::to_string(&state).unwrap();
+        assert_eq!(
+            json.matches("\"color\"").count(),
+            1,
+            "색 없는 탭은 키를 적지 않는다: {json}"
+        );
+        let back: SavedState = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, state);
+        let colors: Vec<_> = back.windows[0]
+            .tabs
+            .iter()
+            .map(|t| TabColor::from_saved(t.color.as_deref()))
+            .collect();
+        assert_eq!(colors, [TabColor::Teal, TabColor::None]);
+        // 모르는 이름·빈 글은 색 없음
+        let odd = json.replace("teal", "magenta");
+        let back: SavedState = serde_json::from_str(&odd).expect("모르는 색 이름이어도 파일은 읽힌다");
+        assert_eq!(
+            TabColor::from_saved(back.windows[0].tabs[0].color.as_deref()),
+            TabColor::None
+        );
+        assert_eq!(TabColor::from_saved(Some("")), TabColor::None);
     }
 }

@@ -45,7 +45,8 @@ pub fn action_for(id: &str) -> Option<MenuCommand> {
         // 창 메뉴의 "항상 위에 띄우기"(#853, Ghostty `floatOnTop`). 키 묶음 `toggle_window_float_on_top`과 같은 동작이다
         "float_on_top" => MenuCommand::Action(Action::ToggleFloatOnTop),
         "toggle_readonly" => MenuCommand::Action(Action::ToggleReadonly),
-        _ => return None,
+        // 탭 오른쪽 단추 메뉴의 색(#852)
+        other => MenuCommand::Action(Action::SetTabColor(crate::tabcolor::TabColor::from_menu_id(other)?)),
     })
 }
 
