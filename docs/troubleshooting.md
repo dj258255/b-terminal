@@ -742,3 +742,13 @@
 - 고침: `Theme.explicit`이 설정이 직접 정한 색을 기억하고, 설정을 다 읽은 뒤 정하지 않은 색은 `foreground`·`background`에서 채운다. `Screen`에 지금 기본 글자색(`foreground`)과 OSC 12 커서색(`cursor_color`)을 실어 앱이 그릴 때마다 `default_colors`로 정한다(CPU·GPU가 같은 `GridView`·`DrawCursor` 값을 쓴다). OSC 4·10·11·12 질의 답은 같은 규칙으로 맞췄고 값은 Ghostty와 같다(커서색을 정하지 않았으면 지금 글자색)
 - 남긴 것: `selection-foreground`가 잘못된 값이면 이제 앞 값(기본은 바탕색)을 그대로 둔다. 전에는 칸 글자색이 되었다
 - 0.101.0에서 풀기: `cursor-color`·`cursor-text`·`selection-background`·`selection-foreground`를 직접 적는다
+
+## 89. 복사 HTML에서 `file://` 링크가 앵커가 되지 않고, 막은 링크가 태그 없이 글만 남고, 비ASCII 주소가 숫자 참조였다
+
+- 언제: 2026-11-26, #846. 0.102.0까지의 동작이다. Ghostty main #15347(2026-11-25 병합)을 따라가다 찾았다
+- 증상: `printf '\033]8;;file:///tmp/a\033\\a\033]8;;\033\\ \033]8;;javascript:x\033\\b\033]8;;\033\\\n'`를 찍어 줄을 HTML로 복사하면 `file://` 링크가 앵커가 아니었고 `javascript:` 링크는 태그 없이 글만 들어갔다. `https://a.example/한글` 같은 주소는 `&#54620;`처럼 숫자 참조로 들어갔다
+- 까닭: ADR-051이 `http`·`https`·`mailto`만 앵커로 만들었고 주소를 글자마다 HTML 이스케이프했다. Ghostty는 그때 거르지 않았지만, main은 `http://`·`https://`·`mailto:`·`file://`만 `href`에 쓰고 나머지는 `href="#"`, 주소는 비ASCII·공백·제어 바이트를 `%XX`로 쓰도록 바꿨다
+- 고침: `copy_format.rs`가 위 규칙대로 쓴다(ADR-085). 앞에 공백·제어 문자가 붙거나 `//`가 없는 주소(`https:a`, `file:/a`)는 막는다. `vt`·`plain`은 그대로다
+- 남긴 것: `file://호스트/…`는 Windows의 Edge에서 네트워크 경로라 따라가면 그 호스트에 접속한다(Ghostty PR 본문의 설명이고 우리가 재지 않았다)
+- 0.102.0에서 풀기: 없음. 링크가 필요한 쪽에서 붙여넣은 뒤 주소를 직접 고친다
+
