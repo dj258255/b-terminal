@@ -4,6 +4,8 @@
 
 ## [아직 릴리스하지 않음]
 
+- kitty 그림 파일 전송(`t=f`)을 Ghostty처럼 걸러서 받는다(snacks.nvim·image.nvim 같은 도구가 그림을 보인다): 절대 경로의 PNG(`f=100`) 일반 파일만(원시 `f=24`·`32`는 파일 정보가 새지 않게 열기 전에 거절, Ghostty와 다름), 실제 경로가 `/proc/`·`/sys/`·`/dev/`(`/dev/shm/` 예외)이면 거절, 48MiB 상한, `O`·`S` 처리, 실패는 모두 `EINVAL`이라 답에 경로·내용이 없다. 임시 파일(`t=t`)·공유 메모리(`t=s`)는 계속 거절하고, 원격 셸이 보낸 `t=f`도 이 컴퓨터의 파일을 가리킨다(ADR-088) (#856)
+
 ## [0.103.0] - 2026-11-26
 
 Ghostty 1.4.0과 kitty를 견준 조사에서 빠진 기능을 채운 판입니다. **화면 글 속 경로(`./src/main.rs`, `~/x`)와 `mailto:`·`ssh:` 같은 주소도 ⌘클릭으로 열고**(다른 앱을 띄우는 주소는 확인 막대로 한 번 묻습니다), fish·nushell·elvish 셸 통합을 더했습니다. 탭 색, force click 사전 조회, 창 메뉴의 "항상 위에 띄우기", `selection-*`의 `cell-foreground`·`cell-background`, 복사 HTML 링크 규칙(Ghostty main #15347)도 Ghostty처럼 했습니다. zsh·bash의 OSC 7은 폴더 이름의 제어 문자를 지워 `kitty-shell-cwd://`로 보냅니다. 마일스톤 0.103.

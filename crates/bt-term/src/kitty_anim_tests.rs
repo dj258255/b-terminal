@@ -236,7 +236,7 @@ fn non_direct_transmission_abandons_a_chunked_frame_without_deleting_the_image()
     let mut g = Graphics::default();
     white2(&mut g);
     assert_eq!(send(&mut g, "a=f,i=1,f=24,s=2,v=1,m=1", &[255, 0, 0]), None);
-    // 파일 전송(t=f)은 조각을 이을 수 없다: 받던 프레임을 버리고 새 프레임 명령으로 처리한다(우리는 파일을 받지 않아 EINVAL)
+    // 파일 전송(t=f)은 조각을 이을 수 없다: 받던 프레임을 버리고 새 프레임 명령으로 처리한다(/tmp/x는 없는 파일이라 EINVAL)
     let reply = send(&mut g, "a=f,t=f,i=1,f=24,s=2,v=1", b"/tmp/x");
     assert_eq!(reply.as_deref(), Some("\x1b_Gi=1;EINVAL\x1b\\"));
     assert!(g.pending.is_none());
