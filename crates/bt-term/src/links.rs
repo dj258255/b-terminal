@@ -591,15 +591,13 @@ pub fn classify(url: &str, local_host: &dyn Fn(&str) -> bool) -> Option<OpenTarg
             return None;
         }
         // 질의(`?attach=…`)가 있으면 메일 앱이 로컬 파일을 붙일 수 있어 바로 열지 않고 묻는다
-        // 질의는 막대에 전부 보일 때만 묻는다
-        let shown = url.chars().count() <= CONFIRM_SHOW;
-        return (confirmable(url) && (shown || !url.contains('?'))).then(|| {
-            if url.contains('?') {
-                OpenTarget::Confirm(url.to_string())
-            } else {
-                OpenTarget::Mail(url.to_string())
-            }
-        });
+        if !confirmable(url) {
+            return None;
+        }
+        if !url.contains('?') {
+            return Some(OpenTarget::Mail(url.to_string()));
+        }
+        return ask_if_visible(url);
     }
     for scheme in CONFIRM_SCHEMES {
         if let Some(rest) = lower.strip_prefix(scheme) {
@@ -607,19 +605,20 @@ pub fn classify(url: &str, local_host: &dyn Fn(&str) -> bool) -> Option<OpenTarg
             if rest.is_empty() || !confirmable(url) {
                 return None;
             }
-            // `://`가 없는 주소는 받는 사람·질의가 곧 내용이라 막대에 다 보일 때만 묻는다
-            if !lower.starts_with(&format!("{scheme}//")) && url.chars().count() > CONFIRM_SHOW {
-                return None;
-            }
             // 호스트를 가진 스킴은 사용자 정보(`root@evil.example`)를 받지 않는다. 막대에서 호스트를 속일 수 있다
             let hosted = !matches!(scheme, "tel:" | "magnet:" | "news:");
             if hosted && rest.split(['/', '?', '#']).next().is_some_and(|a| a.contains('@')) {
                 return None;
             }
-            return Some(OpenTarget::Confirm(url.to_string()));
+            return ask_if_visible(url);
         }
     }
     None
+}
+
+/// 묻는 주소는 막대에 전부 보이는 길이(`CONFIRM_SHOW`)일 때만 묻는다. 넘으면 뒤쪽(질의·받는 사람)이 가려지므로 묻지 않고 막는다
+fn ask_if_visible(url: &str) -> Option<OpenTarget> {
+    (url.chars().count() <= CONFIRM_SHOW).then(|| OpenTarget::Confirm(url.to_string()))
 }
 
 /// 묻는 주소의 길이 상한(`http(s)`와 달리 8KiB까지 보이게 둘 수 없다)
@@ -630,31 +629,12 @@ fn confirmable(url: &str) -> bool {
     url.is_ascii() && url.len() <= CONFIRM_MAX
 }
 
-/// 확인 막대에 보이는 글의 칸 수(`confirm_text`에 넘기는 `max`). `://`가 없는 주소는 이 길이까지만 묻는다
+/// 확인 막대에 보이는 글의 칸 수. 묻는 주소(`Confirm`)는 이 길이까지만 묻는다. 줄여 보이면 뒤쪽(질의)이 가려지기 때문이다
 pub const CONFIRM_SHOW: usize = 80;
 
-/// 확인 막대에 보일 글: 스킴과 authority(`://` 뒤 첫 `/`·`?`·`#`까지, `://`가 없으면 스킴의 `:` 뒤 첫 `/`·`?`·`#`까지)는
-/// 늘 다 보이고, 넘치면 그 뒤를 끝에서 `…`로 줄인다. 주소가 `max` 안이면 그대로다
-pub fn confirm_text(url: &str, max: usize) -> String {
-    let chars: Vec<char> = url.chars().collect();
-    if chars.len() <= max {
-        return url.to_string();
-    }
-    let after_scheme = url.find(':').map_or(0, |i| i + 1);
-    let after_scheme = if url[after_scheme..].starts_with("//") {
-        after_scheme + 2
-    } else {
-        after_scheme
-    };
-    let head_end = url[after_scheme..]
-        .find(['/', '?', '#'])
-        .map_or(url.len(), |j| after_scheme + j);
-    let head: Vec<char> = url[..head_end].chars().collect();
-    let room = max.saturating_sub(head.len() + 1);
-    head.iter()
-        .chain(chars[head.len()..].iter().take(room))
-        .chain(['…'].iter())
-        .collect()
+/// 확인 막대에 보일 글: 주소를 줄이지 않고 그대로 보이되 제어 문자·글 순서를 바꾸는 문자는 보이는 글로 바꾼다
+pub fn confirm_text(url: &str) -> String {
+    bt_core::proto::printable(url)
 }
 
 /// 열기 전에 한 번 묻는 스킴(`url.zig`의 스킴에서 웹·mailto·file을 뺀 것). OSC 8로 온 다른 스킴(`javascript:` 등)은 열지 않는다
@@ -1282,7 +1262,17 @@ mod tests {
             None,
             "너무 긴 주소"
         );
-        // `://`가 없는 주소(받는 사람·질의가 곧 내용)는 막대에 다 보이는 길이(80)까지만 묻는다
+        // 묻는 주소는 어떤 스킴이든 막대에 다 보이는 길이(80)까지만 묻는다. 넘으면 묻지 않는다
+        for long in [
+            format!("ssh://host.example/{}?x=1", "p".repeat(100)),
+            format!("gemini://h.example/q?{}", "p".repeat(100)),
+            format!("ftp://h.example/{}", "p".repeat(100)),
+        ] {
+            assert_eq!(classify(&long, &no), None, "{long}");
+        }
+        let at80 = format!("ssh://h.example/{}", "p".repeat(80 - "ssh://h.example/".len()));
+        assert_eq!(classify(&at80, &no), Some(OpenTarget::Confirm(at80.clone())));
+        // `://`가 없는 주소(받는 사람·질의가 곧 내용)도 같다
         let fits = format!("tel:+{}", "1".repeat(70));
         assert_eq!(classify(&fits, &no), Some(OpenTarget::Confirm(fits.clone())));
         for long in [
@@ -1307,40 +1297,21 @@ mod tests {
     }
 
     #[test]
-    fn confirm_text_keeps_scheme_and_host() {
-        let long = format!("ssh://host.example/{}", "p".repeat(300));
-        let t = confirm_text(&long, 80);
-        assert!(t.starts_with("ssh://host.example/"), "{t}");
-        assert!(t.contains('…') && t.chars().count() <= 80, "{t}");
-        assert_eq!(confirm_text("tel:+1800", 80), "tel:+1800");
-        // 호스트가 길어도 자르지 않는다
-        let host = format!("ssh://{}.example/x", "h".repeat(120));
-        assert!(confirm_text(&host, 80).starts_with(&format!("ssh://{}.example", "h".repeat(120))));
-    }
-
-    #[test]
-    fn confirm_text_shows_scheme_and_authority_always() {
-        // `://`가 없는 주소: 스킴과 받는 사람은 줄이지 않고, 뒤(질의)를 끝에서 줄인다
-        let t = confirm_text(
-            &format!("mailto:{}@b.example?attach=/{}", "u".repeat(50), "p".repeat(100)),
-            80,
+    fn confirm_text_shows_the_whole_address() {
+        // 묻는 주소는 80칸 이하라 줄이지 않고 그대로 보인다
+        for url in ["tel:+1800", "mailto:a@b.example?subject=hi", "gemini://h.example/q?a=1"] {
+            assert_eq!(confirm_text(url), url);
+        }
+        let at_limit = format!(
+            "ssh://host.example/{}",
+            "p".repeat(CONFIRM_SHOW - "ssh://host.example/".len())
         );
-        assert!(t.starts_with(&format!("mailto:{}@b.example", "u".repeat(50))), "{t}");
-        assert!(t.ends_with('…') && t.chars().count() <= 80, "{t}");
-        assert_eq!(
-            confirm_text("mailto:a@b.example?subject=hi", 80),
-            "mailto:a@b.example?subject=hi"
-        );
-        // 뒤를 끝에서 줄인다(`://`가 있는 주소도)
-        let t = confirm_text(&format!("ssh://host.example/{}end", "p".repeat(300)), 80);
-        assert!(t.starts_with("ssh://host.example/pp") && t.ends_with('…'), "{t}");
-        // 받는 사람이 길어도 자르지 않는다
-        let long = format!("tel:{}", "1".repeat(200));
-        assert!(
-            confirm_text(&long, 80).starts_with(&long),
-            "{}",
-            confirm_text(&long, 80)
-        );
+        assert_eq!(at_limit.chars().count(), CONFIRM_SHOW);
+        assert_eq!(confirm_text(&at_limit), at_limit);
+        assert!(!confirm_text(&at_limit).contains('…'));
+        // 제어 문자·방향 바꾸기 문자는 보이는 글로 바꾼다
+        assert_eq!(confirm_text("ssh://h\u{1b}[2J.example"), "ssh://h [2J.example");
+        assert_eq!(confirm_text("ssh://h.example/\u{202e}x"), "ssh://h.example/x");
     }
 
     #[test]
