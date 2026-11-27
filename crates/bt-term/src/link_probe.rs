@@ -154,6 +154,7 @@ pub(crate) fn probe_with<T: EventListener>(
         links: Vec::new(),
         images: Vec::new(),
         command_marks: Vec::new(),
+        trigger_colors: Vec::new(),
     };
     // OSC 8는 위에서 끝냈다(창 화면에는 링크 번호가 없다)
     let url_only = LinkOptions { url: true, osc8: false };

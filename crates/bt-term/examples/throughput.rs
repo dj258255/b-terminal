@@ -9,7 +9,10 @@
 //! 3. both: 스캐너 + 엔진 락 + `advance` + `take_scroll_log`(읽기 한 번마다 `Mutex` 한 번)
 //! 4. 조각 크기는 인자로 바꾼다
 //!
-//! 환경 변수 `E28_STAGE`(scan·parse·both)와 `E28_INPUT`(seq-crlf·seq-lf·seq-bsd·sgr)로 하나만 돌릴 수 있다
+//! 5. trig·trig-hit(#928): both에 트리거 검사(`Triggers::scan`, 읽기 한 번마다)를 더한 것. trig는 아무 줄에도 맞지 않는 규칙,
+//!    trig-hit는 `seq` 줄 대부분에 맞는 규칙(`9 => attention`)이다. `E928_RULE`로 규칙을 바꿀 수 있다(예 `error => notify`)
+//!
+//! 환경 변수 `E28_STAGE`(scan·parse·both·trig·trig-hit)와 `E28_INPUT`(seq-crlf·seq-lf·seq-bsd·sgr)로 하나만 돌릴 수 있다
 
 use std::hint::black_box;
 use std::time::Instant;
@@ -137,6 +140,41 @@ fn run_both(data: &[u8], chunk: usize) -> usize {
     g.0.grid().history_size()
 }
 
+fn run_trigger(data: &[u8], chunk: usize, rule: &str) -> usize {
+    let spec = bt_core::trigger::TriggerSpec::parse(rule).expect("규칙");
+    let (mut triggers, errors) = bt_term::triggers::Triggers::new(&[spec]);
+    assert!(errors.is_empty());
+    let inner: Mutex<(Term<Null>, Processor)> = Mutex::new((new_term(), Processor::new()));
+    triggers.arm(&inner.lock().0);
+    let mut s = Scanner::default();
+    let mut effects = 0;
+    for c in data.chunks(chunk) {
+        let signals = s.feed_at(black_box(c));
+        let mut g = inner.lock();
+        let (term, p) = &mut *g;
+        let mut pos = 0;
+        for (end, _sig) in signals {
+            let end = end.min(c.len());
+            p.advance(term, &c[pos..end]);
+            pos = end;
+        }
+        p.advance(term, &c[pos..]);
+        let _ = term.take_scroll_log();
+        effects += triggers.scan(term, Instant::now()).len();
+    }
+    black_box(effects)
+}
+
+fn run_trig(data: &[u8], chunk: usize) -> usize {
+    let rule = std::env::var("E928_RULE").unwrap_or_else(|_| "zzqq-no-such-text => attention".into());
+    run_trigger(data, chunk, &rule)
+}
+
+fn run_trig_hit(data: &[u8], chunk: usize) -> usize {
+    let rule = std::env::var("E928_RULE").unwrap_or_else(|_| "9 => attention".into());
+    run_trigger(data, chunk, &rule)
+}
+
 /// 5단계: `seq 1 3000000`을 **파이프**(PTY 아님)로 받아 읽기 스레드와 같은 64KiB 버퍼로 읽고 3단계와 같이 먹인다.
 /// `E28_PIPE=1`일 때만 돈다. 읽는 시간(자식이 쓰는 시간 포함)과 엔진 시간을 나눠 돌려준다
 fn run_pipe_both() -> (f64, f64, usize) {
@@ -239,6 +277,8 @@ fn main() {
                 ("scan", run_scan as fn(&[u8], usize) -> usize),
                 ("parse", run_parse),
                 ("both", run_both),
+                ("trig", run_trig),
+                ("trig-hit", run_trig_hit),
             ] {
                 if only_stage.as_deref().is_none_or(|s| s == name) {
                     measure(name, data, chunk, runs, f);

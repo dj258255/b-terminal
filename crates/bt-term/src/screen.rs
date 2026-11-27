@@ -42,6 +42,7 @@ impl CellFlags {
     pub const MARK1: Self = Self(1 << 19);
     pub const MARK2: Self = Self(1 << 20);
     pub const MARK3: Self = Self(1 << 21);
+    // 22~25비트: 트리거 칠하기 번호(1~15, 0이면 없음, #928). 격자를 바꾸지 않는 덧칠이다
 
     pub const fn empty() -> Self {
         Self(0)
@@ -58,6 +59,20 @@ impl CellFlags {
             .position(|m| self.contains(*m))
             .map(|i| i as u8 + 1)
     }
+
+    /// 칸에 얹은 트리거 칠하기 번호(1~15, 규칙 순서). 없으면 없다(#928)
+    pub fn trigger(self) -> Option<u8> {
+        let n = ((self.0 >> Self::TRIGGER_SHIFT) & 0xF) as u8;
+        (n != 0).then_some(n)
+    }
+
+    /// 트리거 칠하기 번호를 정한다(1~15, 그 밖은 지운다)
+    pub fn set_trigger(&mut self, n: u8) {
+        let n = if (1..=15).contains(&n) { u32::from(n) } else { 0 };
+        self.0 = (self.0 & !(0xF << Self::TRIGGER_SHIFT)) | (n << Self::TRIGGER_SHIFT);
+    }
+
+    const TRIGGER_SHIFT: u32 = 22;
 
     pub fn insert(&mut self, other: Self) {
         self.0 |= other.0;
@@ -226,6 +241,8 @@ pub struct Screen {
     pub images: Vec<ImageView>,
     /// 셸 통합이 알린 명령의 결과가 붙은 보이는 줄들(#927). 격자 칸은 바꾸지 않는다. 대체 화면이거나 셸 통합이 없으면 비어 있다
     pub command_marks: Vec<crate::command_marks::RowMark>,
+    /// 트리거 칠하기 색표(#928): 칸의 `trigger()` 번호가 이 표의 (번호 - 1)번째를 가리킨다. 칠할 트리거가 없으면 비어 있다
+    pub trigger_colors: Vec<bt_core::trigger::Highlight>,
 }
 
 impl Screen {

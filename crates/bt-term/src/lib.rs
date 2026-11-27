@@ -34,6 +34,7 @@ pub mod saved_screen;
 pub mod screen;
 pub mod search;
 mod session;
+pub mod triggers;
 pub mod xt_checksum;
 
 pub use copy_format::{CopyFormat, Emit as CopyEmit};
@@ -50,5 +51,5 @@ pub use process::Foreground;
 pub use screen::{Cell, CellFlags, Cursor, CursorShape, ImageView, Modes, MouseFormat, Screen};
 pub use session::{
     CellSide, ClearScreen, ClipboardReply, CommandRecord, Emulator, EventSink, GridSize, SelectKind, SelectionAdjust,
-    Session, SessionEvent, SpawnOptions, WordHit, window_resize_target,
+    Session, SessionEvent, SpawnOptions, WordHit, trigger_event, window_resize_target,
 };

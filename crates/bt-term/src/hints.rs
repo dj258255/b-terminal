@@ -615,6 +615,7 @@ mod tests {
             links: Vec::new(),
             images: Vec::new(),
             command_marks: Vec::new(),
+            trigger_colors: Vec::new(),
         }
     }
 
