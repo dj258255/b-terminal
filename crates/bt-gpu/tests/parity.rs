@@ -339,6 +339,50 @@ fn preedit_matches_cpu() {
     check(&mut g, &mut f, "조합 중 글", &v, &p, Alpha::default());
 }
 
+/// #931: 복사 모드 커서(넓은 글자 위의 블록, 고른 칸 곁)를 GPU도 CPU와 같게 그린다.
+/// 복사 모드 커서는 평소 커서와 같은 `DrawCursor` 길을 타므로 따로 그리는 길이 없다는 것을 픽셀로 고정한다
+#[test]
+fn copy_mode_cursor_over_wide_and_selected_cells_matches_cpu() {
+    let Some(mut g) = gpu() else { return };
+    let mut f = fonts(2.0);
+    let t = Theme::default();
+    for (col, wide, opacity) in [(2usize, true, 1.0f32), (6, false, 1.0), (2, true, 0.6)] {
+        let mut cells = row_cells("ab한글cd ef", 16);
+        cells.extend(row_cells("second row", 16));
+        for (i, c) in cells.iter_mut().enumerate() {
+            c.selected = (1..9).contains(&i);
+        }
+        let cursor = DrawCursor {
+            col,
+            row: 0,
+            style: CursorStyle::Block,
+            wide,
+            color: t.cursor,
+            text_color: t.cursor_text,
+            opacity,
+        };
+        let plain: Vec<DrawCell> = cells
+            .iter()
+            .map(|c| DrawCell {
+                selected: false,
+                ..c.clone()
+            })
+            .collect();
+        let mut v = grid(&cells, 16);
+        v.cursor = Some(cursor);
+        let mut p = grid(&plain, 16);
+        p.cursor = Some(cursor);
+        check(
+            &mut g,
+            &mut f,
+            &format!("복사 모드 커서 {col} {wide} {opacity}"),
+            &v,
+            &p,
+            Alpha::default(),
+        );
+    }
+}
+
 #[test]
 fn minimum_contrast_matches_cpu() {
     let Some(mut g) = gpu() else { return };
