@@ -233,6 +233,9 @@ pub struct Scanner {
     dcs_silent: bool,
     /// 이 DCS 머리에 중간 바이트(0x20~0x2f)가 나왔다. 머리 상한과 상관없이 센다
     dcs_inter: bool,
+    /// 시험 전용: 켜면 끝 바이트 거르기(#938)를 건너뛰어 모든 CSI가 옛 길로 간다. 옛 길과 새 길의 결과를 견주는 데 쓴다
+    #[cfg(test)]
+    pub(crate) no_fast_csi: bool,
     /// kitty 알림(OSC 99)의 쌓인 조각. 스캐너는 세션마다 하나라 쌓임도 세션마다 하나다(#561)
     pub(crate) kitty_notify: crate::kitty_notify::Assembler,
 }
@@ -289,6 +292,18 @@ fn str_c1(b: u8) -> Option<StrC1> {
 }
 
 impl Scanner {
+    /// 시험에서 거르기를 끈 스캐너인가(제품 빌드에서는 늘 거짓)
+    fn slow_csi(&self) -> bool {
+        #[cfg(test)]
+        {
+            self.no_fast_csi
+        }
+        #[cfg(not(test))]
+        {
+            false
+        }
+    }
+
     /// `ESC [`나 8비트 CSI(0x9B) 뒤의 CSI 상태를 연다
     fn begin_csi(&mut self) -> St {
         self.csi.clear();
@@ -625,58 +640,63 @@ impl Scanner {
                     St::Csi
                 }
                 (St::Csi, 0x40..=0x7e) => {
-                    // 엔진이 `ignore` 없이 dispatch할 수 있는 모양이어야 신호를 낸다: 모은 매개변수가 상한 안이고 세미콜론이 31개 이하다
-                    // (엔진은 매개변수 32개를 넘으면 `ignore`로 dispatch하고 `ansi.rs`가 버린다, #605)
-                    let fits = self.csi.len() < MAX_CSI && self.csi.iter().filter(|&&c| c == b';').count() < MAX_PARAMS;
-                    if !self.csi_taint && fits {
-                        if let Some(sig) = csi_signal(b, &self.csi) {
-                            out.push((i + 1, sig));
-                        }
-                        if let Some(sig) = crate::csi_query::plain(b, &self.csi) {
-                            out.push((i + 1, sig));
-                        }
-                        if let Some(sig) = crate::csi_query::visibility(b, &self.csi) {
-                            out.push((i + 1, sig));
-                        }
-                        if let Some(sig) = crate::csi_query::kitty_paste(b, &self.csi) {
-                            out.push((i + 1, sig));
-                        }
-                        for sig in crate::csi_query::save_restore(b, &self.csi) {
-                            out.push((i + 1, sig));
-                        }
-                        // 화면 지우기(ED)도 다른 신호처럼 중간 바이트·표시가 없는 CSI에서만 읽는다. 엔진은 중간 바이트 뒤의 매개변수·
-                        // 매개변수 뒤의 표시를 CsiIgnore로 보내고, 맨 앞의 `< = >`나 매개변수 뒤의 중간 바이트는 `ED`가 아닌 다른 명령으로 dispatch한다(#605).
-                        // `?`가 붙은 `CSI ? 2 J`(DECSED)는 모은 매개변수가 `?2`라 여기서 읽지 않는다
-                        if b == b'J' {
-                            match self.csi.as_slice() {
-                                // ED 22(scroll_complete)도 Ghostty는 화면 지우기와 같이 그림을 정리한다(`clearScreen`, #799)
-                                b"2" | b"22" => out.push((
-                                    i + 1,
-                                    Signal::Erase {
-                                        visible: true,
-                                        scrollback: false,
-                                    },
-                                )),
-                                b"3" => out.push((
-                                    i + 1,
-                                    Signal::Erase {
-                                        visible: false,
-                                        scrollback: true,
-                                    },
-                                )),
-                                _ => {}
+                    // 끝 바이트가 신호가 될 수 있는 것(`CSI_WATCHED_FINALS`)이 아니면 아래 어느 길도 신호를 내지 않는다. 그 밖의 CSI(특히 SGR `m`)는
+                    // 매개변수 문자열을 만들지도 읽지도 않고 지나간다(#938)
+                    if csi_final_is_watched(b) || self.slow_csi() {
+                        // 엔진이 `ignore` 없이 dispatch할 수 있는 모양이어야 신호를 낸다: 모은 매개변수가 상한 안이고 세미콜론이 31개 이하다
+                        // (엔진은 매개변수 32개를 넘으면 `ignore`로 dispatch하고 `ansi.rs`가 버린다, #605)
+                        let fits =
+                            self.csi.len() < MAX_CSI && self.csi.iter().filter(|&&c| c == b';').count() < MAX_PARAMS;
+                        if !self.csi_taint && fits {
+                            if let Some(sig) = csi_signal(b, &self.csi) {
+                                out.push((i + 1, sig));
                             }
-                        }
-                    } else if self.csi_gt && self.csi_inter.is_none() && fits {
-                        if let Some(sig) = crate::csi_query::private_gt(b, &self.csi) {
-                            out.push((i + 1, sig));
-                        }
-                    } else if let (Some(inter), false, true) = (self.csi_inter, self.csi_bad, fits) {
-                        if let Some(sig) = csi_inter_signal(inter, b, &self.csi) {
-                            out.push((i + 1, sig));
-                        }
-                        if let Some(sig) = crate::csi_query::inter(inter, b, &self.csi) {
-                            out.push((i + 1, sig));
+                            if let Some(sig) = crate::csi_query::plain(b, &self.csi) {
+                                out.push((i + 1, sig));
+                            }
+                            if let Some(sig) = crate::csi_query::visibility(b, &self.csi) {
+                                out.push((i + 1, sig));
+                            }
+                            if let Some(sig) = crate::csi_query::kitty_paste(b, &self.csi) {
+                                out.push((i + 1, sig));
+                            }
+                            for sig in crate::csi_query::save_restore(b, &self.csi) {
+                                out.push((i + 1, sig));
+                            }
+                            // 화면 지우기(ED)도 다른 신호처럼 중간 바이트·표시가 없는 CSI에서만 읽는다. 엔진은 중간 바이트 뒤의 매개변수·
+                            // 매개변수 뒤의 표시를 CsiIgnore로 보내고, 맨 앞의 `< = >`나 매개변수 뒤의 중간 바이트는 `ED`가 아닌 다른 명령으로 dispatch한다(#605).
+                            // `?`가 붙은 `CSI ? 2 J`(DECSED)는 모은 매개변수가 `?2`라 여기서 읽지 않는다
+                            if b == b'J' {
+                                match self.csi.as_slice() {
+                                    // ED 22(scroll_complete)도 Ghostty는 화면 지우기와 같이 그림을 정리한다(`clearScreen`, #799)
+                                    b"2" | b"22" => out.push((
+                                        i + 1,
+                                        Signal::Erase {
+                                            visible: true,
+                                            scrollback: false,
+                                        },
+                                    )),
+                                    b"3" => out.push((
+                                        i + 1,
+                                        Signal::Erase {
+                                            visible: false,
+                                            scrollback: true,
+                                        },
+                                    )),
+                                    _ => {}
+                                }
+                            }
+                        } else if self.csi_gt && self.csi_inter.is_none() && fits {
+                            if let Some(sig) = crate::csi_query::private_gt(b, &self.csi) {
+                                out.push((i + 1, sig));
+                            }
+                        } else if let (Some(inter), false, true) = (self.csi_inter, self.csi_bad, fits) {
+                            if let Some(sig) = csi_inter_signal(inter, b, &self.csi) {
+                                out.push((i + 1, sig));
+                            }
+                            if let Some(sig) = crate::csi_query::inter(inter, b, &self.csi) {
+                                out.push((i + 1, sig));
+                            }
                         }
                     }
                     St::Ground
@@ -821,6 +841,16 @@ impl Scanner {
             out.push((at, sig));
         }
     }
+}
+
+/// 스캐너가 CSI에서 신호를 뽑을 수 있는 끝 바이트(#938). `csi_signal`(`t` `h` `l` `n`), `csi_query::plain`(`c` `t` `h` `l` `n`),
+/// `private_gt`(`c` `q`), `visibility`·`kitty_paste`(`h` `l`), `save_restore`(`s` `r`), 화면 지우기(`J`),
+/// 중간 바이트 길 `csi_inter_signal`·`csi_query::inter`(`y` `p`)를 모은 것이다. 신호를 내는 길을 더하면 여기에 그 끝 바이트를 넣는다.
+/// 빠뜨리면 그 신호가 조용히 사라진다(`fast_csi_path_matches_full_dispatch` 시험이 지킨다)
+const CSI_WATCHED_FINALS: &[u8] = b"chlnpqrstyJ";
+
+fn csi_final_is_watched(fin: u8) -> bool {
+    CSI_WATCHED_FINALS.contains(&fin)
 }
 
 /// 매개변수 하나를 수로 읽는다. 비면 0, 넘치면 최댓값
@@ -1725,3 +1755,180 @@ mod dcs_tests;
 #[cfg(test)]
 #[path = "kitty_notify_tests.rs"]
 mod kitty_notify_tests;
+
+#[cfg(test)]
+mod fast_csi_tests {
+    use super::*;
+
+    type Signals = Vec<(usize, Signal)>;
+
+    /// 같은 바이트를 거르기가 켜진 스캐너(제품 길)와 꺼진 스캐너(옛 길: 모든 CSI가 전부 dispatch)에 먹여 나온 (자리, 신호) 목록을 돌려준다.
+    /// 조각 크기마다 따로 먹여 조각 경계에서도 같은지 본다
+    fn both(input: &[u8], chunk: usize) -> (Signals, Signals) {
+        let run = |slow: bool| {
+            let mut s = Scanner {
+                no_fast_csi: slow,
+                ..Scanner::default()
+            };
+            let mut out = Vec::new();
+            let mut base = 0;
+            for c in input.chunks(chunk) {
+                out.extend(s.feed_at(c).into_iter().map(|(at, sig)| (base + at, sig)));
+                base += c.len();
+            }
+            out
+        };
+        (run(false), run(true))
+    }
+
+    /// #938: 끝 바이트(0x40~0x7E 전부) x 앞 표시(`?` `>` `=` `<` `:`과 없음) x 중간 바이트 x 대표 매개변수가 옛 길과 같은 신호를 낸다
+    #[test]
+    fn fast_csi_path_matches_full_dispatch() {
+        let prefixes = ["", "?", ">", "=", "<", ":"];
+        let inters = ["", "$", "*", "#", "!", "$$", " "];
+        let params = [
+            "",
+            "0",
+            "1",
+            "2",
+            "3",
+            "22",
+            "4",
+            "6",
+            "8",
+            "8;24;80",
+            "8;24",
+            "8;1;2;3",
+            "21",
+            "16",
+            "19",
+            "14",
+            "18",
+            "996",
+            "998",
+            "2031",
+            "2033",
+            "2048",
+            "5522",
+            "1;2031",
+            "2031;1",
+            "2;3",
+            "1049",
+            "1;2",
+            "63",
+            "63;5",
+            "15",
+            "25",
+            "26",
+            "55",
+            "56",
+            "62",
+            "75",
+            "85",
+            "1;2;3;4;5;6;7",
+            "1;2;3;4;5;6;7;8;9;10;11;12;13;14;15;16;17;18;19;20;21;22;23;24;25;26;27;28;29;30;31;32",
+            ";",
+            ";;",
+            "2;",
+            ";2",
+            "?",
+            "1?2",
+        ];
+        let mut cases = 0usize;
+        let mut with_signal = 0usize;
+        for fin in 0x40u8..=0x7e {
+            for prefix in prefixes {
+                for inter in inters {
+                    for p in params {
+                        // 앞 표시 + 매개변수 + 중간 바이트 + 끝, 그리고 중간 바이트를 매개변수 앞에 둔 꼴
+                        for body in [format!("{prefix}{p}{inter}"), format!("{prefix}{inter}{p}")] {
+                            let mut input = b"\x1b[".to_vec();
+                            input.extend_from_slice(body.as_bytes());
+                            input.push(fin);
+                            input.extend_from_slice(b"ok");
+                            let (fast, old) = both(&input, input.len());
+                            assert_eq!(fast, old, "입력 {:?}", String::from_utf8_lossy(&input));
+                            cases += 1;
+                            with_signal += usize::from(!old.is_empty());
+                        }
+                    }
+                }
+            }
+        }
+        // 시험이 속 빈 것이 아님을 보인다: 신호가 나오는 경우가 충분히 많다
+        assert!(cases > 50_000, "{cases}");
+        assert!(with_signal > 300, "{with_signal}");
+    }
+
+    /// 거르는 바이트 목록이 실제로 신호가 나는 끝 바이트를 다 담는다: 신호가 나는 끝 바이트는 전부 목록 안이다
+    #[test]
+    fn every_final_that_makes_a_signal_is_watched() {
+        let mut seen = Vec::new();
+        for fin in 0x40u8..=0x7e {
+            for prefix in ["", "?", ">"] {
+                for inter in ["", "$", "*", "#", "!"] {
+                    for p in [
+                        "", "1", "2", "8;24;80", "21", "16", "19", "996", "998", "2031", "2033", "2048", "5522", "15",
+                        "63;1",
+                    ] {
+                        let mut input = b"\x1b[".to_vec();
+                        input.extend_from_slice(format!("{prefix}{p}{inter}").as_bytes());
+                        input.push(fin);
+                        let mut s = Scanner {
+                            no_fast_csi: true,
+                            ..Scanner::default()
+                        };
+                        if !s.feed(&input).is_empty() && !seen.contains(&fin) {
+                            seen.push(fin);
+                        }
+                    }
+                }
+            }
+        }
+        seen.sort_unstable();
+        let mut want = CSI_WATCHED_FINALS.to_vec();
+        want.sort_unstable();
+        assert_eq!(String::from_utf8(seen).unwrap(), String::from_utf8(want).unwrap());
+    }
+
+    /// 실제 출력 꼴: 색 출력, vim 시작과 끝, 알림·질의가 섞인 것. 조각을 1·7·64·전체로 나눠도 옛 길과 같다
+    #[test]
+    fn real_output_shapes_match_the_old_path() {
+        let mut color = Vec::new();
+        for i in 0..200u32 {
+            color.extend_from_slice(
+                format!(
+                    "\x1b[01;34mdir{i}\x1b[0m \x1b[38;5;{}mf\x1b[0m \x1b[38;2;{};{};{}mt\x1b[0m \x1b[1;3;4;31ms\x1b[39;49m\x1b[K\r\n",
+                    i % 256,
+                    i % 256,
+                    (i * 7) % 256,
+                    (i * 13) % 256
+                )
+                .as_bytes(),
+            );
+        }
+        let vim = b"\x1b[?1049h\x1b[22;0;0t\x1b[>4;2m\x1b[?1h\x1b=\x1b[?2004h\x1b[1;24r\x1b[?12h\x1b[?25h\x1b[2 q\x1b[H\x1b[2J\x1b[3J\x1b[6n\x1b[c\x1b[>c\x1b[>0q\x1b[?u\x1b[?996n\x1b[?2031h\x1b[?2033h\x1b[?2048h\x1b[?5522h\x1b[?2031$p\x1b[?2048;2031s\x1b[?2031;5522r\x1b[8;30;100t\x1b[21t\x1b[16t\x1b[19t\x1b[2h\x1b[2l\x1b[1;5;3h\x1b[?25l\x1b[2*y\x1b[1;1;1;2;3;4*y\x1b[7#y\x1b[!p\x1b[?1049l\x1b[23;0;0t".to_vec();
+        let mixed = [
+            &color[..400],
+            b"\x1b]9;build done\x07",
+            &vim[..],
+            b"\x1b]777;notify;title;body\x1b\\",
+            b"\x1b]7501;state=idle\x07\x1b[?63;1n\x1bP+q544e\x1b\\\x1b_Ga=q,i=1;\x1b\\",
+            b"\x1b]133;A\x07\x1b[0m\x1b[?2004h",
+            &color[400..],
+            b"\x1b[1;2\x1b[3m\x1b[2;3\x18\x1b[21t\x1b[?2031\x9b0m\x1b[8;3;4t\xe2\x80\x1b[2J\x1b[3J",
+        ]
+        .concat();
+        for input in [&color[..], &vim[..], &mixed[..]] {
+            let mut signals = 0;
+            for chunk in [1, 7, 64, input.len()] {
+                let (fast, old) = both(input, chunk);
+                assert_eq!(fast, old, "조각 {chunk}");
+                signals = old.len();
+            }
+            if input.len() == mixed.len() {
+                assert!(signals > 20, "섞은 입력에서 신호가 나와야 한다: {signals}");
+            }
+        }
+    }
+}

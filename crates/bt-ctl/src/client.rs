@@ -93,3 +93,105 @@ pub fn call(socket: &std::path::Path, call: Call) -> Result<serde_json::Value, C
         ))
     }
 }
+
+/// 이벤트 구독(`watch`). 첫 답이 오류면 그 오류를 돌려주고, 아니면 이벤트 줄마다 `on_line`을 부른다. `on_line`이 거짓을 돌려주거나
+/// 앱이 연결을 닫으면 끝난다. 줄 하나의 길이에는 상한(`MAX_LINE`)을 건다
+pub fn watch(socket: &std::path::Path, mut on_line: impl FnMut(&str) -> bool) -> Result<(), ClientError> {
+    let mut stream =
+        UnixStream::connect(socket).map_err(|e| ClientError::NoTerminal(format!("{}: {e}", socket.display())))?;
+    let mut line = serde_json::to_vec(&Request {
+        id: 1,
+        call: Call::Watch,
+    })
+    .map_err(|e| ClientError::Remote(e.to_string()))?;
+    line.push(b'\n');
+    stream.write_all(&line).map_err(ClientError::Io)?;
+    let mut reader = BufReader::new(stream);
+    let mut first = true;
+    loop {
+        let mut buf = Vec::new();
+        let n = std::io::Read::take(&mut reader, MAX_LINE as u64 + 1)
+            .read_until(b'\n', &mut buf)
+            .map_err(ClientError::Io)?;
+        if n == 0 {
+            return Ok(());
+        }
+        if buf.len() > MAX_LINE {
+            return Err(ClientError::Remote("이벤트 줄이 너무 깁니다".into()));
+        }
+        let text = String::from_utf8_lossy(&buf);
+        let text = text.trim_end_matches(['\n', '\r']);
+        if first {
+            first = false;
+            let resp: Response =
+                serde_json::from_str(text).map_err(|e| ClientError::Remote(format!("답을 읽지 못했습니다: {e}")))?;
+            if !resp.ok {
+                return Err(ClientError::Remote(
+                    resp.error.unwrap_or_else(|| "알 수 없는 오류".into()),
+                ));
+            }
+            continue;
+        }
+        if !on_line(text) {
+            return Ok(());
+        }
+    }
+}
+
+#[cfg(test)]
+mod watch_tests {
+    use super::*;
+    use std::io::Read;
+    use std::os::unix::net::UnixListener;
+
+    fn serve_once(name: &str, reply: &'static str) -> PathBuf {
+        let path = std::env::temp_dir().join(format!("bt-watch-{}-{name}.sock", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let l = UnixListener::bind(&path).unwrap();
+        std::thread::spawn(move || {
+            let (mut s, _) = l.accept().unwrap();
+            let mut req = [0u8; 64];
+            let n = s.read(&mut req).unwrap();
+            assert!(std::str::from_utf8(&req[..n]).unwrap().contains(r#""method":"watch""#));
+            s.write_all(reply.as_bytes()).unwrap();
+        });
+        path
+    }
+
+    /// 첫 답을 확인한 뒤 이벤트 줄을 하나씩 넘기고, 앱이 닫으면 끝난다(PTY 없이 소켓만 쓴다)
+    #[test]
+    fn watch_passes_event_lines_after_the_first_reply() {
+        let p = serve_once(
+            "ok",
+            "{\"id\":1,\"ok\":true,\"result\":{\"watching\":true}}\n{\"event\":\"ping\"}\n{\"event\":\"tab_closed\",\"tab\":2}\n",
+        );
+        let mut got = Vec::new();
+        watch(&p, |l| {
+            got.push(l.to_string());
+            true
+        })
+        .unwrap();
+        assert_eq!(got, vec![r#"{"event":"ping"}"#, r#"{"event":"tab_closed","tab":2}"#]);
+        let _ = std::fs::remove_file(&p);
+    }
+
+    #[test]
+    fn watch_reports_a_refusal_and_stops_when_the_callback_says_so() {
+        let p = serve_once("full", "{\"id\":1,\"ok\":false,\"error\":\"너무 많습니다\"}\n");
+        let e = watch(&p, |_| true).unwrap_err();
+        assert!(e.to_string().contains("너무 많"), "{e}");
+        let _ = std::fs::remove_file(&p);
+        let p = serve_once(
+            "stop",
+            "{\"id\":1,\"ok\":true}\n{\"event\":\"ping\"}\n{\"event\":\"ping\"}\n",
+        );
+        let mut n = 0;
+        watch(&p, |_| {
+            n += 1;
+            false
+        })
+        .unwrap();
+        assert_eq!(n, 1);
+        let _ = std::fs::remove_file(&p);
+    }
+}
