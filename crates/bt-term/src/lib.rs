@@ -3,6 +3,7 @@
 mod color;
 pub mod command_marks;
 pub mod copy_format;
+pub mod copy_mode;
 pub mod csi_query;
 pub mod dcs;
 pub mod glyph;
@@ -37,6 +38,7 @@ mod session;
 pub mod xt_checksum;
 
 pub use copy_format::{CopyFormat, Emit as CopyEmit};
+pub use copy_mode::{CopyOp, CopySelect};
 pub use input::{
     KeyModes, KeypadKey, KittyFlags, LARGE_PASTE_BYTES, Mods, NamedKey, TextKey, apply_paste_actions, ctrl_seq,
     encode_keypad, encode_modify_other_char, encode_named, encode_named_modify_other, encode_named_with, encode_paste,

@@ -396,6 +396,13 @@ struct Inner {
     /// 명령 출력 고르기(#700)를 시작한 칸: (스크롤백 맨 위에서 센 줄, 칸). 출력이 흘러 줄이 밀려도 같은 줄을 가리킨다.
     /// 있으면 끌기가 출력 구간 단위로 늘린다. 다른 고르기를 시작하거나 지우면 없어진다
     output_click: Option<(usize, usize)>,
+    /// vi 복사 모드(#930). 있으면 모드 중이다
+    copy_mode: Option<crate::copy_mode::CopyMode>,
+}
+
+/// 사람의 입력을 PTY에 쓰지 않는 때: 프로그램이 키보드를 잠갔거나(KAM), 읽기 전용 칸이거나, vi 복사 모드 중(#930)
+fn input_blocked(keyboard_locked: bool, readonly: bool, copy_mode: bool) -> bool {
+    keyboard_locked || readonly || copy_mode
 }
 
 /// 격자 좌표를 스크롤백 맨 위에서 센 (줄, 칸)으로(출력이 흘러 스크롤백이 늘어도 같은 줄)
@@ -618,6 +625,8 @@ pub struct Session {
     output_seq: Arc<std::sync::atomic::AtomicU64>,
     /// 프로그램이 키보드를 잠갔다(KAM, vt-kam-allowed가 켜졌을 때만). 잠겨 있으면 사람의 입력을 PTY에 쓰지 않는다
     kam_locked: Arc<std::sync::atomic::AtomicBool>,
+    /// vi 복사 모드 중이다(#930). 켜져 있으면 사람의 입력(키·IME·붙여넣기)을 PTY에 쓰지 않는다
+    copy_active: std::sync::atomic::AtomicBool,
     /// 사람이 칸을 읽기 전용으로 했다(`toggle_readonly`, ADR-018). 켜져 있으면 `write`가 아무것도 쓰지 않는다
     readonly: Arc<std::sync::atomic::AtomicBool>,
     /// 프로그램이 색 구성표 변경 알림(모드 2031)을 켰다(#232)
@@ -908,6 +917,7 @@ impl Session {
             pixel: Default::default(),
             sel_end: None,
             output_click: None,
+            copy_mode: None,
         }));
         let integrated = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let thread_integrated = integrated.clone();
@@ -1370,6 +1380,7 @@ impl Session {
             scroll_on_output,
             output_seq,
             kam_locked,
+            copy_active: std::sync::atomic::AtomicBool::new(false),
             readonly,
             scheme_updates,
             scheme_light,
@@ -1473,7 +1484,7 @@ impl Session {
     /// 사용자가 친 키·붙여넣기를 PTY에 쓴다. `scroll`이면 쓰기 전에 맨 아래로 돌린다
     /// (설정 scroll-to-bottom의 keystroke, #147)
     pub fn write_input(&self, bytes: &[u8], scroll: bool) {
-        if bytes.is_empty() || self.keyboard_locked() || self.readonly() {
+        if bytes.is_empty() || input_blocked(self.keyboard_locked(), self.readonly(), self.copy_mode_active()) {
             return;
         }
         if scroll {
@@ -1936,6 +1947,72 @@ impl Session {
         }
         g.sel_end = Some(next);
         g.term.scroll_to_point(next);
+        true
+    }
+
+    /// vi 복사 모드에 들어간다(#930). 대체 화면에서도 보이는 격자 위에서 돈다.
+    /// 들어갈 때의 스크롤 자리를 기억해 나올 때 돌려준다. 이미 모드 중이면 거짓
+    pub fn copy_mode_enter(&self) -> bool {
+        let mut g = self.inner.lock();
+        if g.copy_mode.is_some() {
+            return false;
+        }
+        let cm = crate::copy_mode::CopyMode::enter(&g.term);
+        cm.sync(&mut g.term);
+        let p = cm.cursor_point(&g.term);
+        g.sel_end = Some(p);
+        g.output_click = None;
+        g.pixel.reset();
+        g.copy_mode = Some(cm);
+        self.copy_active.store(true, std::sync::atomic::Ordering::Release);
+        true
+    }
+
+    /// vi 복사 모드 중인가
+    pub fn copy_mode_active(&self) -> bool {
+        self.copy_active.load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    /// 복사 모드의 동작 하나(#930). 모드 중이 아니면 하지 않고 거짓
+    pub fn copy_mode_op(&self, op: crate::copy_mode::CopyOp) -> bool {
+        let mut g = self.inner.lock();
+        let Inner {
+            term,
+            copy_mode,
+            pixel,
+            sel_end,
+            ..
+        } = &mut *g;
+        let Some(cm) = copy_mode.as_mut() else {
+            return false;
+        };
+        pixel.reset();
+        cm.apply(term, op);
+        *sel_end = Some(cm.cursor_point(term));
+        true
+    }
+
+    /// 복사 모드가 지금 하는 고르기의 종류. 모드 중이 아니거나 고르기를 시작하지 않았으면 없다
+    pub fn copy_mode_selecting(&self) -> Option<crate::copy_mode::CopySelect> {
+        self.inner.lock().copy_mode.as_ref().and_then(|c| c.selecting())
+    }
+
+    /// 복사 모드에서 복사할 고른 글이 있는가(고르기를 시작했을 때만. 커서 칸 표시는 고른 것이 아니다)
+    pub fn copy_mode_has_selection(&self) -> bool {
+        self.inner.lock().copy_mode.as_ref().is_some_and(|c| c.has_selection())
+    }
+
+    /// 복사 모드를 나간다: 고른 것을 지우고 스크롤 자리를 들어가기 전으로 돌린다. 모드 중이 아니면 거짓
+    pub fn copy_mode_exit(&self) -> bool {
+        let mut g = self.inner.lock();
+        let Some(cm) = g.copy_mode.take() else {
+            return false;
+        };
+        self.copy_active.store(false, std::sync::atomic::Ordering::Release);
+        g.pixel.reset();
+        cm.exit(&mut g.term);
+        g.sel_end = None;
+        g.output_click = None;
         true
     }
 
@@ -3421,6 +3498,15 @@ impl Drop for Session {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #930: 사람의 입력은 KAM·읽기 전용·복사 모드 중 하나만 있어도 PTY에 쓰지 않는다
+    #[test]
+    fn human_input_is_blocked_by_kam_readonly_or_copy_mode() {
+        assert!(!input_blocked(false, false, false));
+        assert!(input_blocked(true, false, false));
+        assert!(input_blocked(false, true, false));
+        assert!(input_blocked(false, false, true));
+    }
 
     #[test]
     fn openpty_retries_transient_failures_then_succeeds() {

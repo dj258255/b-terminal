@@ -435,6 +435,8 @@ HTML은 `<div style="font-family: monospace; white-space: pre;">` 안에 칸의 
 | `copy_title_to_clipboard` | 지금 칸의 터미널 제목(사람이 붙인 것, 없으면 프로그램이 정한 것)을 클립보드로 복사합니다. 제목이 없거나 비면 하지 않습니다 | (없음, 팔레트) |
 | `write_scrollback_file:할일[,형식]` / `write_screen_file:할일[,형식]` / `write_selection_file:할일[,형식]` | 스크롤백 전체 / 화면 / 고른 글을 파일로 쓰고(형식은 `plain`(기본, 글만)·`vt`(색·꾸밈 이스케이프가 든 글, `.txt`)·`html`(바탕·글자 기본색을 넣은 HTML, `.html`)이고 쉼표 앞뒤에 공백을 두지 않습니다. 형식이 틀리면 설정 경고입니다), 할일이 `copy`면 경로를 클립보드에, `paste`면 칸에 붙여넣고, `open`이면 기본 앱으로 엽니다. 파일은 이 사용자 전용 임시 폴더에 두고 앱이 끝날 때 지웁니다. 고른 글이 없으면 아무것도 하지 않습니다. `plain`은 Ghostty처럼 화면 폭에서 접힌 줄을 잇고, 끝의 빈 줄은 내지 않으며, 직접 친 줄 끝 공백은 남깁니다 | `write_screen_file`: `super+shift+j`(paste) `super+shift+alt+j`(open) `super+ctrl+shift+j`(copy)(macOS). 나머지는 (없음, 팔레트에 열기·복사) |
 | `adjust_selection:방향` | 고른 것의 끝점을 옮깁니다. 방향은 `left` `right`(글이 있는 앞·다음 칸까지 빈 칸을 건너뛰고 줄을 넘어감) `up`(맨 윗줄이면 줄 처음으로) `down`(글이 있는 다음 줄로, 없으면 줄 끝으로) `page_up` `page_down`(한 화면만큼 옮길 수 없으면 `home`·`end`) `home` `end`(글이 있는 마지막 줄의 끝) `beginning_of_line` `end_of_line`. Ghostty `Selection.adjust`와 같습니다. 고른 것이 없으면 아무것도 하지 않습니다 | `shift+arrow_left` `right` `up` `down`(`performable`이라 고른 것이 없으면 키는 프로그램으로 갑니다). Ghostty는 `shift+home` `end` `page_up` `page_down`도 이 동작이지만 b-terminal은 그 키를 스크롤에 둡니다 |
+| `activate_copy_mode` | vi 복사 모드에 들어갑니다(아래 "vi 복사 모드"). 키 테이블 `copy_mode`를 켜고, 이 칸에서는 키·IME 확정 글·붙여넣기가 프로그램에 가지 않습니다. 찾기 막대·팔레트·제목 입력이 열려 있으면 들어가지 않고, `keybind = clear`로 `copy_mode` 테이블을 지웠으면 안내만 합니다 | `ctrl+shift+x` |
+| `copy_mode:이름` | 복사 모드 안의 동작(기본은 `copy_mode` 키 테이블에 묶여 있고 모드 밖에서는 아무 일도 하지 않습니다). 이름: `left` `right` `up` `down` `line_start` `line_end` `top` `bottom` `half_page_up` `half_page_down` `page_up` `page_down` `select` `select_line` `select_block` `copy` `exit` | (복사 모드 안) |
 | `copy_url_to_clipboard` | 마우스 아래 링크(화면의 URL·OSC 8) 주소를 클립보드에 | (없음) |
 | `hints:종류[,동작]` | 화면에 보이는 칸에서 `종류`에 맞는 곳마다 라벨(`1`~`9`·`a`~`z`, 35개를 넘으면 `00`부터 두 글자, 맨 아래가 `1`)을 붙이고 키로 고릅니다(kitty `hints` kitten, Ghostty에는 없는 동작). 종류: `url`(스킴 주소)·`path`(경로·파일 이름, 끝의 `:줄:칸`은 뗌)·`linenum`(`경로:줄`)·`line`(줄 전체)·`hash`(16진 7~128자)·`word`(낱말, 세 글자 이상)·`hyperlink`(OSC 8 링크). 동작: `open`(`url`·`path`·`linenum`·`hyperlink`만, 안 적으면 이것)·`copy`(시스템 클립보드)·`paste`(그 칸에 붙여넣기, `line`·`hash`·`word`는 안 적으면 이것). 쉼표 앞뒤에 공백을 두지 않습니다. 틀린 값은 설정 경고입니다. 라벨 글자를 치면 후보가 하나 남을 때 바로 고르고, 후보가 여럿이면 더 치거나 Enter·Space로 친 라벨을 확정합니다. Backspace는 지우고 Esc는 그만둡니다. 라벨에 없는 글자는 받지 않습니다. 키는 PTY로 가지 않고(⌘·Ctrl 조합은 힌트를 닫고 키 묶음으로 갑니다) 영문 자판으로 칩니다. `open`은 ⌘클릭과 같은 길이라 확인 막대·허용 목록을 그대로 지나고 열 수 있는 것에만 라벨이 붙습니다. `paste`는 사람의 붙여넣기와 같아 괄호 붙여넣기 틀·위험 제어 바이트 바꾸기·붙여넣기 보호를 지나고 읽기 전용 칸에는 붙여넣지 않습니다. `linenum`은 `open`·`paste` 모두 편집기 명령 `$EDITOR +줄 '경로'`를 붙여넣고 Enter는 보내지 않습니다(`copy`는 그 명령을 복사). 화면 글이 바뀌면(출력·스크롤) 힌트를 닫고, 스크롤백은 찾지 않습니다(ADR-094) | macOS: `ctrl+shift+e`=`hints:url`, `ctrl+shift+p>f`=`hints:path,paste`, `ctrl+shift+p>shift+f`=`hints:path,open`, `ctrl+shift+p>l`=`hints:line,paste`, `ctrl+shift+p>w`=`hints:word,paste`, `ctrl+shift+p>h`=`hints:hash,paste`, `ctrl+shift+p>n`=`hints:linenum,open`, `ctrl+shift+p>y`=`hints:hyperlink,open`(kitty 기본 묶음과 같은 키, Ghostty 1.4.0 macOS 기본에는 없음). 다른 OS는 없음(Ghostty Linux 기본 `ctrl+shift+e`와 겹침) |
 | `toggle_quick_terminal` | 퀵 터미널(화면 가장자리에서 미끄러져 나오는 창) 보이기·숨기기. 자리·크기·화면·움직임은 `quick-terminal-*` 설정. 창 상태 복원에서 빠집니다 | (없음, `global:`로 묶으세요) |
@@ -472,6 +474,33 @@ Ghostty 설정에 흔한 아래 동작은 `keybind`에 써도 경고가 나지 �
 | `crash:main` `io` `render` | 일부러 앱을 죽여 충돌 처리를 시험하는 디버그 동작입니다. 데이터를 잃을 수 있어 하지 않습니다 |
 
 설정 다시 읽기는 글꼴·색(이미 열린 탭 포함)·키 묶음(전역 단축키 포함)·여백·Option 키를 바꿉니다. 바깥에서 부르려면 `btctl reload-config`. 퀵 터미널은 `btctl quick`.
+
+## vi 복사 모드
+
+키보드만으로 스크롤백을 돌아다니며 글을 고르고 복사합니다(WezTerm CopyMode·Alacritty vi mode·iTerm2 copy mode처럼. Ghostty·kitty에는 없고 소유자가 넣기로 골랐습니다, ADR-103). `ctrl+shift+x`로 들어가고, 모드는 칸 하나에 속합니다(다른 칸을 고르면 그 칸의 모드는 끝납니다).
+
+기본 키는 `copy_mode`라는 키 테이블입니다(위 "키 테이블"과 같은 문법). WezTerm의 기본 묶음을 따랐고 Alacritty vi mode와 같은 키가 많습니다. 모드 밖의 기본 묶음과는 겹치지 않습니다(들어가는 키 `ctrl+shift+x`는 Ghostty 기본에도 kitty 기본 묶음에도 없습니다. 모드 안의 키는 테이블이 켜진 동안만 듣습니다).
+
+| 키 | 하는 일 |
+|---|---|
+| `h` `j` `k` `l`, 방향키 | 한 칸 왼쪽·아래·위·오른쪽. 줄 끝·스크롤백 끝에서 멈춥니다(다음 줄로 넘어가지 않음) |
+| `0` / `home`, `$` / `end` | 줄 맨 앞 칸 / 줄의 글자 끝(`$` 뒤에 위아래로 움직이면 줄마다 글자 끝) |
+| `g` / `G` | 스크롤백 맨 위 / 맨 아래 줄 |
+| `ctrl+u` `ctrl+d` | 반 화면 위·아래 |
+| `ctrl+b` `ctrl+f`, `page_up` `page_down` | 한 화면 위·아래 |
+| `v` / `V` / `ctrl+v` | 글자 / 줄 / 사각 고르기를 시작합니다(같은 키를 다시 누르면 끄고, 다른 종류 키를 누르면 시작점은 두고 종류만 바꿉니다). 고르기 끝은 커서입니다 |
+| `y`, `super+c`(macOS)·`ctrl+shift+c` | 고른 글을 복사하고(`copy_to_clipboard` 기본 형식 `mixed`) 나갑니다. 고르기를 시작하지 않았으면 복사 없이 나갑니다 |
+| `esc` `q` `ctrl+c` `ctrl+g` | 복사 없이 나갑니다 |
+
+- 바꾸기: `keybind = copy_mode/h=copy_mode:right`, 지우기: `copy_mode/q=unbind`, 들어가는 키: `keybind = ctrl+shift+x=unbind` 후 다른 키에 `activate_copy_mode`. 다른 키에서 `copy_mode:exit` 등을 바로 부를 수도 있습니다(모드 밖에서는 아무 일도 하지 않습니다).
+- 모드 중에는 묶이지 않은 키가 `catch_all=ignore`로 먹힙니다. 그래서 `super+t` 같은 일반 단축키도 모드를 나가기 전에는 듣지 않습니다(`copy_mode/super+t=new_tab`처럼 테이블에 따로 묶으면 됩니다). 키 순서(`>`)와 `performable:` 같은 접두사도 테이블 안에서 그대로 씁니다.
+- 입력기: 모드 중에는 입력기를 꺼서 한글 입력 소스에서도 글자 키가 `ㅗ`·`ㅓ`가 아니라 같은 자리의 라틴 글자(`h`·`j`)로 맞습니다(macOS의 ⌘ 층 글자). IME 확정 글과 붙여넣기도 프로그램에 가지 않습니다. 들어갈 때 조합 중이던 글자는 먼저 칸에 확정합니다.
+- 화면: 커서가 화면 밖으로 나가면 넘은 만큼만 스크롤합니다. 나가면(`y`·`esc`·`q`) 스크롤 자리가 들어가기 전으로 돌아갑니다(WezTerm 설명에는 나갈 때 맨 아래로 간다고 적혀 있으나 이슈의 완료 조건을 따랐습니다). 모드를 나가면 고른 것도 지워집니다. 모드 중인 칸의 탭 제목 앞에는 `[복사 모드]`가 붙습니다.
+- 커서: 이번 판에서는 고르기를 시작하지 않았으면 커서 칸 하나가 고른 것처럼 칠해지고(복사 대상은 아님), 고르기 중에는 고르기의 끝 칸이 커서입니다. 정식 커서 그리기는 다음 판입니다.
+- 넓은 글자(한글·CJK·이모지)는 두 칸이고 커서는 늘 앞 칸에 섭니다(오른쪽 반에 서지 않음). 위아래로 움직일 때는 바라는 칸을 기억해 짧은 줄을 지나도 돌아옵니다. 줄바꿈으로 이어진 줄은 `j`·`k`로는 화면 줄 단위로 움직이고, 복사하면 이어 붙고(줄 바꿈 없음), `V`는 이어진 줄 전체를 고릅니다.
+- 출력이 계속 오는 동안: 커서와 고르기 시작점은 줄의 안정된 번호로 쥐므로 화면이 밀려도 같은 줄을 가리킵니다. 스크롤백이 가득 차 그 줄이 밀려나면 맨 위 줄에 붙습니다. 맨 아래에서 들어갔고 출력이 와서 커서 줄이 화면 아래로 밀려나도 자동으로 따라가지 않습니다(다음 판).
+- 하지 않는 것(이번 판): 낱말 움직임 `w b e`·문단 `{ }`·`H M L`·`^`(다음 판, #931), 찾기 `/ ? n N`(그다음, #932), vi 명령으로 글 고치기. 마우스는 모드 중에도 평소처럼 보고·고르기를 하며(고르면 커서 표시를 덮고 다음 키에서 되돌아옵니다) 프로그램에 마우스 보고도 갑니다.
+- 확인한 것은 단위 시험(커서 움직임·고르기·넓은 글자·이어진 줄·스크롤 복원·출력 중 고정, 키 테이블이 모든 키를 먹는지)까지입니다. 실제 창(한글 입력 소스, 탭 제목 표시, 클립보드)에서는 아직 보지 않았습니다.
 
 ## 앱 메뉴: 기본 터미널로 지정
 

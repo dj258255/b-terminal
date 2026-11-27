@@ -1171,6 +1171,8 @@ esctest2를 격리 창에서 돌리려 했지만 자동 권한 검사가 막아�
 
 범수 님이 "다른 오픈소스 터미널 다 참고해서 추천하는대로"라고 하셔서 조사 에이전트 셋이 kitty·WezTerm, foot·Alacritty·Contour·Rio, Ghostty 1.4·iTerm2·Windows Terminal을 나눠 봤습니다. 이미 있는 것(XTGETTCAP, DECRQSS, OSC 52·133·5522 등)을 빼고 Ghostty에도 있는 것부터 골랐습니다. sixel·iTerm 인라인 그림·OSC 66·72·7501·vi 복사 모드·Services 메뉴는 넣지 않기로 했습니다(Ghostty에 없거나, b-studio의 일이거나, `unsafe`가 필요함).
 
+**2026-11-28 소유자 결정으로 vi 복사 모드를 넣기로 바꿨습니다([#930](https://github.com/dj258255/b-terminal/issues/930), 0.112). 위 기록은 그때의 판단으로 남겨 둡니다.** Ghostty·kitty에는 없지만 WezTerm(CopyMode)·Alacritty(vi mode)·iTerm2(copy mode)에 있는 키보드만의 고르기라 범위를 넓혔습니다. 결정은 ADR-103.
+
 - 시각(KST): 이슈를 21:12(#545)·21:19(#546~#549)·21:23(#550)에 열고, 한 PR [#551](https://github.com/dj258255/b-terminal/pull/551)을 21:57에 올려 22:09에 병합했습니다.
 - 실제 창(격리한 HOME·TMPDIR)에서 0.65.0과 견줬습니다: DECSC 문자 집합 다섯 경우, RIS 1.5초 뒤 진행 막대 픽셀(0.65.0은 막대색 146 177 201, 새 빌드는 바탕색 52 58 67), kitty 그림 장면 여섯(그림 없는 화면은 픽셀 차이 0, 잘라내기·오프셋·글자 아래·칸 바탕 아래·같은 자리 번호로 바꾸기는 기대대로).
 - 사고 둘: 주 세션이 시험용 빌드 폴더 `target-test/`(파일 14928개, 약 3.5GB)를 PR 브랜치에 커밋·push했습니다. 지우는 커밋을 더해 병합했고 squash라 main에는 들어가지 않았습니다. `.gitignore`에 `/target-*`를 더했습니다. 또 색 있는 복사 에이전트가 임시 커밋에서 커밋 훅을 우회했습니다(그 커밋은 남지 않았고 훅 설정은 그대로임을 확인).

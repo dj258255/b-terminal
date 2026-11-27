@@ -83,6 +83,10 @@ pub enum Action {
     AdjustSelection(bt_term::SelectionAdjust),
     /// 마우스 아래 링크 주소를 클립보드에(Ghostty `copy_url_to_clipboard`)
     CopyUrl,
+    /// vi 복사 모드에 들어간다(`activate_copy_mode`, #930). 키 테이블 `copy_mode`를 켜고 입력은 PTY로 가지 않는다
+    ActivateCopyMode,
+    /// 복사 모드 안의 동작(`copy_mode:<이름>`, #930)
+    CopyMode(crate::copy_mode::CopyAction),
     /// 칸의 글을 파일로 쓰고 그 경로를 어떻게 할지(Ghostty `write_scrollback_file` 등, #125)
     WriteFile(FileSource, FileThen, FileFormat),
     /// 입력 막대로 지금 칸의 제목을 묻는다(Ghostty `prompt_surface_title`, #124)
@@ -494,6 +498,7 @@ fn unescape(s: &str) -> String {
 
 /// 값을 받지 않는(Ghostty `void`) 동작. 콜론을 붙이면 오류다
 const VOID_ACTIONS: &[&str] = &[
+    "activate_copy_mode",
     "unbind",
     "ignore",
     "paste_from_clipboard",
@@ -647,6 +652,8 @@ pub fn parse_action(s: &str) -> Result<Option<Action>, String> {
         "toggle_window_float_on_top" => Action::ToggleFloatOnTop,
         "prompt_surface_title" => Action::PromptSurfaceTitle,
         "copy_url_to_clipboard" => Action::CopyUrl,
+        "activate_copy_mode" => Action::ActivateCopyMode,
+        "copy_mode" => Action::CopyMode(crate::copy_mode::parse(arg)?),
         "adjust_selection" => {
             use bt_term::SelectionAdjust::*;
             Action::AdjustSelection(match arg.map(str::trim) {
@@ -979,6 +986,8 @@ pub(crate) fn defaults() -> Vec<(&'static str, &'static str)> {
         ("shift+arrow_right", "adjust_selection:right"),
         ("shift+arrow_up", "adjust_selection:up"),
         ("shift+arrow_down", "adjust_selection:down"),
+        // vi 복사 모드(#930): WezTerm과 같은 키. Ghostty 기본(super 묶음)과 겹치지 않는다
+        ("ctrl+shift+x", "activate_copy_mode"),
     ];
     // 되살리기(Ghostty macOS 기본, performable): 다른 OS의 기본에는 없다. 되살릴 것이 없으면 키는 프로그램으로 간다
     if cfg!(target_os = "macos") {
@@ -1063,6 +1072,11 @@ pub(crate) fn default_performable(a: &Action) -> bool {
 }
 
 impl Keymap {
+    /// 이름 붙은 키 테이블이 있는가(복사 모드가 들어가기 전에 본다, #930)
+    pub fn has_table(&self, name: &str) -> bool {
+        self.tables.contains_key(name)
+    }
+
     /// 기본 묶음 위에 설정의 keybind를 얹는다. 읽지 못한 줄은 경고로 돌려준다
     pub fn build(user: &[String]) -> (Self, Vec<String>) {
         let (km, warnings, _) = Self::build_with_status(user);
@@ -1105,6 +1119,16 @@ impl Keymap {
                         order,
                         more: Vec::new(),
                     },
+                );
+            }
+        }
+        // 복사 모드 기본 키 테이블(#930). 사용자 줄이 이 위에 얹혀 같은 키는 나중 것이 이긴다
+        for (t, a) in crate::copy_mode::default_table() {
+            if let (Ok(trig), Ok(Some(act))) = (parse_trigger(t), parse_action(a)) {
+                km.tables.entry(crate::copy_mode::TABLE.to_string()).or_default().bind(
+                    vec![trig],
+                    act,
+                    BindFlags::default(),
                 );
             }
         }
@@ -1504,6 +1528,20 @@ impl Sequencer {
     #[cfg(test)]
     pub fn stack_names(&self) -> Vec<&str> {
         self.stack.iter().map(|t| t.name.as_str()).collect()
+    }
+
+    /// 이름 붙은 키 테이블이 켜져 있는가
+    pub fn has_table(&self, name: &str) -> bool {
+        self.stack.iter().any(|t| t.name == name)
+    }
+
+    /// 켜진 키 테이블 가운데 이름이 `name`인 것을 모두 내린다(복사 모드가 끝날 때, #930). 내린 것이 있으면 참
+    pub fn remove_table(&mut self, name: &str) -> bool {
+        let n = self.stack.len();
+        self.stack.retain(|t| t.name != name);
+        self.pending.clear();
+        self.pending_layer = None;
+        n != self.stack.len()
     }
 
     /// 앞 키를 받고 다음 키를 기다리는 중인가
@@ -2987,7 +3025,9 @@ mod tests {
         assert_eq!(km.lookup(&trig("ctrl+/")), Some(&Action::Text("slash".into())));
         assert_eq!(km.lookup(&trig("/")), Some(&Action::Text("bare".into())));
         assert_eq!(km.lookup(&trig("x")), Some(&Action::Text("/hello".into())));
-        assert_eq!(km.tables.len(), 2);
+        // 만든 두 개와 기본으로 들어 있는 복사 모드 테이블(#930)
+        assert_eq!(km.tables.len(), 3);
+        assert!(km.tables.contains_key(crate::copy_mode::TABLE));
     }
 
     #[test]
