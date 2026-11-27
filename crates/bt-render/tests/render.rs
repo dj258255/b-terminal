@@ -1312,8 +1312,9 @@ fn no_cursor_shaping_break_keeps_ligature_under_cursor() {
         "기본: 앞 칸은 합자가 아닌 '-'"
     );
     let keep_frame = render(&mut keep, b"->\x1b[D", 6, 1, true);
+    // 글리프를 서브픽셀로 옮긴(#903) 뒤 다른 픽셀 수가 20 넘게에서 18로 줄었다(합자 앞 반과 '-'의 닮은 줄이 같은 만큼 옮겨져 안티앨리어싱 값이 더 자주 같다)
     assert!(
-        cell_diff(&keep_frame, &plain, 0, 0) > 20,
+        cell_diff(&keep_frame, &plain, 0, 0) > 10,
         "no-cursor: 앞 칸은 합자의 앞쪽 반이다"
     );
 }
