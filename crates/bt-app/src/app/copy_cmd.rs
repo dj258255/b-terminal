@@ -1,7 +1,7 @@
 //! vi 복사 모드(#930)의 앱 쪽 연결. 커서 움직임·고르기는 `bt_term::copy_mode`, 키 테이블과 동작 이름은 `crate::copy_mode`가 한다.
 //! 여기는 들어가기·나가기·복사, 입력기 끄기, 키 테이블과 칸의 상태 맞추기만 한다
 
-use super::App;
+use super::{App, SearchBar};
 use crate::copy_mode::{CopyAction, TABLE};
 use crate::keymap::Action;
 
@@ -73,6 +73,22 @@ impl App {
                 self.leave_copy_mode_active();
             }
             CopyAction::Exit => self.leave_copy_mode_active(),
+            CopyAction::SearchOpen { forward } => self.copy_search_open(forward),
+            CopyAction::SearchNext { reverse } => {
+                let Some((query, forward)) = self.w.copy_search_last.clone() else {
+                    self.toast("먼저 / 나 ? 로 찾을 글을 정해 주세요".into());
+                    return;
+                };
+                self.copy_search_run(&query, forward != reverse);
+            }
+            CopyAction::Jump(kind) => self.w.copy_jump_wait = Some(kind),
+            CopyAction::JumpAgain { reverse } => {
+                let Some((kind, c)) = self.w.copy_jump_last else { return };
+                let kind = if reverse { kind.reversed() } else { kind };
+                if let Some(t) = self.active_pane() {
+                    t.session.copy_mode_jump(kind, c, true);
+                }
+            }
         }
     }
 
@@ -86,7 +102,101 @@ impl App {
 
     fn drop_copy_table(&mut self) {
         self.w.keyseq.remove_table(TABLE);
+        self.w.copy_jump_wait = None;
+        // 복사 모드의 `/ ?`가 연 찾기 막대는 모드와 함께 닫는다(막대가 키를 쥔 채 남지 않게)
+        if self.w.copy_search_open.is_some() {
+            self.end_search();
+        }
         self.sync_confirm_ime();
+    }
+
+    /// `/`·`?`: 찾기 막대를 연다. 이미 열린 막대(다른 길로 연 것)는 닫고 새로 연다. 막대가 열려 있는 동안
+    /// 키는 막대가 받고(`search_key`) IME도 켜진다(확정한 글만 들어온다)
+    fn copy_search_open(&mut self, forward: bool) {
+        self.end_search();
+        let Some(id) = self.focused_id() else { return };
+        self.w.preedit.clear();
+        self.w.search = Some(SearchBar::new(id, String::new()));
+        self.w.copy_search_open = Some(forward);
+        self.sync_confirm_ime();
+    }
+
+    /// 막대에서 Enter: 친 글(비었으면 마지막으로 찾은 글)로 커서를 옮기고 막대를 닫는다. 맞은 곳 강조는 남긴다
+    pub(super) fn copy_search_confirm(&mut self, forward: bool) {
+        let typed = self.w.search.as_ref().map(|s| s.query.clone()).unwrap_or_default();
+        self.w.search = None;
+        self.w.copy_search_open = None;
+        self.w.preedit.clear();
+        self.sync_confirm_ime();
+        let query = if typed.is_empty() {
+            self.w.copy_search_last.as_ref().map(|(q, _)| q.clone())
+        } else {
+            Some(typed)
+        };
+        match query {
+            Some(q) => {
+                self.w.copy_search_last = Some((q.clone(), forward));
+                self.copy_search_run(&q, forward);
+            }
+            None => self.request_redraw(),
+        }
+    }
+
+    fn copy_search_run(&mut self, query: &str, forward: bool) {
+        let found = self
+            .active_pane()
+            .is_some_and(|t| t.session.copy_mode_search(query, forward));
+        if !found {
+            self.toast(format!("찾지 못했습니다: {query}"));
+        }
+    }
+
+    /// 글자를 기다리는 `f F t T`가 키를 받는다. 받았으면 참(키는 어디에도 가지 않는다)
+    pub(super) fn copy_jump_key(&mut self, event: &winit::event::KeyEvent) -> bool {
+        use winit::keyboard::{Key, NamedKey};
+        let Some(kind) = self.w.copy_jump_wait else {
+            return false;
+        };
+        if !self.copy_mode_on() {
+            self.w.copy_jump_wait = None;
+            return false;
+        }
+        // 수식 키만 눌린 것은 글자가 아니다. 계속 기다린다
+        if let Key::Named(
+            NamedKey::Shift
+            | NamedKey::Control
+            | NamedKey::Alt
+            | NamedKey::AltGraph
+            | NamedKey::Super
+            | NamedKey::Meta
+            | NamedKey::Hyper
+            | NamedKey::CapsLock
+            | NamedKey::Fn
+            | NamedKey::FnLock,
+        ) = &event.logical_key
+        {
+            return true;
+        }
+        self.w.copy_jump_wait = None;
+        if !self.mods.super_key() && !self.mods.control_key() {
+            if let Some(c) = event
+                .text
+                .as_ref()
+                .and_then(|t| t.chars().next())
+                .filter(|c| !c.is_control())
+            {
+                self.copy_jump_char(kind, c);
+            }
+        }
+        true
+    }
+
+    pub(super) fn copy_jump_char(&mut self, kind: bt_term::JumpKind, c: char) {
+        self.w.copy_jump_last = Some((kind, c));
+        if let Some(t) = self.active_pane() {
+            t.session.copy_mode_jump(kind, c, false);
+        }
+        self.request_redraw();
     }
 
     /// 칸 하나의 복사 모드를 나간다(그 칸이 고른 칸이 아니게 됐거나 닫히기 전)

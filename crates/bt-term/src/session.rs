@@ -2038,6 +2038,50 @@ impl Session {
         true
     }
 
+    /// 복사 모드의 `/ ? n N`(#932): `query`로 찾기를 새로 시작해(화면 강조는 이 찾기가 한다) 커서에서 앞(`forward`)이나
+    /// 뒤의 가장 가까운 맞은 곳으로 커서를 옮긴다. 맞은 곳이 없거나 빈 글이거나 모드 중이 아니면 거짓이고 아무것도 옮기지 않는다
+    pub fn copy_mode_search(&self, query: &str, forward: bool) -> bool {
+        let mut g = self.inner.lock();
+        let Inner {
+            term,
+            copy_mode,
+            search,
+            pixel,
+            sel_end,
+            ..
+        } = &mut *g;
+        let Some(cm) = copy_mode.as_mut() else {
+            return false;
+        };
+        *search = crate::search::Search::new(query);
+        let Some(s) = search.as_mut() else {
+            return false;
+        };
+        pixel.reset();
+        let found = cm.search_jump(term, s, forward);
+        *sel_end = Some(cm.cursor_point(term));
+        found
+    }
+
+    /// 복사 모드의 `f F t T`(`repeat`이면 `; ,`, #932): 커서 줄 안에서 글자를 찾아 옮긴다. 못 찾거나 모드 중이 아니면 거짓
+    pub fn copy_mode_jump(&self, kind: crate::copy_mode::JumpKind, c: char, repeat: bool) -> bool {
+        let mut g = self.inner.lock();
+        let Inner {
+            term,
+            copy_mode,
+            pixel,
+            sel_end,
+            ..
+        } = &mut *g;
+        let Some(cm) = copy_mode.as_mut() else {
+            return false;
+        };
+        pixel.reset();
+        let found = cm.jump(term, kind, c, repeat);
+        *sel_end = Some(cm.cursor_point(term));
+        found
+    }
+
     /// 복사 모드가 지금 하는 고르기의 종류. 모드 중이 아니거나 고르기를 시작하지 않았으면 없다
     pub fn copy_mode_selecting(&self) -> Option<crate::copy_mode::CopySelect> {
         self.inner.lock().copy_mode.as_ref().and_then(|c| c.selecting())
@@ -2056,6 +2100,8 @@ impl Session {
         };
         self.copy_active.store(false, std::sync::atomic::Ordering::Release);
         g.pixel.reset();
+        // 복사 모드의 `/ ? n N`(#932)이 켠 찾기 강조도 함께 끈다
+        g.search = None;
         cm.exit(&mut g.term);
         g.sel_end = None;
         g.output_click = None;
