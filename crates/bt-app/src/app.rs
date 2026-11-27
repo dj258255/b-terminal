@@ -4582,7 +4582,7 @@ impl App {
             url: self.config.link_url,
             osc8: self.config.link_osc8,
         };
-        bt_term::links::link_at_with(&self.panes[i].session.snapshot(), c, r, opts).map(|h| (id, h))
+        self.panes[i].session.link_probe(c, r, opts).hit.map(|h| (id, h))
     }
 
     /// Cmd를 누른 동안 마우스 아래 링크를 다시 본다. 바뀌면 밑줄과 마우스 모양을 바꾼다

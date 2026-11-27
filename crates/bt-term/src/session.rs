@@ -1987,6 +1987,13 @@ impl Session {
         crate::copy_format::format_lines(&g.term, &theme, scrollback, opts)
     }
 
+    /// (col, row) 칸의 링크를 필요한 줄만 읽어 찾는다. `links::link_at_with(&self.snapshot(), ..)`와 같은 결과이고
+    /// 엔진 락은 읽는 동안만 쥔다(#924)
+    pub fn link_probe(&self, col: usize, row: usize, opts: crate::links::LinkOptions) -> crate::link_probe::LinkProbe {
+        let g = self.inner.lock();
+        crate::link_probe::probe(&g.term, col, row, opts)
+    }
+
     /// 지금 화면을 꺼낸다
     pub fn snapshot(&self) -> Screen {
         let theme = self.theme.lock().clone();
@@ -2521,8 +2528,8 @@ fn tail_text<T>(term: &Term<T>, lines: usize) -> String {
 }
 
 /// 한 화면이 담는 OSC 8 링크 수와 주소 길이의 상한
-const MAX_LINKS: usize = 4096;
-const MAX_LINK_URI: usize = 8192;
+pub(crate) const MAX_LINKS: usize = 4096;
+pub(crate) const MAX_LINK_URI: usize = 8192;
 
 fn snapshot_of<T: EventListener>(
     term: &Term<T>,
@@ -3060,6 +3067,11 @@ impl Emulator {
 
     pub fn modes(&self) -> Modes {
         modes_of(*self.term.mode())
+    }
+
+    /// (col, row) 칸의 링크를 필요한 줄만 읽어 찾는다. `links::link_at_with(&self.snapshot(), ..)`와 같은 결과다(#924)
+    pub fn link_probe(&self, col: usize, row: usize, opts: crate::links::LinkOptions) -> crate::link_probe::LinkProbe {
+        crate::link_probe::probe(&self.term, col, row, opts)
     }
 
     pub fn snapshot(&mut self) -> Screen {
