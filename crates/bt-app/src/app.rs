@@ -33,6 +33,9 @@ mod trigger_cmd;
 #[cfg(target_os = "macos")]
 pub use script::install as install_scripting;
 mod shader_inputs;
+/// kitty 세션 파일로 시작하기(#934)
+mod startup_session;
+mod tabside;
 
 use crate::broadcast;
 use crate::icon;
@@ -1552,36 +1555,31 @@ impl App {
     fn content_rect(&self) -> Rect {
         let Some(g) = &self.w.gfx else { return Rect::default() };
         let size = g.window.inner_size();
-        let (top, h) = self.bar_geom().content_y(size.height);
-        Rect::new(0, top as i32, size.width, h)
+        let geom = self.bar_geom();
+        let (top, h) = geom.content_y(size.height);
+        let (left, w) = geom.content_x(size.width);
+        Rect::new(left as i32, top as i32, w, h)
     }
 
     /// 탭 줄의 자리 계산(가장자리·여백, #909). 그리기·누르기·칸 격자 자리가 모두 이것을 쓴다
     fn bar_geom(&self) -> crate::tabgeom::BarGeom {
-        let bar_h = if self.tab_bar_visible(self.w.tabs.len()) {
-            self.tabbar_px()
-        } else {
-            0
-        };
-        crate::tabgeom::BarGeom::new(&self.config.tab_bar_look, self.scale, self.top_inset(), bar_h)
+        self.bar_geom_with(self.tab_bar_visible(self.w.tabs.len()), self.top_inset())
     }
 
     /// 탭 줄을 그릴 자리
     fn bar_place(&self, win: (u32, u32)) -> tabbar::BarPlace {
-        let g = self.bar_geom();
-        tabbar::BarPlace {
-            top: g.bar_top(win.1),
-            tabs_x: Some(g.tabs_x(win.0)),
-            bottom: g.bottom,
-        }
+        tabbar::BarPlace::of(&self.bar_geom(), win)
     }
 
     /// 마우스 아래의 탭(탭 줄 사각형 안일 때만)
     fn tab_at_cursor(&self) -> Option<usize> {
         let size = self.w.gfx.as_ref()?.window.inner_size();
         let g = self.bar_geom();
-        if !g.in_bar(self.w.cursor_pos.y, size.height) {
+        if !g.in_bar_at(self.w.cursor_pos.x, self.w.cursor_pos.y, size.width, size.height) {
             return None;
+        }
+        if g.vertical() {
+            return self.vertical_tab_at_cursor(&g, size.height);
         }
         tabbar::hit(
             g.tabs_x(size.width).1,
@@ -2456,11 +2454,18 @@ impl App {
         let now = self.tab_bar_visible(self.w.tabs.len());
         let next = self.tab_bar_visible(self.w.tabs.len() + 1);
         if next && !now {
-            let g = crate::tabgeom::BarGeom::new(&self.config.tab_bar_look, self.scale, 0, self.tabbar_px());
+            let g = self.bar_geom_with(true, 0);
             if !g.bottom {
                 area.y += g.band() as i32;
             }
             area.h = area.h.saturating_sub(g.band());
+            if g.vertical() {
+                // 세로 줄(#935): 칸의 가로 폭에서 띠를 뺀다
+                if g.edge == bt_core::tabstyle::TabBarEdge::Left {
+                    area.x += g.band_x() as i32;
+                }
+                area.w = area.w.saturating_sub(g.band_x());
+            }
         }
         // 새 탭의 글자 크기: `window-inherit-font-size`가 켜져 있으면 고른 칸의 크기(창의 첫 탭이면 창의 크기)
         let font_size = self.new_pane_font_size(pane_font::NewPane::Tab);
@@ -6266,7 +6271,7 @@ impl App {
         };
         let px = |pt: f32| (pt as f64 * self.scale).round() as u32;
         let (pad_w, pad_h) = (
-            px(self.config.padding_x.0) + px(self.config.padding_x.1),
+            px(self.config.padding_x.0) + px(self.config.padding_x.1) + self.tabbar_width_wanted(),
             px(self.config.padding_y.0) + px(self.config.padding_y.1) + self.top_inset() + self.tabbar_height(),
         );
         let size = pane.session.size();
@@ -6304,7 +6309,7 @@ impl App {
             cells,
             cell,
             (
-                px(self.config.padding_x.0) + px(self.config.padding_x.1),
+                px(self.config.padding_x.0) + px(self.config.padding_x.1) + self.tabbar_width_wanted(),
                 px(self.config.padding_y.0) + px(self.config.padding_y.1),
             ),
             self.top_inset() + self.tabbar_height(),
@@ -6384,6 +6389,11 @@ impl App {
     /// `move_tab_to_new_window`: 지금 탭을 새 창으로 떼어 낸다. 탭이 하나뿐이면 아무것도 하지 않는다
     /// (AppKit의 "탭을 새 창으로 이동"도 탭이 하나면 꺼져 있다). 칸(셸)은 App이 들고 있어 탭 묶음만 옮긴다
     fn move_tab_to_new_window(&mut self, event_loop: &ActiveEventLoop) {
+        self.move_tab_to_new_window_at(event_loop, None);
+    }
+
+    /// `move_tab_to_new_window`와 같고, `at`(화면 좌표)이 있으면 새 창을 그 왼쪽 위에 둔다(탭을 끌어 떼기, #935)
+    fn move_tab_to_new_window_at(&mut self, event_loop: &ActiveEventLoop, at: Option<(i32, i32)>) {
         if self.w.quick || !crate::winact::can_detach_tab(self.w.tabs.len()) || self.w.active >= self.w.tabs.len() {
             return;
         }
@@ -6391,6 +6401,9 @@ impl App {
             self.toast("새 창을 만들지 못했습니다".into());
             return;
         };
+        if let Some((x, y)) = at {
+            gfx.window.set_outer_position(PhysicalPosition::new(x, y));
+        }
         let moved = self.w.tabs.remove(self.w.active);
         if self.w.active >= self.w.tabs.len() {
             self.w.active = self.w.tabs.len() - 1;
@@ -7436,7 +7449,13 @@ impl App {
         // 보안 입력이 켜져 있는 동안 창 오른쪽 위의 자물쇠 표시(`macos-secure-input-indication`, #258)
         let secure_badge = self.secure.enabled() && self.config.macos_secure_input_indication;
         // 배지는 탭 줄 아래(탭 줄과 겹치지 않게)
-        let badge_top = self.bar_geom().content_top();
+        let badge_geom = self.bar_geom();
+        let badge_top = badge_geom.content_top();
+        let badge_right = if badge_geom.edge == bt_core::tabstyle::TabBarEdge::Right {
+            badge_geom.band_x()
+        } else {
+            0
+        };
         let confirm = self
             .w
             .confirm
@@ -7948,6 +7967,7 @@ impl App {
                 toast: &toast,
                 secure_badge,
                 badge_top,
+                badge_right,
                 confirm: &confirm,
                 title_prompt: &title_prompt,
                 hover: &hover,
@@ -8289,7 +8309,7 @@ impl App {
                     crate::tabbar::draw_toast(&mut canvas, fonts.chrome(), &theme, text);
                 }
                 if secure_badge {
-                    crate::tabbar::draw_secure_badge(&mut canvas, fonts.chrome(), &theme, badge_top);
+                    crate::tabbar::draw_secure_badge(&mut canvas, fonts.chrome(), &theme, badge_top, badge_right);
                 }
                 if let Some((label, text)) = &title_prompt {
                     tabbar::draw_prompt(
@@ -8775,6 +8795,15 @@ impl ApplicationHandler<UserEvent> for App {
                 self.on_last_window_closed(event_loop, true);
                 return;
             }
+            // kitty 세션 파일(#934): 정했으면 이 배치로 시작한다. 창 상태 복원과 initial-command보다 앞선다(ADR-104)
+            if let Some(path) = crate::session_start::startup_session_to_use(
+                self.config.startup_session.as_deref(),
+                self.config.startup_session_from_cli,
+                first.program.is_some() || first.cwd.is_some(),
+            ) && self.open_startup_session(event_loop, &path)
+            {
+                return;
+            }
             // 창 상태 복원(#94): -e·--cwd로 띄운 것이 아니고 initial-command도 없으면 지난번 창·탭·분할을 되살린다
             if self.config.window_save_state
                 && first.program.is_none()
@@ -9228,7 +9257,7 @@ impl ApplicationHandler<UserEvent> for App {
                 }
                 // 탭을 누르고 있으면 끌기 시작만 살핀다(프로그램에 보고하지 않고 글도 고르지 않는다)
                 if self.w.tab_drag.is_pressed() {
-                    if self.w.tab_drag.moved(position.x) {
+                    if self.w.tab_drag.moved(self.tab_axis(position)) {
                         self.w.tab_click = None;
                         self.request_redraw();
                     }
@@ -9296,17 +9325,7 @@ impl ApplicationHandler<UserEvent> for App {
                 // 놓기를 놓친 채 새 왼쪽 누름이 오면 옛 누름을 버리고 새 누름을 처리한다
                 if self.w.tab_drag.is_pressed() {
                     if button == MouseButton::Left && state == ElementState::Released {
-                        let win_w = self.w.gfx.as_ref().map(|g| g.window.inner_size().width).unwrap_or(0);
-                        let geom = self.bar_geom();
-                        let drop = self.w.tab_drag.release(
-                            geom.tab_x(self.w.cursor_pos.x, win_w),
-                            geom.tabs_x(win_w).1,
-                            self.w.tabs.len(),
-                            self.tab_layout(),
-                        );
-                        if let tabbar::TabDrop::Move { from, to } = drop {
-                            self.reorder_tab(from, to);
-                        }
+                        self.tab_drag_release(event_loop);
                         return;
                     }
                     if !(button == MouseButton::Left && state == ElementState::Pressed) {
@@ -9331,8 +9350,14 @@ impl ApplicationHandler<UserEvent> for App {
                     return;
                 }
                 // 탭 줄을 누르면 그 탭으로
-                let win_h = self.w.gfx.as_ref().map(|g| g.window.inner_size().height).unwrap_or(0);
-                if self.bar_geom().in_band(self.w.cursor_pos.y, win_h) {
+                let (win_w, win_h) = self.w.gfx.as_ref().map_or((0, 0), |g| {
+                    let s = g.window.inner_size();
+                    (s.width, s.height)
+                });
+                if self
+                    .bar_geom()
+                    .in_band_at(self.w.cursor_pos.x, self.w.cursor_pos.y, win_w, win_h)
+                {
                     // 탭 오른쪽 단추: 그 탭을 고르고 메뉴(제목 바꾸기·색)를 띄운다(#852, macOS). Ghostty는 고르지 않고 그 탭에 메뉴를 띄운다
                     if state == ElementState::Pressed && button == MouseButton::Right && self.w.confirm.is_none() {
                         if let Some(i) = self.tab_at_cursor() {
@@ -9365,7 +9390,7 @@ impl ApplicationHandler<UserEvent> for App {
                                 self.handle_action(Action::PromptTabTitle, event_loop);
                             } else {
                                 self.w.tab_click = Some((now, i));
-                                self.w.tab_drag.press(i, self.w.cursor_pos.x);
+                                self.w.tab_drag.press(i, self.tab_axis(self.w.cursor_pos));
                             }
                         }
                     }

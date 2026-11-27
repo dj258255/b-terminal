@@ -560,6 +560,22 @@ pub struct BarPlace {
     pub top: i32,
     pub tabs_x: Option<(i32, u32)>,
     pub bottom: bool,
+    /// 세로 탭 줄(`tab-bar-edge = left | right`, #935)이면 그 자리. 있으면 `top`·`tabs_x`·`bottom`은 쓰지 않는다
+    pub vertical: Option<VerticalPlace>,
+}
+
+/// 세로 탭 줄의 자리(#935, 모두 창 왼쪽 위에서 잰 픽셀). 탭 줄 사각형은 (`x`, `top`)에서 폭 `w`, 창 끝(`end`)까지다
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct VerticalPlace {
+    pub x: i32,
+    pub w: u32,
+    pub top: i32,
+    pub end: i32,
+    /// 탭이 쌓이는 세로 범위(위아래 `tab-bar-margin-width`를 뺀 곳)
+    pub tabs_y: i32,
+    pub tabs_h: u32,
+    /// 오른쪽 줄이면 칸과 맞닿는 쪽이 왼쪽이다
+    pub right: bool,
 }
 
 impl BarPlace {
@@ -570,6 +586,32 @@ impl BarPlace {
             top,
             tabs_x: None,
             bottom: false,
+            vertical: None,
+        }
+    }
+}
+
+impl BarPlace {
+    /// 자리 계산(`BarGeom`)에서 그릴 자리를 만든다. 그리기와 누르기가 같은 계산을 본다
+    pub fn of(g: &crate::tabgeom::BarGeom, win: (u32, u32)) -> Self {
+        let vertical = g.vertical().then(|| {
+            let (x, w) = g.bar_x(win.0);
+            let (tabs_y, tabs_h) = g.tabs_y(win.1);
+            VerticalPlace {
+                x,
+                w,
+                top: g.inset as i32,
+                end: win.1 as i32,
+                tabs_y,
+                tabs_h,
+                right: g.edge == bt_core::tabstyle::TabBarEdge::Right,
+            }
+        });
+        Self {
+            top: g.bar_top(win.1),
+            tabs_x: Some(g.tabs_x(win.0)),
+            bottom: g.bottom,
+            vertical,
         }
     }
 }
@@ -599,34 +641,60 @@ pub fn draw_placed(
     let pal = Palette::new(theme, look);
     let default_look = matches!(look.style, TabBarStyle::Default | TabBarStyle::Hidden);
     let border = theme.background.mix(theme.foreground, 0.16);
-    canvas.fill_rect(0, top, canvas.width, h, pal.bar);
-    if default_look {
-        // 아래쪽 탭 줄은 칸과 맞닿는 위쪽에 긋는다
-        let line_y = if place.bottom { top } else { top + h as i32 - 1 };
-        canvas.fill_rect(0, line_y, canvas.width, 1, border);
-    }
+    // 세로 줄은 탭마다 자리(y)가 다르다. 가로 줄은 모든 탭이 같은 줄(top)이다. (x, 맨 위 y, 폭)
+    let vrows = place.vertical.map(|v| {
+        (
+            v,
+            crate::vtabs::rows(tabs.len(), v.tabs_h, h, crate::vtabs::gap_px(h), look.align),
+        )
+    });
     let cw = m.width as i32;
     let layout = Layout::of(look, m.width);
-    let (tabs_x0, tabs_w) = place.tabs_x.unwrap_or((0, canvas.width));
-    let slot_list: Vec<(i32, u32)> = slots(tabs_w, tabs.len(), layout)
-        .into_iter()
-        .map(|(x, w)| (x + tabs_x0, w))
-        .collect();
-    for (i, (tab, &(x, w))) in tabs.iter().zip(&slot_list).enumerate() {
+    let slot_list: Vec<(i32, i32, u32)> = match &vrows {
+        Some((v, r)) => {
+            canvas.fill_rect(v.x, v.top, v.w, (v.end - v.top).max(0) as u32, pal.bar);
+            if default_look {
+                // 칸과 맞닿는 쪽에 경계선(가로 줄의 아래·위 경계선과 같은 자리 구실)
+                let line_x = if v.right { v.x } else { v.x + v.w as i32 - 1 };
+                canvas.fill_rect(line_x, v.top, 1, (v.end - v.top).max(0) as u32, border);
+            }
+            r.tabs.iter().map(|&(ry, _)| (v.x, v.tabs_y + ry, v.w)).collect()
+        }
+        None => {
+            canvas.fill_rect(0, top, canvas.width, h, pal.bar);
+            if default_look {
+                // 아래쪽 탭 줄은 칸과 맞닿는 위쪽에 긋는다
+                let line_y = if place.bottom { top } else { top + h as i32 - 1 };
+                canvas.fill_rect(0, line_y, canvas.width, 1, border);
+            }
+            let (tabs_x0, tabs_w) = place.tabs_x.unwrap_or((0, canvas.width));
+            slots(tabs_w, tabs.len(), layout)
+                .into_iter()
+                .map(|(x, w)| (x + tabs_x0, top, w))
+                .collect()
+        }
+    };
+    let vertical = vrows.is_some();
+    for (i, (tab, &(x, top, w))) in tabs.iter().zip(&slot_list).enumerate() {
         if default_look {
             if tab.active {
                 canvas.fill_rect(x, top, w, h, pal.active_bg);
             } else if let Some(c) = pal.inactive_bg {
                 canvas.fill_rect(x, top, w, h, c);
             }
-            canvas.fill_rect(x + w as i32 - 1, top + m.height as i32 / 4, 1, h - m.height / 2, border);
+            if !vertical {
+                canvas.fill_rect(x + w as i32 - 1, top + m.height as i32 / 4, 1, h - m.height / 2, border);
+            } else if vrows.as_ref().is_some_and(|(_, r)| r.gap == 0) && i + 1 < slot_list.len() {
+                // 빈 줄 없이 붙은 세로 탭 사이의 가로 구분선(안쪽에 한 칸씩 들여)
+                canvas.fill_rect(x + cw, top + h as i32 - 1, w.saturating_sub(2 * cw as u32), 1, border);
+            }
         } else {
             draw_tab_shape(
                 canvas,
                 look,
                 &pal,
                 tab,
-                tabs.get(i + 1),
+                if vertical { None } else { tabs.get(i + 1) },
                 (x, w),
                 top,
                 h,
@@ -634,7 +702,7 @@ pub fn draw_placed(
                 m.stroke,
             );
         }
-        if look.style == TabBarStyle::Separator && i + 1 < tabs.len() {
+        if look.style == TabBarStyle::Separator && i + 1 < tabs.len() && !vertical {
             let glyph = bt_core::tabstyle::separator_glyph(&look.separator);
             let sepw = separator_width(look, m.width) as i32;
             let sx = x + w as i32 - sepw;
@@ -646,7 +714,7 @@ pub fn draw_placed(
                 draw_text(canvas, fonts, sx, ty, glyph, pal.inactive_fg, false);
             }
         }
-        let (cx, cwid) = content_rect(look, x, w, m.width, i + 1 == tabs.len());
+        let (cx, cwid) = content_rect(look, x, w, m.width, vertical || i + 1 == tabs.len());
         // 가운데 맞춘 제목. 안 읽음 점 자리를 남긴다
         let color = if tab.active { pal.active_fg } else { pal.inactive_fg };
         let style = bt_render::FontStyle::from_flags(
@@ -666,7 +734,11 @@ pub fn draw_placed(
         if let Some(tf) = title_fonts.as_deref_mut() {
             let room_px = (cwid as i32 - 4 * cw).max(cw) as f32;
             let (title, tw) = fit_title(&tab.title, room_px, |c| tf.advance(c));
-            let tx = cx + (cwid as i32 - tw.round() as i32) / 2;
+            let tx = if vertical {
+                cx + 2 * cw
+            } else {
+                cx + (cwid as i32 - tw.round() as i32) / 2
+            };
             let ty = top + (h as i32 - tf.metrics().height as i32) / 2;
             match &tab.spans {
                 None => {
@@ -689,7 +761,11 @@ pub fn draw_placed(
             let max_cells = ((cwid as i32 / cw) - 4).max(1) as usize;
             let title = truncate(&tab.title, max_cells);
             let tw = cw * text_cells(&title) as i32;
-            let tx = cx + (cwid as i32 - tw) / 2;
+            let tx = if vertical {
+                cx + 2 * cw
+            } else {
+                cx + (cwid as i32 - tw) / 2
+            };
             let ty = top + (h as i32 - m.height as i32) / 2;
             match &tab.spans {
                 None => {
@@ -734,6 +810,13 @@ pub fn draw_placed(
             );
         }
     }
+    // 세로 줄에서 다 들어가지 않으면 마지막 줄에 `…`(kitty는 빨강, 여기는 안 고른 탭 글자색)
+    if let Some((v, r)) = &vrows {
+        if let Some(ey) = r.ellipsis {
+            let ty = v.tabs_y + ey + (h as i32 - m.height as i32) / 2;
+            draw_text(canvas, fonts, v.x + 2 * cw, ty, "…", pal.inactive_fg, false);
+        }
+    }
 }
 
 /// 제목 글꼴을 따로 쓸 때(#241) 탭 하나의 제목을 방 `room_px` 안에 맞춘다: (잘린 제목, 그린 폭 px).
@@ -768,6 +851,8 @@ pub enum TabDrop {
     None,
     /// `from` 탭을 `to` 자리로 옮긴다
     Move { from: usize, to: usize },
+    /// 창 밖에 놓았다: `from` 탭을 새 창으로 뗀다(#935)
+    Detach { from: usize },
 }
 
 impl TabDrag {
@@ -795,14 +880,26 @@ impl TabDrag {
             _ => false,
         }
     }
-    /// 단추를 `x`에서 놓았다. 상태는 지워진다
+    /// 단추를 `x`에서 놓았다(가로 줄). 상태는 지워진다. 앱은 `release_at`을 쓰고 이 함수는 가로 줄 계산의 시험이 쓴다
+    #[cfg(test)]
     pub fn release(&mut self, x: f64, width: u32, count: usize, layout: Layout) -> TabDrop {
+        let to = drop_index(width, x, count, layout);
+        self.release_at(count, to, false)
+    }
+    /// 단추를 놓았다. `to`는 놓은 자리의 탭 번호(세로 줄은 `vtabs::drop_index`), `outside`는 창 밖에 놓았는가.
+    /// 끌기가 시작된 뒤에만 움직이거나 뗀다. 탭이 하나면 어느 쪽도 하지 않는다. 상태는 지워진다
+    pub fn release_at(&mut self, count: usize, to: Option<usize>, outside: bool) -> TabDrop {
         let (press, dragging) = (self.press.take(), std::mem::take(&mut self.dragging));
         match press {
-            Some((from, _)) if dragging && count > 1 => match drop_index(width, x, count, layout) {
-                Some(to) if to != from => TabDrop::Move { from, to },
-                _ => TabDrop::None,
-            },
+            Some((from, _)) if dragging && count > 1 => {
+                if outside {
+                    return TabDrop::Detach { from };
+                }
+                match to {
+                    Some(to) if to != from => TabDrop::Move { from, to },
+                    _ => TabDrop::None,
+                }
+            }
             _ => TabDrop::None,
         }
     }
@@ -885,11 +982,11 @@ pub fn draw_toast(canvas: &mut Canvas, fonts: &mut Fonts, theme: &Theme, text: &
 }
 
 /// 보안 키보드 입력이 켜져 있는 동안 창 오른쪽 위에 자물쇠를 띄운다(Ghostty `macos-secure-input-indication`, #258)
-pub fn draw_secure_badge(canvas: &mut Canvas, fonts: &mut Fonts, theme: &Theme, top: u32) {
+pub fn draw_secure_badge(canvas: &mut Canvas, fonts: &mut Fonts, theme: &Theme, top: u32, right: u32) {
     let m = fonts.metrics();
     let side = m.height + m.height / 2;
     let margin = (m.height / 2).max(4);
-    let x = canvas.width as i32 - side as i32 - margin as i32;
+    let x = canvas.width as i32 - right as i32 - side as i32 - margin as i32;
     let y = top as i32 + margin as i32;
     let edge = theme.background.mix(theme.foreground, 0.5);
     canvas.fill_rect(x, y, side, side, edge);
@@ -2091,11 +2188,7 @@ mod tests {
         draw_with_title_font(&mut c, &mut fonts, None, &theme, &look, &tabs, inset as i32);
         // 새 계산: 설정이 없을 때의 자리
         let g = crate::tabgeom::BarGeom::new(&look, 1.0, inset, bh);
-        let place = BarPlace {
-            top: g.bar_top(h),
-            tabs_x: Some(g.tabs_x(w)),
-            bottom: g.bottom,
-        };
+        let place = BarPlace::of(&g, (w, h));
         assert_eq!(place, BarPlace::at(inset as i32).with_tabs_x((0, w)));
         let mut new = vec![0u32; (w * h) as usize];
         let mut c = Canvas::new(&mut new, w, h);
@@ -2121,11 +2214,7 @@ mod tests {
             for edge in [TabBarEdge::Top, TabBarEdge::Bottom] {
                 let look = marked_look(edge, mw, mh);
                 let g = crate::tabgeom::BarGeom::new(&look, 1.0, inset, bh);
-                let place = BarPlace {
-                    top: g.bar_top(h),
-                    tabs_x: Some(g.tabs_x(w)),
-                    bottom: g.bottom,
-                };
+                let place = BarPlace::of(&g, (w, h));
                 let bg = theme.background;
                 let mut buf = vec![0u32; (w * h) as usize];
                 let mut c = Canvas::new(&mut buf, w, h);
@@ -2404,5 +2493,268 @@ mod tests {
         let cut = fit_spans(&spans, "abc…", "abcdef");
         assert_eq!(cut.iter().map(|s| s.text.as_str()).collect::<String>(), "abc…");
         assert!(cut.last().unwrap().bold, "… 은 앞 글자의 꾸밈을 따른다");
+    }
+
+    // ---- 세로 탭 줄(#935) ----
+
+    fn vlook(edge: bt_core::tabstyle::TabBarEdge, style: TabBarStyle, mw: f32, mh: (f32, f32)) -> TabBarLook {
+        TabBarLook {
+            edge,
+            style,
+            margin_width: mw,
+            margin_height: mh,
+            bar_background: Some(Rgb::new(10, 20, 30)),
+            active_background: Some(Rgb::new(200, 10, 10)),
+            inactive_background: Some(Rgb::new(10, 200, 10)),
+            ..TabBarLook::default()
+        }
+    }
+
+    fn long_title_tabs() -> Vec<TabLabel> {
+        let mut tabs = placed_tabs();
+        tabs[0].title = "a very long tab title that cannot fit in a narrow vertical bar at all".into();
+        tabs[1].title = "한글 제목도 길게 길게 길게 길게 길게 길게 길게".into();
+        tabs[2].title = "short".into();
+        tabs
+    }
+
+    /// 세로 줄은 그린 자리와 누르는 자리가 같다: 칠한 것은 모두 탭 줄 사각형 안, 탭마다 그린 색이 누른 탭과 같고,
+    /// 탭 아래 빈 줄을 눌러도 그 탭이다. 왼쪽·오른쪽, 여러 모양, 여백이 있을 때와 없을 때
+    #[test]
+    fn vertical_bar_is_drawn_where_it_is_clicked() {
+        use bt_core::tabstyle::TabBarEdge;
+        let Ok(mut fonts) = Fonts::new(&bt_render::FontConfig::default()) else {
+            return;
+        };
+        let theme = Theme::ghostty_default();
+        let (w, h, inset) = (700u32, 500u32, 20u32);
+        let bh = bar_height(&fonts, None);
+        let cell_w = fonts.metrics().width;
+        let tabs = long_title_tabs();
+        for style in [
+            TabBarStyle::Default,
+            TabBarStyle::Fade,
+            TabBarStyle::Slant,
+            TabBarStyle::Separator,
+            TabBarStyle::Powerline,
+        ] {
+            for edge in [TabBarEdge::Left, TabBarEdge::Right] {
+                for (mw, mh) in [(0.0, (0.0, 0.0)), (6.0, (5.0, 7.0))] {
+                    let look = vlook(edge, style, mw, mh);
+                    let g = crate::tabgeom::BarGeom::new(&look, 1.0, inset, bh).sized(&look, w, cell_w, 0);
+                    assert!(g.vertical(), "{style:?} {edge:?}");
+                    let place = BarPlace::of(&g, (w, h));
+                    let bg = theme.background;
+                    let mut buf = vec![0u32; (w * h) as usize];
+                    let mut c = Canvas::new(&mut buf, w, h);
+                    c.clear(bg);
+                    draw_placed(&mut c, &mut fonts, None, &theme, &look, &tabs, place);
+                    let (bx, bw) = g.bar_x(w);
+                    let (ty, th) = g.tabs_y(h);
+                    let rows = crate::vtabs::rows(tabs.len(), th, bh, crate::vtabs::gap_px(bh), look.align);
+                    // 칠한 픽셀은 모두 탭 줄 사각형 안(여백·칸 자리·제목 막대 비움은 그대로)
+                    for y in 0..h {
+                        for x in 0..w {
+                            let inside = (x as i32) >= bx && (x as i32) < bx + bw as i32 && y >= inset;
+                            if !inside {
+                                assert_eq!(
+                                    c.pixel(x, y),
+                                    bg,
+                                    "{style:?} {edge:?} {mw}: 탭 줄 밖 ({x},{y})가 칠해졌다"
+                                );
+                            }
+                        }
+                    }
+                    // 탭마다: 탭 자리 한가운데 바탕은 그 탭의 색이고, 누르면 그 탭이다
+                    for (i, &(ry, rh)) in rows.tabs.iter().enumerate() {
+                        let py = (ty + ry) as u32 + 2;
+                        let want = if tabs[i].active {
+                            Rgb::new(200, 10, 10)
+                        } else {
+                            Rgb::new(10, 200, 10)
+                        };
+                        // 제목 글자가 가운데에 걸릴 수 있어 탭 안쪽 가장자리 가까이를 본다
+                        let probe = if edge == TabBarEdge::Left {
+                            bx as u32 + 1
+                        } else {
+                            bx as u32 + bw - 2
+                        };
+                        if style == TabBarStyle::Default {
+                            assert_eq!(c.pixel(probe, py), want, "{style:?} {edge:?} {mw}: 탭 {i} 바탕");
+                        }
+                        let (cx, cy) = (bx as f64 + bw as f64 / 2.0, (ty + ry) as f64 + 1.0);
+                        assert!(g.in_bar_at(cx, cy, w, h) && g.in_band_at(cx, cy, w, h));
+                        assert_eq!(
+                            crate::vtabs::tab_at(&rows, cy - ty as f64),
+                            Some(i),
+                            "{style:?} {edge:?}: 탭 {i}"
+                        );
+                        let last = (ty + ry + rh as i32 - 1) as f64;
+                        assert_eq!(crate::vtabs::tab_at(&rows, last - ty as f64), Some(i));
+                    }
+                    // 위 여백(`tab-bar-margin-width`)에는 탭 줄 바탕만 보인다
+                    let top_px = c.pixel(
+                        if edge == TabBarEdge::Left {
+                            bx as u32 + 1
+                        } else {
+                            bx as u32 + bw - 2
+                        },
+                        inset + 2,
+                    );
+                    if mw > 0.0 {
+                        assert_eq!(top_px, Rgb::new(10, 20, 30), "{style:?} {edge:?}: 위 여백");
+                    }
+                    assert!(ty >= inset as i32 + if mw > 0.0 { 6 } else { 0 });
+                }
+            }
+        }
+    }
+
+    /// 세로 줄에서 긴 제목은 탭 폭 안에서 잘린다(탭 줄 사각형 밖으로 글자가 나가지 않음은 위 시험이 본다).
+    /// 제목 길이(`tab-title-max-length`)에 맞춘 폭이면 그 길이의 제목이 잘리지 않는다
+    #[test]
+    fn vertical_width_for_max_length_keeps_that_title_whole() {
+        let Ok(fonts) = Fonts::new(&bt_render::FontConfig::default()) else {
+            return;
+        };
+        let cw = fonts.metrics().width;
+        for style in [
+            TabBarStyle::Default,
+            TabBarStyle::Fade,
+            TabBarStyle::Slant,
+            TabBarStyle::Separator,
+            TabBarStyle::Powerline,
+        ] {
+            let look = TabBarLook {
+                style,
+                ..TabBarLook::default()
+            };
+            for len in [8u32, 20, 33] {
+                let cols = crate::vtabs::desired_cols(&look, len);
+                let w = cols * cw;
+                let (_, inner) = content_rect(&look, 0, w, cw, true);
+                let room_cells = (inner / cw).saturating_sub(4);
+                assert!(
+                    room_cells >= len,
+                    "{style:?} 제목 {len}칸: 제목 방이 {room_cells}칸뿐이다"
+                );
+                // 더 바라지도 않는다(한 칸 이상 남지 않는다)
+                assert!(
+                    room_cells <= len + 1,
+                    "{style:?} 제목 {len}칸: 방 {room_cells}칸은 너무 넓다"
+                );
+            }
+        }
+    }
+
+    /// 세로 줄은 탭이 모자라면 앞의 탭만 그리고 `…`을 그린다. 그린 탭 수만큼만 누를 수 있다
+    #[test]
+    fn vertical_bar_with_too_many_tabs_draws_an_ellipsis_row() {
+        use bt_core::tabstyle::TabBarEdge;
+        let Ok(mut fonts) = Fonts::new(&bt_render::FontConfig::default()) else {
+            return;
+        };
+        let theme = Theme::ghostty_default();
+        let (w, h) = (500u32, 220u32);
+        let bh = bar_height(&fonts, None);
+        let cell_w = fonts.metrics().width;
+        let tabs: Vec<TabLabel> = (0..30).map(|i| plain(i == 0)).collect();
+        let look = vlook(TabBarEdge::Left, TabBarStyle::Default, 0.0, (0.0, 0.0));
+        let g = crate::tabgeom::BarGeom::new(&look, 1.0, 0, bh).sized(&look, w, cell_w, 0);
+        let (ty, th) = g.tabs_y(h);
+        let rows = crate::vtabs::rows(tabs.len(), th, bh, crate::vtabs::gap_px(bh), look.align);
+        assert!(rows.tabs.len() < tabs.len() && rows.ellipsis.is_some());
+        let mut buf = vec![0u32; (w * h) as usize];
+        let mut c = Canvas::new(&mut buf, w, h);
+        c.clear(theme.background);
+        draw_placed(&mut c, &mut fonts, None, &theme, &look, &tabs, BarPlace::of(&g, (w, h)));
+        // 그리지 않은 탭 자리(`…` 줄 밑)는 막대 바탕이다
+        let (bx, bw) = g.bar_x(w);
+        let below = (ty + rows.ellipsis.unwrap() + bh as i32 + 1) as u32;
+        if below < h {
+            assert_eq!(c.pixel(bx as u32 + bw / 2, below), Rgb::new(10, 20, 30));
+        }
+        // `…` 줄에는 글자가 있다(막대 바탕이 아닌 픽셀)
+        let ey0 = (ty + rows.ellipsis.unwrap()).max(0) as u32;
+        let drawn = (ey0..(ey0 + bh).min(h))
+            .any(|y| (bx as u32..bx as u32 + bw).any(|x| c.pixel(x, y) != Rgb::new(10, 20, 30)));
+        assert!(drawn, "`…` 줄에 아무것도 그려지지 않았다");
+    }
+
+    /// 탭을 창 밖으로 끌어 놓으면 새 창으로 뗀다(#935): 끌기가 시작된 뒤에, 탭이 둘 이상일 때만. 창 안에서 놓으면 옮기기다
+    #[test]
+    fn releasing_outside_the_window_detaches_only_after_a_real_drag() {
+        let mut d = TabDrag::default();
+        d.press(1, 100.0);
+        assert_eq!(
+            d.release_at(4, Some(2), true),
+            TabDrop::None,
+            "끌기 전에 놓으면 고르기뿐"
+        );
+        d.press(1, 100.0);
+        d.moved(300.0);
+        assert_eq!(d.release_at(4, Some(2), true), TabDrop::Detach { from: 1 });
+        assert!(!d.is_pressed());
+        d.press(1, 100.0);
+        d.moved(300.0);
+        assert_eq!(
+            d.release_at(1, Some(0), true),
+            TabDrop::None,
+            "탭이 하나면 뗄 것이 없다"
+        );
+        d.press(1, 100.0);
+        d.moved(300.0);
+        assert_eq!(d.release_at(4, Some(2), false), TabDrop::Move { from: 1, to: 2 });
+        d.press(1, 100.0);
+        d.moved(300.0);
+        assert_eq!(d.release_at(4, Some(1), false), TabDrop::None);
+        // 가로 줄 `release`는 지금처럼 옮기기만 한다
+        d.press(0, 50.0);
+        d.moved(300.0);
+        assert_eq!(
+            d.release(250.0, 400, 4, Layout::default()),
+            TabDrop::Move { from: 0, to: 2 }
+        );
+    }
+
+    /// 세로 줄의 제목은 탭 왼쪽에서 시작한다(kitty 세로 탭, 가로 줄처럼 가운데가 아니다)
+    #[test]
+    fn vertical_titles_start_at_the_left_of_the_tab() {
+        use bt_core::tabstyle::TabBarEdge;
+        let Ok(mut fonts) = Fonts::new(&bt_render::FontConfig::default()) else {
+            return;
+        };
+        let theme = Theme::ghostty_default();
+        let (w, h) = (500u32, 200u32);
+        let bh = bar_height(&fonts, None);
+        let cell_w = fonts.metrics().width;
+        let mut tab = plain(true);
+        tab.title = "ab".into();
+        let look = vlook(TabBarEdge::Left, TabBarStyle::Default, 0.0, (0.0, 0.0));
+        let g = crate::tabgeom::BarGeom::new(&look, 1.0, 0, bh).sized(&look, w, cell_w, 0);
+        let mut buf = vec![0u32; (w * h) as usize];
+        let mut c = Canvas::new(&mut buf, w, h);
+        c.clear(theme.background);
+        draw_placed(
+            &mut c,
+            &mut fonts,
+            None,
+            &theme,
+            &look,
+            &[tab],
+            BarPlace::of(&g, (w, h)),
+        );
+        let (bx, bw) = g.bar_x(w);
+        let fill = Rgb::new(200, 10, 10);
+        let ink: Vec<u32> = (bx as u32..bx as u32 + bw)
+            .filter(|&x| (0..bh).any(|y| c.pixel(x, y) != fill))
+            .collect();
+        assert!(!ink.is_empty(), "제목이 그려지지 않았다");
+        let first = *ink.first().unwrap();
+        assert!(
+            first >= bx as u32 + 2 * cell_w && first < bx as u32 + 4 * cell_w,
+            "제목이 왼쪽 두 칸 안쪽에서 시작해야 한다: {first} (칸 폭 {cell_w}, 탭 {bx}..{})",
+            bx as u32 + bw
+        );
     }
 }

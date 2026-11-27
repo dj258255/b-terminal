@@ -14,6 +14,8 @@ b-terminal은 Ghostty와 같은 문법으로 설정합니다. Ghostty를 깔지 
 
 `b-terminal --config-default-files=false`(Ghostty와 같은 명령줄 전용 키)를 주면 2·3번(기본 설정 파일)을 읽지 않고, 4·5번만 읽습니다. 설정을 다시 읽을 때도 같습니다. 설정 파일 안에 이 키를 써도 경고 없이 아무 일도 하지 않습니다(Ghostty와 같음). 값 없이 `--config-default-files`만 쓰면 켬(기본)입니다.
 
+`b-terminal --session <파일>`(`--session=<파일>`도 됨)은 kitty처럼 세션 파일(탭·칸·폴더·명령을 손으로 쓴 시작 배치)로 시작합니다. 설정 `startup-session`을 덮어쓰는 것과 같고(4번 자리), `none`이면 설정의 `startup-session`도 쓰지 않습니다. 쓰는 법은 아래 "kitty 세션 파일" 절입니다.
+
 모르는 설정 키와 `--`로 시작하지 않는 인자(macOS가 넘기는 `-AppleInterfaceStyle` 같은 것)는 앱을 멈추지 않고 경고로 남습니다(Ghostty와 같음).
 
 `b-terminal --show-config`는 읽은 파일, 경고, 지금 적용된 값을 Ghostty 문법으로 보입니다. `+show-config --changes-only=false`와 같은 글(`theme` 줄 포함)이고 기본과의 비교는 없습니다.
@@ -185,9 +187,9 @@ config-file = ?~/.config/b-terminal/local   # ?가 붙으면 없어도 된다
 | `tab-powerline-style` | `angled` `slanted` `round` | `angled` | `powerline`일 때 탭 끝 기호. 글꼴에 파워라인 기호가 없어도 직접 그립니다 |
 | `tab-separator` | 글 | `" ┇"` | `separator`일 때 탭 사이 구분 글자(kitty `tab_separator`). 앞뒤 공백은 빼고 한 칸 폭으로 그리며 따옴표로 감쌀 수 있습니다 |
 | `tab-fade` | 0~1 숫자 목록 | `0.25 0.5 0.75 1` | `fade`일 때 탭 가장자리 칸마다 탭 색을 몇 % 섞을지. 개수만큼 칸이 번집니다 |
-| `tab-bar-align` | `left` `center` `right` (`start` `end`도) | `left` | `default` 말고 탭이 줄을 다 채우지 못할 때의 놓는 쪽 |
-| `tab-bar-edge` | `top` `bottom` | `top` | 탭 줄을 칸 격자의 위나 아래에 둡니다(kitty `tab_bar_edge`. kitty의 기본은 `bottom`이지만 설정을 바꾸지 않은 화면을 지키려고 기본은 `top`입니다). `bottom`이면 칸 격자가 탭 줄 높이만큼 위로 줄고, 그리기·누르기·끌기·가운데 클릭·오른쪽 단추 메뉴·진행 막대·안 읽음 점이 모두 같은 자리를 씁니다. `left`·`right`(세로 탭 줄)는 아직 없어 경고를 내고 `top`으로 둡니다. `macos-titlebar-style`과는 따로입니다: 제목 막대 밑 비움은 늘 위쪽이고 탭 줄은 그 밑(`top`)이나 창 맨 아래(`bottom`)에 놓입니다 |
-| `tab-bar-margin-width` | 0 이상의 수(pt) | `0` | 탭 줄 좌우 여백(kitty `tab_bar_margin_width`). 탭이 이만큼 안쪽에서 시작하고 끝나며 여백에는 탭 줄 바탕만 보입니다. 누르기도 같은 범위입니다 |
+| `tab-bar-align` | `left` `center` `right` (`start` `end`도) | `left` | `default` 말고 탭이 줄을 다 채우지 못할 때의 놓는 쪽. 세로 탭 줄(`tab-bar-edge = left`·`right`)에서는 모든 모양에서 쌓인 탭 묶음이 위(`left`)·가운데·아래(`right`)에 놓입니다 |
+| `tab-bar-edge` | `top` `bottom` `left` `right` | `top` | 탭 줄을 칸 격자의 위·아래·왼쪽·오른쪽에 둡니다(kitty `tab_bar_edge`. kitty의 기본은 `bottom`이지만 설정을 바꾸지 않은 화면을 지키려고 기본은 `top`입니다). `bottom`이면 칸 격자가 탭 줄 높이만큼 위로 줄고, 그리기·누르기·끌기·가운데 클릭·오른쪽 단추 메뉴·진행 막대·안 읽음 점이 모두 같은 자리를 씁니다. **`left`·`right`는 세로 탭 줄입니다(kitty 0.48).** 탭마다 한 줄씩 위에서 아래로 쌓고, 칸 격자는 탭 줄 폭만큼 가로로 줄어듭니다. 폭은 kitty처럼 기본 28칸(제목 방 24칸)이고 창 폭의 3분의 1을 넘지 않으며(창이 18칸보다 좁으면 자리 전부까지), `tab-title-max-length`를 정하면 그 길이의 제목이 잘리지 않을 만큼(제목 + 양옆 4칸 + `tab-bar-style`이 쓰는 칸)입니다. 제목은 탭 왼쪽에서 시작해 방보다 길면 `…`으로 잘리고, 다 들어가면 탭 사이에 빈 줄(탭 높이의 절반)을 두며 모자라면 빈 줄을 없앱니다. 그래도 모자라면 앞의 탭만 그리고 마지막 줄에 `…`을 그립니다(그린 탭만 누를 수 있고 나머지는 키·팔레트로 고릅니다). 탭 아래 빈 줄을 눌러도 그 탭입니다. `macos-titlebar-style`과는 따로입니다: 제목 막대 밑 비움은 늘 위쪽이고 세로 줄은 그 밑에서 창 끝까지입니다 |
+| `tab-bar-margin-width` | 0 이상의 수(pt) | `0` | 탭 줄 좌우 여백(kitty `tab_bar_margin_width`). 탭이 이만큼 안쪽에서 시작하고 끝나며 여백에는 탭 줄 바탕만 보입니다. 누르기도 같은 범위입니다. 세로 탭 줄에서는 탭 묶음 위·아래 여백입니다 |
 | `tab-bar-margin-height` | 두 수(pt), 예 `4 2` | `0 0` | 첫째는 창 가장자리와 탭 줄 사이, 둘째는 탭 줄과 칸 사이(kitty `tab_bar_margin_height`). 여백에는 창 바탕이 보이고 누르기는 받지 않습니다. 수가 둘이 아니면 경고하고 이전 값을 둡니다. 음수는 0입니다 |
 | `active-tab-foreground` `active-tab-background` | 색 · `none` | 정하지 않음 | 고른 탭의 글자·바탕색. 정하지 않으면 지금처럼 테마의 글자색·바탕색(모든 모양에 쓰임) |
 | `inactive-tab-foreground` `inactive-tab-background` | 색 · `none` | 정하지 않음 | 고르지 않은 탭의 글자·바탕색. 정하지 않으면 글자는 흐린 글자색, 바탕은 `default`에서는 막대 바탕이 보이고 다른 모양에서는 테마에서 고른 한 단계 밝은 색입니다 |
@@ -197,7 +199,7 @@ config-file = ?~/.config/b-terminal/local   # ?가 붙으면 없어도 된다
 | `active-tab-title-template` | 글 · `none` | `none` | 고른 탭만 쓰는 틀. `none`이면 `tab-title-template` |
 | `bell-on-tab` | 글 · `yes` `no` | `"🔔 "` | 보지 않는 탭에서 벨이 울렸을 때 제목에 붙일 글(kitty `bell_on_tab`). `yes`·`y`·`true`는 기본 기호, `no`·`n`·`false`·`none`은 빈 글자. 앞뒤 공백은 따옴표로 감쌉니다. 벨 표시 자체는 `bell-features`의 `title`이 켭니다 |
 | `tab-activity-symbol` | 글 · `none` | `none` | 보고 있지 않은 칸에 새 출력이 오면 제목에 붙일 글(kitty `tab_activity_symbol`). 탭을 보면 지웁니다 |
-| `tab-title-max-length` | 정수 | `0` | 제목이 쓸 수 있는 칸 수(kitty `tab_title_max_length`). 넘으면 `max-1`칸 + `…`. 0이면 제한 없음(탭 폭에 맞춰 줄이는 것은 그대로) |
+| `tab-title-max-length` | 정수 | `0` | 제목이 쓸 수 있는 칸 수(kitty `tab_title_max_length`). 넘으면 `max-1`칸 + `…`. 0이면 제한 없음(탭 폭에 맞춰 줄이는 것은 그대로). 세로 탭 줄에서는 줄 폭도 이 길이에 맞춥니다(0이면 28칸) |
 | `window-title-bar` | `top` `bottom` | `top` | 칸마다 제목 막대를 칸 글자 영역의 위나 아래에 둡니다(kitty `window_title_bar`). 막대는 글자 한 줄 높이이고 보이면 그 칸의 글자 영역이 한 줄 줄어듭니다(칸 줄 수가 하나 준다, 프로그램은 줄어든 크기를 받습니다) |
 | `window-title-bar-min-windows` | 정수 | `0` | 탭에 보이는 칸이 이 수 이상일 때만 막대를 보입니다(kitty `window_title_bar_min_windows`). `0`은 안 보임(기본, 설정이 없으면 칸 배치와 픽셀이 지금과 같습니다), `1`은 칸이 하나여도 늘 보임, `2`는 칸이 둘 이상일 때. 크게 보기 중에는 보이는 칸이 하나로 셉니다. 칸이 한 줄뿐이면 두지 않습니다 |
 | `window-title-template` | 글 | `"{fmt.fg.red}{bell_symbol}{activity_symbol}{fmt.fg.window}{progress_percent}{title}"` | 칸 제목 막대 틀(kitty `window_title_template`의 안전한 일부, 탭 제목 틀과 같은 해석기). 받는 이름: `{title}` `{is_active}` `{bell_symbol}` `{activity_symbol}` `{progress_percent}`(진행 표시가 있을 때 `[42%] `·`[…] `) `{window}`·`{window.id}` `{window.wd}`(OSC 7 작업 폴더) `{window.columns}` `{window.lines}`, 꾸밈 `{fmt.fg.색}`·`{fmt.bg.색}`(`window`는 막대의 글자·바탕색)·`{fmt.bold}`·`{fmt.italic}`·`{fmt.reset}`. 파이썬 표현식·`{custom}`·`{index}` 같은 탭 틀의 이름은 받지 않고 경고합니다. 칸 안 프로그램이 보낸 제목·작업 폴더는 값으로만 끼우고 다시 해석하지 않습니다 |
@@ -208,9 +210,10 @@ config-file = ?~/.config/b-terminal/local   # ?가 붙으면 없어도 된다
 | (탭 줄 마우스) | 설정 키 없음 | 항상 | 탭 줄이 보일 때 탭 줄 위에서만 쓰입니다(Ghostty 1.4). **왼쪽 누르기**는 그 탭을 고르고, **가운데 클릭**은 그 탭을 닫습니다. 키로 탭을 닫을 때(`close_tab`)와 같은 길이라 실행 중인 프로그램이 있으면 `confirm-close-surface`에 따라 확인 막대를 띄우고, 닫은 탭은 `undo-timeout` 안에 되살릴 수 있습니다. 칸 안 가운데 클릭 설정(`middle-click-action`)과는 상관없습니다. **두 번 누르기**(시스템 두 번 누르기 간격, `click-repeat-interval`이 0이 아니면 그 값)는 그 탭의 제목 입력 막대(`prompt_tab_title`과 같음)를 엽니다. Ghostty는 탭 줄 안에서 바로 고치지만 b-terminal은 인라인 편집이 없어 이미 있는 입력 막대를 씁니다. **끌기**는 탭을 누른 채 6px 넘게 움직였다 놓으면 놓은 자리의 탭 위치로 옮깁니다(`move_tab`과 같은 순서 바꾸기이고 고른 탭이 따라갑니다). 탭 줄 밖에서 놓으면 처음·끝 위치입니다. 탭이 하나면 아무것도 하지 않고, 끄는 동안 다른 누름은 아무 데도 가지 않으며 마우스 보고도 하지 않습니다. 끄는 자리를 미리 보이는 표시와 다른 창으로 끌기는 없습니다. **오른쪽 클릭**(macOS)은 그 탭을 고르고 메뉴를 띄웁니다: "탭 제목 바꾸기…"와 탭 색 열 가지(없음·파랑·보라·분홍·빨강·주황·노랑·초록·청록·그래파이트, Ghostty 1.4.0 `TerminalTabColor`와 같은 목록·순서). 색은 동그란 견본 그림이 붙고, 지금 색은 견본에 강조 고리가 둘리고 이름 뒤에 ✓가 붙습니다. 고른 색은 그 탭 제목 오른쪽 끝에 작은 점으로 보이고(고른 탭과 아닌 탭이 같음, 없음이면 점 없음) 탭을 옮기거나 닫았다 되살려도, `window-save-state`로 되살려도 따라옵니다. 색은 Apple의 macOS 시스템 색(청록은 `systemMint`, 그래파이트는 `systemGray`)의 sRGB 값이고 바탕이 어두운지에 따라 밝은 쪽·어두운 쪽 값을 고릅니다(값은 이 기계에서 재지 않았습니다). Ghostty에는 이 색을 정하는 키 동작·설정 키가 없어 b-terminal에도 없습니다(메뉴로만 고릅니다). 다른 점: Ghostty는 오른쪽 클릭한 탭을 고르지 않고 그 탭에 메뉴를 띄우지만 b-terminal은 그 탭을 먼저 고릅니다. 실제 창에서 눈으로 확인하지 않았고 순수 함수 시험(`tabbar.rs`·`tabcolor.rs`·`state.rs`)으로만 확인했습니다 |
 | `mouse-hide-while-typing` | `true` / `false` | `false` | |
 | `command` | 명령 | 로그인 셸 | `/bin/sh -c "exec <명령>"`으로 띄웁니다. 모든 새 칸에 쓰고, 첫 칸은 아래 `initial-command`가 이깁니다 |
-| `initial-command` | 명령 | 없음 | 앱을 켤 때 처음 만드는 칸에만 쓰는 명령(Ghostty와 같음, 형식은 `command`와 같음). 이후 칸은 `command`를 씁니다. 명령줄 `-e`가 있으면 `-e`가 이기고, 창 상태 복원(`window-save-state`)은 하지 않습니다 |
+| `initial-command` | 명령 | 없음 | 앱을 켤 때 처음 만드는 칸에만 쓰는 명령(Ghostty와 같음, 형식은 `command`와 같음). 이후 칸은 `command`를 씁니다. 명령줄 `-e`가 있으면 `-e`가 이기고, 창 상태 복원(`window-save-state`)은 하지 않습니다. `startup-session`이 있으면 세션 파일이 이기고 이 키는 쓰지 않습니다 |
 | `wait-after-command` | `true` / `false` | `false` | 명령이 끝나도 칸을 닫지 않고 안내를 그린 채 남깁니다. 수정 키가 아닌 키를 아무거나 누르면 닫습니다(입력기가 확정한 글도 키로 칩니다. 한국어 입력 소스에서 조합 중인 글자로는 닫지 않아, 글자 키 하나는 조합만 시작하고 다음 키에서 닫힙니다). 스크립트·디버깅용입니다 |
 | `abnormal-command-exit-runtime` | 밀리초 정수 | `250` | 칸을 띄운 지 이 시간보다 짧게 끝나면 비정상으로 보고, `wait-after-command`가 꺼져 있어도 칸을 남겨 안내를 그립니다(명령을 못 찾았을 때 칸이 깜빡 사라지지 않게). Ghostty처럼 macOS는 어떤 종료 코드든, Linux는 0이 아닐 때만 봅니다. `0`이면 끕니다. `btctl new --command`로 띄운 칸에도 같습니다 |
+| `startup-session` | 경로 / `none` | 없음 | kitty `startup_session`처럼 시작할 때 읽는 세션 파일(탭·칸·작업 폴더·실행할 명령을 손으로 쓴 시작 배치). 문법과 우리 칸 나누기와의 대응은 아래 "kitty 세션 파일" 절. `~`와 `$변수`를 풀고 **상대 경로는 설정 폴더(`~/.config/b-terminal`) 기준**입니다. 빈 값·`none`은 쓰지 않음. 명령줄 `--session`이 이기고, 명령줄 `-e`·`--cwd`로 띄울 때는 이 설정을 쓰지 않습니다(kitty와 같음). 정하면 이 실행에서는 창 상태 복원(`window-save-state`)과 `initial-command`를 하지 않습니다. 설정을 다시 읽어도 이미 뜬 창은 바뀌지 않습니다(시작할 때만 읽음) |
 | `initial-window` | `true` / `false` | `true` | `false`면 켤 때 창을 만들지 않습니다. 앱은 메뉴 막대에 남고(Dock 아이콘을 눌러도 창이 열리지는 않습니다) 메뉴(새 창)·`btctl new`·전역 단축키(퀵 터미널)로 창을 엽니다. 명령줄 `-e`로 켠 경우는 창을 만듭니다. `window-save-state`로 되살리는 것도 하지 않습니다 |
 | `quit-after-last-window-closed` | `true` / `false` | macOS `false`, Linux `true` | 마지막 창을 닫으면 앱을 끝냅니다. macOS 기본이 `false`라 마지막 창을 닫아도 앱이 남고(메뉴로 새 창), ⌘Q로 끝냅니다. 명령줄 `-e`로 켜면 이 값을 `true`로 두고 `quit-after-last-window-closed-delay`는 지웁니다 |
 | `quit-after-last-window-closed-delay` | 기간(`30s`, `1m` 등) | 없음 | 위가 `true`일 때 마지막 창을 닫고 이만큼 기다렸다가 끝냅니다. 그 사이 창을 열면 취소합니다. 1초보다 짧으면 1초로 올립니다. 없으면 바로 끝냅니다. `initial-window = false`로 켠 뒤 창이 하나도 안 열려도 이 시간이 지나면 끝냅니다 |
@@ -269,7 +272,7 @@ config-file = ?~/.config/b-terminal/local   # ?가 붙으면 없어도 된다
 | `quick-terminal-autohide` | `true` `false` | `true` | 포커스를 잃으면 숨습니다. `quick-terminal-space-behavior = move`에서 Space를 옮겨 포커스를 잃었으면 숨지 않고 새 Space에 다시 뜹니다(Ghostty와 같음, macOS) |
 | `quick-terminal-animation-duration` | 초 | `0.2` | 들어오고 나가는 움직임의 길이. `0`이면 움직이지 않습니다. 가운데(`center`)는 움직이지 않습니다 |
 | `quick-terminal-space-behavior` | `move` `remain` | `move` | Space(데스크톱)를 옮길 때 퀵 터미널이 따라오는가(`move`: 지금 Space로 따라옴, `remain`: 처음 연 Space에 남음). 퀵 창이 포커스를 받을 때 `NSWindow.collectionBehavior`를 정합니다(macOS). 실제 창에서는 아직 확인하지 않았습니다 |
-| `window-save-state` | `default` `always` `never` | `default` | 앱을 끌 때(Cmd-Q) 창 크기·자리, 탭, 분할(비율), 칸의 작업 폴더, 사람이 붙인 탭·창·칸 제목(`set_tab_title`·`set_window_title`·`set_surface_title`과 `prompt_*`)과 탭 색(탭 오른쪽 단추 메뉴로 고른 것)을 적어 두고 다음에 켤 때 새 셸로 되살립니다. 프로그램이 OSC로 정한 제목과 돌던 프로그램은 되살리지 않습니다. 화면 내용은 기본으로 되살리지 않고, 아래 `window-save-state-scrollback`을 켜면 되살립니다. 제목·탭 색이 없던 옛 상태 파일도 읽고(모르는 색 이름은 그 탭만 색 없이 엽니다), 읽은 제목은 제어 문자를 지우고 200자로 자릅니다. 마지막 창을 닫아 꺼진 경우와 `-e`·`--cwd`로 띄운 경우는 되살리지 않습니다 |
+| `window-save-state` | `default` `always` `never` | `default` | 앱을 끌 때(Cmd-Q) 창 크기·자리, 탭, 분할(비율), 칸의 작업 폴더, 사람이 붙인 탭·창·칸 제목(`set_tab_title`·`set_window_title`·`set_surface_title`과 `prompt_*`)과 탭 색(탭 오른쪽 단추 메뉴로 고른 것)을 적어 두고 다음에 켤 때 새 셸로 되살립니다. 프로그램이 OSC로 정한 제목과 돌던 프로그램은 되살리지 않습니다. 화면 내용은 기본으로 되살리지 않고, 아래 `window-save-state-scrollback`을 켜면 되살립니다. 제목·탭 색이 없던 옛 상태 파일도 읽고(모르는 색 이름은 그 탭만 색 없이 엽니다), 읽은 제목은 제어 문자를 지우고 200자로 자릅니다. 마지막 창을 닫아 꺼진 경우와 `-e`·`--cwd`로 띄운 경우는 되살리지 않습니다. 세션 파일(`startup-session`·`--session`)로 시작하면 그 실행에서는 되살리지 않고 세션 파일의 배치로 엽니다(끌 때의 저장은 그대로라 다음 켤 때는 이 실행의 창이 저장 대상입니다) |
 | `window-save-state-scrollback` | `true` / `false` | `false` | b-terminal 키(kitty `restore_session_after_logout`·Windows Terminal 버퍼 복원 참고). `window-save-state`가 켜져 있을 때만 뜻이 있습니다. 켜면 앱을 끌 때 칸마다 기본 화면(vim 등 대체 화면은 저장하지 않음)의 스크롤백과 보이는 줄의 글·색·굵게 같은 꾸밈을 `상태 폴더/scrollback/`(macOS는 `~/Library/Application Support/b-terminal/scrollback/`)에 적고, 켤 때 셸이 뜨기 전에 스크롤백에 놓고 끝에 저장한 시각 줄을 붙입니다. 되살릴 때는 VT 파서를 거치지 않고 셀을 격자에 직접 놓아, 파일에 OSC 52·DCS·BEL이 있어도 실행되지 않고 제어 문자는 공백이 됩니다. **평문으로 저장합니다**(키체인 암호화 없음): 폴더 0700·파일 0600이지만 같은 사용자의 프로그램과 백업은 읽을 수 있고, 화면에 찍힌 비밀번호·토큰이 끄고 켜는 동안 디스크에 남습니다. 칸 4MiB·합 32MiB를 넘으면 오래된 줄부터 버리고, 되살린 뒤·창을 모두 닫고 끈 뒤·설정을 끄고 끈 뒤에 지웁니다. 그림·링크·프롬프트 표시·돌던 프로그램은 되살리지 않습니다 |
 | `window-save-state-scrollback-lines` | 0~100000 | `1000` | b-terminal 키. 칸마다 적는 줄 수의 상한(끝에서부터, 화면 폭에서 접힌 줄은 한 줄로 셈). `0`이면 적지 않습니다. 100000을 넘는 값은 100000으로 읽습니다 |
 | `background-opacity` | `0`~`1` | `1` | 기본 바탕색 칸으로 창 뒤가 비칩니다(글자·색 칸은 불투명). 새 창부터 따릅니다. macOS 네이티브 전체 화면에서는 Ghostty처럼 불투명하게 그립니다(전체 화면 Space의 회색 바탕이 비치지 않게). 비네이티브 전체 화면(`macos-non-native-fullscreen`)에서는 투명도를 지킵니다 |
@@ -568,6 +571,89 @@ macOS 앱 메뉴의 `b-terminal을 기본 터미널로 지정`(`보안 키보드
 - `macos-option-as-alt`와 상관없습니다. 마우스를 누르거나 끌 때의 Option은 늘 사각 수식 키이고, 그 설정은 키 입력에서 Option이 Alt로 가는지만 정합니다.
 - 클릭으로 커서 옮기기(`cursor-click-to-move`)는 Ghostty처럼 수식 키를 보지 않습니다. Option을 누른 채 끌지 않고 한 번 누르면 고른 것이 없어 커서를 옮깁니다.
 - 한계: 키보드로 사각 고르기를 늘리는 동작은 없습니다. 탭 글자는 복사하면 탭으로 남고 탭이 건넌 칸은 내지 않습니다(Ghostty는 건넌 칸을 공백으로 냅니다).
+
+## kitty 세션 파일
+
+kitty처럼 탭·칸·작업 폴더·실행할 명령을 **손으로 써 둔 파일**로 시작할 수 있습니다(#934). 창 상태 복원(`window-save-state`)이 지난번 창을 자동으로 되살리는 것이라면, 이것은 늘 같은 배치(예: 에이전트 CLI 여러 칸)로 여는 사람이 쓰는 파일입니다.
+
+```
+# ~/dev/myproject/launch.session
+layout tall
+cd ~/dev/myproject
+launch --title "Edit" /usr/bin/nvim
+launch --title "Build"
+launch --title "Log" /usr/bin/tail -f /path/to/project/log/file
+```
+
+`b-terminal --session ~/dev/myproject/launch.session`으로 열고, 늘 쓰려면 설정에 `startup-session = ~/dev/myproject/launch.session`을 둡니다. 원본은 kitty `docs/sessions.rst`와 `kitty/session.py`의 `parse_session`입니다.
+
+### 읽는 규칙
+
+- 한 줄에 명령 하나, `#`로 시작하는 줄과 빈 줄은 건너뜁니다. 줄 나눔은 kitty처럼 파이썬 `splitlines()`와 같아서 `\r`·`\v`·`\f`·U+2028 등도 줄 끝입니다.
+- 첫 낱말이 명령이고 나머지는 그 값입니다. `$이름`·`${이름}`은 `launch`의 **인자**와 `set_layout_state`를 뺀 모든 곳에서 풉니다(`$$`는 `$`, 없는 변수는 그대로). 예: `launch --cwd=$X prog $Y`에서 `$X`는 풀고 `$Y`는 그대로입니다.
+- 파일 앞에 `new_tab` 없이 쓴 줄은 처음 탭에 적용됩니다. 칸이 없는 탭에 `new_tab`이 이어지면 그 빈 탭은 버립니다. 끝까지 칸이 없는 탭에는 기본 셸 칸 하나가 뜹니다(kitty와 같음).
+- **모르는 줄과 틀린 줄은 경고하고 넘어갑니다.** kitty는 모르는 줄이 있으면 파일 전체를 버리고 기본 셸로 시작하지만, 여기서는 줄 번호가 붙은 경고(`세션 파일 …: 3번째 줄: …`)를 로그에 남기고 나머지를 씁니다. 경고는 100개까지만 적습니다.
+- 세션 파일을 읽지 못하면(없음·보통 파일이 아님·UTF-8이 아님·1MiB 초과) 이유를 로그에 남기고 세션 없이 시작합니다(그 경우의 창 상태 복원은 평소대로).
+
+### 지원하는 줄
+
+| 줄 | 하는 일 |
+|---|---|
+| `new_tab [제목]` | 새 탭. 제목을 쓰면 탭 제목(`set_tab_title`과 같은 상태)이고 없으면 칸 제목을 따릅니다 |
+| `new_os_window [제목]` | 새 창. 이 줄 앞의 정의는 앞 창에, 뒤는 새 창에 적용됩니다. 줄 뒤의 글은 kitty처럼 그 창 첫 탭의 제목입니다 |
+| `layout 이름[:옵션]` | 지금 탭의 칸 나누기(아래 대응표). 모르는 이름은 경고하고 앞 레이아웃을 씁니다 |
+| `cd [경로]` | 이 탭에서 이어서 만드는 칸의 작업 폴더. `~`를 풀고 **상대 경로는 세션 파일이 있는 폴더 기준**입니다(kitty와 같음). 경로 없는 `cd`는 세션 파일 폴더입니다. 폴더가 없으면 경고하고 기본 폴더로 띄웁니다 |
+| `launch [옵션] [프로그램 [인자…]]` | 칸을 하나 만듭니다. 프로그램이 없으면 기본 셸(설정 `command`가 있으면 그것)입니다 |
+| `title 글` | 다음에 만드는 칸 하나의 제목(`set_surface_title`과 같은 상태) |
+| `focus` | 이 탭을 처음 탭으로, 지금까지 만든 마지막 칸을 처음 고른 칸으로 |
+| `focus_tab 번호` · `focus_tab title:이름` | 시작할 때 고를 탭(번호는 0부터, 이름은 정확히 같은 탭 제목). kitty의 다른 매치식은 경고하고 무시합니다 |
+| `focus_matching_window var:이름=값` | `launch --var 이름=값`을 단 첫 칸을 "지금 칸"으로(다음 `launch --location`의 붙일 곳). 다른 매치식은 무시 |
+| `os_window_title 글` | 그 창의 제목(`set_window_title`과 같은 상태) |
+
+**`launch` 옵션:** `--title 글`(`--window-title`도 같음), `--cwd 경로`(`~`·상대 경로는 세션 파일 폴더 기준. `current`·`last_reported`·`oldest`·`root`는 지원하지 않음), `--env 이름=값`(여러 번), `--var 이름=값`, `--location=vsplit|hsplit|split|before|first|after|neighbor|last|default`와 `--bias 숫자`(둘은 `splits` 레이아웃에서만 뜻이 있고 아래에), `--type=window`(탭·창은 `new_tab`·`new_os_window`로 만들므로 다른 값은 그 줄을 무시). 그 밖의 옵션(`--hold`·`--keep-focus`·`--copy-env` 등)은 경고하고 무시합니다. 값을 받는 옵션으로 아는 이름은 kitty `launch.py`의 옵션 목록(30개와 `-w`)이고, 목록에 없는 `--옵션`은 값 없는 깃발로 봅니다. 옵션 뒤 첫 낱말이 프로그램이고 그 뒤는 모두 그 프로그램의 인자입니다(`--` 뒤도).
+
+**명령은 인자 배열로 갑니다.** 낱말은 셸처럼 나눕니다(`'…'`, `"…"`, 따옴표 밖의 `\글자`, ANSI-C `$'…'`). 나눈 낱말은 프로그램과 인자 배열 그대로 칸에 넘기고, 셸 명령 문자열로 이어 붙이지 않습니다(설정 `command`가 `/bin/sh -c`를 거치는 것과 다릅니다). 그래서 `launch sh -c "a; b"`의 `a; b`는 한 인자이고, 파이프·리디렉션을 쓰려면 `sh -c`를 직접 쓰면 됩니다.
+
+**알아듣지만 하지 않는 줄(경고하고 무시):** `enabled_layouts`, `set_layout_state`, `resize_window`, `focus_os_window`, `os_window_size`, `os_window_position`, `os_window_class`, `os_window_name`, `os_window_state`. 창 크기·자리·종류는 우리 `window-width`·`window-height`·`window-position-*`·`maximize`·`fullscreen` 설정을 따릅니다. 이 밖의 모르는 줄도 같은 경고입니다.
+
+### `layout` 대응표
+
+b-terminal의 칸 나누기는 이진 분할 트리(좌우·위아래)와 칸 하나 확대(`toggle_split_zoom`)입니다. kitty 레이아웃은 아래처럼 옮깁니다. 줄이 없으면 `tall`입니다(kitty 세션 파서도 `enabled_layouts`가 비면 `tall`을 씁니다. kitty 기본 설정이 시작 레이아웃을 무엇으로 두는지는 이 값을 정할 때 확인하지 않았습니다).
+
+| kitty | 우리 배치 |
+|---|---|
+| `tall` | 첫 칸이 왼쪽 절반, 나머지는 오른쪽에 위아래로 같은 크기. 옵션 `bias=10~90`(주 영역 몫, 기본 50), `full_size=n`(주 영역 칸 수, 주 영역 안에서는 나란히), `mirrored=y`(주 영역을 오른쪽에) |
+| `fat` | `tall`을 90도 돌린 것: 첫 칸이 위쪽 절반, 나머지는 아래에 좌우로 같은 크기. 같은 옵션 |
+| `horizontal` | 모든 칸을 좌우로 같은 폭 |
+| `vertical` | 모든 칸을 위아래로 같은 높이 |
+| `grid` | kitty `calc_grid_size`와 같은 줄 수·줄마다 칸 수(위에서 아래로 채움: 4칸 2x2, 3칸 1+2, 5칸 2+3). 칸 수가 8처럼 어중간하면 kitty 식 그대로 2+2+4가 됩니다 |
+| `stack` | 모든 칸이 한 탭에 있고 고른 칸만 크게(확대 상태). 확대를 풀면 좌우 같은 폭으로 보입니다. 칸이 하나면 확대가 아닙니다 |
+| `splits` | `launch --location`·`--bias`로 칸마다 붙일 곳을 정합니다. `vsplit`은 지금 칸을 좌우로 나눠 새 칸을 오른쪽에, `hsplit`은 위아래로 나눠 새 칸을 아래에 둡니다(기본은 `vsplit`). `before`·`first`는 새 칸이 앞(왼쪽·위)입니다. `--bias n`은 새 칸이 차지할 몫(%, 기본 50). `split`(kitty는 칸의 가로세로로 고름)은 `vsplit`으로 읽습니다. "지금 칸"은 방금 만든 칸이고 `focus_matching_window var:…`로 바꿉니다 |
+
+레이아웃 이름 뒤의 옵션 가운데 위에 없는 것(예: `grid:…`의 옵션, `splits:split_axis=…`, `proportional`)은 경고하고 무시합니다. `launch --location`이 `splits` 밖에서 하는 일(kitty는 레이아웃마다 다름)은 하지 않습니다. 칸 크기를 `bias`로 키우고 줄이는 것은 `tall`·`fat`·`splits`의 위 설명만 지원하고, 다른 레이아웃에서는 무시합니다. 나눈 비율은 시작 모양이고 이후 `resize_split`·끌기로 평소처럼 바꿉니다.
+
+### 상한(실수로 수천 개를 열지 않게)
+
+| 대상 | 상한 | 넘으면 |
+|---|---|---|
+| 파일 크기 | 1MiB | 파일 전체를 읽지 않고 세션 없이 시작 |
+| 창(`new_os_window`) | 8 | 이후 창은 만들지 않음(경고 한 번) |
+| 탭(모든 창 합) | 64 | 다음 `new_tab`·`new_os_window` 전까지의 줄을 무시(경고 한 번) |
+| 칸(탭마다) | 32 | 그 `launch` 줄을 무시 |
+| 칸(전체) | 256 | 그 `launch` 줄을 무시하고 이후 탭은 만들지 않음 |
+| `--env`(칸마다) | 64 | 나머지는 버림 |
+
+### 창 상태 복원과 같이 켰을 때
+
+`window-save-state`는 기본이 켜져 있어서 둘이 부딪칩니다. **세션 파일(`startup-session`·`--session`)을 정했으면 그 실행에서는 세션 파일이 이기고 지난 창 상태는 불러오지 않습니다.** 끌 때 창 상태를 적는 것은 그대로라 다음 켤 때 세션을 쓰지 않으면 이 실행의 창이 되살아납니다. 세션 파일을 못 읽었을 때만 평소처럼 복원합니다. 근거: kitty는 `restore_session_after_logout`(기본 끔, 로그아웃 때 저장한 것)이 `startup_session`보다 앞서고 명령줄 `--session`이 있으면 복원을 건너뜁니다(`main.py`의 `logout_snapshot_to_restore`·`_run_app`). Ghostty에는 세션 파일이 없습니다. b-terminal은 복원이 기본으로 켜져 있어 kitty처럼 복원이 이기면 `startup-session`이 두 번째 실행부터 쓸모없어지므로 설정한 사람의 뜻을 앞세웠습니다([ADR-104](decisions.md#adr-104-세션-파일은-설정과-같은-신뢰로-사용자가-쓴-파일에서만-읽고-프로그램-출력이나-소켓으로는-불러오지-않는다)). 설정 `startup-session`은 `-e`·`--cwd`가 있으면 쓰지 않지만 `--session`은 `-e`보다 앞서 `-e`의 프로그램을 무시합니다(kitty `--session` 설명과 같음).
+
+### kitty와 다른 점
+
+- 모르는 줄을 경고하고 넘어갑니다(kitty는 파일 전체를 버림).
+- `launch --cwd`의 상대 경로는 세션 파일 폴더 기준입니다(kitty는 `os.path.abspath`라 kitty 프로세스의 작업 폴더 기준으로 읽었습니다. 이 차이는 코드를 읽어 안 것이고 실제 kitty로 재지 않았습니다).
+- 표준 입력(`--session -`)은 받지 않습니다.
+- `save_as_session`·`goto_session`·`close_session`·`new_window_with_cwd`처럼 세션을 저장·전환하는 동작과 `{session_name}` 탭 제목 틀은 없습니다.
+- 칸 안의 환경(`--env`)은 값이 있는 `이름=값`만 받고, `--env 이름`(kitty 환경에서 복사)은 경고합니다.
 
 ## kitty 색 프로토콜(OSC 21)
 
