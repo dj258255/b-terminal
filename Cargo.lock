@@ -429,6 +429,7 @@ dependencies = [
 name = "bt-core"
 version = "0.106.0"
 dependencies = [
+ "regex",
  "serde",
  "serde_json",
 ]
@@ -484,6 +485,7 @@ dependencies = [
  "parking_lot 0.13.0",
  "png 0.17.16",
  "portable-pty",
+ "regex",
  "serde",
  "tempfile",
 ]

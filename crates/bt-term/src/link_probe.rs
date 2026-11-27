@@ -16,7 +16,7 @@ use alacritty_terminal::term::Term;
 use alacritty_terminal::term::cell::{Cell as VtCell, Flags};
 use bt_core::Rgb;
 
-use crate::links::{LinkHit, LinkOptions, LinkSpan, link_at_with};
+use crate::links::{LinkHit, LinkOptions, LinkSpan};
 use crate::screen::{Cell, CellFlags, Cursor, CursorShape, Modes, Screen};
 use crate::session::{MAX_LINK_URI, MAX_LINKS};
 
@@ -37,6 +37,17 @@ fn is_spacer(c: &VtCell) -> bool {
 
 /// (col, row) 칸의 링크. `links::link_at_with(&snapshot, col, row, opts)`와 같은 결과를 돌려준다
 pub(crate) fn probe<T: EventListener>(term: &Term<T>, col: usize, row: usize, opts: LinkOptions) -> LinkProbe {
+    probe_with(term, col, row, opts, None)
+}
+
+/// `probe`에 사용자 링크 정규식(`link-url-regex`, #929)을 준다. 정규식은 보통 링크가 없을 때만 본다
+pub(crate) fn probe_with<T: EventListener>(
+    term: &Term<T>,
+    col: usize,
+    row: usize,
+    opts: LinkOptions,
+    user: Option<&crate::link_regex::UserLinkRegexes>,
+) -> LinkProbe {
     let cols = term.columns();
     let rows = term.screen_lines();
     let mut out = LinkProbe {
@@ -142,10 +153,11 @@ pub(crate) fn probe<T: EventListener>(term: &Term<T>, col: usize, row: usize, op
         chrome_background: Rgb::new(0, 0, 0),
         links: Vec::new(),
         images: Vec::new(),
+        command_marks: Vec::new(),
     };
     // OSC 8는 위에서 끝냈다(창 화면에는 링크 번호가 없다)
     let url_only = LinkOptions { url: true, osc8: false };
-    out.hit = link_at_with(&window, col, row - top, url_only).map(|mut h| {
+    out.hit = crate::link_regex::link_at_with_user(&window, col, row - top, url_only, user).map(|mut h| {
         for s in &mut h.spans {
             s.row += top;
         }

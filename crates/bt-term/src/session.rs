@@ -377,8 +377,12 @@ struct Inner {
     parser: Processor,
     /// 셸 통합이 알린 프롬프트 시작(OSC 133;A) 줄. 스크롤백 맨 위를 0으로 센 절대 줄
     prompts: std::collections::VecDeque<i64>,
+    /// 명령마다 끝난 결과(종료 코드·걸린 시간, #927). 줄의 안정된 번호로 곁에 둔다
+    marks: crate::command_marks::CommandMarks,
     /// 찾기(#39). 찾는 중이 아니면 없다
     search: Option<crate::search::Search>,
+    /// kitty 마커(#929). 없으면 마크를 칠하지 않는다
+    marker: Option<crate::marks::MarkerState>,
     /// kitty 그래픽(#76): 저장한 그림과 놓인 자리
     graphics: crate::graphics::Graphics,
     /// 글리프 프로토콜(APC 25a1)의 이 칸 등록(#779). 그리지는 않는다(Ghostty 1.4.0과 같다). 전체 초기화(RIS)에서 지운다
@@ -475,6 +479,16 @@ impl Inner {
         }
     }
 
+    /// 새 프롬프트(`133;A`)의 줄을 명령 기억에 더한다(#927). 대체 화면의 표지는 주 화면 줄이 아니라 더하지 않는다
+    fn mark_prompt(&mut self) {
+        if self.term.mode().contains(TermMode::ALT_SCREEN) {
+            return;
+        }
+        self.marks.prune(crate::command_marks::oldest_id(&self.term));
+        let id = crate::command_marks::stable_id(&self.term, self.term.grid().cursor.point.line);
+        self.marks.prompt(id);
+    }
+
     /// 지금 커서 줄(절대)
     fn cursor_abs(&self) -> i64 {
         self.term.grid().history_size() as i64 + self.term.grid().cursor.point.line.0 as i64
@@ -528,10 +542,17 @@ impl Inner {
             graphics,
             cell,
             prompts,
+            marks,
             ..
         } = self;
+        // 지울 구간 맨 위 줄의 안정된 번호. 그 줄부터 아래는 줄이 당겨지니 기억을 버린다(지운 명령과 지금 프롬프트의 것)
+        let cut = crate::output_select::last_command_block(term)
+            .map(|(start, _)| crate::command_marks::stable_id(term, start));
         if !clear_last_command_op(term, parser, graphics, *cell, Some(prompts)) {
             return false;
+        }
+        if let Some(cut) = cut {
+            marks.truncate_from(cut);
         }
         self.sel_end = None;
         self.output_click = None;
@@ -556,6 +577,7 @@ impl Inner {
         self.sel_end = None;
         self.output_click = None;
         // 스크롤백이 사라지고 커서 윗줄이 떨어져 나가 절대 줄 번호가 밀린다. 남은 줄의 프롬프트만 새 번호로 옮긴다
+        self.marks.clear();
         let shift = before + if out == ClearScreen::Cleared { cursor_before } else { 0 };
         let rows = self.term.screen_lines() as i64;
         let prompts = std::mem::take(&mut self.prompts);
@@ -724,6 +746,14 @@ impl Session {
             .collect()
     }
 
+    /// 지금 보이는 `row`줄에 붙은 명령 표시(#927, 마우스를 올렸을 때 종료 코드·걸린 시간을 보인다). 화면 전체를 풀지 않는다
+    pub fn command_mark_at(&self, row: usize) -> Option<crate::command_marks::RowMark> {
+        let g = self.inner.lock();
+        crate::command_marks::visible(&g.term, &g.marks, g.term.screen_lines())
+            .into_iter()
+            .find(|m| m.row == row)
+    }
+
     /// 앞(-1)·뒤(+1) 프롬프트로 스크롤한다. 옮겼으면 참
     pub fn jump_to_prompt(&self, dir: i32) -> bool {
         let mut g = self.inner.lock();
@@ -865,7 +895,9 @@ impl Session {
             term,
             parser: Processor::new(),
             prompts: std::collections::VecDeque::new(),
+            marks: Default::default(),
             search: None,
+            marker: None,
             graphics: crate::graphics::Graphics::with_limit(
                 options
                     .image_storage_limit
@@ -994,6 +1026,7 @@ impl Session {
                                             events.push(SessionEvent::ProgramStatus(None));
                                         }
                                         thread_integrated.store(true, std::sync::atomic::Ordering::Release);
+                                        g.mark_prompt();
                                         let line = g.cursor_abs();
                                         if g.prompts.back() != Some(&line) {
                                             g.prompts.push_back(line);
@@ -1003,10 +1036,12 @@ impl Session {
                                         }
                                     }
                                     Signal::Prompt(PromptMark::CommandExecuted) => {
+                                        g.marks.executed(Instant::now());
                                         capture = Some((Vec::new(), Instant::now()));
                                         events.push(SessionEvent::CommandStarted(pending_cmd.clone()));
                                     }
                                     Signal::Prompt(PromptMark::CommandFinished(code)) => {
+                                        g.marks.finished(code, Instant::now());
                                         if let Some((cap, started)) = capture.take() {
                                             events.push(SessionEvent::CommandFinished(CommandRecord {
                                                 command: pending_cmd.take(),
@@ -1045,6 +1080,7 @@ impl Session {
                                         // 초기화(RIS)는 키보드 잠금도 푼다
                                         if visible && scrollback {
                                             g.glossary.clear_all();
+                                            g.marks.clear();
                                             crate::kitty_color::reset_palette(&mut g.term);
                                             xt_flags = xt_default;
                                             saved_modes = [None; 4];
@@ -1508,6 +1544,8 @@ impl Session {
             release_sync(term, parser);
             sync_graphics(term, graphics, *cell); // 옛 크기에서 일어난 스크롤을 먼저 반영한다(#800)
             g.term.resize(Dims(size));
+            let Inner { term, marks, .. } = &mut *g;
+            realign_marks(term, marks);
             g.cell = (size.cell_width as u32, size.cell_height as u32);
             g.pixel.reset();
         }
@@ -1575,6 +1613,7 @@ impl Session {
             g.graphics_erase(true, true);
             g.glossary.clear_all();
             g.prompts.clear();
+            g.marks.clear();
             g.sel_end = None;
         }
         self.program_status.lock().clear_all();
@@ -1643,6 +1682,37 @@ impl Session {
         *search = crate::search::Search::new(query);
         let s = search.as_mut()?;
         Some(s.status(term))
+    }
+
+    /// kitty `toggle_marker`(#929): 같은 명세면 끄고(`Ok(false)`), 아니면 바꿔 켠다(`Ok(true)`). 정규식을 못 읽으면 오류
+    pub fn toggle_marker(&self, spec: &crate::marks::MarkerSpec) -> Result<bool, String> {
+        crate::marks::toggle(&mut self.inner.lock().marker, spec)
+    }
+
+    /// kitty `remove_marker`: 마커가 있었으면 참
+    pub fn remove_marker(&self) -> bool {
+        self.inner.lock().marker.take().is_some()
+    }
+
+    pub fn has_marker(&self) -> bool {
+        self.inner.lock().marker.is_some()
+    }
+
+    /// kitty `scroll_to_mark`: 이전(`prev`)·다음 마크 줄로. `mark`는 0(아무)~3. 옮겼으면 참
+    pub fn scroll_to_mark(&self, prev: bool, mark: u8) -> bool {
+        self.scroll_to_mark_within(prev, mark, crate::marks::SCROLL_SCAN_LINES)
+    }
+
+    /// `scroll_to_mark`에 훑을 줄 수 상한을 준다(시험용)
+    pub fn scroll_to_mark_within(&self, prev: bool, mark: u8, max_lines: usize) -> bool {
+        let mut g = self.inner.lock();
+        let Some(m) = g.marker.as_ref() else { return false };
+        let Some(n) = crate::marks::scroll_amount(&g.term, m.marker(), prev, mark, max_lines) else {
+            return false;
+        };
+        g.pixel.reset();
+        g.term.scroll_display(Scroll::Delta(n));
+        true
     }
 
     /// 다음 맞은 곳으로(`older`면 위로). 찾는 중이 아니면 없다
@@ -1994,6 +2064,18 @@ impl Session {
         crate::link_probe::probe(&g.term, col, row, opts)
     }
 
+    /// `link_probe`에 사용자 링크 정규식(`link-url-regex`, #929)을 준다
+    pub fn link_probe_with(
+        &self,
+        col: usize,
+        row: usize,
+        opts: crate::links::LinkOptions,
+        user: Option<&crate::link_regex::UserLinkRegexes>,
+    ) -> crate::link_probe::LinkProbe {
+        let g = self.inner.lock();
+        crate::link_probe::probe_with(&g.term, col, row, opts, user)
+    }
+
     /// 지금 화면을 꺼낸다
     pub fn snapshot(&self) -> Screen {
         let theme = self.theme.lock().clone();
@@ -2004,19 +2086,25 @@ impl Session {
             graphics,
             cell,
             pixel,
+            marks,
             ..
         } = &mut *g;
         sync_graphics(term, graphics, *cell);
         let grid = term.grid();
         let shift = pixel.shift(cell.1, grid.history_size(), grid.display_offset());
-        snapshot_with_shift(
+        let mut screen = snapshot_with_shift(
             term,
             &theme,
             search.as_mut(),
             Some(graphics),
             std::time::Instant::now(),
             shift,
-        )
+        );
+        screen.command_marks = marks_for(term, marks, &screen);
+        if let Some(m) = &g.marker {
+            crate::marks::apply(&mut screen, m.marker());
+        }
+        screen
     }
 
     /// 마지막 `snapshot`이 본 보이는 kitty 애니메이션 가운데 가장 이른 다음 프레임 시각(#554). 보이는 애니메이션이 없으면 없다.
@@ -2786,6 +2874,7 @@ fn snapshot_with_shift<T: EventListener>(
         chrome_background,
         links,
         images: graphics.map(|g| visible_images(term, g, now)).unwrap_or_default(),
+        command_marks: Vec::new(),
     }
 }
 
@@ -2857,6 +2946,22 @@ fn sync_graphics<T: EventListener>(term: &mut Term<T>, graphics: &mut crate::gra
 }
 
 /// 지금 보이는 줄에 걸친 kitty 그림들. 대체 화면을 나왔으면 그 화면의 그림을 지운다
+/// 보이는 화면(걸쳐 보이는 줄 포함)에 붙는 명령 표시(#927)
+fn marks_for<T: EventListener>(
+    term: &Term<T>,
+    marks: &crate::command_marks::CommandMarks,
+    screen: &Screen,
+) -> Vec<crate::command_marks::RowMark> {
+    crate::command_marks::visible(term, marks, screen.draw_rows())
+}
+
+/// 크기를 바꿔 줄이 다시 접힌 뒤 명령 기억의 줄 번호를 프롬프트 줄들에 맞춘다(#927)
+fn realign_marks<T: EventListener>(term: &Term<T>, marks: &mut crate::command_marks::CommandMarks) {
+    if !marks.is_empty() {
+        marks.realign(&crate::command_marks::prompt_ids(term));
+    }
+}
+
 fn visible_images<T>(
     term: &Term<T>,
     g: &mut crate::graphics::Graphics,
@@ -2949,6 +3054,10 @@ pub struct Emulator {
     theme: Theme,
     scanner: Scanner,
     search: Option<crate::search::Search>,
+    /// kitty 마커(#929)
+    marker: Option<crate::marks::MarkerState>,
+    /// 마지막 `snapshot`이 마크를 찾으려고 본 줄 수(시험용)
+    marker_rows: usize,
     graphics: crate::graphics::Graphics,
     /// 글리프 프로토콜의 이 칸 등록(#779)
     glossary: crate::glyph::Glossary,
@@ -2957,6 +3066,8 @@ pub struct Emulator {
     pixel: crate::pixel_scroll::PixelScroll,
     /// 그래픽 명령의 답(PTY가 없으므로 모아 둔다)
     replies: Vec<u8>,
+    /// 명령마다 끝난 결과(#927). 세션의 읽기 스레드와 같은 규칙이다
+    marks: crate::command_marks::CommandMarks,
 }
 
 #[derive(Clone, Copy)]
@@ -2977,11 +3088,14 @@ impl Emulator {
             theme,
             scanner: Scanner::default(),
             search: None,
+            marker: None,
+            marker_rows: 0,
             graphics: Default::default(),
             glossary: Default::default(),
             cell: (size.cell_width as u32, size.cell_height as u32),
             pixel: Default::default(),
             replies: Vec::new(),
+            marks: Default::default(),
         }
     }
 
@@ -3030,6 +3144,16 @@ impl Emulator {
                     }
                 }
                 Signal::Semantic(sp) => sp.apply(&mut self.term), // #329
+                // 명령 표시(#927)
+                Signal::Prompt(PromptMark::PromptStart) => {
+                    if !self.term.mode().contains(TermMode::ALT_SCREEN) {
+                        self.marks.prune(crate::command_marks::oldest_id(&self.term));
+                        let id = crate::command_marks::stable_id(&self.term, self.term.grid().cursor.point.line);
+                        self.marks.prompt(id);
+                    }
+                }
+                Signal::Prompt(PromptMark::CommandExecuted) => self.marks.executed(Instant::now()),
+                Signal::Prompt(PromptMark::CommandFinished(code)) => self.marks.finished(*code, Instant::now()),
                 Signal::KittyNotifyReply(r) => self.replies.extend(r), // #561
                 Signal::ProgramStatusQuery { bel } => self.replies.extend(crate::program_status::query_reply(*bel)), // #618
                 _ => {}
@@ -3046,6 +3170,7 @@ impl Emulator {
         release_sync(&mut self.term, &mut self.parser);
         sync_graphics(&mut self.term, &mut self.graphics, self.cell);
         self.term.resize(Dims(size));
+        realign_marks(&self.term, &mut self.marks);
     }
 
     pub fn scroll(&mut self, lines: i32) {
@@ -3077,26 +3202,79 @@ impl Emulator {
     pub fn snapshot(&mut self) -> Screen {
         sync_graphics(&mut self.term, &mut self.graphics, self.cell);
         let shift = self.pixel_shift();
-        snapshot_with_shift(
+        let mut screen = snapshot_with_shift(
             &self.term,
             &self.theme,
             self.search.as_mut(),
             Some(&mut self.graphics),
             std::time::Instant::now(),
             shift,
-        )
+        );
+        screen.command_marks = marks_for(&self.term, &self.marks, &screen);
+        self.marker_rows = self
+            .marker
+            .as_ref()
+            .map_or(0, |m| crate::marks::apply(&mut screen, m.marker()));
+        screen
+    }
+
+    /// (col, row) 칸의 링크에 사용자 정규식(`link-url-regex`)을 더해 찾는다(#929)
+    pub fn link_probe_with(
+        &self,
+        col: usize,
+        row: usize,
+        opts: crate::links::LinkOptions,
+        user: Option<&crate::link_regex::UserLinkRegexes>,
+    ) -> crate::link_probe::LinkProbe {
+        crate::link_probe::probe_with(&self.term, col, row, opts, user)
+    }
+
+    /// kitty `toggle_marker`(#929): 같은 명세면 끄고(`Ok(false)`), 아니면 바꿔 켠다(`Ok(true)`)
+    pub fn toggle_marker(&mut self, spec: &crate::marks::MarkerSpec) -> Result<bool, String> {
+        crate::marks::toggle(&mut self.marker, spec)
+    }
+
+    /// kitty `remove_marker`: 마커가 있었으면 참
+    pub fn remove_marker(&mut self) -> bool {
+        self.marker.take().is_some()
+    }
+
+    /// kitty `scroll_to_mark`(#929). 옮겼으면 참
+    pub fn scroll_to_mark(&mut self, prev: bool, mark: u8) -> bool {
+        self.scroll_to_mark_within(prev, mark, crate::marks::SCROLL_SCAN_LINES)
+    }
+
+    /// `scroll_to_mark`에 훑을 줄 수 상한을 준다(시험용)
+    pub fn scroll_to_mark_within(&mut self, prev: bool, mark: u8, max_lines: usize) -> bool {
+        let Some(m) = self.marker.as_ref() else { return false };
+        let Some(n) = crate::marks::scroll_amount(&self.term, m.marker(), prev, mark, max_lines) else {
+            return false;
+        };
+        self.pixel.reset();
+        self.term.scroll_display(Scroll::Delta(n));
+        true
+    }
+
+    /// 마지막 `snapshot`이 마크를 찾으려고 본 줄 수(시험용)
+    pub fn marker_rows_checked(&self) -> usize {
+        self.marker_rows
     }
 
     /// 시각을 정해 화면을 만든다(애니메이션 프레임 고르기 시험용, #554). 시각은 `kitty_clock_start`부터의 간격으로 준다
     pub fn snapshot_at(&mut self, now: std::time::Instant) -> Screen {
         sync_graphics(&mut self.term, &mut self.graphics, self.cell);
-        snapshot_of(
+        let mut screen = snapshot_of(
             &self.term,
             &self.theme,
             self.search.as_mut(),
             Some(&mut self.graphics),
             now,
-        )
+        );
+        screen.command_marks = marks_for(&self.term, &self.marks, &screen);
+        if let Some(m) = &self.marker {
+            crate::marks::apply(&mut screen, m.marker());
+        }
+        screen
     }
 
     /// kitty 애니메이션 시계의 0점(`snapshot_at`에 줄 시각의 기준)
@@ -3153,9 +3331,14 @@ impl Emulator {
             parser,
             graphics,
             cell,
+            marks,
             ..
         } = self;
-        clear_screen_op(term, parser, graphics, *cell)
+        let out = clear_screen_op(term, parser, graphics, *cell);
+        if out != ClearScreen::Ignored {
+            marks.clear();
+        }
+        out
     }
 }
 
@@ -3179,9 +3362,16 @@ impl Emulator {
             parser,
             graphics,
             cell,
+            marks,
             ..
         } = self;
-        clear_last_command_op(term, parser, graphics, *cell, None)
+        let cut = crate::output_select::last_command_block(term)
+            .map(|(start, _)| crate::command_marks::stable_id(term, start));
+        let done = clear_last_command_op(term, parser, graphics, *cell, None);
+        if let (true, Some(cut)) = (done, cut) {
+            marks.truncate_from(cut);
+        }
+        done
     }
 }
 

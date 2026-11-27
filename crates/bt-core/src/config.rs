@@ -91,6 +91,28 @@ impl LinkPreviews {
     }
 }
 
+/// `command-marks`(#927): 셸 통합이 알린 명령의 결과를 프롬프트 줄 왼쪽 끝 막대로 보이는 범위
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CommandMarks {
+    /// 성공(초록)과 실패(빨강) 모두(기본)
+    True,
+    /// 실패한 명령만
+    Failed,
+    /// 보이지 않는다
+    False,
+}
+
+impl CommandMarks {
+    /// 종료 코드가 `exit_code`인 끝난 명령에 막대를 그리는가. 종료 코드를 모르면 그리지 않는다
+    pub fn shows(self, exit_code: Option<i32>) -> bool {
+        match (self, exit_code) {
+            (CommandMarks::False, _) | (_, None) => false,
+            (CommandMarks::True, Some(_)) => true,
+            (CommandMarks::Failed, Some(c)) => c != 0,
+        }
+    }
+}
+
 /// `copy-on-select`(Ghostty 1.4.0 이후). `Primary`는 선택 클립보드만, `Clipboard`는 시스템 클립보드만, `Both`는 둘 다.
 /// macOS의 선택 클립보드는 b-terminal 앱 안 저장소다(`paste_from_selection`이 읽는다)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -659,10 +681,14 @@ pub struct Config {
     pub background_opacity_cells: bool,
     /// `link-url`(기본 켬): 화면 글의 URL 자동 인식
     pub link_url: bool,
+    /// `link-url-regex`(kitty `detect_url_regex`, #929): 보통 URL이 없을 때 링크로 볼 정규식들(앞에서부터 시도). 이미 컴파일해 본 것만 담는다
+    pub link_url_regex: Vec<String>,
     /// `link-osc8`(Ghostty 1.4, 기본 켬): OSC 8 링크를 링크로 다룬다
     pub link_osc8: bool,
     /// `link-previews`(기본 true): Cmd를 누른 채 링크 위에 있을 때 주소 띠
     pub link_previews: LinkPreviews,
+    /// `command-marks`(기본 true, #927): 명령마다 종료 코드를 줄 왼쪽 끝 막대로 보인다. 격자 칸은 바꾸지 않는다
+    pub command_marks: CommandMarks,
     pub copy_on_select: CopyOnSelect,
     /// 클립보드로 복사하는 글의 줄 끝 공백·탭을 지운다(Ghostty `clipboard-trim-trailing-spaces`)
     pub clipboard_trim_trailing_spaces: bool,
@@ -1934,8 +1960,10 @@ impl Default for Config {
             broadcast_group_colors: BROADCAST_GROUP_COLORS,
             background_opacity_cells: false,
             link_url: true,
+            link_url_regex: Vec::new(),
             link_osc8: true,
             link_previews: LinkPreviews::True,
+            command_marks: CommandMarks::True,
             copy_on_select: if cfg!(any(target_os = "macos", target_os = "linux")) {
                 CopyOnSelect::Primary
             } else {
@@ -3261,6 +3289,19 @@ impl Config {
                     )),
                 }
             }
+            // kitty `mark1_foreground`~`mark3_background`(#929)
+            "mark1-foreground" | "mark2-foreground" | "mark3-foreground" | "mark1-background" | "mark2-background"
+            | "mark3-background" => match color() {
+                Some(c) => {
+                    let i = usize::from(e.key.as_bytes()[4] - b'1');
+                    if e.key.ends_with("foreground") {
+                        t.marks.foreground[i] = c;
+                    } else {
+                        t.marks.background[i] = c;
+                    }
+                }
+                None => bad_color(warnings),
+            },
             _ => return false,
         }
         true
@@ -3551,6 +3592,34 @@ impl Config {
             "link-url" => match parse_bool(v) {
                 Some(b) => self.link_url = b,
                 None => bad(warnings),
+            },
+            // kitty `detect_url_regex`(#929): 여러 번 쓸 수 있다. 빈 값은 지금까지 쌓은 것을 비운다
+            "link-url-regex" => {
+                if v.is_empty() {
+                    self.link_url_regex.clear();
+                } else if self.link_url_regex.len() >= crate::user_regex::MAX_PATTERNS {
+                    warnings.push(format!(
+                        "{}:{}: link-url-regex는 {}개까지만 받습니다. 이 줄은 무시합니다",
+                        e.file.display(),
+                        e.line,
+                        crate::user_regex::MAX_PATTERNS
+                    ));
+                } else {
+                    match crate::user_regex::compile(v, false) {
+                        Ok(_) => self.link_url_regex.push(v.to_string()),
+                        Err(why) => warnings.push(format!(
+                            "{}:{}: link-url-regex를 무시합니다({why}): {v}",
+                            e.file.display(),
+                            e.line
+                        )),
+                    }
+                }
+            }
+            "command-marks" => match v {
+                "true" => self.command_marks = CommandMarks::True,
+                "failed" => self.command_marks = CommandMarks::Failed,
+                "false" => self.command_marks = CommandMarks::False,
+                _ => bad(warnings),
             },
             "link-osc8" => match parse_bool(v) {
                 Some(b) => self.link_osc8 = b,
@@ -4352,6 +4421,10 @@ impl Config {
         push("search-background", search(t.search.background));
         push("search-selected-foreground", search(t.search.selected_foreground));
         push("search-selected-background", search(t.search.selected_background));
+        for i in 0..3 {
+            push(&format!("mark{}-foreground", i + 1), hex(t.marks.foreground[i]));
+            push(&format!("mark{}-background", i + 1), hex(t.marks.background[i]));
+        }
         push("selection-clear-on-typing", self.selection_clear_on_typing.to_string());
         push("selection-clear-on-copy", self.selection_clear_on_copy.to_string());
         push(
@@ -4415,6 +4488,9 @@ impl Config {
             }
         });
         push("link-url", self.link_url.to_string());
+        for r in &self.link_url_regex {
+            push("link-url-regex", r.clone());
+        }
         push("link-osc8", self.link_osc8.to_string());
         push(
             "link-previews",
@@ -4422,6 +4498,15 @@ impl Config {
                 LinkPreviews::True => "true",
                 LinkPreviews::False => "false",
                 LinkPreviews::Osc8 => "osc8",
+            }
+            .to_string(),
+        );
+        push(
+            "command-marks",
+            match self.command_marks {
+                CommandMarks::True => "true",
+                CommandMarks::Failed => "failed",
+                CommandMarks::False => "false",
             }
             .to_string(),
         );
@@ -7463,6 +7548,38 @@ mod tests {
         let r = Config::from_text(&c.render(), true);
         assert!(!r.link_url && !r.link_osc8);
         assert_eq!(r.link_previews, LinkPreviews::Osc8);
+    }
+
+    /// #927: command-marks
+    #[test]
+    fn command_marks_key() {
+        assert_eq!(Config::default().command_marks, CommandMarks::True);
+        for (v, want) in [
+            ("true", CommandMarks::True),
+            ("failed", CommandMarks::Failed),
+            ("false", CommandMarks::False),
+        ] {
+            let c = Config::from_text(&format!("command-marks = {v}\n"), true);
+            assert!(c.warnings.is_empty(), "{v}: {:?}", c.warnings);
+            assert_eq!(c.command_marks, want);
+            assert_eq!(
+                Config::from_text(&c.render(), true).command_marks,
+                want,
+                "{v}: 다시 읽어도 같다"
+            );
+        }
+        let c = Config::from_text("command-marks = sometimes\n", true);
+        assert_eq!(c.warnings.len(), 1);
+        assert_eq!(c.command_marks, CommandMarks::True);
+    }
+
+    #[test]
+    fn command_marks_decide_which_exit_codes_get_a_bar() {
+        assert!(CommandMarks::True.shows(Some(0)) && CommandMarks::True.shows(Some(2)));
+        assert!(!CommandMarks::Failed.shows(Some(0)) && CommandMarks::Failed.shows(Some(2)));
+        assert!(!CommandMarks::False.shows(Some(2)));
+        // 종료 코드를 모르면 성공이라고도 실패라고도 하지 않는다
+        assert!(!CommandMarks::True.shows(None) && !CommandMarks::Failed.shows(None));
     }
 
     /// #191: link는 Ghostty에서도 아직 쓸 수 없다(소스: "TODO: This can't currently be set!"). 받고, 안 된다고 알린다
