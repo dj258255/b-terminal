@@ -609,6 +609,8 @@ mod tests {
             },
             modes: Modes::default(),
             display_offset: 0,
+            pixel_shift: 0,
+            edge: Vec::new(),
             history: 0,
             background: Rgb::new(0, 0, 0),
             foreground: Rgb::new(255, 255, 255),

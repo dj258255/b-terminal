@@ -477,12 +477,13 @@ impl App {
                     .last_frame
                     .as_ref()
                     .and_then(|l| l.panes.iter().find(|p| p.0 == v.id));
-                let rows = dirty_rows(v.screen.cols, v.screen.rows, cells, *cursor, pre, prev)
+                let rows = dirty_rows(v.screen.cols, v.screen.draw_rows(), cells, *cursor, pre, prev)
                     .iter()
                     .filter(|d| **d)
                     .count();
-                // 흔적이 있거나 방금 끝난 칸은 줄이 같아도 다시 그린다(GPU는 격자를 늘 통째로 그린다, #891)
-                let rows = if trail.repaint[i] {
+                // 흔적이 있거나 방금 끝난 칸은 줄이 같아도 다시 그린다(GPU는 격자를 늘 통째로 그린다, #891).
+                // 밀어 그리는 칸(#902)도 줄이 같아도 밀린 픽셀이 달라질 수 있어 늘 다시 그린다
+                let rows = if trail.repaint[i] || v.screen.pixel_shift > 0 {
                     rows.max(v.screen.rows)
                 } else {
                     rows
@@ -495,7 +496,7 @@ impl App {
             // IME 후보 창을 커서 옆에 띄운다
             let vm = v.metrics;
             let px = v.inner.x + (v.screen.cursor.col as u32 * vm.width) as i32;
-            let py = v.inner.y + (v.screen.cursor.row as u32 * vm.height) as i32;
+            let py = v.inner.y + (v.screen.cursor.row as u32 * vm.height) as i32 - v.screen.pixel_shift as i32;
             gfx.window
                 .set_ime_cursor_area(PhysicalPosition::new(px, py), PhysicalSize::new(vm.width, vm.height));
         }
@@ -515,7 +516,8 @@ impl App {
                 .zip(&trail.paints)
                 .map(|((v, (cells, cursor, pre)), paint)| GridView {
                     cols: v.screen.cols,
-                    rows: v.screen.rows,
+                    // 픽셀 스크롤(#902): 걸친 줄까지(`pixel_shift`가 0이면 보이는 줄만)
+                    rows: v.screen.draw_rows(),
                     cells,
                     cursor: *cursor,
                     selection_bg: super::screen_default_colors(&theme, &v.screen).selection_bg,
@@ -524,7 +526,8 @@ impl App {
                     selection_fg_cell: self.config.selection_foreground_cell,
                     preedit: pre.as_deref(),
                     min_contrast: self.config.minimum_contrast,
-                    trail: *paint,
+                    // 밀어 그리는 칸은 커서 흔적을 그리지 않는다
+                    trail: if v.screen.pixel_shift > 0 { None } else { *paint },
                 })
                 .collect();
             // 격자 칸 바탕의 알파도 CPU 길과 같게(#359)
@@ -540,6 +543,7 @@ impl App {
                 .iter()
                 .zip(&grid_views)
                 .map(|(v, gv)| bt_gpu::PaneDraw {
+                    pixel_shift: v.screen.pixel_shift,
                     font: fonts.index_of(v.font_size),
                     x: v.inner.x,
                     y: v.inner.y,

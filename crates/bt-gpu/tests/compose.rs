@@ -262,6 +262,7 @@ fn composed_frame_matches_cpu_canvas_drawn_in_the_same_order() {
     let want = cpu_reference(&mut fx.f, &fx.l, fx.sa.background, [&va, &vb], true);
     let panes = [
         PaneDraw {
+            pixel_shift: 0,
             font: 0,
             x: fx.l.a.0,
             y: fx.l.a.1,
@@ -269,6 +270,7 @@ fn composed_frame_matches_cpu_canvas_drawn_in_the_same_order() {
             clear: fx.sa.background,
         },
         PaneDraw {
+            pixel_shift: 0,
             font: 0,
             x: fx.l.b.0,
             y: fx.l.b.1,
@@ -299,6 +301,7 @@ fn translucent_upper_pixels_blend_over_the_grid() {
     let (va, vb) = (view(&fx.sa, &fx.ca, &fx.t), view(&fx.sb, &fx.cb, &fx.t));
     let panes = [
         PaneDraw {
+            pixel_shift: 0,
             font: 0,
             x: fx.l.a.0,
             y: fx.l.a.1,
@@ -306,6 +309,7 @@ fn translucent_upper_pixels_blend_over_the_grid() {
             clear: fx.sa.background,
         },
         PaneDraw {
+            pixel_shift: 0,
             font: 0,
             x: fx.l.b.0,
             y: fx.l.b.1,
@@ -343,6 +347,7 @@ fn layers_stay_when_only_the_grid_changes() {
     let (va, vb) = (view(&fx.sa, &fx.ca, &fx.t), view(&fx.sb, &fx.cb, &fx.t));
     let panes = [
         PaneDraw {
+            pixel_shift: 0,
             font: 0,
             x: fx.l.a.0,
             y: fx.l.a.1,
@@ -350,6 +355,7 @@ fn layers_stay_when_only_the_grid_changes() {
             clear: fx.sa.background,
         },
         PaneDraw {
+            pixel_shift: 0,
             font: 0,
             x: fx.l.b.0,
             y: fx.l.b.1,
@@ -377,6 +383,7 @@ fn layers_stay_when_only_the_grid_changes() {
     let vb2 = view(&sb2, &cb2, &fx.t);
     let panes2 = [
         PaneDraw {
+            pixel_shift: 0,
             font: 0,
             x: fx.l.a.0,
             y: fx.l.a.1,
@@ -384,6 +391,7 @@ fn layers_stay_when_only_the_grid_changes() {
             clear: fx.sa.background,
         },
         PaneDraw {
+            pixel_shift: 0,
             font: 0,
             x: fx.l.b.0,
             y: fx.l.b.1,
@@ -410,6 +418,7 @@ fn partial_layer_upload_keeps_every_frame_equal_to_the_cpu_frame() {
     let (va, vb) = (view(&fx.sa, &fx.ca, &fx.t), view(&fx.sb, &fx.cb, &fx.t));
     let panes = [
         PaneDraw {
+            pixel_shift: 0,
             font: 0,
             x: fx.l.a.0,
             y: fx.l.a.1,
@@ -417,6 +426,7 @@ fn partial_layer_upload_keeps_every_frame_equal_to_the_cpu_frame() {
             clear: fx.sa.background,
         },
         PaneDraw {
+            pixel_shift: 0,
             font: 0,
             x: fx.l.b.0,
             y: fx.l.b.1,
@@ -563,6 +573,7 @@ fn frames_without_a_layer_update_keep_the_last_layers_and_follow_later_changes()
     let (va, vb) = (view(&fx.sa, &fx.ca, &fx.t), view(&fx.sb, &fx.cb, &fx.t));
     let panes = [
         PaneDraw {
+            pixel_shift: 0,
             font: 0,
             x: fx.l.a.0,
             y: fx.l.a.1,
@@ -570,6 +581,7 @@ fn frames_without_a_layer_update_keep_the_last_layers_and_follow_later_changes()
             clear: fx.sa.background,
         },
         PaneDraw {
+            pixel_shift: 0,
             font: 0,
             x: fx.l.b.0,
             y: fx.l.b.1,
@@ -664,6 +676,7 @@ fn frames_without_a_layer_update_keep_the_last_layers_and_follow_later_changes()
 fn frame_panes<'a>(fx: &Fixture, va: &'a GridView<'a>, vb: &'a GridView<'a>) -> [PaneDraw<'a>; 2] {
     [
         PaneDraw {
+            pixel_shift: 0,
             font: 0,
             x: fx.l.a.0,
             y: fx.l.a.1,
@@ -671,6 +684,7 @@ fn frame_panes<'a>(fx: &Fixture, va: &'a GridView<'a>, vb: &'a GridView<'a>) -> 
             clear: fx.sa.background,
         },
         PaneDraw {
+            pixel_shift: 0,
             font: 0,
             x: fx.l.b.0,
             y: fx.l.b.1,
@@ -888,6 +902,7 @@ fn empty_upper_slice_releases_the_upper_layer_and_it_comes_back() {
     let (va, vb) = (view(&fx.sa, &fx.ca, &fx.t), view(&fx.sb, &fx.cb, &fx.t));
     let panes = [
         PaneDraw {
+            pixel_shift: 0,
             font: 0,
             x: fx.l.a.0,
             y: fx.l.a.1,
@@ -895,6 +910,7 @@ fn empty_upper_slice_releases_the_upper_layer_and_it_comes_back() {
             clear: fx.sa.background,
         },
         PaneDraw {
+            pixel_shift: 0,
             font: 0,
             x: fx.l.b.0,
             y: fx.l.b.1,
@@ -1015,6 +1031,7 @@ fn visual_bell_flash_in_upper_layer_equals_the_cpu_frame() {
     let (va, vb) = (view(&fx.sa, &fx.ca, &fx.t), view(&fx.sb, &fx.cb, &fx.t));
     let panes = [
         PaneDraw {
+            pixel_shift: 0,
             font: 0,
             x: fx.l.a.0,
             y: fx.l.a.1,
@@ -1022,6 +1039,7 @@ fn visual_bell_flash_in_upper_layer_equals_the_cpu_frame() {
             clear: fx.sa.background,
         },
         PaneDraw {
+            pixel_shift: 0,
             font: 0,
             x: fx.l.b.0,
             y: fx.l.b.1,

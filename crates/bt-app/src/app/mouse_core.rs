@@ -418,12 +418,14 @@ impl App {
     }
 
     /// 마우스 휠. `idx`는 휠이 향하는 칸(없으면 없다), `lines`·`xlines`는 이미 배율을 곱한 세로·가로 줄 수(양수가 위·왼쪽)다.
+    /// `pixels`는 트랙패드가 보낸 세로 픽셀(배율을 곱한 값, 양수가 위, 눈금 휠이면 없다): 픽셀 스크롤(`pixel-scroll`, #902)이 켜져 있고 스크롤백을 굴리는 칸이면 줄로 바꾸지 않고 그대로 더한다.
     /// 마우스 보고 중이면 단추 4·5(세로)·6·7(가로)로 보고하고, 대체 화면이면 화살표로, 아니면 스크롤백을 굴린다. 한 번에 최대 10번 보낸다
     pub(super) fn pointer_wheel(
         &mut self,
         idx: Option<usize>,
         lines: f64,
         xlines: f64,
+        pixels: Option<f64>,
         input: &PtrIn,
         st: &mut PtrState,
     ) {
@@ -446,6 +448,19 @@ impl App {
             }
         } else {
             st.accum_x = 0.0;
+        }
+        // 픽셀 스크롤(#902, kitty `pixel_scroll`): 트랙패드의 픽셀 값을 줄 단위로 모으지 않고 스크롤백에 바로 더한다.
+        // 마우스 보고 중이거나 대체 화면이면 지금처럼 줄 단위로 간다
+        if let (Some(px), Some(i)) = (pixels, idx) {
+            let alt = self.panes[i].session.modes().alt_screen;
+            let reporting = self.mouse_reporting_with(i, input.mods.shift).is_some();
+            if mouse::pixel_scroll_applies(self.config.pixel_scroll, true, reporting, alt) {
+                st.accum = 0.0;
+                if self.panes[i].session.scroll_pixels(px) {
+                    self.request_redraw();
+                }
+                return;
+            }
         }
         st.accum += lines;
         let whole = st.accum.trunc() as i32;

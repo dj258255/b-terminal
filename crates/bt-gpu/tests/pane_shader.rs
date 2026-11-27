@@ -109,6 +109,7 @@ impl Scene {
             trail: None,
         };
         let panes = [PaneDraw {
+            pixel_shift: 0,
             font: 0,
             x: 6,
             y: 36,

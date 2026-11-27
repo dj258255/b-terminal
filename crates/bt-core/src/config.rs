@@ -868,6 +868,8 @@ pub struct Config {
     pub focus_follows_mouse: bool,
     /// 마우스 휠 배율: (줄 단위 기기, 픽셀 단위 기기). Ghostty `mouse-scroll-multiplier` 기본 3·1
     pub scroll_multiplier: (f64, f64),
+    /// 트랙패드로 스크롤백을 줄보다 작은 단위로 올려 본다(kitty `pixel_scroll`, #902). Ghostty 1.4.0에는 없다. 기본 꺼짐
+    pub pixel_scroll: bool,
     /// 단어 고르기의 경계 글자(Ghostty `selection-word-chars`)
     pub selection_word_chars: String,
     /// 암호 입력을 알아채면 그 칸이 초점일 때 보안 키보드 입력을 켠다(Ghostty `macos-auto-secure-input`, 기본 켬, #258)
@@ -1928,6 +1930,7 @@ impl Default for Config {
             minimum_contrast: 1.0,
             focus_follows_mouse: false,
             scroll_multiplier: (3.0, 1.0),
+            pixel_scroll: false,
             selection_word_chars: DEFAULT_WORD_CHARS.into(),
             macos_auto_secure_input: true,
             macos_applescript: true,
@@ -3892,6 +3895,10 @@ impl Config {
             },
             "mouse-scroll-multiplier" => match parse_scroll_multiplier(v, self.scroll_multiplier) {
                 Some(m) => self.scroll_multiplier = m,
+                None => bad(warnings),
+            },
+            "pixel-scroll" => match parse_bool(v) {
+                Some(b) => self.pixel_scroll = b,
                 None => bad(warnings),
             },
             // 공백도 경계 글자라 다듬지 않은 값을 쓴다(큰따옴표는 이미 벗김)
@@ -6341,6 +6348,16 @@ mod tests {
         );
         let c = Config::from_text("minimum-contrast = high\n", true);
         assert_eq!((c.minimum_contrast, c.warnings.len()), (1.0, 1));
+    }
+
+    /// #902: `pixel-scroll`은 kitty `pixel_scroll`이다. 기본은 꺼짐(Ghostty 1.4.0에는 없는 기능)
+    #[test]
+    fn pixel_scroll_key() {
+        assert!(!Config::default().pixel_scroll);
+        assert!(Config::from_text("pixel-scroll = true\n", true).pixel_scroll);
+        assert!(!Config::from_text("pixel-scroll = false\n", true).pixel_scroll);
+        let c = Config::from_text("pixel-scroll = maybe\n", true);
+        assert_eq!((c.warnings.len(), c.pixel_scroll), (1, false));
     }
 
     #[test]

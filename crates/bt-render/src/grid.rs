@@ -118,7 +118,26 @@ pub fn draw_grid(canvas: &mut Canvas, fonts: &mut Fonts, x: i32, y: i32, view: &
 /// `draw_grid`에 칸 바탕 아래·글자 아래 그림을 끼운다
 pub fn draw_grid_under(canvas: &mut Canvas, fonts: &mut Fonts, x: i32, y: i32, view: &GridView, under: &Under) {
     let all = vec![true; view.rows];
-    draw_rows_dirty(canvas, fonts, x, y, view, &all, under);
+    draw_rows_dirty(canvas, fonts, x, y, view, &all, under, None);
+}
+
+/// 픽셀 스크롤(kitty `pixel_scroll`, #902): 격자를 `shift` 픽셀 위로 밀어 그린다. `view.rows`는 보이는 줄 수에 걸친 줄 하나를
+/// 더한 값이고(맨 아래 줄), 맨 위 줄은 `shift` 픽셀만큼 위로 잘리고 맨 아래 줄은 보이는 만큼만 그려진다.
+/// 격자 사각형(`x`, `y`에서 보이는 줄 수 × 줄 높이) 밖은 칠하지 않는다. `shift`가 0이면 걸친 줄은 아래로 잘려 `draw_grid_under`와 같다
+pub fn draw_grid_shifted(
+    canvas: &mut Canvas,
+    fonts: &mut Fonts,
+    x: i32,
+    y: i32,
+    view: &GridView,
+    under: &Under,
+    shift: u32,
+) {
+    let ch = fonts.metrics().height as i32;
+    let visible = view.rows.saturating_sub(1) as i32;
+    let clip = (y, y + visible * ch);
+    let all = vec![true; view.rows];
+    draw_rows_dirty(canvas, fonts, x, y - shift as i32, view, &all, under, Some(clip));
 }
 
 /// `dirty`가 참인 줄만 다시 그린다(#40). 다시 칠한 세로 범위들 `[위, 아래)`를 돌려준다.
@@ -133,9 +152,10 @@ pub fn draw_grid_rows(
     view: &GridView,
     dirty: &[bool],
 ) -> Vec<(i32, i32)> {
-    draw_rows_dirty(canvas, fonts, x, y, view, dirty, &Under::default())
+    draw_rows_dirty(canvas, fonts, x, y, view, dirty, &Under::default(), None)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn draw_rows_dirty(
     canvas: &mut Canvas,
     fonts: &mut Fonts,
@@ -144,6 +164,8 @@ fn draw_rows_dirty(
     view: &GridView,
     dirty: &[bool],
     under: &Under,
+    // 이 세로 범위 `[위, 아래)` 밖은 그리지 않는다(픽셀 스크롤의 걸친 줄을 격자 안으로 자른다)
+    clip: Option<(i32, i32)>,
 ) -> Vec<(i32, i32)> {
     let m = fonts.metrics();
     let ch = m.height as i32;
@@ -167,9 +189,12 @@ fn draw_rows_dirty(
             r += 1;
         }
         let (top, bottom) = (y + a as i32 * ch, y + r as i32 * ch);
-        canvas.set_clip_y(top, bottom);
-        draw_rows(canvas, fonts, m, x, y, view, (a, r), under);
-        canvas.reset_clip();
+        let (ctop, cbottom) = clip.map_or((top, bottom), |c| (top.max(c.0), bottom.min(c.1)));
+        if ctop < cbottom {
+            canvas.set_clip_y(ctop, cbottom);
+            draw_rows(canvas, fonts, m, x, y, view, (a, r), under);
+            canvas.reset_clip();
+        }
         spans.push((top, bottom));
     }
     spans

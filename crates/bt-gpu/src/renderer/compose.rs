@@ -21,6 +21,9 @@ pub struct PaneDraw<'a> {
     /// 이 칸을 그릴 글꼴 묶음의 자리(`compose_with`·`present_with`에 넘긴 묶음 목록에서). 칸마다 글자 크기가 달라 묶음이 여럿이다(#422).
     /// `compose`·`present`는 묶음이 하나라 0이다. 범위를 넘으면 0을 쓴다
     pub font: usize,
+    /// 픽셀 스크롤(#902): 격자를 위로 밀어 그릴 픽셀. 0보다 크면 `view.rows`는 보이는 줄 수 + 1(맨 아래에 걸친 줄)이고,
+    /// 격자 사각형(보이는 줄 수 × 줄 높이) 밖은 그리지 않는다. 0이면 `view`를 그대로 그린다
+    pub pixel_shift: u32,
 }
 
 /// 이번 프레임에 새로 올릴 층. `None`이면 앞서 올린 것을 그대로 쓴다(바뀐 프레임에만 올린다)
@@ -442,6 +445,12 @@ impl GpuRenderer {
         for p in panes {
             self.scene
                 .build(&mut self.cache, &mut *fonts[pick(p.font)], p.view, p.clear);
+            if p.pixel_shift > 0 {
+                // 픽셀 스크롤(#902): 위로 밀고 격자 사각형 밖(걸친 줄의 넘친 부분)을 자른다. CPU `draw_grid_shifted`와 같다
+                let ch = fonts[pick(p.font)].metrics().height as i32;
+                let visible = p.view.rows.saturating_sub(1) as i32;
+                self.scene.shift_and_clip_y(-(p.pixel_shift as i32), 0, visible * ch);
+            }
             let (r0, g0) = (ls.rects.len(), ls.glyphs.len());
             ls.rects.extend_from_slice(&self.scene.rects);
             ls.glyphs.extend_from_slice(&self.scene.glyphs);

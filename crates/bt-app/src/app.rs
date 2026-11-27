@@ -225,6 +225,8 @@ pub struct Pane {
     dock_bell: bool,
     /// 스크롤 막대: 마지막으로 본 스크롤 위치(맨 아래에서 올라간 줄 수)와 막대를 보일 때까지의 기한
     scroll_seen: usize,
+    /// 마지막 프레임에 이 칸을 위로 밀어 그린 픽셀(픽셀 스크롤, #902). 마우스 좌표를 칸으로 바꿀 때 그려진 것과 같은 값을 쓴다
+    drawn_shift: u32,
     scrollbar_until: Option<Instant>,
     /// `toggle_mouse_reporting`로 이 칸에 정한 마우스 보고 켬·끔(#209). 없으면 `mouse-reporting` 설정을 따른다
     mouse_reporting_over: Option<bool>,
@@ -2193,6 +2195,7 @@ impl App {
                 progress: None,
                 dock_bell: false,
                 scroll_seen: 0,
+                drawn_shift: 0,
                 scrollbar_until: None,
                 mouse_reporting_over: None,
                 mouse_down: 0,
@@ -4348,8 +4351,9 @@ impl App {
         let r = self.pane_inner(pane.id)?;
         let (cols, rows) = pane_cells(&pane.session);
         let col = ((pos.x - r.x as f64) / m.width as f64).floor().max(0.0) as usize;
-        let row = ((pos.y - r.y as f64) / m.height as f64).floor().max(0.0) as usize;
-        Some((col.min(cols.saturating_sub(1)), row.min(rows.saturating_sub(1))))
+        // 픽셀 스크롤(#902): 마지막으로 그린 만큼 위로 밀려 있으니 그만큼 아래 줄이다
+        let row = mouse::row_at(pos.y - r.y as f64, m.height, pane.drawn_shift, rows);
+        Some((col.min(cols.saturating_sub(1)), row))
     }
 
     /// 창 좌표가 `cell_in`이 구한 칸의 어느 쪽인가(#437). 글자 고르기가 누른 칸과 끝 칸을 넣을지 이 쪽으로 정한다
@@ -7135,6 +7139,10 @@ impl App {
                 // 격자가 창보다 넓으면(DECCOLM 132열, #324) 창 밖은 잘라 그린다. 좁으면 그대로 그리고 오른쪽은 바탕이다
                 let mut screen = p.session.snapshot();
                 screen.crop_columns(p.session.size().cols as usize);
+                // 픽셀 스크롤(#902): 꺼져 있거나, kitty 그림이 보이는 화면이면 줄에 맞춘다(그림은 걸친 줄을 따라 옮기지 못한다)
+                if !self.config.pixel_scroll || !screen.images.is_empty() {
+                    screen.snap_to_lines();
+                }
                 let bell_flash = self.bell_flash_of(p, &screen);
                 Some(PaneView {
                     id: *id,
@@ -7174,8 +7182,11 @@ impl App {
         for v in &views {
             if let Some(i) = self.pane_index(v.id) {
                 let p = &mut self.panes[i];
-                if p.scroll_seen != v.screen.display_offset {
-                    p.scroll_seen = v.screen.display_offset;
+                p.drawn_shift = v.screen.pixel_shift;
+                // 줄과 걸친 픽셀 어느 쪽이 바뀌어도 막대를 보인다
+                let seen = (v.screen.display_offset << 16) | v.screen.pixel_shift as usize;
+                if p.scroll_seen != seen {
+                    p.scroll_seen = seen;
                     p.scrollbar_until = Some(now_bar + SCROLLBAR_FOR);
                 }
             }
@@ -7626,9 +7637,11 @@ impl App {
                     screen.cols as u32 * vm.width,
                     screen.rows as u32 * vm.height,
                 );
+                // 픽셀 스크롤(#902): 걸친 줄까지 `screen.draw_rows()`줄을 `shift` 픽셀 위로 밀어 그린다. 커서 흔적은 줄에 맞춘 화면에서만 그린다
+                let shift = screen.pixel_shift;
                 let view = GridView {
                     cols: screen.cols,
-                    rows: screen.rows,
+                    rows: screen.draw_rows(),
                     cells,
                     cursor: *cursor,
                     selection_bg: screen_default_colors(&theme, screen).selection_bg,
@@ -7637,7 +7650,7 @@ impl App {
                     selection_fg_cell: self.config.selection_foreground_cell,
                     preedit: pre.as_deref(),
                     min_contrast: self.config.minimum_contrast,
-                    trail: trail.paints[i],
+                    trail: if shift > 0 { None } else { trail.paints[i] },
                 };
                 if full {
                     canvas.fill_rect(v.outer.x, v.outer.y, v.outer.w, v.outer.h, screen.background);
@@ -7648,7 +7661,20 @@ impl App {
                         (vm.width, vm.height),
                         (screen.cols, screen.rows),
                     );
-                    images.draw_grid(&mut canvas, fonts.for_size(v.font_size), &view, screen.background);
+                    if shift > 0 {
+                        // 그림이 없는 화면에서만 밀린다(그림이 있으면 줄에 맞춰 `shift`가 0이다)
+                        bt_render::draw_grid_shifted(
+                            &mut canvas,
+                            fonts.for_size(v.font_size),
+                            v.inner.x,
+                            v.inner.y,
+                            &view,
+                            &bt_render::Under::default(),
+                            shift,
+                        );
+                    } else {
+                        images.draw_grid(&mut canvas, fonts.for_size(v.font_size), &view, screen.background);
+                    }
                     if let Some(p) = pad {
                         crate::padding::paint(
                             &mut canvas,
@@ -7673,9 +7699,11 @@ impl App {
                         .last_frame
                         .as_ref()
                         .and_then(|f| f.panes.iter().find(|p| p.0 == v.id));
-                    let mut dirty = dirty_rows(screen.cols, screen.rows, cells, *cursor, pre, prev);
-                    // 커서 흔적은 칸 전체에 걸치니 흔적이 있거나 방금 끝난 칸은 줄을 모두 다시 그린다(#891)
-                    if trail.repaint[i] {
+                    let mut dirty = dirty_rows(screen.cols, screen.draw_rows(), cells, *cursor, pre, prev);
+                    dirty.truncate(screen.rows);
+                    // 커서 흔적은 칸 전체에 걸치니 흔적이 있거나 방금 끝난 칸은 줄을 모두 다시 그린다(#891).
+                    // 밀어 그리는 칸(#902)은 칸 전체가 옮겨졌으니 늘 모두 다시 그린다
+                    if trail.repaint[i] || shift > 0 {
                         dirty.fill(true);
                     }
                     if !dirty.iter().any(|d| *d) {
@@ -7688,14 +7716,27 @@ impl App {
                         dirty.iter_mut().for_each(|d| *d = true);
                     }
                     repainted_rows += dirty.iter().filter(|d| **d).count();
-                    let spans = draw_grid_rows(
-                        &mut canvas,
-                        fonts.for_size(v.font_size),
-                        v.inner.x,
-                        v.inner.y,
-                        &view,
-                        &dirty,
-                    );
+                    let spans = if shift > 0 {
+                        bt_render::draw_grid_shifted(
+                            &mut canvas,
+                            fonts.for_size(v.font_size),
+                            v.inner.x,
+                            v.inner.y,
+                            &view,
+                            &bt_render::Under::default(),
+                            shift,
+                        );
+                        vec![(v.inner.y, v.inner.y + (screen.rows as u32 * vm.height) as i32)]
+                    } else {
+                        draw_grid_rows(
+                            &mut canvas,
+                            fonts.for_size(v.font_size),
+                            v.inner.x,
+                            v.inner.y,
+                            &view,
+                            &dirty,
+                        )
+                    };
                     if let Some(p) = pad {
                         crate::padding::paint(
                             &mut canvas,
@@ -7728,7 +7769,7 @@ impl App {
                 if v.focused {
                     // IME 후보 창을 커서 옆에 띄운다
                     let px = v.inner.x + (screen.cursor.col as u32 * vm.width) as i32;
-                    let py = v.inner.y + (screen.cursor.row as u32 * vm.height) as i32;
+                    let py = v.inner.y + (screen.cursor.row as u32 * vm.height) as i32 - screen.pixel_shift as i32;
                     gfx.window
                         .set_ime_cursor_area(PhysicalPosition::new(px, py), PhysicalSize::new(vm.width, vm.height));
                 }
@@ -8170,10 +8211,12 @@ fn link_underline(f: CellFlags) -> bt_render::Underline {
 }
 
 /// 화면 값을 렌더러 셀로. 찾기에 맞은 칸은 여기서 색을 바꾼다(`search-*` 색, 지금 고른 곳은 `search-selected-*`)
+/// 픽셀 스크롤(#902)로 걸쳐 보이는 줄이 있으면 그 줄(`s.edge`)이 보이는 줄 뒤에 붙는다(`s.draw_rows()`줄)
 pub fn to_draw_cells(s: &Screen, theme: &bt_core::Theme) -> Vec<DrawCell> {
     let mut cells: Vec<DrawCell> = s
         .cells
         .iter()
+        .chain(s.edge.iter())
         .map(|c| {
             // 고른 칸이 찾기에 맞은 칸보다 앞선다(Ghostty `generic.zig`의 `selected` 차례). 그래야 `selection-* = cell-*`가 칸 본래 색을 본다
             let selected = c.flags.contains(CellFlags::SELECTED);
@@ -8211,7 +8254,7 @@ pub fn to_draw_cells(s: &Screen, theme: &bt_core::Theme) -> Vec<DrawCell> {
         .collect();
     // 이모지 묶음(ZWJ·피부색·국기, #87)
     bt_render::cluster::mark(&mut cells, s.cols, |i| {
-        let c = &s.cells[i];
+        let c = s.cells.get(i).unwrap_or_else(|| &s.edge[i - s.cells.len()]);
         bt_render::cluster::ClusterCell {
             ch: c.draw_ch(),
             combining: c.draw_combining(),
@@ -8957,6 +9000,11 @@ impl ApplicationHandler<UserEvent> for App {
             WindowEvent::MouseWheel { delta, .. } => {
                 // 휠 배율(mouse-scroll-multiplier, #126): 줄 단위 기기(마우스 휠)와 픽셀 단위 기기(트랙패드)
                 let (discrete, precision) = self.config.scroll_multiplier;
+                // 픽셀 스크롤(#902): 트랙패드가 보낸 픽셀(관성 사건 포함)을 줄로 바꾸지 않고 그대로 스크롤백에 더한다. 양수가 위
+                let pixels = match delta {
+                    MouseScrollDelta::PixelDelta(p) => Some(p.y * precision),
+                    MouseScrollDelta::LineDelta(..) => None,
+                };
                 let lines = match delta {
                     MouseScrollDelta::LineDelta(_, y) => y as f64 * discrete,
                     MouseScrollDelta::PixelDelta(p) => {
@@ -8979,7 +9027,7 @@ impl ApplicationHandler<UserEvent> for App {
                     .or_else(|| self.active_index());
                 let (input, before) = self.human_ptr(idx);
                 let mut st = before.clone();
-                self.pointer_wheel(idx, lines, xlines, &input, &mut st);
+                self.pointer_wheel(idx, lines, xlines, pixels, &input, &mut st);
                 self.store_human_ptr(idx, &before, &st);
             }
             _ => {}
