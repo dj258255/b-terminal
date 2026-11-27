@@ -770,6 +770,8 @@ pub struct Config {
     pub unfocused_split_fill: Option<Rgb>,
     /// 칸 사이 경계선 색. 없으면 바탕색과 글자색 사이
     pub split_divider_color: Option<Rgb>,
+    /// 칸 테두리(kitty `window_border_width` 따위, #915). 키를 하나도 정하지 않으면 칸 경계선을 지금처럼 그린다
+    pub pane_border: crate::paneborder::PaneBorderConfig,
     /// macOS에서 색 맞춤을 하는가(`window-colorspace = srgb`). 기본은 끔(`display-p3`): 화면 색 공간으로 그대로 넘겨
     /// 프레임마다의 변환을 피한다(실험 E3, ADR-009)
     pub colorspace_srgb: bool,
@@ -1990,6 +1992,7 @@ impl Default for Config {
             unfocused_split_opacity: 0.7,
             unfocused_split_fill: None,
             split_divider_color: None,
+            pane_border: crate::paneborder::PaneBorderConfig::default(),
             colorspace_srgb: false,
             alpha_blending: AlphaBlending::Native,
             text_composition: crate::TextComposition::NONE,
@@ -3280,6 +3283,13 @@ impl Config {
             }
             return;
         }
+        // 칸 테두리 키(#915)
+        if let Some(ok) = self.pane_border.apply(e.key.as_str(), e.value.as_str()) {
+            if !ok {
+                bad(warnings);
+            }
+            return;
+        }
         // 탭 제목 틀 키(#910)
         if let Some(ok) = self.tab_title.apply(e.key.as_str(), e.value.as_str()) {
             if !ok {
@@ -4495,6 +4505,9 @@ impl Config {
             push(k, v);
         }
         for (k, v) in self.tab_title.lines() {
+            push(k, v);
+        }
+        for (k, v) in self.pane_border.lines() {
             push(k, v);
         }
         push("mouse-hide-while-typing", self.mouse_hide_while_typing.to_string());
@@ -7626,6 +7639,33 @@ mod tests {
         assert!(c.warnings.is_empty(), "{:?}", c.warnings);
         let c = Config::from_text("unfocused-split-opacity = dim\nsplit-divider-color = nope\n", true);
         assert_eq!(c.warnings.len(), 2);
+    }
+
+    /// #915: 칸 테두리 키는 설정 읽기와 `--show-config`에 이어지고, 정하지 않으면 지금 경계선 그대로(기본값)이다
+    #[test]
+    fn pane_border_keys_flow_through_config_and_show_config() {
+        let c = Config::from_text("", true);
+        assert!(c.pane_border.is_default());
+        let c = Config::from_text(
+            "window-border-width = 1.5pt\nactive-border-color = #00ff00\ndraw-minimal-borders = false\nwindow-border-radius = 6px\n",
+            true,
+        );
+        assert!(c.warnings.is_empty(), "{:?}", c.warnings);
+        assert!(!c.pane_border.minimal);
+        let shown = c.render();
+        assert!(shown.contains("window-border-width = 1.5pt\n"), "{shown}");
+        assert!(shown.contains("window-border-radius = 6px\n"), "{shown}");
+        assert!(shown.contains("active-border-color = #00ff00\n"), "{shown}");
+        let again = Config::from_text(&shown, true);
+        assert_eq!(again.pane_border, c.pane_border);
+        // 못 읽는 값은 경고하고 기본값을 둔다
+        let c = Config::from_text("window-border-width = wide\n", true);
+        assert_eq!(c.warnings.len(), 1);
+        assert!(c.pane_border.is_default());
+        // 정하지 않은 두께·색은 `--show-config`에 kitty 기본값처럼 적히지 않는다
+        let shown = Config::from_text("", true).render();
+        assert!(!shown.contains("window-border-width"), "{shown}");
+        assert!(!shown.contains("active-border-color"), "{shown}");
     }
 
     #[test]

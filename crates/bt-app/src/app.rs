@@ -198,6 +198,8 @@ pub struct Pane {
     seen_output: u64,
     /// 보지 않은 벨이 있다(`bell-features = title`, #107): 제목 앞에 🔔
     pub bell: bool,
+    /// 키를 받지 않는 동안 벨이 울렸다(kitty `needs_attention`, `bell-border-color`로 칸 테두리에 보인다, #915). 그 칸이 키를 받으면 지운다
+    pub bell_pending: bool,
     /// 벨이 울려 테두리를 두르고 있다(`bell-features = border`, #687). 🔔와 달리 보고 있어도 켜고,
     /// 그 칸이 키를 받는 칸이 되거나 키를 받으면 뗀다
     pub bell_border: bool,
@@ -1504,6 +1506,7 @@ impl App {
 
     /// 칸의 바깥 사각형에서 여백을 뺀 격자 자리. `font_size`는 그 칸의 글자 크기다(남는 자리를 고르게 나눌 때 그 크기의 칸 크기를 쓴다)
     fn inner_rect(&self, r: Rect, font_size: f32) -> Rect {
+        let r = self.border_inset_rect(r);
         let px = |pt: f32| (pt as f64 * self.scale).round() as i32;
         let (left, right) = (px(self.config.padding_x.0), px(self.config.padding_x.1));
         let (top, bottom) = (px(self.config.padding_y.0), px(self.config.padding_y.1));
@@ -1517,7 +1520,18 @@ impl App {
 
     /// 칸 사이 경계선 두께(픽셀)
     fn divider_px(&self) -> u32 {
-        (self.scale.round() as u32).max(1)
+        crate::pane_border::gap_px(&self.config.pane_border, self.scale)
+    }
+
+    /// 칸 바깥 사각형에서 칸 테두리 두께를 뺀 자리(#915). 전체 테두리가 그려지지 않는 칸은 그대로다.
+    /// 탭에 보이는 칸이 하나뿐인 칸(크게 보기 포함)은 사각형이 내용 영역 전체와 같다
+    fn border_inset_rect(&self, r: Rect) -> Rect {
+        let cfg = &self.config.pane_border;
+        if cfg.minimal && !cfg.single {
+            return r;
+        }
+        let single = r == self.content_rect();
+        crate::pane_border::inset_rect(r, crate::pane_border::text_inset(cfg, self.scale, single))
     }
 
     /// 탭 하나의 칸 배치(바깥 사각형). 크게 보기면 고른 칸만 전체를 차지한다
@@ -1847,6 +1861,8 @@ impl App {
             }
             if bell_border_cleared_on_focus(self.w.focused, self.is_focused(i)) {
                 self.panes[i].bell_border = false;
+                // 보게 된 칸은 벨 테두리 색(`bell-border-color`)도 거둔다(#915)
+                self.panes[i].bell_pending = false;
             }
             if self.w.focused && self.is_focused(i) {
                 self.panes[i].session.clear_seen_program_status();
@@ -2022,6 +2038,12 @@ impl App {
         );
         if crate::dock::bell_counts_for_badge(self.config.bell_features.attention, self.any_window_focused()) {
             self.panes[idx].dock_bell = true;
+        }
+        // kitty `needs_attention`: 키를 받는 칸이 아닌 칸의 벨(창이 뒤에 있으면 고른 칸도)
+        let focused_now = self.w.focused && self.is_focused(idx);
+        if !focused_now && !self.panes[idx].bell_pending {
+            self.panes[idx].bell_pending = true;
+            self.request_redraw();
         }
         if r.title && !self.panes[idx].bell {
             self.panes[idx].bell = true;
@@ -2267,6 +2289,7 @@ impl App {
                 activity: false,
                 seen_output: 0,
                 bell: false,
+                bell_pending: false,
                 bell_border: false,
                 visual_bell_at: None,
                 broadcast: None,
@@ -7335,6 +7358,25 @@ impl App {
             .config
             .split_divider_color
             .unwrap_or_else(|| theme.background.mix(theme.foreground, 0.2));
+        // 칸 테두리(#915): 설정이 없으면 경계선 사각형을 `divider_color`로 칠하는 것 그대로다
+        let border_plan = crate::pane_border::plan(
+            &self.config.pane_border,
+            &crate::pane_border::Env {
+                fallback: divider_color,
+                background: theme.background,
+                scale: self.scale,
+                window_focused: self.w.focused,
+            },
+            &views
+                .iter()
+                .map(|v| crate::pane_border::PaneState {
+                    outer: v.outer,
+                    focused: v.focused,
+                    attention: self.pane_index(v.id).is_some_and(|i| self.panes[i].bell_pending),
+                })
+                .collect::<Vec<_>>(),
+            &dividers,
+        );
         // 고르지 않은 칸은 바탕색으로 살짝 덮는다(Ghostty의 unfocused-split-opacity)
         let dim_alpha = ((1.0 - self.config.unfocused_split_opacity) * 255.0).round() as u8;
         let dim_fill = self.config.unfocused_split_fill.unwrap_or(theme.background);
@@ -7657,7 +7699,11 @@ impl App {
                 || bars.iter().any(|b| b.0)
                 // 손잡이와 놓을 자리는 위층에 그린다. 위층을 쓰는 판단(`chrome.overlay || split`)에 빠지면 단언이 걸린다
                 || crate::pane_drag::needs_upper(&handles, drop_preview.is_some())
-                || (single_tab && views.iter().any(|v| v.progress.is_some())),
+                || (single_tab && views.iter().any(|v| v.progress.is_some()))
+                // 칸이 하나일 때의 테두리와 둥근 테두리는 위층에 그린다(#915)
+                || border_plan.has_rings()
+                || (!split && !border_plan.is_empty()),
+            border: border_plan.clone(),
             shader_layers: gfx.gpu.as_ref().is_some_and(|g| g.has_custom_shaders()),
             theme: (theme.background, theme.foreground),
             dim: (dim_alpha, dim_fill, divider_color),
@@ -7687,9 +7733,8 @@ impl App {
                 resize_overlays: &resize_overlays,
                 handles: &handles,
                 drop_preview,
-                dividers: &dividers,
+                border: &border_plan,
                 trail: &trail,
-                divider_color,
                 dim_alpha,
                 dim_fill,
                 split,
@@ -7965,9 +8010,7 @@ impl App {
                 }
             }
             if full {
-                for d in &dividers {
-                    canvas.fill_rect(d.x, d.y, d.w, d.h, divider_color);
-                }
+                border_plan.draw(&mut canvas);
                 for (v, look) in views.iter().zip(&handles) {
                     crate::pane_drag::draw_handle(&mut canvas, v.outer, *look, theme.foreground, self.scale);
                 }
@@ -8139,6 +8182,8 @@ struct Chrome {
     handles: Vec<crate::pane_drag::Look>,
     /// 끌어다 놓을 자리 미리 보기: 놓일 칸의 바깥 사각형과 쪽
     drop: Option<(Rect, crate::split::Direction)>,
+    /// 칸 테두리와 경계선(#915). 고른 칸이 바뀌면 색이 바뀐다
+    border: crate::pane_border::Plan,
     overlay: bool,
     /// GPU 길에서 사용자 셰이더가 돈다: 칸 밖 덧그림을 셰이더 뒤 층에 그린다(#441). 바뀌면 층을 통째로 다시 그린다
     shader_layers: bool,

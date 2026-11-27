@@ -3,6 +3,7 @@
 pub mod clipboard;
 pub mod config;
 pub mod kitty_geom;
+pub mod paneborder;
 pub mod proto;
 pub mod tabstyle;
 pub mod tabtitle;

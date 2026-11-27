@@ -30,6 +30,7 @@ mod menu;
 mod mouse;
 mod padding;
 mod palette;
+mod pane_border;
 mod pane_drag;
 mod pane_font;
 mod pointer;

@@ -1033,6 +1033,22 @@
 - 남긴 것: 실제 창에서 kitty와 나란히 눈으로 견주지 않았다. 굵게·기울임 조각 사이의 글자 간격은 제목 글꼴이 비례일 때 보통 모양으로 재서 조금 다를 수 있다(재지 않았다). 활동 표시는 `Output` 이벤트가 오는 칸만 보며(출력이 없는 입력 에코 등은 같은 길), 셸 프롬프트만 다시 그려도 켜진다(kitty도 출력이면 켠다)
 - 0.106.0에서 풀기: 없음(`tab-bar-style = hidden`·`window-show-tab-bar`는 제목 틀과 상관없다)
 
+## 122. 칸을 나누면 어느 칸이 고른 칸인지 테두리로 알 수 없다(경계선 한 줄뿐이다)
+
+- 언제: 2026-11-28, #915. 0.106.0 뒤 main까지의 동작이다. 화면 모양을 kitty와 견준 조사에서 골랐다
+- 증상: 칸 사이에는 `split-divider-color` 한 줄만 그려졌다. 고른 칸은 고르지 않은 칸을 흐리게 하는 것(`unfocused-split-opacity`)으로만 알 수 있었고, 칸마다 둘레를 두르거나 둥근 모서리를 주거나 벨이 울린 칸의 색을 따로 줄 길이 없었다
+- 까닭: 경계선을 칸 배치가 비워 둔 틈(`divider_px`, 배율 1픽셀 안팎)에 한 색으로 칠할 뿐이었다. kitty는 `window_border_width`·`draw_minimal_borders`·`window_border_radius`·`draw_window_borders_for_single_window`·`active_border_color`·`inactive_border_color`·`bell_border_color`(v0.51.1 `kitty/options/definition.py` 1783·1796·1808·1822·1938·1948·1951줄)로 정하고 `kitty/borders.py`의 `Borders.__call__`·`add_borders`가 그린다
+- 고침: 같은 뜻의 키 일곱을 `-`로 이어 더했다(`bt-core`의 `paneborder`). 그릴 것은 `bt-app`의 `pane_border`가 한 번에 정하고(`plan`), CPU 길과 GPU 길(위층 캔버스)이 같은 `Plan::draw`로 그린다. 규칙은 kitty 소스에서 옮겼다
+  - 최소 테두리(`draw-minimal-borders = true`, `kitty/layout/splits.py` `layout_pair`·`minimal_borders`): 칸 사이 틈은 `2 × 두께`이고 앞쪽 절반은 앞 칸, 뒤쪽 절반은 뒤 칸의 색이다. 칸이 여럿 맞닿은 쪽은 맞닿은 구간마다 그 칸의 색이다. 고른 칸이거나 주의가 필요한 칸이 색을 받고 벨이 이긴다
+  - 전체 테두리(`false`, `borders.py` `add_borders`): 칸마다 바깥 사각형 안쪽 둘레에 두께만큼 두르고, 칸 사이 틈은 0이며 글자 자리는 두께만큼 줄어든다(kitty `window_geometry`에 `border_mult=1`). 고른 칸 색은 창이 앞일 때만이다(`os_window_focused`)
+  - 둥근 모서리는 전체 테두리에서만이다. 식은 `kitty/shaders/rounded_rect.slang`(둥근 사각형까지의 부호 있는 거리, 1픽셀 가장자리 번짐)을 옮겼고 둥근 선 밖 모서리는 바탕색으로 메운다
+  - 두께: pt는 배율을 곱해 반올림하고 0보다 크면 한 픽셀을 남기며(`kitty/window.py` `effective_border`) px는 반올림만 한다. 단위가 없으면 pt, 음수는 0
+- 정한 것: **키를 하나도 정하지 않으면 칸 경계선은 지금과 같은 픽셀이다**(kitty 기본 0.5pt·초록·회색·주황을 쓰지 않는다. `without_settings_the_divider_pixels_are_what_they_were`가 틈 1·2·3에서 `fill_rect`로 칠한 것과 견준다). 색을 정하지 않은 역할은 `split-divider-color`(없으면 바탕색과 글자색 사이)를 쓴다. 정한 역할은 그 색이 이긴다. 벨 색을 안 정했으면 안 고른 색이다
+- kitty와 다른 점: (1) 둥근 모서리에서 글자 자리를 두께보다 조금 더 줄인다(반지름 6px·두께 1px이면 3픽셀). kitty는 둥근 선이 모서리 글자 칸을 덮는다고 안내만 하고 패딩으로 비키라 하지만, 완료 조건이 "글자 칸을 덮지 않는다"라서 그렇게 했다. 같은 설정이라도 칸 수·줄 수가 kitty와 한 칸 다를 수 있다. (2) kitty는 `window_margin_width`가 0이 아니면 최소 테두리를 무시하는데 그 키가 없다. (3) 칸 사이 틈이 1픽셀(두께를 안 정하고 배율 1)이면 둘로 나눌 수 없어 양쪽 가운데 눈에 띄는 쪽(고른 칸, 벨, 안 고른 칸 차례)의 색으로 칠한다. (4) 벨 상태는 "키를 받지 않는 동안 울렸다"로 새로 센다(`Pane::bell_pending`): `bell-features`와 따로고, 그 칸이 키를 받으면(창이 앞일 때) 지운다
+- 보이는 곳: 칸을 나누고 설정한 뒤 `btctl reload-config`. 두께·`draw-minimal-borders`가 바뀌면 칸 크기가 바뀌어 PTY 크기가 바뀐다
+- 남긴 것: 실제 창에서 kitty와 나란히 눈으로 견주지 않았다(PTY 막힘으로 앱을 띄우지 못했다). `App`의 연결(`divider_px`·`inner_rect`에서 부르는 `border_inset_rect`·`bell_pending`)은 앱을 띄워야 해서 시험하지 못했고, 계산은 모두 `pane_border`·`paneborder`의 순수 함수 시험이 지킨다. 칸이 하나인지는 "바깥 사각형이 내용 영역 전체와 같은가"로 판단한다(`border_inset_rect`): 칸 제목 막대처럼 칸 사각형을 따로 줄이는 기능이 들어오면 이 판단을 같이 고쳐야 한다
+- 0.106.0에서 풀기: 없음(설정이 없으면 이 기능은 아무것도 바꾸지 않는다)
+
 ## 124. 스크롤 막대의 폭·색·둥글기·트랙을 바꿀 수 없다
 
 - 언제: 2026-11-28, #917. 0.106.0 뒤 main까지의 동작이다. 화면 모양을 kitty와 견준 조사에서 골랐다

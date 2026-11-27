@@ -40,10 +40,10 @@ pub(super) struct GpuFrame<'a> {
     pub handles: &'a [crate::pane_drag::Look],
     /// 끌어다 놓을 자리 미리 보기: 놓일 칸의 바깥 사각형과 쪽
     pub drop_preview: Option<(Rect, crate::split::Direction)>,
-    pub dividers: &'a [Rect],
+    /// 칸 테두리와 경계선(#915)
+    pub border: &'a crate::pane_border::Plan,
     /// 커서 흔적(`cursor-trail`, #891): 칸마다 그릴 흔적과 다시 그릴 칸
     pub trail: &'a crate::cursor_trail::Step,
-    pub divider_color: bt_core::Rgb,
     pub dim_alpha: u8,
     pub dim_fill: bt_core::Rgb,
     pub split: bool,
@@ -132,9 +132,8 @@ impl App {
             resize_overlays,
             handles,
             drop_preview,
-            dividers,
+            border,
             trail,
-            divider_color,
             dim_alpha,
             dim_fill,
             split,
@@ -409,9 +408,7 @@ impl App {
                         tabbar::draw_progress(ui!(), &theme, v.outer.x, v.outer.y, v.outer.w, p, vm.stroke * 3);
                     }
                 }
-                for d in dividers {
-                    ui!().fill_rect(d.x, d.y, d.w, d.h, divider_color);
-                }
+                border.draw(ui!());
                 for (v, look) in views.iter().zip(handles) {
                     crate::pane_drag::draw_handle(ui!(), v.outer, *look, theme.foreground, scale);
                 }

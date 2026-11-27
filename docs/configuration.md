@@ -283,7 +283,16 @@ config-file = ?~/.config/b-terminal/local   # ?가 붙으면 없어도 된다
 | `unfocused-split-opacity` | `0.15`~`1` | `0.7` | 화면을 나눴을 때 고르지 않은 칸의 불투명도. 낮을수록 흐립니다 |
 | `unfocused-split-fill` | 색 값 | 바탕색 | 고르지 않은 칸을 덮는 색 |
 | `split-divider-color` | 색 값 | 바탕색과 글자색 사이 | 칸 사이 경계선 색 |
+| `window-border-width` | 길이(`0.5pt`·`2px`, 단위가 없으면 pt) | 정하지 않음 | 칸 테두리 두께(kitty `window_border_width`). 정하지 않으면 칸 경계선을 지금처럼 그립니다(배율 1픽셀 안팎). pt는 화면 배율을 곱해 반올림하고 0보다 크면 한 픽셀은 남깁니다. 음수는 0, `0`이면 테두리도 칸 사이 틈도 없습니다. 최소 테두리에서는 칸 사이 틈이 `2 × 두께`입니다(칸마다 자기 쪽 절반을 그립니다). 그래서 두께를 정하면 칸 크기가 지금과 달라지고 PTY 크기가 바뀝니다 |
+| `draw-minimal-borders` | `true` / `false` | `true` | `true`는 이웃 칸과 맞닿은 쪽만, `false`는 칸마다 둘레 전체에 두릅니다(kitty `draw_minimal_borders`). 전체 테두리는 칸 사이 틈이 없고(이웃 칸 테두리가 맞붙음) 글자 자리가 두께만큼 줄어듭니다. 칸이 하나뿐이면 `draw-window-borders-for-single-window`가 켜져야 그립니다 |
+| `window-border-radius` | 길이(`6px`·`4pt`) | `0pt` | 전체 테두리의 모서리 반지름(kitty `window_border_radius`, kitty 0.49.0에서 생김). **`draw-minimal-borders = false`일 때만** 뜻이 있고 최소 테두리에서는 무시합니다. kitty 셰이더(`rounded_rect.slang`)와 같은 식으로 가장자리를 부드럽게 그립니다(그래서 1픽셀 두께는 옅게 보입니다). kitty는 둥근 선이 모서리 글자 칸을 덮을 수 있다며 패딩으로 비키라고 안내하지만, 여기서는 곡선이 글자 자리를 덮지 않게 글자 자리를 두께보다 조금 더(반지름 6px·두께 1px이면 3픽셀) 줄입니다 |
+| `draw-window-borders-for-single-window` | `true` / `false` | `false` | 칸이 하나여도 전체 테두리를 두릅니다(kitty `draw_window_borders_for_single_window`). 창이 앞에 있으면 고른 색, 뒤로 가면 안 고른 색입니다. 크게 보기 중의 칸도 한 칸으로 셉니다 |
+| `active-border-color` | 색 값 / `none` | 정하지 않음 | 고른 칸의 테두리 색(kitty `active_border_color`). 정하지 않으면 `split-divider-color`(없으면 지금 기본 경계선 색)라 고른 칸이 달라 보이지 않습니다. `none`이면 고른 칸도 안 고른 칸 색으로 그립니다. kitty 기본 초록(`#00ff00`)을 쓰지 않습니다 |
+| `inactive-border-color` | 색 값 | 정하지 않음 | 고르지 않은 칸의 테두리 색(kitty `inactive_border_color`). 정하지 않으면 `split-divider-color`. kitty 기본 `#cccccc`를 쓰지 않습니다 |
+| `bell-border-color` | 색 값 | 정하지 않음 | 키를 받지 않는 동안 벨이 울린 칸의 테두리 색(kitty `bell_border_color`). 그 칸을 고르면(창이 앞일 때) 돌아갑니다. 정하지 않으면 `inactive-border-color`와 같습니다. kitty 기본 `#ff5a00`을 쓰지 않습니다. `bell-features = border`의 노란 띠와는 따로입니다 |
 | `mouse-reset-on-shell` | `true` / `false` | `true` | b-terminal 키. 프로그램이 마우스 모드를 켠 채 끝나 셸로 돌아오면 끈다([문제 해결 1](troubleshooting.md#1-셸에-351535m35832m가-쏟아지고-command-not-found가-줄줄이-뜬다)) |
+
+칸 테두리 키(`window-border-width`부터 `bell-border-color`까지, #915)는 kitty 키를 `-`로 이어 받습니다. **`split-divider-color`와 함께 있을 때**: 칸 테두리 키로 정한 역할(고른 칸·안 고른 칸·벨)은 그 색이 이기고, 정하지 않은 역할은 `split-divider-color`(없으면 바탕색과 글자색 사이)를 씁니다. 칸 테두리 키를 하나도 정하지 않으면 지금까지처럼 `split-divider-color`로 경계선만 그립니다(픽셀이 같습니다). 칸 바깥 여백(`window_margin_width`)과 테두리 끌어 크기 바꾸기는 받지 않습니다(경계선 끌기는 그대로). kitty는 `window_margin_width`가 0이 아니면 최소 테두리를 무시하고 전체 테두리를 그리지만 여기에는 그 키가 없습니다.
 
 ### 받기만 하고 쓰지 않는 Ghostty 키
 
