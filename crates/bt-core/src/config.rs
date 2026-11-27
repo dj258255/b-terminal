@@ -728,6 +728,10 @@ pub struct Config {
     pub command: Option<String>,
     /// 첫 칸에만 쓰는 명령(Ghostty `initial-command`, #178). 없으면 `command`
     pub initial_command: Option<String>,
+    /// 시작할 때 읽는 kitty 세션 파일(kitty `startup_session`, #934). 없으면 쓰지 않는다. 상대 경로는 설정 폴더 기준
+    pub startup_session: Option<PathBuf>,
+    /// 명령줄 `--session`으로 정했는가(설정 파일의 값이 아님). 앱이 `-e`와 둘 다 있을 때 누가 이기는지 가린다. 설정 줄로는 바뀌지 않는다
+    pub startup_session_from_cli: bool,
     /// 명령이 끝나도 칸을 남기고 키를 누르면 닫는다(Ghostty `wait-after-command`, 기본 끔)
     pub wait_after_command: bool,
     /// 이 밀리초보다 짧게 끝나면 비정상으로 본다(Ghostty `abnormal-command-exit-runtime`, 기본 250)
@@ -1991,6 +1995,8 @@ impl Default for Config {
             mouse_hide_while_typing: false,
             command: None,
             initial_command: None,
+            startup_session: None,
+            startup_session_from_cli: false,
             wait_after_command: false,
             abnormal_command_exit_runtime: 250,
             initial_window: true,
@@ -3736,6 +3742,13 @@ impl Config {
             }
             "command" => self.command = Some(v.to_string()).filter(|s| !s.is_empty()),
             "initial-command" => self.initial_command = Some(v.to_string()).filter(|s| !s.is_empty()),
+            // kitty `startup_session`: 빈 값·`none`은 없음. `~`·`$변수`를 풀고 상대 경로는 설정 폴더 기준(#934)
+            "startup-session" => {
+                let cfg_dir = bterminal_config_path().parent().map(Path::to_path_buf).unwrap_or_default();
+                self.startup_session = crate::session_path::resolve_session_arg(v, &home(), &cfg_dir, &|k| {
+                    std::env::var(k).ok()
+                });
+            }
             "wait-after-command" => match parse_bool(v) {
                 Some(b) => self.wait_after_command = b,
                 None => bad(warnings),
@@ -4611,6 +4624,9 @@ impl Config {
         push("mouse-hide-while-typing", self.mouse_hide_while_typing.to_string());
         if let Some(c) = &self.initial_command {
             push("initial-command", c.clone());
+        }
+        if let Some(p) = &self.startup_session {
+            push("startup-session", p.display().to_string());
         }
         push("wait-after-command", self.wait_after_command.to_string());
         push(
@@ -8208,6 +8224,36 @@ mod tests {
         );
         assert_eq!(c.initial_command, None);
         assert_eq!(c.quit_after_last_window_closed_delay, None);
+    }
+
+    #[test]
+    fn startup_session_key_resolves_like_kitty() {
+        // 기본은 없음, none·빈 값도 없음
+        assert_eq!(Config::default().startup_session, None);
+        assert!(!Config::default().startup_session_from_cli);
+        for v in ["none", "NONE", ""] {
+            let c = Config::from_text(
+                &format!(
+                    "startup-session = /x/a.session
+startup-session = {v}
+"
+                ),
+                true,
+            );
+            assert_eq!(c.startup_session, None, "{v:?}는 앞에 정한 값을 지운다");
+            assert!(c.warnings.is_empty(), "{:?}", c.warnings);
+        }
+        let c = Config::from_text("startup-session = /work/a.kitty-session\n", true);
+        assert_eq!(c.startup_session, Some(PathBuf::from("/work/a.kitty-session")));
+        assert!(c.render().contains("startup-session = /work/a.kitty-session"));
+        // 상대 경로는 설정 폴더 기준
+        let c = Config::from_text("startup-session = sessions/dev.session\n", true);
+        let p = c.startup_session.expect("상대 경로도 읽힌다");
+        assert!(p.is_absolute(), "{p:?}");
+        assert!(p.ends_with("b-terminal/sessions/dev.session"), "{p:?}");
+        // ~는 집 폴더
+        let c = Config::from_text("startup-session = ~/s.session\n", true);
+        assert_eq!(c.startup_session, Some(home().join("s.session")));
     }
 
     #[test]

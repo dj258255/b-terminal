@@ -43,6 +43,11 @@ mod script_key;
 mod script_mouse;
 mod scrollback_store;
 mod secure_input;
+mod session_file;
+#[cfg(test)]
+mod session_file_tests;
+mod session_layout;
+mod session_start;
 mod shellint;
 mod split;
 mod startup;
@@ -67,6 +72,7 @@ const USAGE: &str =
 
 설정: ~/.config/b-terminal/config (Ghostty와 같은 문법). 테마 914개를 넣어 두었습니다(--list-themes).
 --config-default-files=false: 위 기본 설정 파일을 읽지 않습니다(--config-file로 준 파일은 읽습니다).
+--session <파일>: kitty 세션 파일(탭·칸·폴더·명령)로 시작합니다. none이면 설정의 startup-session도 쓰지 않습니다. 상대 경로는 설정 폴더 기준입니다.
 --<설정 키>=<값>: 설정 파일의 그 키를 덮어씁니다(예: --font-size=20). 기본 설정 파일 다음, --config-file 앞에 적용합니다.";
 
 /// 명령줄에서 읽은 것
@@ -79,6 +85,8 @@ struct Cli {
     default_files: bool,
     /// `--키=값` 설정 덮어쓰기(Ghostty `loadCliArgs`, #743). 값 없는 `--키`는 `true`
     settings: Vec<(String, String)>,
+    /// `--session <파일>`(kitty, #934): 시작 배치 파일. `none`이면 설정의 `startup-session`도 쓰지 않는다
+    session: Option<String>,
     /// 설정 키가 아니라 무시한 인자(Ghostty의 "invalid field" 진단). 앱은 그대로 뜬다
     warnings: Vec<String>,
 }
@@ -103,6 +111,8 @@ fn parse_args(args: impl Iterator<Item = String>) -> Result<Cli, String> {
             }
             v if v.starts_with("--config-file=") => cli.config_file = Some(v["--config-file=".len()..].into()),
             "--show-config" => cli.show_config = true,
+            "--session" => cli.session = Some(args.next().ok_or("--session 뒤에 파일이 필요합니다")?),
+            v if v.starts_with("--session=") => cli.session = Some(v["--session=".len()..].to_string()),
             // 명령줄 전용 bool(Ghostty). 값 없이 쓰면 켬
             "--config-default-files" => cli.default_files = true,
             v if v.starts_with("--config-default-files=") => {
@@ -129,6 +139,17 @@ fn parse_args(args: impl Iterator<Item = String>) -> Result<Cli, String> {
         }
     }
     Ok(cli)
+}
+
+/// `--session` 값을 설정 `startup-session` 덮어쓰기로 바꿔 넣는다(경로 풀기도 설정과 같은 함수). `-`(표준 입력)은 받지 않는다(#934)
+fn apply_session_arg(cli: &mut Cli) {
+    match cli.session.take() {
+        Some(s) if s.trim() == "-" => cli
+            .warnings
+            .push("명령줄: --session -(표준 입력)은 지원하지 않아 무시했습니다".into()),
+        Some(s) => cli.settings.push(("startup-session".to_string(), s)),
+        None => {}
+    }
 }
 
 /// macOS가 어두운 모드인가(`theme = light:…,dark:…`에서 고를 쪽). 모르면 어두운 쪽
@@ -170,12 +191,22 @@ fn main() -> anyhow::Result<()> {
             return Ok(());
         }
     };
+    let mut cli = cli;
+    apply_session_arg(&mut cli);
+    let session_from_cli = cli.settings.iter().any(|(k, _)| k == "startup-session");
     let mut config = bt_core::Config::load_full(
         cli.config_file.as_deref(),
         system_is_dark(),
         cli.default_files,
         &cli.settings,
     );
+    // 명령줄 `--session`(경로가 있는 것)은 `-e`보다 앞선다: 같이 준 프로그램은 무시한다(kitty `--session`)
+    config.startup_session_from_cli = session_from_cli && config.startup_session.is_some();
+    if config.startup_session_from_cli && cli.first.program.take().is_some() {
+        cli.first.args.clear();
+        cli.warnings
+            .push("명령줄: --session을 주면 -e 프로그램은 무시합니다(kitty와 같음)".into());
+    }
     config.warnings.splice(0..0, cli.warnings.iter().cloned());
     if cli.show_config {
         for src in &config.sources {
@@ -328,6 +359,33 @@ mod tests {
         assert_eq!(c.config_file.as_deref(), Some(std::path::Path::new("/tmp/x")));
         assert!(USAGE.contains("--config-default-files"));
         assert!(USAGE.contains("--<설정 키>=<값>"));
+    }
+
+    #[test]
+    fn session_flag_becomes_startup_session_setting() {
+        let cli = |v: &[&str]| parse_args(v.iter().map(|s| s.to_string()));
+        assert_eq!(
+            cli(&["--session", "a.session"]).unwrap().session.as_deref(),
+            Some("a.session")
+        );
+        assert_eq!(cli(&["--session=none"]).unwrap().session.as_deref(), Some("none"));
+        assert!(cli(&["--session"]).is_err(), "값이 없으면 오류");
+        assert!(cli(&[]).unwrap().session.is_none());
+        // 설정 덮어쓰기로 바뀐다. --session=none도 설정의 startup-session을 지우는 줄이 된다
+        let mut c = cli(&["--session", "~/a.session", "--font-size=20"]).unwrap();
+        apply_session_arg(&mut c);
+        assert!(c.session.is_none());
+        let kv = |k: &str, v: &str| (k.to_string(), v.to_string());
+        assert_eq!(
+            c.settings,
+            vec![kv("font-size", "20"), kv("startup-session", "~/a.session")]
+        );
+        // 표준 입력은 받지 않고 알린다
+        let mut c = cli(&["--session", "-"]).unwrap();
+        apply_session_arg(&mut c);
+        assert!(c.settings.is_empty());
+        assert!(c.warnings[0].contains("표준 입력"), "{:?}", c.warnings);
+        assert!(USAGE.contains("--session"));
     }
 
     #[test]

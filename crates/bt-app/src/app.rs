@@ -30,6 +30,8 @@ mod script;
 #[cfg(target_os = "macos")]
 pub use script::install as install_scripting;
 mod shader_inputs;
+/// kitty 세션 파일로 시작하기(#934)
+mod startup_session;
 
 use crate::broadcast;
 use crate::icon;
@@ -8741,6 +8743,15 @@ impl ApplicationHandler<UserEvent> for App {
                 self.w.gfx = None;
                 self.last_focused = None;
                 self.on_last_window_closed(event_loop, true);
+                return;
+            }
+            // kitty 세션 파일(#934): 정했으면 이 배치로 시작한다. 창 상태 복원과 initial-command보다 앞선다(ADR-104)
+            if let Some(path) = crate::session_start::startup_session_to_use(
+                self.config.startup_session.as_deref(),
+                self.config.startup_session_from_cli,
+                first.program.is_some() || first.cwd.is_some(),
+            ) && self.open_startup_session(event_loop, &path)
+            {
                 return;
             }
             // 창 상태 복원(#94): -e·--cwd로 띄운 것이 아니고 initial-command도 없으면 지난번 창·탭·분할을 되살린다
