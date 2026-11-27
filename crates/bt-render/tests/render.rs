@@ -60,6 +60,7 @@ fn cells(s: &Screen) -> Vec<DrawCell> {
                 .flags
                 .contains(CellFlags::FAINT)
                 .then_some(Theme::default().faint_opacity),
+            mark: None,
         })
         .collect();
     bt_render::cluster::mark(&mut cells, s.cols, |i| {
@@ -969,6 +970,7 @@ fn blank(ch: char) -> DrawCell {
         underline_color: None,
         hidden: false,
         faint: None,
+        mark: None,
     }
 }
 
@@ -2274,6 +2276,7 @@ fn faint_color_is_applied_last_after_selection_and_min_contrast() {
         fg: Rgb::new(200, 200, 200),
         bg,
         faint: Some(0.5),
+        mark: None,
         ..blank('a')
     };
     // 흐린 칸: 글자색을 바탕 쪽으로
@@ -2293,6 +2296,7 @@ fn faint_color_is_applied_last_after_selection_and_min_contrast() {
     // 흐리지 않으면 그대로
     let plain = DrawCell {
         faint: None,
+        mark: None,
         ..sel.clone()
     };
     assert_eq!(bt_render::text_color(&view(1.0), &plain, &mut None), sel_fg);
@@ -2301,6 +2305,7 @@ fn faint_color_is_applied_last_after_selection_and_min_contrast() {
         fg: Rgb::new(120, 120, 120),
         bg,
         faint: Some(0.2),
+        mark: None,
         ..blank('a')
     };
     assert!(Rgb::new(120, 120, 120).contrast(bg) >= 3.0);

@@ -1,6 +1,7 @@
 //! PTY와 VT 해석, 알림 스캐너, 키 → 바이트(ADR-001). 엔진 타입을 밖으로 내보내지 않는다
 
 mod color;
+pub mod command_marks;
 pub mod copy_format;
 pub mod csi_query;
 pub mod dcs;
@@ -16,7 +17,9 @@ pub mod kitty_notify;
 pub mod kitty_unicode;
 pub mod latency;
 pub mod link_probe;
+pub mod link_regex;
 pub mod links;
+pub mod marks;
 pub mod mouse_shape;
 pub mod notify;
 #[doc(hidden)]

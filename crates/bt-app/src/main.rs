@@ -9,6 +9,7 @@ mod blur;
 mod broadcast;
 mod cliact;
 mod cliinfo;
+mod cmd_marks;
 mod context_menu;
 mod control;
 mod copy;

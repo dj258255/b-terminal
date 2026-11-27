@@ -123,6 +123,12 @@ pub enum Action {
     ScrollToRow(usize),
     /// 고른 곳이 보이게 스크롤(Ghostty `scroll_to_selection`)
     ScrollToSelection,
+    /// kitty `toggle_marker <종류> <색 번호> <글>...`(#929): 이 칸의 마커를 켜거나(같은 명세면) 끈다
+    ToggleMarker(bt_term::marks::MarkerSpec),
+    /// kitty `remove_marker`
+    RemoveMarker,
+    /// kitty `scroll_to_mark [prev|next] [색 번호]`: (이전인가, 색 번호 0~3)
+    ScrollToMark(bool, u8),
     /// 그 글로 찾기를 시작한다. 이미 찾는 중이면 바꾸고, 빈 글이면 찾기를 취소한다(막대는 둔다, Ghostty `search:글`)
     Search(String),
     /// 고른 글로 찾기(Ghostty `search_selection`)
@@ -546,6 +552,7 @@ const VOID_ACTIONS: &[&str] = &[
     "toggle_mouse_reporting",
     "toggle_readonly",
     "clear_broadcast_groups",
+    "remove_marker",
 ];
 
 /// 동작 이름을 읽는다. `None`이면 unbind
@@ -736,6 +743,16 @@ pub fn parse_action(s: &str) -> Result<Option<Action>, String> {
                 .ok_or("scroll_to_row:줄 번호(스크롤백 맨 위가 0)")?,
         ),
         "scroll_to_selection" => Action::ScrollToSelection,
+        "toggle_marker" => Action::ToggleMarker(
+            bt_term::marks::MarkerSpec::parse(arg.unwrap_or(""))
+                .map_err(|e| format!("toggle_marker:종류 색번호 글...({e})"))?,
+        ),
+        "remove_marker" => Action::RemoveMarker,
+        "scroll_to_mark" => {
+            let (prev, mark) = bt_term::marks::parse_scroll_args(arg.unwrap_or(""))
+                .map_err(|e| format!("scroll_to_mark:[prev|next] [색 번호]({e})"))?;
+            Action::ScrollToMark(prev, mark)
+        }
         // 글은 그대로 받는다(Ghostty처럼 이스케이프를 풀지 않는다). 빈 글은 찾기 취소
         "search" => Action::Search(text()?.to_string()),
         "search_selection" => Action::SearchSelection,
@@ -2086,6 +2103,38 @@ mod tests {
         assert!(parse_action("scroll_to_row").is_err(), "인자가 필요하다");
         assert!(parse_action("scroll_to_row:-1").is_err(), "usize");
         assert!(parse_action("scroll_to_row:abc").is_err());
+        // kitty 마커 동작(#929)
+        let spec = bt_term::marks::MarkerSpec::parse("itext 1 ERROR").unwrap();
+        assert_eq!(
+            parse_action("toggle_marker:itext 1 ERROR").unwrap(),
+            Some(Action::ToggleMarker(spec))
+        );
+        assert!(matches!(
+            parse_action(r"toggle_marker:iregex 1 \\bERROR\\b 2 \\bWARNING\\b").unwrap(),
+            Some(Action::ToggleMarker(s)) if s.groups().len() == 2 && s.groups()[0].1 == r"\bERROR\b"
+        ));
+        assert!(parse_action("toggle_marker").is_err());
+        assert!(parse_action("toggle_marker:function a.py").is_err(), "함수 마커는 없다");
+        assert!(parse_action("toggle_marker:text 1").is_err(), "짝이 안 맞음");
+        assert_eq!(parse_action("remove_marker").unwrap(), Some(Action::RemoveMarker));
+        assert!(parse_action("remove_marker:1").is_err(), "값 없는 동작");
+        assert_eq!(
+            parse_action("scroll_to_mark").unwrap(),
+            Some(Action::ScrollToMark(true, 0))
+        );
+        assert_eq!(
+            parse_action("scroll_to_mark:next").unwrap(),
+            Some(Action::ScrollToMark(false, 0))
+        );
+        assert_eq!(
+            parse_action("scroll_to_mark:prev 2").unwrap(),
+            Some(Action::ScrollToMark(true, 2))
+        );
+        assert_eq!(
+            parse_action("scroll_to_mark:3").unwrap(),
+            Some(Action::ScrollToMark(true, 3))
+        );
+        assert!(parse_action("scroll_to_mark:sideways").is_err());
         assert_eq!(
             parse_action("scroll_to_selection").unwrap(),
             Some(Action::ScrollToSelection)

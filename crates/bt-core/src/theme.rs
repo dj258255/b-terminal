@@ -190,6 +190,35 @@ impl SearchColors {
     }
 }
 
+/// kitty 마커 색(`mark1_foreground`~`mark3_background`, #929). 마커 번호 1~3
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MarkColors {
+    pub foreground: [Rgb; 3],
+    pub background: [Rgb; 3],
+}
+
+impl Default for MarkColors {
+    /// kitty `definition.py`의 기본: 검정 글자에 #98d3cb·#f2dcd3·#f274bc 바탕
+    fn default() -> Self {
+        Self {
+            foreground: [Rgb::new(0, 0, 0); 3],
+            background: [
+                Rgb::new(0x98, 0xd3, 0xcb),
+                Rgb::new(0xf2, 0xdc, 0xd3),
+                Rgb::new(0xf2, 0x74, 0xbc),
+            ],
+        }
+    }
+}
+
+impl MarkColors {
+    /// 마커 번호(1~3, 그 밖은 가까운 쪽으로 맞춘다)의 (글자색, 바탕색)
+    pub fn pick(&self, mark: u8) -> (Rgb, Rgb) {
+        let i = usize::from(mark.clamp(1, 3)) - 1;
+        (self.foreground[i], self.background[i])
+    }
+}
+
 /// 설정이나 테마 파일이 직접 정한 색(#838). 정하지 않은 커서색·커서 글자색·고름 바탕·고름 글자는
 /// 그릴 때 지금 글자색·바탕색(OSC 10·11 반영)에서 나온다(Ghostty `generic.zig`: `cursor-color`·`cursor-text`·`selection-*`의 기본은 정하지 않음)
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -221,6 +250,9 @@ pub struct Theme {
     pub faint_opacity: f32,
     /// 찾기에 맞은 칸의 색
     pub search: SearchColors,
+    /// kitty 마커 색(#929)
+    #[serde(default)]
+    pub marks: MarkColors,
     /// 16~255번 색(240개). 비어 있으면 xterm 표를 그대로 쓴다. `palette-generate`로 만들었거나
     /// `palette = 100=#...`로 바꾼 값이 있을 때만 채운다
     #[serde(default)]
@@ -270,6 +302,7 @@ impl Theme {
             bold_color: None,
             faint_opacity: 0.5,
             search: SearchColors::default(),
+            marks: MarkColors::default(),
             extended: Vec::new(),
             explicit: ExplicitColors::default(),
         }

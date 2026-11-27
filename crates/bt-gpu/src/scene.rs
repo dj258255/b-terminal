@@ -381,6 +381,20 @@ impl Scene {
         }
         self.glyphs_pre = self.glyphs.len();
 
+        // 3.5) 명령 표시(#927): CPU `draw_rows`의 2.9와 같은 막대(글자 위, 커서 아래)
+        for row in 0..view.rows {
+            if let Some(color) = view.cells.get(row * view.cols).and_then(|c| c.mark) {
+                self.rect(
+                    0,
+                    row as i32 * ch,
+                    bt_render::mark_bar_width(m.width),
+                    m.height,
+                    color,
+                    self.solid_alpha(color),
+                );
+            }
+        }
+
         // 4) 커서와 조합 중 글
         if let Some(cur) = view.cursor {
             if cur.row < view.rows && cur.col < view.cols {
