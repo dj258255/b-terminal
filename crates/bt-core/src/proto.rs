@@ -233,6 +233,13 @@ pub struct TabInfo {
     /// 셸 통합(OSC 133 D)이 알린 마지막 명령의 종료 코드. 명령 글·출력은 싣지 않는다
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_exit_code: Option<i32>,
+    /// 탭이 든 탭 묶음의 이름(#952). 이름을 붙이지 않은 묶음은 기본 이름. 묶음에 들지 않으면 필드가 없다.
+    /// 읽기 전용이다: 소켓으로 묶음을 만들거나 바꾸는 명령은 없다
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group: Option<String>,
+    /// 그 묶음이 접혀 있는지. 펴져 있거나 묶음이 없으면 필드가 없다
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub group_collapsed: bool,
 }
 
 /// 소켓으로 내보내는 상태 설명·알림 제목의 글자 수 상한
@@ -504,6 +511,28 @@ mod tests {
             ..t
         };
         let back: TabInfo = serde_json::from_str(&serde_json::to_string(&new).unwrap()).unwrap();
+        assert_eq!(back, new);
+    }
+
+    /// #952: 묶음 필드는 없으면 내보내지 않고, 옛 한 줄도 그대로 읽히며, 있으면 왕복한다
+    #[test]
+    fn tab_info_group_fields_are_optional_and_round_trip() {
+        let old = r#"{"id":3,"title":"zsh","active":true,"unread":false,"cwd":null,"process":"zsh"}"#;
+        let t: TabInfo = serde_json::from_str(old).unwrap();
+        assert_eq!((t.group.clone(), t.group_collapsed), (None, false));
+        let line = serde_json::to_string(&t).unwrap();
+        assert!(!line.contains("group"), "{line}");
+        let new = TabInfo {
+            group: Some("빌드".into()),
+            group_collapsed: true,
+            ..t
+        };
+        let line = serde_json::to_string(&new).unwrap();
+        assert!(
+            line.contains(r#""group":"빌드""#) && line.contains(r#""group_collapsed":true"#),
+            "{line}"
+        );
+        let back: TabInfo = serde_json::from_str(&line).unwrap();
         assert_eq!(back, new);
     }
 

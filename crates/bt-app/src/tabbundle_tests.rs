@@ -320,3 +320,18 @@ fn saved_bundles_keep_only_used_ones_and_load_distrusts_the_file() {
     assert_eq!(tabs, [Some(4), None, None, None]);
     assert_eq!(reg.iter().map(|b| b.id).collect::<Vec<_>>(), [4]);
 }
+
+/// #952: 제어 소켓이 내보낼 묶음 이름·접힘. 이름 없는 묶음은 기본 이름, 등록부에 없는 번호와 묶음 없는 탭은 없음.
+/// 이름의 보이지 않는 서식 글자는 소켓 규칙대로 지운다
+#[test]
+fn socket_group_reports_name_and_collapsed_only_for_registered_bundles() {
+    let mut named = bundle(2, true);
+    named.name = "빌\u{200B}드".into();
+    let mut unnamed = bundle(1, false);
+    unnamed.name = String::new();
+    let reg = vec![unnamed, named];
+    assert_eq!(socket_group(None, &reg), (None, false));
+    assert_eq!(socket_group(Some(9), &reg), (None, false));
+    assert_eq!(socket_group(Some(1), &reg), (Some(DEFAULT_NAME.to_string()), false));
+    assert_eq!(socket_group(Some(2), &reg), (Some("빌드".to_string()), true));
+}

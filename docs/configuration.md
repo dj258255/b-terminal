@@ -680,7 +680,7 @@ b-terminal의 칸 나누기는 이진 분할 트리(좌우·위아래)와 칸 �
 
 | 명령 | 하는 일 |
 |---|---|
-| `ping` `list` `new` `focus` `quick` `reload-config` | 살아 있는지, 칸 목록(`--json`이면 `status`·`status_text`·`status_progress`·`last_exit_code`도: 칸의 프로그램 상태와 마지막 명령의 종료 코드. 값이 없으면 필드가 없습니다), 새 탭·칸·창, 칸으로 가기, 퀵 터미널, 설정 다시 읽기 |
+| `ping` `list` `new` `focus` `quick` `reload-config` | 살아 있는지, 칸 목록(`--json`이면 `status`·`status_text`·`status_progress`·`last_exit_code`·`group`·`group_collapsed`도: 칸의 프로그램 상태, 마지막 명령의 종료 코드, 든 탭 묶음의 이름과 접힘. 값이 없으면 필드가 없습니다), 새 탭·칸·창, 칸으로 가기, 퀵 터미널, 설정 다시 읽기 |
 | `send` `run` `last` | 글 넣기, 명령 돌리고 결과 받기, 마지막 명령 결과(읽기 전용 칸은 `send`·`run` 거절) |
 | `read` `wait` `notify` | 화면 읽기, 글이 나올 때까지 기다리기, 알림 달기 |
 | `close` `close-tab` | 칸 / 칸이 든 탭(나뉜 칸 모두)을 확인 없이 닫기(AppleScript `close`·`close tab`과 같음) |
