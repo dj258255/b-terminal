@@ -1009,7 +1009,7 @@
 - 시험: `tabgeom`의 순수 계산 시험(기본값이 옛 위쪽 탭 줄과 같음, kitty의 위·아래 여백 식, 칸과 탭 줄이 겹치지 않음), `edge_and_margin_keys_follow_kitty`(읽기·`+show-config` 왕복·경고), `default_geometry_draws_the_same_pixels_as_the_old_top_bar`(설정이 없으면 픽셀 같음), `bottom_bar_is_drawn_where_it_is_clicked`(위·아래·여백마다 탭 줄 밖 픽셀이 그대로이고 그린 탭 자리를 누르면 그 탭)
 - 한계: 알림 띠·찾기 막대·링크 주소 띠 같은 덧그림은 창 맨 아래에 놓이므로 `bottom`이면 잠시 탭 줄 위에 겹친다. 좌우 여백의 색은 kitty처럼 이웃 탭 색을 따르지 않고 탭 줄 바탕색이다. 실제 창(그려진 모양, 마우스)은 이 기계의 PTY 막힘 때문에 확인하지 않았다
 
-## 121. 글자를 바탕에 섞는 곡선을 고를 수 없다(`text-composition-strategy`)
+## 120. 글자를 바탕에 섞는 곡선을 고를 수 없다(`text-composition-strategy`)
 
 - 언제: 2026-11-27, #911. 0.106.0 뒤 main까지의 동작이다. 화면 모양을 kitty·Ghostty와 견준 조사에서 골랐다
 - 증상: 밝은 바탕의 어두운 글자는 가늘고 어두운 바탕의 밝은 글자는 굵어 보이는 정도가 테마마다 다른데, 굵기를 맞출 설정이 `alpha-blending`(섞는 색 공간)뿐이었다. 설정에 `text-composition-strategy = platform`을 적으면 알 수 없는 키라는 경고가 나왔다
