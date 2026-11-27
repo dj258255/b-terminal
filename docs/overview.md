@@ -10,7 +10,7 @@ b-terminal은 Ghostty 같은 순수 Rust 터미널 에뮬레이터입니다. PTY
 
 AI 에이전트를 다루는 화면(에이전트 목록·상태·훅·구독 사용량)은 이 저장소의 일이 아닙니다. 그것은 [b-studio](https://github.com/dj258255/b-studio)가 맡고, b-terminal 안에서 도는 프로그램 중 하나입니다([ADR-005](decisions.md#adr-005-b-terminal은-순수-터미널이고-ai-작업-화면은-b-studio가-맡는다)). 기능을 넣기 전에 "Ghostty에도 있을 기능인가"로 가립니다.
 
-다만 Claude Code 같은 AI CLI가 쓰는 표준 신호는 빠짐없이 받습니다. Shift+Enter(kitty 키보드 프로토콜), 데스크톱 알림(OSC 9·99·777), 진행 표시(OSC 9;4), 프로그램 상태(OSC 7501: 일하는 중·기다림·끝남을 탭에 표시), 클립보드 쓰기(OSC 52), 셸 통합입니다. 이것은 터미널이 할 일입니다([ADR-006](decisions.md#adr-006-ghostty는-본보기일-뿐-기대지-않는다-ai-cli가-가장-잘-도는-우리-터미널), [조사 기록](research/2026-11-06-agentic-terminal.md)).
+다만 Claude Code 같은 AI CLI가 쓰는 표준 신호는 빠짐없이 받습니다. Shift+Enter(kitty 키보드 프로토콜), 데스크톱 알림(OSC 9·99·777), 진행 표시(OSC 9;4), 프로그램 상태(OSC 7501: 일하는 중·기다림·끝남을 탭에 표시. iTerm2의 OSC 21337 세션 상태도 같은 길로 받음), 클립보드 쓰기(OSC 52), 셸 통합입니다. 이것은 터미널이 할 일입니다([ADR-006](decisions.md#adr-006-ghostty는-본보기일-뿐-기대지-않는다-ai-cli가-가장-잘-도는-우리-터미널), [조사 기록](research/2026-11-06-agentic-terminal.md)).
 
 ## 누구를 위한가
 

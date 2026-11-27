@@ -244,6 +244,67 @@ pub fn parse(body: &[u8]) -> Option<Command> {
     }))
 }
 
+/// iTerm2 세션 상태(OSC 21337, #926)의 `21337;` 뒤 본문 하나를 7501의 뿌리 기록 보고로 바꾼다.
+/// <https://iterm2.com/documentation-session-status.html>: `status=글;indicator=색;status-color=색;detail=글`을 `;`로 잇는다.
+/// 아는 키는 `status`·`detail`이고 나머지(`indicator`·`status-color` 포함)는 모르는 키처럼 건너뛴다(iTerm2도 모르는 키는 무시한다).
+/// 같은 키가 또 오면 마지막 것을 쓴다. 바뀜표:
+///
+/// | `status` | 보고 |
+/// |---|---|
+/// | 없음(키가 없다) | 버린다 |
+/// | 빈 글(지우기) | `idle`(탭 표시가 사라지고 알림도 없다) |
+/// | `waiting`(대소문자 무시) | `blocked`(종류 없음) |
+/// | `idle`(대소문자 무시) | `idle` |
+/// | `working`(대소문자 무시) | `working` |
+/// | 그 밖의 글 | `working`, 글은 `title` |
+///
+/// `detail`은 `msg`로 간다. 글이 너무 길거나(7501의 `title`·`msg` 상한) 제어 문자·잘못된 UTF-8이 있으면 보고 전체를 버린다
+pub fn parse_iterm2(body: &[u8]) -> Option<Report> {
+    if body.len() > MAX_BODY {
+        return None;
+    }
+    let mut status: Option<&[u8]> = None;
+    let mut detail: Option<&[u8]> = None;
+    for part in body.split(|&b| b == b';') {
+        let Some(eq) = part.iter().position(|&b| b == b'=') else {
+            continue;
+        };
+        match &part[..eq] {
+            b"status" => status = Some(&part[eq + 1..]),
+            b"detail" => detail = Some(&part[eq + 1..]),
+            _ => {}
+        }
+    }
+    let text = |v: &[u8], max: usize| -> Option<Option<String>> {
+        let s = std::str::from_utf8(v).ok()?;
+        if s.chars().any(char::is_control) || s.chars().count() > max {
+            return None;
+        }
+        Some(Some(s.to_string()).filter(|s| !s.is_empty()))
+    };
+    let status = text(status?, MAX_TITLE)?;
+    let msg = match detail {
+        Some(v) => text(v, MAX_MSG)?,
+        None => None,
+    };
+    let (state, title) = match status.as_deref() {
+        None => (State::Idle, None),
+        Some(s) if s.eq_ignore_ascii_case("waiting") => (State::Blocked, None),
+        Some(s) if s.eq_ignore_ascii_case("idle") => (State::Idle, None),
+        Some(s) if s.eq_ignore_ascii_case("working") => (State::Working, None),
+        Some(_) => (State::Working, status),
+    };
+    Some(Report {
+        state,
+        id: None,
+        kind: None,
+        progress: None,
+        app: None,
+        title,
+        msg: if state == State::Idle { None } else { msg },
+    })
+}
+
 /// 터미널 밖(데스크톱 알림 등)에 보일 글을 다듬는다: 제어 문자는 공백으로, 방향을 바꾸는 글자와 보이지 않는 서식 글자는 지우고
 /// 앞뒤 공백을 자른 뒤 글자 수를 자른다. 글은 마크업이 아니라 글자 그대로 쓴다
 pub fn safe_text(s: &str, max: usize) -> String {
@@ -447,6 +508,62 @@ mod tests {
         assert_eq!(r.summary_title().as_deref(), Some("Plan"));
         r.apply(report("state=clear"));
         assert_eq!(r.summary_title(), None);
+    }
+
+    fn iterm(body: &str) -> Option<Report> {
+        parse_iterm2(body.as_bytes())
+    }
+
+    #[test]
+    fn iterm2_documented_examples_become_root_reports() {
+        // 문서의 예: 주황 점과 함께 Working
+        let r = iterm("status=Working;indicator=#ffa500").expect("보고");
+        assert_eq!((r.state, r.id, r.title, r.msg), (State::Working, None, None, None));
+        // 문서의 지우기 예: 모든 키를 빈 값으로
+        let r = iterm("status=;indicator=;status-color=").expect("보고");
+        assert_eq!(r.state, State::Idle);
+        assert_eq!(iterm("status=Waiting").map(|r| r.state), Some(State::Blocked));
+        assert_eq!(iterm("status=IDLE").map(|r| r.state), Some(State::Idle));
+        let r = iterm("status=Reviewing;detail=3 files;color=x").expect("보고");
+        assert_eq!(
+            (r.state, r.title.as_deref(), r.msg.as_deref()),
+            (State::Working, Some("Reviewing"), Some("3 files"))
+        );
+        // 같은 키는 마지막 것, 값 안의 `=`는 글자
+        assert_eq!(
+            iterm("status=Idle;status=Waiting;detail=a=b").and_then(|r| r.msg),
+            Some("a=b".into())
+        );
+    }
+
+    #[test]
+    fn iterm2_report_replaces_the_root_record_of_7501_and_the_later_one_wins() {
+        let mut rec = Records::default();
+        rec.apply(report("state=working:progress=40"));
+        let alert = rec
+            .apply(iterm("status=Waiting;detail=승인 필요").unwrap())
+            .expect("blocked 알림");
+        assert_eq!((alert.state, alert.msg.as_deref()), (State::Blocked, Some("승인 필요")));
+        assert_eq!(rec.len(), 1);
+        assert_eq!(rec.summary().map(|s| s.state), Some(State::Blocked));
+        rec.apply(report("state=working"));
+        assert_eq!(rec.summary().map(|s| s.state), Some(State::Working));
+        rec.apply(iterm("status=").unwrap());
+        assert_eq!(rec.summary(), None, "지우면 탭 표시가 없다");
+    }
+
+    #[test]
+    fn iterm2_bad_reports_are_dropped() {
+        assert!(iterm("indicator=#ffa500").is_none(), "status 키가 없다");
+        assert!(iterm("").is_none());
+        assert!(iterm("garbage").is_none());
+        assert!(iterm(&format!("status={}", "가".repeat(MAX_TITLE + 1))).is_none());
+        assert!(iterm(&format!("status=Working;detail={}", "a".repeat(MAX_MSG + 1))).is_none());
+        assert!(iterm("status=Wor\u{1b}king").is_none());
+        assert!(iterm("status=Working;detail=a\nb").is_none());
+        assert!(parse_iterm2(b"status=Work\xffing").is_none());
+        assert!(parse_iterm2(&[b"status=".as_slice(), &vec![b'a'; MAX_BODY]].concat()).is_none());
+        assert!(iterm(&format!("status={}", "가".repeat(MAX_TITLE))).is_some());
     }
 
     fn report(body: &str) -> Report {

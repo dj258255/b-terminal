@@ -789,6 +789,13 @@ impl Scanner {
             }
             return;
         }
+        // iTerm2 세션 상태(OSC 21337, #926): 7501의 뿌리 기록 보고와 같은 신호로 보낸다. 틀린 것은 조용히 버린다
+        if let Some(body) = raw.strip_prefix(b"21337;") {
+            if let Some(r) = crate::program_status::parse_iterm2(body) {
+                out.push((at, Signal::ProgramStatus(Box::new(r))));
+            }
+            return;
+        }
         // OSC 133은 `133;` 뒤가 2048바이트를 넘으면 명령 전체를 버린다(#822, Ghostty `captureTrailing(.fixed)`의 `MAX_BUF`).
         // 같은 OSC를 읽는 `133;A` 등의 옵션 신호와 아래의 옛 표지 모두 이 앞에서 걸러진다
         if raw.strip_prefix(b"133;").is_some_and(|t| t.len() > MAX_OSC133_TRAILING) {
@@ -1461,6 +1468,29 @@ mod tests {
         assert_eq!(s.feed(b"ne\x1b\\").len(), 1);
         // tmux 패스스루 안쪽은 조용하다(ADR-053)
         assert!(notes(b"\x1bPtmux;\x1b\x1b]7501;?\x07\x1b\\").is_empty());
+    }
+
+    #[test]
+    fn osc21337_makes_the_same_signal_as_7501_with_either_terminator() {
+        for tail in [&b"\x07"[..], b"\x1b\\"] {
+            let mut input = b"\x1b]21337;status=Working;indicator=#ffa500".to_vec();
+            input.extend_from_slice(tail);
+            let got = notes(&input);
+            assert!(
+                matches!(got.as_slice(), [Signal::ProgramStatus(r)] if r.state == crate::program_status::State::Working),
+                "{got:?}"
+            );
+        }
+        let got = notes(b"\x1b]21337;status=Waiting;detail=ok\x07");
+        assert!(
+            matches!(got.as_slice(), [Signal::ProgramStatus(r)] if r.state == crate::program_status::State::Blocked)
+        );
+        assert!(notes(b"\x1b]21337;indicator=red\x07").is_empty());
+        // C0는 스캐너가 본문에 넣지 않고(엔진과 같다), DEL·C1은 해석기가 버린다
+        assert!(notes(b"\x1b]21337;status=a\x7fb\x07").is_empty());
+        assert!(notes("\x1b]21337;status=a\u{85}b\x07".as_bytes()).is_empty());
+        assert!(notes(b"\x1b]21337\x07").is_empty());
+        assert!(notes(b"\x1b]213370;status=Working\x07").is_empty());
     }
 
     #[test]
