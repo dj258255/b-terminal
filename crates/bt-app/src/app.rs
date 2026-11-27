@@ -15,6 +15,7 @@ use winit::keyboard::ModifiersState;
 use winit::window::{CursorIcon, Window, WindowId};
 
 mod backdrop;
+mod copy_cmd;
 /// 제어 소켓의 칸 다루기 명령의 순수 판단(#858)
 mod ctl_cmd;
 mod gpu_frame;
@@ -275,23 +276,29 @@ impl Pane {
 
     /// 탭 제목 틀(`tab-title-template`)의 `{title}`: 벨 기호 없는 이름(`🔒`은 앞에 둔다). 벨은 틀의 `{bell_symbol}`이 맡는다(#910)
     fn plain_title_in(&self, tab_override: Option<&str>) -> String {
-        title_of(
-            tab_override.or(self.user_title.as_deref()),
-            &self.title,
-            self.fg_name.as_deref(),
-            false,
-            self.session.readonly(),
+        copy_mode_title(
+            title_of(
+                tab_override.or(self.user_title.as_deref()),
+                &self.title,
+                self.fg_name.as_deref(),
+                false,
+                self.session.readonly(),
+            ),
+            self.session.copy_mode_active(),
         )
     }
 
     /// 탭 제목을 덮어썼으면(`set_tab_title`, #207) 그것이 칸 제목보다 먼저다
     fn display_title_in(&self, tab_override: Option<&str>) -> String {
-        title_of(
-            tab_override.or(self.user_title.as_deref()),
-            &self.title,
-            self.fg_name.as_deref(),
-            self.bell,
-            self.session.readonly(),
+        copy_mode_title(
+            title_of(
+                tab_override.or(self.user_title.as_deref()),
+                &self.title,
+                self.fg_name.as_deref(),
+                self.bell,
+                self.session.readonly(),
+            ),
+            self.session.copy_mode_active(),
         )
     }
 }
@@ -362,6 +369,11 @@ fn titlebar_fill(
     chrome_bg: bt_core::Rgb,
 ) -> Option<(i32, i32, u32, u32, bt_core::Rgb)> {
     (reversed && top_inset > 0).then_some((0, 0, width, top_inset, chrome_bg))
+}
+
+/// 복사 모드 표시(#930): 모드 중인 칸의 제목 앞에 붙인다(탭 줄·창 제목). WezTerm도 탭 제목에 "Copy Mode"를 붙인다
+fn copy_mode_title(title: String, on: bool) -> String {
+    if on { format!("[복사 모드] {title}") } else { title }
 }
 
 /// 칸 제목(#124): 사람이 붙인 것 → 프로그램이 정한 것 → 전경 프로세스 이름 → "셸". 벨이 있으면 앞에 🔔
@@ -1821,6 +1833,11 @@ impl App {
     fn commit_text(&mut self, text: &str) {
         self.w.preedit.clear();
         self.reset_blink();
+        // 복사 모드 중에는 확정 글도 PTY(와 같은 묶음의 다른 칸)에 보내지 않는다(#930)
+        if self.copy_mode_on() {
+            self.request_redraw();
+            return;
+        }
         // 확인 막대가 떠 있으면 글을 어디에도 보내지 않는다(Enter·Esc만 받는다)
         if self.w.confirm.is_some() {
             self.request_redraw();
@@ -1918,6 +1935,10 @@ impl App {
             self.end_search();
         }
         self.w.selecting = false;
+        // 복사 모드는 그 칸의 것이다: 다른 칸으로 옮기면 나간다(#930)
+        if let Some(b) = before.filter(|b| Some(*b) != after) {
+            self.leave_copy_mode_of(b);
+        }
         if before == after || !self.w.focused {
             return;
         }
@@ -3069,7 +3090,8 @@ impl App {
     /// 확인 막대가 떠 있는 동안 지금 창의 입력기를 끈다(#721). 한국어 입력기는 Y·N 키를 조합으로 가져가 winit이
     /// `KeyboardInput`을 주지 않으므로, 끄면 그 키가 키로 와 `confirm_key`가 ⌘ 층 글자로 읽는다
     fn sync_confirm_ime(&mut self) {
-        let allowed = self.w.confirm.is_none();
+        // 복사 모드(#930)에서도 끈다: 글자 키(h j k l…)가 조합으로 사라지지 않고 키로 와야 하고, 조합 글자가 PTY에 섞이지 않는다
+        let allowed = self.w.confirm.is_none() && !self.copy_mode_on();
         if let Some(g) = self.w.gfx.as_ref() {
             g.window.set_ime_allowed(allowed);
         }
@@ -5642,6 +5664,9 @@ impl App {
             }
             Action::ToggleMarker(_) | Action::RemoveMarker | Action::ScrollToMark(..) => {
                 self.run_marker_action(&action);
+            }
+            Action::ActivateCopyMode | Action::CopyMode(_) => {
+                self.run_copy_mode_action(&action);
             }
             Action::Search(text) => self.search_with(&text),
             Action::SearchSelection => {
@@ -9096,6 +9121,10 @@ impl ApplicationHandler<UserEvent> for App {
                     if !overlay && self.active_pane().is_some_and(|t| t.session.readonly()) {
                         return;
                     }
+                    // 복사 모드 중에는 조합 글자를 그리지 않는다(#930)
+                    if self.copy_mode_on() {
+                        return;
+                    }
                     // 조합을 시작하면 고른 영역을 지운다(Ghostty `selection-clear-on-typing`: preedit 시작도 입력으로 본다)
                     if self.config.selection_clear_on_typing
                         && !text.is_empty()
@@ -9151,7 +9180,12 @@ impl ApplicationHandler<UserEvent> for App {
                     return;
                 }
                 // 키 묶음(키 순서 포함, #106): 앞 키는 기다리고, 순서가 깨지면 쌓은 키를 그대로 보낸다
-                let trigger = keys::trigger(&event, self.mods);
+                self.sync_copy_mode_table();
+                let trigger = if self.copy_mode_on() {
+                    keys::trigger_latin(&event, self.mods)
+                } else {
+                    keys::trigger(&event, self.mods)
+                };
                 let mut modes = self.active_pane().map(|t| t.session.modes()).unwrap_or_default();
                 // IME 조합 중에 눌린 키는 modifyOtherKeys로 바꾸지 않는다(확정 글자만 PTY로 간다, #312)
                 if !self.w.preedit.is_empty() {
