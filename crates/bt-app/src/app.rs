@@ -1448,8 +1448,43 @@ impl App {
     fn content_rect(&self) -> Rect {
         let Some(g) = &self.w.gfx else { return Rect::default() };
         let size = g.window.inner_size();
-        let top = self.top_inset() + self.tabbar_height();
-        Rect::new(0, top as i32, size.width, size.height.saturating_sub(top))
+        let (top, h) = self.bar_geom().content_y(size.height);
+        Rect::new(0, top as i32, size.width, h)
+    }
+
+    /// 탭 줄의 자리 계산(가장자리·여백, #909). 그리기·누르기·칸 격자 자리가 모두 이것을 쓴다
+    fn bar_geom(&self) -> crate::tabgeom::BarGeom {
+        let bar_h = if self.tab_bar_visible(self.w.tabs.len()) {
+            self.tabbar_px()
+        } else {
+            0
+        };
+        crate::tabgeom::BarGeom::new(&self.config.tab_bar_look, self.scale, self.top_inset(), bar_h)
+    }
+
+    /// 탭 줄을 그릴 자리
+    fn bar_place(&self, win: (u32, u32)) -> tabbar::BarPlace {
+        let g = self.bar_geom();
+        tabbar::BarPlace {
+            top: g.bar_top(win.1),
+            tabs_x: Some(g.tabs_x(win.0)),
+            bottom: g.bottom,
+        }
+    }
+
+    /// 마우스 아래의 탭(탭 줄 사각형 안일 때만)
+    fn tab_at_cursor(&self) -> Option<usize> {
+        let size = self.w.gfx.as_ref()?.window.inner_size();
+        let g = self.bar_geom();
+        if !g.in_bar(self.w.cursor_pos.y, size.height) {
+            return None;
+        }
+        tabbar::hit(
+            g.tabs_x(size.width).1,
+            g.tab_x(self.w.cursor_pos.x, size.width),
+            self.w.tabs.len(),
+            self.tab_layout(),
+        )
     }
 
     /// 칸의 바깥 사각형에서 여백을 뺀 격자 자리. `font_size`는 그 칸의 글자 크기다(남는 자리를 고르게 나눌 때 그 크기의 칸 크기를 쓴다)
@@ -1617,13 +1652,9 @@ impl App {
         )
     }
 
-    /// 탭 줄 높이. 탭이 하나면 없다(Ghostty처럼)
+    /// 탭 줄이 차지하는 세로 띠의 높이(여백 포함, #909). 탭이 하나면 없다(Ghostty처럼)
     fn tabbar_height(&self) -> u32 {
-        if self.tab_bar_visible(self.w.tabs.len()) {
-            self.tabbar_px()
-        } else {
-            0
-        }
+        self.bar_geom().band()
     }
 
     /// 탭이 `count`개일 때 탭 줄을 그리는가: `window-show-tab-bar`가 보이라 하고 `tab-bar-style = hidden`이 아니다.
@@ -2221,9 +2252,11 @@ impl App {
         let now = self.tab_bar_visible(self.w.tabs.len());
         let next = self.tab_bar_visible(self.w.tabs.len() + 1);
         if next && !now {
-            let bar = self.tabbar_px();
-            area.y += bar as i32;
-            area.h = area.h.saturating_sub(bar);
+            let g = crate::tabgeom::BarGeom::new(&self.config.tab_bar_look, self.scale, 0, self.tabbar_px());
+            if !g.bottom {
+                area.y += g.band() as i32;
+            }
+            area.h = area.h.saturating_sub(g.band());
         }
         // 새 탭의 글자 크기: `window-inherit-font-size`가 켜져 있으면 고른 칸의 크기(창의 첫 탭이면 창의 크기)
         let font_size = self.new_pane_font_size(pane_font::NewPane::Tab);
@@ -7109,7 +7142,7 @@ impl App {
         // 보안 입력이 켜져 있는 동안 창 오른쪽 위의 자물쇠 표시(`macos-secure-input-indication`, #258)
         let secure_badge = self.secure.enabled() && self.config.macos_secure_input_indication;
         // 배지는 탭 줄 아래(탭 줄과 겹치지 않게)
-        let badge_top = top_inset + self.tabbar_height();
+        let badge_top = self.bar_geom().content_top();
         let confirm = self
             .w
             .confirm
@@ -7468,6 +7501,14 @@ impl App {
                 .step(crate::cursor_trail::now(), settings.as_ref(), &inputs)
         };
         self.w.trail_wake = trail.wake.map(|d| Instant::now() + d);
+        // 탭 줄을 그릴 자리(창·글꼴을 빌리기 전에 계산한다, #909)
+        let bar_place = match self.w.gfx.as_ref() {
+            Some(g) => {
+                let s = g.window.inner_size();
+                self.bar_place((s.width, s.height))
+            }
+            None => return,
+        };
         let Some(gfx) = self.w.gfx.as_mut() else { return };
         let Some(mut fonts) = self.w.fonts.parts_mut() else {
             return;
@@ -7556,6 +7597,7 @@ impl App {
                 split,
                 single_tab,
                 top_inset,
+                bar_place,
                 title: &title,
                 proxy,
             });
@@ -7615,14 +7657,14 @@ impl App {
                     }
                 }
                 if !labels.is_empty() {
-                    tabbar::draw_with_title_font(
+                    tabbar::draw_placed(
                         &mut canvas,
                         fonts.chrome(),
                         self.w.title_fonts.as_mut(),
                         &theme,
                         &self.config.tab_bar_look,
                         &labels,
-                        top_inset as i32,
+                        bar_place,
                     );
                 }
             }
@@ -8844,11 +8886,14 @@ impl ApplicationHandler<UserEvent> for App {
                 // 놓기를 놓친 채 새 왼쪽 누름이 오면 옛 누름을 버리고 새 누름을 처리한다
                 if self.w.tab_drag.is_pressed() {
                     if button == MouseButton::Left && state == ElementState::Released {
-                        let width = self.w.gfx.as_ref().map(|g| g.window.inner_size().width).unwrap_or(0);
-                        let drop =
-                            self.w
-                                .tab_drag
-                                .release(self.w.cursor_pos.x, width, self.w.tabs.len(), self.tab_layout());
+                        let win_w = self.w.gfx.as_ref().map(|g| g.window.inner_size().width).unwrap_or(0);
+                        let geom = self.bar_geom();
+                        let drop = self.w.tab_drag.release(
+                            geom.tab_x(self.w.cursor_pos.x, win_w),
+                            geom.tabs_x(win_w).1,
+                            self.w.tabs.len(),
+                            self.tab_layout(),
+                        );
                         if let tabbar::TabDrop::Move { from, to } = drop {
                             self.reorder_tab(from, to);
                         }
@@ -8876,19 +8921,18 @@ impl ApplicationHandler<UserEvent> for App {
                     return;
                 }
                 // 탭 줄을 누르면 그 탭으로
-                if (self.w.cursor_pos.y as u32) < top_inset + self.tabbar_height() {
+                let win_h = self.w.gfx.as_ref().map(|g| g.window.inner_size().height).unwrap_or(0);
+                if self.bar_geom().in_band(self.w.cursor_pos.y, win_h) {
                     // 탭 오른쪽 단추: 그 탭을 고르고 메뉴(제목 바꾸기·색)를 띄운다(#852, macOS). Ghostty는 고르지 않고 그 탭에 메뉴를 띄운다
                     if state == ElementState::Pressed && button == MouseButton::Right && self.w.confirm.is_none() {
-                        let width = self.w.gfx.as_ref().map(|g| g.window.inner_size().width).unwrap_or(0);
-                        if let Some(i) = tabbar::hit(width, self.w.cursor_pos.x, self.w.tabs.len(), self.tab_layout()) {
+                        if let Some(i) = self.tab_at_cursor() {
                             self.activate(i);
                             self.tab_menu_popup();
                         }
                         return;
                     }
                     if state == ElementState::Pressed && matches!(button, MouseButton::Left | MouseButton::Middle) {
-                        let width = self.w.gfx.as_ref().map(|g| g.window.inner_size().width).unwrap_or(0);
-                        let hit = tabbar::hit(width, self.w.cursor_pos.x, self.w.tabs.len(), self.tab_layout());
+                        let hit = self.tab_at_cursor();
                         // 확인 막대가 떠 있으면 탭 줄의 새 동작(가운데 클릭 닫기, 두 번 눌러 제목)은 하지 않는다.
                         // 키는 확인 막대가 모두 가로채지만 마우스는 여기로 오므로, 열린 확인을 덮거나 확인 없이 닫지 않게 한다
                         let modal = self.w.confirm.is_some();

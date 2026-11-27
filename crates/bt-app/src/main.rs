@@ -47,6 +47,7 @@ mod state;
 mod status_note;
 mod tabbar;
 mod tabcolor;
+mod tabgeom;
 mod text_blink;
 mod themepick;
 mod toggles;

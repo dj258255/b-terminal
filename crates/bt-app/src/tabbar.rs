@@ -411,15 +411,59 @@ fn soft_color(pal: &Palette, tab_bg: Rgb) -> Rgb {
 /// 제목 글꼴을 따로 쓰는 탭 줄(#241 `window-title-font-family`). `title_fonts`가 없으면 터미널 글꼴로 셀 격자에 맞춰 그린다.
 /// 있으면 글자마다 advance로 자리를 잡고(비례폭도 겹치지 않게) 잘림도 그 폭으로 센다. 탭 높이·구분선·안 읽음 점·진행 막대도 제목 글꼴 지표로 센다(#474).
 /// `look`은 `tab-bar-style`과 탭 색·글꼴 모양이다. 기본값이면 지금까지의 픽셀과 같다(#901)
+#[cfg(test)]
 pub fn draw_with_title_font(
+    canvas: &mut Canvas,
+    fonts: &mut Fonts,
+    title_fonts: Option<&mut Fonts>,
+    theme: &Theme,
+    look: &TabBarLook,
+    tabs: &[TabLabel],
+    top: i32,
+) {
+    draw_placed(canvas, fonts, title_fonts, theme, look, tabs, BarPlace::at(top));
+}
+
+/// 탭 줄을 놓는 자리(#909). `top`은 탭 줄 맨 위 y, `tabs_x`는 탭이 놓이는 가로 범위(시작 x, 폭: 좌우 여백을 뺀 곳),
+/// `bottom`은 탭 줄이 칸 아래에 있어 기본 모양의 경계선을 위쪽에 긋는다. `None`이면 창 폭 전체다
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BarPlace {
+    pub top: i32,
+    pub tabs_x: Option<(i32, u32)>,
+    pub bottom: bool,
+}
+
+impl BarPlace {
+    /// 지금까지의 자리: 창 폭 전체, 위쪽 탭 줄
+    #[cfg(test)]
+    pub fn at(top: i32) -> Self {
+        Self {
+            top,
+            tabs_x: None,
+            bottom: false,
+        }
+    }
+}
+
+#[cfg(test)]
+impl BarPlace {
+    fn with_tabs_x(mut self, x: (i32, u32)) -> Self {
+        self.tabs_x = Some(x);
+        self
+    }
+}
+
+/// `draw_with_title_font`와 같고 탭 줄 자리(가장자리·좌우 여백)를 받는다. `BarPlace::at(top)`이면 같은 픽셀이다
+pub fn draw_placed(
     canvas: &mut Canvas,
     fonts: &mut Fonts,
     mut title_fonts: Option<&mut Fonts>,
     theme: &Theme,
     look: &TabBarLook,
     tabs: &[TabLabel],
-    top: i32,
+    place: BarPlace,
 ) {
+    let top = place.top;
     // 높이·구분선·점·진행 막대는 모두 제목 글꼴이 있으면 그 지표로 센다(#474). 탭 자리는 누른 자리 판정(`hit`)과 같은 `slots`다
     let m = bar_fonts(fonts, title_fonts.as_deref()).metrics();
     let h = bar_height(fonts, title_fonts.as_deref());
@@ -428,11 +472,17 @@ pub fn draw_with_title_font(
     let border = theme.background.mix(theme.foreground, 0.16);
     canvas.fill_rect(0, top, canvas.width, h, pal.bar);
     if default_look {
-        canvas.fill_rect(0, top + h as i32 - 1, canvas.width, 1, border);
+        // 아래쪽 탭 줄은 칸과 맞닿는 위쪽에 긋는다
+        let line_y = if place.bottom { top } else { top + h as i32 - 1 };
+        canvas.fill_rect(0, line_y, canvas.width, 1, border);
     }
     let cw = m.width as i32;
     let layout = Layout::of(look, m.width);
-    let slot_list = slots(canvas.width, tabs.len(), layout);
+    let (tabs_x0, tabs_w) = place.tabs_x.unwrap_or((0, canvas.width));
+    let slot_list: Vec<(i32, u32)> = slots(tabs_w, tabs.len(), layout)
+        .into_iter()
+        .map(|(x, w)| (x + tabs_x0, w))
+        .collect();
     for (i, (tab, &(x, w))) in tabs.iter().zip(&slot_list).enumerate() {
         if default_look {
             if tab.active {
@@ -1836,5 +1886,127 @@ mod tests {
             !dot_x.is_empty() && dot_x[0] >= cw as usize,
             "안 읽음 점이 모서리 안쪽에 없다"
         );
+    }
+    /// 탭 줄 자리(#909): 설정이 없으면 지금과 같은 픽셀, 아래쪽·여백이면 그린 자리와 누르는 자리가 같다
+    fn placed_tabs() -> Vec<TabLabel> {
+        let mut t0 = plain(true);
+        t0.progress = Some((1, 100));
+        t0.unread = true;
+        let mut t2 = plain(false);
+        t2.color = crate::tabcolor::TabColor::Red;
+        vec![t0, plain(false), t2]
+    }
+
+    fn marked_look(edge: bt_core::tabstyle::TabBarEdge, mw: f32, mh: (f32, f32)) -> TabBarLook {
+        TabBarLook {
+            edge,
+            margin_width: mw,
+            margin_height: mh,
+            bar_background: Some(Rgb::new(10, 20, 30)),
+            active_background: Some(Rgb::new(200, 10, 10)),
+            inactive_background: Some(Rgb::new(10, 200, 10)),
+            ..TabBarLook::default()
+        }
+    }
+
+    #[test]
+    fn default_geometry_draws_the_same_pixels_as_the_old_top_bar() {
+        let Ok(mut fonts) = Fonts::new(&bt_render::FontConfig::default()) else {
+            return;
+        };
+        let theme = Theme::ghostty_default();
+        let (w, h, inset) = (500u32, 300u32, 28u32);
+        let bh = bar_height(&fonts, None);
+        let look = TabBarLook::default();
+        let tabs = placed_tabs();
+        let mut old = vec![0u32; (w * h) as usize];
+        let mut c = Canvas::new(&mut old, w, h);
+        c.clear(theme.background);
+        draw_with_title_font(&mut c, &mut fonts, None, &theme, &look, &tabs, inset as i32);
+        // 새 계산: 설정이 없을 때의 자리
+        let g = crate::tabgeom::BarGeom::new(&look, 1.0, inset, bh);
+        let place = BarPlace {
+            top: g.bar_top(h),
+            tabs_x: Some(g.tabs_x(w)),
+            bottom: g.bottom,
+        };
+        assert_eq!(place, BarPlace::at(inset as i32).with_tabs_x((0, w)));
+        let mut new = vec![0u32; (w * h) as usize];
+        let mut c = Canvas::new(&mut new, w, h);
+        c.clear(theme.background);
+        draw_placed(&mut c, &mut fonts, None, &theme, &look, &tabs, place);
+        assert!(old == new, "설정이 없는데 탭 줄 픽셀이 달라졌다");
+        // 칸 격자 자리도 지금과 같다: 제목 막대 비움 + 탭 줄 높이 밑에서 창 끝까지
+        assert_eq!(g.content_y(h), (inset + bh, h - inset - bh));
+        assert_eq!(g.band(), bh);
+    }
+
+    #[test]
+    fn bottom_bar_is_drawn_where_it_is_clicked() {
+        use bt_core::tabstyle::TabBarEdge;
+        let Ok(mut fonts) = Fonts::new(&bt_render::FontConfig::default()) else {
+            return;
+        };
+        let theme = Theme::ghostty_default();
+        let (w, h, inset) = (600u32, 400u32, 0u32);
+        let bh = bar_height(&fonts, None);
+        let tabs = placed_tabs();
+        for (mw, mh) in [(0.0, (0.0, 0.0)), (12.0, (5.0, 7.0))] {
+            for edge in [TabBarEdge::Top, TabBarEdge::Bottom] {
+                let look = marked_look(edge, mw, mh);
+                let g = crate::tabgeom::BarGeom::new(&look, 1.0, inset, bh);
+                let place = BarPlace {
+                    top: g.bar_top(h),
+                    tabs_x: Some(g.tabs_x(w)),
+                    bottom: g.bottom,
+                };
+                let bg = theme.background;
+                let mut buf = vec![0u32; (w * h) as usize];
+                let mut c = Canvas::new(&mut buf, w, h);
+                c.clear(bg);
+                draw_placed(&mut c, &mut fonts, None, &theme, &look, &tabs, place);
+                let (bar_t, bar_b) = g.bar_y(h);
+                let layout = Layout::of(&look, 1);
+                let (tx, tw) = g.tabs_x(w);
+                let slot = slots(tw, tabs.len(), layout);
+                // 칠한 픽셀은 모두 탭 줄 사각형 안이다(여백·칸 자리는 그대로)
+                for y in 0..h {
+                    for x in 0..w {
+                        if (y as i32) < bar_t || (y as i32) >= bar_b {
+                            assert_eq!(c.pixel(x, y), bg, "{edge:?} {mw}: 탭 줄 밖 ({x},{y})가 칠해졌다");
+                        }
+                    }
+                }
+                // 탭마다: 그린 색(고른 탭 빨강, 나머지 초록)이 누른 탭과 같다
+                for (i, &(sx, sw)) in slot.iter().enumerate() {
+                    let px = (tx + sx + 3) as u32;
+                    let py = (bar_t + 2) as u32;
+                    let want = if tabs[i].active {
+                        Rgb::new(200, 10, 10)
+                    } else {
+                        Rgb::new(10, 200, 10)
+                    };
+                    assert_eq!(c.pixel(px, py), want, "{edge:?} {mw}: 탭 {i} 바탕");
+                    let (cx, cy) = ((tx + sx) as f64 + 3.0, py as f64);
+                    assert!(g.in_bar(cy, h) && g.in_band(cy, h));
+                    assert_eq!(
+                        hit(tw, g.tab_x(cx, w), tabs.len(), layout),
+                        Some(i),
+                        "{edge:?} {mw}: 그린 탭 {i}의 자리를 누르면 그 탭이어야 한다"
+                    );
+                    let last = (tx + sx + sw as i32 - 1) as f64;
+                    assert_eq!(hit(tw, g.tab_x(last, w), tabs.len(), layout), Some(i));
+                }
+                // 여백 밖(창 왼쪽 끝)은 탭이 아니다. 좌우 여백이 있으면 탭 줄 바탕만 있다
+                if mw > 0.0 {
+                    assert_eq!(hit(tw, g.tab_x(0.0, w), tabs.len(), layout), None);
+                    assert_eq!(c.pixel(0, (bar_t + 2) as u32), Rgb::new(10, 20, 30));
+                }
+                // 진행 막대·안 읽음 점은 탭 줄 사각형 안(위 검사가 이미 보장), 그리고 실제로 그려졌다
+                let yellow = theme.palette[3];
+                let found = (bar_t..bar_b).any(|y| (0..w).any(|x| c.pixel(x, y as u32) == yellow));
+                assert!(found, "{edge:?}: 안 읽음 점이 탭 줄 안에 없다");
+            }
+        }
     }
 }
