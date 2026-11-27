@@ -24,5 +24,5 @@ pub use grid::{
     CursorStyle, DrawCell, DrawCursor, GridView, Under, decoration_color, draw_grid, draw_grid_rows, draw_grid_under,
     ligatures, lock_rects, no_min_contrast, text_color,
 };
-pub use text::{char_cells, draw_text, set_ambiguous_wide, text_cells, truncate};
+pub use text::{char_cells, draw_text, draw_text_styled, set_ambiguous_wide, text_cells, truncate};
 pub use underline::Underline;

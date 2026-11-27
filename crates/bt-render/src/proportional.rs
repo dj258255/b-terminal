@@ -35,6 +35,19 @@ pub fn truncate_width(s: &str, max_px: f32, mut advance: impl FnMut(char) -> f32
 /// 글을 (x, y: 줄 위쪽)에 그리고 그린 폭(px)을 돌려준다. 글자마다 `Fonts::advance`만큼 나아간다.
 /// 넓은 글자(한글·이모지)는 그 폭 안 가운데에 둔다. 상자 그림 글자는 따로 그리지 않고 글꼴의 글리프를 쓴다
 pub fn draw_text_proportional(canvas: &mut Canvas, fonts: &mut Fonts, x: i32, y: i32, s: &str, color: Rgb) -> i32 {
+    draw_text_proportional_styled(canvas, fonts, x, y, s, color, FontStyle::Regular)
+}
+
+/// `draw_text_proportional`에 굵게·기울임을 준다. 자리(advance)는 보통 모양 글꼴로 재므로 굵은 글꼴의 폭이 다르면 글자 사이가 조금 달라진다
+pub fn draw_text_proportional_styled(
+    canvas: &mut Canvas,
+    fonts: &mut Fonts,
+    x: i32,
+    y: i32,
+    s: &str,
+    color: Rgb,
+    style: FontStyle,
+) -> i32 {
     let baseline = fonts.metrics().baseline as i32;
     let mut pen = x as f32;
     for c in s.chars() {
@@ -43,7 +56,7 @@ pub fn draw_text_proportional(canvas: &mut Canvas, fonts: &mut Fonts, x: i32, y:
             continue;
         }
         if c != ' ' {
-            if let Some(g) = fonts.glyph(c, FontStyle::Regular) {
+            if let Some(g) = fonts.glyph(c, style) {
                 let px = pen.round() as i32;
                 let offset = if crate::text::char_cells(c) > 1 {
                     (adv.round() as i32 - g.width as i32) / 2 - g.left

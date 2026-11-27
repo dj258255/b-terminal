@@ -1617,11 +1617,27 @@ impl App {
 
     /// 탭 줄 높이. 탭이 하나면 없다(Ghostty처럼)
     fn tabbar_height(&self) -> u32 {
-        if self.config.window_show_tab_bar.visible(self.w.tabs.len()) {
+        if self.tab_bar_visible(self.w.tabs.len()) {
             self.tabbar_px()
         } else {
             0
         }
+    }
+
+    /// 탭이 `count`개일 때 탭 줄을 그리는가: `window-show-tab-bar`가 보이라 하고 `tab-bar-style = hidden`이 아니다.
+    /// kitty의 `hidden`은 `window-show-tab-bar = never`와 같은 효과다(탭 줄이 없고, 진행 막대는 칸 위에 그린다, #901)
+    fn tab_bar_visible(&self, count: usize) -> bool {
+        self.config
+            .tab_bar_look
+            .bar_visible(self.config.window_show_tab_bar, count)
+    }
+
+    /// 탭 줄의 탭 자리 방식(누르기·끌기가 그린 모양과 맞게)
+    fn tab_layout(&self) -> tabbar::Layout {
+        let cell_w = self.w.fonts.chrome().map_or(1, |term| {
+            tabbar::bar_fonts(term, self.w.title_fonts.as_ref()).metrics().width
+        });
+        tabbar::Layout::of(&self.config.tab_bar_look, cell_w)
     }
 
     /// 탭 줄이 보일 때의 높이(#474: 제목 글꼴이 있으면 그 기준). 글꼴을 읽지 못했으면 0
@@ -2199,8 +2215,8 @@ impl App {
     pub fn open_tab(&mut self, options: SpawnOptions) -> Option<u64> {
         // 탭이 하나에서 둘이 되면 탭 줄이 생긴다. 새 칸은 탭 줄을 뺀 크기로 띄운다
         let mut area = self.content_rect();
-        let now = self.config.window_show_tab_bar.visible(self.w.tabs.len());
-        let next = self.config.window_show_tab_bar.visible(self.w.tabs.len() + 1);
+        let now = self.tab_bar_visible(self.w.tabs.len());
+        let next = self.tab_bar_visible(self.w.tabs.len() + 1);
         if next && !now {
             let bar = self.tabbar_px();
             area.y += bar as i32;
@@ -7216,7 +7232,7 @@ impl App {
         let dim_alpha = ((1.0 - self.config.unfocused_split_opacity) * 255.0).round() as u8;
         let dim_fill = self.config.unfocused_split_fill.unwrap_or(theme.background);
         // 탭 막대가 없을 때(`window-show-tab-bar`): 진행 막대를 칸 위에 그린다
-        let single_tab = !self.config.window_show_tab_bar.visible(self.w.tabs.len());
+        let single_tab = !self.tab_bar_visible(self.w.tabs.len());
         let labels: Vec<tabbar::TabLabel> = if single_tab {
             Vec::new()
         } else {
@@ -7472,6 +7488,7 @@ impl App {
                 .iter()
                 .map(|l| (l.title.clone(), l.active, l.unread, l.progress))
                 .collect(),
+            tab_look: self.config.tab_bar_look.clone(),
             handles: handles.clone(),
             drop: drop_preview,
             overlay: toast.is_some()
@@ -7495,6 +7512,7 @@ impl App {
             theme: (theme.background, theme.foreground),
             dim: (dim_alpha, dim_fill, divider_color),
         };
+        let tab_look = self.config.tab_bar_look.clone();
         // GPU 길(ADR-036, macOS 기본 ADR-039): 층과 격자를 합쳐 창 surface에 올린다. 아래는 CPU 길
         if gfx.gpu.is_some() {
             self.redraw_gpu(gpu_frame::GpuFrame {
@@ -7504,6 +7522,7 @@ impl App {
                 pads: &pads,
                 bars: &bars,
                 labels: &labels,
+                tab_look: &tab_look,
                 chrome,
                 toast: &toast,
                 secure_badge,
@@ -7590,6 +7609,7 @@ impl App {
                         fonts.chrome(),
                         self.w.title_fonts.as_mut(),
                         &theme,
+                        &self.config.tab_bar_look,
                         &labels,
                         top_inset as i32,
                     );
@@ -7919,6 +7939,8 @@ struct Chrome {
     cell: (u32, u32),
     panes: Vec<PaneKey>,
     labels: Vec<LabelKey>,
+    /// 탭 줄의 모양·색(설정을 다시 읽으면 바뀐다, #901)
+    tab_look: bt_core::tabstyle::TabBarLook,
     /// 칸마다 손잡이를 어떻게 보이는가(`drag-handle`)
     handles: Vec<crate::pane_drag::Look>,
     /// 끌어다 놓을 자리 미리 보기: 놓일 칸의 바깥 사각형과 쪽
@@ -8780,7 +8802,10 @@ impl ApplicationHandler<UserEvent> for App {
                 if self.w.tab_drag.is_pressed() {
                     if button == MouseButton::Left && state == ElementState::Released {
                         let width = self.w.gfx.as_ref().map(|g| g.window.inner_size().width).unwrap_or(0);
-                        let drop = self.w.tab_drag.release(self.w.cursor_pos.x, width, self.w.tabs.len());
+                        let drop =
+                            self.w
+                                .tab_drag
+                                .release(self.w.cursor_pos.x, width, self.w.tabs.len(), self.tab_layout());
                         if let tabbar::TabDrop::Move { from, to } = drop {
                             self.reorder_tab(from, to);
                         }
@@ -8812,7 +8837,7 @@ impl ApplicationHandler<UserEvent> for App {
                     // 탭 오른쪽 단추: 그 탭을 고르고 메뉴(제목 바꾸기·색)를 띄운다(#852, macOS). Ghostty는 고르지 않고 그 탭에 메뉴를 띄운다
                     if state == ElementState::Pressed && button == MouseButton::Right && self.w.confirm.is_none() {
                         let width = self.w.gfx.as_ref().map(|g| g.window.inner_size().width).unwrap_or(0);
-                        if let Some(i) = tabbar::hit(width, self.w.cursor_pos.x, self.w.tabs.len()) {
+                        if let Some(i) = tabbar::hit(width, self.w.cursor_pos.x, self.w.tabs.len(), self.tab_layout()) {
                             self.activate(i);
                             self.tab_menu_popup();
                         }
@@ -8820,7 +8845,7 @@ impl ApplicationHandler<UserEvent> for App {
                     }
                     if state == ElementState::Pressed && matches!(button, MouseButton::Left | MouseButton::Middle) {
                         let width = self.w.gfx.as_ref().map(|g| g.window.inner_size().width).unwrap_or(0);
-                        let hit = tabbar::hit(width, self.w.cursor_pos.x, self.w.tabs.len());
+                        let hit = tabbar::hit(width, self.w.cursor_pos.x, self.w.tabs.len(), self.tab_layout());
                         // 확인 막대가 떠 있으면 탭 줄의 새 동작(가운데 클릭 닫기, 두 번 눌러 제목)은 하지 않는다.
                         // 키는 확인 막대가 모두 가로채지만 마우스는 여기로 오므로, 열린 확인을 덮거나 확인 없이 닫지 않게 한다
                         let modal = self.w.confirm.is_some();

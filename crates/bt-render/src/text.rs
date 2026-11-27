@@ -51,6 +51,19 @@ pub fn truncate(s: &str, max_cells: usize) -> String {
 
 /// 글을 (x, y: 줄 위쪽)에 그리고 그린 폭(픽셀)을 돌려준다. 폭은 셀 단위로 맞춘다
 pub fn draw_text(canvas: &mut Canvas, fonts: &mut Fonts, x: i32, y: i32, s: &str, color: Rgb, bold: bool) -> i32 {
+    draw_text_styled(canvas, fonts, x, y, s, color, FontStyle::from_flags(bold, false))
+}
+
+/// `draw_text`에 굵게·기울임을 함께 준다(탭 제목의 `active-tab-font-style` 같은 것, #901)
+pub fn draw_text_styled(
+    canvas: &mut Canvas,
+    fonts: &mut Fonts,
+    x: i32,
+    y: i32,
+    s: &str,
+    color: Rgb,
+    style: FontStyle,
+) -> i32 {
     let m = fonts.metrics();
     let mut px = x;
     for c in s.chars() {
@@ -59,7 +72,7 @@ pub fn draw_text(canvas: &mut Canvas, fonts: &mut Fonts, x: i32, y: i32, s: &str
             continue;
         }
         if c != ' ' && !crate::boxdraw::draw(canvas, c, px, y, m.width * span, m.height, m.stroke, color) {
-            if let Some(g) = fonts.glyph(c, FontStyle::from_flags(bold, false)) {
+            if let Some(g) = fonts.glyph(c, style) {
                 let slot = (m.width * span) as i32;
                 let offset = if span > 1 {
                     (slot - g.width as i32) / 2 - g.left
