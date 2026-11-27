@@ -17,6 +17,7 @@
 - `background-opacity`가 1보다 작아도 macOS 네이티브 전체 화면(초록 버튼, `toggle_fullscreen`)에서는 불투명하게 그립니다. Ghostty 1.4.0과 같고, 전체 화면 Space의 회색 바탕과 뒤의 위젯이 글자 뒤로 비치지 않게 합니다. 전체 화면을 나오면 투명도가 돌아오고, 비네이티브 전체 화면(`macos-non-native-fullscreen`)은 투명도를 지킵니다. 실제 창으로는 아직 보지 않았습니다 (#921)
 - iTerm2 세션 상태(OSC 21337 `status=…;detail=…`)를 받아 프로그램 상태(OSC 7501)와 같은 탭 막대·알림으로 보입니다. `waiting`은 기다림, `working`은 일하는 중, 빈 값은 지우기이고 점·글자 색(`indicator`·`status-color`)은 그리지 않습니다. 두 신호가 함께 오면 나중에 온 것을 씁니다(#926)
 - Cmd(Linux는 Ctrl)를 누른 채 마우스를 움직일 때 링크를 찾느라 화면 전체를 복사하지 않고, 마우스 칸이 든 줄(줄바꿈으로 이어진 줄 묶음)만 읽습니다. 링크를 거르는 규칙(`links.rs`)은 그대로이고 보이는 동작은 같습니다. 복사하는 동안 쥐던 엔진 락도 그만큼 짧아집니다 (#924)
+- kitty 마커와 사용자 정규식 링크: `toggle_marker:<text|itext|regex|iregex> <1~3> <글>...`·`remove_marker`·`scroll_to_mark:[prev|next] [1~3]`(마크는 격자를 바꾸지 않는 덧칠, 보이는 줄만 검사, 스크롤백은 5만 줄까지만 훑음)와 `mark1-foreground`~`mark3-background`, `link-url-regex`(보통 URL이 없을 때만 보는 링크 정규식, 여는 쪽 거르기는 그대로)를 받습니다. 정규식은 Rust `regex`(역참조 없음, 선형 시간, 크기 상한) (#929)
 
 ## [0.106.0] - 2026-11-27
 

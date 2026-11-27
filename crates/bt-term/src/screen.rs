@@ -38,6 +38,10 @@ impl CellFlags {
     pub const FAINT: Self = Self(1 << 17);
     /// 깜빡임(SGR 5·6, #862). 렌더러가 커서 깜빡임과 같은 박자로 글자를 숨겼다 보인다
     pub const BLINK: Self = Self(1 << 18);
+    /// kitty 마커 1~3번이 칠한 칸(#929). 격자를 바꾸지 않는 덧칠이라 그릴 때 `mark*-foreground`·`mark*-background`를 건다
+    pub const MARK1: Self = Self(1 << 19);
+    pub const MARK2: Self = Self(1 << 20);
+    pub const MARK3: Self = Self(1 << 21);
 
     pub const fn empty() -> Self {
         Self(0)
@@ -45,6 +49,14 @@ impl CellFlags {
 
     pub const fn contains(self, other: Self) -> bool {
         self.0 & other.0 == other.0
+    }
+
+    /// 칸에 얹은 마커 번호(1~3). 없으면 없다
+    pub fn mark(self) -> Option<u8> {
+        [Self::MARK1, Self::MARK2, Self::MARK3]
+            .iter()
+            .position(|m| self.contains(*m))
+            .map(|i| i as u8 + 1)
     }
 
     pub fn insert(&mut self, other: Self) {

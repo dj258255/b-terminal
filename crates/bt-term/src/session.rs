@@ -379,6 +379,8 @@ struct Inner {
     prompts: std::collections::VecDeque<i64>,
     /// 찾기(#39). 찾는 중이 아니면 없다
     search: Option<crate::search::Search>,
+    /// kitty 마커(#929). 없으면 마크를 칠하지 않는다
+    marker: Option<crate::marks::MarkerState>,
     /// kitty 그래픽(#76): 저장한 그림과 놓인 자리
     graphics: crate::graphics::Graphics,
     /// 글리프 프로토콜(APC 25a1)의 이 칸 등록(#779). 그리지는 않는다(Ghostty 1.4.0과 같다). 전체 초기화(RIS)에서 지운다
@@ -866,6 +868,7 @@ impl Session {
             parser: Processor::new(),
             prompts: std::collections::VecDeque::new(),
             search: None,
+            marker: None,
             graphics: crate::graphics::Graphics::with_limit(
                 options
                     .image_storage_limit
@@ -1645,6 +1648,37 @@ impl Session {
         Some(s.status(term))
     }
 
+    /// kitty `toggle_marker`(#929): 같은 명세면 끄고(`Ok(false)`), 아니면 바꿔 켠다(`Ok(true)`). 정규식을 못 읽으면 오류
+    pub fn toggle_marker(&self, spec: &crate::marks::MarkerSpec) -> Result<bool, String> {
+        crate::marks::toggle(&mut self.inner.lock().marker, spec)
+    }
+
+    /// kitty `remove_marker`: 마커가 있었으면 참
+    pub fn remove_marker(&self) -> bool {
+        self.inner.lock().marker.take().is_some()
+    }
+
+    pub fn has_marker(&self) -> bool {
+        self.inner.lock().marker.is_some()
+    }
+
+    /// kitty `scroll_to_mark`: 이전(`prev`)·다음 마크 줄로. `mark`는 0(아무)~3. 옮겼으면 참
+    pub fn scroll_to_mark(&self, prev: bool, mark: u8) -> bool {
+        self.scroll_to_mark_within(prev, mark, crate::marks::SCROLL_SCAN_LINES)
+    }
+
+    /// `scroll_to_mark`에 훑을 줄 수 상한을 준다(시험용)
+    pub fn scroll_to_mark_within(&self, prev: bool, mark: u8, max_lines: usize) -> bool {
+        let mut g = self.inner.lock();
+        let Some(m) = g.marker.as_ref() else { return false };
+        let Some(n) = crate::marks::scroll_amount(&g.term, m.marker(), prev, mark, max_lines) else {
+            return false;
+        };
+        g.pixel.reset();
+        g.term.scroll_display(Scroll::Delta(n));
+        true
+    }
+
     /// 다음 맞은 곳으로(`older`면 위로). 찾는 중이 아니면 없다
     pub fn search_step(&self, older: bool) -> Option<crate::search::SearchStatus> {
         let mut g = self.inner.lock();
@@ -1994,6 +2028,18 @@ impl Session {
         crate::link_probe::probe(&g.term, col, row, opts)
     }
 
+    /// `link_probe`에 사용자 링크 정규식(`link-url-regex`, #929)을 준다
+    pub fn link_probe_with(
+        &self,
+        col: usize,
+        row: usize,
+        opts: crate::links::LinkOptions,
+        user: Option<&crate::link_regex::UserLinkRegexes>,
+    ) -> crate::link_probe::LinkProbe {
+        let g = self.inner.lock();
+        crate::link_probe::probe_with(&g.term, col, row, opts, user)
+    }
+
     /// 지금 화면을 꺼낸다
     pub fn snapshot(&self) -> Screen {
         let theme = self.theme.lock().clone();
@@ -2009,14 +2055,18 @@ impl Session {
         sync_graphics(term, graphics, *cell);
         let grid = term.grid();
         let shift = pixel.shift(cell.1, grid.history_size(), grid.display_offset());
-        snapshot_with_shift(
+        let mut screen = snapshot_with_shift(
             term,
             &theme,
             search.as_mut(),
             Some(graphics),
             std::time::Instant::now(),
             shift,
-        )
+        );
+        if let Some(m) = &g.marker {
+            crate::marks::apply(&mut screen, m.marker());
+        }
+        screen
     }
 
     /// 마지막 `snapshot`이 본 보이는 kitty 애니메이션 가운데 가장 이른 다음 프레임 시각(#554). 보이는 애니메이션이 없으면 없다.
@@ -2949,6 +2999,10 @@ pub struct Emulator {
     theme: Theme,
     scanner: Scanner,
     search: Option<crate::search::Search>,
+    /// kitty 마커(#929)
+    marker: Option<crate::marks::MarkerState>,
+    /// 마지막 `snapshot`이 마크를 찾으려고 본 줄 수(시험용)
+    marker_rows: usize,
     graphics: crate::graphics::Graphics,
     /// 글리프 프로토콜의 이 칸 등록(#779)
     glossary: crate::glyph::Glossary,
@@ -2977,6 +3031,8 @@ impl Emulator {
             theme,
             scanner: Scanner::default(),
             search: None,
+            marker: None,
+            marker_rows: 0,
             graphics: Default::default(),
             glossary: Default::default(),
             cell: (size.cell_width as u32, size.cell_height as u32),
@@ -3077,26 +3133,77 @@ impl Emulator {
     pub fn snapshot(&mut self) -> Screen {
         sync_graphics(&mut self.term, &mut self.graphics, self.cell);
         let shift = self.pixel_shift();
-        snapshot_with_shift(
+        let mut screen = snapshot_with_shift(
             &self.term,
             &self.theme,
             self.search.as_mut(),
             Some(&mut self.graphics),
             std::time::Instant::now(),
             shift,
-        )
+        );
+        self.marker_rows = self
+            .marker
+            .as_ref()
+            .map_or(0, |m| crate::marks::apply(&mut screen, m.marker()));
+        screen
+    }
+
+    /// (col, row) 칸의 링크에 사용자 정규식(`link-url-regex`)을 더해 찾는다(#929)
+    pub fn link_probe_with(
+        &self,
+        col: usize,
+        row: usize,
+        opts: crate::links::LinkOptions,
+        user: Option<&crate::link_regex::UserLinkRegexes>,
+    ) -> crate::link_probe::LinkProbe {
+        crate::link_probe::probe_with(&self.term, col, row, opts, user)
+    }
+
+    /// kitty `toggle_marker`(#929): 같은 명세면 끄고(`Ok(false)`), 아니면 바꿔 켠다(`Ok(true)`)
+    pub fn toggle_marker(&mut self, spec: &crate::marks::MarkerSpec) -> Result<bool, String> {
+        crate::marks::toggle(&mut self.marker, spec)
+    }
+
+    /// kitty `remove_marker`: 마커가 있었으면 참
+    pub fn remove_marker(&mut self) -> bool {
+        self.marker.take().is_some()
+    }
+
+    /// kitty `scroll_to_mark`(#929). 옮겼으면 참
+    pub fn scroll_to_mark(&mut self, prev: bool, mark: u8) -> bool {
+        self.scroll_to_mark_within(prev, mark, crate::marks::SCROLL_SCAN_LINES)
+    }
+
+    /// `scroll_to_mark`에 훑을 줄 수 상한을 준다(시험용)
+    pub fn scroll_to_mark_within(&mut self, prev: bool, mark: u8, max_lines: usize) -> bool {
+        let Some(m) = self.marker.as_ref() else { return false };
+        let Some(n) = crate::marks::scroll_amount(&self.term, m.marker(), prev, mark, max_lines) else {
+            return false;
+        };
+        self.pixel.reset();
+        self.term.scroll_display(Scroll::Delta(n));
+        true
+    }
+
+    /// 마지막 `snapshot`이 마크를 찾으려고 본 줄 수(시험용)
+    pub fn marker_rows_checked(&self) -> usize {
+        self.marker_rows
     }
 
     /// 시각을 정해 화면을 만든다(애니메이션 프레임 고르기 시험용, #554). 시각은 `kitty_clock_start`부터의 간격으로 준다
     pub fn snapshot_at(&mut self, now: std::time::Instant) -> Screen {
         sync_graphics(&mut self.term, &mut self.graphics, self.cell);
-        snapshot_of(
+        let mut screen = snapshot_of(
             &self.term,
             &self.theme,
             self.search.as_mut(),
             Some(&mut self.graphics),
             now,
-        )
+        );
+        if let Some(m) = &self.marker {
+            crate::marks::apply(&mut screen, m.marker());
+        }
+        screen
     }
 
     /// kitty 애니메이션 시계의 0점(`snapshot_at`에 줄 시각의 기준)

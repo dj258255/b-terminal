@@ -22,6 +22,7 @@ mod gpu_pace;
 mod input_latency;
 mod kitty_images;
 /// 사람과 AppleScript가 함께 쓰는 마우스 처리(#662). 모든 플랫폼
+mod marker_cmd;
 mod mouse_core;
 /// AppleScript 명령과 상태 스냅숏(#634). macOS에만 있다
 #[cfg(target_os = "macos")]
@@ -1192,6 +1193,8 @@ impl Win {
 
 pub struct App {
     config: AppConfig,
+    /// `link-url-regex`를 컴파일해 둔 것(#929)
+    link_regex: bt_term::link_regex::UserLinkRegexes,
     proxy: EventLoopProxy<UserEvent>,
     redraw_pending: Arc<AtomicBool>,
     scale: f64,
@@ -1312,8 +1315,10 @@ impl App {
             log::warn!("설정: {w}");
         }
         config.warnings.extend(kw);
+        let (link_regex, _) = bt_term::link_regex::UserLinkRegexes::new(&config.link_url_regex);
         Self {
             config,
+            link_regex,
             proxy,
             redraw_pending: Arc::new(AtomicBool::new(false)),
             scale: 1.0,
@@ -4582,7 +4587,11 @@ impl App {
             url: self.config.link_url,
             osc8: self.config.link_osc8,
         };
-        self.panes[i].session.link_probe(c, r, opts).hit.map(|h| (id, h))
+        self.panes[i]
+            .session
+            .link_probe_with(c, r, opts, Some(&self.link_regex))
+            .hit
+            .map(|h| (id, h))
     }
 
     /// Cmd를 누른 동안 마우스 아래 링크를 다시 본다. 바뀌면 밑줄과 마우스 모양을 바꾼다
@@ -5550,6 +5559,9 @@ impl App {
                     t.session.scroll_to_selection();
                 }
             }
+            Action::ToggleMarker(_) | Action::RemoveMarker | Action::ScrollToMark(..) => {
+                self.run_marker_action(&action);
+            }
             Action::Search(text) => self.search_with(&text),
             Action::SearchSelection => {
                 if let Some(text) = self.active_pane().and_then(|t| t.session.selection_text()) {
@@ -5742,6 +5754,7 @@ impl App {
             }
         }
         self.config = next;
+        self.rebuild_link_regex();
         // AppleScript를 껐다 켰으면 vendor에도 알린다(#634)
         #[cfg(target_os = "macos")]
         self.sync_scripting_enabled();
@@ -8522,6 +8535,9 @@ pub fn to_draw_cells(s: &Screen, theme: &bt_core::Theme) -> Vec<DrawCell> {
                 theme.search.pick(true, c.fg, c.bg)
             } else if c.flags.contains(CellFlags::MATCH) {
                 theme.search.pick(false, c.fg, c.bg)
+            } else if let Some(n) = c.flags.mark() {
+                // kitty 마커(#929): 격자는 그대로 두고 그릴 때만 마커 색을 건다. CPU·GPU 길이 이 셀 값을 같이 쓴다
+                theme.marks.pick(n)
             } else {
                 (c.fg, c.bg)
             };
@@ -9845,6 +9861,39 @@ mod tests {
         // 복사한 뒤: 기본(끔)은 남기고, 켜면 지운다
         assert!(!clears_selection_after_copy(false));
         assert!(clears_selection_after_copy(true));
+    }
+
+    /// kitty 마커(#929): 마크 칸은 마커 색으로 그리고(CPU·GPU가 같이 쓰는 `to_draw_cells`), 찾기 맞음·고름이 앞선다. 격자 글자는 그대로다
+    #[test]
+    fn marker_cells_use_mark_colors_below_selection_and_search() {
+        use bt_core::Rgb;
+        use bt_term::{Emulator, GridSize};
+        let theme = bt_core::Theme::default();
+        let mut e = Emulator::new(GridSize::new(6, 1), theme.clone());
+        e.feed(b"abcdef");
+        let mut s = e.snapshot();
+        s.cells[0].flags.insert(CellFlags::MARK1);
+        s.cells[1].flags.insert(CellFlags::MARK2);
+        s.cells[2].flags.insert(CellFlags::MARK3);
+        s.cells[3].flags.insert(CellFlags::MARK1 | CellFlags::MATCH);
+        s.cells[4].flags.insert(CellFlags::MARK1 | CellFlags::SELECTED);
+        let cells = to_draw_cells(&s, &theme);
+        let black = Rgb::new(0, 0, 0);
+        assert_eq!((cells[0].fg, cells[0].bg), (black, Rgb::new(0x98, 0xd3, 0xcb)));
+        assert_eq!((cells[1].fg, cells[1].bg), (black, Rgb::new(0xf2, 0xdc, 0xd3)));
+        assert_eq!((cells[2].fg, cells[2].bg), (black, Rgb::new(0xf2, 0x74, 0xbc)));
+        assert_eq!(
+            cells[3].bg,
+            theme.search.pick(false, s.cells[3].fg, s.cells[3].bg).1,
+            "찾기 맞음이 앞선다"
+        );
+        assert_eq!(
+            (cells[4].fg, cells[4].bg),
+            (s.cells[4].fg, s.cells[4].bg),
+            "고른 칸이 앞선다"
+        );
+        assert_eq!((cells[5].fg, cells[5].bg), (s.cells[5].fg, s.cells[5].bg));
+        assert_eq!(cells[0].ch, 'a');
     }
 
     #[test]
