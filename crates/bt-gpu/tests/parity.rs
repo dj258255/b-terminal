@@ -683,3 +683,26 @@ fn fallback_size_adjusted_glyphs_match_cpu() {
         );
     }
 }
+
+/// 글리프의 가로 서브픽셀 이동(#903)은 비트맵에 이미 들어 있어서, CPU와 GPU가 같은 글자 픽셀을 낸다(배율 1·2)
+#[test]
+fn subpixel_shifted_glyphs_match_cpu() {
+    let Some(mut g) = gpu() else { return };
+    for scale in [1.0, 2.0] {
+        let mut f = fonts(scale);
+        let mut cells = row_cells("iiii llll mmmm WWWW", 20);
+        cells.extend(row_cells("0000 gggg a-> 가나 !=", 20));
+        let v = grid(&cells, 20);
+        let want = cpu_frame(&mut f, &v, Alpha::default());
+        let got = gpu_frame(&mut g, &mut f, &v, Alpha::default());
+        let (n, max, total) = diff(&want, &got);
+        eprintln!("서브픽셀 글자 x{scale}: 다른 픽셀 {n}/{total}, 최대 차이 {max}");
+        assert!(max <= 2, "x{scale}: 채널 최대 차이 {max}");
+        assert!(n * 1000 < total * 5, "x{scale}: 다른 픽셀 {n}/{total}");
+        // 글자가 실제로 그려졌다
+        let mut empty = row_cells("", 20);
+        empty.extend(row_cells("", 20));
+        let blank = cpu_frame(&mut f, &grid(&empty, 20), Alpha::default());
+        assert!(diff(&blank, &want).0 > 100, "x{scale}: 글자를 그리지 않았다");
+    }
+}

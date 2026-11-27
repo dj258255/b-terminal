@@ -234,6 +234,9 @@ pub struct Fonts {
     synth: [Synth; 4],
     /// 모든 윤곽에 더하는 두껍게(px, #193 `font-thicken`). 끄면 0
     thicken: f32,
+    /// 글리프를 칸 안에서 가로로 옮기는 양(px, #903). 칸 폭(반올림)과 기본 글꼴의 전진 폭(반올림 전)의 차이의 절반이고,
+    /// 음수이면 정수 부분을 빼고 소수 부분만 남긴다(Ghostty `coretext.zig` `renderGlyph`와 같다)
+    dx: f32,
     /// 이 묶음을 만든 차례(#754). 묶음마다 다르다
     generation: u64,
 }
@@ -801,6 +804,7 @@ impl Fonts {
             } else {
                 0.0
             },
+            dx: glyph_dx(metrics.width as f32, primary_metrics.cell_width * px),
             generation: NEXT_GENERATION.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
         })
     }
@@ -864,9 +868,11 @@ impl Fonts {
         };
         let mut ctx = self.context.borrow_mut();
         let gid = font.glyph_id(ch);
+        // 가로로 늘려 칸을 채우는 Powerline 모양은 Ghostty도 옮기지 않는다(stretch 제약)
+        let dx = if is_powerline(ch) { 0.0 } else { self.dx };
         let mut render_at = |px: f32| {
             let mut scaler = ctx.builder(font.font()).size(px).hint(false).variations(vars).build();
-            self.render_outline(&mut scaler, gid, px, synth)
+            self.render_outline(&mut scaler, gid, px, synth, dx)
         };
         let img = render_at(px)?;
         let (mut left, mut top) = (img.placement.left, img.placement.top);
@@ -907,8 +913,12 @@ impl Fonts {
         gid: u16,
         px: f32,
         synth: Synth,
+        dx: f32,
     ) -> Option<swash::scale::image::Image> {
         let mut render = swash::scale::Render::new(&[swash::scale::Source::Outline]);
+        if dx != 0.0 {
+            render.offset(swash::zeno::Vector::new(dx, 0.0));
+        }
         let grow = self.thicken + if synth.bold { synth_bold_px(px) } else { 0.0 };
         if grow > 0.0 {
             render.embolden(grow);
@@ -1007,7 +1017,7 @@ impl Fonts {
                 .hint(false)
                 .variations(&self.variations[style as usize])
                 .build();
-            self.render_outline(&mut scaler, gid, self.px, self.synth[style as usize])
+            self.render_outline(&mut scaler, gid, self.px, self.synth[style as usize], self.dx)
                 .map(|img| {
                     Rc::new(Glyph {
                         width: img.placement.width as usize,
@@ -1260,6 +1270,13 @@ pub(crate) fn adjusted(base: f32, a: Option<Adjust>, scale: f32) -> i32 {
         Some(Adjust::Points(p)) => base + p * scale,
     };
     v.round() as i32
+}
+
+/// 글리프를 칸 가운데로 옮기는 가로 양(px, #903): 칸 폭이 글꼴의 전진 폭보다 넓으면 그 차이의 절반, 좁으면 차이의 절반에서
+/// 정수 부분을 뺀 소수 부분. 소수 위치까지 그려 넣어서 칸 폭 반올림이 글자를 한쪽으로 몰지 않는다
+fn glyph_dx(cell_width: f32, face_width: f32) -> f32 {
+    let dx = (cell_width - face_width) / 2.0;
+    if dx < 0.0 { dx - dx.trunc() } else { dx }
 }
 
 fn cell_metrics(
@@ -2001,5 +2018,203 @@ mod fallback_size_tests {
             }
         }
         assert!(is_nerd_font("Symbols Nerd Font Mono") && !is_nerd_font("Apple Symbols"));
+    }
+}
+
+/// 글리프 가로 서브픽셀 위치(#903): Ghostty 1.4.0 `coretext.zig` `renderGlyph`의 규칙과 견준다
+#[cfg(test)]
+mod subpixel_tests {
+    use super::*;
+
+    /// Ghostty 규칙의 가로 이동량(px): 칸 폭(반올림)과 글꼴 전진 폭(반올림 전)의 차이의 절반.
+    /// 음수이면 정수 부분을 빼고 소수 부분만 남긴다
+    fn rule_dx(cell_w: f32, face_w: f32) -> f32 {
+        let dx = (cell_w - face_w) / 2.0;
+        if dx < 0.0 { dx - dx.trunc() } else { dx }
+    }
+
+    /// 기준: swash로 윤곽을 `dx`만큼 옮겨 그린다(Ghostty가 CoreText 문맥을 옮기는 것과 같은 일)
+    fn reference(f: &Fonts, ch: char, dx: f32) -> Option<Glyph> {
+        let font = f.regular[0].clone();
+        let mut ctx = f.context.borrow_mut();
+        let mut scaler = ctx.builder(font.font()).size(f.px).hint(false).build();
+        let mut r = swash::scale::Render::new(&[swash::scale::Source::Outline]);
+        r.offset(swash::zeno::Vector::new(dx, 0.0));
+        let img = r.render(&mut scaler, font.glyph_id(ch))?;
+        Some(Glyph {
+            width: img.placement.width as usize,
+            height: img.placement.height as usize,
+            left: img.placement.left,
+            top: img.placement.top,
+            bitmap: img.data,
+            color: None,
+        })
+    }
+
+    /// 덮음 정도로 무게를 단 가로 중심(셀 왼쪽에서, 픽셀 가운데를 0.5로)
+    fn centroid(g: &Glyph) -> f32 {
+        let (mut sum, mut wsum) = (0.0f64, 0.0f64);
+        for (i, &a) in g.bitmap.iter().enumerate() {
+            let x = (i % g.width) as f64 + g.left as f64 + 0.5;
+            sum += x * a as f64;
+            wsum += a as f64;
+        }
+        (sum / wsum.max(1.0)) as f32
+    }
+
+    fn fonts_for(family: Option<&str>, scale: f32) -> Option<Fonts> {
+        let f = Fonts::new(&FontConfig {
+            family: family.map(str::to_string),
+            scale,
+            ..FontConfig::default()
+        })
+        .ok()?;
+        match family {
+            Some(n) if !f.family_name.eq_ignore_ascii_case(n) => None,
+            _ => Some(f),
+        }
+    }
+
+    /// 지금 동작을 잰다: `cargo test -p bt-render --lib measure_subpixel -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn measure_subpixel() {
+        for (name, family) in [("JetBrains Mono(내장)", None), ("Menlo", Some("Menlo"))] {
+            for scale in [1.0f32, 2.0] {
+                let Some(mut f) = fonts_for(family, scale) else {
+                    println!("{name} 배율{scale}: 이 기계에 없음");
+                    continue;
+                };
+                let cell_w = f.metrics().width as f32;
+                let face_w = f.regular[0].face_metrics(false).cell_width * f.px;
+                let dx = rule_dx(cell_w, face_w);
+                println!(
+                    "== {name} 13pt 배율{scale} px={} 칸폭={cell_w} 전진폭={face_w:.4} Ghostty dx={dx:.4}",
+                    f.px
+                );
+                println!("글자 | 지금 left,폭,중심 | Ghostty 규칙 left,폭,중심 | 중심 차이");
+                for ch in ['i', 'l', 'm', 'W', '0'] {
+                    let (Some(a), Some(b)) = (f.glyph(ch, FontStyle::Regular), reference(&f, ch, dx)) else {
+                        continue;
+                    };
+                    println!(
+                        "{ch} | {},{},{:.3} | {},{},{:.3} | {:+.3}",
+                        a.left,
+                        a.width,
+                        centroid(&a),
+                        b.left,
+                        b.width,
+                        centroid(&b),
+                        centroid(&b) - centroid(&a)
+                    );
+                }
+            }
+        }
+    }
+
+    /// 두께 배율(kitty 0.50): 글꼴 크기를 바꿔 가며 상자 선·커서·밑줄 두께를 잰다
+    #[test]
+    #[ignore]
+    fn measure_thickness() {
+        println!(
+            "크기(px) | 칸 | 상자 선 | 막대 커서 | 속 빈 커서 | 밑줄 | Ghostty 상자 선(ceil 밑줄 두께) | Ghostty 커서"
+        );
+        for pt in [8.0f32, 10.0, 13.0, 16.0, 20.0, 26.0, 32.0, 40.0, 52.0] {
+            let f = Fonts::new(&FontConfig {
+                size: pt,
+                ..FontConfig::default()
+            })
+            .unwrap();
+            let m = f.metrics();
+            let ut = f.regular[0].font().metrics(&[]).scale(f.px).stroke_size;
+            println!(
+                "{} | {}x{} | {} | {} | {} | {} | {} | 1",
+                f.px,
+                m.width,
+                m.height,
+                m.box_thickness,
+                m.cursor_beam,
+                m.cursor_hollow,
+                m.underline_thickness,
+                ut.ceil().max(1.0)
+            );
+        }
+    }
+
+    /// 상자 선·막대 커서·속 빈 커서·밑줄 두께는 글꼴 크기를 따라 커진다(kitty 0.50 "두께를 글꼴 크기에 맞춤", #903).
+    /// 작은 크기는 1px, 큰 크기는 더 두껍다. 크기가 커질 때 줄어드는 일은 없다
+    #[test]
+    fn line_thickness_follows_font_size() {
+        let at = |pt: f32| {
+            Fonts::new(&FontConfig {
+                size: pt,
+                ..FontConfig::default()
+            })
+            .unwrap()
+            .metrics()
+        };
+        let (small, big) = (at(8.0), at(40.0));
+        assert_eq!((small.box_thickness, small.cursor_beam, small.cursor_hollow), (1, 2, 1));
+        assert!(big.box_thickness >= 3 && big.cursor_beam >= 6 && big.cursor_hollow >= 3);
+        let mut prev = (0, 0, 0);
+        for pt in [8.0, 10.0, 13.0, 16.0, 20.0, 26.0, 32.0, 40.0, 52.0] {
+            let m = at(pt);
+            let now = (m.box_thickness, m.cursor_beam, m.cursor_hollow);
+            assert!(
+                now.0 >= prev.0 && now.1 >= prev.1 && now.2 >= prev.2,
+                "{pt}pt {now:?} < {prev:?}"
+            );
+            prev = now;
+        }
+    }
+
+    /// 칸 안 글리프는 Ghostty 규칙의 가로 이동을 받는다: 내장 글꼴·Menlo, 배율 1·2
+    #[test]
+    fn glyph_matches_ghostty_subpixel_rule() {
+        for family in [None, Some("Menlo")] {
+            for scale in [1.0f32, 2.0] {
+                let Some(mut f) = fonts_for(family, scale) else {
+                    continue;
+                };
+                let dx = rule_dx(
+                    f.metrics().width as f32,
+                    f.regular[0].face_metrics(false).cell_width * f.px,
+                );
+                for ch in ['i', 'l', 'm', 'W', '0', 'g'] {
+                    let (a, b) = (f.glyph(ch, FontStyle::Regular).unwrap(), reference(&f, ch, dx).unwrap());
+                    assert_eq!(
+                        (a.left, a.top, a.width, a.height, &a.bitmap),
+                        (b.left, b.top, b.width, b.height, &b.bitmap),
+                        "{family:?} 배율{scale} {ch:?} dx={dx}"
+                    );
+                }
+            }
+        }
+    }
+    /// Ghostty `coretext.zig` 370~379줄: 칸이 전진 폭보다 좁아 차이가 음수이면 정수 부분을 빼고 소수만 남긴다
+    #[test]
+    fn glyph_dx_keeps_only_the_fraction_when_the_cell_is_narrower() {
+        let near = |a: f32, b: f32| (a - b).abs() < 1e-4;
+        assert!(near(glyph_dx(8.0, 7.8), 0.1), "넓으면 차이의 절반");
+        assert!(
+            near(glyph_dx(10.0, 7.8), 1.1),
+            "양수는 정수 부분도 그대로(adjust-cell-width로 넓힌 칸의 가운데)"
+        );
+        assert!(near(glyph_dx(8.0, 9.3), -0.65), "-1보다 크면 그대로");
+        assert!(near(glyph_dx(6.0, 9.0), -0.5), "-1.5는 정수 부분 -1을 빼서 -0.5");
+        assert!(near(glyph_dx(4.0, 9.0), -0.5), "-2.5도 -0.5");
+    }
+
+    /// 칸을 채우도록 늘리는 파워라인 모양은 Ghostty도 옮기지 않는다(`stretch` 제약)
+    #[test]
+    fn powerline_glyphs_are_not_shifted() {
+        let mut f = fonts_for(None, 1.0).expect("내장 글꼴");
+        assert!(f.dx != 0.0, "기본 글꼴에서 dx가 0이면 이 시험이 아무것도 보지 않는다");
+        let ch = '\u{E0B0}';
+        let a = f.glyph(ch, FontStyle::Regular).expect("파워라인 글리프");
+        let flat = reference(&f, ch, 0.0).expect("기준");
+        let moved = reference(&f, ch, f.dx).expect("옮긴 기준");
+        assert_ne!(flat.bitmap, moved.bitmap, "옮기면 비트맵이 달라야 시험이 뜻이 있다");
+        assert_eq!((a.left, a.width, &a.bitmap), (flat.left, flat.width, &flat.bitmap));
     }
 }
