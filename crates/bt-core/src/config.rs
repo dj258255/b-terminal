@@ -748,6 +748,8 @@ pub struct Config {
     pub macos_dock_progress: bool,
     /// 스크롤 막대(Ghostty `scrollbar`, 기본 system)
     pub scrollbar: Scrollbar,
+    /// 스크롤 막대 모양(kitty `scrollbar_width` 등, #917). 정하지 않으면 지금 막대 그대로
+    pub scrollbar_style: ScrollbarStyle,
     /// 크게 보는 칸을 지키는 때(Ghostty `split-preserve-zoom`, 기본 아무 때도 아님)
     pub split_preserve_zoom: SplitPreserveZoom,
     /// 앱 자신의 알림 띠(Ghostty `app-notifications`)
@@ -944,7 +946,7 @@ impl FinishAction {
     }
 }
 
-/// `scrollbar`(Ghostty): 스크롤 막대를 보이는가
+/// `scrollbar`(Ghostty `system`·`never`, kitty 값 넷을 더함): 스크롤 막대를 보이는가
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Scrollbar {
     /// 시스템 방식(기본): 스크롤하는 동안과 그 뒤 잠깐, 또는 마우스가 오른쪽 끝 위에 있을 때만 보인다
@@ -952,17 +954,126 @@ pub enum Scrollbar {
     System,
     /// 그리지 않는다
     Never,
+    /// kitty `always`: 스크롤백이 있는 동안 늘(시스템 설정과 상관없이)
+    Always,
+    /// kitty `scrolled`: 위로 올라가 있는 동안(맨 아래가 아닐 때)
+    Scrolled,
+    /// kitty `hovered`: 마우스가 오른쪽 끝 위에 있는 동안
+    Hovered,
+    /// kitty `scrolled-and-hovered`: 위로 올라가 있고 마우스도 오른쪽 끝 위에 있을 때
+    ScrolledAndHovered,
+    /// kitty `scrolled-or-hovered`: 위로 올라가 있거나 마우스가 오른쪽 끝 위에 있을 때
+    ScrolledOrHovered,
 }
 
 impl Scrollbar {
-    /// 막대를 그리는가. `history`는 스크롤백 줄 수, `scrolling`은 방금 스크롤했다, `hovering`은 마우스가 오른쪽 끝 위에 있다,
-    /// `always`는 시스템 설정 "스크롤 막대 보기: 항상"(#630)
-    pub fn shows(self, history: usize, scrolling: bool, hovering: bool, always: bool) -> bool {
+    /// 막대를 그리는가. `history`는 스크롤백 줄 수, `scrolling`은 방금 스크롤했다(시스템 방식의 잠깐 보임),
+    /// `hovering`은 마우스가 오른쪽 끝 위에 있다, `always`는 시스템 설정 "스크롤 막대 보기: 항상"(#630),
+    /// `scrolled_back`은 맨 아래에서 위로 올라가 있다(kitty 값이 보는 것)
+    pub fn shows(self, history: usize, scrolling: bool, hovering: bool, always: bool, scrolled_back: bool) -> bool {
+        if history == 0 {
+            return false;
+        }
         match self {
             Scrollbar::Never => false,
-            Scrollbar::System => history > 0 && (always || scrolling || hovering),
+            Scrollbar::System => always || scrolling || hovering,
+            Scrollbar::Always => true,
+            Scrollbar::Scrolled => scrolled_back,
+            Scrollbar::Hovered => hovering,
+            Scrollbar::ScrolledAndHovered => scrolled_back && hovering,
+            Scrollbar::ScrolledOrHovered => scrolled_back || hovering,
         }
     }
+
+    fn parse(v: &str) -> Option<Self> {
+        Some(match v {
+            "system" => Scrollbar::System,
+            "never" => Scrollbar::Never,
+            "always" => Scrollbar::Always,
+            "scrolled" => Scrollbar::Scrolled,
+            "hovered" => Scrollbar::Hovered,
+            "scrolled-and-hovered" => Scrollbar::ScrolledAndHovered,
+            "scrolled-or-hovered" => Scrollbar::ScrolledOrHovered,
+            _ => return None,
+        })
+    }
+
+    fn name(self) -> &'static str {
+        match self {
+            Scrollbar::System => "system",
+            Scrollbar::Never => "never",
+            Scrollbar::Always => "always",
+            Scrollbar::Scrolled => "scrolled",
+            Scrollbar::Hovered => "hovered",
+            Scrollbar::ScrolledAndHovered => "scrolled-and-hovered",
+            Scrollbar::ScrolledOrHovered => "scrolled-or-hovered",
+        }
+    }
+}
+
+/// 스크롤 막대 색(kitty `scrollbar_handle_color`·`scrollbar_track_color`)
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ScrollbarColor {
+    /// 지금 글자색(기본)
+    #[default]
+    Foreground,
+    /// 지금 고른 글 바탕색
+    SelectionBackground,
+    Rgb(Rgb),
+}
+
+impl ScrollbarColor {
+    fn parse(v: &str) -> Option<Self> {
+        match v {
+            "foreground" => Some(Self::Foreground),
+            "selection-background" | "selection_background" => Some(Self::SelectionBackground),
+            _ => Rgb::parse_color(v).map(Self::Rgb),
+        }
+    }
+
+    fn render(self) -> String {
+        match self {
+            Self::Foreground => "foreground".into(),
+            Self::SelectionBackground => "selection-background".into(),
+            Self::Rgb(c) => format!("#{:02x}{:02x}{:02x}", c.r, c.g, c.b),
+        }
+    }
+
+    /// 지금 글자색·고름 바탕색으로 실제 색을 낸다
+    pub fn resolve(self, foreground: Rgb, selection_background: Rgb) -> Rgb {
+        match self {
+            Self::Foreground => foreground,
+            Self::SelectionBackground => selection_background,
+            Self::Rgb(c) => c,
+        }
+    }
+}
+
+/// 스크롤 막대 모양(kitty `scrollbar_*`). 길이는 칸 너비(높이) 배수, 투명도는 0~1.
+/// `None`은 "정하지 않음"이고, 그때는 kitty 기본값이 아니라 b-terminal이 처음부터 그리던 막대
+/// (폭 6px×배율, 가장자리 간격 1px×배율, 손잡이 최소 20px, 직각, 트랙 없음, 투명도 0.43·마우스 올리면 0.67)를 그린다
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct ScrollbarStyle {
+    /// `scrollbar-width`(칸 너비 배수, kitty 기본 0.5)
+    pub width: Option<f32>,
+    /// `scrollbar-hover-width`(칸 너비 배수, kitty 기본 1). 정하지 않으면 `width`와 같다
+    pub hover_width: Option<f32>,
+    /// `scrollbar-radius`(칸 너비 배수, kitty 기본 0.3)
+    pub radius: Option<f32>,
+    /// `scrollbar-gap`(칸 너비 배수, kitty 기본 0.1): 칸 오른쪽 가장자리와 막대 사이
+    pub gap: Option<f32>,
+    /// `scrollbar-min-handle-height`(칸 높이 배수, kitty 기본 1)
+    pub min_handle_height: Option<f32>,
+    /// `scrollbar-handle-color`
+    pub handle_color: ScrollbarColor,
+    /// `scrollbar-handle-opacity`(kitty 기본 0.5). 정하면 마우스를 올려도 같다
+    pub handle_opacity: Option<f32>,
+    /// `scrollbar-track-color`
+    pub track_color: ScrollbarColor,
+    /// `scrollbar-track-opacity`(kitty 기본 0)
+    pub track_opacity: f32,
+    /// `scrollbar-track-hover-opacity`(kitty 기본 0.1). 정하지 않으면 `track_opacity`와 같다
+    pub track_hover_opacity: Option<f32>,
 }
 
 /// `split-preserve-zoom`(Ghostty): 크게 보는 칸을 언제 지키는가. 기본은 아무것도 지키지 않는다
@@ -1873,6 +1984,7 @@ impl Default for Config {
             progress_style: true,
             macos_dock_progress: true,
             scrollbar: Scrollbar::System,
+            scrollbar_style: ScrollbarStyle::default(),
             split_preserve_zoom: SplitPreserveZoom::default(),
             app_notifications: AppNotifications::default(),
             unfocused_split_opacity: 0.7,
@@ -3642,10 +3754,53 @@ impl Config {
                 Some(b) => self.macos_dock_progress = b,
                 None => bad(warnings),
             },
-            "scrollbar" => match v {
-                "system" => self.scrollbar = Scrollbar::System,
-                "never" => self.scrollbar = Scrollbar::Never,
+            "scrollbar" => match Scrollbar::parse(v) {
+                Some(m) => self.scrollbar = m,
+                None => bad(warnings),
+            },
+            "scrollbar-width" | "scrollbar-hover-width" | "scrollbar-radius" | "scrollbar-gap" | "scrollbar-min-handle-height"
+            | "scrollbar-handle-opacity" | "scrollbar-track-hover-opacity" => {
+                // 빈 값·`default`는 정하지 않은 것(지금 막대). 음수·숫자가 아닌 값은 경고하고 그대로 둔다
+                let val = if v.is_empty() || v == "default" {
+                    Some(None)
+                } else {
+                    match v.parse::<f32>() {
+                        Ok(f) if f.is_finite() && f >= 0.0 => Some(Some(f)),
+                        _ => None,
+                    }
+                };
+                match val {
+                    None => bad(warnings),
+                    Some(val) => {
+                        let st = &mut self.scrollbar_style;
+                        match e.key.as_str() {
+                            "scrollbar-width" => st.width = val,
+                            "scrollbar-hover-width" => st.hover_width = val,
+                            "scrollbar-radius" => st.radius = val,
+                            "scrollbar-gap" => st.gap = val,
+                            "scrollbar-min-handle-height" => st.min_handle_height = val,
+                            "scrollbar-handle-opacity" => st.handle_opacity = val.map(|f| f.min(1.0)),
+                            _ => st.track_hover_opacity = val.map(|f| f.min(1.0)),
+                        }
+                    }
+                }
+            }
+            "scrollbar-track-opacity" => match v.parse::<f32>() {
+                Ok(f) if f.is_finite() && f >= 0.0 => self.scrollbar_style.track_opacity = f.min(1.0),
+                _ if v.is_empty() || v == "default" => self.scrollbar_style.track_opacity = 0.0,
                 _ => bad(warnings),
+            },
+            "scrollbar-handle-color" | "scrollbar-track-color" => match ScrollbarColor::parse(v) {
+                Some(c) if e.key == "scrollbar-handle-color" => self.scrollbar_style.handle_color = c,
+                Some(c) => self.scrollbar_style.track_color = c,
+                None if v.is_empty() || v == "default" => {
+                    if e.key == "scrollbar-handle-color" {
+                        self.scrollbar_style.handle_color = ScrollbarColor::Foreground
+                    } else {
+                        self.scrollbar_style.track_color = ScrollbarColor::Foreground
+                    }
+                }
+                None => bad(warnings),
             },
             "split-preserve-zoom" => {
                 if !self.split_preserve_zoom.apply(v) {
@@ -4442,14 +4597,21 @@ impl Config {
         push("desktop-notifications", self.desktop_notifications.to_string());
         push("progress-style", self.progress_style.to_string());
         push("macos-dock-progress", self.macos_dock_progress.to_string());
-        push(
-            "scrollbar",
-            match self.scrollbar {
-                Scrollbar::System => "system",
-                Scrollbar::Never => "never",
-            }
-            .into(),
-        );
+        push("scrollbar", self.scrollbar.name().into());
+        {
+            let st = &self.scrollbar_style;
+            let opt = |o: Option<f32>| o.map_or("default".to_string(), |f| f.to_string());
+            push("scrollbar-width", opt(st.width));
+            push("scrollbar-hover-width", opt(st.hover_width));
+            push("scrollbar-radius", opt(st.radius));
+            push("scrollbar-gap", opt(st.gap));
+            push("scrollbar-min-handle-height", opt(st.min_handle_height));
+            push("scrollbar-handle-color", st.handle_color.render());
+            push("scrollbar-handle-opacity", opt(st.handle_opacity));
+            push("scrollbar-track-color", st.track_color.render());
+            push("scrollbar-track-opacity", st.track_opacity.to_string());
+            push("scrollbar-track-hover-opacity", opt(st.track_hover_opacity));
+        }
         push(
             "split-preserve-zoom",
             if self.split_preserve_zoom.navigation {
@@ -4791,25 +4953,25 @@ mod tests {
     #[test]
     fn scrollbar_shows_by_mode_history_and_activity() {
         // 스크롤백이 없으면 보일 것이 없다
-        assert!(!Scrollbar::System.shows(0, true, true, false));
+        assert!(!Scrollbar::System.shows(0, true, true, false, false));
         // 스크롤했거나 마우스가 끝에 있으면 보인다
-        assert!(Scrollbar::System.shows(10, true, false, false));
-        assert!(Scrollbar::System.shows(10, false, true, false));
+        assert!(Scrollbar::System.shows(10, true, false, false, false));
+        assert!(Scrollbar::System.shows(10, false, true, false, false));
         // 가만히 있으면 숨는다
-        assert!(!Scrollbar::System.shows(10, false, false, false));
+        assert!(!Scrollbar::System.shows(10, false, false, false, false));
         // never는 언제나 그리지 않는다
-        assert!(!Scrollbar::Never.shows(10, true, true, true));
+        assert!(!Scrollbar::Never.shows(10, true, true, true, false));
     }
 
     /// 시스템 설정 "스크롤 막대 보기: 항상"(Legacy 스타일, #630)이면 스크롤백이 있는 동안 늘 보인다
     #[test]
     fn scrollbar_always_shows_with_history_when_system_style_is_legacy() {
-        assert!(Scrollbar::System.shows(10, false, false, true));
+        assert!(Scrollbar::System.shows(10, false, false, true, false));
         assert!(
-            !Scrollbar::System.shows(0, false, false, true),
+            !Scrollbar::System.shows(0, false, false, true, false),
             "스크롤백이 없으면 항상 보기여도 없다"
         );
-        assert!(!Scrollbar::Never.shows(10, false, false, true));
+        assert!(!Scrollbar::Never.shows(10, false, false, true, false));
     }
 
     #[test]
@@ -4848,7 +5010,7 @@ mod tests {
         assert!(r.contains("scrollbar = never"));
         assert!(r.contains("split-preserve-zoom = navigation"));
         let c = Config::from_text(
-            "progress-style = x\nscrollbar = always\nsplit-preserve-zoom = foo\n",
+            "progress-style = x\nscrollbar = bogus\nsplit-preserve-zoom = foo\n",
             true,
         );
         assert!(c.progress_style && c.scrollbar == Scrollbar::System && !c.split_preserve_zoom.navigation);
@@ -6809,7 +6971,7 @@ mod tests {
         assert!(r.contains("scrollbar = never"));
         assert!(r.contains("split-preserve-zoom = navigation"));
         let c = Config::from_text(
-            "progress-style = x\nscrollbar = always\nsplit-preserve-zoom = foo\n",
+            "progress-style = x\nscrollbar = bogus\nsplit-preserve-zoom = foo\n",
             true,
         );
         assert!(c.progress_style && c.scrollbar == Scrollbar::System && !c.split_preserve_zoom.navigation);
