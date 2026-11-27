@@ -33,6 +33,13 @@ const NAMES: &[(&str, CopyAction)] = &[
     ("half_page_down", CopyAction::Op(CopyOp::HalfPageDown)),
     ("page_up", CopyAction::Op(CopyOp::PageUp)),
     ("page_down", CopyAction::Op(CopyOp::PageDown)),
+    ("word_forward", CopyAction::Op(CopyOp::WordForward)),
+    ("word_backward", CopyAction::Op(CopyOp::WordBackward)),
+    ("word_end", CopyAction::Op(CopyOp::WordEnd)),
+    ("line_content_start", CopyAction::Op(CopyOp::LineContentStart)),
+    ("viewport_top", CopyAction::Op(CopyOp::ViewportTop)),
+    ("viewport_middle", CopyAction::Op(CopyOp::ViewportMiddle)),
+    ("viewport_bottom", CopyAction::Op(CopyOp::ViewportBottom)),
     ("select", CopyAction::Op(CopyOp::SelectCell)),
     ("select_line", CopyAction::Op(CopyOp::SelectLine)),
     ("select_block", CopyAction::Op(CopyOp::SelectBlock)),
@@ -49,8 +56,9 @@ pub fn parse(arg: Option<&str>) -> Result<CopyAction, String> {
     })
 }
 
-/// 기본 키 테이블(트리거, 동작). WezTerm CopyMode의 기본 묶음 가운데 이번 판의 동작만 옮겼다.
-/// 낱말·문단 움직임(w b e { })과 화면 위·중간·아래(H M L)는 다음 판(#931), 찾기(/ ? n N)는 그다음(#932)이다.
+/// 기본 키 테이블(트리거, 동작). WezTerm CopyMode의 기본 묶음 가운데 이번 판까지의 동작만 옮겼다.
+/// 낱말(w b e, Tab·Shift+Tab, Alt+f·Alt+b·Alt+←→)·줄의 첫 글자(^, Alt+m)·화면 위·중간·아래(H M L)는 #931이다.
+/// WezTerm에 없는 W B E { }는 넣지 않았다. 찾기(/ ? n N)는 다음 판(#932)이다.
 /// 글자 키는 `super`·`ctrl`이 없어도 라틴 글자로 맞춘다(한글 입력 소스에서도 같은 키, `app/copy_cmd.rs`).
 /// 마지막의 `catch_all=ignore`가 묶이지 않은 키를 먹어 프로그램에 가지 않게 한다
 pub(crate) fn default_table() -> Vec<(&'static str, &'static str)> {
@@ -67,6 +75,20 @@ pub(crate) fn default_table() -> Vec<(&'static str, &'static str)> {
         ("home", "copy_mode:line_start"),
         ("shift+4", "copy_mode:line_end"),
         ("end", "copy_mode:line_end"),
+        ("w", "copy_mode:word_forward"),
+        ("tab", "copy_mode:word_forward"),
+        ("alt+f", "copy_mode:word_forward"),
+        ("alt+arrow_right", "copy_mode:word_forward"),
+        ("b", "copy_mode:word_backward"),
+        ("shift+tab", "copy_mode:word_backward"),
+        ("alt+b", "copy_mode:word_backward"),
+        ("alt+arrow_left", "copy_mode:word_backward"),
+        ("e", "copy_mode:word_end"),
+        ("shift+6", "copy_mode:line_content_start"),
+        ("alt+m", "copy_mode:line_content_start"),
+        ("shift+h", "copy_mode:viewport_top"),
+        ("shift+m", "copy_mode:viewport_middle"),
+        ("shift+l", "copy_mode:viewport_bottom"),
         ("g", "copy_mode:top"),
         ("shift+g", "copy_mode:bottom"),
         ("ctrl+u", "copy_mode:half_page_up"),
@@ -206,6 +228,35 @@ mod tests {
         for k in ["a", "space", "ctrl+a", "f1", "alt+x"] {
             let out = press(&km, &mut sq, k);
             assert_eq!(out.action, Some(Action::Ignore), "{k}");
+        }
+    }
+
+    #[test]
+    fn word_and_viewport_keys_are_bound_like_wezterm_and_the_ones_it_lacks_are_not() {
+        let (km, mut sq) = entered();
+        for (key, name) in [
+            ("w", "word_forward"),
+            ("b", "word_backward"),
+            ("e", "word_end"),
+            ("tab", "word_forward"),
+            ("shift+tab", "word_backward"),
+            ("shift+6", "line_content_start"),
+            ("shift+h", "viewport_top"),
+            ("shift+m", "viewport_middle"),
+            ("shift+l", "viewport_bottom"),
+        ] {
+            let out = press(&km, &mut sq, key);
+            assert_eq!(out.action, Some(parse_action_of(&format!("copy_mode:{name}"))), "{key}");
+        }
+        // WezTerm 기본 묶음에 없는 W B E { }는 묶지 않는다(먹기만 한다)
+        for key in [
+            "shift+w",
+            "shift+b",
+            "shift+e",
+            "shift+bracket_left",
+            "shift+bracket_right",
+        ] {
+            assert_eq!(press(&km, &mut sq, key).action, Some(Action::Ignore), "{key}");
         }
     }
 
