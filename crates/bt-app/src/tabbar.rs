@@ -1,8 +1,9 @@
 //! 가로 탭 줄(Ghostty처럼). 탭이 둘 이상일 때만 창 위쪽에 그린다
 
+use bt_core::tabstyle::{TabBarAlign, TabBarLook, TabBarStyle, TabPowerlineStyle};
 use bt_core::{Rgb, Theme};
-use bt_render::proportional::draw_text_proportional;
-use bt_render::{Canvas, Fonts, draw_text, text_cells, truncate};
+use bt_render::proportional::{draw_text_proportional, draw_text_proportional_styled};
+use bt_render::{Canvas, Fonts, draw_text, draw_text_styled, text_cells, truncate};
 
 /// 탭 줄 한 칸
 #[derive(Debug, Clone)]
@@ -123,81 +124,399 @@ pub fn bar_height(terminal: &Fonts, title: Option<&Fonts>) -> u32 {
     }
 }
 
+/// 탭 자리를 고르는 방식. 기본 모양은 창 폭을 탭 수로 고르게 나눠 가득 채운다(`max_tab`이 없음).
+/// kitty식 모양(`tab-bar-style = fade` 등)은 탭 하나의 폭에 상한이 있어 탭이 모자라면 `align`대로 한쪽에 모인다(#901)
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Layout {
+    pub max_tab: Option<u32>,
+    pub align: TabBarAlign,
+}
+
+/// kitty식 모양에서 탭 하나의 상한을 몇 칸으로 보는가
+const MAX_TAB_CELLS: u32 = 24;
+
+impl Layout {
+    /// 설정과 탭 줄 글꼴의 칸 폭(px)에서 자리 방식을 정한다
+    pub fn of(look: &TabBarLook, cell_w: u32) -> Self {
+        match look.style {
+            TabBarStyle::Default | TabBarStyle::Hidden => Self::default(),
+            _ => Self {
+                max_tab: Some(cell_w.max(1) * MAX_TAB_CELLS),
+                align: look.align,
+            },
+        }
+    }
+}
+
 /// 탭마다 (x, 폭). 상한 없이 창 폭을 탭 수로 고르게 나누고, 나머지 픽셀은 마지막 탭이 가져 오른쪽 끝까지 채운다(#478).
-/// 폭이 탭 수보다 작으면 탭마다 1px로 하고 창 밖으로 넘어간다(패닉은 없다)
-fn slots(width: u32, count: usize) -> Vec<(i32, u32)> {
+/// 폭이 탭 수보다 작으면 탭마다 1px로 하고 창 밖으로 넘어간다(패닉은 없다).
+/// `max_tab`이 있고 나눈 폭이 그보다 크면 모든 탭이 그 폭이고 줄 전체를 `align`대로 놓는다
+fn slots(width: u32, count: usize, layout: Layout) -> Vec<(i32, u32)> {
     if count == 0 {
         return Vec::new();
     }
     let w = (width / count as u32).max(1);
+    if let Some(cap) = layout.max_tab.filter(|&cap| w > cap) {
+        let total = cap * count as u32;
+        let start = match layout.align {
+            TabBarAlign::Left => 0,
+            TabBarAlign::Center => (width.saturating_sub(total) / 2) as i32,
+            TabBarAlign::Right => width.saturating_sub(total) as i32,
+        };
+        return (0..count).map(|i| (start + (i as u32 * cap) as i32, cap)).collect();
+    }
     let last = width.saturating_sub(w * (count as u32 - 1)).max(1);
     (0..count)
         .map(|i| (i as i32 * w as i32, if i + 1 == count { last } else { w }))
         .collect()
 }
 
+/// 탭 줄에서 쓸 색들. 적지 않은 색은 지금처럼 테마에서 고른다
+struct Palette {
+    bar: Rgb,
+    active_bg: Rgb,
+    active_fg: Rgb,
+    /// 기본 모양에서는 정했을 때만 칠한다(`None`이면 막대 바탕이 보인다)
+    inactive_bg: Option<Rgb>,
+    inactive_fg: Rgb,
+}
+
+impl Palette {
+    fn new(theme: &Theme, look: &TabBarLook) -> Self {
+        let styled = !matches!(look.style, TabBarStyle::Default | TabBarStyle::Hidden);
+        Self {
+            bar: look
+                .bar_background
+                .unwrap_or_else(|| theme.background.mix(theme.foreground, 0.06)),
+            active_bg: look.active_background.unwrap_or(theme.background),
+            active_fg: look.active_foreground.unwrap_or(theme.foreground),
+            inactive_bg: look
+                .inactive_background
+                .or_else(|| styled.then(|| theme.background.mix(theme.foreground, 0.14))),
+            inactive_fg: look
+                .inactive_foreground
+                .unwrap_or_else(|| theme.foreground.mix(theme.background, 0.45)),
+        }
+    }
+    fn bg(&self, active: bool) -> Rgb {
+        if active {
+            self.active_bg
+        } else {
+            self.inactive_bg.unwrap_or(self.bar)
+        }
+    }
+}
+
+/// 파워라인 기호의 꼴. 글꼴에 기호가 없어도 그려지게 직접 칠한다(U+E0B0·E0B4·E0BC)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Shape {
+    /// U+E0B0: 오른쪽을 가리키는 세모
+    Angled,
+    /// U+E0B4: 오른쪽 반원
+    Round,
+    /// U+E0BC: 왼쪽 위 직각 세모(왼쪽에서 오른쪽 아래로 기운다)
+    Slanted,
+}
+
+/// 칸 높이 `h` 중 위에서 `half`(0~1)쯤 되는 줄에서 기호가 왼쪽에서 차지하는 폭의 비율(0~1)
+fn shape_edge(shape: Shape, half: f32) -> f32 {
+    match shape {
+        Shape::Angled => 1.0 - (2.0 * half - 1.0).abs(),
+        Shape::Round => (1.0 - (2.0 * half - 1.0).powi(2)).max(0.0).sqrt(),
+        Shape::Slanted => 1.0 - half,
+    }
+}
+
+/// 칸 `(x, y, cw, h)`의 줄마다 `edge`(px, 소수)만큼을 왼쪽(또는 오른쪽)에서 `color`로 칠한다. 가장자리 한 픽셀은 덮음 정도로 섞는다
+#[allow(clippy::too_many_arguments)]
+fn fill_cover(
+    canvas: &mut Canvas,
+    x: i32,
+    y: i32,
+    cw: u32,
+    h: u32,
+    edge: impl Fn(f32) -> f32,
+    from_right: bool,
+    color: Rgb,
+) {
+    for r in 0..h {
+        let cover = (edge((r as f32 + 0.5) / h as f32) * cw as f32).clamp(0.0, cw as f32);
+        let full = cover.floor() as u32;
+        let frac = cover - full as f32;
+        let (fx, ax) = if from_right {
+            (x + cw as i32 - full as i32, x + cw as i32 - full as i32 - 1)
+        } else {
+            (x, x + full as i32)
+        };
+        canvas.fill_rect(fx, y + r as i32, full, 1, color);
+        if frac > 0.02 && full < cw {
+            canvas.blend_px(ax, y + r as i32, color, (frac * 255.0).round() as u8);
+        }
+    }
+}
+
+/// 가장자리(`shape_edge`)를 따라 두께 `t` px의 선만 긋는다(파워라인의 비어 있는 구분 기호)
+#[allow(clippy::too_many_arguments)]
+fn stroke_edge(canvas: &mut Canvas, x: i32, y: i32, cw: u32, h: u32, shape: Shape, t: u32, color: Rgb) {
+    for r in 0..h {
+        let e = (shape_edge(shape, (r as f32 + 0.5) / h as f32) * cw as f32).round() as i32;
+        let start = (e - t as i32).max(0);
+        canvas.fill_rect(x + start, y + r as i32, (e - start).max(0) as u32, 1, color);
+    }
+}
+
+/// 이 모양에서 한 탭의 안쪽(제목·점·진행 막대가 들어가는 자리): (x, 폭)
+fn content_rect(look: &TabBarLook, x: i32, w: u32, cw: u32, last: bool) -> (i32, u32) {
+    let cells = |n: u32| (n * cw).min(w / 2);
+    match look.style {
+        TabBarStyle::Default | TabBarStyle::Hidden => (x, w),
+        TabBarStyle::Fade => {
+            let n = fade_cells(look, w, cw);
+            (x + (n * cw) as i32, w.saturating_sub((2 * n + 1) * cw).max(1))
+        }
+        TabBarStyle::Slant => (x + cells(1) as i32, w.saturating_sub(2 * cells(1)).max(1)),
+        TabBarStyle::Separator => {
+            let sep = if last { 0 } else { separator_width(look, cw) };
+            (x, w.saturating_sub(sep).max(1))
+        }
+        TabBarStyle::Powerline => (x, w.saturating_sub(cells(1)).max(1)),
+    }
+}
+
+/// 탭 폭 `w`에 들어가는 번짐 칸 수: 양쪽 번짐과 끝 한 칸을 빼고도 제목 자리가 남게 줄인다
+fn fade_cells(look: &TabBarLook, w: u32, cw: u32) -> u32 {
+    let room = (w / cw.max(1)).saturating_sub(3) / 2;
+    (look.fade.len() as u32).min(room)
+}
+
+fn separator_width(look: &TabBarLook, cw: u32) -> u32 {
+    let glyph = bt_core::tabstyle::separator_glyph(&look.separator);
+    cw * text_cells(glyph) as u32
+}
+
+/// 탭 하나의 바탕과 모양(번짐·기울임·구분 기호)을 칠한다. 제목·점·막대는 `draw_with_title_font`가 그 위에 그린다
+#[allow(clippy::too_many_arguments)]
+fn draw_tab_shape(
+    canvas: &mut Canvas,
+    look: &TabBarLook,
+    pal: &Palette,
+    tab: &TabLabel,
+    next: Option<&TabLabel>,
+    (x, w): (i32, u32),
+    top: i32,
+    h: u32,
+    cw: u32,
+    stroke: u32,
+) {
+    let bg = pal.bg(tab.active);
+    let cwi = cw as i32;
+    match look.style {
+        TabBarStyle::Default | TabBarStyle::Hidden => {}
+        TabBarStyle::Fade => {
+            let n = fade_cells(look, w, cw);
+            let right = x + w as i32 - cwi - (n * cw) as i32;
+            canvas.fill_rect(
+                x + (n * cw) as i32,
+                top,
+                (right - x - (n * cw) as i32).max(0) as u32,
+                h,
+                bg,
+            );
+            for i in 0..n as usize {
+                let c = pal.bar.mix(bg, look.fade[i]);
+                canvas.fill_rect(x + (i as u32 * cw) as i32, top, cw, h, c);
+                let c = pal.bar.mix(bg, look.fade[n as usize - 1 - i]);
+                canvas.fill_rect(right + (i as u32 * cw) as i32, top, cw, h, c);
+            }
+        }
+        TabBarStyle::Slant => {
+            canvas.fill_rect(x, top, w, h, bg);
+            let c = cw.min(w / 2);
+            // 막대 바탕이 위쪽 모서리를 깎는다: 왼쪽은 U+E0BC, 오른쪽은 U+E0BE(좌우 뒤집음)
+            fill_cover(
+                canvas,
+                x,
+                top,
+                c,
+                h,
+                |half| shape_edge(Shape::Slanted, half),
+                false,
+                pal.bar,
+            );
+            fill_cover(
+                canvas,
+                x + w as i32 - c as i32,
+                top,
+                c,
+                h,
+                |half| shape_edge(Shape::Slanted, half),
+                true,
+                pal.bar,
+            );
+        }
+        TabBarStyle::Separator => {
+            let sepw = if next.is_some() { separator_width(look, cw) } else { 0 };
+            canvas.fill_rect(x, top, w - sepw.min(w), h, bg);
+            if sepw > 0 {
+                let sx = x + w as i32 - sepw as i32;
+                canvas.fill_rect(sx, top, sepw, h, pal.inactive_bg.unwrap_or(pal.bar));
+            }
+        }
+        TabBarStyle::Powerline => {
+            let c = cw.min(w / 2);
+            canvas.fill_rect(x, top, w - c, h, bg);
+            let sx = x + (w - c) as i32;
+            let next_bg = next.map_or(pal.bar, |n| pal.bg(n.active));
+            if next.is_some() && next_bg == bg {
+                // 이웃 탭과 색이 같으면 이어 붙지 않게 속이 빈 구분 기호(kitty의 soft separator)
+                canvas.fill_rect(sx, top, c, h, bg);
+                let line = soft_color(pal, bg);
+                let shape = shape_of(look.powerline);
+                stroke_edge(canvas, sx, top, c, h, shape, stroke.max(1), line);
+            } else {
+                canvas.fill_rect(sx, top, c, h, next_bg);
+                let shape = shape_of(look.powerline);
+                fill_cover(canvas, sx, top, c, h, |half| shape_edge(shape, half), false, bg);
+            }
+        }
+    }
+}
+
+fn shape_of(style: TabPowerlineStyle) -> Shape {
+    match style {
+        TabPowerlineStyle::Angled => Shape::Angled,
+        TabPowerlineStyle::Round => Shape::Round,
+        TabPowerlineStyle::Slanted => Shape::Slanted,
+    }
+}
+
+/// kitty `draw_tab_with_powerline`의 soft separator 색
+fn soft_color(pal: &Palette, tab_bg: Rgb) -> Rgb {
+    let fg = pal.inactive_fg;
+    if tab_bg == fg {
+        pal.bar
+    } else if tab_bg != pal.bar {
+        let inactive = pal.inactive_bg.unwrap_or(pal.bar);
+        if inactive.contrast(pal.bar) < inactive.contrast(fg) {
+            pal.bar
+        } else {
+            fg
+        }
+    } else {
+        fg
+    }
+}
+
 /// 탭 줄을 `top`(창 위에서 내려온 픽셀)부터 그린다. 제목 막대 밑으로 콘텐츠가 들어가는 창에서는 `top`이 제목 막대 높이다(#192).
 /// 제목 글꼴을 따로 쓰는 탭 줄(#241 `window-title-font-family`). `title_fonts`가 없으면 터미널 글꼴로 셀 격자에 맞춰 그린다.
-/// 있으면 글자마다 advance로 자리를 잡고(비례폭도 겹치지 않게) 잘림도 그 폭으로 센다. 탭 높이·구분선·안 읽음 점·진행 막대도 제목 글꼴 지표로 센다(#474)
+/// 있으면 글자마다 advance로 자리를 잡고(비례폭도 겹치지 않게) 잘림도 그 폭으로 센다. 탭 높이·구분선·안 읽음 점·진행 막대도 제목 글꼴 지표로 센다(#474).
+/// `look`은 `tab-bar-style`과 탭 색·글꼴 모양이다. 기본값이면 지금까지의 픽셀과 같다(#901)
 pub fn draw_with_title_font(
     canvas: &mut Canvas,
     fonts: &mut Fonts,
     mut title_fonts: Option<&mut Fonts>,
     theme: &Theme,
+    look: &TabBarLook,
     tabs: &[TabLabel],
     top: i32,
 ) {
     // 높이·구분선·점·진행 막대는 모두 제목 글꼴이 있으면 그 지표로 센다(#474). 탭 자리는 누른 자리 판정(`hit`)과 같은 `slots`다
     let m = bar_fonts(fonts, title_fonts.as_deref()).metrics();
     let h = bar_height(fonts, title_fonts.as_deref());
-    let bar = theme.background.mix(theme.foreground, 0.06);
-    let active_bg = theme.background;
+    let pal = Palette::new(theme, look);
+    let default_look = matches!(look.style, TabBarStyle::Default | TabBarStyle::Hidden);
     let border = theme.background.mix(theme.foreground, 0.16);
-    let text = theme.foreground;
-    let dim = theme.foreground.mix(theme.background, 0.45);
-    canvas.fill_rect(0, top, canvas.width, h, bar);
-    canvas.fill_rect(0, top + h as i32 - 1, canvas.width, 1, border);
+    canvas.fill_rect(0, top, canvas.width, h, pal.bar);
+    if default_look {
+        canvas.fill_rect(0, top + h as i32 - 1, canvas.width, 1, border);
+    }
     let cw = m.width as i32;
-    for (tab, (x, w)) in tabs.iter().zip(slots(canvas.width, tabs.len())) {
-        if tab.active {
-            canvas.fill_rect(x, top, w, h, active_bg);
-        }
-        canvas.fill_rect(x + w as i32 - 1, top + m.height as i32 / 4, 1, h - m.height / 2, border);
-        // 가운데 맞춘 제목. 안 읽음 점 자리를 남긴다
-        let color = if tab.active { text } else { dim };
-        if let Some(tf) = title_fonts.as_deref_mut() {
-            let room_px = (w as i32 - 4 * cw).max(cw) as f32;
-            let (title, tw) = fit_title(&tab.title, room_px, |c| tf.advance(c));
-            let tx = x + (w as i32 - tw.round() as i32) / 2;
-            let ty = top + (h as i32 - tf.metrics().height as i32) / 2;
-            draw_text_proportional(canvas, tf, tx, ty, &title, color);
+    let layout = Layout::of(look, m.width);
+    let slot_list = slots(canvas.width, tabs.len(), layout);
+    for (i, (tab, &(x, w))) in tabs.iter().zip(&slot_list).enumerate() {
+        if default_look {
+            if tab.active {
+                canvas.fill_rect(x, top, w, h, pal.active_bg);
+            } else if let Some(c) = pal.inactive_bg {
+                canvas.fill_rect(x, top, w, h, c);
+            }
+            canvas.fill_rect(x + w as i32 - 1, top + m.height as i32 / 4, 1, h - m.height / 2, border);
         } else {
-            let max_cells = ((w as i32 / cw) - 4).max(1) as usize;
+            draw_tab_shape(
+                canvas,
+                look,
+                &pal,
+                tab,
+                tabs.get(i + 1),
+                (x, w),
+                top,
+                h,
+                m.width,
+                m.stroke,
+            );
+        }
+        if look.style == TabBarStyle::Separator && i + 1 < tabs.len() {
+            let glyph = bt_core::tabstyle::separator_glyph(&look.separator);
+            let sepw = separator_width(look, m.width) as i32;
+            let sx = x + w as i32 - sepw;
+            if let Some(tf) = title_fonts.as_deref_mut() {
+                let ty = top + (h as i32 - tf.metrics().height as i32) / 2;
+                draw_text_proportional(canvas, tf, sx, ty, glyph, pal.inactive_fg);
+            } else if !glyph.is_empty() {
+                let ty = top + (h as i32 - m.height as i32) / 2;
+                draw_text(canvas, fonts, sx, ty, glyph, pal.inactive_fg, false);
+            }
+        }
+        let (cx, cwid) = content_rect(look, x, w, m.width, i + 1 == tabs.len());
+        // 가운데 맞춘 제목. 안 읽음 점 자리를 남긴다
+        let color = if tab.active { pal.active_fg } else { pal.inactive_fg };
+        let style = bt_render::FontStyle::from_flags(
+            if tab.active {
+                look.active_font
+            } else {
+                look.inactive_font
+            }
+            .bold(),
+            if tab.active {
+                look.active_font
+            } else {
+                look.inactive_font
+            }
+            .italic(),
+        );
+        if let Some(tf) = title_fonts.as_deref_mut() {
+            let room_px = (cwid as i32 - 4 * cw).max(cw) as f32;
+            let (title, tw) = fit_title(&tab.title, room_px, |c| tf.advance(c));
+            let tx = cx + (cwid as i32 - tw.round() as i32) / 2;
+            let ty = top + (h as i32 - tf.metrics().height as i32) / 2;
+            draw_text_proportional_styled(canvas, tf, tx, ty, &title, color, style);
+        } else {
+            let max_cells = ((cwid as i32 / cw) - 4).max(1) as usize;
             let title = truncate(&tab.title, max_cells);
             let tw = cw * text_cells(&title) as i32;
-            let tx = x + (w as i32 - tw) / 2;
+            let tx = cx + (cwid as i32 - tw) / 2;
             let ty = top + (h as i32 - m.height as i32) / 2;
-            draw_text(canvas, fonts, tx, ty, &title, color, false);
+            draw_text_styled(canvas, fonts, tx, ty, &title, color, style);
         }
         if let Some(p) = tab.progress {
             draw_progress(
                 canvas,
                 theme,
-                x,
+                cx,
                 top + h as i32 - (m.stroke * 3) as i32 - 1,
-                w,
+                cwid,
                 p,
                 m.stroke * 3,
             );
         }
         if tab.unread {
-            dot(canvas, x + cw, top + h as i32 / 2, (cw / 3).max(2), theme.palette[3]);
+            dot(canvas, cx + cw, top + h as i32 / 2, (cw / 3).max(2), theme.palette[3]);
         }
         // 탭 색(#852): Ghostty처럼 탭 오른쪽 끝(제목 뒤)의 작은 점. 고른 탭과 아닌 탭이 같다. 제목 자리(양쪽 두 칸)의 오른쪽 칸 가운데
         if let Some(rgb) = tab.color.rgb(crate::tabcolor::is_dark(theme.background)) {
             dot(
                 canvas,
-                x + w as i32 - cw - cw / 2,
+                cx + cwid as i32 - cw - cw / 2,
                 top + h as i32 / 2,
                 (cw * 3 / 8).max(2),
                 rgb,
@@ -215,8 +534,8 @@ pub fn fit_title(title: &str, room_px: f32, mut advance: impl FnMut(char) -> f32
 }
 
 /// 창 좌표가 몇 번째 탭인가
-pub fn hit(width: u32, x: f64, count: usize) -> Option<usize> {
-    slots(width, count)
+pub fn hit(width: u32, x: f64, count: usize, layout: Layout) -> Option<usize> {
+    slots(width, count, layout)
         .iter()
         .position(|&(sx, w)| x >= sx as f64 && x < (sx + w as i32) as f64)
 }
@@ -266,10 +585,10 @@ impl TabDrag {
         }
     }
     /// 단추를 `x`에서 놓았다. 상태는 지워진다
-    pub fn release(&mut self, x: f64, width: u32, count: usize) -> TabDrop {
+    pub fn release(&mut self, x: f64, width: u32, count: usize, layout: Layout) -> TabDrop {
         let (press, dragging) = (self.press.take(), std::mem::take(&mut self.dragging));
         match press {
-            Some((from, _)) if dragging && count > 1 => match drop_index(width, x, count) {
+            Some((from, _)) if dragging && count > 1 => match drop_index(width, x, count, layout) {
                 Some(to) if to != from => TabDrop::Move { from, to },
                 _ => TabDrop::None,
             },
@@ -283,12 +602,12 @@ impl TabDrag {
 }
 
 /// 끌어서 놓은 자리(`x`)의 탭 번호. 탭 줄 밖(왼쪽·오른쪽)이면 처음·끝 탭으로 자른다
-pub fn drop_index(width: u32, x: f64, count: usize) -> Option<usize> {
+pub fn drop_index(width: u32, x: f64, count: usize, layout: Layout) -> Option<usize> {
     if count == 0 {
         return None;
     }
     let x = x.clamp(0.0, (width as f64 - 1.0).max(0.0));
-    hit(width, x, count).or(Some(count - 1))
+    hit(width, x, count, layout).or(Some(count - 1))
 }
 
 /// `from` 탭을 `to` 자리로 옮긴 뒤 `active` 탭의 새 번호
@@ -709,7 +1028,7 @@ mod tests {
         assert!(d.is_pressed());
         assert!(!d.moved(103.0), "문턱 안");
         assert!(!d.is_dragging());
-        assert_eq!(d.release(103.0, 400, 4), TabDrop::None);
+        assert_eq!(d.release(103.0, 400, 4, Layout::default()), TabDrop::None);
         assert!(!d.is_pressed());
     }
 
@@ -720,7 +1039,10 @@ mod tests {
         assert!(d.moved(50.0 + DRAG_START_PX));
         assert!(d.is_dragging());
         assert!(!d.moved(300.0), "이미 시작했으면 또 새로 시작하지 않는다");
-        assert_eq!(d.release(250.0, 400, 4), TabDrop::Move { from: 0, to: 2 });
+        assert_eq!(
+            d.release(250.0, 400, 4, Layout::default()),
+            TabDrop::Move { from: 0, to: 2 }
+        );
         assert!(!d.is_dragging());
     }
 
@@ -729,18 +1051,18 @@ mod tests {
         let mut d = TabDrag::default();
         d.press(1, 150.0);
         d.moved(190.0);
-        assert_eq!(d.release(120.0, 400, 4), TabDrop::None);
+        assert_eq!(d.release(120.0, 400, 4, Layout::default()), TabDrop::None);
         d.press(0, 10.0);
         d.moved(300.0);
-        assert_eq!(d.release(300.0, 400, 1), TabDrop::None);
+        assert_eq!(d.release(300.0, 400, 1, Layout::default()), TabDrop::None);
     }
 
     #[test]
     fn drop_outside_bar_clamps_to_ends() {
-        assert_eq!(drop_index(400, -30.0, 4), Some(0));
-        assert_eq!(drop_index(400, 900.0, 4), Some(3));
-        assert_eq!(drop_index(400, 150.0, 4), Some(1));
-        assert_eq!(drop_index(400, 10.0, 0), None);
+        assert_eq!(drop_index(400, -30.0, 4, Layout::default()), Some(0));
+        assert_eq!(drop_index(400, 900.0, 4, Layout::default()), Some(3));
+        assert_eq!(drop_index(400, 150.0, 4, Layout::default()), Some(1));
+        assert_eq!(drop_index(400, 10.0, 0, Layout::default()), None);
     }
 
     #[test]
@@ -819,7 +1141,15 @@ mod tests {
             color: Default::default(),
         };
         let tabs = [mk(&"안녕 W".repeat(30)), mk("")];
-        draw_with_title_font(&mut c, &mut fonts, title.as_mut(), &theme, &tabs, 0);
+        draw_with_title_font(
+            &mut c,
+            &mut fonts,
+            title.as_mut(),
+            &theme,
+            &TabBarLook::default(),
+            &tabs,
+            0,
+        );
         // 둘째 탭(x 150..299)은 제목이 없으니 바탕·구분선·밑줄 말고는 아무것도 없어야 한다
         let bar = theme.background.mix(theme.foreground, 0.06);
         let bh = bar_height(&fonts, title.as_ref());
@@ -861,7 +1191,15 @@ mod tests {
             color: Default::default(),
         };
         let tabs = [mk(&"Hgjpq안녕 Ég ".repeat(10)), mk("")];
-        draw_with_title_font(&mut c, &mut fonts, title.as_mut(), &theme, &tabs, 0);
+        draw_with_title_font(
+            &mut c,
+            &mut fonts,
+            title.as_mut(),
+            &theme,
+            &TabBarLook::default(),
+            &tabs,
+            0,
+        );
         let border = theme.background.mix(theme.foreground, 0.16);
         for x in 0..149 {
             assert_eq!(c.pixel(x, bh - 1), border, "({x})에서 구분선이 덮였다");
@@ -929,7 +1267,7 @@ mod tests {
     #[test]
     fn slots_fill_the_whole_width() {
         for count in [1usize, 2, 3, 7] {
-            let s = slots(2000, count);
+            let s = slots(2000, count, Layout::default());
             assert_eq!(s.len(), count);
             assert_eq!(s.iter().map(|&(_, w)| w).sum::<u32>(), 2000, "탭 {count}: 폭 합");
             assert_eq!(s[0].0, 0);
@@ -950,27 +1288,31 @@ mod tests {
     #[test]
     fn hit_matches_the_slots() {
         for count in [1usize, 2, 3, 7] {
-            let s = slots(2000, count);
-            assert_eq!(hit(2000, 0.0, count), Some(0));
-            assert_eq!(hit(2000, 1999.0, count), Some(count - 1), "탭 {count}: 오른쪽 끝");
-            assert_eq!(hit(2000, 2000.0, count), None);
+            let s = slots(2000, count, Layout::default());
+            assert_eq!(hit(2000, 0.0, count, Layout::default()), Some(0));
+            assert_eq!(
+                hit(2000, 1999.0, count, Layout::default()),
+                Some(count - 1),
+                "탭 {count}: 오른쪽 끝"
+            );
+            assert_eq!(hit(2000, 2000.0, count, Layout::default()), None);
             for (i, &(x, _)) in s.iter().enumerate().skip(1) {
-                assert_eq!(hit(2000, x as f64 - 1.0, count), Some(i - 1));
-                assert_eq!(hit(2000, x as f64, count), Some(i));
+                assert_eq!(hit(2000, x as f64 - 1.0, count, Layout::default()), Some(i - 1));
+                assert_eq!(hit(2000, x as f64, count, Layout::default()), Some(i));
             }
         }
-        assert_eq!(hit(2000, 5.0, 0), None);
+        assert_eq!(hit(2000, 5.0, 0, Layout::default()), None);
     }
 
     /// #478: 폭이 0이거나 탭 수보다 작아도 패닉이 나지 않는다
     #[test]
     fn slots_do_not_panic_on_tiny_widths() {
-        assert!(slots(2000, 0).is_empty());
+        assert!(slots(2000, 0, Layout::default()).is_empty());
         for (width, count) in [(0u32, 3usize), (1, 3), (3, 7), (5, 5)] {
-            let s = slots(width, count);
+            let s = slots(width, count, Layout::default());
             assert_eq!(s.len(), count);
             assert!(s.iter().all(|&(_, w)| w >= 1));
-            let _ = hit(width, 0.0, count);
+            let _ = hit(width, 0.0, count, Layout::default());
         }
     }
 
@@ -1061,7 +1403,7 @@ mod tests {
             mk(false, TabColor::Red),
             mk(false, TabColor::None),
         ];
-        draw_with_title_font(&mut c, &mut fonts, None, &theme, &tabs, 0);
+        draw_with_title_font(&mut c, &mut fonts, None, &theme, &TabBarLook::default(), &tabs, 0);
         let bh = bar_height(&fonts, None);
         let dark = crate::tabcolor::is_dark(theme.background);
         let count = |c: &Canvas, x0: u32, x1: u32, want: Rgb| {
@@ -1103,7 +1445,7 @@ mod tests {
             color: Default::default(),
         }];
         let top = 40;
-        draw_with_title_font(&mut c, &mut fonts, None, &theme, &tabs, top);
+        draw_with_title_font(&mut c, &mut fonts, None, &theme, &TabBarLook::default(), &tabs, top);
         let bar = theme.background.mix(theme.foreground, 0.06).to_u32();
         let at = |y: u32| buf[(y * w + 5) as usize] & 0xFF_FFFF;
         // 제목 막대 자리는 그대로, 그 밑부터 탭 줄 색
@@ -1196,6 +1538,303 @@ mod tests {
             (l as i32 - (w - 1 - r) as i32).abs() <= 1,
             "가운데: {l} / {}",
             w - 1 - r
+        );
+    }
+
+    // ---- #901 탭 막대 모양과 색 ----
+
+    fn plain(active: bool) -> TabLabel {
+        TabLabel {
+            title: String::new(),
+            active,
+            unread: false,
+            progress: None,
+            color: Default::default(),
+        }
+    }
+
+    /// 탭 줄을 그려 (줄마다 색) 표로 돌려준다: (그림, 탭 줄 높이, 칸 폭)
+    fn render(look: &TabBarLook, tabs: &[TabLabel], w: u32) -> Option<(Vec<Vec<Rgb>>, u32, u32)> {
+        let mut fonts = Fonts::new(&bt_render::FontConfig::default()).ok()?;
+        let theme = Theme::ghostty_default();
+        let bh = bar_height(&fonts, None);
+        let mut buf = vec![0u32; (w * (bh + 4)) as usize];
+        let mut c = Canvas::new(&mut buf, w, bh + 4);
+        c.clear(Rgb::new(1, 2, 3));
+        draw_with_title_font(&mut c, &mut fonts, None, &theme, look, tabs, 0);
+        let rows = (0..bh).map(|y| (0..w).map(|x| c.pixel(x, y)).collect()).collect();
+        Some((rows, bh, fonts.metrics().width))
+    }
+
+    const BAR: Rgb = Rgb::new(10, 10, 10);
+    const ACT: Rgb = Rgb::new(200, 40, 40);
+    const INA: Rgb = Rgb::new(40, 40, 200);
+
+    fn colored(style: TabBarStyle) -> TabBarLook {
+        TabBarLook {
+            style,
+            bar_background: Some(BAR),
+            active_background: Some(ACT),
+            inactive_background: Some(INA),
+            ..TabBarLook::default()
+        }
+    }
+
+    /// 기본 모양은 #901 이전 그리기(막대 바탕·밑 구분선·고른 탭 바탕·탭 사이 세로 구분선)와 픽셀이 같다
+    #[test]
+    fn default_look_draws_the_same_pixels_as_before_901() {
+        let Ok(fonts) = Fonts::new(&bt_render::FontConfig::default()) else {
+            return;
+        };
+        let theme = Theme::ghostty_default();
+        let (w, bh) = (500u32, bar_height(&fonts, None));
+        let tabs = [plain(false), plain(true), plain(false)];
+        let (rows, _, _) = render(&TabBarLook::default(), &tabs, w).unwrap();
+        let m = fonts.metrics();
+        let bar = theme.background.mix(theme.foreground, 0.06);
+        let border = theme.background.mix(theme.foreground, 0.16);
+        let mut want = vec![vec![bar; w as usize]; bh as usize];
+        want[bh as usize - 1].fill(border);
+        for (i, (x, tw)) in slots(w, 3, Layout::default()).into_iter().enumerate() {
+            let (x, tw) = (x as usize, tw as usize);
+            if i == 1 {
+                for row in want.iter_mut() {
+                    row[x..x + tw].fill(theme.background);
+                }
+            }
+            for y in (m.height / 4)..(m.height / 4 + bh - m.height / 2) {
+                want[y as usize][x + tw - 1] = border;
+            }
+        }
+        assert_eq!(rows, want);
+    }
+
+    #[test]
+    fn capped_layout_gathers_tabs_by_align_and_default_still_fills() {
+        let cap = Layout {
+            max_tab: Some(100),
+            align: TabBarAlign::Left,
+        };
+        assert_eq!(slots(1000, 3, cap), vec![(0, 100), (100, 100), (200, 100)]);
+        let c = Layout {
+            align: TabBarAlign::Center,
+            ..cap
+        };
+        assert_eq!(slots(1000, 3, c), vec![(350, 100), (450, 100), (550, 100)]);
+        let r = Layout {
+            align: TabBarAlign::Right,
+            ..cap
+        };
+        assert_eq!(slots(1000, 3, r), vec![(700, 100), (800, 100), (900, 100)]);
+        // 탭이 많아 나눈 폭이 상한보다 작으면 줄을 가득 채운다
+        assert_eq!(slots(1000, 20, c), slots(1000, 20, Layout::default()));
+        assert_eq!(
+            slots(1000, 3, Layout::default()),
+            vec![(0, 333), (333, 333), (666, 334)]
+        );
+        // 누르기·끌기가 그린 자리와 같다: 탭 밖(빈 막대)은 없는 자리다
+        assert_eq!(hit(1000, 649.0, 3, c), Some(2));
+        assert_eq!(hit(1000, 650.0, 3, c), None);
+        assert_eq!(hit(1000, 349.0, 3, c), None);
+        assert_eq!(hit(1000, 351.0, 3, c), Some(0));
+        assert_eq!(hit(1000, 10.0, 3, r), None);
+        assert_eq!(
+            drop_index(1000, 10.0, 3, r),
+            Some(2),
+            "끌어 놓는 자리는 막대 밖이면 끝 탭"
+        );
+        let look = TabBarLook {
+            style: TabBarStyle::Slant,
+            align: TabBarAlign::Right,
+            ..TabBarLook::default()
+        };
+        assert_eq!(
+            Layout::of(&look, 10),
+            Layout {
+                max_tab: Some(240),
+                align: TabBarAlign::Right
+            }
+        );
+        assert_eq!(Layout::of(&TabBarLook::default(), 10), Layout::default());
+    }
+
+    #[test]
+    fn fade_tabs_blend_their_edges_into_the_bar() {
+        let tabs = [plain(true), plain(false), plain(false)];
+        let Some((rows, bh, cw)) = render(&colored(TabBarStyle::Fade), &tabs, 1000) else {
+            return;
+        };
+        let cap = (cw * 24) as usize;
+        let y = bh as usize / 2;
+        let fade = [0.25, 0.5, 0.75, 1.0];
+        for (i, a) in fade.iter().enumerate() {
+            let x = i * cw as usize + 1;
+            assert_eq!(rows[y][x], BAR.mix(ACT, *a), "왼쪽 번짐 {i}");
+            // 오른쪽은 거꾸로: 끝 한 칸(막대 바탕) 앞에서부터 안쪽으로 1.0 → 0.25가 아니라 0.25 → 1.0의 반대
+            let rx = cap - cw as usize - (i + 1) * cw as usize + 1;
+            assert_eq!(rows[y][rx], BAR.mix(ACT, *a), "오른쪽 번짐 {i}");
+        }
+        assert_eq!(rows[y][cap / 2], ACT);
+        assert_eq!(rows[y][cap - 1], BAR, "탭 끝의 한 칸은 막대 바탕");
+        assert_eq!(rows[y][cap + cap / 2], INA, "고르지 않은 탭은 그 색");
+        assert_eq!(rows[y][3 * cap + 5], BAR, "탭 오른쪽 빈 막대");
+    }
+
+    #[test]
+    fn slant_tabs_cut_their_top_corners() {
+        let tabs = [plain(true), plain(false)];
+        let Some((rows, bh, cw)) = render(&colored(TabBarStyle::Slant), &tabs, 800) else {
+            return;
+        };
+        let cap = (cw * 24) as usize;
+        let last = bh as usize - 1;
+        assert_eq!(rows[0][0], BAR, "왼쪽 위는 깎인다");
+        assert_eq!(rows[last][cw as usize / 2], ACT, "왼쪽 아래는 탭 색");
+        assert_eq!(rows[0][cap - 1], BAR, "오른쪽 위는 깎인다");
+        assert_eq!(rows[last][cap - 1 - cw as usize / 2], ACT);
+        assert_eq!(rows[last / 2][cap / 2], ACT);
+        // 기울기: 깎인 폭은 위에서 아래로 줄어든다
+        let cut = |y: usize| (0..cw as usize).take_while(|&x| rows[y][x] == BAR).count();
+        assert!(
+            cut(1) > cut(last / 2) && cut(last / 2) > cut(last - 1),
+            "{} {} {}",
+            cut(1),
+            cut(last / 2),
+            cut(last - 1)
+        );
+        assert_eq!(rows[0][cap], BAR, "다음 탭도 제 왼쪽 위가 깎인다");
+    }
+
+    #[test]
+    fn separator_tabs_put_a_separator_cell_between_tabs_only() {
+        let look = TabBarLook {
+            separator: " | ".into(),
+            ..colored(TabBarStyle::Separator)
+        };
+        let tabs = [plain(true), plain(false), plain(false)];
+        let Some((rows, bh, cw)) = render(&look, &tabs, 900) else {
+            return;
+        };
+        let cap = (cw * 24) as usize;
+        let y = 1;
+        assert_eq!(rows[y][cap / 2], ACT);
+        // `|` 한 칸 폭의 구분 자리는 안 고른 탭 색 바탕이고 마지막 탭에는 없다
+        assert_eq!(rows[y][cap - 1], INA);
+        assert_eq!(rows[y][cap - cw as usize - 1], ACT);
+        let end = 3 * cap;
+        assert_eq!(rows[y][end - 1], INA);
+        assert_eq!(rows[y][end - 1 - cw as usize], INA);
+        // 구분 글자가 실제로 그려졌다(바탕과 다른 픽셀이 구분 자리에 있다)
+        let sep_pixels = (0..bh as usize)
+            .flat_map(|yy| (cap - cw as usize..cap).map(move |x| (x, yy)))
+            .filter(|&(x, yy)| rows[yy][x] != INA)
+            .count();
+        assert!(sep_pixels > 0, "구분 글자가 없다");
+    }
+
+    #[test]
+    fn powerline_tabs_end_in_a_shape_that_points_into_the_next_tab() {
+        let tabs = [plain(true), plain(false), plain(false)];
+        for (style, name) in [
+            (TabPowerlineStyle::Angled, "angled"),
+            (TabPowerlineStyle::Round, "round"),
+            (TabPowerlineStyle::Slanted, "slanted"),
+        ] {
+            let look = TabBarLook {
+                powerline: style,
+                ..colored(TabBarStyle::Powerline)
+            };
+            let Some((rows, bh, cw)) = render(&look, &tabs, 900) else {
+                return;
+            };
+            let cap = (cw * 24) as usize;
+            let (c, last) = (cw as usize, bh as usize - 1);
+            let mid = last / 2;
+            // 구분 칸의 바탕은 다음 탭 색, 기호는 이 탭 색
+            match style {
+                TabPowerlineStyle::Slanted => {
+                    assert_eq!(rows[0][cap - 2], ACT, "{name}: 위쪽은 이 탭 색이 끝까지");
+                    assert_eq!(rows[last][cap - 1], INA, "{name}: 아래쪽은 다음 탭 색");
+                }
+                _ => {
+                    assert_eq!(rows[0][cap - 1], INA, "{name}: 위쪽 모서리는 다음 탭 색");
+                    assert_eq!(rows[last][cap - 1], INA, "{name}: 아래쪽 모서리");
+                    assert_eq!(rows[mid][cap - 2], ACT, "{name}: 가운데는 끝까지 이 탭 색");
+                }
+            }
+            assert_eq!(rows[mid][cap - c - 2], ACT, "{name}");
+            // 마지막 탭은 막대 바탕으로 끝난다
+            let corner = if style == TabPowerlineStyle::Slanted { last } else { 0 };
+            assert_eq!(rows[corner][3 * cap - 1], BAR, "{name}: 막대 쪽");
+            // 안 고른 탭끼리는 이어 붙지 않게 속이 빈 기호가 같은 색 칸 안에 그려진다
+            let soft = (0..bh as usize)
+                .flat_map(|y| (2 * cap - c..2 * cap).map(move |x| (x, y)))
+                .filter(|&(x, y)| rows[y][x] != INA)
+                .count();
+            assert!(soft > 0, "{name}: 속 빈 구분 기호가 없다");
+            assert_eq!(rows[0][2 * cap - c - 3], INA, "{name}");
+        }
+    }
+
+    #[test]
+    fn style_colors_and_font_style_apply_to_every_style_and_default_keeps_its_theme() {
+        let theme = Theme::ghostty_default();
+        let tabs = [plain(true), plain(false)];
+        // 기본 모양에서도 막대·탭 색을 정하면 따른다. 안 고른 탭은 정했을 때만 칠한다
+        let look = TabBarLook {
+            bar_background: Some(BAR),
+            active_background: Some(ACT),
+            ..TabBarLook::default()
+        };
+        let Some((rows, _, _)) = render(&look, &tabs, 400) else {
+            return;
+        };
+        assert_eq!(rows[2][5], ACT);
+        assert_eq!(rows[2][205], BAR);
+        let (rows, _, _) = render(&TabBarLook::default(), &tabs, 400).unwrap();
+        assert_eq!(rows[2][205], theme.background.mix(theme.foreground, 0.06));
+        // 굵은 제목은 보통 제목과 다른 픽셀을 낸다
+        let titled = |bold: bool| {
+            let look = TabBarLook {
+                active_font: if bold {
+                    bt_core::tabstyle::TabFontStyle::Bold
+                } else {
+                    Default::default()
+                },
+                ..TabBarLook::default()
+            };
+            let mut t = plain(true);
+            t.title = "WWWW iiii".into();
+            render(&look, &[t, plain(false)], 400).unwrap().0
+        };
+        assert_ne!(titled(true), titled(false), "굵게가 그려지지 않았다");
+    }
+
+    #[test]
+    fn progress_bar_and_dots_stay_inside_the_tab_content() {
+        let mut t0 = plain(true);
+        t0.progress = Some((1, 100));
+        t0.unread = true;
+        t0.color = crate::tabcolor::TabColor::Blue;
+        let tabs = [t0, plain(false)];
+        let Some((rows, bh, cw)) = render(&colored(TabBarStyle::Slant), &tabs, 800) else {
+            return;
+        };
+        let cap = (cw * 24) as usize;
+        let theme = Theme::ghostty_default();
+        let blue = theme.palette[4];
+        let y = bh as usize - 3;
+        let xs: Vec<usize> = (0..cap).filter(|&x| rows[y][x] == blue).collect();
+        assert!(!xs.is_empty(), "진행 막대가 없다");
+        assert!(
+            xs[0] >= cw as usize && *xs.last().unwrap() < cap - cw as usize,
+            "기울어진 모서리 칸 밖"
+        );
+        let yellow = theme.palette[3];
+        let dot_x: Vec<usize> = (0..cap).filter(|&x| rows[bh as usize / 2][x] == yellow).collect();
+        assert!(
+            !dot_x.is_empty() && dot_x[0] >= cw as usize,
+            "안 읽음 점이 모서리 안쪽에 없다"
         );
     }
 }

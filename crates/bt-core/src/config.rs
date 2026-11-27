@@ -692,6 +692,8 @@ pub struct Config {
     pub window_inherit_font_size: bool,
     pub window_new_tab_position: WindowNewTabPosition,
     pub window_show_tab_bar: WindowShowTabBar,
+    /// 탭 막대 모양과 색(`tab-bar-style` 등, kitty처럼, #901)
+    pub tab_bar_look: crate::tabstyle::TabBarLook,
     pub mouse_hide_while_typing: bool,
     pub command: Option<String>,
     /// 첫 칸에만 쓰는 명령(Ghostty `initial-command`, #178). 없으면 `command`
@@ -1834,6 +1836,7 @@ impl Default for Config {
             window_inherit_font_size: true,
             window_new_tab_position: WindowNewTabPosition::Current,
             window_show_tab_bar: WindowShowTabBar::Auto,
+            tab_bar_look: crate::tabstyle::TabBarLook::default(),
             mouse_hide_while_typing: false,
             command: None,
             initial_command: None,
@@ -3149,6 +3152,13 @@ impl Config {
                 e.key
             ))
         };
+        // 탭 막대 모양·색 키(#901)
+        if let Some(ok) = self.tab_bar_look.apply(e.key.as_str(), e.value.as_str()) {
+            if !ok {
+                bad(warnings);
+            }
+            return;
+        }
         match e.key.as_str() {
             "theme" | "import-ghostty" => {}
             "font-family" => {
@@ -4294,6 +4304,9 @@ impl Config {
             }
             .into(),
         );
+        for (k, v) in self.tab_bar_look.lines() {
+            push(k, v);
+        }
         push("mouse-hide-while-typing", self.mouse_hide_while_typing.to_string());
         if let Some(c) = &self.initial_command {
             push("initial-command", c.clone());

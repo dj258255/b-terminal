@@ -975,3 +975,14 @@
 - 두께(kitty 0.50 "두께를 글꼴 크기에 맞춤", `docs/changelog.rst` 0.50.0): 이미 따라간다. 상자 선·밑줄·속 빈 커서는 `round(px/14)`(1px 이상), 막대 커서는 그 두 배(2px 이상)이다. 쟀다(글꼴 크기 px → 상자 선/막대/속 빈/밑줄): 8~20px 1/2/1/1, 26·32px 2/4/2/2, 40px 3/6/3/3, 52px 4/8/4/4. Ghostty는 상자 선·밑줄을 글꼴의 밑줄 두께 지표의 올림(`Metrics.zig` 298·319줄)으로 정하고 커서 두께는 크기와 관계없이 1이다(`cursor_thickness`, 34줄). 재 보니 Ghostty 쪽 값은 40px에서 2(우리 3), 52px에서 3(우리 4)이고 32px 이하에서는 우리와 같았다. 이 차이는 기본 화면의 밑줄 두께를 바꿔서 이번에는 고치지 않았다
 - 남긴 것: 넓은 글자(한글)는 지금도 칸 가운데로 정수 픽셀 단위로 놓는다(`grid.rs`). Ghostty는 제약 없는 글자를 자기 윤곽 위치에 두고 같은 `dx`만 더하므로, 이 길의 소수 위치는 견주지 않았다. 대체 글꼴의 글리프도 기본 글꼴 기준의 같은 `dx`를 받는다(Ghostty와 같다). CoreText와 swash의 윤곽 위치는 직접 견주지 않았고, 기준 값은 같은 swash 윤곽을 `dx`만큼 옮겨 그린 것이다
 - 0.106.0에서 풀기: 없음
+
+## 117. 탭 줄 모양과 탭 색을 고를 수 없다
+
+- 언제: 2026-11-27, #901. 0.106.0까지의 동작이다. 화면 모양을 kitty와 견준 조사에서 골랐다
+- 증상: 설정에 `tab-bar-style = powerline`을 적으면 알 수 없는 키라는 경고가 나오고 탭 줄은 한 가지 모양이다. 탭 색은 탭마다 단추 메뉴로 고르는 작은 점뿐이라 고른 탭·안 고른 탭·막대의 색, 제목 글꼴 모양을 바꿀 길이 없었다
+- 까닭: 탭 줄 그리기(`tabbar.rs`)가 모양 하나와 테마에서 파생한 색 셋(막대·고른 탭·흐린 글자)에 못 박혀 있었다. kitty `kitty/options/definition.py`의 `tab_bar_style`(기본 `fade`)·`tab_powerline_style`·`tab_separator`·`tab_fade`·`tab_bar_align`·`active_tab_*`·`inactive_tab_*`·`tab_bar_background`에 해당하는 설정이 없었다
+- 고침: 같은 뜻의 키를 `-`로 이어 더했다(`bt-core`의 `tabstyle`). 그리는 규칙은 `kitty/tab_bar.py`를 옮겼다. `fade`는 `draw_tab_with_fade`처럼 탭 가장자리 칸을 `막대색.mix(탭색, alpha)`로 번지게 하고(첫 칸이 `tab-fade`의 첫 값) 끝에 막대 바탕 한 칸을 둔다. `slant`는 `draw_tab_with_slant`처럼 양옆 한 칸의 위쪽을 막대 바탕으로 깎는다(U+E0BC·E0BE 꼴). `separator`는 `draw_tab_with_separator`처럼 마지막 탭을 뺀 탭 끝에 안 고른 탭 색 바탕의 구분 글자 칸을 둔다. `powerline`은 `draw_tab_with_powerline`처럼 탭 끝 한 칸에 다음 탭 색 바탕·이 탭 색 기호(angled U+E0B0, round U+E0B4, slanted U+E0BC)를 두고, 이웃 탭 색이 같으면 속이 빈 기호(U+E0B1·E0B5·╱)를 쓴다(색 고르는 규칙 포함). 기호는 글꼴이 아니라 줄마다 덮음 정도로 직접 칠해 글꼴에 없어도 나오고 가장자리 한 픽셀은 섞는다. 적지 않은 색은 지금처럼 테마에서 고르며 kitty 기본색(#000/#eee 등)은 쓰지 않는다. `default`는 이전 그리기와 같은 픽셀이다(`default_look_draws_the_same_pixels_as_before_901`이 이전 그리기를 시험 안에서 다시 세워 견준다). 탭 누르기·끌기·놓기의 자리(`hit`·`drop_index`·`TabDrag::release`)는 같은 `Layout`/`slots`를 써서 그린 자리와 어긋나지 않는다. 안 읽음 점·탭 색 점·진행 막대는 모양별로 기울기·번짐 칸을 뺀 안쪽에 그린다. CPU·GPU 길은 둘 다 같은 `draw_with_title_font`를 CPU 캔버스에 그려 올리므로(GPU 길은 그 캔버스를 아래 층으로 올림) 따로 같은 픽셀임을 견주는 GPU 시험은 두지 않았다
+- 정한 것: `hidden`은 kitty처럼 탭 줄만 없애고 탭은 그대로 두며, 우리에게는 `window-show-tab-bar = never`와 같은 효과다(탭 줄이 없는 동안 진행 막대를 칸 위에 그리는 길도 같다). kitty `custom`은 받지 않아 경고한다
+- kitty와 다른 점: kitty의 탭은 제목 길이만큼의 폭이고 우리 탭은 칸 24개 폭의 고정 폭이라(누르기·끌기가 제목을 몰라도 자리를 세도록) 제목은 탭 안 가운데에 놓는다. kitty는 제목을 왼쪽부터 놓는다. `tab-separator`의 앞뒤 공백은 폭이 아니라 무시한다. `active-tab-font-style`의 기본을 kitty의 `bold-italic`이 아니라 `normal`로 두었다(적지 않으면 지금 모양). 막대 아래 구분선은 `default`에만 있다. kitty의 `tab_bar_margin_*`·`tab_title_template`·`tab_activity_symbol`·`tab_bar_min_tabs` 같은 키는 이번에 넣지 않았다
+- 남긴 것: 기울임(`italic`)은 글꼴에 기울임 모양이 없으면 글꼴 설정의 합성 규칙을 따르며 어느 글꼴에서 어떻게 보이는지는 재지 않았다. 비례 제목 글꼴에서는 글자 폭을 보통 모양으로 재서 굵은 글꼴이 더 넓으면 글자 사이가 조금 달라진다(재지 않았다). 실제 창에서 kitty와 나란히 눈으로 견주지는 않았다
+- 0.106.0에서 풀기: 없음

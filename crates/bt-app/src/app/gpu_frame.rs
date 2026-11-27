@@ -23,6 +23,7 @@ pub(super) struct GpuFrame<'a> {
     pub pads: &'a [Option<crate::padding::PadPaint>],
     pub bars: &'a [(bool, bool)],
     pub labels: &'a [tabbar::TabLabel],
+    pub tab_look: &'a bt_core::tabstyle::TabBarLook,
     pub chrome: Chrome,
     pub toast: &'a Option<(String, Instant)>,
     pub secure_badge: bool,
@@ -114,6 +115,7 @@ impl App {
             pads,
             bars,
             labels,
+            tab_look,
             chrome,
             toast,
             secure_badge,
@@ -244,6 +246,7 @@ impl App {
                     fonts.chrome(),
                     self.w.title_fonts.as_mut(),
                     &theme,
+                    tab_look,
                     labels,
                     top_inset as i32,
                 );
