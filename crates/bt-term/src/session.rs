@@ -3644,4 +3644,34 @@ mod title_template_tests {
         assert_eq!(spans.len(), 1);
         assert!(!spans[0].text.contains('\x1b'));
     }
+    /// 칸 제목 막대 틀(#916)도 같다: OSC 2 제목 `{fmt.fg.red}x`가 글자 그대로 나오고 막대 색을 바꾸지 못한다(엔진에 바이트를 먹인다, PTY 없음)
+    #[test]
+    fn osc2_title_shows_literally_in_the_window_title_bar_template() {
+        let title = title_after(b"\x1b]2;{fmt.fg.red}x{window.id}\x07");
+        assert_eq!(title, "{fmt.fg.red}x{window.id}");
+        let tab = TabTitleConfig::default();
+        for template in [
+            "{title}",
+            bt_core::wintitle::DEFAULT_TEMPLATE,
+            "{window.id}: {title}",
+            "{fmt.bold}{title}{fmt.nobold}",
+        ] {
+            let d = tabtitle::WindowData {
+                title: &title,
+                id: 4,
+                ..tabtitle::WindowData::default()
+            };
+            let spans = tabtitle::render_window(template, &tab, &d);
+            let text: String = spans.iter().map(|s| s.text.as_str()).collect();
+            assert!(text.ends_with("{fmt.fg.red}x{window.id}"), "{template}: {text}");
+            assert!(!text.contains('\x1b'), "{template}");
+            assert!(
+                spans
+                    .iter()
+                    .filter(|s| s.text.contains("fmt.fg.red"))
+                    .all(|s| s.fg == SpanColor::Tab),
+                "{template}: {spans:?}"
+            );
+        }
+    }
 }

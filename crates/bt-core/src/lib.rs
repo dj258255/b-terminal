@@ -10,6 +10,7 @@ pub mod tabtitle;
 pub mod text_composition;
 pub mod theme;
 pub mod visual_bell;
+pub mod wintitle;
 
 pub use config::{AlphaBlending, Config, LinkPreviews, PaletteEntryConf};
 pub use text_composition::TextComposition;

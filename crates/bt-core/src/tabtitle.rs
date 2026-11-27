@@ -38,7 +38,7 @@ impl Default for TabTitleConfig {
 }
 
 /// kitty `tab_title_template`: 한 쌍의 따옴표(`'`나 `"`)로 감쌌으면 벗긴다
-fn unquote(v: &str) -> &str {
+pub(crate) fn unquote(v: &str) -> &str {
     for q in ['\'', '"'] {
         if v.len() >= 2 && v.starts_with(q) && v.ends_with(q) {
             return &v[1..v.len() - 1];
@@ -213,6 +213,13 @@ enum Field {
     AllProgress,
     /// 우리에게 값이 없는 이름: 빈 글자(`layout_name`·`session_name`·`keyboard_mode`·`custom`…)
     Empty,
+    /// 칸 제목 막대 틀(#916)의 이름: `{window}`·`{window.id}`·`{window.wd}`·`{window.columns}`·`{window.lines}`·`{is_active}`·`{progress_percent}`
+    WinId,
+    WinWd,
+    WinColumns,
+    WinLines,
+    IsActive,
+    WinProgress,
     Sup(String),
     Sub(String),
     Fmt(Fmt),
@@ -273,6 +280,36 @@ fn field(name: &str) -> Option<Field> {
     })
 }
 
+/// 칸 제목 막대 틀의 이름 하나(kitty `window_title_bar.py`의 `eval_locals`와 `fmt`). 탭 틀의 이름(`index` 등)은 받지 않는다:
+/// kitty는 이름 오류로 제목을 그대로 보이고 우리도 그렇다
+fn window_field(name: &str) -> Option<Field> {
+    let name = name.trim();
+    Some(match name {
+        "title" => Field::Title,
+        "is_active" => Field::IsActive,
+        "bell_symbol" => Field::Bell,
+        "activity_symbol" => Field::Activity,
+        "progress_percent" => Field::WinProgress,
+        "custom" => Field::Empty,
+        "window" | "window.id" => Field::WinId,
+        "window.wd" => Field::WinWd,
+        "window.columns" => Field::WinColumns,
+        "window.lines" => Field::WinLines,
+        "fmt.reset" => Field::Fmt(Fmt::Reset),
+        "fmt.bold" => Field::Fmt(Fmt::Bold),
+        "fmt.nobold" => Field::Fmt(Fmt::NoBold),
+        "fmt.italic" => Field::Fmt(Fmt::Italic),
+        "fmt.noitalic" => Field::Fmt(Fmt::NoItalic),
+        _ => {
+            if let Some(c) = name.strip_prefix("fmt.fg.") {
+                Field::Fmt(Fmt::Fg(fmt_color_in(c, true)?))
+            } else {
+                Field::Fmt(Fmt::Bg(fmt_color_in(name.strip_prefix("fmt.bg.")?, true)?))
+            }
+        }
+    })
+}
+
 /// 파이썬 이름 하나(글자·숫자·밑줄)
 fn ident(n: &str) -> Option<String> {
     let ok = !n.is_empty()
@@ -283,9 +320,17 @@ fn ident(n: &str) -> Option<String> {
 
 /// kitty `ColorFormatter`: `default`·`tab`·`color0`~`color255`·`_RRGGBB`(= `#RRGGBB`)·색 이름
 fn fmt_color(name: &str) -> Option<SpanColor> {
+    fmt_color_in(name, false)
+}
+
+/// `window`가 참이면 칸 제목 막대 틀(kitty `WindowTitleColorFormatter`)의 이름이다: `window`(그 막대의 글자색·바탕색)는 되고 `tab`은 안 된다.
+/// 막대의 기본 색(`default`)과 `window`는 같은 색이라 모두 `SpanColor::Tab`(막대 색)으로 둔다
+fn fmt_color_in(name: &str, window: bool) -> Option<SpanColor> {
     match name {
+        "default" if window => Some(SpanColor::Tab),
+        "window" if window => Some(SpanColor::Tab),
         "default" => Some(SpanColor::Default),
-        "tab" => Some(SpanColor::Tab),
+        "tab" if !window => Some(SpanColor::Tab),
         _ => {
             if let Some(n) = name.strip_prefix("color") {
                 if !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()) {
@@ -305,6 +350,11 @@ fn fmt_color(name: &str) -> Option<SpanColor> {
 /// 틀을 읽는다. 파이썬 f-문자열처럼 `{{`·`}}`는 중괄호 글자다. 짝이 안 맞거나, 이름이 아닌 것(표현식·`!r`·`:형식`·모르는 이름)이
 /// 들어 있으면 `None`이다. 이 글을 다시 해석하는 일은 없다
 fn parse(template: &str) -> Option<Vec<Piece>> {
+    parse_scoped(template, false)
+}
+
+/// `parse`와 같고 `window`가 참이면 칸 제목 막대 틀의 이름만 받는다(`window_field`)
+fn parse_scoped(template: &str, window: bool) -> Option<Vec<Piece>> {
     let mut out = Vec::new();
     let mut lit = String::new();
     let mut it = template.chars().peekable();
@@ -331,7 +381,7 @@ fn parse(template: &str) -> Option<Vec<Piece>> {
                 if !lit.is_empty() {
                     out.push(Piece::Lit(std::mem::take(&mut lit)));
                 }
-                out.push(Piece::Field(field(&name)?));
+                out.push(Piece::Field(if window { window_field(&name)? } else { field(&name)? }));
             }
             c => lit.push(c),
         }
@@ -374,6 +424,8 @@ pub fn progress_text(p: Option<(u8, u8)>) -> String {
 struct Eval<'a> {
     data: &'a TitleData<'a>,
     cfg: &'a TabTitleConfig,
+    /// 칸 제목 막대 틀이면 그 칸의 값
+    win: Option<&'a WindowData<'a>>,
     spans: Vec<Span>,
     cur: Span,
 }
@@ -429,6 +481,15 @@ impl Eval<'_> {
                 d.all_progress
             }),
             Field::Empty | Field::Fmt(_) => String::new(),
+            Field::WinId => self.win.map_or(String::new(), |w| w.id.to_string()),
+            Field::WinWd => self.win.map_or(String::new(), |w| clean(w.wd)),
+            Field::WinColumns => self.win.map_or(String::new(), |w| w.columns.to_string()),
+            Field::WinLines => self.win.map_or(String::new(), |w| w.lines.to_string()),
+            // 파이썬 `True`·`False`처럼
+            Field::IsActive => self
+                .win
+                .map_or(String::new(), |w| if w.is_active { "True" } else { "False" }.into()),
+            Field::WinProgress => self.win.map_or(String::new(), |w| clean(w.progress)),
             Field::Sup(n) | Field::Sub(n) => {
                 let sub = matches!(f, Field::Sub(_));
                 let raw = match n.as_str() {
@@ -485,6 +546,7 @@ pub fn render(cfg: &TabTitleConfig, active: bool, data: &TitleData, base_bold: b
         let mut e = Eval {
             data,
             cfg,
+            win: None,
             spans: Vec::new(),
             cur,
         };
@@ -510,10 +572,83 @@ pub fn render(cfg: &TabTitleConfig, active: bool, data: &TitleData, base_bold: b
     let mut e = Eval {
         data,
         cfg,
+        win: None,
         spans: Vec::new(),
         cur,
     };
     e.run(&pieces);
+    e.spans
+}
+
+/// 칸 제목 막대 틀에 끼울 값(#916). 글은 모두 믿지 않는 것이라 제어 문자를 지우고 끼운다
+#[derive(Debug, Clone, Default)]
+pub struct WindowData<'a> {
+    /// 칸 안 프로그램이 OSC 0/2로 보낸 제목(또는 사람이 붙인 제목). 틀로 다시 해석하지 않는다
+    pub title: &'a str,
+    pub is_active: bool,
+    pub id: u64,
+    /// 칸의 작업 폴더(OSC 7). 모르면 빈 글자
+    pub wd: &'a str,
+    pub columns: usize,
+    pub lines: usize,
+    pub bell: bool,
+    pub activity: bool,
+    /// kitty `progress_percent`의 글(`window_progress_text`)
+    pub progress: &'a str,
+}
+
+/// kitty 칸의 `progress_percent`: 끝 모름은 `[…] `, 퍼센트가 0보다 크면 `[42%] `, 아니면 빈 글자.
+/// 입력은 진행 표시 (상태, 퍼센트)이고 상태 3이 끝 모름이다
+pub fn window_progress_text(p: Option<(u8, u8)>) -> String {
+    match p {
+        Some((3, _)) => "[…] ".into(),
+        Some((_, pct)) if pct > 0 => format!("[{pct}%] "),
+        _ => String::new(),
+    }
+}
+
+/// 칸 제목 틀을 읽을 수 있는가(설정을 읽을 때 거른다)
+pub fn window_template_ok(template: &str) -> bool {
+    parse_scoped(template, true).is_some()
+}
+
+/// 칸 제목 막대의 글을 틀(`template`)로 그린다: 꾸밈이 같은 글끼리 묶은 조각들. 꾸밈이 없는 글과 `fmt.fg.window`·`fmt.fg.default`는
+/// `SpanColor::Tab`(막대의 글자색·바탕색)이다. 벨·활동 기호는 `tab`의 `bell-on-tab`·`tab-activity-symbol`을 쓴다(kitty처럼 틀에
+/// 없으면 붙이지 않는다). 틀을 읽지 못하면 kitty처럼 제목만 한 조각으로 돌려준다
+pub fn render_window(template: &str, tab: &TabTitleConfig, d: &WindowData) -> Vec<Span> {
+    let data = TitleData {
+        title: d.title,
+        bell: d.bell,
+        activity: d.activity,
+        ..TitleData::default()
+    };
+    let cur = Span {
+        text: String::new(),
+        fg: SpanColor::Tab,
+        bg: SpanColor::Tab,
+        bold: false,
+        italic: false,
+    };
+    let mut e = Eval {
+        data: &data,
+        cfg: tab,
+        win: Some(d),
+        spans: Vec::new(),
+        cur,
+    };
+    match parse_scoped(template, true) {
+        Some(pieces) => e.run(&pieces),
+        None => {
+            let t = clean(d.title);
+            e.text(&t);
+        }
+    }
+    // 막대의 기본 색은 막대 색이다(`fmt.reset`·`fmt.fg.default`)
+    let bar = |c: SpanColor| if c == SpanColor::Default { SpanColor::Tab } else { c };
+    for sp in &mut e.spans {
+        sp.fg = bar(sp.fg);
+        sp.bg = bar(sp.bg);
+    }
     e.spans
 }
 
@@ -797,5 +932,156 @@ mod tests {
             assert_eq!(c.warnings.len(), 1, "{line}: {:?}", c.warnings);
             assert_eq!(c.tab_title, TabTitleConfig::default(), "{line}");
         }
+    }
+    // ---- 칸 제목 막대 틀(#916) ----
+
+    fn wdata(title: &str) -> WindowData<'_> {
+        WindowData {
+            title,
+            id: 7,
+            columns: 80,
+            lines: 23,
+            ..WindowData::default()
+        }
+    }
+
+    fn wrender(template: &str, d: &WindowData) -> Vec<Span> {
+        render_window(template, &TabTitleConfig::default(), d)
+    }
+
+    /// kitty의 기본 칸 제목 틀: 벨 기호는 빨강, 제목은 막대 색
+    #[test]
+    fn window_default_template_colors_the_bell_red_and_the_title_with_the_bar() {
+        let mut d = wdata("vim");
+        d.bell = true;
+        let s = wrender(crate::wintitle::DEFAULT_TEMPLATE, &d);
+        assert_eq!(flat(&s), "🔔 vim");
+        assert_eq!(s.len(), 2, "{s:?}");
+        assert_eq!(s[0].fg, SpanColor::Rgb(Rgb::new(255, 0, 0)));
+        assert_eq!(s[1].fg, SpanColor::Tab);
+        // 벨도 활동도 진행도 없으면 제목 한 조각
+        let s = wrender(crate::wintitle::DEFAULT_TEMPLATE, &wdata("vim"));
+        assert_eq!(s.len(), 1);
+        assert_eq!(
+            (s[0].text.as_str(), s[0].fg, s[0].bg),
+            ("vim", SpanColor::Tab, SpanColor::Tab)
+        );
+    }
+
+    /// 칸 안 프로그램이 보낸 제목은 값일 뿐이다: `{fmt.fg.red}`가 색을 바꾸지 못하고 글자 그대로 나온다
+    #[test]
+    fn window_title_from_the_program_is_never_reinterpreted() {
+        let s = wrender("{title}", &wdata("{fmt.fg.red}x{window.wd}{title}"));
+        assert_eq!(s.len(), 1, "{s:?}");
+        assert_eq!(s[0].text, "{fmt.fg.red}x{window.wd}{title}");
+        assert_eq!(s[0].fg, SpanColor::Tab);
+        // 작업 폴더(OSC 7)도 값이다
+        let mut d = wdata("t");
+        d.wd = "/tmp/{fmt.bg.red}";
+        let s = wrender("{window.wd}", &d);
+        assert_eq!(flat(&s), "/tmp/{fmt.bg.red}");
+        assert_eq!(s.len(), 1);
+        // 제목에 `}}`나 `{{`가 있어도 같다
+        assert_eq!(flat(&wrender("[{title}]", &wdata("{{a}}"))), "[{{a}}]");
+    }
+
+    #[test]
+    fn window_values_drop_control_bytes() {
+        let mut d = wdata("a\x1b[31mb\x07c\nd\u{9b}e");
+        d.wd = "/x\x1b]0;evil\x07y";
+        d.progress = "[5%]\x1b ";
+        assert_eq!(
+            flat(&wrender("{title}|{window.wd}|{progress_percent}", &d)),
+            "a[31mbcde|/x]0;evily|[5%] "
+        );
+    }
+
+    #[test]
+    fn window_names_are_id_wd_size_and_python_style_bool() {
+        let mut d = wdata("t");
+        d.wd = "/home/a";
+        let t = "{window} {window.id} {window.wd} {window.columns}x{window.lines} {is_active}";
+        assert_eq!(flat(&wrender(t, &d)), "7 7 /home/a 80x23 False");
+        d.is_active = true;
+        assert_eq!(flat(&wrender("{is_active}", &d)), "True");
+        // 값이 없으면 빈 글자
+        assert_eq!(flat(&wrender("[{window.wd}]{custom}", &wdata("t"))), "[]");
+    }
+
+    #[test]
+    fn window_templates_take_only_window_names() {
+        // 탭 틀의 이름은 칸 틀에서 이름 오류, 칸 틀의 이름은 탭 틀에서 이름 오류(kitty 그대로)
+        for bad in [
+            "{index}",
+            "{num_windows}",
+            "{sup.index}",
+            "{tab.active_wd}",
+            "{fmt.fg.tab}",
+            "{layout_name}",
+            "{title.upper()}",
+            "{",
+        ] {
+            assert!(!window_template_ok(bad), "{bad}");
+        }
+        for ok in [
+            "{title}",
+            "{window.id}",
+            "{is_active}",
+            "{fmt.fg.window}",
+            "{fmt.bg.window}",
+            "{fmt.bold}{fmt.fg.red}x",
+            "{{}}",
+        ] {
+            assert!(window_template_ok(ok), "{ok}");
+        }
+        for tab_only_bad in ["{window.id}", "{is_active}", "{fmt.fg.window}", "{progress_percent}"] {
+            assert!(parse(tab_only_bad).is_none(), "{tab_only_bad}");
+        }
+        // 틀을 읽지 못하면 제목만(kitty는 이름 오류로 제목을 그대로)
+        assert_eq!(flat(&wrender("{nosuch}{title}", &wdata("abc"))), "abc");
+    }
+
+    #[test]
+    fn window_bar_default_colors_are_the_bar_colors() {
+        let s = wrender(
+            "{fmt.fg.red}a{fmt.fg.window}b{fmt.bg.window}c{fmt.fg.default}{fmt.bg.default}d{fmt.reset}e",
+            &wdata("t"),
+        );
+        let by = |t: &str| s.iter().find(|x| x.text.contains(t)).unwrap().clone();
+        assert_eq!(by("a").fg, SpanColor::Rgb(Rgb::new(255, 0, 0)));
+        for t in ["b", "c", "d", "e"] {
+            assert_eq!((by(t).fg, by(t).bg), (SpanColor::Tab, SpanColor::Tab), "{t}");
+        }
+        let s = wrender("{fmt.bold}{fmt.fg.color9}{fmt.bg._102030}x", &wdata("t"));
+        assert!(s[0].bold);
+        assert_eq!(s[0].fg, SpanColor::Indexed(9));
+        assert_eq!(s[0].bg, SpanColor::Rgb(Rgb::new(0x10, 0x20, 0x30)));
+    }
+
+    #[test]
+    fn window_symbols_use_the_tab_symbol_settings_and_are_not_added_when_missing() {
+        let mut d = wdata("t");
+        d.bell = true;
+        d.activity = true;
+        let cfg = TabTitleConfig {
+            bell_symbol: "!".into(),
+            activity_symbol: "*".into(),
+            ..TabTitleConfig::default()
+        };
+        assert_eq!(
+            flat(&render_window("{bell_symbol}{activity_symbol}{title}", &cfg, &d)),
+            "!*t"
+        );
+        // 탭 줄과 달리 틀에 없으면 붙이지 않는다(kitty 칸 틀)
+        assert_eq!(flat(&render_window("{title}", &cfg, &d)), "t");
+    }
+
+    #[test]
+    fn window_progress_text_follows_kitty() {
+        assert_eq!(window_progress_text(None), "");
+        assert_eq!(window_progress_text(Some((1, 0))), "");
+        assert_eq!(window_progress_text(Some((1, 42))), "[42%] ");
+        assert_eq!(window_progress_text(Some((2, 7))), "[7%] ");
+        assert_eq!(window_progress_text(Some((3, 0))), "[…] ");
     }
 }

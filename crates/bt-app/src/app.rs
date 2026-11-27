@@ -848,6 +848,8 @@ struct PaneView {
     id: u64,
     outer: Rect,
     inner: Rect,
+    /// 칸 제목 막대(`window-title-bar-min-windows`, #916). 막대를 두지 않으면 없다
+    win_bar: Option<crate::winbar::WinBar>,
     screen: Screen,
     focused: bool,
     progress: Option<(u8, u8)>,
@@ -1458,7 +1460,64 @@ impl App {
 
     /// 칸의 격자 자리(바깥 사각형에서 여백을 뺀 곳)
     fn pane_inner(&self, id: u64) -> Option<Rect> {
-        Some(self.inner_rect(self.pane_rect(id)?, self.pane_font_size(id)?))
+        let font = self.pane_font_size(id)?;
+        Some(self.bar_and_inner(self.group_of(id)?, self.pane_rect(id)?, font).1)
+    }
+
+    /// 탭 `gi`의 칸(바깥 사각형 `outer`)의 (칸 제목 막대 사각형, 격자 자리). 막대가 없으면(기본) `inner_rect(outer)`와 같다.
+    /// 칸 테두리(#915)를 먼저 빼고 그 안에서 막대(#916)를 자른 뒤 여백을 뺀다(kitty `set_geometry`, `winbar::frame_and_cut`)
+    fn bar_and_inner(&self, gi: usize, outer: Rect, font_size: f32) -> (Option<Rect>, Rect) {
+        let (bar, base) = crate::winbar::frame_and_cut(
+            outer,
+            |r| self.border_inset_rect(r),
+            |framed| self.title_bar_plan(gi, framed, font_size),
+        );
+        (bar, self.padded_rect(base, font_size))
+    }
+
+    /// 테두리를 뺀 칸 사각형 `framed`에 제목 막대를 두면 (막대 사각형, 나머지 사각형). 두지 않으면 `None`.
+    /// kitty처럼 탭에 보이는 칸이 `window-title-bar-min-windows` 이상이고 칸이 두 줄 넘게 있을 때만 둔다
+    fn title_bar_plan(&self, gi: usize, framed: Rect, font_size: f32) -> Option<(Rect, Rect)> {
+        let cfg = &self.config.window_title;
+        if cfg.min_windows == 0 {
+            return None;
+        }
+        let bar_h = self.chrome_metrics()?.height;
+        let m = self.metrics_at(font_size)?;
+        let rows = self.padded_rect(framed, font_size).h / m.height.max(1);
+        crate::winbar::plan(cfg, self.group_layout(gi).len(), framed, bar_h, rows)
+    }
+
+    /// 칸 `p`의 제목 막대를 그릴 값(#916). `bar`는 막대 사각형, `focused`는 고른 칸인가
+    fn window_bar(&self, p: &Pane, bar: Rect, focused: bool, theme: &bt_core::Theme) -> crate::winbar::WinBar {
+        let cfg = &self.config.window_title;
+        let title = p.plain_title_in(None);
+        let wd = p
+            .cwd
+            .as_deref()
+            .map(|c| c.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let progress = bt_core::tabtitle::window_progress_text(p.live_progress());
+        let size = p.session.size();
+        let data = bt_core::tabtitle::WindowData {
+            title: &title,
+            is_active: focused,
+            id: p.id,
+            wd: &wd,
+            columns: size.cols as usize,
+            lines: size.rows as usize,
+            bell: p.bell,
+            activity: p.activity,
+            progress: &progress,
+        };
+        let (fg, bg) = tabbar::window_bar_colors(theme, &self.config.tab_bar_look, cfg, focused);
+        crate::winbar::WinBar {
+            rect: bar,
+            spans: bt_core::tabtitle::render_window(cfg.template_for(focused), &self.config.tab_title, &data),
+            fg,
+            bg,
+            align: cfg.align,
+        }
     }
 
     /// 탭 줄 아래 칸들이 차지하는 자리. 여백은 칸마다 따로 뺀다(Ghostty처럼)
@@ -1506,7 +1565,11 @@ impl App {
 
     /// 칸의 바깥 사각형에서 여백을 뺀 격자 자리. `font_size`는 그 칸의 글자 크기다(남는 자리를 고르게 나눌 때 그 크기의 칸 크기를 쓴다)
     fn inner_rect(&self, r: Rect, font_size: f32) -> Rect {
-        let r = self.border_inset_rect(r);
+        self.padded_rect(self.border_inset_rect(r), font_size)
+    }
+
+    /// 테두리를 뺀 사각형에서 여백을 뺀 격자 자리
+    fn padded_rect(&self, r: Rect, font_size: f32) -> Rect {
         let px = |pt: f32| (pt as f64 * self.scale).round() as i32;
         let (left, right) = (px(self.config.padding_x.0), px(self.config.padding_x.1));
         let (top, bottom) = (px(self.config.padding_y.0), px(self.config.padding_y.1));
@@ -2189,6 +2252,14 @@ impl App {
             return GridSize::new(80, 24);
         };
         grid_for(self.inner_rect(outer, font_size), &m)
+    }
+
+    /// 탭 `gi`의 칸(바깥 사각형)에 들어가는 격자 크기. 칸 제목 막대(#916)가 있으면 그만큼 뺀다
+    fn grid_size_in(&self, gi: usize, outer: Rect, font_size: f32) -> GridSize {
+        let Some(m) = self.metrics_at(font_size) else {
+            return GridSize::new(80, 24);
+        };
+        grid_for(self.bar_and_inner(gi, outer, font_size).1, &m)
     }
 
     fn sink(&self, id: u64) -> bt_term::EventSink {
@@ -4219,7 +4290,7 @@ impl App {
         for gi in 0..self.w.tabs.len() {
             for (id, rect) in self.group_layout(gi) {
                 let Some(i) = self.pane_index(id) else { continue };
-                let size = self.grid_size_for(rect, self.panes[i].font_size);
+                let size = self.grid_size_in(gi, rect, self.panes[i].font_size);
                 // 칸·줄 수가 바뀌면 크기 표시(resize-overlay, #122)
                 let p = &mut self.panes[i];
                 let old = p.session.size();
@@ -7119,7 +7190,7 @@ impl App {
             .filter_map(|(id, outer)| {
                 let p = &self.panes[self.pane_index(id)?];
                 let m = self.metrics_at(p.font_size)?;
-                let inner = self.inner_rect(outer, p.font_size);
+                let inner = self.bar_and_inner(self.w.active, outer, p.font_size).1;
                 let mut screen = p.session.snapshot();
                 screen.crop_columns(p.session.size().cols as usize);
                 let geom = crate::a11y::Geom {
@@ -7259,10 +7330,12 @@ impl App {
                     screen.snap_to_lines();
                 }
                 let bell_flash = self.bell_flash_of(p, &screen);
+                let (bar, inner) = self.bar_and_inner(self.w.active, *outer, p.font_size);
                 Some(PaneView {
                     id: *id,
                     outer: *outer,
-                    inner: self.inner_rect(*outer, p.font_size),
+                    inner,
+                    win_bar: bar.map(|bar| self.window_bar(p, bar, Some(*id) == focus, &theme)),
                     font_size: p.font_size,
                     metrics: self.metrics_at(p.font_size)?,
                     screen,
@@ -7676,6 +7749,7 @@ impl App {
                     )
                 })
                 .collect(),
+            win_bars: views.iter().map(|v| v.win_bar.clone()).collect(),
             labels: labels
                 .iter()
                 .map(|l| (l.title.clone(), l.active, l.unread, l.progress, l.spans.clone()))
@@ -7873,6 +7947,9 @@ impl App {
                             screen.background,
                             None,
                         );
+                    }
+                    if let Some(bar) = &v.win_bar {
+                        crate::winbar::draw(&mut canvas, fonts.chrome(), &theme, bar);
                     }
                     images.paint(&mut canvas, bt_core::kitty_geom::Layer::AboveText);
                     if split && !v.focused && dim_alpha > 0 {
@@ -8175,6 +8252,8 @@ struct Chrome {
     size: (u32, u32),
     cell: (u32, u32),
     panes: Vec<PaneKey>,
+    /// 칸 제목 막대(#916). 제목이 바뀌면 통째로 다시 그린다
+    win_bars: Vec<Option<crate::winbar::WinBar>>,
     labels: Vec<LabelKey>,
     /// 탭 줄의 모양·색(설정을 다시 읽으면 바뀐다, #901)
     tab_look: bt_core::tabstyle::TabBarLook,

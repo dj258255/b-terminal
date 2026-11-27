@@ -54,6 +54,7 @@ mod themepick;
 mod toggles;
 mod undo;
 mod winact;
+mod winbar;
 mod windeco;
 
 use bt_term::SpawnOptions;

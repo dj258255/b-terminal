@@ -314,6 +314,28 @@ impl Palette {
     }
 }
 
+/// 칸 제목 막대(#916)의 (글자색, 바탕색): 설정(`window-title-bar-*-foreground`·`-background`)이 없으면(`none`)
+/// kitty처럼 탭 줄의 고른 탭(`active_tab_*`)·안 고른 탭(`inactive_tab_*`) 색을 따른다
+pub fn window_bar_colors(
+    theme: &Theme,
+    look: &TabBarLook,
+    cfg: &bt_core::wintitle::WindowTitleConfig,
+    active: bool,
+) -> (Rgb, Rgb) {
+    let pal = Palette::new(theme, look);
+    if active {
+        (
+            cfg.active_foreground.unwrap_or(pal.active_fg),
+            cfg.active_background.unwrap_or(pal.active_bg),
+        )
+    } else {
+        (
+            cfg.inactive_foreground.unwrap_or(pal.inactive_fg),
+            cfg.inactive_background.unwrap_or_else(|| pal.bg(false)),
+        )
+    }
+}
+
 /// 파워라인 기호의 꼴. 글꼴에 기호가 없어도 그려지게 직접 칠한다(U+E0B0·E0B4·E0BC)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Shape {
@@ -2332,6 +2354,39 @@ mod tests {
         // 1이면 …만
         let (t, _) = label_text(vec![sp("abc", SpanColor::Tab)], 1, false, false);
         assert_eq!(t, "…");
+    }
+
+    /// 칸 제목 막대 색(#916): 설정이 `none`이면 탭 줄의 고른 탭·안 고른 탭 색을 따르고, 정하면 그것을 쓴다
+    #[test]
+    fn window_bar_colors_follow_the_tab_bar_unless_set() {
+        use bt_core::wintitle::WindowTitleConfig;
+        let theme = Theme::ghostty_default();
+        let look = TabBarLook::default();
+        let pal = Palette::new(&theme, &look);
+        let none = WindowTitleConfig::default();
+        assert_eq!(
+            window_bar_colors(&theme, &look, &none, true),
+            (pal.active_fg, pal.active_bg)
+        );
+        assert_eq!(
+            window_bar_colors(&theme, &look, &none, false),
+            (pal.inactive_fg, pal.bg(false))
+        );
+        let mut c = WindowTitleConfig::default();
+        c.apply("window-title-bar-active-foreground", "#010203");
+        c.apply("window-title-bar-inactive-background", "#040506");
+        assert_eq!(
+            window_bar_colors(&theme, &look, &c, true),
+            (Rgb::new(1, 2, 3), pal.active_bg)
+        );
+        assert_eq!(
+            window_bar_colors(&theme, &look, &c, false),
+            (pal.inactive_fg, Rgb::new(4, 5, 6))
+        );
+        // 탭 줄 색을 바꾸면 따라 바뀐다
+        let mut look2 = TabBarLook::default();
+        look2.apply("active-tab-background", "#0a0b0c");
+        assert_eq!(window_bar_colors(&theme, &look2, &none, true).1, Rgb::new(10, 11, 12));
     }
 
     #[test]

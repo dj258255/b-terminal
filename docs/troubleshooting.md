@@ -1049,6 +1049,21 @@
 - 남긴 것: 실제 창에서 kitty와 나란히 눈으로 견주지 않았다(PTY 막힘으로 앱을 띄우지 못했다). `App`의 연결(`divider_px`·`inner_rect`에서 부르는 `border_inset_rect`·`bell_pending`)은 앱을 띄워야 해서 시험하지 못했고, 계산은 모두 `pane_border`·`paneborder`의 순수 함수 시험이 지킨다. 칸이 하나인지는 "바깥 사각형이 내용 영역 전체와 같은가"로 판단한다(`border_inset_rect`): 칸 제목 막대처럼 칸 사각형을 따로 줄이는 기능이 들어오면 이 판단을 같이 고쳐야 한다
 - 0.106.0에서 풀기: 없음(설정이 없으면 이 기능은 아무것도 바꾸지 않는다)
 
+## 123. 칸을 여럿 나누면 칸마다 무엇이 도는지 알 길이 탭 제목뿐이다(칸 제목 막대)
+
+- 언제: 2026-11-28, #916. 0.106.0 뒤 main까지의 동작이다. 화면 모양을 kitty와 견준 조사에서 골랐다
+- 증상: 칸을 나눠도 제목은 탭 줄에 고른 칸의 것 하나만 보인다. 칸마다 무엇이 도는지(제목·작업 폴더·진행률·벨)를 보려면 칸을 하나씩 골라 봐야 한다
+- 까닭: 칸 안에는 글자 영역뿐이었고 칸마다의 제목을 그릴 자리가 없었다. kitty는 `window_title_bar`·`window_title_bar_min_windows`·`window_title_template`·`active_window_title_template`·`window_title_bar_active_foreground`·`_background`·`window_title_bar_inactive_foreground`·`_background`·`window_title_bar_align`(v0.51.1 `kitty/options/definition.py` 2135줄 앞뒤)로 칸마다 위나 아래에 한 줄 막대를 그린다
+- 고침: 같은 뜻의 키 아홉을 `-`로 이어 더했다(`bt-core`의 `wintitle`). 틀 해석은 탭 제목 틀(`tabtitle`, ADR-098)을 그대로 쓰고 칸 쪽 이름(`window.id`·`window.wd`·`window.columns`·`window.lines`·`is_active`·`progress_percent`)과 `fmt.fg.window`·`fmt.bg.window`만 더했다. 막대 자리는 `bt-app`의 `winbar`가 정한다
+- 막대 자리(kitty `kitty/window.py` `set_geometry`, `kitty/layout/base.py` 729~739줄): 탭에 보이는 칸이 `window-title-bar-min-windows`(0이면 안 보임, 1이면 늘) 이상이고 칸이 두 줄 넘게 있으면, 칸 바깥 사각형 위(`top`)나 아래(`bottom`)에서 글자 한 줄 높이(창 기준 글꼴의 칸 높이)를 떼어 막대로 쓰고 남은 곳이 여백·글자 영역이다. 그래서 칸 줄 수가 하나 줄고 프로그램은 SIGWINCH로 줄어든 크기를 받는다. 막대 위 누르기에는 막대 전용 처리가 없다: 칸 여백 위 누르기와 같은 길을 타(다른 칸이면 그 칸을 고르고, 고른 칸이면 가장자리 칸으로 붙여 처리) 막대에서 선택·마우스 보고가 시작될 수 있다(실제 창에서 확인하지 않았다)
+- 색(kitty `window_title_bar.py` `render`): `none`이면 탭 줄의 고른 탭(`active_tab_*`)·안 고른 탭(`inactive_tab_*`) 색이다. 우리는 이것이 탭 줄의 `Palette`와 같은 값이다(`tabbar::window_bar_colors`). 막대의 기본 색(`fmt.reset`·`fmt.fg.default`·`fmt.fg.window`)은 모두 막대 색이다
+- 맞춤(`render`): 막대 칸 수 = 막대 폭 / 글자 폭. 왼쪽은 0, 가운데는 `(칸 - 글) // 2`, 오른쪽은 `칸 - 글` 칸을 글 앞에 둔다. 글이 넘치면 잘린다. 틀이 빈 글을 내면 막대를 그리지 않는다(자리는 그대로 남는다)
+- 정한 것: 설정이 없으면(`window-title-bar-min-windows = 0`) 막대 판단이 처음에 빠져나가므로 칸 사각형·격자 크기·그리는 일이 모두 지금과 같다. 막대는 CPU 길과 GPU 길이 같은 함수(`winbar::draw`)를 아래층 캔버스에 그려 같은 픽셀이다. 칸 사각형에서 막대 높이를 빼는 일은 `App::bar_and_inner` 하나로 모았고 칸 크기 맞추기(`resize_all`)·칸 안 자리(`pane_inner`)·마우스 보고·그리기·접근성 자리에 한 줄로 끼웠다. 칸 테두리(#915)와 함께 쓰면 kitty처럼 테두리를 먼저 빼고 그 안에서 막대를 자른다(`winbar::frame_and_cut`). 테두리 계산이 "탭에 칸이 하나인가"를 바깥 사각형으로 판단하므로, 막대를 먼저 빼면 칸 하나에 막대가 보일 때(`window-title-bar-min-windows = 1`) 그 판단이 틀린다
+- 보안: 칸 안 프로그램이 OSC 0/2로 보낸 제목과 OSC 7 작업 폴더는 틀에 값으로만 끼우고 제어 문자를 지운다(ADR-098 결정 5). 엔진에 `ESC ] 2 ; {fmt.fg.red}x{window.id} BEL`을 먹여 읽은 제목으로 시험했다(`bt-term` `osc2_title_shows_literally_in_the_window_title_bar_template`, PTY 없음)와 막대에 실제로 그려 글자에 색이 없는 것을 픽셀로 확인했다(`osc_title_with_fmt_text_is_drawn_literally_without_color`)
+- kitty와 다른 점: (1) `{custom}`(설정 폴더의 `window_title_bar.py`)과 표현식은 받지 않는다. `{custom}`은 빈 글자다. (2) `progress_percent`는 kitty처럼 `[42%] `·`[…] `이다. (3) 막대를 끌어 칸을 옮기는 일과 `toggle_window_title_bars`는 없다(이슈 범위 밖). (4) 막대 높이는 칸 글꼴이 아니라 창 기준 글꼴의 한 줄이라 칸마다 글자 크기를 바꾼 창에서는 그 칸의 줄과 높이가 맞지 않을 수 있다(kitty는 창마다 한 글꼴). (5) 막대 칸 수의 최솟값 4칸(kitty `max(4, ...)`)은 두지 않는다. (6) `fmt.fg.tab`은 칸 틀에서 이름 오류다(kitty 칸 틀에는 `tab` 이름이 없다)
+- 남긴 것: 실제 창에서 kitty와 나란히 눈으로 견주지 않았다(재지 않았다). 칸을 나눈 실제 앱의 줄 수 변화·SIGWINCH·마우스 위치는 앱을 띄워 보지 않았다. 앱 안 배선(`resize_all`·`pane_inner`·그리기에서 막대 높이를 빼는 줄)은 단위 시험이 없고 순수 함수(`winbar::plan`·`cut`)만 시험했다
+- 0.106.0에서 풀기: 없음(기본이 안 보임이고 새 키만 더했다)
+
 ## 124. 스크롤 막대의 폭·색·둥글기·트랙을 바꿀 수 없다
 
 - 언제: 2026-11-28, #917. 0.106.0 뒤 main까지의 동작이다. 화면 모양을 kitty와 견준 조사에서 골랐다

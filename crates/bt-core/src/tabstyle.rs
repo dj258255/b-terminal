@@ -136,7 +136,7 @@ impl Default for TabBarLook {
 }
 
 /// 색 값: 비었거나 `none`이면 `Some(None)`(정하지 않음), 읽으면 `Some(Some(색))`, 틀리면 `None`
-fn color(v: &str) -> Option<Option<Rgb>> {
+pub(crate) fn color(v: &str) -> Option<Option<Rgb>> {
     let v = v.trim();
     if v.is_empty() || v.eq_ignore_ascii_case("none") {
         return Some(None);
