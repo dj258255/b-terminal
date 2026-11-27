@@ -58,13 +58,22 @@ impl TabFontStyle {
     }
 }
 
-/// `tab-bar-edge`(kitty `tab_bar_edge`). 세로 탭 줄(`left`·`right`)은 아직 없어 `top`으로 둔다(#909).
+/// `tab-bar-edge`(kitty `tab_bar_edge`). `left`·`right`는 세로 탭 줄이다(#935, kitty 0.48).
 /// 기본은 `top`이다(kitty의 기본 `bottom`과 다르다: 설정을 바꾸지 않은 사람의 화면을 지킨다)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum TabBarEdge {
     #[default]
     Top,
     Bottom,
+    Left,
+    Right,
+}
+
+impl TabBarEdge {
+    /// 세로 탭 줄(창 왼쪽·오른쪽)인가
+    pub fn vertical(self) -> bool {
+        matches!(self, Self::Left | Self::Right)
+    }
 }
 
 /// kitty `positive_float`: 읽히는 유한한 수의 `max(0, x)`. 읽지 못하면 `None`
@@ -205,11 +214,8 @@ impl TabBarLook {
             "tab-bar-edge" => match v.trim().to_ascii_lowercase().as_str() {
                 "top" => set(&mut self.edge, TabBarEdge::Top),
                 "bottom" => set(&mut self.edge, TabBarEdge::Bottom),
-                // 세로 탭 줄은 아직 없다: 경고를 내고 위로 둔다
-                "left" | "right" => {
-                    self.edge = TabBarEdge::Top;
-                    false
-                }
+                "left" => set(&mut self.edge, TabBarEdge::Left),
+                "right" => set(&mut self.edge, TabBarEdge::Right),
                 _ => false,
             },
             "tab-bar-margin-width" => positive_float(v).is_some_and(|f| set(&mut self.margin_width, f)),
@@ -302,6 +308,8 @@ impl TabBarLook {
                 match self.edge {
                     TabBarEdge::Top => "top",
                     TabBarEdge::Bottom => "bottom",
+                    TabBarEdge::Left => "left",
+                    TabBarEdge::Right => "right",
                 }
                 .into(),
             ),
@@ -441,12 +449,21 @@ mod tests {
         let again = Config::from_text(&c.render(), true);
         assert!(again.warnings.is_empty(), "{:?}", again.warnings);
         assert_eq!(again.tab_bar_look, c.tab_bar_look);
-        // 세로 탭 줄은 경고를 내고 위로 둔다
-        for edge in ["left", "right"] {
+        // 세로 탭 줄(#935, kitty 0.48): 경고 없이 받고, `+show-config` 왕복도 같다
+        for (edge, want) in [
+            ("left", TabBarEdge::Left),
+            ("right", TabBarEdge::Right),
+            ("LEFT", TabBarEdge::Left),
+        ] {
             let c = Config::from_text(&format!("tab-bar-edge = bottom\ntab-bar-edge = {edge}\n"), true);
-            assert_eq!(c.warnings.len(), 1, "{edge}: {:?}", c.warnings);
-            assert_eq!(c.tab_bar_look.edge, TabBarEdge::Top, "{edge}");
+            assert!(c.warnings.is_empty(), "{edge}: {:?}", c.warnings);
+            assert_eq!(c.tab_bar_look.edge, want, "{edge}");
+            let again = Config::from_text(&c.render(), true);
+            assert!(again.warnings.is_empty(), "{edge}: {:?}", again.warnings);
+            assert_eq!(again.tab_bar_look.edge, want, "{edge}: 왕복");
         }
+        assert!(TabBarEdge::Left.vertical() && TabBarEdge::Right.vertical());
+        assert!(!TabBarEdge::Top.vertical() && !TabBarEdge::Bottom.vertical());
         for line in [
             "tab-bar-edge = middle",
             "tab-bar-margin-width = wide",

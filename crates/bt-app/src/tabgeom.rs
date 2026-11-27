@@ -3,6 +3,8 @@
 //! 진행 막대·안 읽음 점·창 크기(칸 수 → 픽셀)가 모두 이 계산을 쓰므로 그린 자리와 누르는 자리가 어긋나지 않는다.
 //! kitty `os_window_regions`(`kitty/state.c` 825~886줄)를 옮겼다: 위쪽이면 `central.top = 높이 + 안 + 밖`·`tab_bar.top = 밖`,
 //! 아래쪽이면 `central.bottom = 창 - (높이 + 안 + 밖)`·`tab_bar.top = central.bottom + 안`.
+//! 세로 탭 줄(`left`·`right`, #935)은 위의 계산을 가로로 돌린 것이다: `central.left = 폭 + 안 + 밖`(왼쪽) 또는 `central.right = 창 - (폭 + 안 + 밖)`(오른쪽).
+//! 폭은 `vtabs`가 정하고(`with_vertical_width`·`sized`·`wanted`), 세로 줄이면 `band()`(세로 높이)는 0이고 `band_x()`가 가로 폭을 가져간다.
 //! 여백 값이 모두 0이고 위쪽이면 탭 줄은 창 위(제목 막대 비움 바로 밑)에서 높이만큼이라 지금과 같다
 
 use bt_core::tabstyle::{TabBarEdge, TabBarLook};
@@ -25,6 +27,10 @@ pub struct BarGeom {
     pub outer: u32,
     /// 탭 줄과 칸 사이(px)
     pub inner: u32,
+    /// 탭 줄을 둔 가장자리. 세로(`left`·`right`)면 `bar_h`는 탭 한 줄(행)의 높이다(#935)
+    pub edge: TabBarEdge,
+    /// 세로 탭 줄의 폭(px). 가로 줄이거나 아직 정하지 않았으면 0이고, 0이면 세로 줄도 자리를 차지하지 않는다
+    pub vw: u32,
 }
 
 impl BarGeom {
@@ -36,12 +42,100 @@ impl BarGeom {
             margin_x: pt_px(look.margin_width, scale),
             outer: pt_px(look.margin_height.0, scale),
             inner: pt_px(look.margin_height.1, scale),
+            edge: look.edge,
+            vw: 0,
+        }
+    }
+
+    /// 세로 탭 줄의 폭(px)을 정한다. 가로 줄에서는 무시한다
+    pub fn with_vertical_width(mut self, vw: u32) -> Self {
+        if self.edge.vertical() {
+            self.vw = vw;
+        }
+        self
+    }
+
+    /// 창 폭 `win_w`와 탭 줄 글꼴의 칸 폭 `cell_w`로 세로 줄의 폭을 정한다(kitty `vertical_tab_bar_cols`).
+    /// `max_length`는 `tab-title-max-length`(0이면 28칸)
+    pub fn sized(self, look: &TabBarLook, win_w: u32, cell_w: u32, max_length: u32) -> Self {
+        if !self.edge.vertical() {
+            return self;
+        }
+        let avail = win_w as i64 - self.outer as i64 - self.inner as i64;
+        let cols = crate::vtabs::bar_cols(avail, cell_w, crate::vtabs::desired_cols(look, max_length));
+        self.with_vertical_width(cols * cell_w.max(1))
+    }
+
+    /// 창이 아직 없어 폭을 모를 때(창 크기를 정할 때): 바라는 폭 그대로
+    pub fn wanted(self, look: &TabBarLook, cell_w: u32, max_length: u32) -> Self {
+        let cols = crate::vtabs::desired_cols(look, max_length);
+        self.with_vertical_width(cols * cell_w.max(1))
+    }
+
+    /// 세로 탭 줄이 지금 자리를 차지하는가(세로 가장자리이고 탭 줄이 있고 폭이 있다)
+    pub fn vertical(&self) -> bool {
+        self.edge.vertical() && self.bar_h > 0 && self.vw > 0
+    }
+
+    /// 세로 줄이 칸의 가로 폭에서 가져가는 띠의 폭(여백 포함). 가로 줄이면 0
+    pub fn band_x(&self) -> u32 {
+        if self.vertical() {
+            self.outer + self.vw + self.inner
+        } else {
+            0
+        }
+    }
+
+    /// 칸이 들어가는 가로 범위 (맨 왼쪽 x, 폭). 왼쪽 세로 줄이면 띠 오른쪽에서, 오른쪽이면 띠 왼쪽까지
+    pub fn content_x(&self, win_w: u32) -> (u32, u32) {
+        let band = self.band_x().min(win_w);
+        let left = if self.edge == TabBarEdge::Left { band } else { 0 };
+        (left, win_w - band)
+    }
+
+    /// 세로 탭 줄 사각형의 가로 범위 (시작 x, 폭)
+    pub fn bar_x(&self, win_w: u32) -> (i32, u32) {
+        match self.edge {
+            TabBarEdge::Right => (win_w.saturating_sub(self.outer + self.vw) as i32, self.vw),
+            _ => (self.outer as i32, self.vw),
+        }
+    }
+
+    /// 세로 줄의 탭이 놓이는 세로 범위 (시작 y, 높이). 제목 막대 비움 밑에서 창 끝까지, 위아래로 `tab-bar-margin-width`를 뺀다
+    pub fn tabs_y(&self, win_h: u32) -> (i32, u32) {
+        let top = self.inset.min(win_h);
+        let room = win_h - top;
+        let m = self.margin_x.min(room / 2);
+        ((top + m) as i32, (room - 2 * m).max(1))
+    }
+
+    /// (x, y)가 탭 줄 사각형 안인가. 세로 줄은 가로 범위도 본다. 탭 줄이 없으면 거짓
+    pub fn in_bar_at(&self, x: f64, y: f64, win_w: u32, win_h: u32) -> bool {
+        if !self.edge.vertical() {
+            return self.in_bar(y, win_h);
+        }
+        let (bx, bw) = self.bar_x(win_w);
+        self.vertical() && x >= bx as f64 && x < (bx + bw as i32) as f64 && y >= self.inset as f64 && y < win_h as f64
+    }
+
+    /// (x, y)가 탭 줄과 그 여백을 합친 띠 안인가(칸이 아닌 곳). 탭 줄이 없으면 거짓
+    pub fn in_band_at(&self, x: f64, y: f64, win_w: u32, win_h: u32) -> bool {
+        if !self.edge.vertical() {
+            return self.in_band(y, win_h);
+        }
+        if !self.vertical() || y < self.inset as f64 || y >= win_h as f64 {
+            return false;
+        }
+        let band = self.band_x().min(win_w) as f64;
+        match self.edge {
+            TabBarEdge::Right => x >= win_w as f64 - band && x < win_w as f64,
+            _ => x >= 0.0 && x < band,
         }
     }
 
     /// 탭 줄이 차지하는 세로 띠의 높이(여백 포함). 탭 줄이 없으면 0
     pub fn band(&self) -> u32 {
-        if self.bar_h == 0 {
+        if self.bar_h == 0 || self.edge.vertical() {
             0
         } else {
             self.outer + self.bar_h + self.inner
@@ -78,7 +172,7 @@ impl BarGeom {
     /// y가 탭 줄 사각형 안인가. 탭 줄이 없으면 거짓
     pub fn in_bar(&self, y: f64, win_h: u32) -> bool {
         let (t, b) = self.bar_y(win_h);
-        self.bar_h > 0 && y >= t as f64 && y < b as f64
+        self.bar_h > 0 && !self.edge.vertical() && y >= t as f64 && y < b as f64
     }
 
     /// y가 탭 줄과 그 여백을 합친 띠 안인가(칸이 아닌 곳). 탭 줄이 없으면 거짓
@@ -189,5 +283,104 @@ mod tests {
             assert!(bb <= top as i32 || bt >= cells_end, "{bottom}: 탭 줄과 칸이 겹침");
             assert_eq!(h + g.band() + g.inset, 700, "{bottom}: 제목 막대 비움 + 칸 + 띠 = 창");
         }
+    }
+
+    // ---- 세로 탭 줄(#935) ----
+
+    fn vgeom(edge: TabBarEdge, mw: f32, mh: (f32, f32), vw: u32) -> BarGeom {
+        BarGeom::new(&look(edge, mw, mh), 1.0, 30, 40).with_vertical_width(vw)
+    }
+
+    #[test]
+    fn left_bar_takes_width_from_the_cells_and_not_height() {
+        // kitty: central.left = 폭 + 안 + 밖, tab_bar.left = 밖
+        let g = vgeom(TabBarEdge::Left, 0.0, (3.0, 4.0), 200);
+        assert!(g.vertical());
+        assert_eq!((g.outer, g.inner, g.band_x()), (3, 4, 207));
+        assert_eq!(g.band(), 0, "세로 줄은 칸의 높이를 줄이지 않는다");
+        assert_eq!(g.content_y(800), (30, 770), "제목 막대 비움 밑에서 창 끝까지");
+        assert_eq!(g.content_x(1000), (207, 793));
+        assert_eq!(g.bar_x(1000), (3, 200));
+        assert_eq!(g.content_top(), 30);
+        // 칸 격자와 탭 줄과 여백이 창 폭을 빈틈없이 나눈다
+        let (cx, cw) = g.content_x(1000);
+        let (bx, bw) = g.bar_x(1000);
+        assert_eq!(bx as u32 + bw + g.inner, cx);
+        assert_eq!(g.outer + bw + g.inner + cw, 1000);
+    }
+
+    #[test]
+    fn right_bar_puts_the_cells_first_like_kitty() {
+        // kitty: central.right = 창 - (폭 + 안 + 밖), tab_bar.left = central.right + 안
+        let g = vgeom(TabBarEdge::Right, 0.0, (3.0, 4.0), 200);
+        assert_eq!(g.content_x(1000), (0, 793));
+        assert_eq!(g.bar_x(1000), (793 + 4, 200));
+        assert_eq!(g.bar_x(1000).0 as u32 + 200 + 3, 1000);
+    }
+
+    #[test]
+    fn vertical_margin_width_is_above_and_below_the_tabs() {
+        // kitty: tab_bar_margin_width는 세로 줄에서 위·아래 여백
+        let g = vgeom(TabBarEdge::Left, 5.0, (0.0, 0.0), 200);
+        assert_eq!(g.tabs_y(800), (35, 800 - 35 - 5));
+        let g = vgeom(TabBarEdge::Right, 0.0, (0.0, 0.0), 200);
+        assert_eq!(g.tabs_y(800), (30, 770));
+        // 여백이 높이보다 커도 높이는 1 이상
+        let g = vgeom(TabBarEdge::Left, 9999.0, (0.0, 0.0), 200);
+        assert!(g.tabs_y(800).1 >= 1);
+    }
+
+    #[test]
+    fn vertical_hits_use_x_and_y() {
+        let g = vgeom(TabBarEdge::Left, 0.0, (2.0, 3.0), 100);
+        // 탭 줄 사각형: x 2..102, y 30..800
+        assert!(g.in_bar_at(2.0, 30.0, 1000, 800) && g.in_bar_at(101.9, 799.0, 1000, 800));
+        assert!(!g.in_bar_at(1.9, 100.0, 1000, 800) && !g.in_bar_at(102.0, 100.0, 1000, 800));
+        assert!(!g.in_bar_at(50.0, 29.9, 1000, 800), "제목 막대 비움은 탭 줄이 아니다");
+        // 띠는 여백 포함: x 0..105
+        assert!(g.in_band_at(0.0, 100.0, 1000, 800) && g.in_band_at(104.9, 100.0, 1000, 800));
+        assert!(!g.in_band_at(105.0, 100.0, 1000, 800));
+        let r = vgeom(TabBarEdge::Right, 0.0, (2.0, 3.0), 100);
+        assert!(r.in_band_at(895.0, 100.0, 1000, 800) && r.in_band_at(999.9, 100.0, 1000, 800));
+        assert!(!r.in_band_at(894.9, 100.0, 1000, 800));
+        assert!(r.in_bar_at(898.0, 100.0, 1000, 800) && !r.in_bar_at(897.9, 100.0, 1000, 800));
+        // 가로 줄이면 x는 보지 않고 지금 판정과 같다
+        let h = BarGeom::new(&look(TabBarEdge::Top, 0.0, (0.0, 0.0)), 1.0, 30, 40);
+        assert!(h.in_bar_at(5000.0, 30.0, 1000, 800) == h.in_bar(30.0, 800));
+        assert!(!h.vertical() && h.band_x() == 0);
+    }
+
+    #[test]
+    fn a_vertical_edge_without_width_or_bar_is_no_band() {
+        // 탭 줄이 없다(높이 0)거나 폭이 0이면 아무 자리도 차지하지 않는다
+        let none = BarGeom::new(&look(TabBarEdge::Left, 4.0, (3.0, 4.0)), 1.0, 30, 0).with_vertical_width(200);
+        assert!(!none.vertical());
+        assert_eq!((none.band_x(), none.band()), (0, 0));
+        assert_eq!(none.content_x(900), (0, 900));
+        assert!(!none.in_band_at(1.0, 100.0, 900, 800) && !none.in_bar_at(1.0, 100.0, 900, 800));
+        let nowidth = vgeom(TabBarEdge::Right, 0.0, (3.0, 4.0), 0);
+        assert!(!nowidth.vertical());
+        assert_eq!(nowidth.content_x(900), (0, 900));
+    }
+
+    #[test]
+    fn sized_width_comes_from_window_width_and_title_length() {
+        let l = look(TabBarEdge::Left, 0.0, (3.0, 4.0));
+        // 넓은 창: 28칸 * 칸 폭 10
+        let g = BarGeom::new(&l, 1.0, 0, 40).sized(&l, 2000, 10, 0);
+        assert_eq!(g.vw, 280);
+        // 좁은 창(600 - 7 = 593px → 59칸의 3분의 1 = 19칸)
+        let g = BarGeom::new(&l, 1.0, 0, 40).sized(&l, 600, 10, 0);
+        assert_eq!(g.vw, 190);
+        // 제목 길이 12: 12 + 4칸
+        let g = BarGeom::new(&l, 1.0, 0, 40).sized(&l, 2000, 10, 12);
+        assert_eq!(g.vw, 160);
+        // 가로 줄이면 건드리지 않는다
+        let t = look(TabBarEdge::Top, 0.0, (0.0, 0.0));
+        assert_eq!(BarGeom::new(&t, 1.0, 0, 40).sized(&t, 2000, 10, 0).vw, 0);
+        // 창을 만들기 전(폭을 모를 때)은 바라는 폭을 쓴다
+        let g = BarGeom::new(&l, 1.0, 0, 40).wanted(&l, 10, 0);
+        assert_eq!(g.vw, 280);
+        assert_eq!(g.band_x(), 280 + 7);
     }
 }
