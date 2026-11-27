@@ -208,3 +208,24 @@ fn clearing_the_last_command_removes_only_its_mark() {
     // 지운 명령(true)과 그 뒤 현재 프롬프트의 기억은 버리고, 앞 명령(false)은 남는다
     assert_eq!(got, vec![done(1)]);
 }
+
+#[test]
+fn marks_follow_their_prompt_rows_when_narrowing_rewraps_long_lines() {
+    // 긴 출력 줄이 좁아지며 여러 줄로 접히면 프롬프트 줄의 번호가 밀린다. 기억이 따라가야 한다
+    let mut e = emu(40, 6);
+    for i in 0..3 {
+        e.feed(command(&format!("c{i}"), &"x".repeat(35), Some(i)).as_bytes());
+    }
+    e.feed(b"\x1b]133;A\x07$ ");
+    e.resize(GridSize::new(8, 6));
+    e.scroll(100);
+    let s = e.snapshot();
+    let got = marks(&s);
+    assert!(!got.is_empty());
+    for (row, state) in got {
+        let text = s.row_text(row);
+        if let Some(n) = text.strip_prefix("$ c").and_then(|t| t.trim().parse::<i32>().ok()) {
+            assert_eq!(state, done(n), "{text}");
+        }
+    }
+}
