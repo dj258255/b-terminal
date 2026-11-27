@@ -148,7 +148,7 @@ impl App {
         // 투명 창·배경 그림(#359): CPU 길(`redraw`)과 같은 값. 투명으로 열지 않은 창은 설정이 나중에 바뀌어도 불투명으로 그린다
         // (surface의 알파 모드는 열 때 정해진다)
         let opacity = if gpu.window_transparent() {
-            crate::toggles::effective_opacity(self.config.background_opacity, self.w.opaque)
+            crate::toggles::drawn_opacity(self.config.background_opacity, self.w.opaque, self.w.native_fullscreen)
         } else {
             1.0
         };

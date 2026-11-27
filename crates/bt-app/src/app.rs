@@ -1086,6 +1086,8 @@ struct Win {
     trail_wake: Option<Instant>,
     /// 이 창의 바탕이 `toggle_background_opacity`로 불투명해졌다(#209)
     opaque: bool,
+    /// 이 창이 macOS 네이티브 전체 화면이다(#921). 이 동안은 투명도를 끄고 그린다(`toggles::drawn_opacity`)
+    native_fullscreen: bool,
     /// 제목 막대 폴더 아이콘에 마지막으로 올린 폴더(#279). 같으면 다시 올리지 않는다
     proxy_icon: Option<std::path::PathBuf>,
     /// 창이 다른 창에 가려졌거나 최소화됐다(`WindowEvent::Occluded`, #303). 알리기 전에는 보인다고 본다
@@ -1168,6 +1170,7 @@ impl Win {
             trails: Default::default(),
             trail_wake: None,
             opaque: false,
+            native_fullscreen: false,
             proxy_icon: None,
             occluded: false,
             kitty_wake: None,
@@ -4999,6 +5002,21 @@ impl App {
 
     /// 지금 창의 바탕 투명도를 설정값과 불투명 사이에서 바꾼다(Ghostty `toggle_background_opacity`, #209).
     /// `background-opacity`가 1 이상이면 아무것도 하지 않는다
+    /// 창이 네이티브 전체 화면에 들어가거나 나왔으면 기록하고, 옛 투명도로 만든 배경 그림 층과 앞 프레임을 버린다(#921).
+    /// 전체 화면에 들어가고 나올 때는 창 크기가 바뀌므로 `Resized`에서 부른다
+    fn sync_native_fullscreen(&mut self) {
+        #[cfg(target_os = "macos")]
+        let now = self.w.gfx.as_ref().is_some_and(|g| g.window.fullscreen().is_some());
+        // 회색 바탕이 비치는 일은 macOS 전체 화면 Space의 것이다
+        #[cfg(not(target_os = "macos"))]
+        let now = false;
+        if now != self.w.native_fullscreen {
+            self.w.native_fullscreen = now;
+            self.w.backdrop = None;
+            self.w.last_frame = None;
+        }
+    }
+
     fn toggle_background_opacity(&mut self) {
         if !crate::toggles::can_toggle_opacity(self.config.background_opacity) {
             return;
@@ -7829,7 +7847,8 @@ impl App {
         }
         let mut repainted_rows = 0;
         // 이 창이 지금 쓰는 바탕 불투명도(toggle_background_opacity로 불투명해졌으면 1, #209)
-        let opacity = crate::toggles::effective_opacity(self.config.background_opacity, self.w.opaque);
+        let opacity =
+            crate::toggles::drawn_opacity(self.config.background_opacity, self.w.opaque, self.w.native_fullscreen);
         // 배경 그림 층(#134): 창 크기·바탕색이 바뀌면 다시 합성한다
         // 화면 반전(DECSCNM, #302)이면 기본 바탕색이 맞바뀐다. 창 바탕·투명 처리도 그 색을 따른다(Ghostty는 맞바뀐 바탕색을 쓴다)
         let win_bg = views
@@ -8823,6 +8842,7 @@ impl ApplicationHandler<UserEvent> for App {
         match event {
             WindowEvent::CloseRequested => self.request(Pending::CloseWindow, event_loop),
             WindowEvent::Resized(_) => {
+                self.sync_native_fullscreen();
                 self.resize_all();
                 self.recheck_link_confirm();
             }

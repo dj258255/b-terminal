@@ -11,6 +11,14 @@ pub fn effective_opacity(config: f32, opaque: bool) -> f32 {
     if opaque { 1.0 } else { config }
 }
 
+/// 그릴 바탕 불투명도. `native_fullscreen`은 창이 macOS 네이티브 전체 화면(제 Space)인가.
+/// Ghostty 1.4.0처럼 네이티브 전체 화면에서는 투명도를 끈다: 전체 화면 Space의 바탕이 회색이라 글자 뒤로 비치고
+/// 뒤의 위젯이 보일 수 있다(`Config.zig` `background-opacity`, `TerminalWindow.swift` `syncAppearance`).
+/// 비네이티브 전체 화면(`macos-non-native-fullscreen`)은 Ghostty처럼 투명도를 지킨다(호출하는 쪽이 `false`를 넘긴다)
+pub fn drawn_opacity(config: f32, opaque: bool, native_fullscreen: bool) -> f32 {
+    effective_opacity(config, opaque || native_fullscreen)
+}
+
 /// `toggle_background_opacity`를 할 수 있는가. `background-opacity`가 1 이상이면 창이 처음부터
 /// 불투명하게 만들어지므로 하지 않는다(Ghostty 주석)
 pub fn can_toggle_opacity(config: f32) -> bool {
@@ -47,6 +55,16 @@ pub fn config_open_argv(path: &Path, macos: bool) -> Vec<OsString> {
 mod tests {
     use super::*;
     use crate::keymap::{Action, parse_action};
+
+    /// 네이티브 전체 화면이면 불투명으로 그리고, 나오면 설정값으로 돌아온다(#921, Ghostty `syncAppearance`)
+    #[test]
+    fn native_fullscreen_draws_opaque_like_ghostty() {
+        assert_eq!(drawn_opacity(0.7, false, true), 1.0);
+        assert_eq!(drawn_opacity(0.0, false, true), 1.0);
+        assert_eq!(drawn_opacity(0.7, false, false), 0.7, "전체 화면이 아니면 설정값");
+        assert_eq!(drawn_opacity(0.7, true, false), 1.0, "토글로 불투명이면 1");
+        assert_eq!(drawn_opacity(1.0, false, true), 1.0);
+    }
 
     #[test]
     fn opacity_toggle_switches_between_config_and_opaque() {

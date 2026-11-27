@@ -1074,3 +1074,13 @@
 - kitty와 다른 점: (1) 막대의 세로 범위는 kitty와 달리 창 높이에서 간격을 빼지 않고 격자의 세로 범위 그대로다(누르기·끌기 좌표가 같은 트랙을 쓰게). (2) `scrollbar-handle-opacity`를 적으면 마우스를 올려도 같고, 안 적으면 옛 0.43→0.67 변화가 남는다. (3) 반지름이 폭·길이의 절반보다 크면 절반으로 줄인다. (4) `scrollbar_interactive`·`scrollbar_jump_on_click`·`scrollbar_hitbox_expansion`은 받지 않는다(누르기 동작은 그대로, 시스템 설정을 따른다). (5) 색 이름은 `selection-background`로 적고(kitty의 `selection_background`도 받는다) 값은 지금 고른 글 바탕색이다
 - 남긴 것: 실제 창에서 모양을 눈으로 견주지 않았고(PTY 막힘으로 앱을 띄우지 않았다), 둥근 손잡이의 가장자리 부드러움은 kitty 셰이더의 식을 옮겼을 뿐 kitty와 픽셀로 견주지 않았다. 같은 화면에서 CPU 길과 GPU 길이 같은지는 같은 함수를 부르는 것을 소스로 지켰고, GPU 어댑터로 두 길 전체를 견주지는 않았다
 - 0.106.0에서 풀기: 없음(안 적으면 지금 막대 그대로다)
+
+## 125. 투명 창을 네이티브 전체 화면에 넣으면 글자 뒤로 회색 바탕이 비친다
+
+- 언제: 2026-11-28, #921. 0.106.0 뒤 main까지의 동작이다. 배경 투명도를 Ghostty 1.4.0 원본과 견주다 찾았다(실제 창으로 본 것이 아니라 코드로 찾음)
+- 증상: `background-opacity`가 1보다 작으면 초록 버튼이나 `toggle_fullscreen`으로 들어간 macOS 네이티브 전체 화면에서도 투명하게 그려, 전체 화면 Space의 회색 바탕과 그 뒤의 위젯이 글자 뒤로 비친다(코드에서 추론)
+- 까닭: 그리는 불투명도를 `toggles::effective_opacity(설정, 토글로 불투명)`로만 정하고 전체 화면을 보지 않았다. Ghostty는 `TerminalWindow.swift`의 `syncAppearance`에서 `!styleMask.contains(.fullScreen)`일 때만 창을 투명하게 하고, `Config.zig`의 `background-opacity` 설명에도 같은 까닭을 적었다
+- 고침: `toggles::drawn_opacity(설정, 토글로 불투명, 네이티브 전체 화면)`이 네이티브 전체 화면이면 1을 낸다. CPU 길(`redraw`)과 GPU 길(`gpu_frame`)이 이 값을 쓴다. 전체 화면에 들어가고 나올 때는 창 크기가 바뀌므로 `Resized`에서 `Window::fullscreen()`을 보고 상태가 바뀌었으면 배경 그림 층과 앞 프레임을 버린다(투명도 토글과 같은 방법). winit은 초록 버튼으로 들어간 전체 화면도 `fullscreen()`에 반영한다(`vendor/winit/.../window_delegate.rs` `window_will_enter_fullscreen`)
+- 정한 것: Ghostty는 창을 불투명으로 바꾸지만(`NSWindow.isOpaque`), 우리는 창 전체를 직접 칠하므로 그리는 불투명도를 1로 해도 보이는 결과가 같다. 그래서 vendor/winit에 새 네이티브 호출을 더하지 않았다. 비네이티브 전체 화면은 Ghostty처럼 투명도를 지킨다
+- 남긴 것: 실제 창에서 보지 않았다(이 Mac은 11-27부터 PTY를 열 수 없어 앱을 띄우지 못함). 전체 화면에 들어가고 나오는 애니메이션 동안의 한 프레임 모양도 보지 않았다
+- 0.106.0에서 풀기: 없음(전체 화면에서 투명하게 쓰고 싶으면 `macos-non-native-fullscreen = true`)
