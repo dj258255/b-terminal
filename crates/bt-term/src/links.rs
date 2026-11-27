@@ -1003,6 +1003,7 @@ mod tests {
             chrome_background: Rgb::new(0, 0, 0),
             links: Vec::new(),
             images: Vec::new(),
+            command_marks: Vec::new(),
         }
     }
 

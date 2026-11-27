@@ -212,6 +212,8 @@ pub struct Screen {
     pub links: Vec<String>,
     /// 화면에 보이는 kitty 그림들(놓인 차례)
     pub images: Vec<ImageView>,
+    /// 셸 통합이 알린 명령의 결과가 붙은 보이는 줄들(#927). 격자 칸은 바꾸지 않는다. 대체 화면이거나 셸 통합이 없으면 비어 있다
+    pub command_marks: Vec<crate::command_marks::RowMark>,
 }
 
 impl Screen {

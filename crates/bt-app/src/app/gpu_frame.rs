@@ -42,6 +42,8 @@ pub(super) struct GpuFrame<'a> {
     pub drop_preview: Option<(Rect, crate::split::Direction)>,
     /// 칸 테두리와 경계선(#915)
     pub border: &'a crate::pane_border::Plan,
+    /// 명령 표시 막대에 올린 마우스의 띠 글(#927)
+    pub mark_hint: &'a Option<String>,
     /// 커서 흔적(`cursor-trail`, #891): 칸마다 그릴 흔적과 다시 그릴 칸
     pub trail: &'a crate::cursor_trail::Step,
     pub dim_alpha: u8,
@@ -133,6 +135,7 @@ impl App {
             handles,
             drop_preview,
             border,
+            mark_hint,
             trail,
             dim_alpha,
             dim_fill,
@@ -183,7 +186,7 @@ impl App {
                 .collect::<Vec<_>>(),
             toast: toast.is_some(),
             secure_badge,
-            hover_hint: hover.as_ref().is_some_and(|(_, h)| link_previews.shows(h.explicit)),
+            hover_hint: hover.as_ref().is_some_and(|(_, h)| link_previews.shows(h.explicit)) || mark_hint.is_some(),
             search: search.is_some(),
             palette: palette.is_some(),
             title_prompt: title_prompt.is_some(),
@@ -433,6 +436,9 @@ impl App {
                 }
                 if let Some((_, hit)) = hover.as_ref().filter(|(_, h)| link_previews.shows(h.explicit)) {
                     tabbar::draw_link_hint(ui!(), fonts.chrome(), &theme, &bt_core::proto::printable(&hit.url));
+                }
+                if let Some(text) = mark_hint {
+                    tabbar::draw_link_hint(ui!(), fonts.chrome(), &theme, text);
                 }
                 if let Some((q, rows, sel)) = palette {
                     tabbar::draw_palette(ui!(), fonts.chrome(), &theme, &format!("{q}{preedit}"), rows, *sel);

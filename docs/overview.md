@@ -32,7 +32,7 @@ AI 에이전트를 다루는 화면(에이전트 목록·상태·훅·구독 사
 - **키 바이트.** kitty 키보드를 켜지 않은 프로그램에는 Ghostty 앱과 같은 바이트를 보냅니다(Ctrl+[·Ctrl+i는 `CSI u`). Shift+Enter·Ctrl+Enter 같은 수식 키가 붙은 이름 키도 Ghostty 표 그대로입니다(`ESC[27;2;13~` 등). 기본 키 묶음은 Ghostty macOS 기본 목록과 같고, Option+←·→(단어 이동)와 Cmd+←·→·Backspace(줄 처음·끝, 줄 지우기)도 그 안에 있습니다([ADR-055](decisions.md#adr-055-레거시-키-인코딩은-ghostty-앱이-보내는-바이트에-맞추고-option은-글자-길에서만-설정을-따르며-macos-기본-키-묶음에-글-편집-다섯-개를-더한다)).
 - **분할 칸 누르기.** 고르지 않은 칸을 누르면 그 칸만 고르고, 그 누름은 프로그램에 보내지 않습니다(0.57, [ROADMAP](../ROADMAP.md)).
 - **AppleScript.** macOS 앱 묶음에 Ghostty 1.4와 같은 사전이 있습니다. 창·탭·터미널 객체, 새 창·탭·분할(새 칸 설정 레코드 포함), 글·키·마우스 보내기, 키 묶음 동작 부르기를 합니다. 끄려면 `macos-applescript = false`([configuration.md](configuration.md)).
-- **프로토콜.** kitty 키보드·그래픽(직접 전송과 걸러낸 파일 전송)·색(OSC 21)·클립보드(OSC 5522)·iTerm2 클립보드 쓰기(OSC 1337 Copy, OSC 52와 같은 검사), 글리프 프로토콜(APC `25a1`: 등록을 받아 검사·저장·답만 하고 그리지는 않음, Ghostty 1.4.0과 같음), OSC 8 링크, OSC 133 셸 통합, 사용자 셰이더(`custom-shader`)를 받습니다.
+- **프로토콜.** kitty 키보드·그래픽(직접 전송과 걸러낸 파일 전송)·색(OSC 21)·클립보드(OSC 5522)·iTerm2 클립보드 쓰기(OSC 1337 Copy, OSC 52와 같은 검사), 글리프 프로토콜(APC `25a1`: 등록을 받아 검사·저장·답만 하고 그리지는 않음, Ghostty 1.4.0과 같음), OSC 8 링크, OSC 133 셸 통합, 사용자 셰이더(`custom-shader`)를 받습니다. 셸 통합이 있으면 명령마다 끝난 결과를 프롬프트 줄 왼쪽 끝 막대로 보입니다(`command-marks`, 기본 켬).
 
 ### 다른 점
 

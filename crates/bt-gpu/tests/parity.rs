@@ -49,6 +49,7 @@ fn cell(ch: char) -> DrawCell {
         underline_color: None,
         hidden: false,
         faint: None,
+        mark: None,
     }
 }
 
@@ -517,6 +518,7 @@ fn faint_cells_match_cpu() {
         .iter()
         .map(|c| DrawCell {
             faint: None,
+            mark: None,
             ..c.clone()
         })
         .collect();
@@ -704,5 +706,71 @@ fn subpixel_shifted_glyphs_match_cpu() {
         empty.extend(row_cells("", 20));
         let blank = cpu_frame(&mut f, &grid(&empty, 20), Alpha::default());
         assert!(diff(&blank, &want).0 > 100, "x{scale}: 글자를 그리지 않았다");
+    }
+}
+
+/// 명령 표시(#927): 줄 맨 앞 칸 왼쪽 끝의 막대를 CPU와 GPU가 같은 픽셀로 그린다. 칸의 글자·바탕은 막대 밖에서 그대로다
+#[test]
+fn command_marks_match_cpu_and_leave_the_rest_of_the_cell_alone() {
+    let red = Rgb::new(224, 80, 80);
+    let green = Rgb::new(60, 130, 80);
+    let build = |marked: bool| {
+        let mut cells = row_cells("$ false 가나", 14);
+        cells.extend(row_cells("boom", 14));
+        cells.extend(row_cells("$ true", 14));
+        if marked {
+            cells[0].mark = Some(red);
+            cells[28].mark = Some(green);
+        }
+        cells
+    };
+    let (marked, plain) = (build(true), build(false));
+    let (v, p) = (grid(&marked, 14), grid(&plain, 14));
+    let Some(mut g) = gpu() else {
+        eprintln!("GPU 없음: CPU 쪽만 확인");
+        cpu_only(&mut fonts(2.0), &v, &p, red, green);
+        return;
+    };
+    for scale in [2.0, 1.0] {
+        let mut f = fonts(scale);
+        cpu_only(&mut f, &v, &p, red, green);
+        check(&mut g, &mut f, &format!("명령 표시 x{scale}"), &v, &p, Alpha::default());
+        // 투명 창에서도 같다
+        let a = Alpha {
+            window: Some(200),
+            cells: None,
+        };
+        check(&mut g, &mut f, &format!("명령 표시 투명 x{scale}"), &v, &p, a);
+    }
+}
+
+fn cpu_only(f: &mut Fonts, v: &GridView, p: &GridView, red: Rgb, green: Rgb) {
+    let m = f.metrics();
+    let bar = bt_render::mark_bar_width(m.width);
+    let with = cpu_frame(f, v, Alpha::default());
+    let without = cpu_frame(f, p, Alpha::default());
+    let w = (m.width * 14) as usize;
+    let px = |buf: &[u32], x: usize, y: usize| buf[y * w + x] & 0x00ff_ffff;
+    let pack = |c: Rgb| ((c.r as u32) << 16) | ((c.g as u32) << 8) | c.b as u32;
+    for y in 0..m.height as usize {
+        for x in 0..bar as usize {
+            assert_eq!(px(&with, x, y), pack(red), "첫 줄 막대 ({x},{y})");
+            assert_eq!(
+                px(&with, x, 2 * m.height as usize + y),
+                pack(green),
+                "셋째 줄 막대 ({x},{y})"
+            );
+            // 표시 없는 줄(둘째 줄)은 그대로다
+            assert_eq!(
+                px(&with, x, m.height as usize + y),
+                px(&without, x, m.height as usize + y)
+            );
+        }
+    }
+    // 막대 오른쪽은 표시가 없을 때와 같다(칸의 글자·바탕을 바꾸지 않는다)
+    for y in 0..(3 * m.height) as usize {
+        for x in bar as usize..w {
+            assert_eq!(px(&with, x, y), px(&without, x, y), "막대 밖 ({x},{y})");
+        }
     }
 }
