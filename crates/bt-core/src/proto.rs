@@ -138,6 +138,9 @@ pub enum Call {
         direction: String,
         points: u16,
     },
+    /// 이 연결을 이벤트 구독으로 바꾼다(#925). 첫 답(`ok`) 뒤로 앱이 이벤트를 한 줄 JSON(`Event`)씩 계속 보낸다.
+    /// 읽기 전용이다: 이 연결로는 다른 요청을 보내지 않는다. 구독자 수에는 상한이 있다
+    Watch,
     /// 탭에 알림을 단다(OSC 알림과 같게 다룬다)
     Notify {
         #[serde(default)]
@@ -218,6 +221,76 @@ pub struct TabInfo {
     pub cwd: Option<PathBuf>,
     #[serde(default)]
     pub process: Option<String>,
+    /// 칸의 프로그램 상태(OSC 7501) 중 탭 막대가 보이는 가장 급한 것의 이름(`working`·`blocked`·`done`·`error`). 없으면 필드가 없다(#925)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<String>,
+    /// 그 상태 기록의 제목. 앱이 이미 거른 글이고 `MAX_STATUS_TEXT`자까지만 내보낸다
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status_text: Option<String>,
+    /// 그 상태 기록의 진행률(0~100)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status_progress: Option<u8>,
+    /// 셸 통합(OSC 133 D)이 알린 마지막 명령의 종료 코드. 명령 글·출력은 싣지 않는다
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_exit_code: Option<i32>,
+}
+
+/// 소켓으로 내보내는 상태 설명·알림 제목의 글자 수 상한
+pub const MAX_STATUS_TEXT: usize = 120;
+
+/// `watch` 연결이 흘리는 이벤트 한 줄(#925). 화면 글·명령 글·출력·알림 본문은 싣지 않는다.
+/// 글(`text`·`title`)은 앱이 이미 거른 값을 `MAX_STATUS_TEXT`자로 자른 것이다
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "event", rename_all = "snake_case")]
+pub enum Event {
+    /// 칸의 프로그램 상태가 바뀌었다. 기록이 없어지면 `state`는 `none`
+    Status {
+        tab: u64,
+        state: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        progress: Option<u8>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        text: Option<String>,
+    },
+    /// 셸 통합이 명령의 끝을 알렸다
+    CommandFinished {
+        tab: u64,
+        #[serde(default)]
+        exit_code: Option<i32>,
+        duration_ms: u64,
+    },
+    /// 앱이 이 칸의 데스크톱 알림을 띄웠다(제목만)
+    Notification {
+        tab: u64,
+        title: String,
+    },
+    TabOpened {
+        tab: u64,
+    },
+    TabClosed {
+        tab: u64,
+    },
+    /// 연결이 살아 있다는 표시(조용한 동안 가끔)
+    Ping,
+}
+
+/// 이벤트 줄. 한 줄 JSON이고 줄바꿈이 없다
+pub fn event_line(e: &Event) -> String {
+    serde_json::to_string(e).unwrap_or_default()
+}
+
+/// 소켓으로 내보낼 글을 다듬는다: 앱 안 글 다듬기(`printable`)를 한 번 더 거치고 `MAX_STATUS_TEXT`자로 자른다. 비면 `None`
+pub fn export_text(s: &str) -> Option<String> {
+    let t = printable(s);
+    let t = t.trim();
+    if t.is_empty() {
+        return None;
+    }
+    Some(if t.chars().count() > MAX_STATUS_TEXT {
+        t.chars().take(MAX_STATUS_TEXT - 1).chain(['…']).collect()
+    } else {
+        t.to_string()
+    })
 }
 
 /// 소켓 폴더. macOS는 사용자마다 다른 `$TMPDIR`, 그 밖에는 `$XDG_RUNTIME_DIR`, 둘 다 없으면 /tmp 아래 사용자 폴더
@@ -397,6 +470,69 @@ mod tests {
                 modifiers: None
             }
         );
+    }
+
+    /// #925: 옛 btctl·클라이언트가 보내거나 읽는 `list` 한 줄이 그대로 읽힌다. 새 필드는 없으면 내보내지 않는다
+    #[test]
+    fn tab_info_adds_status_fields_without_breaking_old_json() {
+        let old = r#"{"id":3,"title":"zsh","active":true,"unread":false,"cwd":null,"process":"zsh"}"#;
+        let t: TabInfo = serde_json::from_str(old).unwrap();
+        assert_eq!(t.status, None);
+        assert_eq!(t.last_exit_code, None);
+        let line = serde_json::to_string(&t).unwrap();
+        assert!(!line.contains("status") && !line.contains("last_exit_code"), "{line}");
+        let new = TabInfo {
+            status: Some("blocked".into()),
+            status_text: Some("권한 묻는 중".into()),
+            status_progress: Some(40),
+            last_exit_code: Some(2),
+            ..t
+        };
+        let back: TabInfo = serde_json::from_str(&serde_json::to_string(&new).unwrap()).unwrap();
+        assert_eq!(back, new);
+    }
+
+    #[test]
+    fn watch_request_and_events_are_one_line_json() {
+        let w: Request = serde_json::from_str(r#"{"method":"watch"}"#).unwrap();
+        assert_eq!(w.call, Call::Watch);
+        let events = [
+            Event::Status {
+                tab: 1,
+                state: "working".into(),
+                progress: Some(10),
+                text: Some("빌드".into()),
+            },
+            Event::CommandFinished {
+                tab: 1,
+                exit_code: Some(1),
+                duration_ms: 20,
+            },
+            Event::Notification {
+                tab: 2,
+                title: "끝".into(),
+            },
+            Event::TabOpened { tab: 3 },
+            Event::TabClosed { tab: 3 },
+            Event::Ping,
+        ];
+        for e in events {
+            let line = event_line(&e);
+            assert!(!line.contains('\n') && line.contains("\"event\""), "{line}");
+            assert_eq!(serde_json::from_str::<Event>(&line).unwrap(), e);
+        }
+        assert_eq!(event_line(&Event::Ping), r#"{"event":"ping"}"#);
+    }
+
+    /// 내보내는 글은 제어 문자·방향 글자를 지우고 상한에서 자른다
+    #[test]
+    fn export_text_is_cleaned_and_capped() {
+        assert_eq!(export_text("a\x1b[2Jb\u{202E}c").as_deref(), Some("a [2Jbc"));
+        assert_eq!(export_text("  \n "), None);
+        let long = "가".repeat(500);
+        let t = export_text(&long).unwrap();
+        assert_eq!(t.chars().count(), MAX_STATUS_TEXT);
+        assert!(t.ends_with('…'));
     }
 
     #[test]

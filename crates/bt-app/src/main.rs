@@ -19,6 +19,7 @@ mod divider_drag;
 mod dock;
 mod dock_open;
 mod dump;
+mod events;
 mod file_drop;
 mod hints;
 mod icon;

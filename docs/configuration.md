@@ -544,12 +544,14 @@ macOS 앱 메뉴의 `b-terminal을 기본 터미널로 지정`(`보안 키보드
 
 | 명령 | 하는 일 |
 |---|---|
-| `ping` `list` `new` `focus` `quick` `reload-config` | 살아 있는지, 칸 목록, 새 탭·칸·창, 칸으로 가기, 퀵 터미널, 설정 다시 읽기 |
+| `ping` `list` `new` `focus` `quick` `reload-config` | 살아 있는지, 칸 목록(`--json`이면 `status`·`status_text`·`status_progress`·`last_exit_code`도: 칸의 프로그램 상태와 마지막 명령의 종료 코드. 값이 없으면 필드가 없습니다), 새 탭·칸·창, 칸으로 가기, 퀵 터미널, 설정 다시 읽기 |
 | `send` `run` `last` | 글 넣기, 명령 돌리고 결과 받기, 마지막 명령 결과(읽기 전용 칸은 `send`·`run` 거절) |
 | `read` `wait` `notify` | 화면 읽기, 글이 나올 때까지 기다리기, 알림 달기 |
 | `close` `close-tab` | 칸 / 칸이 든 탭(나뉜 칸 모두)을 확인 없이 닫기(AppleScript `close`·`close tab`과 같음) |
 | `set-title` `set-tab-title` | 칸 / 탭 제목 덮어쓰기. 글이 없으면 지움. 제어 문자는 지우고 200자로 자름 |
 | `send-key [--mods shift,control,option,command] 키` | 키 이름(`enter`·`a`·`arrowUp`, AppleScript `send key`와 같은 이름)으로 키 보내기. 사람이 누른 키와 같은 인코더·키 묶음을 지남. 읽기 전용 칸과 확인·검색·팔레트·제목 막대가 열린 창에는 거절 |
+| `send --key 키 [--mods ...]` | `send-key`와 같은 일(같은 요청, 같은 길). 글이 아니라 키 이름을 보낼 때 |
+| `watch` | 이벤트를 한 줄 JSON씩 계속 찍습니다(b-studio 같은 도구가 `list`를 계속 묻지 않고 알게). 이벤트: `{"event":"status","tab":2,"state":"blocked","progress":40,"text":"제목"}`(칸의 프로그램 상태 OSC 7501이 바뀜, 기록이 없어지면 `"state":"none"`), `{"event":"command_finished","tab":2,"exit_code":1,"duration_ms":5300}`(셸 통합), `{"event":"notification","tab":2,"title":"..."}`(앱이 데스크톱 알림을 띄움, 제목만), `{"event":"tab_opened","tab":3}`·`{"event":"tab_closed","tab":3}`, 조용할 때 15초마다 `{"event":"ping"}`. 화면 글·명령 글·출력·알림 본문은 싣지 않고, 글은 제어 문자를 지워 120자로 자릅니다. 구독은 동시에 8명까지이고, 큐(256줄)가 차거나 5초 안에 받아 가지 못하면 앱이 연결을 끊습니다(끊기면 다시 붙고 `btctl list`로 지금 상태를 읽습니다). 지난 일은 다시 보내지 않습니다. 끝내려면 Ctrl-C |
 | `get-text [--extent screen\|all\|selection\|last-output]` | 글 읽기(읽기 전용). `all`은 스크롤백 포함, `selection`은 고른 글, `last-output`은 마지막 명령 출력(셸 통합 필요) |
 | `scroll up\|down [줄]\|page-up\|page-down\|top\|bottom` | 스크롤백 움직이기 |
 | `resize [--amount 점] left\|right\|up\|down` | 나뉜 칸의 경계 밀기(키 묶음 `resize_split`과 같음, 기본 20점) |
