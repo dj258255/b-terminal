@@ -33,6 +33,18 @@ pub enum CopyOp {
     HalfPageDown,
     PageUp,
     PageDown,
+    /// 다음 낱말의 첫 글자(`w`)
+    WordForward,
+    /// 앞 낱말의 첫 글자(`b`)
+    WordBackward,
+    /// 낱말의 끝 글자(`e`)
+    WordEnd,
+    /// 줄의 첫 비공백 칸(`^`)
+    LineContentStart,
+    /// 화면 맨 위·가운데·맨 아래 줄(`H` `M` `L`)
+    ViewportTop,
+    ViewportMiddle,
+    ViewportBottom,
     /// 글자 단위 고르기 켜고 끄기(`v`)
     SelectCell,
     /// 줄 단위 고르기(`V`)
@@ -59,6 +71,49 @@ enum Goal {
 
 /// 줄의 안정된 번호와 칸
 type Pos = (i64, usize);
+
+/// 크기 바꾸기 앞의 커서·시작점이 가리키던 글 위치: (이어진 줄 번호, 그 줄 안의 칸 번호)
+pub struct Reflow {
+    cursor: (usize, usize),
+    anchor: Option<(usize, usize)>,
+}
+
+/// 격자 칸을 줄 접힘에 상관없는 글 위치로: (맨 위부터 센 이어진 줄 번호, 그 줄 첫 칸부터 센 칸 번호)
+fn logical_of<T>(term: &Term<T>, line: Line, col: usize) -> (usize, usize) {
+    let cols = term.columns();
+    let (mut n, mut start) = (0, term.topmost_line().0);
+    for l in term.topmost_line().0..line.0 {
+        if !wraps(term, Line(l)) {
+            n += 1;
+            start = l + 1;
+        }
+    }
+    (n, (line.0 - start) as usize * cols + col)
+}
+
+/// `logical_of`의 거꾸로. 그 줄이 줄었으면 그 줄의 끝 칸으로 붙는다
+fn grid_of<T>(term: &Term<T>, (n, off): (usize, usize)) -> (Line, usize) {
+    let cols = term.columns();
+    let bottom = term.bottommost_line().0;
+    let mut l = term.topmost_line().0;
+    let mut left = n;
+    while left > 0 && l < bottom {
+        if !wraps(term, Line(l)) {
+            left -= 1;
+        }
+        l += 1;
+    }
+    let mut end = l;
+    while end < bottom && wraps(term, Line(end)) {
+        end += 1;
+    }
+    let row = l + (off / cols) as i32;
+    if row > end {
+        (Line(end), cols - 1)
+    } else {
+        (Line(row), off % cols)
+    }
+}
 
 /// 복사 모드 하나의 상태(칸마다 하나)
 #[derive(Debug, Clone)]
@@ -122,6 +177,157 @@ fn col_for<T>(term: &Term<T>, line: Line, goal: Goal) -> usize {
     }
 }
 
+/// 낱말 움직임이 보는 글자 종류
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Class {
+    Space,
+    /// `selection-word-chars`에 든 글자(덩어리 하나가 낱말 하나)
+    Sep,
+    Word,
+}
+
+fn class_at<T>(term: &Term<T>, idx: usize) -> Class {
+    let cols = term.columns();
+    let (line, col) = of_index(term, idx);
+    let cell = &term.grid()[line][Column(col)];
+    // 넓은 글자의 뒤 칸은 앞 칸과 같은 종류
+    if cell.flags.contains(Flags::WIDE_CHAR_SPACER) && col > 0 && cols > 0 {
+        return class_at(term, idx - 1);
+    }
+    if cell.flags.contains(Flags::LEADING_WIDE_CHAR_SPACER) {
+        return Class::Space;
+    }
+    match cell.c {
+        ' ' | '\0' | '\t' => Class::Space,
+        c if term.semantic_escape_chars().contains(c) => Class::Sep,
+        _ => Class::Word,
+    }
+}
+
+/// 격자를 왼쪽 위부터 오른쪽 아래까지 한 줄로 센 번호
+fn index_of<T>(term: &Term<T>, line: Line, col: usize) -> usize {
+    (line.0 - term.topmost_line().0) as usize * term.columns() + col
+}
+
+fn of_index<T>(term: &Term<T>, idx: usize) -> (Line, usize) {
+    let cols = term.columns();
+    (Line(term.topmost_line().0 + (idx / cols) as i32), idx % cols)
+}
+
+fn total_cells<T>(term: &Term<T>) -> usize {
+    (term.bottommost_line().0 - term.topmost_line().0 + 1) as usize * term.columns()
+}
+
+/// 줄이 자동으로 접혀 다음 줄로 이어지는가
+fn wraps<T>(term: &Term<T>, line: Line) -> bool {
+    term.grid()[line][Column(term.columns() - 1)]
+        .flags
+        .contains(Flags::WRAPLINE)
+}
+
+/// 한 칸 앞으로. 넓은 글자의 뒤 칸은 건너뛴다. 둘째 값은 줄이 직접 바뀌어(접힌 것이 아니라) 낱말이 끊기는가
+fn step_forward<T>(term: &Term<T>, idx: usize) -> Option<(usize, bool)> {
+    let cols = term.columns();
+    let mut n = idx + 1;
+    if n < total_cells(term) {
+        let (l, c) = of_index(term, n);
+        if term.grid()[l][Column(c)].flags.contains(Flags::WIDE_CHAR_SPACER) {
+            n += 1;
+        }
+    }
+    if n >= total_cells(term) {
+        return None;
+    }
+    let broke = n / cols != idx / cols && !wraps(term, of_index(term, idx).0);
+    Some((n, broke))
+}
+
+/// 한 칸 뒤로(넓은 글자는 앞 칸에 선다)
+fn step_back<T>(term: &Term<T>, idx: usize) -> Option<(usize, bool)> {
+    let cols = term.columns();
+    if idx == 0 {
+        return None;
+    }
+    let mut n = idx - 1;
+    let (l, c) = of_index(term, n);
+    if c > 0 && term.grid()[l][Column(c)].flags.contains(Flags::WIDE_CHAR_SPACER) {
+        n -= 1;
+    }
+    let broke = n / cols != idx / cols && !wraps(term, of_index(term, n).0);
+    Some((n, broke))
+}
+
+/// `w` `b` `e`: 글자 종류(공백·경계 글자·낱말)가 바뀌는 곳이 낱말 경계다. 줄 바꿈은 공백이고 접힌 줄은 이어진다.
+/// 더 갈 곳이 없으면 그 자리에 둔다
+fn word_move<T>(term: &Term<T>, line: Line, col: usize, op: CopyOp) -> (Line, usize) {
+    let start = index_of(term, line, col);
+    let found = match op {
+        CopyOp::WordForward => word_forward(term, start),
+        CopyOp::WordBackward => word_backward(term, start),
+        _ => word_end(term, start),
+    };
+    let (l, c) = of_index(term, found.unwrap_or(start));
+    (l, snap(term, l, c))
+}
+
+fn skip_space_forward<T>(term: &Term<T>, mut p: usize) -> Option<usize> {
+    while class_at(term, p) == Class::Space {
+        p = step_forward(term, p)?.0;
+    }
+    Some(p)
+}
+
+fn word_forward<T>(term: &Term<T>, start: usize) -> Option<usize> {
+    let mut p = start;
+    let c0 = class_at(term, p);
+    if c0 != Class::Space {
+        loop {
+            let (n, broke) = step_forward(term, p)?;
+            p = n;
+            if broke || class_at(term, n) != c0 {
+                break;
+            }
+        }
+    }
+    skip_space_forward(term, p)
+}
+
+fn word_end<T>(term: &Term<T>, start: usize) -> Option<usize> {
+    let (mut p, _) = step_forward(term, start)?;
+    p = skip_space_forward(term, p)?;
+    let c = class_at(term, p);
+    while let Some((n, broke)) = step_forward(term, p) {
+        if broke || class_at(term, n) != c {
+            break;
+        }
+        p = n;
+    }
+    Some(p)
+}
+
+fn word_backward<T>(term: &Term<T>, start: usize) -> Option<usize> {
+    let (mut p, _) = step_back(term, start)?;
+    while class_at(term, p) == Class::Space {
+        p = step_back(term, p)?.0;
+    }
+    let c = class_at(term, p);
+    while let Some((n, broke)) = step_back(term, p) {
+        if broke || class_at(term, n) != c {
+            break;
+        }
+        p = n;
+    }
+    Some(p)
+}
+
+/// 줄의 첫 비공백 칸(없으면 0)
+fn first_content<T>(term: &Term<T>, line: Line) -> usize {
+    let base = index_of(term, line, 0);
+    (0..term.columns())
+        .find(|&c| class_at(term, base + c) != Class::Space)
+        .map_or(0, |c| snap(term, line, c))
+}
+
 /// 움직임 하나: (줄, 칸, 바라는 칸)을 새로 정한다. 모든 결과는 격자 안이고 넓은 글자의 앞 칸이다.
 /// `page`는 화면 줄 수
 fn motion<T>(term: &Term<T>, line: Line, col: usize, goal: Goal, op: CopyOp, page: usize) -> (Line, usize, Goal) {
@@ -160,6 +366,23 @@ fn motion<T>(term: &Term<T>, line: Line, col: usize, goal: Goal, op: CopyOp, pag
         CopyOp::LineEnd => (line, content_end(term, line), Goal::End),
         CopyOp::Top => (top, 0, Goal::Col(0)),
         CopyOp::Bottom => (bottom, 0, Goal::Col(0)),
+        CopyOp::WordForward | CopyOp::WordBackward | CopyOp::WordEnd => {
+            let (l, c) = word_move(term, line, col, op);
+            (l, c, Goal::Col(c))
+        }
+        CopyOp::LineContentStart => {
+            let c = first_content(term, line);
+            (line, c, Goal::Col(c))
+        }
+        CopyOp::ViewportTop | CopyOp::ViewportMiddle | CopyOp::ViewportBottom => {
+            let view_top = -(term.grid().display_offset() as i32);
+            let rows = term.screen_lines() as i32;
+            vertical(match op {
+                CopyOp::ViewportTop => view_top,
+                CopyOp::ViewportMiddle => view_top + (rows - 1) / 2,
+                _ => view_top + rows - 1,
+            })
+        }
         CopyOp::SelectCell | CopyOp::SelectLine | CopyOp::SelectBlock => (line, col, goal),
     }
 }
@@ -227,6 +450,52 @@ impl CopyMode {
         point(line, snap(term, line, self.cursor.1))
     }
 
+    /// 출력이 온 뒤: 커서가 보이게 화면을 따라가고 고른 것을 다시 맞춘다
+    pub fn follow<T: EventListener>(&self, term: &mut Term<T>) {
+        self.sync(term);
+    }
+
+    /// 크기를 바꾸기 전에 커서·시작점의 글 위치를 적어 둔다
+    pub fn before_resize<T>(&self, term: &Term<T>) -> Reflow {
+        let at = |(id, col): Pos| {
+            let line = line_of(term, id);
+            logical_of(term, line, snap(term, line, col))
+        };
+        Reflow {
+            cursor: at(self.cursor),
+            anchor: self.anchor.map(|(a, _)| at(a)),
+        }
+    }
+
+    /// 크기를 바꾼 뒤 적어 둔 글 위치로 커서·시작점을 다시 놓는다
+    pub fn after_resize<T: EventListener>(&mut self, term: &mut Term<T>, r: Reflow) {
+        let back = |term: &Term<T>, l: (usize, usize)| {
+            let (line, col) = grid_of(term, l);
+            (stable_id(term, line), snap(term, line, col))
+        };
+        self.cursor = back(term, r.cursor);
+        self.goal = Goal::Col(self.cursor.1);
+        if let (Some((a, _)), Some(l)) = (self.anchor.as_mut(), r.anchor) {
+            *a = back(term, l);
+        }
+        self.sync(term);
+    }
+
+    /// 화면(`Screen`)의 커서를 복사 모드 커서로 바꾼다
+    pub fn paint_cursor<T>(&self, term: &Term<T>, screen: &mut crate::Screen) {
+        let p = self.cursor_point(term);
+        let row = p.line.0 + term.grid().display_offset() as i32;
+        let visible = row >= 0 && (row as usize) < screen.rows && p.column.0 < screen.cols;
+        screen.cursor = crate::screen::Cursor {
+            col: p.column.0,
+            row: row.max(0) as usize,
+            shape: crate::CursorShape::Block,
+            wide: term.grid()[p.line][p.column].flags.contains(Flags::WIDE_CHAR),
+            visible,
+            blinking: false,
+        };
+    }
+
     /// 지금 하는 고르기. 시작하지 않았으면 없다
     pub fn selecting(&self) -> Option<CopySelect> {
         self.anchor.map(|(_, k)| k)
@@ -260,16 +529,14 @@ impl CopyMode {
         self.sync(term);
     }
 
-    /// 커서가 보이게 하고 고른 것을 엔진에 반영한다. 고르기를 시작하지 않았으면 커서 칸 하나만 칠해 자리를 보인다
-    /// (`has_selection`은 이 한 칸을 고른 것으로 치지 않는다)
+    /// 커서가 보이게 하고 고른 것을 엔진에 반영한다. 고르기를 시작하지 않았으면 고른 칸은 없다(커서는 `paint_cursor`가 따로 그린다)
     pub fn sync<T: EventListener>(&self, term: &mut Term<T>) {
         let cur = self.cursor_point(term);
         reveal(term, cur.line);
-        let (anchor, kind) = match self.anchor {
-            Some((a, k)) => (point(line_of(term, a.0), snap(term, line_of(term, a.0), a.1)), k),
-            None => (cur, CopySelect::Cell),
-        };
-        term.selection = Some(selection_between(kind, anchor, cur));
+        term.selection = self.anchor.map(|(a, kind)| {
+            let line = line_of(term, a.0);
+            selection_between(kind, point(line, snap(term, line, a.1)), cur)
+        });
     }
 
     /// 복사할 고른 글이 있는가(고르기를 시작했을 때만)
@@ -593,5 +860,288 @@ mod tests {
         let p = cm.cursor_point(&t);
         assert!(p.column.0 < 4 && p.line <= t.bottommost_line() && p.line >= t.topmost_line());
         goto(&mut t, &mut cm, &[Right, Down]);
+    }
+
+    /// 화면에서 커서 줄의 보이는 줄 번호(0이 맨 위)
+    fn row_on_screen(t: &Term<Quiet>, cm: &CopyMode) -> i32 {
+        cm.cursor_point(t).line.0 + t.grid().display_offset() as i32
+    }
+
+    fn char_at_cursor(t: &Term<Quiet>, cm: &CopyMode) -> char {
+        let p = cm.cursor_point(t);
+        t.grid()[p.line][p.column].c
+    }
+
+    #[test]
+    fn word_motions_split_words_by_the_selection_word_chars() {
+        // 기본 경계 글자에 쉼표·괄호·공백이 있다. 경계 글자 덩어리도 낱말 하나로 센다(vim의 w)
+        let mut t = term_with(20, 2, "foo,bar (baz)  qux");
+        let mut cm = CopyMode::enter(&t);
+        goto(&mut t, &mut cm, &[Top]);
+        let mut seen = vec![];
+        for _ in 0..6 {
+            goto(&mut t, &mut cm, &[WordForward]);
+            seen.push(at(&t, &cm).1);
+        }
+        assert_eq!(seen, vec![3, 4, 8, 9, 12, 15], "w");
+        goto(&mut t, &mut cm, &[Top]);
+        let mut seen = vec![];
+        for _ in 0..6 {
+            goto(&mut t, &mut cm, &[WordEnd]);
+            seen.push(at(&t, &cm).1);
+        }
+        assert_eq!(seen, vec![2, 3, 6, 8, 11, 12], "e");
+        goto(&mut t, &mut cm, &[WordEnd]);
+        assert_eq!(at(&t, &cm).1, 17, "마지막 낱말의 끝");
+        let mut seen = vec![];
+        for _ in 0..7 {
+            goto(&mut t, &mut cm, &[WordBackward]);
+            seen.push(at(&t, &cm).1);
+        }
+        assert_eq!(seen, vec![15, 12, 9, 8, 4, 3, 0], "b");
+        goto(&mut t, &mut cm, &[WordBackward]);
+        assert_eq!(at(&t, &cm), (0, 0), "맨 앞에서는 그대로");
+    }
+
+    #[test]
+    fn word_boundaries_follow_the_configured_chars() {
+        let mut t = Term::new(
+            Config {
+                semantic_escape_chars: " -".into(),
+                ..Config::default()
+            },
+            &Size(20, 2),
+            Quiet,
+        );
+        let mut p: Processor = Processor::new();
+        p.advance(&mut t, b"a.b-c,d e");
+        let mut cm = CopyMode::enter(&t);
+        goto(&mut t, &mut cm, &[Top, WordForward]);
+        assert_eq!(at(&t, &cm).1, 3, "`.`은 경계가 아니라 낱말 안이고 `-`는 경계다");
+        goto(&mut t, &mut cm, &[WordForward]);
+        assert_eq!(at(&t, &cm).1, 4);
+        goto(&mut t, &mut cm, &[WordForward]);
+        assert_eq!(at(&t, &cm).1, 8, "쉼표는 이 설정에서 낱말 글자");
+    }
+
+    #[test]
+    fn word_motions_cross_lines_and_skip_empty_ones_but_not_wrapped_rows() {
+        let mut t = term_with(8, 5, "abc\r\n\r\n  def");
+        let mut cm = CopyMode::enter(&t);
+        goto(&mut t, &mut cm, &[Top, WordForward]);
+        assert_eq!(at(&t, &cm), (2, 2), "빈 줄과 들여쓰기를 건너 다음 줄 낱말");
+        goto(&mut t, &mut cm, &[WordBackward]);
+        assert_eq!(at(&t, &cm), (0, 0));
+        goto(&mut t, &mut cm, &[WordEnd, WordEnd]);
+        assert_eq!(at(&t, &cm), (2, 4), "e도 줄을 넘는다");
+        // 줄을 가득 채우고 직접 줄을 바꾼 것은 낱말이 끊긴다
+        let mut t = term_with(4, 3, "abcd\r\nefgh");
+        let mut cm = CopyMode::enter(&t);
+        goto(&mut t, &mut cm, &[Top, WordForward]);
+        assert_eq!(at(&t, &cm), (1, 0));
+        // 자동으로 접힌 줄은 한 낱말이다
+        let mut t = term_with(4, 3, "abcdefgh ij");
+        let mut cm = CopyMode::enter(&t);
+        goto(&mut t, &mut cm, &[Top, WordEnd]);
+        assert_eq!(at(&t, &cm), (1, 3), "접힌 줄을 넘어 낱말 끝");
+        goto(&mut t, &mut cm, &[WordBackward]);
+        assert_eq!(at(&t, &cm), (0, 0));
+    }
+
+    #[test]
+    fn word_motions_step_over_wide_chars_by_whole_characters() {
+        let mut t = term_with(12, 2, "한글 abc 자");
+        let mut cm = CopyMode::enter(&t);
+        goto(&mut t, &mut cm, &[Top, WordEnd]);
+        assert_eq!(at(&t, &cm), (0, 2), "글의 앞 칸");
+        goto(&mut t, &mut cm, &[WordForward]);
+        assert_eq!(at(&t, &cm), (0, 5));
+        goto(&mut t, &mut cm, &[WordForward]);
+        assert_eq!(at(&t, &cm), (0, 9), "자의 앞 칸");
+        goto(&mut t, &mut cm, &[WordBackward, WordBackward]);
+        assert_eq!(at(&t, &cm), (0, 0));
+    }
+
+    #[test]
+    fn caret_goes_to_the_first_non_blank_and_zero_on_blank_lines() {
+        let mut t = term_with(10, 3, "   ab\r\n\r\nx");
+        let mut cm = CopyMode::enter(&t);
+        goto(&mut t, &mut cm, &[Top, LineEnd, LineContentStart]);
+        assert_eq!(at(&t, &cm), (0, 3));
+        goto(&mut t, &mut cm, &[Down, LineContentStart]);
+        assert_eq!(at(&t, &cm), (1, 0));
+    }
+
+    #[test]
+    fn h_m_l_pick_the_top_middle_and_bottom_of_the_view_keeping_the_column() {
+        let mut feed = String::new();
+        for i in 0..30 {
+            feed.push_str(&format!("line{i:02}\r\n"));
+        }
+        let mut t = term_with(10, 5, &feed);
+        let mut cm = CopyMode::enter(&t);
+        goto(&mut t, &mut cm, &[Top, HalfPageDown, HalfPageDown, Right, Right]);
+        let off = t.grid().display_offset() as i32;
+        assert!(off > 0);
+        goto(&mut t, &mut cm, &[ViewportTop]);
+        assert_eq!(at(&t, &cm), (-off, 2));
+        goto(&mut t, &mut cm, &[ViewportBottom]);
+        assert_eq!(at(&t, &cm), (-off + 4, 2));
+        goto(&mut t, &mut cm, &[ViewportMiddle]);
+        assert_eq!(at(&t, &cm), (-off + 2, 2));
+        assert_eq!(t.grid().display_offset() as i32, off, "화면은 움직이지 않는다");
+    }
+
+    #[test]
+    fn the_cursor_is_drawn_as_a_block_on_the_screen_and_not_as_a_selection() {
+        let mut t = term_with(8, 3, "한글a\r\nbc");
+        let mut cm = CopyMode::enter(&t);
+        goto(&mut t, &mut cm, &[Top, Right]);
+        assert!(
+            t.selection.is_none(),
+            "고르기 전에는 고른 칸이 없다(커서는 따로 그린다)"
+        );
+        let mut screen =
+            crate::session::snapshot_of(&t, &bt_core::Theme::default(), None, None, std::time::Instant::now());
+        cm.paint_cursor(&t, &mut screen);
+        let c = screen.cursor;
+        assert_eq!((c.col, c.row), (2, 0));
+        assert!(c.wide && c.visible && !c.blinking);
+        assert_eq!(c.shape, crate::CursorShape::Block);
+        // 위로 스크롤해 커서 줄이 화면 밖이면 그리지 않는다
+        let mut feed = String::new();
+        for i in 0..30 {
+            feed.push_str(&format!("line{i:02}\r\n"));
+        }
+        let mut t = term_with(10, 5, &feed);
+        let mut cm = CopyMode::enter(&t);
+        goto(&mut t, &mut cm, &[Top]);
+        t.scroll_display(Scroll::Bottom);
+        let mut screen =
+            crate::session::snapshot_of(&t, &bt_core::Theme::default(), None, None, std::time::Instant::now());
+        cm.paint_cursor(&t, &mut screen);
+        assert!(!screen.cursor.visible);
+    }
+
+    #[test]
+    fn the_view_follows_when_output_pushes_the_cursor_line_off_the_top() {
+        let mut feed = String::new();
+        for i in 0..8 {
+            feed.push_str(&format!("line{i}\r\n"));
+        }
+        let mut t = term_with(10, 4, &feed);
+        let mut cm = CopyMode::enter(&t);
+        goto(&mut t, &mut cm, &[Up, Up, Up]);
+        assert_eq!(row_on_screen(&t, &cm), 0);
+        let want = char_at_cursor(&t, &cm);
+        let before_line = t.grid()[cm.cursor_point(&t).line]
+            .into_iter()
+            .take(5)
+            .map(|c| c.c)
+            .collect::<String>();
+        let mut p: Processor = Processor::new();
+        p.advance(&mut t, b"more1\r\nmore2\r\nmore3\r\n");
+        cm.follow(&mut t);
+        let row = row_on_screen(&t, &cm);
+        assert!((0..4).contains(&row), "커서 줄이 화면 안에 있다: {row}");
+        assert_eq!(char_at_cursor(&t, &cm), want);
+        let after_line = t.grid()[cm.cursor_point(&t).line]
+            .into_iter()
+            .take(5)
+            .map(|c| c.c)
+            .collect::<String>();
+        assert_eq!(after_line, before_line, "같은 줄을 가리킨다");
+        assert!(t.grid().display_offset() > 0, "화면이 커서 줄을 따라 올라갔다");
+        // 위에서 보던 화면은 출력이 와도 그대로다
+        let off = t.grid().display_offset();
+        p.advance(&mut t, b"more4\r\n");
+        cm.follow(&mut t);
+        assert_eq!(row_on_screen(&t, &cm), row, "화면 안에서 줄 위치가 그대로");
+        assert!(t.grid().display_offset() >= off);
+    }
+
+    #[test]
+    fn a_full_scrollback_keeps_the_cursor_at_the_top_row_and_visible() {
+        let mut t = Term::new(
+            Config {
+                scrolling_history: 3,
+                ..Config::default()
+            },
+            &Size(10, 3),
+            Quiet,
+        );
+        let mut p: Processor = Processor::new();
+        p.advance(&mut t, b"a\r\nb\r\nc\r\nd\r\ne\r\n");
+        let mut cm = CopyMode::enter(&t);
+        goto(&mut t, &mut cm, &[Top]);
+        p.advance(&mut t, b"f\r\ng\r\nh\r\ni\r\nj\r\n");
+        cm.follow(&mut t);
+        assert_eq!(cm.cursor_point(&t).line, t.topmost_line());
+        assert_eq!(row_on_screen(&t, &cm), 0, "밀려난 줄은 맨 위로 붙고 보인다");
+    }
+
+    #[test]
+    fn selection_start_follows_the_text_too_when_output_arrives() {
+        let mut feed = String::new();
+        for i in 0..8 {
+            feed.push_str(&format!("line{i}\r\n"));
+        }
+        let mut t = term_with(10, 4, &feed);
+        let mut cm = CopyMode::enter(&t);
+        goto(&mut t, &mut cm, &[Up, Up, Up, SelectLine, Down]);
+        let before = text(&t);
+        let mut p: Processor = Processor::new();
+        p.advance(&mut t, b"m1\r\nm2\r\nm3\r\nm4\r\n");
+        cm.follow(&mut t);
+        assert_eq!(text(&t), before);
+        assert!(before.as_deref().is_some_and(|s| s.starts_with("line")));
+    }
+
+    #[test]
+    fn reflowing_the_screen_keeps_cursor_and_selection_start_on_the_same_text() {
+        let feed = "abcdefghijkl\r\nmnopqrstuvwx\r\nyz";
+        for new_cols in [5usize, 7, 3, 12, 20] {
+            let mut t = term_with(12, 6, feed);
+            let mut cm = CopyMode::enter(&t);
+            goto(&mut t, &mut cm, &[Top, Right, Right, SelectCell, Down, Right]);
+            assert_eq!(char_at_cursor(&t, &cm), 'p');
+            let sel = text(&t);
+            assert_eq!(sel.as_deref(), Some("cdefghijkl\nmnop"));
+            let r = cm.before_resize(&t);
+            t.resize(Size(new_cols, 6));
+            cm.after_resize(&mut t, r);
+            assert_eq!(char_at_cursor(&t, &cm), 'p', "{new_cols}칸: 커서");
+            assert_eq!(text(&t), sel, "{new_cols}칸: 고른 글");
+            // 다시 원래 폭으로
+            let r = cm.before_resize(&t);
+            t.resize(Size(12, 6));
+            cm.after_resize(&mut t, r);
+            assert_eq!(char_at_cursor(&t, &cm), 'p', "되돌린 뒤 커서");
+            assert_eq!(text(&t), sel, "되돌린 뒤 고른 글");
+        }
+    }
+
+    #[test]
+    fn reflow_with_history_and_wide_chars_stays_on_the_text() {
+        let mut feed = String::new();
+        for i in 0..20 {
+            feed.push_str(&format!("한글{i:02}abcdefghij\r\n"));
+        }
+        let mut t = term_with(16, 5, &feed);
+        let mut cm = CopyMode::enter(&t);
+        goto(&mut t, &mut cm, &[Top, Down, Down, Down, WordForward]);
+        let want = text_of_line(&t, &cm);
+        let c0 = char_at_cursor(&t, &cm);
+        let r = cm.before_resize(&t);
+        t.resize(Size(7, 5));
+        cm.after_resize(&mut t, r);
+        assert_eq!(char_at_cursor(&t, &cm), c0);
+        assert!((0..5).contains(&row_on_screen(&t, &cm)));
+        let _ = want;
+    }
+
+    fn text_of_line(t: &Term<Quiet>, cm: &CopyMode) -> String {
+        let p = cm.cursor_point(t);
+        t.grid()[p.line].into_iter().map(|c| c.c).collect()
     }
 }

@@ -1336,11 +1336,17 @@ impl Session {
                                 events.extend(t.scan(term, Instant::now()).into_iter().map(trigger_event));
                             }
                         }
-                        // 새 출력이 오면 맨 아래로(scroll-to-bottom의 output, #147)
-                        if thread_scroll_on_output.load(std::sync::atomic::Ordering::Relaxed) {
+                        // 복사 모드 중에는 맨 아래로 끌지 않고, 커서 줄이 보이게만 화면을 따라간다(#931)
+                        {
                             let mut g = thread_inner.lock();
-                            if scroll_wanted(true, g.term.grid().display_offset()) {
-                                g.term.scroll_display(Scroll::Bottom);
+                            let Inner { term, copy_mode, .. } = &mut *g;
+                            if let Some(cm) = copy_mode.as_ref() {
+                                cm.follow(term);
+                            } else if thread_scroll_on_output.load(std::sync::atomic::Ordering::Relaxed)
+                                && scroll_wanted(true, term.grid().display_offset())
+                            {
+                                // 새 출력이 오면 맨 아래로(scroll-to-bottom의 output, #147)
+                                term.scroll_display(Scroll::Bottom);
                             }
                         }
                         for e in events {
@@ -1571,8 +1577,15 @@ impl Session {
             } = &mut *g;
             release_sync(term, parser);
             sync_graphics(term, graphics, *cell); // 옛 크기에서 일어난 스크롤을 먼저 반영한다(#800)
+            // 복사 모드의 커서·시작점은 줄이 다시 접혀도 같은 글을 가리켜야 한다(#931)
+            let reflow = g.copy_mode.as_ref().map(|cm| cm.before_resize(&g.term));
             g.term.resize(Dims(size));
-            let Inner { term, marks, .. } = &mut *g;
+            let Inner {
+                term, marks, copy_mode, ..
+            } = &mut *g;
+            if let (Some(cm), Some(r)) = (copy_mode.as_mut(), reflow) {
+                cm.after_resize(term, r);
+            }
             realign_marks(term, marks);
             g.cell = (size.cell_width as u32, size.cell_height as u32);
             g.pixel.reset();
@@ -2217,6 +2230,9 @@ impl Session {
         if let Some(t) = &g.triggers {
             t.highlight(&mut screen);
         }
+        if let Some(cm) = &g.copy_mode {
+            cm.paint_cursor(&g.term, &mut screen);
+        }
         screen
     }
 
@@ -2750,7 +2766,7 @@ fn tail_text<T>(term: &Term<T>, lines: usize) -> String {
 pub(crate) const MAX_LINKS: usize = 4096;
 pub(crate) const MAX_LINK_URI: usize = 8192;
 
-fn snapshot_of<T: EventListener>(
+pub(crate) fn snapshot_of<T: EventListener>(
     term: &Term<T>,
     theme: &Theme,
     search: Option<&mut crate::search::Search>,
