@@ -177,6 +177,12 @@ fn list_line(t: &TabInfo) -> String {
     if let Some(code) = t.last_exit_code {
         line.push_str(&format!("  종료 {code}"));
     }
+    if let Some(group) = &t.group {
+        line.push_str(&format!("  묶음: {}", printable(group)));
+        if t.group_collapsed {
+            line.push_str(" (접힘)");
+        }
+    }
     line
 }
 
@@ -697,6 +703,8 @@ mod tests {
             status_text: None,
             status_progress: None,
             last_exit_code: None,
+            group: None,
+            group_collapsed: false,
         };
         assert_eq!(list_line(&base), "*  3  zsh                      claude");
         let t = TabInfo {
@@ -709,6 +717,33 @@ mod tests {
         let l = list_line(&t);
         assert!(l.ends_with("[blocked 40%: 권한 [2J 필요]  종료 2"), "{l}");
         assert!(!l.contains('\x1b'));
+    }
+
+    /// #952: 묶음에 든 탭은 줄 끝에 묶음 이름(접혔으면 표시)을 붙이고, 이름의 제어 문자는 공백으로 바꾼다
+    #[test]
+    fn list_line_shows_the_tab_group() {
+        let t = TabInfo {
+            id: 4,
+            title: "zsh".into(),
+            active: false,
+            unread: false,
+            cwd: None,
+            process: None,
+            status: None,
+            status_text: None,
+            status_progress: None,
+            last_exit_code: Some(0),
+            group: Some("빌\x1b]0;x\x07드".into()),
+            group_collapsed: true,
+        };
+        let l = list_line(&t);
+        assert!(l.ends_with("종료 0  묶음: 빌 ]0;x 드 (접힘)"), "{l}");
+        assert!(!l.contains('\x1b') && !l.contains('\x07'));
+        let open = TabInfo {
+            group_collapsed: false,
+            ..t
+        };
+        assert!(list_line(&open).ends_with("묶음: 빌 ]0;x 드"));
     }
 
     #[test]

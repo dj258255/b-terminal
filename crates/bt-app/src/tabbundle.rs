@@ -37,6 +37,16 @@ impl Bundle {
     }
 }
 
+/// 제어 소켓 `list`가 내보낼 탭의 묶음 이름과 접힘(#952). 등록부에 없는 번호는 묶음 없음이다.
+/// 이름은 소켓으로 나가는 글의 규칙(`export_text`)을 지난다
+pub fn socket_group(bundle: Option<Id>, bundles: &[Bundle]) -> (Option<String>, bool) {
+    let Some(b) = bundle.and_then(|id| bundles.iter().find(|b| b.id == id)) else {
+        return (None, false);
+    };
+    let name = if b.name.is_empty() { DEFAULT_NAME } else { &b.name };
+    (bt_core::proto::export_text(name), b.collapsed)
+}
+
 /// 탭 줄에 놓이는 것 하나: 묶음 머리표 또는 탭
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BarItem {

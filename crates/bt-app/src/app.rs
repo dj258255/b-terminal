@@ -2672,16 +2672,21 @@ impl App {
             }
             Call::List => {
                 // 지금 창부터 창마다 탭 줄 순서, 탭 안에서는 왼쪽·위부터
-                let order: Vec<usize> = std::iter::once(&self.w)
+                // 칸마다 든 탭 묶음(#952)의 이름·접힘을 함께 든다
+                let order: Vec<(usize, (Option<String>, bool))> = std::iter::once(&self.w)
                     .chain(&self.others)
-                    .flat_map(|w| w.tabs.iter())
-                    .flat_map(|g| g.layout.leaves())
-                    .filter_map(|pid| self.pane_index(pid))
+                    .flat_map(|w| {
+                        w.tabs
+                            .iter()
+                            .map(move |g| (g, crate::tabbundle::socket_group(g.bundle, &w.bundles)))
+                    })
+                    .flat_map(|(g, group)| g.layout.leaves().into_iter().map(move |pid| (pid, group.clone())))
+                    .filter_map(|(pid, group)| self.pane_index(pid).map(|i| (i, group)))
                     .collect();
                 let tabs: Vec<TabInfo> = order
                     .into_iter()
-                    .map(|i| (i, &self.panes[i]))
-                    .map(|(i, t)| {
+                    .map(|(i, group)| (i, &self.panes[i], group))
+                    .map(|(i, t, (group, group_collapsed))| {
                         let sum = t.status_summary();
                         TabInfo {
                             id: t.id,
@@ -2697,6 +2702,8 @@ impl App {
                                 .and_then(bt_core::proto::export_text),
                             status_progress: sum.and_then(|s| s.progress),
                             last_exit_code: t.last_command.as_ref().and_then(|c| c.exit_code),
+                            group,
+                            group_collapsed,
                         }
                     })
                     .collect();
