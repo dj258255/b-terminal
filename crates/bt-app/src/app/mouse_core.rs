@@ -416,7 +416,7 @@ impl App {
     /// 두 번 누른 칸의 URL 범위((줄, 첫 칸), (줄, 끝 칸)). `link-url = false`면 없다(Ghostty는 `link` 규칙이 없으면 낱말 고르기)
     fn double_click_link(&self, idx: usize, c: usize, r: usize) -> Option<((usize, usize), (usize, usize))> {
         let opts = mouse::double_click_link_options(self.config.link_url)?;
-        let hit = bt_term::links::link_at_with(&self.panes[idx].session.snapshot(), c, r, opts)?;
+        let hit = self.panes[idx].session.link_probe(c, r, opts).hit?;
         crate::context_menu::link_ends(&hit.spans)
     }
 
