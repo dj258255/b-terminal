@@ -4,7 +4,7 @@
 //! 복사 모드는 이름이 `copy_mode`인 키 테이블이다(ADR-103). 기본 묶음은 WezTerm CopyMode를 따르고(Alacritty vi mode와 같은 키가 많다),
 //! 사용자가 `keybind = copy_mode/h=…`로 덮거나 `copy_mode/h=unbind`로 지운다
 
-use bt_term::CopyOp;
+use bt_term::{CopyOp, JumpKind};
 
 /// 복사 모드 키 테이블 이름
 pub const TABLE: &str = "copy_mode";
@@ -18,6 +18,18 @@ pub enum CopyAction {
     Copy,
     /// 복사 없이 나간다
     Exit,
+    /// 찾기 막대를 열어 글을 받는다(`/`면 앞으로, `?`면 뒤로, #932)
+    SearchOpen { forward: bool },
+    /// 마지막에 찾은 글을 다시 찾는다(`n`은 같은 방향, `N`은 반대 방향)
+    SearchNext { reverse: bool },
+    /// 다음에 치는 글자를 줄 안에서 찾는다(`f F t T`)
+    Jump(JumpKind),
+    /// 마지막 줄 안 글자 찾기를 되풀이한다(`;`는 같은 방향, `,`는 반대 방향)
+    JumpAgain { reverse: bool },
+}
+
+const fn jump(forward: bool, till: bool) -> CopyAction {
+    CopyAction::Jump(JumpKind { forward, till })
 }
 
 const NAMES: &[(&str, CopyAction)] = &[
@@ -43,9 +55,41 @@ const NAMES: &[(&str, CopyAction)] = &[
     ("select", CopyAction::Op(CopyOp::SelectCell)),
     ("select_line", CopyAction::Op(CopyOp::SelectLine)),
     ("select_block", CopyAction::Op(CopyOp::SelectBlock)),
+    ("next_line", CopyAction::Op(CopyOp::NextLineStart)),
+    ("other_end", CopyAction::Op(CopyOp::OtherEnd)),
+    ("other_end_horiz", CopyAction::Op(CopyOp::OtherEndHoriz)),
+    ("search_forward", CopyAction::SearchOpen { forward: true }),
+    ("search_backward", CopyAction::SearchOpen { forward: false }),
+    ("search_next", CopyAction::SearchNext { reverse: false }),
+    ("search_prev", CopyAction::SearchNext { reverse: true }),
+    ("jump_forward", jump(true, false)),
+    ("jump_backward", jump(false, false)),
+    ("jump_till_forward", jump(true, true)),
+    ("jump_till_backward", jump(false, true)),
+    ("jump_again", CopyAction::JumpAgain { reverse: false }),
+    ("jump_reverse", CopyAction::JumpAgain { reverse: true }),
     ("copy", CopyAction::Copy),
     ("exit", CopyAction::Exit),
 ];
+
+/// 복사 모드 중에 들어온 확정 글(IME 확정·붙여넣기)이 갈 곳. 복사 모드 중에는 PTY로 가지 않는다(ADR-103).
+/// 찾기 막대가 열려 있으면 막대로(조합 중인 글은 오지 않고 확정한 글만 온다), 글자를 기다리는 `f F t T`면 그 글자로, 아니면 버린다
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TextRoute {
+    Search,
+    Jump,
+    Drop,
+}
+
+pub fn route_text(search_open: bool, jump_waiting: bool) -> TextRoute {
+    if search_open {
+        TextRoute::Search
+    } else if jump_waiting {
+        TextRoute::Jump
+    } else {
+        TextRoute::Drop
+    }
+}
 
 /// `copy_mode:<이름>`의 값을 읽는다
 pub fn parse(arg: Option<&str>) -> Result<CopyAction, String> {
@@ -58,7 +102,8 @@ pub fn parse(arg: Option<&str>) -> Result<CopyAction, String> {
 
 /// 기본 키 테이블(트리거, 동작). WezTerm CopyMode의 기본 묶음 가운데 이번 판까지의 동작만 옮겼다.
 /// 낱말(w b e, Tab·Shift+Tab, Alt+f·Alt+b·Alt+←→)·줄의 첫 글자(^, Alt+m)·화면 위·중간·아래(H M L)는 #931이다.
-/// WezTerm에 없는 W B E { }는 넣지 않았다. 찾기(/ ? n N)는 다음 판(#932)이다.
+/// WezTerm에 없는 W B E { }는 넣지 않았다. 줄 안 글자 찾기(f F t T ; ,)·o O·Enter는 WezTerm 기본 묶음 그대로(#932).
+/// 찾기 `/ ? n N`은 WezTerm 기본 복사 모드 묶음에는 없고 vi를 따랐다(#932)
 /// 글자 키는 `super`·`ctrl`이 없어도 라틴 글자로 맞춘다(한글 입력 소스에서도 같은 키, `app/copy_cmd.rs`).
 /// 마지막의 `catch_all=ignore`가 묶이지 않은 키를 먹어 프로그램에 가지 않게 한다
 pub(crate) fn default_table() -> Vec<(&'static str, &'static str)> {
@@ -97,6 +142,19 @@ pub(crate) fn default_table() -> Vec<(&'static str, &'static str)> {
         ("page_up", "copy_mode:page_up"),
         ("ctrl+f", "copy_mode:page_down"),
         ("page_down", "copy_mode:page_down"),
+        ("enter", "copy_mode:next_line"),
+        ("o", "copy_mode:other_end"),
+        ("shift+o", "copy_mode:other_end_horiz"),
+        ("f", "copy_mode:jump_forward"),
+        ("shift+f", "copy_mode:jump_backward"),
+        ("t", "copy_mode:jump_till_forward"),
+        ("shift+t", "copy_mode:jump_till_backward"),
+        ("semicolon", "copy_mode:jump_again"),
+        ("comma", "copy_mode:jump_reverse"),
+        ("slash", "copy_mode:search_forward"),
+        ("shift+slash", "copy_mode:search_backward"),
+        ("n", "copy_mode:search_next"),
+        ("shift+n", "copy_mode:search_prev"),
         ("v", "copy_mode:select"),
         ("shift+v", "copy_mode:select_line"),
         ("ctrl+v", "copy_mode:select_block"),
@@ -310,5 +368,46 @@ mod tests {
             .filter(|(t, a)| (*t == "ctrl+shift+x" || *t == "super+x") && *a != "activate_copy_mode")
             .collect();
         assert!(uses.is_empty(), "{uses:?}");
+    }
+
+    #[test]
+    fn search_jump_and_other_end_keys_are_bound_like_the_docs() {
+        let (km, mut sq) = entered();
+        for (key, name) in [
+            ("slash", "search_forward"),
+            ("shift+slash", "search_backward"),
+            ("n", "search_next"),
+            ("shift+n", "search_prev"),
+            ("f", "jump_forward"),
+            ("shift+f", "jump_backward"),
+            ("t", "jump_till_forward"),
+            ("shift+t", "jump_till_backward"),
+            ("semicolon", "jump_again"),
+            ("comma", "jump_reverse"),
+            ("o", "other_end"),
+            ("shift+o", "other_end_horiz"),
+            ("enter", "next_line"),
+        ] {
+            let out = press(&km, &mut sq, key);
+            assert_eq!(out.action, Some(parse_action_of(&format!("copy_mode:{name}"))), "{key}");
+            assert!(out.send.is_empty(), "{key}");
+        }
+        assert_eq!(parse(Some("search_prev")), Ok(CopyAction::SearchNext { reverse: true }));
+        assert_eq!(
+            parse(Some("jump_till_backward")),
+            Ok(CopyAction::Jump(JumpKind {
+                forward: false,
+                till: true
+            }))
+        );
+    }
+
+    /// 찾기 입력 중에 들어온 확정 글은 막대로만 간다. PTY(Drop이 아닌 곳)로 가는 길이 없다
+    #[test]
+    fn confirmed_text_in_copy_mode_goes_to_the_bar_or_the_jump_never_the_pty() {
+        assert_eq!(route_text(true, false), TextRoute::Search);
+        assert_eq!(route_text(true, true), TextRoute::Search);
+        assert_eq!(route_text(false, true), TextRoute::Jump);
+        assert_eq!(route_text(false, false), TextRoute::Drop);
     }
 }
