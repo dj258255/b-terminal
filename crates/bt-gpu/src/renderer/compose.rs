@@ -464,14 +464,8 @@ impl GpuRenderer {
             });
         }
         self.sync_atlases();
-        self.queue.write_buffer(
-            &self.globals,
-            0,
-            &[size.0 as f32, size.1 as f32, 0.0, 0.0]
-                .iter()
-                .flat_map(|v| v.to_le_bytes())
-                .collect::<Vec<u8>>(),
-        );
+        self.queue
+            .write_buffer(&self.globals, 0, &self.globals_bytes(size.0 as f32, size.1 as f32));
         self.bytes.clear();
         for r in &self.layers.rects {
             r.write(&mut self.bytes);

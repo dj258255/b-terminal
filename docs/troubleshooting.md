@@ -1008,3 +1008,14 @@
 - 달리한 것: kitty의 기본은 `bottom`이지만 설정을 바꾸지 않은 사람의 화면을 지키려고 기본은 `top`이다. 세로 탭 줄(`left`·`right`)은 하지 않는다(경고하고 `top`). kitty는 탭 줄을 칸(cell) 단위로 어림해 남는 폭을 양옆에 나누지만 여기는 픽셀 그대로 쓴다
 - 시험: `tabgeom`의 순수 계산 시험(기본값이 옛 위쪽 탭 줄과 같음, kitty의 위·아래 여백 식, 칸과 탭 줄이 겹치지 않음), `edge_and_margin_keys_follow_kitty`(읽기·`+show-config` 왕복·경고), `default_geometry_draws_the_same_pixels_as_the_old_top_bar`(설정이 없으면 픽셀 같음), `bottom_bar_is_drawn_where_it_is_clicked`(위·아래·여백마다 탭 줄 밖 픽셀이 그대로이고 그린 탭 자리를 누르면 그 탭)
 - 한계: 알림 띠·찾기 막대·링크 주소 띠 같은 덧그림은 창 맨 아래에 놓이므로 `bottom`이면 잠시 탭 줄 위에 겹친다. 좌우 여백의 색은 kitty처럼 이웃 탭 색을 따르지 않고 탭 줄 바탕색이다. 실제 창(그려진 모양, 마우스)은 이 기계의 PTY 막힘 때문에 확인하지 않았다
+
+## 121. 글자를 바탕에 섞는 곡선을 고를 수 없다(`text-composition-strategy`)
+
+- 언제: 2026-11-27, #911. 0.106.0 뒤 main까지의 동작이다. 화면 모양을 kitty·Ghostty와 견준 조사에서 골랐다
+- 증상: 밝은 바탕의 어두운 글자는 가늘고 어두운 바탕의 밝은 글자는 굵어 보이는 정도가 테마마다 다른데, 굵기를 맞출 설정이 `alpha-blending`(섞는 색 공간)뿐이었다. 설정에 `text-composition-strategy = platform`을 적으면 알 수 없는 키라는 경고가 나왔다
+- 까닭: 글자 덮음 값(글리프의 회색조)을 그대로 섞었고 곡선을 거칠 길이 없었다. kitty는 `kitty/options/definition.py` 278~310줄의 `text_composition_strategy`를 `kitty/options/to-c.h` 641~676줄이 읽어 `shaders.c` 1494~1495줄에서 셰이더에 1/감마와 `1 + 명암/100`을 넘기고, `kitty/shaders/cell.slang`의 `foreground_contrast_new`(231~241줄)가 `clamp(lerp(a, pow(a, 1/감마), (1 - 글자밝기 + 바탕밝기) * 0.5) * 명암, 0, 1)`로 덮음을 바꾼다. 밝기는 `Y = (0.2126, 0.7152, 0.0722)`(`background.slang` 91줄)를 sRGB 값에 곱해 더한 것이다. 감마가 밝기 차에 따라 0(밝은 글자 어두운 바탕)에서 1(어두운 글자 밝은 바탕)로 배율되므로 어두운 글자만 곡선을 크게 받는다
+- 고침: 설정 `text-composition-strategy`를 더했다. 값은 `none`(기본)·`legacy`·`platform`(`1.7 30`)·`감마`·`감마 명암`. 같은 식을 `bt-core`의 `TextComposition::coverage`(순수 함수), CPU 길 `Canvas::draw_glyph`, GPU 셰이더 `text_curve`(`shader.wgsl`)에 넣었다. GPU는 전역 유니폼의 안 쓰던 두 칸에 `1/감마`와 `1 + 명암/100`을 싣는다(곡선이 없으면 정확히 1·1이라 셰이더가 덮음을 그대로 돌려준다). 이를 위해 전역 유니폼을 조각 셰이더에도 보이게 했다
+- 정한 것: 기본은 `none`이다. kitty의 `legacy`는 "pre 0.28 방식"으로 `foreground_contrast_old`(243~255줄)가 sRGB 값으로 섞는 결과를 선형 틀에서 흉내 내는 식이라, 우리 기본(`alpha-blending = native`, sRGB 값으로 그대로 섞음)과 같은 화면을 내는 것으로 읽었다(원본의 식을 따져서 그렇게 읽었을 뿐 픽셀로 견주지는 않았다). 그래도 이름은 `none`을 따로 두고 `legacy`는 같은 뜻의 별칭으로만 받는다. `alpha-blending = linear`와 `legacy`를 함께 쓰면 kitty에서는 선형 틀이라도 sRGB 섞기를 흉내 내지만 여기서는 `none`과 같이 곡선이 없을 뿐이다. 순서는 kitty와 같이 곡선이 먼저이고(kitty는 곡선을 건 덮음으로 섞는다), 그 덮음을 `alpha-blending`의 섞는 공간과 `linear-corrected` 보정에 넘긴다. Ghostty에는 이 곡선이 없다
+- 검증: 순수 함수는 kitty 식을 따로 계산한 점(`1.7 30`에서 흰 바탕 검은 글자 덮음 0.1→0.3355, 0.5→0.8647 등)과 견줬고, 기본일 때 CPU 글자 픽셀이 곡선 도입 전 식과 정확히 같다(시험). CPU·GPU 길은 같은 화면에서 채널 최대 차이 1이었다(시험 `crates/bt-gpu/tests/text_composition.rs`, 이 기계의 GPU 어댑터)
+- 남긴 것: 색 글리프(이모지)에는 곡선을 걸지 않는다(kitty는 색 스프라이트에도 건다). CPU 길의 바탕은 칸 바탕색이 아니라 글리프가 얹히는 자리의 지금 픽셀이라, 글리프가 겹치거나 투명 창이면 GPU 길과 조금 다를 수 있다(재지 않았다). 실제 창에서 `platform`이 어떻게 보이는지, 기본을 바꿀지는 아직 사람 눈으로 견주지 않았다
+- 0.106.0에서 풀기: 없음(기본이 `none`이라 안 적으면 그대로다)

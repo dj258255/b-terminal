@@ -1,6 +1,6 @@
 //! 0RGB 픽셀 버퍼에 그리는 기본 동작
 
-use bt_core::Rgb;
+use bt_core::{Rgb, TextComposition};
 
 use crate::font::Glyph;
 
@@ -18,6 +18,8 @@ pub struct Canvas<'a> {
     backdrop: Option<(u32, &'a [u32])>,
     /// `background-opacity-cells`(#177): 색이 있는 바탕 칸을 칠할 알파(0~255)
     cells_alpha: Option<u8>,
+    /// 글자 덮음 곡선(#911). 기본은 곡선 없음
+    text_composition: TextComposition,
 }
 
 /// `background-opacity-cells`가 켜져 있고 창이 투명하면 색 바탕 칸을 칠할 알파(0~255). 아니면 없다(#177)
@@ -36,12 +38,19 @@ impl<'a> Canvas<'a> {
             see_through: None,
             backdrop: None,
             cells_alpha: None,
+            text_composition: TextComposition::NONE,
         }
     }
 
     /// `background-opacity-cells`(#177): 앞으로 `fill_rect_cell`로 칠하는 색 바탕 칸을 `alpha`만큼만 덮는 반투명으로 칠한다
     pub fn set_cells_alpha(&mut self, alpha: Option<u8>) {
         self.cells_alpha = alpha;
+    }
+
+    /// 글자 덮음 곡선(`text-composition-strategy`, #911)을 정한다. 앞으로 `draw_glyph`로 그리는 흑백 글리프의 덮음에 건다.
+    /// 바탕은 글리프가 얹히는 자리의 지금 픽셀이다. 색 글리프(이모지)는 건드리지 않는다
+    pub fn set_text_composition(&mut self, c: TextComposition) {
+        self.text_composition = c;
     }
 
     /// 칸 하나의 바탕을 칠한다. `set_cells_alpha`가 있으면 색 바탕 칸도 반투명으로, 기본 바탕색은 `fill_rect`와 같다
@@ -187,6 +196,7 @@ impl<'a> Canvas<'a> {
         if glyph.bitmap.len() < glyph.width * glyph.height {
             return;
         }
+        let tc = self.text_composition;
         let gx = x + glyph.left;
         let gy = baseline_y - glyph.top;
         for row in 0..glyph.height {
@@ -204,6 +214,11 @@ impl<'a> Canvas<'a> {
                     continue;
                 }
                 let i = (py as u32 * self.width + px as u32) as usize;
+                let a = if tc.is_identity() {
+                    a
+                } else {
+                    tc.coverage_u8(a as u8, color, Rgb::from_u32(self.buf[i])) as u32
+                };
                 self.buf[i] = blend(self.buf[i], color, a);
             }
         }
