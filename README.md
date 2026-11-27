@@ -86,6 +86,8 @@ btctl notify "빌드" "끝났습니다"           # 이 탭에 알림
 btctl reload-config                      # 설정 다시 읽기
 btctl run --tab 2 -- cargo test          # 2번 탭에서 돌리고 끝날 때까지 기다려 출력·종료 코드(셸 통합)
 btctl last --tab 2 --json                # 2번 탭에서 마지막으로 끝난 명령
+btctl send --tab 2 --key enter            # 키 이름으로 키 보내기
+btctl watch                              # 상태 바뀜·명령 끝·알림·탭 열림/닫힘을 한 줄 JSON으로 계속 받기
 ```
 
 제어 소켓은 같은 사용자만 닿는 폴더(0700)의 소켓(0600)입니다. 자세한 경계는 [SECURITY.md](SECURITY.md)에 있습니다.

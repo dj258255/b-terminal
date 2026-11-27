@@ -98,6 +98,8 @@ const MOUSE_OFF: &[u8] = b"\x1b[?9l\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1005l\
 pub struct SpawnOptions {
     /// 없으면 `$SHELL`(없으면 `/bin/zsh`)을 로그인 셸로 띄운다
     pub program: Option<String>,
+    /// 트리거(설정 trigger, #928). 정규식에 맞는 출력 줄에 강조·알림·벨·탭 표시만 한다
+    pub triggers: Vec<bt_core::trigger::TriggerSpec>,
     pub args: Vec<String>,
     pub cwd: Option<PathBuf>,
     /// 더하거나 덮을 환경 변수
@@ -214,6 +216,8 @@ pub enum SessionEvent {
     KittyClipboardWrite(crate::kitty_clip::WriteRequest),
     /// 칸의 프로그램 상태 기록(OSC 7501)이 바뀌었다(#618). 기록이 새로 `blocked`·`done`·`error`가 되었으면 그 값이 함께 온다
     ProgramStatus(Option<crate::program_status::Alert>),
+    /// 트리거 `attention`(#928): 이 칸의 탭에 주의 표시(안 읽음)를 단다. 소리도 알림도 아니다
+    TriggerAttention,
 }
 
 pub type EventSink = Arc<dyn Fn(SessionEvent) + Send + Sync>;
@@ -383,6 +387,8 @@ struct Inner {
     search: Option<crate::search::Search>,
     /// kitty 마커(#929). 없으면 마크를 칠하지 않는다
     marker: Option<crate::marks::MarkerState>,
+    /// 트리거(#928). 없으면 줄을 검사하지 않는다
+    triggers: Option<crate::triggers::Triggers>,
     /// kitty 그래픽(#76): 저장한 그림과 놓인 자리
     graphics: crate::graphics::Graphics,
     /// 글리프 프로토콜(APC 25a1)의 이 칸 등록(#779). 그리지는 않는다(Ghostty 1.4.0과 같다). 전체 초기화(RIS)에서 지운다
@@ -900,6 +906,11 @@ impl Session {
         if !options.restore_lines.is_empty() {
             crate::saved_screen::restore(&mut term, &options.restore_lines, options.restore_note.as_deref());
         }
+        // 트리거(#928): 띄운 직후의 빈 화면부터 본다
+        let triggers = new_triggers(&options.triggers).0.map(|mut t| {
+            t.arm(&term);
+            t
+        });
         let inner = Arc::new(Mutex::new(Inner {
             term,
             parser: Processor::new(),
@@ -907,6 +918,7 @@ impl Session {
             marks: Default::default(),
             search: None,
             marker: None,
+            triggers,
             graphics: crate::graphics::Graphics::with_limit(
                 options
                     .image_storage_limit
@@ -1318,6 +1330,11 @@ impl Session {
                                 term, graphics, cell, ..
                             } = &mut *g;
                             sync_graphics(term, graphics, *cell);
+                            // 트리거(#928): 이 읽기에서 새로 찍힌 줄만 본다. 하는 일은 알림·벨·탭 표시 사건뿐이고 PTY에는 쓰지 않는다
+                            let Inner { term, triggers, .. } = &mut *g;
+                            if let Some(t) = triggers.as_mut() {
+                                events.extend(t.scan(term, Instant::now()).into_iter().map(trigger_event));
+                            }
                         }
                         // 새 출력이 오면 맨 아래로(scroll-to-bottom의 output, #147)
                         if thread_scroll_on_output.load(std::sync::atomic::Ordering::Relaxed) {
@@ -1609,6 +1626,11 @@ impl Session {
         self.program_status.lock().summary()
     }
 
+    /// 탭에 보일 상태 기록의 제목(이미 거른 글, #925). 없으면 `None`
+    pub fn program_status_title(&self) -> Option<String> {
+        self.program_status.lock().summary_title()
+    }
+
     /// 사용자가 본 `done`·`error` 기록을 지운다(#618). 지운 것이 있으면 참
     pub fn clear_seen_program_status(&self) -> bool {
         self.program_status.lock().clear_seen()
@@ -1693,6 +1715,17 @@ impl Session {
         *search = crate::search::Search::new(query);
         let s = search.as_mut()?;
         Some(s.status(term))
+    }
+
+    /// 트리거를 바꾼다(설정 다시 읽기, #928). 못 읽는 규칙은 빼고 이유를 돌려준다. 규칙이 없으면 줄 검사를 하지 않는다
+    pub fn set_triggers(&self, specs: &[bt_core::trigger::TriggerSpec]) -> Vec<String> {
+        let (mut t, errors) = new_triggers(specs);
+        let mut g = self.inner.lock();
+        if let Some(t) = t.as_mut() {
+            t.arm(&g.term);
+        }
+        g.triggers = t;
+        errors
     }
 
     /// kitty `toggle_marker`(#929): 같은 명세면 끄고(`Ok(false)`), 아니면 바꿔 켠다(`Ok(true)`). 정규식을 못 읽으면 오류
@@ -2181,6 +2214,9 @@ impl Session {
         if let Some(m) = &g.marker {
             crate::marks::apply(&mut screen, m.marker());
         }
+        if let Some(t) = &g.triggers {
+            t.highlight(&mut screen);
+        }
         screen
     }
 
@@ -2343,6 +2379,24 @@ fn clear_last_command_op<T: EventListener>(
 fn erase_screen_graphics<T>(term: &Term<T>, graphics: &mut crate::graphics::Graphics) {
     let alt = term.mode().contains(alacritty_terminal::term::TermMode::ALT_SCREEN);
     graphics.erase_screen(term.grid().history_size() as i64, alt);
+}
+
+/// 트리거 규칙을 컴파일한다. 규칙이 하나도 없으면 없다(검사하지 않는다)
+fn new_triggers(specs: &[bt_core::trigger::TriggerSpec]) -> (Option<crate::triggers::Triggers>, Vec<String>) {
+    let (t, errors) = crate::triggers::Triggers::new(specs);
+    ((!t.is_empty()).then_some(t), errors)
+}
+
+/// 트리거가 낸 일을 세션 사건으로 바꾼다. 알림·벨·탭 표시뿐이고 PTY에 쓰는 사건은 없다(#928)
+pub fn trigger_event(e: crate::triggers::Effect) -> SessionEvent {
+    match e {
+        crate::triggers::Effect::Notify { body } => SessionEvent::Notification(Notification {
+            title: String::new(),
+            body,
+        }),
+        crate::triggers::Effect::Bell => SessionEvent::Bell,
+        crate::triggers::Effect::Attention => SessionEvent::TriggerAttention,
+    }
 }
 
 fn signal_event(sig: Signal) -> SessionEvent {
@@ -2952,6 +3006,7 @@ fn snapshot_with_shift<T: EventListener>(
         links,
         images: graphics.map(|g| visible_images(term, g, now)).unwrap_or_default(),
         command_marks: Vec::new(),
+        trigger_colors: Vec::new(),
     }
 }
 
@@ -3135,6 +3190,9 @@ pub struct Emulator {
     marker: Option<crate::marks::MarkerState>,
     /// 마지막 `snapshot`이 마크를 찾으려고 본 줄 수(시험용)
     marker_rows: usize,
+    /// 트리거(#928)와 아직 꺼내지 않은 그 결과
+    triggers: Option<crate::triggers::Triggers>,
+    trigger_effects: Vec<crate::triggers::Effect>,
     graphics: crate::graphics::Graphics,
     /// 글리프 프로토콜의 이 칸 등록(#779)
     glossary: crate::glyph::Glossary,
@@ -3167,6 +3225,8 @@ impl Emulator {
             search: None,
             marker: None,
             marker_rows: 0,
+            triggers: None,
+            trigger_effects: Vec::new(),
             graphics: Default::default(),
             glossary: Default::default(),
             cell: (size.cell_width as u32, size.cell_height as u32),
@@ -3239,7 +3299,29 @@ impl Emulator {
         }
         self.parser.advance(&mut self.term, &bytes[pos..]);
         sync_graphics(&mut self.term, &mut self.graphics, self.cell);
+        if let Some(t) = self.triggers.as_mut() {
+            self.trigger_effects.extend(t.scan(&self.term, Instant::now()));
+        }
         notes
+    }
+
+    /// 트리거를 바꾼다(#928). 못 읽는 규칙은 빼고 이유를 돌려준다
+    pub fn set_triggers(&mut self, specs: &[bt_core::trigger::TriggerSpec]) -> Vec<String> {
+        let (mut t, errors) = new_triggers(specs);
+        if let Some(t) = t.as_mut() {
+            t.arm(&self.term);
+        }
+        self.triggers = t;
+        errors
+    }
+
+    /// 지금까지 트리거가 낸 일(알림·벨·탭 표시)을 꺼낸다. PTY에 쓸 바이트는 없다(`take_replies`와 따로다)
+    pub fn take_trigger_effects(&mut self) -> Vec<crate::triggers::Effect> {
+        std::mem::take(&mut self.trigger_effects)
+    }
+
+    pub fn triggers(&self) -> Option<&crate::triggers::Triggers> {
+        self.triggers.as_ref()
     }
 
     pub fn resize(&mut self, size: GridSize) {
@@ -3292,6 +3374,9 @@ impl Emulator {
             .marker
             .as_ref()
             .map_or(0, |m| crate::marks::apply(&mut screen, m.marker()));
+        if let Some(t) = &self.triggers {
+            t.highlight(&mut screen);
+        }
         screen
     }
 
@@ -3350,6 +3435,9 @@ impl Emulator {
         screen.command_marks = marks_for(&self.term, &self.marks, &screen);
         if let Some(m) = &self.marker {
             crate::marks::apply(&mut screen, m.marker());
+        }
+        if let Some(t) = &self.triggers {
+            t.highlight(&mut screen);
         }
         screen
     }

@@ -9,6 +9,7 @@ pub mod tabstyle;
 pub mod tabtitle;
 pub mod text_composition;
 pub mod theme;
+pub mod trigger;
 pub mod user_regex;
 pub mod visual_bell;
 pub mod wintitle;

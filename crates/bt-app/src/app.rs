@@ -28,6 +28,8 @@ mod mouse_core;
 /// AppleScript 명령과 상태 스냅숏(#634). macOS에만 있다
 #[cfg(target_os = "macos")]
 mod script;
+/// 트리거(#928)의 앱 쪽 연결
+mod trigger_cmd;
 #[cfg(target_os = "macos")]
 pub use script::install as install_scripting;
 mod shader_inputs;
@@ -1255,6 +1257,8 @@ pub struct App {
     #[cfg(target_os = "macos")]
     menu_default_terminal: Option<muda::MenuItem>,
     control: Option<crate::control::ControlServer>,
+    /// 제어 소켓 `watch` 구독자에게 보낼 이벤트 모음(#925)
+    events: crate::events::Hub,
     keymap: Keymap,
     /// 명령줄의 설정 인자. 설정을 다시 읽을 때도 같은 것을 쓴다
     config_args: ConfigArgs,
@@ -1355,6 +1359,7 @@ impl App {
             run_waiters: std::collections::HashMap::new(),
             text_waiters: Vec::new(),
             control: None,
+            events: crate::events::Hub::default(),
             keymap,
             config_args,
             w: Win::new(font_size),
@@ -1969,6 +1974,18 @@ impl App {
         }
     }
 
+    /// 칸의 지금 프로그램 상태를 `watch` 구독자에게 알린다(#925). 같은 상태가 이어지면 모음이 건너뛴다
+    fn publish_status(&self, idx: usize) {
+        let t = &self.panes[idx];
+        let sum = t.status_summary();
+        let title = sum.and_then(|_| t.session.program_status_title());
+        self.events.publish(crate::events::status_event(
+            t.id,
+            sum.map(|s| (s.state.name(), s.progress)),
+            title.as_deref(),
+        ));
+    }
+
     /// 칸의 프로그램 상태 기록(OSC 7501)이 바뀌었다(#618). 사용자가 보고 있는 칸(창이 앞이고 고른 칸)이면 끝남·오류를 본 것으로 지우고,
     /// 아니면 사용자를 부르는 바뀜(기다림·끝남·오류가 새로 됨)에 데스크톱 알림을 하나 띄운다(`desktop-notifications`, 칸마다 5초에 한 번)
     fn on_program_status(&mut self, idx: usize, alert: Option<bt_term::program_status::Alert>) {
@@ -1976,6 +1993,7 @@ impl App {
         if watching {
             self.panes[idx].session.clear_seen_program_status();
         }
+        self.publish_status(idx);
         let Some(alert) = alert else { return };
         if watching || !self.config.desktop_notifications {
             return;
@@ -1985,6 +2003,7 @@ impl App {
         if crate::status_note::due(t.last_status_note.map(|at| at.elapsed())) {
             t.last_status_note = Some(Instant::now());
             let (title, body) = crate::status_note::text(&alert, &title);
+            self.events.publish(crate::events::notification_event(t.id, &title));
             if let Some(id) = crate::desktop::notify_pane(t.id, &title, &body) {
                 crate::desktop::remember_note(&mut t.notes, id);
             }
@@ -2083,6 +2102,7 @@ impl App {
                 } else {
                     note.title.clone()
                 };
+                self.events.publish(crate::events::notification_event(t.id, &title));
                 if let Some(id) = crate::desktop::notify_pane(t.id, &title, &note.body) {
                     crate::desktop::remember_note(&mut t.notes, id);
                 }
@@ -2235,6 +2255,8 @@ impl App {
     /// 셸 통합이 알린 명령의 끝: btctl run에 답하고, 오래 걸린 명령이면(창을 보지 않을 때) 알린다
     fn on_command_finished(&mut self, idx: usize, rec: bt_term::CommandRecord) {
         let tab_id = self.panes[idx].id;
+        self.events
+            .publish(crate::events::finished_event(tab_id, rec.exit_code, rec.duration));
         self.panes[idx].running = None;
         if let Some((req_id, reply, _)) = self.run_waiters.remove(&tab_id) {
             let _ = reply.send(bt_core::proto::Response::ok(
@@ -2341,6 +2363,7 @@ impl App {
             color_scheme_light: !self.scheme_dark(),
             grapheme_width_method: self.config.grapheme_width_method,
             ambiguous_wide: self.config.ambiguous_width == bt_core::config::AmbiguousWidth::Wide,
+            triggers: self.config.triggers.clone(),
             ..options
         };
         // 칸 안의 btctl이 이 터미널과 이 칸을 찾게 한다
@@ -2446,6 +2469,7 @@ impl App {
         let pane = self.spawn_pane(options, size, font_size)?;
         let id = pane.id;
         self.panes.push(pane);
+        self.events.publish(bt_core::proto::Event::TabOpened { tab: id });
         self.settle_preedit();
         let before = self.focused_id();
         let at = self
@@ -2492,6 +2516,7 @@ impl App {
         let pane = self.spawn_pane(options, size, font_size)?;
         debug_assert_eq!(pane.id, new_id);
         self.panes.push(pane);
+        self.events.publish(bt_core::proto::Event::TabOpened { tab: new_id });
         self.settle_preedit();
         let before = self.focused_id();
         let g = &mut self.w.tabs[gi];
@@ -2648,13 +2673,23 @@ impl App {
                 let tabs: Vec<TabInfo> = order
                     .into_iter()
                     .map(|i| (i, &self.panes[i]))
-                    .map(|(i, t)| TabInfo {
-                        id: t.id,
-                        title: t.display_title(),
-                        active: self.is_focused(i),
-                        unread: t.unread,
-                        cwd: t.cwd.clone(),
-                        process: t.fg_name.clone(),
+                    .map(|(i, t)| {
+                        let sum = t.status_summary();
+                        TabInfo {
+                            id: t.id,
+                            title: t.display_title(),
+                            active: self.is_focused(i),
+                            unread: t.unread,
+                            cwd: t.cwd.clone(),
+                            process: t.fg_name.clone(),
+                            status: sum.map(|s| s.state.name().to_string()),
+                            status_text: sum
+                                .and_then(|_| t.session.program_status_title())
+                                .as_deref()
+                                .and_then(bt_core::proto::export_text),
+                            status_progress: sum.and_then(|s| s.progress),
+                            last_exit_code: t.last_command.as_ref().and_then(|c| c.exit_code),
+                        }
                     })
                     .collect();
                 Response::ok(id, serde_json::to_value(tabs).unwrap_or_default())
@@ -2941,6 +2976,8 @@ impl App {
                     }
                 }
             }
+            // 구독은 소켓 스레드가 직접 맡는다(`control::watch`). 여기까지 오면 잘못 온 것이다
+            Call::Watch => Response::err(id, "watch는 소켓 연결에서만 씁니다"),
             Call::Notify { tab, title, body } => match pick(self, tab) {
                 Ok(i) => {
                     self.on_notification(i, bt_term::Notification { title, body });
@@ -3941,6 +3978,7 @@ impl App {
         // Session을 떨어뜨리면 `Drop`이 셸에 SIGHUP을 보낸다(읽기 스레드가 PTY 주 쪽을 쥐고 있어 떨어뜨리는 것만으로는 닫히지 않는다, #651). 들고 있으면 그때까지 셸이 산다
         let mut pane = self.panes.remove(index);
         let id = pane.id;
+        self.events.publish(bt_core::proto::Event::TabClosed { tab: id });
         crate::desktop::forget(std::mem::take(&mut pane.notes));
         self.fail_text_waiters(|w| w.pane == id, "글이 나오기 전에 칸이 닫혔습니다");
         if let Some((req_id, reply, _)) = self.run_waiters.remove(&id) {
@@ -4026,6 +4064,7 @@ impl App {
             }
             if let Some(i) = self.pane_index(id) {
                 let mut pane = self.panes.remove(i);
+                self.events.publish(bt_core::proto::Event::TabClosed { tab: id });
                 // 칸을 닫을 때처럼 알림 센터의 그 칸 알림을 지운다(되살려도 옛 알림은 돌아오지 않는다, #625)
                 crate::desktop::forget(std::mem::take(&mut pane.notes));
                 panes.push(pane);
@@ -4107,6 +4146,7 @@ impl App {
         g.zoomed = false;
         self.w.active = gi;
         self.panes.push(pane);
+        self.events.publish(bt_core::proto::Event::TabOpened { tab: id });
         self.focus_changed(before);
         self.clear_visible_unread();
         self.resize_all();
@@ -4136,6 +4176,9 @@ impl App {
             },
         );
         self.w.active = at;
+        for p in &panes {
+            self.events.publish(bt_core::proto::Event::TabOpened { tab: p.id });
+        }
         self.panes.extend(panes);
         self.focus_changed(before);
         self.clear_visible_unread();
@@ -5818,6 +5861,7 @@ impl App {
         }
         self.config = next;
         self.rebuild_link_regex();
+        self.sync_triggers();
         // AppleScript를 껐다 켰으면 vendor에도 알린다(#634)
         #[cfg(target_os = "macos")]
         self.sync_scripting_enabled();
@@ -6798,6 +6842,7 @@ impl App {
                     }
                     if let Some(p) = self.spawn_pane(opts, size, font_size) {
                         ids.push(p.id);
+                        self.events.publish(bt_core::proto::Event::TabOpened { tab: p.id });
                         self.panes.push(p);
                     }
                 }
@@ -6806,6 +6851,7 @@ impl App {
                     for id in ids {
                         if let Some(i) = self.pane_index(id) {
                             self.panes.remove(i);
+                            self.events.publish(bt_core::proto::Event::TabClosed { tab: id });
                         }
                     }
                     continue;
@@ -6891,6 +6937,7 @@ impl App {
             if let Some(i) = self.pane_index(id) {
                 // Session을 떨어뜨리면 `Drop`이 셸에 SIGHUP을 보낸다(#651)
                 let mut pane = self.panes.remove(i);
+                self.events.publish(bt_core::proto::Event::TabClosed { tab: id });
                 crate::desktop::forget(std::mem::take(&mut pane.notes));
             }
             self.fail_text_waiters(|w| w.pane == id, "글이 나오기 전에 창이 닫혔습니다");
@@ -8615,6 +8662,9 @@ pub fn to_draw_cells(s: &Screen, theme: &bt_core::Theme) -> Vec<DrawCell> {
             } else if let Some(n) = c.flags.mark() {
                 // kitty 마커(#929): 격자는 그대로 두고 그릴 때만 마커 색을 건다. CPU·GPU 길이 이 셀 값을 같이 쓴다
                 theme.marks.pick(n)
+            } else if let Some(n) = c.flags.trigger() {
+                // 트리거 강조(#928): 같은 덧칠이다. 색표는 스냅숏이 들고 있고, 정하지 않은 쪽은 칸의 원래 색이다
+                bt_term::triggers::pick(&s.trigger_colors, n, c.fg, c.bg)
             } else {
                 (c.fg, c.bg)
             };
@@ -8708,7 +8758,7 @@ impl ApplicationHandler<UserEvent> for App {
             }
         }
         if self.control.is_none() {
-            match crate::control::start(self.proxy.clone()) {
+            match crate::control::start(self.proxy.clone(), self.events.clone()) {
                 Ok(c) => {
                     log::info!("제어 소켓: {}", c.path.display());
                     self.control = Some(c);
@@ -8914,6 +8964,7 @@ impl ApplicationHandler<UserEvent> for App {
                     SessionEvent::Bell => self.on_bell(idx),
                     SessionEvent::WindowResize { rows, cols } => self.on_window_resize_request(idx, rows, cols),
                     SessionEvent::ProgramStatus(alert) => self.on_program_status(idx, alert),
+                    SessionEvent::TriggerAttention => self.on_trigger_attention(idx),
                     SessionEvent::Output => {}
                 }
                 self.request_redraw();
@@ -9980,6 +10031,40 @@ mod tests {
             "고른 칸이 앞선다"
         );
         assert_eq!((cells[5].fg, cells[5].bg), (s.cells[5].fg, s.cells[5].bg));
+        assert_eq!(cells[0].ch, 'a');
+    }
+
+    /// 트리거 강조(#928): 칠한 칸은 규칙의 색으로 그리고(정하지 않은 쪽은 원래 색), 마커·찾기 맞음·고름이 앞선다. 격자 글자는 그대로다
+    #[test]
+    fn trigger_cells_use_rule_colors_below_selection_search_and_marks() {
+        use bt_core::Rgb;
+        use bt_term::{Emulator, GridSize};
+        let theme = bt_core::Theme::default();
+        let mut e = Emulator::new(GridSize::new(6, 1), theme.clone());
+        e.feed(b"abcdef");
+        let spec = bt_core::trigger::TriggerSpec::parse("abcde => highlight:fg=#102030").unwrap();
+        let spec2 = bt_core::trigger::TriggerSpec::parse("zz => highlight:bg=#405060").unwrap();
+        assert!(e.set_triggers(&[spec2, spec]).is_empty());
+        let mut s = e.snapshot();
+        // 규칙 2번(abcde)이 0~4칸을 칠했다: 글자색만 정했으니 바탕은 그대로
+        assert_eq!(s.cells[0].flags.trigger(), Some(2));
+        s.cells[1].flags.insert(CellFlags::MARK1);
+        s.cells[2].flags.insert(CellFlags::MATCH);
+        s.cells[3].flags.insert(CellFlags::SELECTED);
+        let cells = to_draw_cells(&s, &theme);
+        assert_eq!((cells[0].fg, cells[0].bg), (Rgb::new(0x10, 0x20, 0x30), s.cells[0].bg));
+        assert_eq!(cells[1].bg, theme.marks.pick(1).1, "마커가 앞선다");
+        assert_eq!(cells[2].bg, theme.search.pick(false, s.cells[2].fg, s.cells[2].bg).1);
+        assert_eq!(
+            (cells[3].fg, cells[3].bg),
+            (s.cells[3].fg, s.cells[3].bg),
+            "고른 칸이 앞선다"
+        );
+        assert_eq!(
+            (cells[5].fg, cells[5].bg),
+            (s.cells[5].fg, s.cells[5].bg),
+            "맞지 않은 칸은 그대로"
+        );
         assert_eq!(cells[0].ch, 'a');
     }
 

@@ -235,7 +235,7 @@ pub fn shlex_split(s: &str) -> Result<Vec<String>, String> {
 }
 
 /// 화면 한 줄의 글과 글자별 (시작 바이트, 시작 칸, 칸 수)
-fn row_text(cells: &[Cell]) -> (String, Vec<(usize, usize, usize)>) {
+pub(crate) fn row_text(cells: &[Cell]) -> (String, Vec<(usize, usize, usize)>) {
     let mut text = String::new();
     let mut map = Vec::new();
     for (col, c) in cells.iter().enumerate() {
@@ -290,7 +290,7 @@ pub fn apply(screen: &mut Screen, marker: &Marker) -> usize {
     checked
 }
 
-fn grid_row_text<T>(term: &Term<T>, line: Line) -> String {
+pub(crate) fn grid_row_text<T>(term: &Term<T>, line: Line) -> String {
     let row = &term.grid()[line];
     let mut text = String::new();
     for c in 0..term.columns() {
