@@ -98,6 +98,8 @@ const MOUSE_OFF: &[u8] = b"\x1b[?9l\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1005l\
 pub struct SpawnOptions {
     /// 없으면 `$SHELL`(없으면 `/bin/zsh`)을 로그인 셸로 띄운다
     pub program: Option<String>,
+    /// 트리거(설정 trigger, #928). 정규식에 맞는 출력 줄에 강조·알림·벨·탭 표시만 한다
+    pub triggers: Vec<bt_core::trigger::TriggerSpec>,
     pub args: Vec<String>,
     pub cwd: Option<PathBuf>,
     /// 더하거나 덮을 환경 변수
@@ -214,6 +216,8 @@ pub enum SessionEvent {
     KittyClipboardWrite(crate::kitty_clip::WriteRequest),
     /// 칸의 프로그램 상태 기록(OSC 7501)이 바뀌었다(#618). 기록이 새로 `blocked`·`done`·`error`가 되었으면 그 값이 함께 온다
     ProgramStatus(Option<crate::program_status::Alert>),
+    /// 트리거 `attention`(#928): 이 칸의 탭에 주의 표시(안 읽음)를 단다. 소리도 알림도 아니다
+    TriggerAttention,
 }
 
 pub type EventSink = Arc<dyn Fn(SessionEvent) + Send + Sync>;
@@ -383,6 +387,8 @@ struct Inner {
     search: Option<crate::search::Search>,
     /// kitty 마커(#929). 없으면 마크를 칠하지 않는다
     marker: Option<crate::marks::MarkerState>,
+    /// 트리거(#928). 없으면 줄을 검사하지 않는다
+    triggers: Option<crate::triggers::Triggers>,
     /// kitty 그래픽(#76): 저장한 그림과 놓인 자리
     graphics: crate::graphics::Graphics,
     /// 글리프 프로토콜(APC 25a1)의 이 칸 등록(#779). 그리지는 않는다(Ghostty 1.4.0과 같다). 전체 초기화(RIS)에서 지운다
@@ -396,6 +402,13 @@ struct Inner {
     /// 명령 출력 고르기(#700)를 시작한 칸: (스크롤백 맨 위에서 센 줄, 칸). 출력이 흘러 줄이 밀려도 같은 줄을 가리킨다.
     /// 있으면 끌기가 출력 구간 단위로 늘린다. 다른 고르기를 시작하거나 지우면 없어진다
     output_click: Option<(usize, usize)>,
+    /// vi 복사 모드(#930). 있으면 모드 중이다
+    copy_mode: Option<crate::copy_mode::CopyMode>,
+}
+
+/// 사람의 입력을 PTY에 쓰지 않는 때: 프로그램이 키보드를 잠갔거나(KAM), 읽기 전용 칸이거나, vi 복사 모드 중(#930)
+fn input_blocked(keyboard_locked: bool, readonly: bool, copy_mode: bool) -> bool {
+    keyboard_locked || readonly || copy_mode
 }
 
 /// 격자 좌표를 스크롤백 맨 위에서 센 (줄, 칸)으로(출력이 흘러 스크롤백이 늘어도 같은 줄)
@@ -618,6 +631,8 @@ pub struct Session {
     output_seq: Arc<std::sync::atomic::AtomicU64>,
     /// 프로그램이 키보드를 잠갔다(KAM, vt-kam-allowed가 켜졌을 때만). 잠겨 있으면 사람의 입력을 PTY에 쓰지 않는다
     kam_locked: Arc<std::sync::atomic::AtomicBool>,
+    /// vi 복사 모드 중이다(#930). 켜져 있으면 사람의 입력(키·IME·붙여넣기)을 PTY에 쓰지 않는다
+    copy_active: std::sync::atomic::AtomicBool,
     /// 사람이 칸을 읽기 전용으로 했다(`toggle_readonly`, ADR-018). 켜져 있으면 `write`가 아무것도 쓰지 않는다
     readonly: Arc<std::sync::atomic::AtomicBool>,
     /// 프로그램이 색 구성표 변경 알림(모드 2031)을 켰다(#232)
@@ -891,6 +906,11 @@ impl Session {
         if !options.restore_lines.is_empty() {
             crate::saved_screen::restore(&mut term, &options.restore_lines, options.restore_note.as_deref());
         }
+        // 트리거(#928): 띄운 직후의 빈 화면부터 본다
+        let triggers = new_triggers(&options.triggers).0.map(|mut t| {
+            t.arm(&term);
+            t
+        });
         let inner = Arc::new(Mutex::new(Inner {
             term,
             parser: Processor::new(),
@@ -898,6 +918,7 @@ impl Session {
             marks: Default::default(),
             search: None,
             marker: None,
+            triggers,
             graphics: crate::graphics::Graphics::with_limit(
                 options
                     .image_storage_limit
@@ -908,6 +929,7 @@ impl Session {
             pixel: Default::default(),
             sel_end: None,
             output_click: None,
+            copy_mode: None,
         }));
         let integrated = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let thread_integrated = integrated.clone();
@@ -1308,6 +1330,11 @@ impl Session {
                                 term, graphics, cell, ..
                             } = &mut *g;
                             sync_graphics(term, graphics, *cell);
+                            // 트리거(#928): 이 읽기에서 새로 찍힌 줄만 본다. 하는 일은 알림·벨·탭 표시 사건뿐이고 PTY에는 쓰지 않는다
+                            let Inner { term, triggers, .. } = &mut *g;
+                            if let Some(t) = triggers.as_mut() {
+                                events.extend(t.scan(term, Instant::now()).into_iter().map(trigger_event));
+                            }
                         }
                         // 새 출력이 오면 맨 아래로(scroll-to-bottom의 output, #147)
                         if thread_scroll_on_output.load(std::sync::atomic::Ordering::Relaxed) {
@@ -1370,6 +1397,7 @@ impl Session {
             scroll_on_output,
             output_seq,
             kam_locked,
+            copy_active: std::sync::atomic::AtomicBool::new(false),
             readonly,
             scheme_updates,
             scheme_light,
@@ -1473,7 +1501,7 @@ impl Session {
     /// 사용자가 친 키·붙여넣기를 PTY에 쓴다. `scroll`이면 쓰기 전에 맨 아래로 돌린다
     /// (설정 scroll-to-bottom의 keystroke, #147)
     pub fn write_input(&self, bytes: &[u8], scroll: bool) {
-        if bytes.is_empty() || self.keyboard_locked() || self.readonly() {
+        if bytes.is_empty() || input_blocked(self.keyboard_locked(), self.readonly(), self.copy_mode_active()) {
             return;
         }
         if scroll {
@@ -1687,6 +1715,17 @@ impl Session {
         *search = crate::search::Search::new(query);
         let s = search.as_mut()?;
         Some(s.status(term))
+    }
+
+    /// 트리거를 바꾼다(설정 다시 읽기, #928). 못 읽는 규칙은 빼고 이유를 돌려준다. 규칙이 없으면 줄 검사를 하지 않는다
+    pub fn set_triggers(&self, specs: &[bt_core::trigger::TriggerSpec]) -> Vec<String> {
+        let (mut t, errors) = new_triggers(specs);
+        let mut g = self.inner.lock();
+        if let Some(t) = t.as_mut() {
+            t.arm(&g.term);
+        }
+        g.triggers = t;
+        errors
     }
 
     /// kitty `toggle_marker`(#929): 같은 명세면 끄고(`Ok(false)`), 아니면 바꿔 켠다(`Ok(true)`). 정규식을 못 읽으면 오류
@@ -1944,6 +1983,72 @@ impl Session {
         true
     }
 
+    /// vi 복사 모드에 들어간다(#930). 대체 화면에서도 보이는 격자 위에서 돈다.
+    /// 들어갈 때의 스크롤 자리를 기억해 나올 때 돌려준다. 이미 모드 중이면 거짓
+    pub fn copy_mode_enter(&self) -> bool {
+        let mut g = self.inner.lock();
+        if g.copy_mode.is_some() {
+            return false;
+        }
+        let cm = crate::copy_mode::CopyMode::enter(&g.term);
+        cm.sync(&mut g.term);
+        let p = cm.cursor_point(&g.term);
+        g.sel_end = Some(p);
+        g.output_click = None;
+        g.pixel.reset();
+        g.copy_mode = Some(cm);
+        self.copy_active.store(true, std::sync::atomic::Ordering::Release);
+        true
+    }
+
+    /// vi 복사 모드 중인가
+    pub fn copy_mode_active(&self) -> bool {
+        self.copy_active.load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    /// 복사 모드의 동작 하나(#930). 모드 중이 아니면 하지 않고 거짓
+    pub fn copy_mode_op(&self, op: crate::copy_mode::CopyOp) -> bool {
+        let mut g = self.inner.lock();
+        let Inner {
+            term,
+            copy_mode,
+            pixel,
+            sel_end,
+            ..
+        } = &mut *g;
+        let Some(cm) = copy_mode.as_mut() else {
+            return false;
+        };
+        pixel.reset();
+        cm.apply(term, op);
+        *sel_end = Some(cm.cursor_point(term));
+        true
+    }
+
+    /// 복사 모드가 지금 하는 고르기의 종류. 모드 중이 아니거나 고르기를 시작하지 않았으면 없다
+    pub fn copy_mode_selecting(&self) -> Option<crate::copy_mode::CopySelect> {
+        self.inner.lock().copy_mode.as_ref().and_then(|c| c.selecting())
+    }
+
+    /// 복사 모드에서 복사할 고른 글이 있는가(고르기를 시작했을 때만. 커서 칸 표시는 고른 것이 아니다)
+    pub fn copy_mode_has_selection(&self) -> bool {
+        self.inner.lock().copy_mode.as_ref().is_some_and(|c| c.has_selection())
+    }
+
+    /// 복사 모드를 나간다: 고른 것을 지우고 스크롤 자리를 들어가기 전으로 돌린다. 모드 중이 아니면 거짓
+    pub fn copy_mode_exit(&self) -> bool {
+        let mut g = self.inner.lock();
+        let Some(cm) = g.copy_mode.take() else {
+            return false;
+        };
+        self.copy_active.store(false, std::sync::atomic::Ordering::Release);
+        g.pixel.reset();
+        cm.exit(&mut g.term);
+        g.sel_end = None;
+        g.output_click = None;
+        true
+    }
+
     /// 전체 고르기(`select_all`, #805): Ghostty `Screen.selectAll`처럼 스크롤백까지 통틀어 글이 있는 첫 칸부터 마지막 칸까지 고른다
     /// (앞뒤의 빈 줄·빈칸·탭은 뺀다). 글이 하나도 없으면 아무것도 바꾸지 않고 거짓(Ghostty `Surface`도 null이면 앞서 고른 것을 그대로 둔다)
     pub fn select_all(&self) -> bool {
@@ -2109,6 +2214,9 @@ impl Session {
         if let Some(m) = &g.marker {
             crate::marks::apply(&mut screen, m.marker());
         }
+        if let Some(t) = &g.triggers {
+            t.highlight(&mut screen);
+        }
         screen
     }
 
@@ -2271,6 +2379,24 @@ fn clear_last_command_op<T: EventListener>(
 fn erase_screen_graphics<T>(term: &Term<T>, graphics: &mut crate::graphics::Graphics) {
     let alt = term.mode().contains(alacritty_terminal::term::TermMode::ALT_SCREEN);
     graphics.erase_screen(term.grid().history_size() as i64, alt);
+}
+
+/// 트리거 규칙을 컴파일한다. 규칙이 하나도 없으면 없다(검사하지 않는다)
+fn new_triggers(specs: &[bt_core::trigger::TriggerSpec]) -> (Option<crate::triggers::Triggers>, Vec<String>) {
+    let (t, errors) = crate::triggers::Triggers::new(specs);
+    ((!t.is_empty()).then_some(t), errors)
+}
+
+/// 트리거가 낸 일을 세션 사건으로 바꾼다. 알림·벨·탭 표시뿐이고 PTY에 쓰는 사건은 없다(#928)
+pub fn trigger_event(e: crate::triggers::Effect) -> SessionEvent {
+    match e {
+        crate::triggers::Effect::Notify { body } => SessionEvent::Notification(Notification {
+            title: String::new(),
+            body,
+        }),
+        crate::triggers::Effect::Bell => SessionEvent::Bell,
+        crate::triggers::Effect::Attention => SessionEvent::TriggerAttention,
+    }
 }
 
 fn signal_event(sig: Signal) -> SessionEvent {
@@ -2880,6 +3006,7 @@ fn snapshot_with_shift<T: EventListener>(
         links,
         images: graphics.map(|g| visible_images(term, g, now)).unwrap_or_default(),
         command_marks: Vec::new(),
+        trigger_colors: Vec::new(),
     }
 }
 
@@ -3063,6 +3190,9 @@ pub struct Emulator {
     marker: Option<crate::marks::MarkerState>,
     /// 마지막 `snapshot`이 마크를 찾으려고 본 줄 수(시험용)
     marker_rows: usize,
+    /// 트리거(#928)와 아직 꺼내지 않은 그 결과
+    triggers: Option<crate::triggers::Triggers>,
+    trigger_effects: Vec<crate::triggers::Effect>,
     graphics: crate::graphics::Graphics,
     /// 글리프 프로토콜의 이 칸 등록(#779)
     glossary: crate::glyph::Glossary,
@@ -3095,6 +3225,8 @@ impl Emulator {
             search: None,
             marker: None,
             marker_rows: 0,
+            triggers: None,
+            trigger_effects: Vec::new(),
             graphics: Default::default(),
             glossary: Default::default(),
             cell: (size.cell_width as u32, size.cell_height as u32),
@@ -3167,7 +3299,29 @@ impl Emulator {
         }
         self.parser.advance(&mut self.term, &bytes[pos..]);
         sync_graphics(&mut self.term, &mut self.graphics, self.cell);
+        if let Some(t) = self.triggers.as_mut() {
+            self.trigger_effects.extend(t.scan(&self.term, Instant::now()));
+        }
         notes
+    }
+
+    /// 트리거를 바꾼다(#928). 못 읽는 규칙은 빼고 이유를 돌려준다
+    pub fn set_triggers(&mut self, specs: &[bt_core::trigger::TriggerSpec]) -> Vec<String> {
+        let (mut t, errors) = new_triggers(specs);
+        if let Some(t) = t.as_mut() {
+            t.arm(&self.term);
+        }
+        self.triggers = t;
+        errors
+    }
+
+    /// 지금까지 트리거가 낸 일(알림·벨·탭 표시)을 꺼낸다. PTY에 쓸 바이트는 없다(`take_replies`와 따로다)
+    pub fn take_trigger_effects(&mut self) -> Vec<crate::triggers::Effect> {
+        std::mem::take(&mut self.trigger_effects)
+    }
+
+    pub fn triggers(&self) -> Option<&crate::triggers::Triggers> {
+        self.triggers.as_ref()
     }
 
     pub fn resize(&mut self, size: GridSize) {
@@ -3220,6 +3374,9 @@ impl Emulator {
             .marker
             .as_ref()
             .map_or(0, |m| crate::marks::apply(&mut screen, m.marker()));
+        if let Some(t) = &self.triggers {
+            t.highlight(&mut screen);
+        }
         screen
     }
 
@@ -3278,6 +3435,9 @@ impl Emulator {
         screen.command_marks = marks_for(&self.term, &self.marks, &screen);
         if let Some(m) = &self.marker {
             crate::marks::apply(&mut screen, m.marker());
+        }
+        if let Some(t) = &self.triggers {
+            t.highlight(&mut screen);
         }
         screen
     }
@@ -3426,6 +3586,15 @@ impl Drop for Session {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #930: 사람의 입력은 KAM·읽기 전용·복사 모드 중 하나만 있어도 PTY에 쓰지 않는다
+    #[test]
+    fn human_input_is_blocked_by_kam_readonly_or_copy_mode() {
+        assert!(!input_blocked(false, false, false));
+        assert!(input_blocked(true, false, false));
+        assert!(input_blocked(false, true, false));
+        assert!(input_blocked(false, false, true));
+    }
 
     #[test]
     fn openpty_retries_transient_failures_then_succeeds() {

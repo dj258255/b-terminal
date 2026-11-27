@@ -1,0 +1,263 @@
+//! vi 복사 모드(#930)의 키 쪽: 동작 이름, 기본 키 테이블. 화면·PTY·창을 건드리지 않는 순수한 부분이다.
+//! 커서 움직임과 고르기는 `bt_term::copy_mode`, 앱과의 연결은 `app/copy_cmd.rs`가 맡는다.
+//!
+//! 복사 모드는 이름이 `copy_mode`인 키 테이블이다(ADR-103). 기본 묶음은 WezTerm CopyMode를 따르고(Alacritty vi mode와 같은 키가 많다),
+//! 사용자가 `keybind = copy_mode/h=…`로 덮거나 `copy_mode/h=unbind`로 지운다
+
+use bt_term::CopyOp;
+
+/// 복사 모드 키 테이블 이름
+pub const TABLE: &str = "copy_mode";
+
+/// `copy_mode:<이름>` 동작 하나
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CopyAction {
+    /// 커서·고르기 동작
+    Op(CopyOp),
+    /// 고른 글을 클립보드에 복사하고 나간다(고른 것이 없으면 복사 없이 나간다)
+    Copy,
+    /// 복사 없이 나간다
+    Exit,
+}
+
+const NAMES: &[(&str, CopyAction)] = &[
+    ("left", CopyAction::Op(CopyOp::Left)),
+    ("right", CopyAction::Op(CopyOp::Right)),
+    ("up", CopyAction::Op(CopyOp::Up)),
+    ("down", CopyAction::Op(CopyOp::Down)),
+    ("line_start", CopyAction::Op(CopyOp::LineStart)),
+    ("line_end", CopyAction::Op(CopyOp::LineEnd)),
+    ("top", CopyAction::Op(CopyOp::Top)),
+    ("bottom", CopyAction::Op(CopyOp::Bottom)),
+    ("half_page_up", CopyAction::Op(CopyOp::HalfPageUp)),
+    ("half_page_down", CopyAction::Op(CopyOp::HalfPageDown)),
+    ("page_up", CopyAction::Op(CopyOp::PageUp)),
+    ("page_down", CopyAction::Op(CopyOp::PageDown)),
+    ("select", CopyAction::Op(CopyOp::SelectCell)),
+    ("select_line", CopyAction::Op(CopyOp::SelectLine)),
+    ("select_block", CopyAction::Op(CopyOp::SelectBlock)),
+    ("copy", CopyAction::Copy),
+    ("exit", CopyAction::Exit),
+];
+
+/// `copy_mode:<이름>`의 값을 읽는다
+pub fn parse(arg: Option<&str>) -> Result<CopyAction, String> {
+    let arg = arg.map(str::trim).unwrap_or("");
+    NAMES.iter().find(|(n, _)| *n == arg).map(|(_, a)| *a).ok_or_else(|| {
+        let names: Vec<&str> = NAMES.iter().map(|(n, _)| *n).collect();
+        format!("copy_mode:{}", names.join("·"))
+    })
+}
+
+/// 기본 키 테이블(트리거, 동작). WezTerm CopyMode의 기본 묶음 가운데 이번 판의 동작만 옮겼다.
+/// 낱말·문단 움직임(w b e { })과 화면 위·중간·아래(H M L)는 다음 판(#931), 찾기(/ ? n N)는 그다음(#932)이다.
+/// 글자 키는 `super`·`ctrl`이 없어도 라틴 글자로 맞춘다(한글 입력 소스에서도 같은 키, `app/copy_cmd.rs`).
+/// 마지막의 `catch_all=ignore`가 묶이지 않은 키를 먹어 프로그램에 가지 않게 한다
+pub(crate) fn default_table() -> Vec<(&'static str, &'static str)> {
+    let mut v = vec![
+        ("h", "copy_mode:left"),
+        ("arrow_left", "copy_mode:left"),
+        ("l", "copy_mode:right"),
+        ("arrow_right", "copy_mode:right"),
+        ("k", "copy_mode:up"),
+        ("arrow_up", "copy_mode:up"),
+        ("j", "copy_mode:down"),
+        ("arrow_down", "copy_mode:down"),
+        ("0", "copy_mode:line_start"),
+        ("home", "copy_mode:line_start"),
+        ("shift+4", "copy_mode:line_end"),
+        ("end", "copy_mode:line_end"),
+        ("g", "copy_mode:top"),
+        ("shift+g", "copy_mode:bottom"),
+        ("ctrl+u", "copy_mode:half_page_up"),
+        ("ctrl+d", "copy_mode:half_page_down"),
+        ("ctrl+b", "copy_mode:page_up"),
+        ("page_up", "copy_mode:page_up"),
+        ("ctrl+f", "copy_mode:page_down"),
+        ("page_down", "copy_mode:page_down"),
+        ("v", "copy_mode:select"),
+        ("shift+v", "copy_mode:select_line"),
+        ("ctrl+v", "copy_mode:select_block"),
+        ("y", "copy_mode:copy"),
+        ("escape", "copy_mode:exit"),
+        ("q", "copy_mode:exit"),
+        ("ctrl+c", "copy_mode:exit"),
+        ("ctrl+g", "copy_mode:exit"),
+    ];
+    // 시스템 복사 키도 y와 같다(고른 것이 없으면 아무 일도 하지 않고 모드는 그대로 두지 않고 나간다)
+    v.push((
+        if cfg!(target_os = "macos") {
+            "super+c"
+        } else {
+            "ctrl+shift+c"
+        },
+        "copy_mode:copy",
+    ));
+    v.push(("catch_all", "ignore"));
+    v
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::keymap::{Action, Keymap, Sequencer, parse_trigger};
+
+    fn entered() -> (Keymap, Sequencer) {
+        let (km, warnings) = Keymap::build(&[]);
+        assert!(warnings.is_empty(), "{warnings:?}");
+        let mut sq = Sequencer::default();
+        assert!(
+            sq.apply_table_action(&km, &Action::ActivateKeyTable(TABLE.into())).0,
+            "기본 묶음에 copy_mode 테이블이 있다"
+        );
+        (km, sq)
+    }
+
+    fn press(km: &Keymap, sq: &mut Sequencer, key: &str) -> crate::keymap::KeyOutcome {
+        // 눌러 PTY에 갈 바이트가 있는 것처럼 비어 있지 않은 바이트를 준다
+        sq.feed(km, Some(parse_trigger(key).unwrap()), key.as_bytes().to_vec())
+    }
+
+    #[test]
+    fn names_round_trip_and_unknown_names_are_errors() {
+        for (n, a) in NAMES {
+            assert_eq!(parse(Some(n)), Ok(*a));
+        }
+        assert!(parse(None).is_err());
+        assert!(parse(Some("nope")).is_err());
+        assert_eq!(parse(Some(" left ")), Ok(CopyAction::Op(CopyOp::Left)));
+    }
+
+    #[test]
+    fn every_default_key_does_what_the_table_says() {
+        let (km, mut sq) = entered();
+        for (key, act) in default_table() {
+            if key == "catch_all" {
+                continue;
+            }
+            let out = press(&km, &mut sq, key);
+            let want = parse_action_of(act);
+            assert_eq!(out.action, Some(want), "{key}");
+            assert!(out.send.is_empty(), "{key}: 키가 프로그램으로 새면 안 된다");
+        }
+    }
+
+    fn parse_action_of(s: &str) -> Action {
+        crate::keymap::parse_action(s).unwrap().unwrap()
+    }
+
+    /// 복사 모드 중에는 어떤 키도 PTY에 바이트를 보내지 않는다(묶인 키도, 묶이지 않은 키도, 수식 키 조합도)
+    #[test]
+    fn no_key_reaches_the_pty_while_the_mode_is_on() {
+        let (km, mut sq) = entered();
+        let keys = [
+            "a",
+            "z",
+            "x",
+            "w",
+            "b",
+            "e",
+            "p",
+            "i",
+            "o",
+            "d",
+            "u",
+            "f",
+            "n",
+            "r",
+            "s",
+            "t",
+            "m",
+            "c",
+            "1",
+            "2",
+            "9",
+            "space",
+            "enter",
+            "tab",
+            "backspace",
+            "delete",
+            "f1",
+            "f5",
+            "insert",
+            "shift+a",
+            "shift+z",
+            "ctrl+a",
+            "ctrl+z",
+            "ctrl+x",
+            "ctrl+r",
+            "alt+x",
+            "alt+f",
+            "ctrl+alt+a",
+            "shift+enter",
+            "ctrl+shift+a",
+            "slash",
+            "shift+slash",
+            "period",
+            "comma",
+            "bracket_left",
+            "ctrl+bracket_left",
+        ];
+        for k in keys {
+            let out = press(&km, &mut sq, k);
+            assert!(out.send.is_empty(), "{k}: PTY로 {:?}", out.send);
+        }
+        // 묶이지 않은 키는 아무 동작도 하지 않고 먹힌다
+        for k in ["a", "space", "ctrl+a", "f1", "alt+x"] {
+            let out = press(&km, &mut sq, k);
+            assert_eq!(out.action, Some(Action::Ignore), "{k}");
+        }
+    }
+
+    #[test]
+    fn keys_pass_to_the_pty_again_after_the_table_is_off() {
+        let (km, mut sq) = entered();
+        assert!(sq.apply_table_action(&km, &Action::DeactivateKeyTable).0);
+        let out = press(&km, &mut sq, "a");
+        assert_eq!(out.send, b"a".to_vec());
+        assert_eq!(out.action, None);
+    }
+
+    #[test]
+    fn the_user_can_override_and_unbind_copy_mode_keys() {
+        let (km, warnings) = Keymap::build(&[
+            "copy_mode/h=copy_mode:right".into(),
+            "copy_mode/q=unbind".into(),
+            "copy_mode/n=copy_mode:down".into(),
+        ]);
+        assert!(warnings.is_empty(), "{warnings:?}");
+        let mut sq = Sequencer::default();
+        sq.apply_table_action(&km, &Action::ActivateKeyTable(TABLE.into()));
+        assert_eq!(
+            press(&km, &mut sq, "h").action,
+            Some(parse_action_of("copy_mode:right"))
+        );
+        assert_eq!(press(&km, &mut sq, "n").action, Some(parse_action_of("copy_mode:down")));
+        // 지운 키는 catch_all이 먹는다(프로그램에 가지 않는다)
+        let out = press(&km, &mut sq, "q");
+        assert!(out.send.is_empty());
+        assert_eq!(out.action, Some(Action::Ignore));
+    }
+
+    #[test]
+    fn the_table_is_gone_after_keybind_clear_and_the_entry_does_nothing() {
+        let (km, _) = Keymap::build(&["clear".into()]);
+        let mut sq = Sequencer::default();
+        assert!(!sq.apply_table_action(&km, &Action::ActivateKeyTable(TABLE.into())).0);
+    }
+
+    #[test]
+    fn the_entry_key_is_ctrl_shift_x_and_shadows_no_default() {
+        let (km, _) = Keymap::build(&[]);
+        let mut sq = Sequencer::default();
+        let out = sq.feed(&km, Some(parse_trigger("ctrl+shift+x").unwrap()), vec![0x18]);
+        assert_eq!(out.action, Some(Action::ActivateCopyMode));
+        assert!(out.send.is_empty());
+        // 다른 기본 묶음이 같은 키를 쓰지 않는다
+        let uses: Vec<_> = crate::keymap::defaults()
+            .into_iter()
+            .filter(|(t, a)| (*t == "ctrl+shift+x" || *t == "super+x") && *a != "activate_copy_mode")
+            .collect();
+        assert!(uses.is_empty(), "{uses:?}");
+    }
+}

@@ -15,6 +15,7 @@ use winit::keyboard::ModifiersState;
 use winit::window::{CursorIcon, Window, WindowId};
 
 mod backdrop;
+mod copy_cmd;
 /// 제어 소켓의 칸 다루기 명령의 순수 판단(#858)
 mod ctl_cmd;
 mod gpu_frame;
@@ -27,6 +28,8 @@ mod mouse_core;
 /// AppleScript 명령과 상태 스냅숏(#634). macOS에만 있다
 #[cfg(target_os = "macos")]
 mod script;
+/// 트리거(#928)의 앱 쪽 연결
+mod trigger_cmd;
 #[cfg(target_os = "macos")]
 pub use script::install as install_scripting;
 mod shader_inputs;
@@ -275,23 +278,29 @@ impl Pane {
 
     /// 탭 제목 틀(`tab-title-template`)의 `{title}`: 벨 기호 없는 이름(`🔒`은 앞에 둔다). 벨은 틀의 `{bell_symbol}`이 맡는다(#910)
     fn plain_title_in(&self, tab_override: Option<&str>) -> String {
-        title_of(
-            tab_override.or(self.user_title.as_deref()),
-            &self.title,
-            self.fg_name.as_deref(),
-            false,
-            self.session.readonly(),
+        copy_mode_title(
+            title_of(
+                tab_override.or(self.user_title.as_deref()),
+                &self.title,
+                self.fg_name.as_deref(),
+                false,
+                self.session.readonly(),
+            ),
+            self.session.copy_mode_active(),
         )
     }
 
     /// 탭 제목을 덮어썼으면(`set_tab_title`, #207) 그것이 칸 제목보다 먼저다
     fn display_title_in(&self, tab_override: Option<&str>) -> String {
-        title_of(
-            tab_override.or(self.user_title.as_deref()),
-            &self.title,
-            self.fg_name.as_deref(),
-            self.bell,
-            self.session.readonly(),
+        copy_mode_title(
+            title_of(
+                tab_override.or(self.user_title.as_deref()),
+                &self.title,
+                self.fg_name.as_deref(),
+                self.bell,
+                self.session.readonly(),
+            ),
+            self.session.copy_mode_active(),
         )
     }
 }
@@ -362,6 +371,11 @@ fn titlebar_fill(
     chrome_bg: bt_core::Rgb,
 ) -> Option<(i32, i32, u32, u32, bt_core::Rgb)> {
     (reversed && top_inset > 0).then_some((0, 0, width, top_inset, chrome_bg))
+}
+
+/// 복사 모드 표시(#930): 모드 중인 칸의 제목 앞에 붙인다(탭 줄·창 제목). WezTerm도 탭 제목에 "Copy Mode"를 붙인다
+fn copy_mode_title(title: String, on: bool) -> String {
+    if on { format!("[복사 모드] {title}") } else { title }
 }
 
 /// 칸 제목(#124): 사람이 붙인 것 → 프로그램이 정한 것 → 전경 프로세스 이름 → "셸". 벨이 있으면 앞에 🔔
@@ -1821,6 +1835,11 @@ impl App {
     fn commit_text(&mut self, text: &str) {
         self.w.preedit.clear();
         self.reset_blink();
+        // 복사 모드 중에는 확정 글도 PTY(와 같은 묶음의 다른 칸)에 보내지 않는다(#930)
+        if self.copy_mode_on() {
+            self.request_redraw();
+            return;
+        }
         // 확인 막대가 떠 있으면 글을 어디에도 보내지 않는다(Enter·Esc만 받는다)
         if self.w.confirm.is_some() {
             self.request_redraw();
@@ -1918,6 +1937,10 @@ impl App {
             self.end_search();
         }
         self.w.selecting = false;
+        // 복사 모드는 그 칸의 것이다: 다른 칸으로 옮기면 나간다(#930)
+        if let Some(b) = before.filter(|b| Some(*b) != after) {
+            self.leave_copy_mode_of(b);
+        }
         if before == after || !self.w.focused {
             return;
         }
@@ -2342,6 +2365,7 @@ impl App {
             color_scheme_light: !self.scheme_dark(),
             grapheme_width_method: self.config.grapheme_width_method,
             ambiguous_wide: self.config.ambiguous_width == bt_core::config::AmbiguousWidth::Wide,
+            triggers: self.config.triggers.clone(),
             ..options
         };
         // 칸 안의 btctl이 이 터미널과 이 칸을 찾게 한다
@@ -3068,7 +3092,8 @@ impl App {
     /// 확인 막대가 떠 있는 동안 지금 창의 입력기를 끈다(#721). 한국어 입력기는 Y·N 키를 조합으로 가져가 winit이
     /// `KeyboardInput`을 주지 않으므로, 끄면 그 키가 키로 와 `confirm_key`가 ⌘ 층 글자로 읽는다
     fn sync_confirm_ime(&mut self) {
-        let allowed = self.w.confirm.is_none();
+        // 복사 모드(#930)에서도 끈다: 글자 키(h j k l…)가 조합으로 사라지지 않고 키로 와야 하고, 조합 글자가 PTY에 섞이지 않는다
+        let allowed = self.w.confirm.is_none() && !self.copy_mode_on();
         if let Some(g) = self.w.gfx.as_ref() {
             g.window.set_ime_allowed(allowed);
         }
@@ -5642,6 +5667,9 @@ impl App {
             Action::ToggleMarker(_) | Action::RemoveMarker | Action::ScrollToMark(..) => {
                 self.run_marker_action(&action);
             }
+            Action::ActivateCopyMode | Action::CopyMode(_) => {
+                self.run_copy_mode_action(&action);
+            }
             Action::Search(text) => self.search_with(&text),
             Action::SearchSelection => {
                 if let Some(text) = self.active_pane().and_then(|t| t.session.selection_text()) {
@@ -5835,6 +5863,7 @@ impl App {
         }
         self.config = next;
         self.rebuild_link_regex();
+        self.sync_triggers();
         // AppleScript를 껐다 켰으면 vendor에도 알린다(#634)
         #[cfg(target_os = "macos")]
         self.sync_scripting_enabled();
@@ -8635,6 +8664,9 @@ pub fn to_draw_cells(s: &Screen, theme: &bt_core::Theme) -> Vec<DrawCell> {
             } else if let Some(n) = c.flags.mark() {
                 // kitty 마커(#929): 격자는 그대로 두고 그릴 때만 마커 색을 건다. CPU·GPU 길이 이 셀 값을 같이 쓴다
                 theme.marks.pick(n)
+            } else if let Some(n) = c.flags.trigger() {
+                // 트리거 강조(#928): 같은 덧칠이다. 색표는 스냅숏이 들고 있고, 정하지 않은 쪽은 칸의 원래 색이다
+                bt_term::triggers::pick(&s.trigger_colors, n, c.fg, c.bg)
             } else {
                 (c.fg, c.bg)
             };
@@ -8943,6 +8975,7 @@ impl ApplicationHandler<UserEvent> for App {
                     SessionEvent::Bell => self.on_bell(idx),
                     SessionEvent::WindowResize { rows, cols } => self.on_window_resize_request(idx, rows, cols),
                     SessionEvent::ProgramStatus(alert) => self.on_program_status(idx, alert),
+                    SessionEvent::TriggerAttention => self.on_trigger_attention(idx),
                     SessionEvent::Output => {}
                 }
                 self.request_redraw();
@@ -9099,6 +9132,10 @@ impl ApplicationHandler<UserEvent> for App {
                     if !overlay && self.active_pane().is_some_and(|t| t.session.readonly()) {
                         return;
                     }
+                    // 복사 모드 중에는 조합 글자를 그리지 않는다(#930)
+                    if self.copy_mode_on() {
+                        return;
+                    }
                     // 조합을 시작하면 고른 영역을 지운다(Ghostty `selection-clear-on-typing`: preedit 시작도 입력으로 본다)
                     if self.config.selection_clear_on_typing
                         && !text.is_empty()
@@ -9154,7 +9191,12 @@ impl ApplicationHandler<UserEvent> for App {
                     return;
                 }
                 // 키 묶음(키 순서 포함, #106): 앞 키는 기다리고, 순서가 깨지면 쌓은 키를 그대로 보낸다
-                let trigger = keys::trigger(&event, self.mods);
+                self.sync_copy_mode_table();
+                let trigger = if self.copy_mode_on() {
+                    keys::trigger_latin(&event, self.mods)
+                } else {
+                    keys::trigger(&event, self.mods)
+                };
                 let mut modes = self.active_pane().map(|t| t.session.modes()).unwrap_or_default();
                 // IME 조합 중에 눌린 키는 modifyOtherKeys로 바꾸지 않는다(확정 글자만 PTY로 간다, #312)
                 if !self.w.preedit.is_empty() {
@@ -10000,6 +10042,40 @@ mod tests {
             "고른 칸이 앞선다"
         );
         assert_eq!((cells[5].fg, cells[5].bg), (s.cells[5].fg, s.cells[5].bg));
+        assert_eq!(cells[0].ch, 'a');
+    }
+
+    /// 트리거 강조(#928): 칠한 칸은 규칙의 색으로 그리고(정하지 않은 쪽은 원래 색), 마커·찾기 맞음·고름이 앞선다. 격자 글자는 그대로다
+    #[test]
+    fn trigger_cells_use_rule_colors_below_selection_search_and_marks() {
+        use bt_core::Rgb;
+        use bt_term::{Emulator, GridSize};
+        let theme = bt_core::Theme::default();
+        let mut e = Emulator::new(GridSize::new(6, 1), theme.clone());
+        e.feed(b"abcdef");
+        let spec = bt_core::trigger::TriggerSpec::parse("abcde => highlight:fg=#102030").unwrap();
+        let spec2 = bt_core::trigger::TriggerSpec::parse("zz => highlight:bg=#405060").unwrap();
+        assert!(e.set_triggers(&[spec2, spec]).is_empty());
+        let mut s = e.snapshot();
+        // 규칙 2번(abcde)이 0~4칸을 칠했다: 글자색만 정했으니 바탕은 그대로
+        assert_eq!(s.cells[0].flags.trigger(), Some(2));
+        s.cells[1].flags.insert(CellFlags::MARK1);
+        s.cells[2].flags.insert(CellFlags::MATCH);
+        s.cells[3].flags.insert(CellFlags::SELECTED);
+        let cells = to_draw_cells(&s, &theme);
+        assert_eq!((cells[0].fg, cells[0].bg), (Rgb::new(0x10, 0x20, 0x30), s.cells[0].bg));
+        assert_eq!(cells[1].bg, theme.marks.pick(1).1, "마커가 앞선다");
+        assert_eq!(cells[2].bg, theme.search.pick(false, s.cells[2].fg, s.cells[2].bg).1);
+        assert_eq!(
+            (cells[3].fg, cells[3].bg),
+            (s.cells[3].fg, s.cells[3].bg),
+            "고른 칸이 앞선다"
+        );
+        assert_eq!(
+            (cells[5].fg, cells[5].bg),
+            (s.cells[5].fg, s.cells[5].bg),
+            "맞지 않은 칸은 그대로"
+        );
         assert_eq!(cells[0].ch, 'a');
     }
 

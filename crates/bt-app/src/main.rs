@@ -13,6 +13,7 @@ mod cmd_marks;
 mod context_menu;
 mod control;
 mod copy;
+mod copy_mode;
 mod cursor_trail;
 mod default_terminal;
 mod desktop;

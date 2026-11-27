@@ -681,6 +681,8 @@ pub struct Config {
     pub background_opacity_cells: bool,
     /// `link-url`(기본 켬): 화면 글의 URL 자동 인식
     pub link_url: bool,
+    /// `trigger`(iTerm2 Triggers의 안전한 부분집합, #928): 출력 줄이 정규식에 맞으면 강조·알림·벨·탭 표시. 읽은 것만 담는다
+    pub triggers: Vec<crate::trigger::TriggerSpec>,
     /// `link-url-regex`(kitty `detect_url_regex`, #929): 보통 URL이 없을 때 링크로 볼 정규식들(앞에서부터 시도). 이미 컴파일해 본 것만 담는다
     pub link_url_regex: Vec<String>,
     /// `link-osc8`(Ghostty 1.4, 기본 켬): OSC 8 링크를 링크로 다룬다
@@ -1965,6 +1967,7 @@ impl Default for Config {
             background_opacity_cells: false,
             link_url: true,
             link_url_regex: Vec::new(),
+            triggers: Vec::new(),
             link_osc8: true,
             link_previews: LinkPreviews::True,
             command_marks: CommandMarks::True,
@@ -3621,6 +3624,28 @@ impl Config {
                     }
                 }
             }
+            // iTerm2 Triggers의 안전한 부분집합(#928, ADR-102): 여러 번 쓸 수 있다. 빈 값은 지금까지 쌓은 것을 비운다
+            "trigger" => {
+                if v.is_empty() {
+                    self.triggers.clear();
+                } else if self.triggers.len() >= crate::trigger::MAX_TRIGGERS {
+                    warnings.push(format!(
+                        "{}:{}: trigger는 {}개까지만 받습니다. 이 줄은 무시합니다",
+                        e.file.display(),
+                        e.line,
+                        crate::trigger::MAX_TRIGGERS
+                    ));
+                } else {
+                    match crate::trigger::TriggerSpec::parse(v) {
+                        Ok(spec) => self.triggers.push(spec),
+                        Err(why) => warnings.push(format!(
+                            "{}:{}: trigger를 무시합니다({why}): {v}",
+                            e.file.display(),
+                            e.line
+                        )),
+                    }
+                }
+            }
             "command-marks" => match v {
                 "true" => self.command_marks = CommandMarks::True,
                 "failed" => self.command_marks = CommandMarks::Failed,
@@ -4503,6 +4528,9 @@ impl Config {
         push("link-url", self.link_url.to_string());
         for r in &self.link_url_regex {
             push("link-url-regex", r.clone());
+        }
+        for t in &self.triggers {
+            push("trigger", t.to_config_value());
         }
         push("link-osc8", self.link_osc8.to_string());
         push(
