@@ -341,6 +341,7 @@ mod cpu {
             underline_color: None,
             hidden: false,
             faint: None,
+            mark: None,
         }
     }
 

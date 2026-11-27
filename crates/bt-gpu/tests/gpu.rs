@@ -52,6 +52,7 @@ fn cells(s: &Screen) -> Vec<DrawCell> {
             underline_color: None,
             hidden: false,
             faint: None,
+            mark: None,
         })
         .collect();
     cluster::mark(&mut cells, s.cols, |i| {
@@ -151,6 +152,7 @@ fn background_only_cells_match_cpu_exactly() {
             underline_color: None,
             hidden: false,
             faint: None,
+            mark: None,
         })
         .collect();
     let t = Theme::default();

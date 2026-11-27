@@ -13,6 +13,6 @@ pub mod user_regex;
 pub mod visual_bell;
 pub mod wintitle;
 
-pub use config::{AlphaBlending, Config, LinkPreviews, PaletteEntryConf};
+pub use config::{AlphaBlending, CommandMarks, Config, LinkPreviews, PaletteEntryConf};
 pub use text_composition::TextComposition;
 pub use theme::{MarkColors, Rgb, Theme};

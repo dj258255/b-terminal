@@ -54,6 +54,7 @@ fn cells(s: &Screen) -> Vec<DrawCell> {
             underline_color: None,
             hidden: false,
             faint: None,
+            mark: None,
         })
         .collect();
     cluster::mark(&mut cells, s.cols, |i| {
