@@ -27,6 +27,8 @@ mod mouse_core;
 /// AppleScript 명령과 상태 스냅숏(#634). macOS에만 있다
 #[cfg(target_os = "macos")]
 mod script;
+/// 트리거(#928)의 앱 쪽 연결
+mod trigger_cmd;
 #[cfg(target_os = "macos")]
 pub use script::install as install_scripting;
 mod shader_inputs;
@@ -2340,6 +2342,7 @@ impl App {
             color_scheme_light: !self.scheme_dark(),
             grapheme_width_method: self.config.grapheme_width_method,
             ambiguous_wide: self.config.ambiguous_width == bt_core::config::AmbiguousWidth::Wide,
+            triggers: self.config.triggers.clone(),
             ..options
         };
         // 칸 안의 btctl이 이 터미널과 이 칸을 찾게 한다
@@ -5833,6 +5836,7 @@ impl App {
         }
         self.config = next;
         self.rebuild_link_regex();
+        self.sync_triggers();
         // AppleScript를 껐다 켰으면 vendor에도 알린다(#634)
         #[cfg(target_os = "macos")]
         self.sync_scripting_enabled();
@@ -8633,6 +8637,9 @@ pub fn to_draw_cells(s: &Screen, theme: &bt_core::Theme) -> Vec<DrawCell> {
             } else if let Some(n) = c.flags.mark() {
                 // kitty 마커(#929): 격자는 그대로 두고 그릴 때만 마커 색을 건다. CPU·GPU 길이 이 셀 값을 같이 쓴다
                 theme.marks.pick(n)
+            } else if let Some(n) = c.flags.trigger() {
+                // 트리거 강조(#928): 같은 덧칠이다. 색표는 스냅숏이 들고 있고, 정하지 않은 쪽은 칸의 원래 색이다
+                bt_term::triggers::pick(&s.trigger_colors, n, c.fg, c.bg)
             } else {
                 (c.fg, c.bg)
             };
@@ -8932,6 +8939,7 @@ impl ApplicationHandler<UserEvent> for App {
                     SessionEvent::Bell => self.on_bell(idx),
                     SessionEvent::WindowResize { rows, cols } => self.on_window_resize_request(idx, rows, cols),
                     SessionEvent::ProgramStatus(alert) => self.on_program_status(idx, alert),
+                    SessionEvent::TriggerAttention => self.on_trigger_attention(idx),
                     SessionEvent::Output => {}
                 }
                 self.request_redraw();
@@ -9989,6 +9997,40 @@ mod tests {
             "고른 칸이 앞선다"
         );
         assert_eq!((cells[5].fg, cells[5].bg), (s.cells[5].fg, s.cells[5].bg));
+        assert_eq!(cells[0].ch, 'a');
+    }
+
+    /// 트리거 강조(#928): 칠한 칸은 규칙의 색으로 그리고(정하지 않은 쪽은 원래 색), 마커·찾기 맞음·고름이 앞선다. 격자 글자는 그대로다
+    #[test]
+    fn trigger_cells_use_rule_colors_below_selection_search_and_marks() {
+        use bt_core::Rgb;
+        use bt_term::{Emulator, GridSize};
+        let theme = bt_core::Theme::default();
+        let mut e = Emulator::new(GridSize::new(6, 1), theme.clone());
+        e.feed(b"abcdef");
+        let spec = bt_core::trigger::TriggerSpec::parse("abcde => highlight:fg=#102030").unwrap();
+        let spec2 = bt_core::trigger::TriggerSpec::parse("zz => highlight:bg=#405060").unwrap();
+        assert!(e.set_triggers(&[spec2, spec]).is_empty());
+        let mut s = e.snapshot();
+        // 규칙 2번(abcde)이 0~4칸을 칠했다: 글자색만 정했으니 바탕은 그대로
+        assert_eq!(s.cells[0].flags.trigger(), Some(2));
+        s.cells[1].flags.insert(CellFlags::MARK1);
+        s.cells[2].flags.insert(CellFlags::MATCH);
+        s.cells[3].flags.insert(CellFlags::SELECTED);
+        let cells = to_draw_cells(&s, &theme);
+        assert_eq!((cells[0].fg, cells[0].bg), (Rgb::new(0x10, 0x20, 0x30), s.cells[0].bg));
+        assert_eq!(cells[1].bg, theme.marks.pick(1).1, "마커가 앞선다");
+        assert_eq!(cells[2].bg, theme.search.pick(false, s.cells[2].fg, s.cells[2].bg).1);
+        assert_eq!(
+            (cells[3].fg, cells[3].bg),
+            (s.cells[3].fg, s.cells[3].bg),
+            "고른 칸이 앞선다"
+        );
+        assert_eq!(
+            (cells[5].fg, cells[5].bg),
+            (s.cells[5].fg, s.cells[5].bg),
+            "맞지 않은 칸은 그대로"
+        );
         assert_eq!(cells[0].ch, 'a');
     }
 
