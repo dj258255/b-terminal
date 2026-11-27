@@ -10,6 +10,7 @@
 - **트랙패드로 스크롤백을 올릴 때 화면이 줄보다 작은 단위로 움직입니다(`pixel-scroll`, 기본 꺼짐).** kitty의 `pixel_scroll`처럼 트랙패드(관성 사건 포함)가 보낸 픽셀을 줄로 모으지 않고 스크롤백에 그대로 더해, 줄에 걸친 위치로 화면을 밀어 그립니다(CPU·GPU 길 같은 픽셀). 마우스 보고 중이거나 대체 화면이거나 kitty 그림이 보이는 화면이면 평소처럼 줄 단위입니다. 맨 아래로 돌아오면(키 입력, 새 출력이 맨 아래일 때) 줄에 맞춥니다(#902)
 - 탭 줄을 칸 아래에 둘 수 있게 했습니다: `tab-bar-edge`(`top` 기본·`bottom`, `left`·`right`는 경고하고 `top`), `tab-bar-margin-width`(좌우 여백 pt), `tab-bar-margin-height`(창 가장자리와 탭 줄·탭 줄과 칸 사이 pt, 두 수). kitty `os_window_regions`처럼 칸 격자·그리기·누르기·끌기·메뉴가 한 계산을 씁니다. 설정을 바꾸지 않으면 탭 줄 픽셀과 칸 격자 크기는 그대로입니다. 실제 창은 확인하지 않았습니다 (#909)
 - 글자 덮음 곡선을 고를 수 있습니다: `text-composition-strategy`(kitty의 `text_composition_strategy`처럼 `none`·`legacy`·`platform`(`1.7 30`)·`감마`·`감마 명암`, 기본 `none`은 지금과 같은 글자 픽셀). 감마와 추가 명암이 바탕·글자 밝기 차에 따라 걸려 흰 바탕의 어두운 글자는 굵어지고 어두운 바탕의 밝은 글자는 명암만 받습니다. CPU·GPU 길이 같은 곡선을 쓰고 `alpha-blending`과 함께면 곡선을 먼저 겁니다. 실제 창에서 `platform`의 모양은 아직 보지 않았습니다 (#911)
+- 탭 제목 틀을 kitty처럼 고름: `tab-title-template`·`active-tab-title-template`(`{title}`·`{index}`·`{fmt.fg.red}`·`{fmt.bold}`·`{sup.index}` 같은 이름과 꾸밈만 받고 파이썬 표현식·`{custom}`은 받지 않음, 프로그램이 보낸 제목은 틀로 다시 해석하지 않음)·`bell-on-tab`·`tab-activity-symbol`(보고 있지 않은 칸의 새 출력)·`tab-title-max-length`. 설정이 없으면 탭 제목과 픽셀이 지금과 같습니다 (#910)
 
 ## [0.106.0] - 2026-11-27
 

@@ -694,6 +694,8 @@ pub struct Config {
     pub window_show_tab_bar: WindowShowTabBar,
     /// 탭 막대 모양과 색(`tab-bar-style` 등, kitty처럼, #901)
     pub tab_bar_look: crate::tabstyle::TabBarLook,
+    /// 탭 제목 틀·벨·활동 기호·최대 길이(`tab-title-template` 등, kitty처럼, #910)
+    pub tab_title: crate::tabtitle::TabTitleConfig,
     pub mouse_hide_while_typing: bool,
     pub command: Option<String>,
     /// 첫 칸에만 쓰는 명령(Ghostty `initial-command`, #178). 없으면 `command`
@@ -1841,6 +1843,7 @@ impl Default for Config {
             window_new_tab_position: WindowNewTabPosition::Current,
             window_show_tab_bar: WindowShowTabBar::Auto,
             tab_bar_look: crate::tabstyle::TabBarLook::default(),
+            tab_title: crate::tabtitle::TabTitleConfig::default(),
             mouse_hide_while_typing: false,
             command: None,
             initial_command: None,
@@ -3165,6 +3168,13 @@ impl Config {
             }
             return;
         }
+        // 탭 제목 틀 키(#910)
+        if let Some(ok) = self.tab_title.apply(e.key.as_str(), e.value.as_str()) {
+            if !ok {
+                bad(warnings);
+            }
+            return;
+        }
         match e.key.as_str() {
             "theme" | "import-ghostty" => {}
             "font-family" => {
@@ -4327,6 +4337,9 @@ impl Config {
             .into(),
         );
         for (k, v) in self.tab_bar_look.lines() {
+            push(k, v);
+        }
+        for (k, v) in self.tab_title.lines() {
             push(k, v);
         }
         push("mouse-hide-while-typing", self.mouse_hide_while_typing.to_string());
