@@ -58,6 +58,34 @@ impl TabFontStyle {
     }
 }
 
+/// `tab-bar-edge`(kitty `tab_bar_edge`). 세로 탭 줄(`left`·`right`)은 아직 없어 `top`으로 둔다(#909).
+/// 기본은 `top`이다(kitty의 기본 `bottom`과 다르다: 설정을 바꾸지 않은 사람의 화면을 지킨다)
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum TabBarEdge {
+    #[default]
+    Top,
+    Bottom,
+}
+
+/// kitty `positive_float`: 읽히는 유한한 수의 `max(0, x)`. 읽지 못하면 `None`
+fn positive_float(v: &str) -> Option<f32> {
+    v.trim()
+        .parse::<f32>()
+        .ok()
+        .filter(|f| f.is_finite())
+        .map(|f| f.max(0.0))
+}
+
+/// kitty `tab_bar_margin_height`: 공백으로 가른 두 수(밖, 안). 두 개가 아니면 `None`(kitty는 무시한다)
+fn margin_height(v: &str) -> Option<(f32, f32)> {
+    let mut it = v.split_whitespace();
+    let (a, b) = (it.next()?, it.next()?);
+    if it.next().is_some() {
+        return None;
+    }
+    Some((positive_float(a)?, positive_float(b)?))
+}
+
 /// kitty `tab_fade`의 기본값
 pub const DEFAULT_FADE: [f32; 4] = [0.25, 0.5, 0.75, 1.0];
 /// kitty `tab_separator`의 기본값(`default_tab_separator`)
@@ -77,6 +105,12 @@ pub struct TabBarLook {
     pub bar_background: Option<Rgb>,
     pub active_font: TabFontStyle,
     pub inactive_font: TabFontStyle,
+    /// 탭 줄을 둘 가장자리(#909)
+    pub edge: TabBarEdge,
+    /// 탭 줄 좌우 여백(pt, kitty `tab_bar_margin_width`). 탭이 이만큼 안쪽에서 시작하고 끝난다
+    pub margin_width: f32,
+    /// 탭 줄 위아래 여백(pt, kitty `tab_bar_margin_height`): (창 가장자리와 탭 줄 사이, 탭 줄과 칸 사이)
+    pub margin_height: (f32, f32),
 }
 
 impl Default for TabBarLook {
@@ -94,6 +128,9 @@ impl Default for TabBarLook {
             bar_background: None,
             active_font: TabFontStyle::Normal,
             inactive_font: TabFontStyle::Normal,
+            edge: TabBarEdge::Top,
+            margin_width: 0.0,
+            margin_height: (0.0, 0.0),
         }
     }
 }
@@ -165,6 +202,18 @@ impl TabBarLook {
                 "right" | "end" => set(&mut self.align, TabBarAlign::Right),
                 _ => false,
             },
+            "tab-bar-edge" => match v.trim().to_ascii_lowercase().as_str() {
+                "top" => set(&mut self.edge, TabBarEdge::Top),
+                "bottom" => set(&mut self.edge, TabBarEdge::Bottom),
+                // 세로 탭 줄은 아직 없다: 경고를 내고 위로 둔다
+                "left" | "right" => {
+                    self.edge = TabBarEdge::Top;
+                    false
+                }
+                _ => false,
+            },
+            "tab-bar-margin-width" => positive_float(v).is_some_and(|f| set(&mut self.margin_width, f)),
+            "tab-bar-margin-height" => margin_height(v).is_some_and(|m| set(&mut self.margin_height, m)),
             "tab-separator" => {
                 self.separator = separator(v);
                 true
@@ -248,6 +297,19 @@ impl TabBarLook {
             ("inactive-tab-background", hex(self.inactive_background)),
             ("inactive-tab-font-style", font(self.inactive_font).into()),
             ("tab-bar-background", hex(self.bar_background)),
+            (
+                "tab-bar-edge",
+                match self.edge {
+                    TabBarEdge::Top => "top",
+                    TabBarEdge::Bottom => "bottom",
+                }
+                .into(),
+            ),
+            ("tab-bar-margin-width", self.margin_width.to_string()),
+            (
+                "tab-bar-margin-height",
+                format!("{} {}", self.margin_height.0, self.margin_height.1),
+            ),
         ]
     }
 }
@@ -352,6 +414,46 @@ mod tests {
             "tab-fade = 2",
             "active-tab-foreground = nosuchcolor",
             "inactive-tab-font-style = heavy",
+        ] {
+            let c = Config::from_text(&format!("{line}\n"), true);
+            assert_eq!(c.warnings.len(), 1, "{line}: {:?}", c.warnings);
+            assert_eq!(c.tab_bar_look, TabBarLook::default(), "{line}");
+        }
+    }
+    /// 탭 줄 자리 키(#909): 기본은 지금과 같고(위쪽·여백 0), kitty처럼 읽고, 틀린 값은 경고하고 이전 값을 둔다
+    #[test]
+    fn edge_and_margin_keys_follow_kitty() {
+        use crate::config::Config;
+        let l = TabBarLook::default();
+        assert_eq!(
+            (l.edge, l.margin_width, l.margin_height),
+            (TabBarEdge::Top, 0.0, (0.0, 0.0))
+        );
+        let c = Config::from_text(
+            "tab-bar-edge = bottom\ntab-bar-margin-width = 4.5\ntab-bar-margin-height = 3 -2\n",
+            true,
+        );
+        assert!(c.warnings.is_empty(), "{:?}", c.warnings);
+        let l = &c.tab_bar_look;
+        assert_eq!(l.edge, TabBarEdge::Bottom);
+        assert_eq!(l.margin_width, 4.5);
+        assert_eq!(l.margin_height, (3.0, 0.0), "kitty positive_float: 음수는 0");
+        let again = Config::from_text(&c.render(), true);
+        assert!(again.warnings.is_empty(), "{:?}", again.warnings);
+        assert_eq!(again.tab_bar_look, c.tab_bar_look);
+        // 세로 탭 줄은 경고를 내고 위로 둔다
+        for edge in ["left", "right"] {
+            let c = Config::from_text(&format!("tab-bar-edge = bottom\ntab-bar-edge = {edge}\n"), true);
+            assert_eq!(c.warnings.len(), 1, "{edge}: {:?}", c.warnings);
+            assert_eq!(c.tab_bar_look.edge, TabBarEdge::Top, "{edge}");
+        }
+        for line in [
+            "tab-bar-edge = middle",
+            "tab-bar-margin-width = wide",
+            "tab-bar-margin-width = inf",
+            "tab-bar-margin-height = 3",
+            "tab-bar-margin-height = 1 2 3",
+            "tab-bar-margin-height = a b",
         ] {
             let c = Config::from_text(&format!("{line}\n"), true);
             assert_eq!(c.warnings.len(), 1, "{line}: {:?}", c.warnings);

@@ -185,6 +185,9 @@ config-file = ?~/.config/b-terminal/local   # ?가 붙으면 없어도 된다
 | `tab-separator` | 글 | `" ┇"` | `separator`일 때 탭 사이 구분 글자(kitty `tab_separator`). 앞뒤 공백은 빼고 한 칸 폭으로 그리며 따옴표로 감쌀 수 있습니다 |
 | `tab-fade` | 0~1 숫자 목록 | `0.25 0.5 0.75 1` | `fade`일 때 탭 가장자리 칸마다 탭 색을 몇 % 섞을지. 개수만큼 칸이 번집니다 |
 | `tab-bar-align` | `left` `center` `right` (`start` `end`도) | `left` | `default` 말고 탭이 줄을 다 채우지 못할 때의 놓는 쪽 |
+| `tab-bar-edge` | `top` `bottom` | `top` | 탭 줄을 칸 격자의 위나 아래에 둡니다(kitty `tab_bar_edge`. kitty의 기본은 `bottom`이지만 설정을 바꾸지 않은 화면을 지키려고 기본은 `top`입니다). `bottom`이면 칸 격자가 탭 줄 높이만큼 위로 줄고, 그리기·누르기·끌기·가운데 클릭·오른쪽 단추 메뉴·진행 막대·안 읽음 점이 모두 같은 자리를 씁니다. `left`·`right`(세로 탭 줄)는 아직 없어 경고를 내고 `top`으로 둡니다. `macos-titlebar-style`과는 따로입니다: 제목 막대 밑 비움은 늘 위쪽이고 탭 줄은 그 밑(`top`)이나 창 맨 아래(`bottom`)에 놓입니다 |
+| `tab-bar-margin-width` | 0 이상의 수(pt) | `0` | 탭 줄 좌우 여백(kitty `tab_bar_margin_width`). 탭이 이만큼 안쪽에서 시작하고 끝나며 여백에는 탭 줄 바탕만 보입니다. 누르기도 같은 범위입니다 |
+| `tab-bar-margin-height` | 두 수(pt), 예 `4 2` | `0 0` | 첫째는 창 가장자리와 탭 줄 사이, 둘째는 탭 줄과 칸 사이(kitty `tab_bar_margin_height`). 여백에는 창 바탕이 보이고 누르기는 받지 않습니다. 수가 둘이 아니면 경고하고 이전 값을 둡니다. 음수는 0입니다 |
 | `active-tab-foreground` `active-tab-background` | 색 · `none` | 정하지 않음 | 고른 탭의 글자·바탕색. 정하지 않으면 지금처럼 테마의 글자색·바탕색(모든 모양에 쓰임) |
 | `inactive-tab-foreground` `inactive-tab-background` | 색 · `none` | 정하지 않음 | 고르지 않은 탭의 글자·바탕색. 정하지 않으면 글자는 흐린 글자색, 바탕은 `default`에서는 막대 바탕이 보이고 다른 모양에서는 테마에서 고른 한 단계 밝은 색입니다 |
 | `active-tab-font-style` `inactive-tab-font-style` | `normal` `bold` `italic` `bold-italic` | `normal` | 탭 제목 글꼴 모양. 비례 제목 글꼴(`window-title-font-family`)에서는 글자 사이 간격을 보통 모양으로 재므로 굵은 글꼴 폭이 다르면 조금 다릅니다 |

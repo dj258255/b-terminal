@@ -49,6 +49,8 @@ pub(super) struct GpuFrame<'a> {
     pub split: bool,
     pub single_tab: bool,
     pub top_inset: u32,
+    /// 탭 줄을 그리는 자리(가장자리·좌우 여백, #909)
+    pub bar_place: tabbar::BarPlace,
     pub title: &'a str,
     pub proxy: Option<std::path::PathBuf>,
 }
@@ -138,6 +140,7 @@ impl App {
             split,
             single_tab,
             top_inset,
+            bar_place,
             title,
             proxy,
             latency,
@@ -241,14 +244,14 @@ impl App {
                 }
             }
             if !labels.is_empty() {
-                tabbar::draw_with_title_font(
+                tabbar::draw_placed(
                     &mut lower,
                     fonts.chrome(),
                     self.w.title_fonts.as_mut(),
                     &theme,
                     tab_look,
                     labels,
-                    top_inset as i32,
+                    bar_place,
                 );
             }
             for (v, pad) in views.iter().zip(pads) {
