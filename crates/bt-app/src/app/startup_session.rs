@@ -116,6 +116,7 @@ impl App {
             zoomed: tab.zoomed && leaves.len() > 1,
             title: tab.title.as_deref().and_then(clean_user_title),
             color: Default::default(),
+            bundle: None,
         });
         for (id, pane) in ids.iter().zip(&tab.panes) {
             if let Some(t) = pane.title.as_deref().and_then(clean_user_title) {

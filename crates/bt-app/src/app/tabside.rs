@@ -39,7 +39,7 @@ impl App {
     pub(super) fn vertical_rows(&self, g: &crate::tabgeom::BarGeom, win_h: u32) -> crate::vtabs::Rows {
         let (_, th) = g.tabs_y(win_h);
         crate::vtabs::rows(
-            self.w.tabs.len(),
+            self.bar_items().len(),
             th,
             g.bar_h,
             crate::vtabs::gap_px(g.bar_h),
@@ -52,7 +52,7 @@ impl App {
         if self.bar_geom().vertical() { p.y } else { p.x }
     }
 
-    /// 세로 줄의 마우스 아래 탭(탭 줄 사각형 안일 때만)
+    /// 세로 줄의 마우스 아래 항목 번호(탭 줄 사각형 안일 때만). 머리표도 한 항목이다(#933)
     pub(super) fn vertical_tab_at_cursor(&self, g: &crate::tabgeom::BarGeom, win_h: u32) -> Option<usize> {
         let (ty, _) = g.tabs_y(win_h);
         crate::vtabs::tab_at(&self.vertical_rows(g, win_h), self.w.cursor_pos.y - ty as f64)
@@ -87,24 +87,34 @@ impl App {
         };
         let geom = self.bar_geom();
         let count = self.w.tabs.len();
-        let to = if geom.vertical() {
+        let items = self.bar_items();
+        let at = if geom.vertical() {
             let (ty, _) = geom.tabs_y(win_h);
             crate::vtabs::drop_index(
                 &self.vertical_rows(&geom, win_h),
-                count,
+                items.len(),
                 self.w.cursor_pos.y - ty as f64,
             )
         } else {
-            tabbar::drop_index(
+            tabbar::drop_item(
                 geom.tabs_x(win_w).1,
                 geom.tab_x(self.w.cursor_pos.x, win_w),
-                count,
+                &self.bar_fixed(&items),
                 self.tab_layout(),
             )
         };
+        // 놓은 항목이 탭이면 그 탭 자리로, 묶음 머리표면 그 묶음의 첫 탭 자리로(묶음 맨 앞에 들어간다, #933)
+        let dropped = at.and_then(|i| items.get(i).copied());
+        let to = dropped.and_then(|it| match it {
+            crate::tabbundle::BarItem::Tab(t) => Some(t),
+            crate::tabbundle::BarItem::Chip(b) => self.w.tabs.iter().position(|t| t.bundle == Some(b)),
+        });
         let outside = !self.w.quick && self.cursor_outside_frame();
         match self.w.tab_drag.release_at(count, to, outside) {
-            tabbar::TabDrop::Move { from, to } => self.reorder_tab(from, to),
+            tabbar::TabDrop::Move { from, to } => match dropped {
+                Some(crate::tabbundle::BarItem::Chip(b)) => self.reorder_tab_to_chip(from, b),
+                _ => self.reorder_tab(from, to),
+            },
             tabbar::TabDrop::Detach { from } => self.detach_tab_to_cursor(from, event_loop),
             tabbar::TabDrop::None => {}
         }

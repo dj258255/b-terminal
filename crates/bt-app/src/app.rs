@@ -32,6 +32,7 @@ mod script;
 mod trigger_cmd;
 #[cfg(target_os = "macos")]
 pub use script::install as install_scripting;
+mod bundles;
 mod shader_inputs;
 /// kitty 세션 파일로 시작하기(#934)
 mod startup_session;
@@ -716,6 +717,8 @@ struct TabGroup {
     title: Option<String>,
     /// 탭 오른쪽 단추 메뉴로 고른 탭 색(#852)
     color: crate::tabcolor::TabColor,
+    /// 든 탭 묶음의 번호(#933, `Win::bundles`). 같은 묶음의 탭은 늘 이어져 있다
+    bundle: Option<crate::tabbundle::Id>,
 }
 
 /// 제목 입력 막대가 정할 곳(#207)
@@ -725,6 +728,8 @@ enum TitleTarget {
     Surface(u64),
     /// 그 칸이 든 탭
     Tab(u64),
+    /// 탭 묶음(#933)
+    Bundle(crate::tabbundle::Id),
     Window,
 }
 
@@ -733,6 +738,7 @@ impl TitleTarget {
         match self {
             TitleTarget::Surface(_) => "제목 › ",
             TitleTarget::Tab(_) => "탭 제목 › ",
+            TitleTarget::Bundle(_) => "묶음 이름 › ",
             TitleTarget::Window => "창 제목 › ",
         }
     }
@@ -751,6 +757,7 @@ enum Closed {
         zoomed: bool,
         title: Option<String>,
         color: crate::tabcolor::TabColor,
+        bundle: Option<crate::tabbundle::Id>,
     },
 }
 
@@ -1007,6 +1014,8 @@ struct Win {
     /// 항상 위에 띄우는 중(`toggle_window_float_on_top`, #148)
     float_on_top: bool,
     tabs: Vec<TabGroup>,
+    /// 이 창의 탭 묶음들(#933): 이름·색·접힘. 탭이 든 묶음은 `TabGroup::bundle`로 가리킨다
+    bundles: Vec<crate::tabbundle::Bundle>,
     /// 보고 있는 탭(tabs의 자리)
     active: usize,
     preedit: String,
@@ -1143,6 +1152,7 @@ impl Win {
             pane_drag: crate::pane_drag::PaneDrag::default(),
             divider: crate::divider_drag::DividerState::default(),
             tab_drag: tabbar::TabDrag::default(),
+            bundles: Vec::new(),
             tab_click: None,
             handle_hover: None,
             selecting: false,
@@ -1573,20 +1583,10 @@ impl App {
 
     /// 마우스 아래의 탭(탭 줄 사각형 안일 때만)
     fn tab_at_cursor(&self) -> Option<usize> {
-        let size = self.w.gfx.as_ref()?.window.inner_size();
-        let g = self.bar_geom();
-        if !g.in_bar_at(self.w.cursor_pos.x, self.w.cursor_pos.y, size.width, size.height) {
-            return None;
+        match self.item_at_cursor()? {
+            crate::tabbundle::BarItem::Tab(i) => Some(i),
+            crate::tabbundle::BarItem::Chip(_) => None,
         }
-        if g.vertical() {
-            return self.vertical_tab_at_cursor(&g, size.height);
-        }
-        tabbar::hit(
-            g.tabs_x(size.width).1,
-            g.tab_x(self.w.cursor_pos.x, size.width),
-            self.w.tabs.len(),
-            self.tab_layout(),
-        )
     }
 
     /// 칸의 바깥 사각형에서 여백을 뺀 격자 자리. `font_size`는 그 칸의 글자 크기다(남는 자리를 고르게 나눌 때 그 크기의 칸 크기를 쓴다)
@@ -2481,6 +2481,8 @@ impl App {
             .config
             .window_new_tab_position
             .insert_index(self.w.active, self.w.tabs.len());
+        // 묶음의 한가운데에는 끼우지 않는다(#933): 묶음 뒤로 민다
+        let at = crate::tabbundle::fit_insert(&self.bundle_ids(), at, None);
         self.w.tabs.insert(
             at,
             TabGroup {
@@ -2489,6 +2491,7 @@ impl App {
                 zoomed: false,
                 title: None,
                 color: Default::default(),
+                bundle: None,
             },
         );
         self.w.active = at;
@@ -3257,7 +3260,7 @@ impl App {
         #[cfg(target_os = "macos")]
         if let Some(g) = self.w.tabs.get(self.w.active) {
             let dark = crate::tabcolor::is_dark(self.config.theme.background);
-            crate::context_menu::popup_tab(&crate::context_menu::tab_entries(g.color), dark);
+            crate::context_menu::popup_tab(&crate::context_menu::tab_entries(g.color), &self.tab_group_menu(), dark);
         }
     }
 
@@ -3917,6 +3920,7 @@ impl App {
                     self.request_redraw_all();
                 }
             }
+            TitleTarget::Bundle(id) => self.set_bundle_name(id, text),
             TitleTarget::Window => {
                 self.w.window_title = clean_user_title(text);
                 self.request_redraw_all();
@@ -4024,6 +4028,7 @@ impl App {
                         zoomed: was.0,
                         title: removed.title,
                         color: removed.color,
+                        bundle: removed.bundle,
                     });
                 }
             }
@@ -4052,7 +4057,8 @@ impl App {
             }
             return;
         }
-        let (layout, focus, zoomed, title, color) = (g.layout.clone(), g.focus, g.zoomed, g.title.clone(), g.color);
+        let (layout, focus, zoomed, title, color, bundle) =
+            (g.layout.clone(), g.focus, g.zoomed, g.title.clone(), g.color, g.bundle);
         let before = self.focused_id();
         self.w.tabs.remove(gi);
         if gi < self.w.active || self.w.active >= self.w.tabs.len() {
@@ -4083,6 +4089,7 @@ impl App {
             zoomed,
             title,
             color,
+            bundle,
         });
         self.focus_changed(before);
         self.clear_visible_unread();
@@ -4123,8 +4130,9 @@ impl App {
                 zoomed,
                 title,
                 color,
+                bundle,
             } => {
-                self.restore_tab(panes, layout, index, focus, zoomed, (title, color));
+                self.restore_tab(panes, layout, index, focus, zoomed, (title, color, bundle));
                 Redo::Tab(focus)
             }
         };
@@ -4166,10 +4174,12 @@ impl App {
         index: usize,
         focus: u64,
         zoomed: bool,
-        (title, color): (Option<String>, crate::tabcolor::TabColor),
+        (title, color, bundle): (Option<String>, crate::tabcolor::TabColor, Option<crate::tabbundle::Id>),
     ) {
         let before = self.focused_id();
-        let at = index.min(self.w.tabs.len());
+        // 닫을 때 든 묶음이 아직 있으면 그 묶음으로 되돌린다(구간을 깨지 않는 자리로, #933)
+        let bundle = bundle.filter(|b| self.w.bundles.iter().any(|x| x.id == *b));
+        let at = crate::tabbundle::fit_insert(&self.bundle_ids(), index.min(self.w.tabs.len()), bundle);
         self.w.tabs.insert(
             at,
             TabGroup {
@@ -4178,6 +4188,7 @@ impl App {
                 zoomed,
                 title,
                 color,
+                bundle,
             },
         );
         self.w.active = at;
@@ -5486,6 +5497,10 @@ impl App {
                     self.w.title_prompt = Some((TitleTarget::Tab(id), now));
                 }
             }
+            Action::NewTabGroup => self.tab_group_new(),
+            Action::LeaveTabGroup => self.tab_group_leave(),
+            Action::JoinTabGroup => self.tab_group_join(),
+            Action::TabGroup(target, op) => self.tab_group_op(target, op),
             Action::SetTabColor(color) => {
                 if let Some(g) = self.w.tabs.get_mut(self.w.active) {
                     g.color = color;
@@ -6379,11 +6394,10 @@ impl App {
         if len < 2 || from >= len || to >= len || to == from {
             return;
         }
-        let active = tabbar::active_after_move(self.w.active, from, to);
-        let tab = self.w.tabs.remove(from);
-        self.w.tabs.insert(to, tab);
-        self.w.active = active;
-        self.request_redraw();
+        // 놓은 자리 탭의 묶음을 이어받는다(묶음의 탭 위면 들어가고, 묶음 없는 탭 위면 나온다, #933)
+        let mut ids = self.bundle_ids();
+        crate::tabbundle::reorder(&mut ids, from, to);
+        self.apply_bundle_edit(ids, Some((from, to)));
     }
 
     /// `move_tab_to_new_window`: 지금 탭을 새 창으로 떼어 낸다. 탭이 하나뿐이면 아무것도 하지 않는다
@@ -6404,7 +6418,11 @@ impl App {
         if let Some((x, y)) = at {
             gfx.window.set_outer_position(PhysicalPosition::new(x, y));
         }
-        let moved = self.w.tabs.remove(self.w.active);
+        let mut moved = self.w.tabs.remove(self.w.active);
+        // 새 창으로 떼면 묶음에서 빠진다(#933): 묶음은 창마다 따로다
+        moved.bundle = None;
+        let ids = self.bundle_ids();
+        crate::tabbundle::prune(&mut self.w.bundles, &ids);
         if self.w.active >= self.w.tabs.len() {
             self.w.active = self.w.tabs.len() - 1;
         }
@@ -6416,7 +6434,7 @@ impl App {
         // 칸·탭 제목 막대만 옮긴 칸에 매인다. 창 제목 막대는 남는 창의 것이다
         if self.w.title_prompt.as_ref().is_some_and(|(target, _)| match target {
             TitleTarget::Surface(p) | TitleTarget::Tab(p) => leaves.contains(p),
-            TitleTarget::Window => false,
+            TitleTarget::Window | TitleTarget::Bundle(_) => false,
         }) {
             self.w.title_prompt = None;
         }
@@ -6778,11 +6796,16 @@ impl App {
                                 zoomed: t.zoomed,
                                 title: t.title.clone(),
                                 color: (t.color != crate::tabcolor::TabColor::None).then(|| t.color.key().to_string()),
+                                bundle: t.bundle.filter(|b| w.bundles.iter().any(|x| x.id == *b)),
                             }
                         })
                         .collect(),
                     active: w.active,
                     title: w.window_title.clone(),
+                    bundles: crate::tabbundle::saved_bundles(
+                        &w.bundles,
+                        &w.tabs.iter().map(|t| t.bundle).collect::<Vec<_>>(),
+                    ),
                 })
             })
             .collect();
@@ -6878,6 +6901,7 @@ impl App {
                     // 상태 파일은 보안 경계는 아니지만 믿지 않는다: 읽은 제목도 사람이 친 제목과 같은 규칙을 다시 거친다
                     title: st.title.as_deref().and_then(clean_user_title),
                     color: crate::tabcolor::TabColor::from_saved(st.color.as_deref()),
+                    bundle: st.bundle,
                 });
                 for (id, t) in leaves.iter().zip(st.layout.pane_titles()) {
                     if let Some(t) = t.as_deref().and_then(clean_user_title) {
@@ -6895,6 +6919,7 @@ impl App {
                 }
                 continue;
             }
+            self.restore_bundles(&sw.bundles);
             self.w.active = sw.active.min(self.w.tabs.len() - 1);
             self.w.window_title = sw.title.as_deref().and_then(clean_user_title);
             self.last_focused = self.w.id();
@@ -7618,11 +7643,15 @@ impl App {
         let labels: Vec<tabbar::TabLabel> = if single_tab {
             Vec::new()
         } else {
-            self.w
-                .tabs
-                .iter()
-                .enumerate()
-                .map(|(gi, g)| {
+            self.bar_items()
+                .into_iter()
+                .map(|item| {
+                    // 묶음 머리표(#933)는 이름만 있는 칸이다
+                    let gi = match item {
+                        crate::tabbundle::BarItem::Chip(id) => return self.chip_label(id),
+                        crate::tabbundle::BarItem::Tab(gi) => gi,
+                    };
+                    let g = &self.w.tabs[gi];
                     let panes: Vec<&Pane> = g
                         .layout
                         .leaves()
@@ -7681,6 +7710,7 @@ impl App {
                                     .filter(|_| self.config.progress_style)
                             }),
                         color: g.color,
+                        bundle: self.bundle_mark(gi),
                     }
                 })
                 .collect()
@@ -9358,6 +9388,10 @@ impl ApplicationHandler<UserEvent> for App {
                     .bar_geom()
                     .in_band_at(self.w.cursor_pos.x, self.w.cursor_pos.y, win_w, win_h)
                 {
+                    // 묶음 머리표(#933): 왼쪽은 접기·펴기, 오른쪽은 묶음 메뉴
+                    if state == ElementState::Pressed && self.w.confirm.is_none() && self.chip_press(button) {
+                        return;
+                    }
                     // 탭 오른쪽 단추: 그 탭을 고르고 메뉴(제목 바꾸기·색)를 띄운다(#852, macOS). Ghostty는 고르지 않고 그 탭에 메뉴를 띄운다
                     if state == ElementState::Pressed && button == MouseButton::Right && self.w.confirm.is_none() {
                         if let Some(i) = self.tab_at_cursor() {
