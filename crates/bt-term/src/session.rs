@@ -592,6 +592,8 @@ pub struct Session {
     integrated: Arc<std::sync::atomic::AtomicBool>,
     /// 새 출력이 오면 맨 아래로 스크롤하는가(읽기 스레드가 본다)
     scroll_on_output: Arc<std::sync::atomic::AtomicBool>,
+    /// 읽기 스레드가 출력을 받은 횟수(탭의 활동 표시 `tab-activity-symbol`, #910). 앱이 앞에 본 값과 달라졌으면 새 출력이 있었다
+    output_seq: Arc<std::sync::atomic::AtomicU64>,
     /// 프로그램이 키보드를 잠갔다(KAM, vt-kam-allowed가 켜졌을 때만). 잠겨 있으면 사람의 입력을 PTY에 쓰지 않는다
     kam_locked: Arc<std::sync::atomic::AtomicBool>,
     /// 사람이 칸을 읽기 전용으로 했다(`toggle_readonly`, ADR-018). 켜져 있으면 `write`가 아무것도 쓰지 않는다
@@ -879,6 +881,8 @@ impl Session {
         let thread_integrated = integrated.clone();
         let scroll_on_output = Arc::new(std::sync::atomic::AtomicBool::new(options.scroll_on_output));
         let thread_scroll_on_output = scroll_on_output.clone();
+        let output_seq = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let thread_output_seq = output_seq.clone();
         let kam_locked = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let thread_kam_locked = kam_locked.clone();
         let exited = Arc::new(Mutex::new(None));
@@ -1282,6 +1286,7 @@ impl Session {
                         if crate::latency::enabled() {
                             thread_latency.lock().note_output(Instant::now());
                         }
+                        thread_output_seq.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                         sink(SessionEvent::Output);
                     }
                     Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
@@ -1327,6 +1332,7 @@ impl Session {
             killer,
             integrated,
             scroll_on_output,
+            output_seq,
             kam_locked,
             readonly,
             scheme_updates,
@@ -1466,6 +1472,11 @@ impl Session {
     /// 설정을 다시 읽었을 때 모호 폭 설정을 바꾼다(#857). 이미 찍힌 글은 그대로 두고 이 뒤에 찍는 글부터 따른다
     pub fn set_ambiguous_wide(&self, on: bool) {
         self.inner.lock().term.set_ambiguous_wide(on);
+    }
+
+    /// 지금까지 받은 출력 묶음의 수. 앞에 본 값과 다르면 그 사이에 새 출력이 있었다
+    pub fn output_seq(&self) -> u64 {
+        self.output_seq.load(std::sync::atomic::Ordering::Relaxed)
     }
 
     pub fn set_scroll_on_output(&self, on: bool) {
@@ -3563,5 +3574,74 @@ mod resize_tests {
         // 화면보다 크면 줄인다
         assert_eq!(window_resize_target((9999, 9999), cur, max), max);
         assert_eq!(window_resize_target((301, 50), cur, max), (300, 50));
+    }
+}
+
+/// 프로그램이 OSC 0/2로 보낸 제목은 탭 제목 틀에 값으로만 끼고 다시 해석되지 않는다(#910, ADR-098). 엔진에 바이트를 먹인다. PTY는 열지 않는다
+#[cfg(test)]
+mod title_template_tests {
+    use super::*;
+    use bt_core::tabtitle::{self, SpanColor, TabTitleConfig, TitleData};
+
+    #[derive(Clone, Default)]
+    struct Capture(Arc<Mutex<Vec<String>>>);
+    impl EventListener for Capture {
+        fn send_event(&self, event: VtEvent) {
+            if let VtEvent::Title(t) = event {
+                self.0.lock().push(t);
+            }
+        }
+    }
+
+    fn title_after(bytes: &[u8]) -> String {
+        let cap = Capture::default();
+        let size = GridSize::new(20, 4).clamped();
+        let mut term = Term::new(Config::default(), &Dims(size), cap.clone());
+        let mut parser: Processor = Processor::new();
+        parser.advance(&mut term, bytes);
+        cap.0.lock().last().cloned().unwrap_or_default()
+    }
+
+    #[test]
+    fn osc2_title_with_template_syntax_shows_literally_in_any_template() {
+        let title = title_after(b"\x1b]2;{fmt.fg.red}x{index}\x07");
+        assert_eq!(title, "{fmt.fg.red}x{index}");
+        for template in [
+            "{title}",
+            "{index}: {title}",
+            "{fmt.bold}{title}{fmt.nobold}",
+            tabtitle::DEFAULT_TEMPLATE,
+        ] {
+            let cfg = TabTitleConfig {
+                template: template.to_string(),
+                ..TabTitleConfig::default()
+            };
+            let data = TitleData {
+                title: &title,
+                index: 3,
+                ..TitleData::default()
+            };
+            let spans = tabtitle::render(&cfg, false, &data, false, false);
+            let text: String = spans.iter().map(|s| s.text.as_str()).collect();
+            assert!(text.ends_with("{fmt.fg.red}x{index}"), "{template}: {text}");
+            assert!(!text.contains("\x1b"), "{template}");
+            // 제목 글자에서 온 조각에는 빨강이 없다
+            assert!(
+                spans
+                    .iter()
+                    .filter(|s| s.text.contains("fmt.fg.red"))
+                    .all(|s| s.fg == SpanColor::Tab),
+                "{template}: {spans:?}"
+            );
+        }
+        // 제어 문자가 낀 제목: ESC는 지우고 나머지는 값이다
+        let title = title_after(b"\x1b]2;a\x1b[31mb{title}\x07");
+        let data = TitleData {
+            title: &title,
+            ..TitleData::default()
+        };
+        let spans = tabtitle::render(&TabTitleConfig::default(), false, &data, false, false);
+        assert_eq!(spans.len(), 1);
+        assert!(!spans[0].text.contains('\x1b'));
     }
 }

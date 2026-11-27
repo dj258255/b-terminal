@@ -1019,3 +1019,16 @@
 - 검증: 순수 함수는 kitty 식을 따로 계산한 점(`1.7 30`에서 흰 바탕 검은 글자 덮음 0.1→0.3355, 0.5→0.8647 등)과 견줬고, 기본일 때 CPU 글자 픽셀이 곡선 도입 전 식과 정확히 같다(시험). CPU·GPU 길은 같은 화면에서 채널 최대 차이 1이었다(시험 `crates/bt-gpu/tests/text_composition.rs`, 이 기계의 GPU 어댑터)
 - 남긴 것: 색 글리프(이모지)에는 곡선을 걸지 않는다(kitty는 색 스프라이트에도 건다). CPU 길의 바탕은 칸 바탕색이 아니라 글리프가 얹히는 자리의 지금 픽셀이라, 글리프가 겹치거나 투명 창이면 GPU 길과 조금 다를 수 있다(재지 않았다). 실제 창에서 `platform`이 어떻게 보이는지, 기본을 바꿀지는 아직 사람 눈으로 견주지 않았다
 - 0.106.0에서 풀기: 없음(기본이 `none`이라 안 적으면 그대로다)
+
+## 121. 탭 제목의 형식을 바꿀 수 없다(번호·폴더·진행률을 제목에 넣을 길이 없다)
+
+- 언제: 2026-11-27, #910. 0.106.0 뒤 main까지의 동작이다. 화면 모양을 kitty와 견준 조사에서 골랐다
+- 증상: 탭에는 셸이 정한 제목만 보인다. `⌘1` 단축키와 맞추려 `1: zsh`처럼 번호를 붙이거나, 작업 폴더·실행 중인 프로그램을 제목에 넣거나, 벨·활동 표시 글자를 바꾸거나, 제목 길이를 제한할 길이 없었다
+- 까닭: 탭 줄 그리기가 제목 하나(벨이 있으면 앞에 `🔔 `)를 그대로 그렸다. kitty는 `tab_title_template`·`active_tab_title_template`·`bell_on_tab`·`tab_activity_symbol`·`tab_title_max_length`(v0.51.1 `kitty/options/definition.py` 1630·2391·2403·2461·2537줄)로 정하고, 틀은 `kitty/tab_bar.py` `evaluate_title_template`(371줄)가 파이썬 `eval`로 푼다
+- 고침: 같은 뜻의 키 다섯을 `-`로 이어 더했다(`bt-core`의 `tabtitle`). 틀은 이름 바꾸기와 꾸밈만 받는다(ADR-098). `sup.`·`sub.` 글자표와 `fmt.fg.`·`fmt.bg.`의 이름(`default`·`tab`·`colorN`·`_RRGGBB`·색 이름)은 `kitty/tab_bar.py` 178~205줄(`Formatter`·`ColorFormatter`·`SupSub`)을 옮겼다. `{bell_symbol}`·`{activity_symbol}`이 값이 있는데 틀에 없으면 앞에 빨강으로 붙이는 하위 호환은 `evaluate_title_template` 412~418줄, 길이 제한은 `draw_title` 503~521줄(넘으면 `제한-1`칸 + `…`)을 따랐다. 탭 번호는 kitty처럼 1부터다
+- 정한 것: 설정이 없으면 틀은 `{bell_symbol}{activity_symbol}{title}`이고 활동 기호는 없음이라 제목이 지금과 같다(kitty 기본 틀의 `{fmt.fg.red}`·진행률 글자·보안 입력 기호는 뺐다: 진행은 탭 아래 막대로, 벨 🔔는 지금처럼 글자색으로 그린다). 이 같음은 기본 틀과 벨 있음·없음·빈 제목 세 경우를 같은 글을 그냥 적은 탭과 픽셀로 견주어 고정했다(`default_template_draws_the_same_pixels_as_the_plain_title`). 틀이 파이썬 표현식·모르는 이름·짝 안 맞는 중괄호를 쓰면 kitty는 로그만 남기고 제목을 보이지만 우리는 설정을 읽을 때 경고하고 이전 틀을 둔다
+- 활동: 앱에 "보지 않는 칸의 새 출력" 상태가 없어 읽기 스레드가 출력을 받은 횟수(`Session::output_seq`)를 더하고, 앱이 앞서 본 값과 다르고 그 칸을 보고 있지 않으면(창이 뒤에 있거나 다른 탭) 켠다. 기호가 없으면(기본) 이 일을 하지 않는다. 그 탭을 보면(`clear_visible_unread`) 벨·안 읽음과 함께 지운다
+- 보안: 프로그램이 OSC 0/2로 보낸 제목, OSC 7 작업 폴더, 전경 프로세스 이름은 믿지 않는 글이라 틀에 값으로만 끼우고 제어 문자를 지운다. 제목 안의 `{fmt.fg.red}`·`{{`는 글자 그대로 보인다. 엔진에 `ESC ] 2 ; {fmt.fg.red}x BEL`을 먹여 읽은 제목으로 시험했다(`bt-term` `osc2_title_with_template_syntax_shows_literally_in_any_template`, PTY 없음)
+- kitty와 다른 점: (1) `{custom}`·`layout_name`·`session_name`·`keyboard_mode`·`secure_input_symbol`·`tab.active_oldest_*`·`tab.program_status`·`tab.children_mem_usage`는 빈 글자다. (2) `tab.last_focused_progress_percent`의 아이콘 글자(kitty는 글꼴에 없을 수 있는 기호)는 `42% `·`! `·`… `·`|| 42% `로 바꿨다. (3) `{max_title_length}`는 설정 값(0이면 0)이고 탭 폭에서 남는 칸이 아니다. (4) `fmt.reset`·`fmt.fg.default`·`fmt.bg.default`는 kitty처럼 탭 줄의 기본 색(안 고른 탭 글자색·막대 바탕)이고 탭 색이 아니다. (5) 벨 기호는 지금처럼 고른 칸의 벨만 센다(kitty는 탭 안 어느 창이든). 활동은 탭 안 어느 칸이든 센다. (6) 우리 탭은 고정 폭이라 제목은 탭 안 가운데에 놓고, 탭 폭에 맞춘 줄임은 `tab-title-max-length`와 별도로 그대로 한다. (7) 줄바꿈이 든 틀(`tab_title_max_lines`)·세로 탭 줄은 없다. (8) 굵게·기울임은 `active-tab-font-style`을 처음 상태로 하고 `fmt.nobold`가 끈다
+- 남긴 것: 실제 창에서 kitty와 나란히 눈으로 견주지 않았다. 굵게·기울임 조각 사이의 글자 간격은 제목 글꼴이 비례일 때 보통 모양으로 재서 조금 다를 수 있다(재지 않았다). 활동 표시는 `Output` 이벤트가 오는 칸만 보며(출력이 없는 입력 에코 등은 같은 길), 셸 프롬프트만 다시 그려도 켜진다(kitty도 출력이면 켠다)
+- 0.106.0에서 풀기: 없음(`tab-bar-style = hidden`·`window-show-tab-bar`는 제목 틀과 상관없다)

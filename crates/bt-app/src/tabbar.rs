@@ -1,6 +1,7 @@
 //! 가로 탭 줄(Ghostty처럼). 탭이 둘 이상일 때만 창 위쪽에 그린다
 
 use bt_core::tabstyle::{TabBarAlign, TabBarLook, TabBarStyle, TabPowerlineStyle};
+use bt_core::tabtitle::{Span, SpanColor};
 use bt_core::{Rgb, Theme};
 use bt_render::proportional::{draw_text_proportional, draw_text_proportional_styled};
 use bt_render::{Canvas, Fonts, draw_text, draw_text_styled, text_cells, truncate};
@@ -8,7 +9,10 @@ use bt_render::{Canvas, Fonts, draw_text, draw_text_styled, text_cells, truncate
 /// 탭 줄 한 칸
 #[derive(Debug, Clone)]
 pub struct TabLabel {
+    /// 틀(`tab-title-template`)로 그린 제목의 글. 꾸밈을 빼고 이은 글이다
     pub title: String,
+    /// 틀이 색·굵게·기울임을 바꿨으면 그 조각들(이은 글은 `title`). 바꾼 것이 없으면 `None`이라 `title` 하나를 그린다(#910)
+    pub spans: Option<Vec<Span>>,
     pub active: bool,
     /// 보지 않은 알림(OSC 9·99·777, 벨)이 있다
     pub unread: bool,
@@ -17,6 +21,109 @@ pub struct TabLabel {
     pub progress: Option<(u8, u8)>,
     /// 사람이 고른 탭 색(#852). 있으면 제목 오른쪽에 작은 점
     pub color: crate::tabcolor::TabColor,
+}
+
+/// 틀로 그린 조각들을 탭 줄 제목으로 만든다: (이은 글, 꾸밈이 있으면 조각들).
+/// `max_len`(`tab-title-max-length`)이 0이 아니고 글이 그보다 넓으면 kitty처럼 `max_len - 1`칸까지 두고 `…`을 붙인다.
+/// 모든 조각이 탭의 기본 꾸밈(`base_bold`·`base_italic`)이면 조각은 `None`이다
+pub fn label_text(
+    mut spans: Vec<Span>,
+    max_len: u32,
+    base_bold: bool,
+    base_italic: bool,
+) -> (String, Option<Vec<Span>>) {
+    if max_len > 0 {
+        let total: usize = spans.iter().map(|s| text_cells(&s.text)).sum();
+        if total > max_len as usize {
+            let keep = (max_len as usize).saturating_sub(1);
+            spans = take_cells(&spans, keep);
+            let tail = spans.last().cloned();
+            match tail {
+                Some(last) if last.text.is_empty() => spans.last_mut().unwrap().text.push('…'),
+                Some(mut last) => {
+                    last.text = "…".into();
+                    spans.push(last);
+                }
+                None => {}
+            }
+        }
+    }
+    spans.retain(|s| !s.text.is_empty());
+    let title: String = spans.iter().map(|s| s.text.as_str()).collect();
+    let plain = spans.iter().all(|s| s.is_plain(base_bold, base_italic));
+    (title, (!plain).then_some(spans))
+}
+
+/// 앞에서부터 `cells`칸어치의 조각들. 넓은 글자가 걸치면 그 글자는 뺀다
+fn take_cells(spans: &[Span], cells: usize) -> Vec<Span> {
+    let mut used = 0;
+    let mut out: Vec<Span> = Vec::new();
+    'all: for sp in spans {
+        let mut text = String::new();
+        for c in sp.text.chars() {
+            let w = bt_render::char_cells(c);
+            if used + w > cells {
+                out.push(Span { text, ..sp.clone() });
+                break 'all;
+            }
+            text.push(c);
+            used += w;
+        }
+        out.push(Span { text, ..sp.clone() });
+    }
+    out
+}
+
+/// 탭 줄이 줄인 글(`fitted`: `original`의 앞부분 + `…` 하나, 또는 같은 글)에 맞춰 조각들을 자른다
+fn fit_spans(spans: &[Span], fitted: &str, original: &str) -> Vec<Span> {
+    if fitted == original {
+        return spans.to_vec();
+    }
+    let keep = fitted.chars().count().saturating_sub(1);
+    let mut out = take_chars(spans, keep);
+    match out.last().cloned() {
+        Some(mut last) => {
+            last.text = "…".into();
+            out.push(last);
+        }
+        None => {
+            if let Some(first) = spans.first() {
+                out.push(Span {
+                    text: "…".into(),
+                    ..first.clone()
+                });
+            }
+        }
+    }
+    out
+}
+
+fn take_chars(spans: &[Span], n: usize) -> Vec<Span> {
+    let mut left = n;
+    let mut out = Vec::new();
+    for sp in spans {
+        if left == 0 {
+            break;
+        }
+        let text: String = sp.text.chars().take(left).collect();
+        left -= text.chars().count();
+        out.push(Span { text, ..sp.clone() });
+    }
+    out
+}
+
+/// 조각의 글자색·바탕색(바탕을 칠하지 않으면 `None`)
+fn span_colors(sp: &Span, theme: &Theme, pal: &Palette, tab_fg: Rgb) -> (Rgb, Option<Rgb>) {
+    let pick = |c: SpanColor, tab: Option<Rgb>, default: Rgb| match c {
+        SpanColor::Tab => tab,
+        SpanColor::Default => Some(default),
+        SpanColor::Rgb(c) => Some(c),
+        SpanColor::Indexed(n) => Some(theme.indexed(n)),
+    };
+    (
+        pick(sp.fg, Some(tab_fg), pal.inactive_fg).unwrap_or(tab_fg),
+        pick(sp.bg, None, pal.bar),
+    )
 }
 
 /// 막대 상태 코드: 프로그램 상태(OSC 7501)에서 온 것(`status_bar`)
@@ -539,14 +646,46 @@ pub fn draw_placed(
             let (title, tw) = fit_title(&tab.title, room_px, |c| tf.advance(c));
             let tx = cx + (cwid as i32 - tw.round() as i32) / 2;
             let ty = top + (h as i32 - tf.metrics().height as i32) / 2;
-            draw_text_proportional_styled(canvas, tf, tx, ty, &title, color, style);
+            match &tab.spans {
+                None => {
+                    draw_text_proportional_styled(canvas, tf, tx, ty, &title, color, style);
+                }
+                Some(spans) => {
+                    let mut pen = tx;
+                    for sp in fit_spans(spans, &title, &tab.title) {
+                        let (fg, bg) = span_colors(&sp, theme, &pal, color);
+                        let w = sp.text.chars().map(|c| tf.advance(c)).sum::<f32>().round() as i32;
+                        if let Some(bg) = bg {
+                            canvas.fill_rect(pen, top, w.max(0) as u32, h, bg);
+                        }
+                        let st = bt_render::FontStyle::from_flags(sp.bold, sp.italic);
+                        pen += draw_text_proportional_styled(canvas, tf, pen, ty, &sp.text, fg, st);
+                    }
+                }
+            }
         } else {
             let max_cells = ((cwid as i32 / cw) - 4).max(1) as usize;
             let title = truncate(&tab.title, max_cells);
             let tw = cw * text_cells(&title) as i32;
             let tx = cx + (cwid as i32 - tw) / 2;
             let ty = top + (h as i32 - m.height as i32) / 2;
-            draw_text_styled(canvas, fonts, tx, ty, &title, color, style);
+            match &tab.spans {
+                None => {
+                    draw_text_styled(canvas, fonts, tx, ty, &title, color, style);
+                }
+                Some(spans) => {
+                    let mut pen = tx;
+                    for sp in fit_spans(spans, &title, &tab.title) {
+                        let (fg, bg) = span_colors(&sp, theme, &pal, color);
+                        let w = cw * text_cells(&sp.text) as i32;
+                        if let Some(bg) = bg {
+                            canvas.fill_rect(pen, top, w.max(0) as u32, h, bg);
+                        }
+                        let st = bt_render::FontStyle::from_flags(sp.bold, sp.italic);
+                        pen += draw_text_styled(canvas, fonts, pen, ty, &sp.text, fg, st);
+                    }
+                }
+            }
         }
         if let Some(p) = tab.progress {
             draw_progress(
@@ -1185,6 +1324,7 @@ mod tests {
         c.clear(theme.background);
         let mk = |t: &str| TabLabel {
             title: t.into(),
+            spans: None,
             active: false,
             unread: false,
             progress: None,
@@ -1235,6 +1375,7 @@ mod tests {
         c.clear(theme.background);
         let mk = |t: &str| TabLabel {
             title: t.into(),
+            spans: None,
             active: false,
             unread: false,
             progress: None,
@@ -1440,6 +1581,7 @@ mod tests {
         let (w, h) = (400u32, 60u32);
         let mk = |active: bool, color: TabColor| TabLabel {
             title: "a".into(),
+            spans: None,
             active,
             unread: false,
             progress: None,
@@ -1489,6 +1631,7 @@ mod tests {
         c.clear(theme.background);
         let tabs = [TabLabel {
             title: "a".into(),
+            spans: None,
             active: false,
             unread: false,
             progress: None,
@@ -1596,6 +1739,7 @@ mod tests {
     fn plain(active: bool) -> TabLabel {
         TabLabel {
             title: String::new(),
+            spans: None,
             active,
             unread: false,
             progress: None,
@@ -2008,5 +2152,202 @@ mod tests {
                 assert!(found, "{edge:?}: 안 읽음 점이 탭 줄 안에 없다");
             }
         }
+    }
+
+    /// 탭 제목 틀(#910): 틀로 그린 라벨을 그려 같은 글을 그냥 적은 라벨과 픽셀을 견준다. PTY도 창도 쓰지 않는다
+    fn label_for(
+        cfg: &bt_core::tabtitle::TabTitleConfig,
+        title: &str,
+        bell: bool,
+        index: usize,
+        active: bool,
+    ) -> TabLabel {
+        use bt_core::tabtitle::{TitleData, render};
+        let data = TitleData {
+            title,
+            index,
+            num_windows: 1,
+            bell,
+            ..TitleData::default()
+        };
+        let spans = render(cfg, active, &data, false, false);
+        let (title, spans) = label_text(spans, cfg.max_length, false, false);
+        TabLabel {
+            title,
+            spans,
+            active,
+            unread: false,
+            progress: None,
+            color: Default::default(),
+        }
+    }
+
+    /// 빨간 기운이 센 픽셀(글자 가장자리는 섞여서 순수한 빨강이 아닐 수 있다)
+    fn reddish(p: u32) -> bool {
+        let (r, g, b) = ((p >> 16) & 0xFF, (p >> 8) & 0xFF, p & 0xFF);
+        r > g + 80 && r > b + 80
+    }
+
+    fn plain_label(title: &str, active: bool) -> TabLabel {
+        TabLabel {
+            title: title.into(),
+            spans: None,
+            active,
+            unread: false,
+            progress: None,
+            color: Default::default(),
+        }
+    }
+
+    fn render_tabs(tabs: &[TabLabel]) -> Option<Vec<u32>> {
+        let mut fonts = Fonts::new(&bt_render::FontConfig::default()).ok()?;
+        let theme = Theme::ghostty_default();
+        let (w, h) = (400u32, 60u32);
+        let mut buf = vec![0u32; (w * h) as usize];
+        let mut c = Canvas::new(&mut buf, w, h);
+        c.clear(theme.background);
+        draw_with_title_font(&mut c, &mut fonts, None, &theme, &TabBarLook::default(), tabs, 0);
+        Some(buf)
+    }
+
+    /// 설정이 없으면 탭 제목과 픽셀이 지금과 같다(벨이 있어도 `🔔 ` 앞붙임 그대로)
+    #[test]
+    fn default_template_draws_the_same_pixels_as_the_plain_title() {
+        let cfg = bt_core::tabtitle::TabTitleConfig::default();
+        for (title, bell, plain) in [("zsh", false, "zsh"), ("zsh", true, "🔔 zsh"), ("", false, "")] {
+            let a = label_for(&cfg, title, bell, 1, true);
+            assert!(a.spans.is_none(), "{title}");
+            assert_eq!(a.title, plain);
+            let b = label_for(&cfg, "x", false, 2, false);
+            let Some(left) = render_tabs(&[a, b]) else { return };
+            let right = render_tabs(&[plain_label(plain, true), plain_label("x", false)]).unwrap();
+            assert!(left == right, "{title:?} bell={bell}: 픽셀이 다르다");
+        }
+    }
+
+    /// 완료 조건: `{index}: {title}`이면 탭에 `1: zsh` 꼴이 그려진다
+    #[test]
+    fn index_and_title_template_draws_one_colon_zsh() {
+        let cfg = bt_core::tabtitle::TabTitleConfig {
+            template: "{index}: {title}".into(),
+            ..Default::default()
+        };
+        let a = label_for(&cfg, "zsh", false, 1, true);
+        let b = label_for(&cfg, "vim", false, 2, false);
+        assert_eq!((a.title.as_str(), b.title.as_str()), ("1: zsh", "2: vim"));
+        let Some(left) = render_tabs(&[a, b]) else { return };
+        let right = render_tabs(&[plain_label("1: zsh", true), plain_label("2: vim", false)]).unwrap();
+        assert!(left == right);
+        let Some(other) = render_tabs(&[plain_label("zsh", true), plain_label("vim", false)]) else {
+            return;
+        };
+        assert!(left != other, "번호가 그려지지 않았다");
+    }
+
+    /// 완료 조건: OSC 2로 `{fmt.fg.red}x`를 보내도 그 글자가 그대로 그려지고 빨갛게 되지 않는다
+    #[test]
+    fn program_title_with_fmt_syntax_is_drawn_literally_not_colored() {
+        let theme = Theme::ghostty_default();
+        for template in ["{title}", "{index}: {title}", "{fmt.bold}{title}"] {
+            let cfg = bt_core::tabtitle::TabTitleConfig {
+                template: template.into(),
+                ..Default::default()
+            };
+            let evil = "{fmt.fg.red}x";
+            let a = label_for(&cfg, evil, false, 1, true);
+            assert!(a.title.ends_with(evil), "{template}: {}", a.title);
+            let Some(buf) = render_tabs(&[a.clone(), plain_label("b", false)]) else {
+                return;
+            };
+            // 같은 글을 꾸밈 없이 적은 라벨과 색이 같다(틀이 굵게를 시켰으면 그 글꼴만 다르다)
+            if template != "{fmt.bold}{title}" {
+                let lit = render_tabs(&[plain_label(&a.title, true), plain_label("b", false)]).unwrap();
+                assert!(buf == lit, "{template}");
+            }
+            assert!(
+                !buf.iter().any(|p| reddish(*p)),
+                "{template}: 믿지 않는 제목이 색을 바꿨다 {:?}",
+                theme.palette[1]
+            );
+        }
+    }
+
+    #[test]
+    fn fmt_pieces_color_the_tab_title_and_fill_backgrounds() {
+        let cfg = bt_core::tabtitle::TabTitleConfig {
+            template: "{fmt.fg.red}A{fmt.fg.tab}b{fmt.bg._00ff00} c".into(),
+            ..Default::default()
+        };
+        let a = label_for(&cfg, "t", false, 1, true);
+        assert_eq!(a.title, "Ab c");
+        assert!(a.spans.is_some());
+        let Some(buf) = render_tabs(&[a]) else { return };
+        let green = bt_core::Rgb::new(0, 255, 0).to_u32();
+        assert!(buf.iter().any(|p| reddish(*p)), "빨간 글자가 없다");
+        assert!(buf.iter().any(|p| p & 0xFF_FFFF == green), "초록 바탕이 없다");
+    }
+
+    #[test]
+    fn bold_fmt_draws_differently_from_plain() {
+        let cfg = bt_core::tabtitle::TabTitleConfig {
+            template: "{fmt.bold}{title}".into(),
+            ..Default::default()
+        };
+        let a = label_for(&cfg, "Hello", false, 1, true);
+        assert_eq!(a.title, "Hello");
+        assert!(a.spans.is_some(), "굵게는 꾸밈이다");
+        let Some(bold) = render_tabs(&[a]) else { return };
+        let plain = render_tabs(&[plain_label("Hello", true)]).unwrap();
+        assert!(bold != plain);
+    }
+
+    #[test]
+    fn max_length_cuts_with_ellipsis_like_kitty() {
+        use bt_core::tabtitle::{Span, SpanColor};
+        let sp = |t: &str, fg| Span {
+            text: t.into(),
+            fg,
+            bg: SpanColor::Tab,
+            bold: false,
+            italic: false,
+        };
+        let red = SpanColor::Rgb(bt_core::Rgb::new(255, 0, 0));
+        // 제한 없음(0)이거나 들어가면 그대로
+        let (t, s) = label_text(vec![sp("abcdefghij", SpanColor::Tab)], 0, false, false);
+        assert_eq!((t.as_str(), s), ("abcdefghij", None));
+        let (t, _) = label_text(vec![sp("abcde", SpanColor::Tab)], 5, false, false);
+        assert_eq!(t, "abcde");
+        // 넘으면 max-1칸 + …
+        let (t, s) = label_text(vec![sp("abcdefghij", SpanColor::Tab)], 5, false, false);
+        assert_eq!((t.as_str(), s), ("abcd…", None));
+        // 조각에 걸쳐도 꾸밈은 지킨다
+        let (t, s) = label_text(vec![sp("ab", red), sp("cdefgh", SpanColor::Tab)], 4, false, false);
+        assert_eq!(t, "abc…");
+        let s = s.unwrap();
+        assert_eq!((s[0].text.as_str(), s[0].fg), ("ab", red));
+        assert_eq!(s.iter().map(|x| x.text.as_str()).collect::<String>(), "abc…");
+        // 넓은 글자는 두 칸: 3칸 안에 `가`(2칸) + …
+        let (t, _) = label_text(vec![sp("가나다라", SpanColor::Tab)], 4, false, false);
+        assert_eq!(t, "가…");
+        // 1이면 …만
+        let (t, _) = label_text(vec![sp("abc", SpanColor::Tab)], 1, false, false);
+        assert_eq!(t, "…");
+    }
+
+    #[test]
+    fn fit_spans_follows_the_bar_ellipsis() {
+        use bt_core::tabtitle::{Span, SpanColor};
+        let sp = |t: &str, bold| Span {
+            text: t.into(),
+            fg: SpanColor::Tab,
+            bg: SpanColor::Tab,
+            bold,
+            italic: false,
+        };
+        let spans = vec![sp("ab", false), sp("cdef", true)];
+        assert_eq!(fit_spans(&spans, "abcdef", "abcdef"), spans);
+        let cut = fit_spans(&spans, "abc…", "abcdef");
+        assert_eq!(cut.iter().map(|s| s.text.as_str()).collect::<String>(), "abc…");
+        assert!(cut.last().unwrap().bold, "… 은 앞 글자의 꾸밈을 따른다");
     }
 }

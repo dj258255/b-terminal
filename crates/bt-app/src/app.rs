@@ -192,6 +192,10 @@ pub struct Pane {
     fg_pid: Option<i32>,
     /// 보지 않은 알림이 있다
     pub unread: bool,
+    /// 보고 있지 않은 동안 새 출력이 왔다(`tab-activity-symbol`, kitty의 활동 표시, #910). 보게 되면 지운다
+    pub activity: bool,
+    /// 마지막으로 본 `Session::output_seq` 값
+    seen_output: u64,
     /// 보지 않은 벨이 있다(`bell-features = title`, #107): 제목 앞에 🔔
     pub bell: bool,
     /// 벨이 울려 테두리를 두르고 있다(`bell-features = border`, #687). 🔔와 달리 보고 있어도 켜고,
@@ -262,6 +266,17 @@ impl Pane {
     /// 탭 줄·창 제목에 쓸 이름: 사람이 붙인 제목 → 셸이 보낸 제목 → 전경 프로세스 이름. 보지 않은 벨이 있으면 앞에 🔔
     fn display_title(&self) -> String {
         self.display_title_in(None)
+    }
+
+    /// 탭 제목 틀(`tab-title-template`)의 `{title}`: 벨 기호 없는 이름(`🔒`은 앞에 둔다). 벨은 틀의 `{bell_symbol}`이 맡는다(#910)
+    fn plain_title_in(&self, tab_override: Option<&str>) -> String {
+        title_of(
+            tab_override.or(self.user_title.as_deref()),
+            &self.title,
+            self.fg_name.as_deref(),
+            false,
+            self.session.readonly(),
+        )
     }
 
     /// 탭 제목을 덮어썼으면(`set_tab_title`, #207) 그것이 칸 제목보다 먼저다
@@ -1813,6 +1828,7 @@ impl App {
             if self.is_visible(i) {
                 self.panes[i].unread = false;
                 self.panes[i].bell = false;
+                self.panes[i].activity = false;
             }
             if bell_border_cleared_on_focus(self.w.focused, self.is_focused(i)) {
                 self.panes[i].bell_border = false;
@@ -1870,6 +1886,28 @@ impl App {
             g.window.set_minimized(false);
             g.window.focus_window();
         }
+    }
+
+    /// 보고 있지 않은 칸에 새 출력이 왔으면 활동 표시를 켠다(`tab-activity-symbol`, #910). 기호가 없으면 아무것도 하지 않는다.
+    /// 바뀐 것이 있으면 참
+    fn poll_activity(&mut self) -> bool {
+        if self.config.tab_title.activity_symbol.is_empty() {
+            return false;
+        }
+        let mut changed = false;
+        for i in 0..self.panes.len() {
+            let seq = self.panes[i].session.output_seq();
+            if seq == self.panes[i].seen_output {
+                continue;
+            }
+            self.panes[i].seen_output = seq;
+            let watching = self.w.focused && self.is_visible(i);
+            if !watching && !self.panes[i].activity {
+                self.panes[i].activity = true;
+                changed = true;
+            }
+        }
+        changed
     }
 
     /// 전경 프로세스 이름을 본다(셸이 제목을 보내지 않을 때 탭 이름으로 쓴다). 바뀐 것이 있으면 참
@@ -2211,6 +2249,8 @@ impl App {
                 fg_name: None,
                 fg_pid: None,
                 unread: false,
+                activity: false,
+                seen_output: 0,
                 bell: false,
                 bell_border: false,
                 visual_bell_at: None,
@@ -7296,11 +7336,46 @@ impl App {
                         .filter_map(|id| self.pane_index(id).map(|i| &self.panes[i]))
                         .collect();
                     let focused = panes.iter().find(|p| p.id == g.focus);
+                    let active = gi == self.w.active;
+                    let (title, spans) = {
+                        let look = &self.config.tab_bar_look;
+                        let font = if active { look.active_font } else { look.inactive_font };
+                        let plain = focused
+                            .map(|p| p.plain_title_in(g.title.as_deref()))
+                            .unwrap_or_default();
+                        let wd = focused
+                            .and_then(|p| p.cwd.as_deref())
+                            .map(|c| c.to_string_lossy().into_owned())
+                            .unwrap_or_default();
+                        let exe = focused
+                            .and_then(|p| p.fg_name.as_deref())
+                            .map_or("", |n| n.rsplit('/').next().unwrap_or(n));
+                        let live: Vec<(u8, u8)> = panes.iter().filter_map(|p| p.live_progress()).collect();
+                        let avg = (!live.is_empty()).then(|| {
+                            let sum: u32 = live.iter().map(|p| p.1 as u32).sum();
+                            (live[0].0, (sum / live.len() as u32) as u8)
+                        });
+                        let data = bt_core::tabtitle::TitleData {
+                            title: &plain,
+                            index: gi + 1,
+                            num_windows: panes.len(),
+                            // 벨은 지금까지처럼 고른 칸의 것만 센다
+                            bell: focused.is_some_and(|p| p.bell),
+                            activity: panes.iter().any(|p| p.activity),
+                            active_wd: &wd,
+                            active_exe: exe,
+                            last_progress: focused.and_then(|p| p.live_progress()),
+                            all_progress: avg,
+                            progress_panes: live.len(),
+                        };
+                        let cfg = &self.config.tab_title;
+                        let spans = bt_core::tabtitle::render(cfg, active, &data, font.bold(), font.italic());
+                        tabbar::label_text(spans, cfg.max_length, font.bold(), font.italic())
+                    };
                     tabbar::TabLabel {
-                        title: focused
-                            .map(|p| p.display_title_in(g.title.as_deref()))
-                            .unwrap_or_default(),
-                        active: gi == self.w.active,
+                        title,
+                        spans,
+                        active,
                         unread: panes.iter().any(|p| p.unread),
                         // 칸들의 프로그램 상태(OSC 7501) 가운데 가장 급한 것, 없으면 고른 칸의 진행 표시, 없으면 다른 칸의 것
                         progress: tabbar::most_urgent(panes.iter().filter_map(|p| p.status_summary()))
@@ -7542,7 +7617,7 @@ impl App {
                 .collect(),
             labels: labels
                 .iter()
-                .map(|l| (l.title.clone(), l.active, l.unread, l.progress))
+                .map(|l| (l.title.clone(), l.active, l.unread, l.progress, l.spans.clone()))
                 .collect(),
             tab_look: self.config.tab_bar_look.clone(),
             handles: handles.clone(),
@@ -8016,8 +8091,14 @@ const BLINK: Duration = Duration::from_millis(600);
 
 /// 칸 하나의 격자 밖 모양: id, 바깥·격자 자리, 고른 칸인가, 바탕색, 칸·줄 수, 칸 크기(칸마다 글자 크기가 다르다, #422)
 type PaneKey = (u64, Rect, Rect, bool, bt_core::Rgb, usize, usize, (u32, u32));
-/// 탭 줄 한 칸: 제목, 보고 있음, 안 읽음, 진행
-type LabelKey = (String, bool, bool, Option<(u8, u8)>);
+/// 탭 줄 한 칸: 제목, 보고 있음, 안 읽음, 진행, 꾸밈 조각(틀이 꾸몄을 때)
+type LabelKey = (
+    String,
+    bool,
+    bool,
+    Option<(u8, u8)>,
+    Option<Vec<bt_core::tabtitle::Span>>,
+);
 /// 앞 프레임의 칸 하나: id, 셀, 커서, 조합 글
 type PaneFrame = (u64, Vec<DrawCell>, Option<DrawCursor>, Option<String>);
 
@@ -8448,6 +8529,7 @@ impl ApplicationHandler<UserEvent> for App {
                     self.update_hover();
                 }
                 self.check_text_waiters();
+                self.poll_activity();
                 self.refresh_search(Instant::now());
                 // 어느 창의 칸이 바뀌었는지 모르므로 모든 창(바뀐 줄이 없는 창은 올리지 않는다)
                 self.request_redraw_all()

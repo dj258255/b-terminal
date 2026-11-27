@@ -5,6 +5,7 @@ pub mod config;
 pub mod kitty_geom;
 pub mod proto;
 pub mod tabstyle;
+pub mod tabtitle;
 pub mod text_composition;
 pub mod theme;
 pub mod visual_bell;
