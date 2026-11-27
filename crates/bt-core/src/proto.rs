@@ -270,6 +270,8 @@ pub enum Event {
     TabClosed {
         tab: u64,
     },
+    /// 이 구독자의 큐가 밀려 이벤트를 건너뛰었다. 받는 쪽은 `list`로 지금 상태를 다시 읽는다
+    Lagged,
     /// 연결이 살아 있다는 표시(조용한 동안 가끔)
     Ping,
 }
@@ -279,9 +281,11 @@ pub fn event_line(e: &Event) -> String {
     serde_json::to_string(e).unwrap_or_default()
 }
 
-/// 소켓으로 내보낼 글을 다듬는다: 앱 안 글 다듬기(`printable`)를 한 번 더 거치고 `MAX_STATUS_TEXT`자로 자른다. 비면 `None`
+/// 소켓으로 내보낼 글을 다듬는다: 앱 안 글 다듬기(`printable`)를 한 번 더 거치고, `printable`이 남기는 보이지 않는 서식 글자
+/// (태그 문자·변형 선택자·보이지 않는 연산자·한글 채움 등)도 지운 뒤 `MAX_STATUS_TEXT`자로 자른다. 비면 `None`.
+/// 이모지를 잇는 ZWJ(U+200D)는 남긴다. 소켓 손님이 모델에 이 글을 넣을 수 있어 숨은 지시문 길을 줄이려는 것이다
 pub fn export_text(s: &str) -> Option<String> {
-    let t = printable(s);
+    let t: String = printable(s).chars().filter(|&c| !invisible_for_export(c)).collect();
     let t = t.trim();
     if t.is_empty() {
         return None;
@@ -291,6 +295,17 @@ pub fn export_text(s: &str) -> Option<String> {
     } else {
         t.to_string()
     })
+}
+
+fn invisible_for_export(c: char) -> bool {
+    matches!(c,
+        '\u{00AD}' | '\u{034F}' | '\u{115F}' | '\u{1160}' | '\u{180E}' | '\u{3164}' | '\u{FFA0}'
+        | '\u{2060}'..='\u{206F}'
+        | '\u{FE00}'..='\u{FE0F}'
+        | '\u{FFF9}'..='\u{FFFB}'
+        | '\u{1D173}'..='\u{1D17A}'
+        | '\u{E0000}'..='\u{E007F}'
+        | '\u{E0100}'..='\u{E01EF}')
 }
 
 /// 소켓 폴더. macOS는 사용자마다 다른 `$TMPDIR`, 그 밖에는 `$XDG_RUNTIME_DIR`, 둘 다 없으면 /tmp 아래 사용자 폴더
@@ -514,6 +529,7 @@ mod tests {
             },
             Event::TabOpened { tab: 3 },
             Event::TabClosed { tab: 3 },
+            Event::Lagged,
             Event::Ping,
         ];
         for e in events {
@@ -533,6 +549,27 @@ mod tests {
         let t = export_text(&long).unwrap();
         assert_eq!(t.chars().count(), MAX_STATUS_TEXT);
         assert!(t.ends_with('…'));
+    }
+
+    /// 보이지 않는 서식 글자(태그 문자·변형 선택자·보이지 않는 연산자·한글 채움 등)는 소켓으로 내보내는 글에서 지운다(손님이 모델에 넣을 때 숨은 지시문이 되지 않게).
+    /// 이모지를 잇는 ZWJ(U+200D)는 남긴다: 글자가 아니라 이모지 조합에 쓰이고 지우면 가족·직업 이모지가 깨진다
+    #[test]
+    fn export_text_drops_invisible_format_characters() {
+        let tag = "\u{E0049}\u{E0067}\u{E006E}";
+        assert_eq!(export_text(&format!("a{tag}b")).as_deref(), Some("ab"));
+        assert_eq!(export_text("a\u{206A}b\u{206F}c").as_deref(), Some("abc"));
+        assert_eq!(
+            export_text("a\u{00AD}b\u{034F}c\u{3164}d\u{FFA0}e").as_deref(),
+            Some("abcde")
+        );
+        assert_eq!(export_text("a\u{FFF9}b\u{FFFB}c").as_deref(), Some("abc"));
+        assert_eq!(
+            export_text("a\u{FE00}b\u{FE0F}c\u{E0100}d\u{E01EF}e").as_deref(),
+            Some("abcde")
+        );
+        assert_eq!(export_text("\u{E0049}\u{3164}"), None);
+        assert_eq!(export_text("👨\u{200D}👩").as_deref(), Some("👨\u{200D}👩"));
+        assert_eq!(export_text("한글 ok").as_deref(), Some("한글 ok"));
     }
 
     #[test]

@@ -4,6 +4,7 @@
 
 use std::collections::HashMap;
 use std::io::Write;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, SyncSender, TrySendError, sync_channel};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -20,6 +21,8 @@ pub const HEARTBEAT: Duration = Duration::from_secs(15);
 struct Sub {
     id: u64,
     tx: SyncSender<Arc<str>>,
+    /// 큐가 차서 이벤트를 건너뛰었다. `pump`가 큐를 비운 뒤 `lagged` 한 줄로 알리고 내린다
+    lagged: Arc<AtomicBool>,
 }
 
 #[derive(Default)]
@@ -40,6 +43,7 @@ pub struct Hub {
 pub struct Subscription {
     id: u64,
     rx: Receiver<Arc<str>>,
+    lagged: Arc<AtomicBool>,
     hub: Hub,
 }
 
@@ -61,10 +65,16 @@ impl Hub {
         let (tx, rx) = sync_channel(QUEUE_LINES);
         g.next_id += 1;
         let id = g.next_id;
-        g.subs.push(Sub { id, tx });
+        let lagged = Arc::new(AtomicBool::new(false));
+        g.subs.push(Sub {
+            id,
+            tx,
+            lagged: lagged.clone(),
+        });
         Ok(Subscription {
             id,
             rx,
+            lagged,
             hub: self.clone(),
         })
     }
@@ -74,7 +84,8 @@ impl Hub {
         self.inner.lock().map(|g| g.subs.len()).unwrap_or(0)
     }
 
-    /// 이벤트를 모든 구독자에게 던진다. 기다리지 않는다: 큐가 가득 찼거나 끊긴 구독자는 목록에서 뺀다(그 연결은 곧 닫힌다).
+    /// 이벤트를 모든 구독자에게 던진다. 기다리지 않는다: 큐가 가득 찬 구독자는 그 이벤트를 건너뛰고 "밀림" 표시만 세운다
+    /// (칸 출력만으로 구독을 끊을 수 없게). 끊긴 구독자는 목록에서 뺀다. 읽지 않는 손님은 연결의 쓰기 기한이 끊는다.
     /// 바로 앞과 같은 상태 이벤트는 건너뛴다
     pub fn publish(&self, e: Event) {
         let Ok(mut g) = self.inner.lock() else { return };
@@ -96,22 +107,39 @@ impl Hub {
         let line: Arc<str> = event_line(&e).into();
         g.subs.retain(|s| match s.tx.try_send(line.clone()) {
             Ok(()) => true,
-            Err(TrySendError::Full(_)) | Err(TrySendError::Disconnected(_)) => false,
+            Err(TrySendError::Full(_)) => {
+                s.lagged.store(true, Ordering::Relaxed);
+                true
+            }
+            Err(TrySendError::Disconnected(_)) => false,
         });
     }
 }
 
 impl Subscription {
-    /// 이벤트를 `w`에 한 줄씩 쓴다. 쓰기에 실패하거나(느린 손님은 소켓의 쓰기 기한이 끊는다) 큐에서 밀려 끊기면 돌아온다.
+    /// 큐에 있는 줄을 모두 쓰고, 밀림 표시가 서 있으면 `lagged` 한 줄을 쓴다(큐를 비운 뒤라 그 뒤 이벤트는 이어서 온다)
+    fn drain(&self, w: &mut impl Write) -> std::io::Result<()> {
+        while let Ok(line) = self.rx.try_recv() {
+            w.write_all(line.as_bytes())?;
+            w.write_all(b"\n")?;
+        }
+        if self.lagged.swap(false, Ordering::Relaxed) {
+            w.write_all(event_line(&Event::Lagged).as_bytes())?;
+            w.write_all(b"\n")?;
+        }
+        w.flush()
+    }
+
+    /// 이벤트를 `w`에 한 줄씩 쓴다. 쓰기에 실패하면(느린 손님은 소켓의 쓰기 기한이 끊는다) 돌아온다.
     /// 조용한 동안은 `heartbeat`마다 `ping`을 써서 닫힌 연결을 알아챈다
     pub fn pump(&self, w: &mut impl Write, heartbeat: Duration) {
         loop {
-            let line: Arc<str> = match self.rx.recv_timeout(heartbeat) {
+            let first: Arc<str> = match self.rx.recv_timeout(heartbeat) {
                 Ok(l) => l,
                 Err(RecvTimeoutError::Timeout) => event_line(&Event::Ping).into(),
                 Err(RecvTimeoutError::Disconnected) => return,
             };
-            if w.write_all(line.as_bytes()).is_err() || w.write_all(b"\n").is_err() || w.flush().is_err() {
+            if w.write_all(first.as_bytes()).is_err() || w.write_all(b"\n").is_err() || self.drain(w).is_err() {
                 return;
             }
         }
@@ -190,9 +218,10 @@ mod tests {
         assert_eq!(hub.subscribers(), 0);
     }
 
-    /// 읽지 않는 구독자는 큐가 차면 끊기고, 그동안 publish는 한 번도 막히지 않는다. 읽는 구독자는 영향이 없다
+    /// 읽지 않는 구독자가 있어도 publish는 막히지 않고 구독자를 빼지도 않는다. 밀린 구독자는 큐를 다 받은 뒤 `lagged` 한 줄을 받고 이어서 받는다.
+    /// 칸 출력만으로(상태·명령 끝을 연달아 보내) 구독을 끊을 수 없게 하는 것이다
     #[test]
-    fn slow_subscriber_is_dropped_and_publish_never_blocks() {
+    fn lagging_subscriber_gets_a_lagged_line_and_keeps_receiving() {
         let hub = Hub::default();
         let slow = hub.subscribe().unwrap();
         let fast = hub.subscribe().unwrap();
@@ -202,12 +231,21 @@ mod tests {
             while fast.try_next().is_some() {}
         }
         assert!(start.elapsed() < Duration::from_secs(2));
-        assert_eq!(hub.subscribers(), 1, "느린 구독자만 빠진다");
-        // 끊긴 구독자의 pump는 큐를 다 쓴 뒤 돌아온다
+        assert_eq!(hub.subscribers(), 2, "밀려도 구독자를 빼지 않는다");
         let mut sink = Vec::new();
-        slow.pump(&mut sink, Duration::from_secs(5));
-        assert_eq!(sink.iter().filter(|b| **b == b'\n').count(), QUEUE_LINES);
+        slow.drain(&mut sink).unwrap();
+        let text = String::from_utf8(sink).unwrap();
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(lines.len(), QUEUE_LINES + 1);
+        assert_eq!(*lines.last().unwrap(), r#"{"event":"lagged"}"#);
+        // 밀림은 한 번만 알리고, 그 뒤 이벤트는 이어서 온다
         hub.publish(Event::TabOpened { tab: 999 });
+        let mut sink = Vec::new();
+        slow.drain(&mut sink).unwrap();
+        assert_eq!(
+            String::from_utf8(sink).unwrap(),
+            "{\"event\":\"tab_opened\",\"tab\":999}\n"
+        );
         assert!(fast.try_next().is_some());
     }
 
