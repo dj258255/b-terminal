@@ -47,8 +47,38 @@ pub fn action_for(id: &str) -> Option<MenuCommand> {
         "float_on_top" => MenuCommand::Action(Action::ToggleFloatOnTop),
         "toggle_readonly" => MenuCommand::Action(Action::ToggleReadonly),
         // 탭 오른쪽 단추 메뉴의 색(#852)
-        other => MenuCommand::Action(Action::SetTabColor(crate::tabcolor::TabColor::from_menu_id(other)?)),
+        other => MenuCommand::Action(match group_action(other) {
+            Some(a) => a,
+            None => Action::SetTabColor(crate::tabcolor::TabColor::from_menu_id(other)?),
+        }),
     })
+}
+
+/// 탭 묶음 항목(#933)의 id → 동작. 탭 메뉴의 `tab_group_*`는 지금 탭의 묶음에, 머리표 메뉴의 `chip_<번호>_*`는 그 번호의 묶음에 한다
+fn group_action(id: &str) -> Option<Action> {
+    use crate::tabbundle::BundleOp;
+    use crate::tabcolor::TabColor;
+    let color = |key: &str| TabColor::from_key(key).map(BundleOp::Color);
+    match id {
+        "tab_group_new" => return Some(Action::NewTabGroup),
+        "tab_group_leave" => return Some(Action::LeaveTabGroup),
+        "tab_group_join" => return Some(Action::JoinTabGroup),
+        "tab_group_rename" => return Some(Action::TabGroup(None, BundleOp::Rename)),
+        "tab_group_toggle" => return Some(Action::TabGroup(None, BundleOp::Toggle)),
+        _ => {}
+    }
+    if let Some(key) = id.strip_prefix("tab_group_color_") {
+        return Some(Action::TabGroup(None, color(key)?));
+    }
+    let (num, op) = id.strip_prefix("chip_")?.split_once('_')?;
+    let bundle: crate::tabbundle::Id = num.parse().ok()?;
+    let op = match op {
+        "toggle" => BundleOp::Toggle,
+        "rename" => BundleOp::Rename,
+        "dissolve" => BundleOp::Dissolve,
+        other => color(other.strip_prefix("color_")?)?,
+    };
+    Some(Action::TabGroup(Some(bundle), op))
 }
 
 #[derive(Debug, Clone, PartialEq)]

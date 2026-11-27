@@ -113,6 +113,15 @@ pub enum Action {
     PromptTabTitle,
     /// 탭 오른쪽 단추 메뉴로 지금 탭의 색을 정한다(#852). Ghostty에는 이 키 동작이 없어(메뉴로만 고른다) 키 묶음 이름은 없다
     SetTabColor(crate::tabcolor::TabColor),
+    /// 지금 탭을 새 탭 묶음에 혼자 넣는다(#933 `new_tab_group`). Ghostty·kitty에는 없고 iTerm2 3.7·Warp의 탭 그룹을 따른다
+    NewTabGroup,
+    /// 지금 탭을 묶음에서 뺀다(`leave_tab_group`)
+    LeaveTabGroup,
+    /// 지금 탭을 옆 탭의 묶음에 넣는다(`join_tab_group`)
+    JoinTabGroup,
+    /// 탭 묶음 하나에 하는 일(`toggle_tab_group`·`prompt_tab_group_title`·`set_tab_group_title`·`set_tab_group_color`·`dissolve_tab_group`).
+    /// 대상이 없으면 지금 탭의 묶음이고, 있으면 그 번호의 묶음이다(머리표 메뉴)
+    TabGroup(Option<crate::tabbundle::Id>, crate::tabbundle::BundleOp),
     /// 입력 막대로 지금 창의 제목을 묻는다(Ghostty `prompt_window_title`, #207)
     PromptWindowTitle,
     /// 지금 탭의 제목을 덮어쓴다. 빈 글이면 덮어쓴 제목을 지운다(Ghostty `set_tab_title`, #207)
@@ -537,6 +546,12 @@ const VOID_ACTIONS: &[&str] = &[
     "prompt_surface_title",
     "prompt_tab_title",
     "prompt_window_title",
+    "new_tab_group",
+    "leave_tab_group",
+    "join_tab_group",
+    "toggle_tab_group",
+    "prompt_tab_group_title",
+    "dissolve_tab_group",
     "copy_url_to_clipboard",
     "copy_title_to_clipboard",
     "select_all",
@@ -707,6 +722,23 @@ pub fn parse_action(s: &str) -> Result<Option<Action>, String> {
         }
         "set_surface_title" => Action::SetSurfaceTitle(arg.unwrap_or("").to_string()),
         "prompt_tab_title" => Action::PromptTabTitle,
+        "new_tab_group" => Action::NewTabGroup,
+        "leave_tab_group" => Action::LeaveTabGroup,
+        "join_tab_group" => Action::JoinTabGroup,
+        "toggle_tab_group" => Action::TabGroup(None, crate::tabbundle::BundleOp::Toggle),
+        "prompt_tab_group_title" => Action::TabGroup(None, crate::tabbundle::BundleOp::Rename),
+        "dissolve_tab_group" => Action::TabGroup(None, crate::tabbundle::BundleOp::Dissolve),
+        "set_tab_group_title" => Action::TabGroup(
+            None,
+            crate::tabbundle::BundleOp::SetTitle(arg.unwrap_or("").to_string()),
+        ),
+        "set_tab_group_color" => Action::TabGroup(
+            None,
+            crate::tabbundle::BundleOp::Color(
+                arg.and_then(|a| crate::tabcolor::TabColor::from_key(a.trim()))
+                    .ok_or("set_tab_group_color:none·blue·purple·pink·red·orange·yellow·green·teal·graphite")?,
+            ),
+        ),
         "prompt_window_title" => Action::PromptWindowTitle,
         "set_tab_title" => Action::SetTabTitle(arg.unwrap_or("").to_string()),
         "set_window_title" => Action::SetWindowTitle(arg.unwrap_or("").to_string()),
@@ -3445,5 +3477,43 @@ mod tests {
         assert_eq!(crate::palette::shortcut(&km, &c), "Y");
         let km = only(&["y=toggle_split_zoom", "ctrl+shift+alt+x=toggle_split_zoom"]);
         assert_eq!(crate::palette::shortcut(&km, &c), "⌃⌥⇧X");
+    }
+
+    /// 탭 묶음 동작(#933): 이름이 풀리고, 색 이름이 틀리면 오류, 값이 필요 없는 동작에 콜론을 붙이면 오류
+    #[test]
+    fn tab_group_actions_parse() {
+        use crate::tabbundle::BundleOp;
+        use crate::tabcolor::TabColor;
+        assert_eq!(parse_action("new_tab_group").unwrap(), Some(Action::NewTabGroup));
+        assert_eq!(parse_action("leave_tab_group").unwrap(), Some(Action::LeaveTabGroup));
+        assert_eq!(parse_action("join_tab_group").unwrap(), Some(Action::JoinTabGroup));
+        assert_eq!(
+            parse_action("toggle_tab_group").unwrap(),
+            Some(Action::TabGroup(None, BundleOp::Toggle))
+        );
+        assert_eq!(
+            parse_action("prompt_tab_group_title").unwrap(),
+            Some(Action::TabGroup(None, BundleOp::Rename))
+        );
+        assert_eq!(
+            parse_action("dissolve_tab_group").unwrap(),
+            Some(Action::TabGroup(None, BundleOp::Dissolve))
+        );
+        assert_eq!(
+            parse_action("set_tab_group_title:에이전트").unwrap(),
+            Some(Action::TabGroup(None, BundleOp::SetTitle("에이전트".into())))
+        );
+        assert_eq!(
+            parse_action("set_tab_group_title").unwrap(),
+            Some(Action::TabGroup(None, BundleOp::SetTitle(String::new()))),
+            "빈 글은 이름을 지운다"
+        );
+        assert_eq!(
+            parse_action("set_tab_group_color:teal").unwrap(),
+            Some(Action::TabGroup(None, BundleOp::Color(TabColor::Teal)))
+        );
+        assert!(parse_action("set_tab_group_color:magenta").is_err());
+        assert!(parse_action("set_tab_group_color").is_err());
+        assert!(parse_action("new_tab_group:1").is_err());
     }
 }

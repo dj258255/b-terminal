@@ -27,6 +27,21 @@ pub struct SavedWindow {
     /// 사람이 붙인 창 제목(`set_window_title`). 옛 판 파일에는 없다
     #[serde(default)]
     pub title: Option<String>,
+    /// 탭 묶음(#933)의 이름·색·접힘. 묶음이 없으면 적지 않고, 옛 판 파일에는 없다(묶음 없음으로 읽힌다)
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub bundles: Vec<SavedBundle>,
+}
+
+/// 저장한 탭 묶음 하나(#933). 파일은 믿지 않는다: 이름은 읽을 때 다시 다듬고, 모르는 색 이름은 색 없음으로 본다
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SavedBundle {
+    pub id: u32,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub color: Option<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub collapsed: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -41,6 +56,9 @@ pub struct SavedTab {
     /// 사람이 고른 탭 색의 이름(`tabcolor::TabColor::key`, #852). 옛 판 파일에는 없고, 모르는 이름은 읽을 때 없는 것으로 본다
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub color: Option<String>,
+    /// 든 탭 묶음의 번호(`SavedWindow::bundles`의 `id`, #933). 묶음이 없으면 적지 않는다. 옛 판 파일에는 없다
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bundle: Option<u32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -253,9 +271,16 @@ mod tests {
                     zoomed: false,
                     title: Some("빌드".into()),
                     color: Some("teal".into()),
+                    bundle: Some(3),
                 }],
                 active: 0,
                 title: Some("작업".into()),
+                bundles: vec![SavedBundle {
+                    id: 3,
+                    name: "에이전트".into(),
+                    color: Some("blue".into()),
+                    collapsed: true,
+                }],
             }],
         };
         save(&p, &state).unwrap();
@@ -316,6 +341,7 @@ mod tests {
             zoomed: false,
             title: None,
             color: color.map(str::to_string),
+            bundle: None,
         };
         let state = SavedState {
             version: VERSION,
@@ -325,6 +351,7 @@ mod tests {
                 tabs: vec![tab(Some("teal")), tab(None)],
                 active: 0,
                 title: None,
+                bundles: Vec::new(),
             }],
         };
         let json = serde_json::to_string(&state).unwrap();
@@ -349,5 +376,56 @@ mod tests {
             TabColor::None
         );
         assert_eq!(TabColor::from_saved(Some("")), TabColor::None);
+    }
+
+    /// 탭 묶음(#933): 묶음 목록과 탭의 묶음 번호를 적고 되살린다. 묶음이 없으면 키를 적지 않고, 묶음이 없던 옛 파일도 그대로 읽힌다
+    #[test]
+    fn bundles_round_trip_and_old_files_read_as_no_bundles() {
+        let tab = |bundle: Option<u32>| SavedTab {
+            layout: SavedNode::Pane {
+                cwd: None,
+                title: None,
+                scrollback: None,
+            },
+            focus: 0,
+            zoomed: false,
+            title: None,
+            color: None,
+            bundle,
+        };
+        let state = SavedState {
+            version: VERSION,
+            windows: vec![SavedWindow {
+                size: (800, 600),
+                position: None,
+                tabs: vec![tab(Some(2)), tab(Some(2)), tab(None)],
+                active: 1,
+                title: None,
+                bundles: vec![SavedBundle {
+                    id: 2,
+                    name: "서버".into(),
+                    color: Some("green".into()),
+                    collapsed: true,
+                }],
+            }],
+        };
+        let json = serde_json::to_string(&state).unwrap();
+        assert_eq!(serde_json::from_str::<SavedState>(&json).unwrap(), state);
+        // 묶음이 없는 창은 두 키를 모두 적지 않는다
+        let plain = SavedState {
+            version: VERSION,
+            windows: vec![SavedWindow {
+                bundles: Vec::new(),
+                tabs: vec![tab(None)],
+                ..state.windows[0].clone()
+            }],
+        };
+        let json = serde_json::to_string(&plain).unwrap();
+        assert!(!json.contains("bundle"), "{json}");
+        // 묶음 키가 없는 옛 파일
+        let old = r#"{"version":1,"windows":[{"size":[800,600],"position":null,"tabs":[{"layout":{"Pane":{"cwd":null}},"focus":0,"zoomed":false}],"active":0}]}"#;
+        let back: SavedState = serde_json::from_str(old).unwrap();
+        assert!(back.windows[0].bundles.is_empty());
+        assert_eq!(back.windows[0].tabs[0].bundle, None);
     }
 }

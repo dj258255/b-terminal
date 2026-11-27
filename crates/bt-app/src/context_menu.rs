@@ -143,9 +143,127 @@ pub fn tab_entries(current: crate::tabcolor::TabColor) -> Vec<TabEntry> {
     v
 }
 
-/// 탭 메뉴를 마우스 자리에 띄운다(`popup`처럼 모달). 색 항목은 동그란 견본 그림이 붙고, 고른 색은 고리와 뒤의 표시로 구별한다
+/// 탭 메뉴에 붙는 탭 묶음 항목(#933)
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GroupEntry {
+    Separator,
+    /// 새 묶음으로 묶기
+    New,
+    /// 묶음에서 빼기
+    Leave,
+    /// 옆 탭의 묶음에 넣기
+    Join,
+    /// 묶음 이름 바꾸기
+    Rename,
+    /// 접기(`collapsed`가 거짓일 때) 또는 펴기
+    Toggle {
+        collapsed: bool,
+    },
+    /// 묶음 색 하위 메뉴. 지금 색이 고른 것이다
+    Colors {
+        current: crate::tabcolor::TabColor,
+    },
+}
+
+/// 지금 탭의 메뉴에 붙는 묶음 항목. `in_bundle`은 탭이 묶음에 들었는가, `sole`은 그 묶음에 혼자인가,
+/// `can_join`은 옆 탭의 묶음에 넣을 수 있는가. 묶음에 들지 않았으면 이름·접기·색은 없다
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub fn group_entries(
+    in_bundle: bool,
+    sole: bool,
+    can_join: bool,
+    collapsed: bool,
+    color: crate::tabcolor::TabColor,
+) -> Vec<GroupEntry> {
+    let mut v = vec![GroupEntry::Separator];
+    if !sole {
+        v.push(GroupEntry::New);
+    }
+    if can_join {
+        v.push(GroupEntry::Join);
+    }
+    if in_bundle {
+        v.push(GroupEntry::Leave);
+        v.push(GroupEntry::Rename);
+        v.push(GroupEntry::Toggle { collapsed });
+        v.push(GroupEntry::Colors { current: color });
+    }
+    v
+}
+
+/// 메뉴 항목 id(`menu::action_for`가 푼다)
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub fn group_item_id(e: &GroupEntry) -> Option<&'static str> {
+    Some(match e {
+        GroupEntry::New => "tab_group_new",
+        GroupEntry::Leave => "tab_group_leave",
+        GroupEntry::Join => "tab_group_join",
+        GroupEntry::Rename => "tab_group_rename",
+        GroupEntry::Toggle { .. } => "tab_group_toggle",
+        GroupEntry::Separator | GroupEntry::Colors { .. } => return None,
+    })
+}
+
+/// 묶음 머리표 메뉴의 항목 id: `chip_<묶음 번호>_<일>`(`menu::action_for`가 푼다)
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub fn chip_item_id(bundle: crate::tabbundle::Id, op: &str) -> String {
+    format!("chip_{bundle}_{op}")
+}
+
 #[cfg(target_os = "macos")]
-pub fn popup_tab(entries: &[TabEntry], dark: bool) {
+fn color_submenu(
+    title: &str,
+    current: crate::tabcolor::TabColor,
+    dark: bool,
+    id_of: &dyn Fn(crate::tabcolor::TabColor) -> String,
+) -> muda::Submenu {
+    use crate::tabcolor::{SWATCH_PX, TabColor, swatch_rgba};
+    use muda::{Icon, IconMenuItem, Submenu};
+    let sub = Submenu::new(title, true);
+    for color in TabColor::ALL {
+        let selected = color == current;
+        let icon = Icon::from_rgba(swatch_rgba(color, selected, dark), SWATCH_PX, SWATCH_PX).ok();
+        let text = if selected {
+            format!("{} ✓", color.label())
+        } else {
+            color.label().to_string()
+        };
+        let _ = sub.append(&IconMenuItem::with_id(id_of(color), text, true, icon, None));
+    }
+    sub
+}
+
+/// 묶음 머리표의 오른쪽 단추 메뉴를 띄운다(macOS, 모달, #933): 접기·펴기, 이름 바꾸기, 색, 묶음 풀기
+#[cfg(target_os = "macos")]
+pub fn popup_bundle(bundle: crate::tabbundle::Id, collapsed: bool, color: crate::tabcolor::TabColor, dark: bool) {
+    use muda::{ContextMenu, Menu, MenuItem, PredefinedMenuItem};
+    let menu = Menu::new();
+    let toggle = if collapsed { "묶음 펴기" } else { "묶음 접기" };
+    let _ = menu.append(&MenuItem::with_id(chip_item_id(bundle, "toggle"), toggle, true, None));
+    let _ = menu.append(&MenuItem::with_id(
+        chip_item_id(bundle, "rename"),
+        "묶음 이름 바꾸기…",
+        true,
+        None,
+    ));
+    let _ = menu.append(&color_submenu("묶음 색", color, dark, &|c| {
+        chip_item_id(bundle, &format!("color_{}", c.key()))
+    }));
+    let _ = menu.append(&PredefinedMenuItem::separator());
+    let _ = menu.append(&MenuItem::with_id(
+        chip_item_id(bundle, "dissolve"),
+        "묶음 풀기",
+        true,
+        None,
+    ));
+    winit::platform::macos::popup_context_menu(menu.ns_menu());
+}
+
+/// 탭 메뉴를 마우스 자리에 띄운다(`popup`처럼 모달). 색 항목은 동그란 견본 그림이 붙고, 고른 색은 고리와 뒤의 표시로 구별한다.
+/// `groups`는 탭 묶음 항목(#933)이고 색 아래에 붙는다
+#[cfg(target_os = "macos")]
+pub fn popup_tab(entries: &[TabEntry], groups: &[GroupEntry], dark: bool) {
     use crate::tabcolor::{SWATCH_PX, swatch_rgba};
     use muda::{ContextMenu, Icon, IconMenuItem, Menu, MenuItem, PredefinedMenuItem};
     let menu = Menu::new();
@@ -161,6 +279,29 @@ pub fn popup_tab(entries: &[TabEntry], dark: bool) {
                     color.label().to_string()
                 };
                 menu.append(&IconMenuItem::with_id(color.menu_id(), text, true, icon, None))
+            }
+        };
+    }
+    for g in groups {
+        let _ = match g {
+            GroupEntry::Separator => menu.append(&PredefinedMenuItem::separator()),
+            GroupEntry::Colors { current } => menu.append(&color_submenu("묶음 색", *current, dark, &|c| {
+                format!("tab_group_color_{}", c.key())
+            })),
+            GroupEntry::Toggle { collapsed } => menu.append(&MenuItem::with_id(
+                "tab_group_toggle",
+                if *collapsed { "묶음 펴기" } else { "묶음 접기" },
+                true,
+                None,
+            )),
+            other => {
+                let text = match other {
+                    GroupEntry::New => "새 묶음으로 묶기",
+                    GroupEntry::Leave => "묶음에서 빼기",
+                    GroupEntry::Join => "옆 탭의 묶음에 넣기",
+                    _ => "묶음 이름 바꾸기…",
+                };
+                menu.append(&MenuItem::with_id(group_item_id(other).unwrap_or(""), text, true, None))
             }
         };
     }
@@ -379,5 +520,85 @@ mod tests {
                 assert!(text.chars().any(|c| ('\u{AC00}'..='\u{D7A3}').contains(&c)), "{text}");
             }
         }
+    }
+
+    /// 탭 묶음 항목(#933): 묶음에 들지 않은 탭은 묶기·넣기만, 든 탭은 빼기·이름·접기·색도 보인다. 혼자뿐인 묶음은 "새 묶음" 없음
+    #[test]
+    fn group_menu_shows_only_what_applies() {
+        use crate::tabcolor::TabColor;
+        let none = group_entries(false, false, false, false, TabColor::None);
+        assert_eq!(none, [GroupEntry::Separator, GroupEntry::New]);
+        let join = group_entries(false, false, true, false, TabColor::None);
+        assert_eq!(join, [GroupEntry::Separator, GroupEntry::New, GroupEntry::Join]);
+        let inside = group_entries(true, false, false, true, TabColor::Teal);
+        assert_eq!(
+            inside,
+            [
+                GroupEntry::Separator,
+                GroupEntry::New,
+                GroupEntry::Leave,
+                GroupEntry::Rename,
+                GroupEntry::Toggle { collapsed: true },
+                GroupEntry::Colors {
+                    current: TabColor::Teal
+                },
+            ]
+        );
+        let sole = group_entries(true, true, false, false, TabColor::None);
+        assert!(!sole.contains(&GroupEntry::New));
+    }
+
+    /// 탭 메뉴·머리표 메뉴의 항목 id가 모두 묶음 동작으로 가고, 모르는 id·깨진 번호는 없다
+    #[test]
+    fn group_menu_ids_map_to_actions() {
+        use crate::tabbundle::BundleOp;
+        use crate::tabcolor::TabColor;
+        let act = |id: &str| match action_for(id) {
+            Some(MenuCommand::Action(a)) => Some(a),
+            other => {
+                assert!(other.is_none(), "{id}: {other:?}");
+                None
+            }
+        };
+        assert_eq!(act("tab_group_new"), Some(Action::NewTabGroup));
+        assert_eq!(act("tab_group_leave"), Some(Action::LeaveTabGroup));
+        assert_eq!(act("tab_group_join"), Some(Action::JoinTabGroup));
+        assert_eq!(act("tab_group_rename"), Some(Action::TabGroup(None, BundleOp::Rename)));
+        assert_eq!(act("tab_group_toggle"), Some(Action::TabGroup(None, BundleOp::Toggle)));
+        for c in TabColor::ALL {
+            assert_eq!(
+                act(&format!("tab_group_color_{}", c.key())),
+                Some(Action::TabGroup(None, BundleOp::Color(c)))
+            );
+            assert_eq!(
+                act(&chip_item_id(7, &format!("color_{}", c.key()))),
+                Some(Action::TabGroup(Some(7), BundleOp::Color(c)))
+            );
+        }
+        assert_eq!(
+            act(&chip_item_id(7, "toggle")),
+            Some(Action::TabGroup(Some(7), BundleOp::Toggle))
+        );
+        assert_eq!(
+            act(&chip_item_id(12, "rename")),
+            Some(Action::TabGroup(Some(12), BundleOp::Rename))
+        );
+        assert_eq!(
+            act(&chip_item_id(3, "dissolve")),
+            Some(Action::TabGroup(Some(3), BundleOp::Dissolve))
+        );
+        for bad in [
+            "chip_x_toggle",
+            "chip_7_nope",
+            "chip_7",
+            "chip__toggle",
+            "chip_7_color_magenta",
+            "tab_group_color_magenta",
+            "tab_group_nope",
+        ] {
+            assert_eq!(act(bad), None, "{bad}");
+        }
+        // 기존 탭 색 항목은 그대로 간다
+        assert_eq!(act("tab_color_blue"), Some(Action::SetTabColor(TabColor::Blue)));
     }
 }
