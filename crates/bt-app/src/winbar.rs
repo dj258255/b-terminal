@@ -44,6 +44,22 @@ pub fn cut(outer: Rect, bar_h: u32, bottom: bool) -> Option<(Rect, Rect)> {
     })
 }
 
+/// 칸의 바깥 사각형 `outer`에서 (막대 사각형, 글자 영역의 바탕 사각형). 바탕에서 여백을 빼면 격자 자리다.
+/// kitty처럼 칸 테두리(#915)는 칸 바깥 둘레이고 제목 막대는 그 안쪽이다(`kitty/window.py` `set_geometry`는 테두리를 뺀
+/// 칸 크기에서 막대를 자른다). 그래서 테두리를 먼저 빼고(`border`) 그 안에서 막대를 자른다(`cut`). 막대가 없으면 테두리만 뺀 사각형이다.
+/// 테두리 계산은 "탭에 칸이 하나인가"를 바깥 사각형으로 판단하므로 `border`에는 늘 바깥 사각형이 들어가야 한다
+pub fn frame_and_cut(
+    outer: Rect,
+    border: impl Fn(Rect) -> Rect,
+    cut: impl Fn(Rect) -> Option<(Rect, Rect)>,
+) -> (Option<Rect>, Rect) {
+    let framed = border(outer);
+    match cut(framed) {
+        Some((bar, rest)) => (Some(bar), rest),
+        None => (None, framed),
+    }
+}
+
 /// 막대를 둘지와 자리를 정한다(kitty `layout/base.py`·`window.py set_geometry`): 탭에 보이는 칸이 `visible`개이고 설정이
 /// 막대를 보이게 하며(`window-title-bar-min-windows`) 칸이 `pane_rows`줄(막대 줄 포함)로 두 줄 넘게 있을 때만 (막대, 나머지)를 돌려준다.
 /// 설정이 없으면(기본 0) 늘 `None`이라 칸 배치가 바뀌지 않는다
@@ -128,6 +144,31 @@ mod tests {
             bold: false,
             italic: false,
         }
+    }
+
+    /// 칸 테두리(#915)와 함께: 테두리는 칸 바깥 둘레, 막대는 그 안쪽이다(kitty `set_geometry`). 테두리 계산은 바깥 사각형을 받는다
+    #[test]
+    fn border_comes_off_first_and_the_bar_sits_inside_it() {
+        use std::cell::RefCell;
+        let outer = Rect::new(0, 0, 200, 100);
+        let seen = RefCell::new(Vec::new());
+        let border = |r: Rect| {
+            seen.borrow_mut().push(r);
+            Rect::new(r.x + 2, r.y + 2, r.w - 4, r.h - 4)
+        };
+        let (bar, base) = frame_and_cut(outer, border, |r| cut(r, 16, false));
+        assert_eq!(
+            seen.borrow().as_slice(),
+            &[outer],
+            "테두리 계산은 바깥 사각형을 받아야 칸 하나를 알아본다"
+        );
+        assert_eq!(bar, Some(Rect::new(2, 2, 196, 16)), "막대는 테두리 안쪽 맨 위");
+        assert_eq!(base, Rect::new(2, 18, 196, 80), "글자 바탕은 막대 아래, 테두리 안쪽");
+        // 아래쪽 막대도 테두리 안쪽
+        let (bar, base) = frame_and_cut(outer, border, |r| cut(r, 16, true));
+        assert_eq!((bar, base), (Some(Rect::new(2, 82, 196, 16)), Rect::new(2, 2, 196, 80)));
+        // 막대가 없으면 테두리만 뺀다(지금과 같다)
+        assert_eq!(frame_and_cut(outer, border, |_| None), (None, Rect::new(2, 2, 196, 96)));
     }
 
     #[test]
