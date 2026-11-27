@@ -82,6 +82,25 @@ pub fn trigger(event: &KeyEvent, mods: ModifiersState) -> Option<Trigger> {
     trigger_of(&key, mods)
 }
 
+/// 복사 모드(#930)가 쓰는 트리거: 수식 키가 없어도 글자 키를 라틴 글자로 읽는다. 복사 모드 중에는 입력기를 꺼 글자 키가
+/// `KeyboardInput`으로 오는데, 한글 2벌식에서 `h` 자리는 `ㅗ`이므로 ⌘ 층 글자(`h`)로 바꿔 같은 키 묶음을 맞춘다
+pub fn trigger_latin(event: &KeyEvent, mods: ModifiersState) -> Option<Trigger> {
+    use winit::platform::modifier_supplement::KeyEventExtModifierSupplement;
+    let key = latin_letter_key(&event.key_without_modifiers(), mods, || {
+        command_layer(event.physical_key)
+    });
+    trigger_of(&key, mods)
+}
+
+/// `trigger_latin`의 판단: ⌃가 있는 것처럼 ⌘ 층 글자로 바꿔 읽는다(수식 키는 트리거에 그대로 쓴다)
+pub(crate) fn latin_letter_key(
+    without_modifiers: &Key,
+    mods: ModifiersState,
+    command_layer: impl FnOnce() -> Option<String>,
+) -> Key {
+    layout_trigger_key(without_modifiers, mods | ModifiersState::CONTROL, command_layer)
+}
+
 /// 지금 자판의 ⌘ 층 글자(#709). macOS만 읽을 수 있다
 #[cfg(target_os = "macos")]
 fn command_layer(key: PhysicalKey) -> Option<String> {
@@ -813,6 +832,31 @@ pub(crate) fn encode_legacy(k: &LegacyKey, modes: bt_term::Modes, option_as_alt:
 mod tests {
     use super::*;
     use bt_term::{encode_text, encode_text_with};
+
+    /// #930: 복사 모드에서는 수식 키 없는 한글 글자 키도 ⌘ 층 글자로 읽어 `h j k l` 묶음에 맞는다
+    #[test]
+    fn copy_mode_reads_plain_hangul_keys_as_their_latin_letters() {
+        let h = Key::Character("ㅗ".into());
+        assert_eq!(
+            latin_letter_key(&h, ModifiersState::empty(), || Some("h".to_string())),
+            Key::Character("h".into())
+        );
+        let t = trigger_of(
+            &latin_letter_key(&h, ModifiersState::SHIFT, || Some("g".to_string())),
+            ModifiersState::SHIFT,
+        )
+        .unwrap();
+        assert_eq!((t.key.as_str(), t.mods.shift), ("g", true), "Shift+ㅎ은 shift+g(G)");
+        // 일반 모드에서는 수식 키 없는 한글 글자 키를 그대로 둔다(입력기가 받는 글자)
+        assert_eq!(
+            layout_trigger_key(&h, ModifiersState::empty(), || Some("h".to_string())),
+            h
+        );
+        // 라틴 글자는 그대로, ⌘ 층을 알 수 없으면 원래 글자
+        let a = Key::Character("a".into());
+        assert_eq!(latin_letter_key(&a, ModifiersState::empty(), || None), a);
+        assert_eq!(latin_letter_key(&h, ModifiersState::empty(), || None), h);
+    }
 
     #[test]
     fn non_latin_letter_with_cmd_or_ctrl_uses_command_layer() {

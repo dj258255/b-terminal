@@ -41,6 +41,8 @@ const ACTIONS: &[&str] = &[
     "scroll_page_fractional",
     "scroll_page_lines",
     "adjust_selection",
+    "activate_copy_mode",
+    "copy_mode",
     "jump_to_prompt",
     "write_scrollback_file",
     "write_screen_file",
