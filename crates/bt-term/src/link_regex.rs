@@ -1,4 +1,4 @@
-//! 사용자 정규식 링크(`link-url-regex`, kitty `detect_url_regex`, #929, ADR-101).
+//! 사용자 정규식 링크(`link-url-regex`, kitty `detect_url_regex`, #929, ADR-099).
 //!
 //! 원문은 kitty v0.51.1의 `kitty/options/definition.py` 964~1000줄(설명)과 `kitty/screen.c` `detect_url_with_regex` 5190~5242줄·
 //! `screen_detect_url` 5288줄:

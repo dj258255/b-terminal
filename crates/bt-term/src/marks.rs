@@ -1,4 +1,4 @@
-//! kitty 마커(#929, ADR-101): `toggle_marker`·`remove_marker`·`scroll_to_mark`.
+//! kitty 마커(#929, ADR-099): `toggle_marker`·`remove_marker`·`scroll_to_mark`.
 //!
 //! 원문은 kitty v0.51.1의 `docs/marks.rst`, `kitty/options/utils.py`(`parse_marker_spec` 477~500줄, `toggle_marker` 503~510줄,
 //! `scroll_to_mark` 513~526줄), `kitty/marks.py`(`marker_from_multiple_regex` 29~44줄), `kitty/window.py`(`toggle_marker` 3052~3060줄,
