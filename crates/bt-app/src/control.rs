@@ -9,13 +9,16 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc::{SyncSender, sync_channel};
 use std::time::Duration;
 
-use bt_core::proto::{MAX_LINE, Request, Response, socket_dir, socket_path};
+use bt_core::proto::{Call, MAX_LINE, Request, Response, socket_dir, socket_path};
 use winit::event_loop::EventLoopProxy;
 
 use crate::app::UserEvent;
+use crate::events::{HEARTBEAT, Hub};
 
 /// 창 스레드가 답할 때까지 기다리는 상한
 const REPLY_TIMEOUT: Duration = Duration::from_secs(5);
+/// `watch` 연결에 한 줄을 쓰는 기한. 이 안에 못 받아 가는 느린 손님은 끊는다(#925)
+const WATCH_WRITE_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// 소켓 파일. 떨어뜨리면 지운다
 pub struct ControlServer {
@@ -43,7 +46,7 @@ pub fn prepare_dir(dir: &Path, uid: u32) -> std::io::Result<()> {
 }
 
 /// 소켓을 열고 받기 스레드를 띄운다
-pub fn start(proxy: EventLoopProxy<UserEvent>) -> std::io::Result<ControlServer> {
+pub fn start(proxy: EventLoopProxy<UserEvent>, hub: Hub) -> std::io::Result<ControlServer> {
     let dir = socket_dir(uid());
     prepare_dir(&dir, uid())?;
     let path = socket_path(&dir, std::process::id());
@@ -59,15 +62,16 @@ pub fn start(proxy: EventLoopProxy<UserEvent>) -> std::io::Result<ControlServer>
         for stream in listener.incoming() {
             let Ok(stream) = stream else { continue };
             let proxy = proxy.clone();
+            let hub = hub.clone();
             let _ = std::thread::Builder::new()
                 .name("bt-control-conn".into())
-                .spawn(move || serve(stream, proxy));
+                .spawn(move || serve(stream, proxy, hub));
         }
     })?;
     Ok(ControlServer { path })
 }
 
-fn serve(stream: UnixStream, proxy: EventLoopProxy<UserEvent>) {
+fn serve(stream: UnixStream, proxy: EventLoopProxy<UserEvent>, hub: Hub) {
     let _ = stream.set_read_timeout(Some(Duration::from_secs(30)));
     let Ok(mut writer) = stream.try_clone() else { return };
     let mut reader = BufReader::new(stream);
@@ -83,6 +87,11 @@ fn serve(stream: UnixStream, proxy: EventLoopProxy<UserEvent>) {
             return;
         }
         let response = match serde_json::from_slice::<Request>(&line) {
+            // 구독은 앱 스레드를 거치지 않는다: 이 연결 스레드가 큐를 읽어 쓴다(#925)
+            Ok(Request { id, call: Call::Watch }) => {
+                watch(&mut writer, id, &hub, HEARTBEAT);
+                return;
+            }
             Ok(req) => dispatch(req, &proxy),
             Err(e) => Response::err(0, format!("요청을 읽지 못했습니다: {e}")),
         };
@@ -90,6 +99,23 @@ fn serve(stream: UnixStream, proxy: EventLoopProxy<UserEvent>) {
             return;
         }
     }
+}
+
+/// `watch` 연결: 구독을 열고 첫 답을 쓴 뒤, 끊길 때까지 이벤트를 한 줄씩 쓴다. 구독자가 너무 많으면 오류 답 하나로 끝낸다.
+/// 쓰기에 기한을 걸어(`WATCH_WRITE_TIMEOUT`) 읽지 않는 손님이 이 스레드를 붙잡지 못하게 한다
+fn watch(writer: &mut UnixStream, id: u64, hub: &Hub, heartbeat: Duration) {
+    let _ = writer.set_write_timeout(Some(WATCH_WRITE_TIMEOUT));
+    let sub = match hub.subscribe() {
+        Ok(s) => s,
+        Err(why) => {
+            let _ = reply(writer, &Response::err(id, why));
+            return;
+        }
+    };
+    if reply(writer, &Response::ok(id, serde_json::json!({ "watching": true }))).is_err() {
+        return;
+    }
+    sub.pump(writer, heartbeat);
 }
 
 fn dispatch(req: Request, proxy: &EventLoopProxy<UserEvent>) -> Response {
@@ -118,6 +144,64 @@ mod tests {
         let _ = std::fs::remove_dir_all(&p);
         let _ = std::fs::remove_file(&p);
         p
+    }
+
+    fn pair() -> (UnixStream, UnixStream) {
+        UnixStream::pair().unwrap()
+    }
+
+    fn read_line(r: &mut BufReader<UnixStream>) -> String {
+        let mut l = String::new();
+        r.read_line(&mut l).unwrap();
+        l
+    }
+
+    /// #925: watch는 첫 답 뒤에 이벤트를 한 줄 JSON씩 흘린다(소켓 쌍만 쓰고 PTY는 열지 않는다)
+    #[test]
+    fn watch_answers_then_streams_event_lines() {
+        let hub = Hub::default();
+        let (mut srv, cli) = pair();
+        cli.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        let h = hub.clone();
+        let t = std::thread::spawn(move || watch(&mut srv, 7, &h, Duration::from_secs(60)));
+        let mut r = BufReader::new(cli);
+        let first: Response = serde_json::from_str(&read_line(&mut r)).unwrap();
+        assert!(first.ok && first.id == 7);
+        hub.publish(bt_core::proto::Event::TabOpened { tab: 9 });
+        assert_eq!(read_line(&mut r), "{\"event\":\"tab_opened\",\"tab\":9}\n");
+        // 손님이 끊으면 다음 쓰기에서 알아채고 스레드가 끝난다
+        drop(r);
+        hub.publish(bt_core::proto::Event::TabOpened { tab: 10 });
+        hub.publish(bt_core::proto::Event::TabOpened { tab: 11 });
+        t.join().unwrap();
+        assert_eq!(hub.subscribers(), 0);
+    }
+
+    #[test]
+    fn watch_refuses_when_too_many_subscribers() {
+        let hub = Hub::default();
+        let _held: Vec<_> = (0..crate::events::MAX_SUBSCRIBERS)
+            .map(|_| hub.subscribe().unwrap())
+            .collect();
+        let (mut srv, cli) = pair();
+        watch(&mut srv, 3, &hub, Duration::from_secs(60));
+        let mut r = BufReader::new(cli);
+        let resp: Response = serde_json::from_str(&read_line(&mut r)).unwrap();
+        assert!(!resp.ok && resp.error.unwrap().contains("너무 많"));
+    }
+
+    /// 읽지 않는 손님을 끊으려면 쓰기에 기한이 걸려 있어야 한다(버퍼가 찬 소켓의 write가 영원히 기다리지 않게).
+    /// 구독자 수가 찬 경우처럼 곧바로 끝나는 길에서도 기한을 먼저 걸어 둔다
+    #[test]
+    fn watch_sets_a_write_deadline_before_anything_else() {
+        let hub = Hub::default();
+        let _held: Vec<_> = (0..crate::events::MAX_SUBSCRIBERS)
+            .map(|_| hub.subscribe().unwrap())
+            .collect();
+        let (mut srv, _cli) = pair();
+        assert_eq!(srv.write_timeout().unwrap(), None);
+        watch(&mut srv, 1, &hub, Duration::from_secs(60));
+        assert_eq!(srv.write_timeout().unwrap(), Some(WATCH_WRITE_TIMEOUT));
     }
 
     #[test]

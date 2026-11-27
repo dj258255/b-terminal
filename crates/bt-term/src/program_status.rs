@@ -34,6 +34,20 @@ pub enum State {
     Clear,
 }
 
+impl State {
+    /// 소켓·로그에 쓰는 이름(OSC 7501의 `state` 값과 같다, #925)
+    pub fn name(self) -> &'static str {
+        match self {
+            State::Idle => "idle",
+            State::Working => "working",
+            State::Done => "done",
+            State::Blocked => "blocked",
+            State::Error => "error",
+            State::Clear => "clear",
+        }
+    }
+}
+
 /// `kind` 값(`blocked`일 때만): 사용자에게 무엇이 필요한가
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Kind {
@@ -454,6 +468,15 @@ impl Records {
         self.list.clear();
     }
 
+    /// `summary`와 같은 기록의 제목(이미 거른 글). 제어 소켓의 `list`·이벤트가 쓴다(#925)
+    pub fn summary_title(&self) -> Option<String> {
+        self.list
+            .iter()
+            .filter(|r| rank(r.state) > 0)
+            .max_by_key(|r| (rank(r.state), r.seq))
+            .and_then(|r| r.title.clone())
+    }
+
     /// 탭에 보일 가장 급한 상태(`blocked` > `error` > `working` > `done`, `idle`은 없다). 같으면 나중에 갱신된 것
     pub fn summary(&self) -> Option<Summary> {
         self.list
@@ -470,6 +493,22 @@ impl Records {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #925: 소켓이 내보내는 상태 이름과 제목은 탭 막대가 고른 기록과 같은 것에서 온다
+    #[test]
+    fn summary_title_follows_the_summary_record() {
+        let mut r = Records::default();
+        r.apply(report("state=working:id=a:title=UGxhbg"));
+        r.apply(report("state=blocked:id=b:title=UGVybWlzc2lvbg"));
+        let sum = r.summary().unwrap();
+        assert_eq!(sum.state, State::Blocked);
+        assert_eq!(sum.state.name(), "blocked");
+        assert_eq!(r.summary_title().as_deref(), Some("Permission"));
+        r.apply(report("state=clear:id=b"));
+        assert_eq!(r.summary_title().as_deref(), Some("Plan"));
+        r.apply(report("state=clear"));
+        assert_eq!(r.summary_title(), None);
+    }
 
     fn iterm(body: &str) -> Option<Report> {
         parse_iterm2(body.as_bytes())

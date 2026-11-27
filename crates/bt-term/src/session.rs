@@ -1598,6 +1598,11 @@ impl Session {
         self.program_status.lock().summary()
     }
 
+    /// 탭에 보일 상태 기록의 제목(이미 거른 글, #925). 없으면 `None`
+    pub fn program_status_title(&self) -> Option<String> {
+        self.program_status.lock().summary_title()
+    }
+
     /// 사용자가 본 `done`·`error` 기록을 지운다(#618). 지운 것이 있으면 참
     pub fn clear_seen_program_status(&self) -> bool {
         self.program_status.lock().clear_seen()

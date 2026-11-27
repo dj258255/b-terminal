@@ -14,6 +14,8 @@ const USAGE: &str = "사용: btctl <명령> [인자]
                                     새 탭. --split right·down·left·up·auto면 탭(칸)을 나눠, --window면 새 창에 연다
   focus <탭>                        그 탭으로
   send [--tab N] [--enter] <글...>  탭에 글 넣기(--enter면 끝에 Enter)
+  send [--tab N] --key <키> [--mods 수식키]
+                                    send-key와 같음(키 이름으로 키 보내기)
   read [--tab N] [--lines N]        탭 화면을 글로(--lines면 맨 아래에서 위로 N줄, 스크롤백 포함)
   wait [--tab N] [--timeout 초] -- <글...>
                                     탭 글(화면과 최근 스크롤백 500줄)에 그 글이 나올 때까지 기다림. 기한이 지나면 1로 끝남
@@ -34,6 +36,8 @@ const USAGE: &str = "사용: btctl <명령> [인자]
   run [--tab N] [--timeout 초] [--json] -- <명령...>
                                     탭에서 명령을 돌리고 끝날 때까지 기다려 출력을 찍고 그 종료 코드로 끝남(셸 통합 필요)
   last [--tab N] [--json]           탭에서 마지막으로 끝난 명령의 출력과 종료 코드
+  watch                             이벤트를 한 줄 JSON씩 계속 찍음(상태 바뀜 status, 명령 끝 command_finished, 알림 notification, 탭 열림·닫힘 tab_opened·tab_closed, 가끔 ping).
+                                    화면 글·명령 글·출력은 싣지 않음. 동시에 8개까지. 끊으려면 Ctrl-C
 
 탭 번호는 칸마다 하나입니다(화면을 나누면 칸마다 따로).
 탭을 주지 않으면 btctl을 부른 칸(BT_TAB_ID), 탭 밖이면 지금 고른 칸입니다.";
@@ -108,6 +112,72 @@ fn finish_command(v: serde_json::Value, json: bool) -> Result<String, Error> {
     use std::io::Write;
     let _ = std::io::stdout().flush();
     std::process::exit(r.exit_code.unwrap_or(0).clamp(0, 255));
+}
+
+/// `send`의 요청. `--key`가 있으면 키 이름으로 보내고(`send-key`와 같다), 아니면 글을 넣는다
+fn build_send(tab: Option<u64>, rest: &[String]) -> Result<Call, Error> {
+    if rest.iter().any(|a| a == "--key") {
+        let mut key = None;
+        let mut modifiers = None;
+        let mut it = rest.iter();
+        while let Some(a) = it.next() {
+            match a.as_str() {
+                "--key" => {
+                    key = Some(
+                        it.next()
+                            .ok_or_else(|| usage("--key 뒤에 키 이름이 필요합니다(예: enter, a, arrowUp)"))?
+                            .clone(),
+                    )
+                }
+                "--mods" => {
+                    modifiers = Some(
+                        it.next()
+                            .ok_or_else(|| usage("--mods 뒤에 shift·control·option·command(쉼표로 가름)가 필요합니다"))?
+                            .clone(),
+                    )
+                }
+                other => return Err(usage(format!("--key와 함께 쓸 수 없는 인자: {other}"))),
+            }
+        }
+        return Ok(Call::SendKey {
+            tab,
+            key: key.unwrap_or_default(),
+            modifiers,
+        });
+    }
+    let enter = rest.iter().any(|a| a == "--enter");
+    let words: Vec<&str> = rest.iter().filter(|a| *a != "--enter").map(String::as_str).collect();
+    let mut text = words.join(" ");
+    if enter {
+        text.push('\r');
+    }
+    if text.is_empty() {
+        return Err(usage("넣을 글이 필요합니다"));
+    }
+    Ok(Call::Send { tab, text })
+}
+
+/// `list` 글 한 줄. 제목·프로세스·상태 글은 터미널 출력에서 온 글이라 제어 문자를 지운다
+fn list_line(t: &TabInfo) -> String {
+    let mark = if t.active { "*" } else { " " };
+    let unread = if t.unread { " ●" } else { "" };
+    let title = printable(&t.title);
+    let process = printable(t.process.as_deref().unwrap_or(""));
+    let mut line = format!("{mark}{:>3}  {:<24} {}{}", t.id, title, process, unread);
+    if let Some(status) = &t.status {
+        line.push_str(&format!("  [{}", printable(status)));
+        if let Some(p) = t.status_progress {
+            line.push_str(&format!(" {p}%"));
+        }
+        if let Some(text) = &t.status_text {
+            line.push_str(&format!(": {}", printable(text)));
+        }
+        line.push(']');
+    }
+    if let Some(code) = t.last_exit_code {
+        line.push_str(&format!("  종료 {code}"));
+    }
+    line
 }
 
 /// 칸 하나를 다루는 새 명령(#858)의 요청을 만든다. 이 명령이 아니면 `None`
@@ -270,18 +340,7 @@ fn run(args: &[String]) -> Result<String, Error> {
             }
             let tabs: Vec<TabInfo> =
                 serde_json::from_value(v).map_err(|e| Error::Client(ClientError::Remote(e.to_string())))?;
-            Ok(tabs
-                .iter()
-                .map(|t| {
-                    let mark = if t.active { "*" } else { " " };
-                    let unread = if t.unread { " ●" } else { "" };
-                    // 제목은 터미널 출력에서 온 글이다. 이 터미널을 조작하지 못하게 제어 문자를 지운다
-                    let title = printable(&t.title);
-                    let process = printable(t.process.as_deref().unwrap_or(""));
-                    format!("{mark}{:>3}  {:<24} {}{}", t.id, title, process, unread)
-                })
-                .collect::<Vec<_>>()
-                .join("\n"))
+            Ok(tabs.iter().map(list_line).collect::<Vec<_>>().join("\n"))
         }
         "new" => {
             let mut cwd = None;
@@ -338,16 +397,19 @@ fn run(args: &[String]) -> Result<String, Error> {
         }
         "send" => {
             let (tab, rest) = take_tab(rest)?;
-            let enter = rest.iter().any(|a| a == "--enter");
-            let words: Vec<&str> = rest.iter().filter(|a| *a != "--enter").map(String::as_str).collect();
-            let mut text = words.join(" ");
-            if enter {
-                text.push('\r');
+            call(&socket, build_send(tab, &rest)?)?;
+            Ok(String::new())
+        }
+        "watch" => {
+            if let Some(a) = rest.first() {
+                return Err(usage(format!("모르는 인자: {a}")));
             }
-            if text.is_empty() {
-                return Err(usage("넣을 글이 필요합니다"));
-            }
-            call(&socket, Call::Send { tab, text })?;
+            client::watch(&socket, |line| {
+                use std::io::Write;
+                let mut out = std::io::stdout().lock();
+                // 줄마다 바로 내보낸다(파이프로 받는 쪽이 기다리지 않게). 받는 쪽이 닫히면 끝낸다
+                writeln!(out, "{}", printable(line)).and_then(|_| out.flush()).is_ok()
+            })?;
             Ok(String::new())
         }
         "read" => {
@@ -597,6 +659,61 @@ mod tests {
         );
         assert!(is_usage(build("resize", &["diagonal"])));
         assert!(is_usage(build("resize", &["--amount", "0", "left"])));
+    }
+
+    /// #925: `send --key`는 `send-key`와 같은 요청이고, `--key`가 없으면 글을 넣는다
+    #[test]
+    fn send_key_flag_builds_a_key_request() {
+        assert_eq!(
+            build_send(Some(2), &v(&["--key", "arrowUp", "--mods", "control"])).unwrap(),
+            Call::SendKey {
+                tab: Some(2),
+                key: "arrowUp".into(),
+                modifiers: Some("control".into())
+            }
+        );
+        assert!(is_usage(build_send(None, &v(&["--key"]))));
+        assert!(is_usage(build_send(None, &v(&["--key", "a", "여분"]))));
+        assert_eq!(
+            build_send(None, &v(&["--enter", "ls"])).unwrap(),
+            Call::Send {
+                tab: None,
+                text: "ls\r".into()
+            }
+        );
+        assert!(is_usage(build_send(None, &[])));
+    }
+
+    #[test]
+    fn list_line_shows_status_and_exit_code_with_clean_text() {
+        let base = TabInfo {
+            id: 3,
+            title: "zsh".into(),
+            active: true,
+            unread: false,
+            cwd: None,
+            process: Some("claude".into()),
+            status: None,
+            status_text: None,
+            status_progress: None,
+            last_exit_code: None,
+        };
+        assert_eq!(list_line(&base), "*  3  zsh                      claude");
+        let t = TabInfo {
+            status: Some("blocked".into()),
+            status_text: Some("권한\x1b[2J 필요".into()),
+            status_progress: Some(40),
+            last_exit_code: Some(2),
+            ..base
+        };
+        let l = list_line(&t);
+        assert!(l.ends_with("[blocked 40%: 권한 [2J 필요]  종료 2"), "{l}");
+        assert!(!l.contains('\x1b'));
+    }
+
+    #[test]
+    fn usage_lists_watch_and_send_key_flag() {
+        assert!(USAGE.contains("watch") && USAGE.contains("--key"));
     }
 
     #[test]
