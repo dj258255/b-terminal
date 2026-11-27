@@ -142,6 +142,7 @@ pub(crate) fn probe<T: EventListener>(term: &Term<T>, col: usize, row: usize, op
         chrome_background: Rgb::new(0, 0, 0),
         links: Vec::new(),
         images: Vec::new(),
+        command_marks: Vec::new(),
     };
     // OSC 8는 위에서 끝냈다(창 화면에는 링크 번호가 없다)
     let url_only = LinkOptions { url: true, osc8: false };

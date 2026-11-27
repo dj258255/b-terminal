@@ -1027,6 +1027,8 @@ struct Win {
     toast: Option<(String, Instant)>,
     /// Cmd를 누른 채 마우스가 올라간 링크(칸 id, 링크)
     hover: Option<(u64, bt_term::links::LinkHit)>,
+    /// 명령 표시 막대(첫 칸 열) 위에 마우스가 올라간 칸 id와 줄(#927). 종료 코드·걸린 시간을 띠로 보인다
+    mark_hover: Option<(u64, usize)>,
     /// 링크 수식 키 누르기의 진행(#705, `mouse::LinkPress`)
     link_click: crate::mouse::LinkPress,
     /// 고르지 않은 칸을 누른 왼쪽 누름을 삼켰다: 짝 떼기도 삼킨다(#500)
@@ -1139,6 +1141,7 @@ impl Win {
             focused: false,
             toast: None,
             hover: None,
+            mark_hover: None,
             link_click: crate::mouse::LinkPress::Idle,
             focus_click: mouse::FocusClickGuard::default(),
             kitty_down: std::collections::HashMap::new(),
@@ -4587,6 +4590,7 @@ impl App {
 
     /// Cmd를 누른 동안 마우스 아래 링크를 다시 본다. 바뀌면 밑줄과 마우스 모양을 바꾼다
     fn update_hover(&mut self) {
+        self.update_mark_hover();
         let next = if self.link_mod() {
             self.link_under(self.w.cursor_pos)
         } else {
@@ -4598,6 +4602,40 @@ impl App {
         self.w.hover = next;
         self.refresh_pointer();
         self.request_redraw();
+    }
+
+    /// 마우스가 명령 표시 막대 열(첫 칸 열) 위의 막대가 있는 줄에 있는가(#927). 바뀌면 다시 그린다
+    fn update_mark_hover(&mut self) {
+        let mode = self.config.command_marks;
+        let pos = self.w.cursor_pos;
+        let next = (mode != bt_core::config::CommandMarks::False)
+            .then(|| {
+                let id = self.pane_at(pos)?;
+                let i = self.pane_index(id)?;
+                let inner = self.pane_inner(id)?;
+                let m = self.metrics_at(self.panes[i].font_size)?;
+                if !inner.contains(pos.x, pos.y) || !crate::cmd_marks::over_bar_column(pos.x - inner.x as f64, m.width)
+                {
+                    return None;
+                }
+                let (_, row) = self.cell_in(i, pos)?;
+                let mark = self.panes[i].session.command_mark_at(row)?;
+                crate::cmd_marks::hint_text(mark.state, mode)?;
+                Some((id, row))
+            })
+            .flatten();
+        if next != self.w.mark_hover {
+            self.w.mark_hover = next;
+            self.request_redraw();
+        }
+    }
+
+    /// 명령 표시 막대에 올린 마우스가 보일 띠 글(#927). 줄이 스크롤로 바뀌었으면 지금 줄의 것으로 다시 읽는다
+    fn mark_hint(&self) -> Option<String> {
+        let (id, row) = self.w.mark_hover?;
+        let i = self.pane_index(id)?;
+        let mark = self.panes[i].session.command_mark_at(row)?;
+        crate::cmd_marks::hint_text(mark.state, self.config.command_marks)
     }
 
     /// 지금 누른 수식 키가 사각 고르기 키인가(#433). macOS는 Option, 그 밖에는 Ctrl(또는 Super)+Alt
@@ -7571,6 +7609,7 @@ impl App {
         let hint_style = crate::hints::HintStyle::from_theme(&theme);
         let preedit = self.w.preedit.clone();
         let hover = self.w.hover.clone();
+        let mark_hint = self.mark_hint();
         let link_previews = self.config.link_previews;
         // 명령 팔레트: (친 글, 보일 줄들(이름, 부제, 단축키), 고른 줄)
         let palette = self.w.palette.as_ref().map(|(q, sel)| {
@@ -7608,6 +7647,14 @@ impl App {
             .map(|v| {
                 let screen = &v.screen;
                 let mut cells = to_draw_cells(screen, &theme);
+                crate::cmd_marks::apply(
+                    &mut cells,
+                    screen.cols,
+                    &screen.command_marks,
+                    self.config.command_marks,
+                    &theme,
+                    screen.background,
+                );
                 crate::text_blink::apply(&mut cells, &screen.cells, text_visible);
                 if let Some((_, plan)) = hint_plan.as_ref().filter(|(p, _)| *p == v.id) {
                     crate::hints::paint(&mut cells, screen.cols, plan, &hint_style);
@@ -7778,6 +7825,7 @@ impl App {
             overlay: toast.is_some()
                 || secure_badge
                 || hover.is_some()
+                || mark_hint.is_some()
                 || hint_plan.is_some()
                 || search.is_some()
                 || palette.is_some()
@@ -7818,6 +7866,7 @@ impl App {
                 confirm: &confirm,
                 title_prompt: &title_prompt,
                 hover: &hover,
+                mark_hint: &mark_hint,
                 link_previews,
                 palette: &palette,
                 search: &search,
@@ -8137,6 +8186,9 @@ impl App {
                         &theme,
                         &bt_core::proto::printable(&hit.url),
                     );
+                }
+                if let Some(text) = &mark_hint {
+                    tabbar::draw_link_hint(&mut canvas, fonts.chrome(), &theme, text);
                 }
                 if let Some((q, rows, sel)) = &palette {
                     tabbar::draw_palette(
@@ -8545,6 +8597,7 @@ pub fn to_draw_cells(s: &Screen, theme: &bt_core::Theme) -> Vec<DrawCell> {
                 underline_color: c.underline_color.filter(|_| !c.flags.contains(CellFlags::HIDDEN)),
                 hidden: c.flags.contains(CellFlags::HIDDEN),
                 faint: c.flags.contains(CellFlags::FAINT).then_some(theme.faint_opacity),
+                mark: None,
             }
         })
         .collect();
@@ -10420,6 +10473,7 @@ mod tests {
             underline_color: None,
             hidden: false,
             faint: None,
+            mark: None,
         };
         let (cols, rows) = (4, 3);
         let cells = vec![blank.clone(); cols * rows];

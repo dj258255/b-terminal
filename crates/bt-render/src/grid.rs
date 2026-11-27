@@ -33,6 +33,8 @@ pub struct DrawCell {
     pub hidden: bool,
     /// 흐림(SGR 2)이면 `faint-opacity`. 글자색은 반전·고름·찾기·최소 명암비를 정한 마지막에 이 알파로 바탕에 섞는다(#835)
     pub faint: Option<f32>,
+    /// 명령 표시(#927): 줄 맨 앞 칸의 왼쪽 끝에 세로로 긋는 막대의 색(불투명). 칸의 글자·바탕은 바꾸지 않는다
+    pub mark: Option<Rgb>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -326,6 +328,13 @@ fn draw_rows(
         }
     }
 
+    // 2.9) 명령 표시(#927): 줄 맨 앞 칸 왼쪽 끝의 막대. 글자 위, 커서 아래. 칸 안이라 이웃 칸·줄을 덮지 않는다
+    for row in a..b.min(view.rows) {
+        if let Some(color) = view.cells.get(row * view.cols).and_then(|c| c.mark) {
+            canvas.fill_rect(x, y + row as i32 * ch, mark_bar_width(m.width), m.height, color);
+        }
+    }
+
     // 3) 커서와 조합 중 글
     if let Some(cur) = view.cursor {
         if text_rows.contains(&cur.row) && cur.row < view.rows && cur.col < view.cols {
@@ -354,6 +363,11 @@ fn draw_rows(
             canvas.blend_rect(x + r.x, y + r.y, r.w, r.h, t.color, t.alpha);
         }
     }
+}
+
+/// 명령 표시 막대의 폭(픽셀, #927): 칸 폭의 5분의 1, 2~4픽셀. 칸 안에 들어가는 만큼만
+pub fn mark_bar_width(cell_width: u32) -> u32 {
+    (cell_width / 5).clamp(2, 4).min(cell_width)
 }
 
 /// 칸의 글자색. 차례는 Ghostty와 같다: 고른 칸이면 `selection_fg`, 최소 명암비(#123)를 켰으면 바탕과 비슷한 색을

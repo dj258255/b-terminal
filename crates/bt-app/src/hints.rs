@@ -185,6 +185,7 @@ fn label_cell(cells: &mut [DrawCell], i: usize, cols_end: usize, ch: char, style
         underline_color: None,
         hidden: false,
         faint: None,
+        mark: None,
     };
     if was_wide && i + 1 < cols_end {
         let s = &mut cells[i + 1];
@@ -388,6 +389,7 @@ mod tests {
             underline_color: Some(Rgb::new(1, 2, 3)),
             hidden: true,
             faint: Some(0.5),
+            mark: None,
         }
     }
 
