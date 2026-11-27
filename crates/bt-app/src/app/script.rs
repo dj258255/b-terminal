@@ -792,8 +792,10 @@ impl App {
             .metrics_at(self.panes[idx].font_size)
             .map_or((8.0, 16.0), |m| (m.width as f64, m.height as f64));
         let (xlines, ylines) = crate::script_mouse::scroll_lines(precision, delta.0, delta.1, cell, discrete, precise);
+        // 픽셀 스크롤(#902): `precision true`의 값은 픽셀이라 사람의 트랙패드와 같은 길로 보낸다(양수가 위)
+        let pixels = (precision && delta.1 != 0.0).then_some(delta.1 * precise);
         self.with_script_mouse(idx, mods, None, |app, input, sm| {
-            app.pointer_wheel(Some(idx), ylines, xlines, input, &mut sm.state);
+            app.pointer_wheel(Some(idx), ylines, xlines, pixels, input, &mut sm.state);
         });
     }
 }

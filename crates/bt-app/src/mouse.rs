@@ -497,9 +497,56 @@ impl FocusClickGuard {
     }
 }
 
+/// 픽셀 스크롤(#902)을 이 휠 사건에 쓰는가. kitty `scroll_event_in_window`(mouse.c 1914줄)와 같다: 설정이 켜져 있고,
+/// 고정밀 기기(트랙패드, 픽셀 값)이며, 안쪽 프로그램이 마우스를 받지 않고(`reporting`), 대체 화면이 아닐 때만이다.
+/// 아니면 지금처럼 줄 단위로 간다(눈금 휠, 마우스 보고, 대체 화면의 화살표)
+pub fn pixel_scroll_applies(enabled: bool, precise: bool, reporting: bool, alt_screen: bool) -> bool {
+    enabled && precise && !reporting && !alt_screen
+}
+
+/// 격자 맨 위에서 잰 세로 픽셀 `y_in_grid`가 가리키는 줄(0부터). 화면을 위로 `shift` 픽셀 밀어 그렸으면(픽셀 스크롤, #902)
+/// 보이는 줄은 `shift`만큼 아래 줄이다(kitty mouse.c 336줄은 반대로 `- pixel_scroll_offset_y`: 이쪽은 위로 미는 쪽으로 적는다).
+/// 격자 위·아래 밖은 첫·마지막 줄. 맨 아래 `shift` 픽셀에 걸친 줄은 마지막 줄로 친다(걸친 줄은 칸 값이 없다)
+pub fn row_at(y_in_grid: f64, cell_height: u32, shift: u32, rows: usize) -> usize {
+    if cell_height == 0 || rows == 0 {
+        return 0;
+    }
+    let y = (y_in_grid + f64::from(shift)).floor().max(0.0);
+    ((y / f64::from(cell_height)) as usize).min(rows - 1)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #902: 픽셀 스크롤은 설정이 켜지고, 트랙패드(픽셀 값)이고, 마우스 보고도 대체 화면도 아닐 때만이다(kitty와 같다)
+    #[test]
+    fn pixel_scroll_only_for_precise_devices_on_the_main_screen() {
+        assert!(pixel_scroll_applies(true, true, false, false));
+        assert!(!pixel_scroll_applies(false, true, false, false), "설정이 꺼짐");
+        assert!(!pixel_scroll_applies(true, false, false, false), "눈금 휠은 줄 단위");
+        assert!(!pixel_scroll_applies(true, true, true, false), "마우스 보고 중");
+        assert!(!pixel_scroll_applies(true, true, false, true), "대체 화면");
+    }
+
+    /// #902: 밀어 그린 화면의 세로 픽셀은 `shift`만큼 아래 줄을 가리킨다. 밀지 않았으면(0) 지금과 같다
+    #[test]
+    fn row_at_counts_the_shift() {
+        // 줄 높이 16, 5줄
+        assert_eq!(row_at(0.0, 16, 0, 5), 0);
+        assert_eq!(row_at(15.9, 16, 0, 5), 0);
+        assert_eq!(row_at(16.0, 16, 0, 5), 1);
+        // 11픽셀 밀림: 맨 위 5픽셀은 아직 첫 줄, 그 아래부터 둘째 줄
+        assert_eq!(row_at(4.9, 16, 11, 5), 0);
+        assert_eq!(row_at(5.0, 16, 11, 5), 1);
+        assert_eq!(row_at(20.9, 16, 11, 5), 1);
+        assert_eq!(row_at(21.0, 16, 11, 5), 2);
+        // 맨 아래 걸친 줄은 마지막 줄로 친다. 격자 밖도 안으로 붙는다
+        assert_eq!(row_at(79.0, 16, 11, 5), 4);
+        assert_eq!(row_at(-30.0, 16, 11, 5), 0);
+        assert_eq!(row_at(500.0, 16, 11, 5), 4);
+        assert_eq!(row_at(f64::NAN, 16, 11, 5), 11 / 16);
+    }
 
     /// Ghostty 1.4.0 `Surface.maybePromptClick`(#729): 수식 키는 보지 않는다. 끌지 않은 한 번 누르기이고 놓은 뒤 고른 글이
     /// 없으면 옮긴다. Shift 클릭으로 고르기를 넓혔으면 고른 글이 남아 옮기지 않는다

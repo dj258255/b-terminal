@@ -251,6 +251,7 @@ fn gpu_layers_match_the_cpu_path_and_stack_in_ghostty_order() {
     paint(&mut Canvas::new(&mut upper, w, h), Layer::AboveText);
     let view = gv(&sc, &sc.dc);
     let panes = [PaneDraw {
+        pixel_shift: 0,
         font: 0,
         x: sc.origin.0,
         y: sc.origin.1,
@@ -509,6 +510,7 @@ fn unicode_placeholders_draw_the_image_on_both_paths_and_never_the_glyph() {
     paint(&mut Canvas::new(&mut mid, w, h), Layer::BelowText);
     let view = gv(&screen, &theme, &dc);
     let panes = [PaneDraw {
+        pixel_shift: 0,
         font: 0,
         x: origin.0,
         y: origin.1,
@@ -679,6 +681,7 @@ fn scroll_clipped_placement_draws_the_same_on_both_paths() {
     lower_base(&mut Canvas::new(&mut lower, w, h));
     paint(&mut Canvas::new(&mut upper, w, h), Layer::AboveText);
     let panes = [PaneDraw {
+        pixel_shift: 0,
         font: 0,
         x: origin.0,
         y: origin.1,

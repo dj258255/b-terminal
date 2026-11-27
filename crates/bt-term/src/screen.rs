@@ -195,6 +195,12 @@ pub struct Screen {
     pub display_offset: usize,
     /// 스크롤백 줄 수
     pub history: usize,
+    /// 픽셀 스크롤(kitty `pixel_scroll`, #902): 화면을 위로 밀어 그릴 픽셀(줄 높이 미만). 0이면 줄에 맞춘 화면이다.
+    /// 0보다 크면 `edge`에 맨 아래에 걸쳐 보이는 다음 줄이 있다
+    pub pixel_shift: u32,
+    /// `pixel_shift > 0`일 때 화면 맨 아래 줄 다음 줄(`cols`칸). 화면 맨 아래에 `pixel_shift` 픽셀만큼 걸쳐 보인다.
+    /// 고르기·찾기 맞은 곳·링크 표시는 `cells`와 같이 얹혀 있다. 아니면 비어 있다
+    pub edge: Vec<Cell>,
     pub background: Rgb,
     /// 지금 기본 글자색(OSC 10으로 바꿨으면 그 색, 화면 반전이면 맞바뀐 색). 정하지 않은 커서·고름 색이 여기서 나온다(#838)
     pub foreground: Rgb,
@@ -211,6 +217,24 @@ pub struct Screen {
 impl Screen {
     pub fn cell(&self, col: usize, row: usize) -> &Cell {
         &self.cells[row * self.cols + col]
+    }
+
+    /// 그릴 줄 수: 보이는 줄에 픽셀 스크롤로 걸쳐 보이는 줄(`edge`)이 있으면 하나 더한다(#902)
+    pub fn draw_rows(&self) -> usize {
+        self.rows + usize::from(!self.edge.is_empty())
+    }
+
+    /// 걸친 픽셀을 없애고 줄에 맞춘 화면으로 되돌린다(#902). 그림이 보이는 화면이나 설정이 꺼진 때 쓴다.
+    /// 걸친 줄에 있던 커서는 보이지 않게 한다
+    pub fn snap_to_lines(&mut self) {
+        if self.pixel_shift == 0 && self.edge.is_empty() {
+            return;
+        }
+        self.pixel_shift = 0;
+        self.edge.clear();
+        if self.cursor.row >= self.rows {
+            self.cursor.visible = false;
+        }
     }
 
     /// 한 줄을 글로 꺼낸다(뒤 칸·끝 공백 제외). 테스트와 화면 읽기(btctl read)에 쓴다

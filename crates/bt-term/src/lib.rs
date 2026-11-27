@@ -21,6 +21,7 @@ pub mod notify;
 #[doc(hidden)]
 pub mod osc133;
 pub mod output_select;
+pub mod pixel_scroll;
 pub mod plain;
 pub mod process;
 pub mod program_status;

@@ -171,6 +171,7 @@ fn two_panes_of_different_sizes_match_cpu_per_pane() {
     let (w, h) = (wa + gap + wb, ha.max(hb));
     let panes = [
         PaneDraw {
+            pixel_shift: 0,
             font: 0,
             x: 0,
             y: 0,
@@ -178,6 +179,7 @@ fn two_panes_of_different_sizes_match_cpu_per_pane() {
             clear: BG,
         },
         PaneDraw {
+            pixel_shift: 0,
             font: 1,
             x: (wa + gap) as i32,
             y: 0,

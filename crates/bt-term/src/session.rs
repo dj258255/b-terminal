@@ -385,6 +385,8 @@ struct Inner {
     glossary: crate::glyph::Glossary,
     /// 셀 크기(px). 그림을 칸에 맞출 때 쓴다
     cell: (u32, u32),
+    /// 픽셀 스크롤(#902)의 걸친 픽셀. 줄 단위 스크롤·크기 바뀜에서 지운다
+    pixel: crate::pixel_scroll::PixelScroll,
     /// 고르기의 움직이는 끝점(#138 adjust_selection). 고르기를 시작·늘이면 바뀐다
     sel_end: Option<Point>,
     /// 명령 출력 고르기(#700)를 시작한 칸: (스크롤백 맨 위에서 센 줄, 칸). 출력이 흘러 줄이 밀려도 같은 줄을 가리킨다.
@@ -419,6 +421,29 @@ fn scroll_term_to_row(term: &mut Term<Listener>, row: usize) {
     let offset = term.grid().display_offset();
     let want = history.saturating_sub(row);
     term.scroll_display(Scroll::Delta(want as i32 - offset as i32));
+}
+
+/// 스크롤백을 위로(양수) `delta` 픽셀 올린다(#902). 줄 높이 `ch` 단위의 `display_offset`과 걸친 픽셀로 나눠 반영한다.
+/// 위치가 바뀌었으면 참. 대체 화면(스크롤백이 없다)이나 움직일 데가 없으면 거짓
+fn scroll_term_pixels<T: EventListener>(
+    px: &mut crate::pixel_scroll::PixelScroll,
+    term: &mut Term<T>,
+    delta: f64,
+    ch: u32,
+) -> bool {
+    let history = term.grid().history_size();
+    let offset = term.grid().display_offset();
+    let before = (offset, px.sub(ch, history, offset));
+    let Some(step) = px.plan(delta, ch, history, offset) else {
+        return false;
+    };
+    if step.offset != offset {
+        term.scroll_display(Scroll::Delta(step.offset as i32 - offset as i32));
+    }
+    let now = term.grid().display_offset();
+    // 엔진이 줄 수를 다르게 잘랐으면 그 줄에서 걸친 픽셀은 쓰지 않는다
+    px.set(if now == step.offset { step.sub } else { 0.0 }, history, now);
+    before != (now, px.sub(ch, history, now))
 }
 
 /// 프롬프트를 기억하는 상한(오래된 것부터 버린다)
@@ -846,6 +871,7 @@ impl Session {
             ),
             glossary: crate::glyph::Glossary::default(),
             cell: (size.cell_width.max(1) as u32, size.cell_height.max(1) as u32),
+            pixel: Default::default(),
             sel_end: None,
             output_click: None,
         }));
@@ -1472,6 +1498,7 @@ impl Session {
             sync_graphics(term, graphics, *cell); // 옛 크기에서 일어난 스크롤을 먼저 반영한다(#800)
             g.term.resize(Dims(size));
             g.cell = (size.cell_width as u32, size.cell_height as u32);
+            g.pixel.reset();
         }
         if let Err(e) = self.master.lock().resize(size.pty()) {
             log::debug!("pty resize failed: {e}");
@@ -1485,11 +1512,36 @@ impl Session {
 
     /// 스크롤백을 줄 단위로 움직인다(양수는 위로)
     pub fn scroll(&self, lines: i32) {
-        self.inner.lock().term.scroll_display(Scroll::Delta(lines));
+        let mut g = self.inner.lock();
+        g.pixel.reset();
+        g.term.scroll_display(Scroll::Delta(lines));
     }
 
     pub fn scroll_to_bottom(&self) {
-        self.inner.lock().term.scroll_display(Scroll::Bottom);
+        let mut g = self.inner.lock();
+        g.pixel.reset();
+        g.term.scroll_display(Scroll::Bottom);
+    }
+
+    /// 스크롤백을 위로(양수) `delta` 픽셀 올린다(픽셀 스크롤, kitty `pixel_scroll`, #902). 줄보다 작은 값도 쌓인다.
+    /// 위치가 바뀌었으면 참(대체 화면이나 스크롤백이 없으면 거짓)
+    pub fn scroll_pixels(&self, delta: f64) -> bool {
+        let mut g = self.inner.lock();
+        let ch = g.cell.1;
+        let Inner { term, pixel, .. } = &mut *g;
+        scroll_term_pixels(pixel, term, delta, ch)
+    }
+
+    /// 지금 화면을 위로 밀어 그릴 걸친 픽셀(`Screen::pixel_shift`와 같다). 마우스 좌표를 칸으로 바꿀 때 쓴다
+    pub fn pixel_shift(&self) -> u32 {
+        let g = self.inner.lock();
+        let grid = g.term.grid();
+        g.pixel.shift(g.cell.1, grid.history_size(), grid.display_offset())
+    }
+
+    /// 걸친 픽셀을 지운다(설정에서 픽셀 스크롤을 껐을 때). 줄 위치는 그대로다
+    pub fn end_pixel_scroll(&self) {
+        self.inner.lock().pixel.reset();
     }
 
     /// 탭에 보일 가장 급한 프로그램 상태(OSC 7501, #618). 없으면 `None`
@@ -1551,7 +1603,9 @@ impl Session {
     /// 스크롤백 맨 위를 0으로 센 절대 줄 `row`가 화면 맨 위에 오게 스크롤한다(Ghostty `scroll_to_row`).
     /// 맨 아래보다 아래거나 범위를 넘으면 맨 아래에서 멈춘다
     pub fn scroll_to_row(&self, row: usize) {
-        scroll_term_to_row(&mut self.inner.lock().term, row);
+        let mut g = self.inner.lock();
+        g.pixel.reset();
+        scroll_term_to_row(&mut g.term, row);
     }
 
     /// 고른 곳이 보이게 스크롤한다(Ghostty `scroll_to_selection`). 시작 줄이 이미 보이면 움직이지 않고,
@@ -1931,10 +1985,20 @@ impl Session {
             search,
             graphics,
             cell,
+            pixel,
             ..
         } = &mut *g;
         sync_graphics(term, graphics, *cell);
-        snapshot_of(term, &theme, search.as_mut(), Some(graphics), std::time::Instant::now())
+        let grid = term.grid();
+        let shift = pixel.shift(cell.1, grid.history_size(), grid.display_offset());
+        snapshot_with_shift(
+            term,
+            &theme,
+            search.as_mut(),
+            Some(graphics),
+            std::time::Instant::now(),
+            shift,
+        )
     }
 
     /// 마지막 `snapshot`이 본 보이는 kitty 애니메이션 가운데 가장 이른 다음 프레임 시각(#554). 보이는 애니메이션이 없으면 없다.
@@ -2456,6 +2520,25 @@ fn snapshot_of<T: EventListener>(
     graphics: Option<&mut crate::graphics::Graphics>,
     now: std::time::Instant,
 ) -> Screen {
+    snapshot_with_shift(term, theme, search, graphics, now, 0)
+}
+
+/// `snapshot_of`에 픽셀 스크롤(#902)의 걸친 픽셀 `pixel_shift`를 준다. 0이거나 맨 아래이면 `snapshot_of`와 같다.
+/// 0보다 크면 화면 맨 아래에 걸쳐 보이는 다음 줄을 `Screen::edge`에 담는다(고르기·찾기·링크 표시를 같은 규칙으로)
+fn snapshot_with_shift<T: EventListener>(
+    term: &Term<T>,
+    theme: &Theme,
+    search: Option<&mut crate::search::Search>,
+    graphics: Option<&mut crate::graphics::Graphics>,
+    now: std::time::Instant,
+    pixel_shift: u32,
+) -> Screen {
+    // 맨 아래에는 다음 줄이 없다
+    let pixel_shift = if term.grid().display_offset() == 0 {
+        0
+    } else {
+        pixel_shift
+    };
     let cols = term.columns();
     let rows = term.screen_lines();
     let content = term.renderable_content();
@@ -2487,7 +2570,7 @@ fn snapshot_of<T: EventListener>(
     let (matches, current) = match search {
         Some(s) => {
             let current = s.current(term);
-            (s.visible(term), current)
+            (s.visible_with_edge(term, pixel_shift > 0), current)
         }
         None => (Vec::new(), None),
     };
@@ -2496,16 +2579,8 @@ fn snapshot_of<T: EventListener>(
     // 주소 → 자리. 칸마다 다른 링크를 찍어도 그릴 때마다 칸 수 × 링크 수를 비교하지 않게(#54)
     let mut link_ids: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
 
-    for indexed in content.display_iter {
-        let row = indexed.point.line.0 + offset;
-        if row < 0 || row as usize >= rows {
-            continue;
-        }
-        let col = indexed.point.column.0;
-        if col >= cols {
-            continue;
-        }
-        let src = indexed.cell;
+    // 칸 하나를 화면 칸으로 바꾼다. 보이는 줄과 픽셀 스크롤로 걸쳐 보이는 다음 줄(#902)이 같은 규칙을 쓴다
+    let mut make_cell = |src: &alacritty_terminal::term::cell::Cell, point: alacritty_terminal::index::Point| -> Cell {
         let (fg, bg) = color::cell_colors(theme, overrides, src.fg, src.bg, src.flags);
         let mut flags = CellFlags::empty();
         let f = src.flags;
@@ -2555,12 +2630,12 @@ fn snapshot_of<T: EventListener>(
         if src.c == crate::kitty_unicode::PLACEHOLDER {
             flags.insert(CellFlags::PLACEHOLDER);
         }
-        if selection.is_some_and(|s| s.contains(indexed.point)) {
+        if selection.is_some_and(|s| s.contains(point)) {
             flags.insert(CellFlags::SELECTED);
         }
-        if !matches.is_empty() && crate::search::hit(&matches, &mut match_cursor, indexed.point) {
+        if !matches.is_empty() && crate::search::hit(&matches, &mut match_cursor, point) {
             flags.insert(CellFlags::MATCH);
-            if current.as_ref().is_some_and(|m| m.contains(&indexed.point)) {
+            if current.as_ref().is_some_and(|m| m.contains(&point)) {
                 flags.insert(CellFlags::MATCH_CURRENT);
             }
         }
@@ -2585,7 +2660,7 @@ fn snapshot_of<T: EventListener>(
             Some(i)
         });
         let combining = src.zerowidth().map(|z| z.to_vec()).unwrap_or_default();
-        cells[row as usize * cols + col] = Cell {
+        Cell {
             ch: src.c,
             combining,
             fg,
@@ -2593,7 +2668,31 @@ fn snapshot_of<T: EventListener>(
             flags,
             link,
             underline_color: color::underline_rgb(theme, overrides, src.underline_color(), f, bg),
-        };
+        }
+    };
+
+    for indexed in content.display_iter {
+        let row = indexed.point.line.0 + offset;
+        if row < 0 || row as usize >= rows {
+            continue;
+        }
+        let col = indexed.point.column.0;
+        if col >= cols {
+            continue;
+        }
+        cells[row as usize * cols + col] = make_cell(indexed.cell, indexed.point);
+    }
+    // 픽셀 스크롤(#902): 화면 맨 아래에 걸쳐 보이는 다음 줄. 맨 아래(offset 0)에는 다음 줄이 없다
+    let mut edge: Vec<Cell> = Vec::new();
+    if pixel_shift > 0 && offset > 0 {
+        let line = Line(rows as i32 - offset);
+        let row = &term.grid()[line];
+        for col in 0..cols {
+            edge.push(make_cell(
+                &row[Column(col)],
+                alacritty_terminal::index::Point::new(line, Column(col)),
+            ));
+        }
     }
 
     // 넓은 글자의 머리와 꼬리는 하나로 고른다(Ghostty `render.zig`의 줄 범위와 `generic.zig`의 `x_compare`).
@@ -2636,9 +2735,13 @@ fn snapshot_of<T: EventListener>(
         VtCursorShape::HollowBlock => Some(CursorShape::HollowBlock),
         VtCursorShape::Hidden => None,
     };
-    let in_view = cursor_row >= 0 && (cursor_row as usize) < rows;
+    let in_grid = cursor_row >= 0 && (cursor_row as usize) < rows;
+    // 픽셀 스크롤(#902): 커서가 걸쳐 보이는 다음 줄에 있으면 그 줄(`row == rows`)에 그린다
+    let in_edge = !edge.is_empty() && cursor_row == rows as i32;
+    let in_view = in_grid || in_edge;
     let col = vt_cursor.point.column.0.min(cols.saturating_sub(1));
-    let wide = in_view && cells[cursor_row as usize * cols + col].flags.contains(CellFlags::WIDE);
+    let wide = (in_grid && cells[cursor_row as usize * cols + col].flags.contains(CellFlags::WIDE))
+        || (in_edge && edge[col].flags.contains(CellFlags::WIDE));
     let cursor = Cursor {
         col,
         row: cursor_row.max(0) as usize,
@@ -2657,6 +2760,8 @@ fn snapshot_of<T: EventListener>(
         modes: modes_of(content.mode),
         display_offset: content.display_offset,
         history: term.grid().history_size(),
+        pixel_shift,
+        edge,
         background,
         foreground,
         cursor_color: overrides[NamedColor::Cursor].map(|c| bt_core::Rgb::new(c.r, c.g, c.b)),
@@ -2830,6 +2935,8 @@ pub struct Emulator {
     /// 글리프 프로토콜의 이 칸 등록(#779)
     glossary: crate::glyph::Glossary,
     cell: (u32, u32),
+    /// 픽셀 스크롤(#902)의 걸친 픽셀
+    pixel: crate::pixel_scroll::PixelScroll,
     /// 그래픽 명령의 답(PTY가 없으므로 모아 둔다)
     replies: Vec<u8>,
 }
@@ -2855,6 +2962,7 @@ impl Emulator {
             graphics: Default::default(),
             glossary: Default::default(),
             cell: (size.cell_width as u32, size.cell_height as u32),
+            pixel: Default::default(),
             replies: Vec::new(),
         }
     }
@@ -2923,7 +3031,20 @@ impl Emulator {
     }
 
     pub fn scroll(&mut self, lines: i32) {
+        self.pixel.reset();
         self.term.scroll_display(Scroll::Delta(lines));
+    }
+
+    /// 스크롤백을 위로(양수) `delta` 픽셀 올린다(`Session::scroll_pixels`와 같다, #902)
+    pub fn scroll_pixels(&mut self, delta: f64) -> bool {
+        scroll_term_pixels(&mut self.pixel, &mut self.term, delta, self.cell.1)
+    }
+
+    /// 지금 걸친 픽셀(`Session::pixel_shift`와 같다)
+    pub fn pixel_shift(&self) -> u32 {
+        let grid = self.term.grid();
+        self.pixel
+            .shift(self.cell.1, grid.history_size(), grid.display_offset())
     }
 
     pub fn modes(&self) -> Modes {
@@ -2932,12 +3053,14 @@ impl Emulator {
 
     pub fn snapshot(&mut self) -> Screen {
         sync_graphics(&mut self.term, &mut self.graphics, self.cell);
-        snapshot_of(
+        let shift = self.pixel_shift();
+        snapshot_with_shift(
             &self.term,
             &self.theme,
             self.search.as_mut(),
             Some(&mut self.graphics),
             std::time::Instant::now(),
+            shift,
         )
     }
 

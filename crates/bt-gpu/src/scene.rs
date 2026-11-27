@@ -140,6 +140,65 @@ impl Scene {
         self.glyphs_pre = 0;
     }
 
+    /// 픽셀 스크롤(#902): 모든 인스턴스를 세로로 `dy` 옮기고 `[top, bottom)` 밖은 자른다(좌표는 격자 왼쪽 위 기준).
+    /// 걸친 사각형·글리프는 보이는 만큼만 남긴다(글리프는 아틀라스 좌표도 같이 옮겨 같은 텍셀을 그린다).
+    /// 칸 바탕·글자 앞 사각형·글자 앞 글리프의 경계(`rects_bg`·`rects_pre`·`glyphs_pre`)는 남은 개수에 맞춘다
+    pub fn shift_and_clip_y(&mut self, dy: i32, top: i32, bottom: i32) {
+        let (top, bottom) = (top as f32, bottom as f32);
+        let dy = dy as f32;
+        let (bg, pre) = (self.rects_bg, self.rects_pre);
+        let mut kept = 0;
+        let (mut kept_bg, mut kept_pre) = (0, 0);
+        let rects = std::mem::take(&mut self.rects);
+        for (i, mut r) in rects.into_iter().enumerate() {
+            let y0 = (r.pos[1] + dy).max(top);
+            let y1 = (r.pos[1] + dy + r.size[1]).min(bottom);
+            if y1 > y0 {
+                r.pos[1] = y0;
+                r.size[1] = y1 - y0;
+                self.rects.push(r);
+                kept += 1;
+            }
+            if i + 1 == bg {
+                kept_bg = kept;
+            }
+            if i + 1 == pre {
+                kept_pre = kept;
+            }
+        }
+        if bg == 0 {
+            kept_bg = 0;
+        }
+        if pre == 0 {
+            kept_pre = 0;
+        }
+        self.rects_bg = kept_bg;
+        self.rects_pre = kept_pre;
+        let gpre = self.glyphs_pre;
+        let mut kept_g = 0;
+        let mut kept_gpre = 0;
+        let glyphs = std::mem::take(&mut self.glyphs);
+        for (i, mut g) in glyphs.into_iter().enumerate() {
+            let y0 = g.pos[1] + dy;
+            let y1 = y0 + g.size[1];
+            let (c0, c1) = (y0.max(top), y1.min(bottom));
+            if c1 > c0 {
+                g.atlas[1] += c0 - y0;
+                g.pos[1] = c0;
+                g.size[1] = c1 - c0;
+                self.glyphs.push(g);
+                kept_g += 1;
+            }
+            if i + 1 == gpre {
+                kept_gpre = kept_g;
+            }
+        }
+        if gpre == 0 {
+            kept_gpre = 0;
+        }
+        self.glyphs_pre = kept_gpre;
+    }
+
     fn rect(&mut self, x: i32, y: i32, w: u32, h: u32, color: Rgb, alpha: u8) {
         if w == 0 || h == 0 {
             return;

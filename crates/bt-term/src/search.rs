@@ -405,9 +405,11 @@ impl Search {
     }
 
     /// 지금 보이는 줄들의 맞은 곳(위에서 아래로)
-    pub fn visible<T>(&self, term: &Term<T>) -> Vec<Match> {
+    /// `edge`이면 픽셀 스크롤(#902)로 화면 맨 아래에 걸쳐 보이는 다음 줄까지 찾는다
+    pub fn visible_with_edge<T>(&self, term: &Term<T>, edge: bool) -> Vec<Match> {
         let offset = term.grid().display_offset() as i32;
-        let mut v = self.find_in(term, -offset, term.screen_lines() as i32 - 1 - offset);
+        let last = term.screen_lines() as i32 - 1 - offset + i32::from(edge && offset > 0);
+        let mut v = self.find_in(term, -offset, last);
         v.truncate(MAX_VISIBLE);
         v
     }
