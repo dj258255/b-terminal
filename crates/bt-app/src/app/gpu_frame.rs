@@ -386,18 +386,23 @@ impl App {
                         );
                     }
                     if bar.0 {
-                        let width = (bt_render::scrollbar::BAR_WIDTH as f64 * scale).round() as u32;
-                        bt_render::scrollbar::draw(
+                        let look = bt_render::scrollbar::Look::resolve(
+                            &self.config.scrollbar_style,
+                            scale,
+                            (vm.width, vm.height),
+                            theme.foreground,
+                            theme.selection_background,
+                        );
+                        bt_render::scrollbar::draw_look(
                             ui!(),
-                            v.outer.right() - width as i32 - scale.round().max(1.0) as i32,
+                            v.outer.right(),
                             v.inner.y,
                             screen.rows as u32 * vm.height,
-                            width,
+                            &look,
+                            bar.1,
                             screen.rows,
                             screen.history,
                             screen.display_offset,
-                            theme.foreground,
-                            if bar.1 { 170 } else { 110 },
                         );
                     }
                     if let (true, Some(p)) = (single_tab, v.progress) {
@@ -752,5 +757,28 @@ mod layer_plan_tests {
         assert!(p.draw && p.alloc_upper && p.keep_upper && !p.alloc_top && !p.keep_top);
         let p = layer_plan(false, false, true, false);
         assert!(!p.draw && !p.keep_upper && !p.alloc_top);
+    }
+
+    /// 스크롤 막대(#917): CPU 길(`app.rs`)과 GPU 길(여기)이 같은 `Look::resolve`·`draw_look`으로 같은 `Canvas`에 그린다.
+    /// 한쪽만 옛 `draw`(설정을 모르는 그리기)로 돌아가면 두 길의 픽셀이 갈라지므로 소스로 지킨다
+    #[test]
+    fn both_render_paths_draw_the_scrollbar_with_the_same_look() {
+        for (name, src) in [
+            ("gpu_frame.rs", include_str!("gpu_frame.rs")),
+            ("app.rs", include_str!("../app.rs")),
+        ] {
+            assert!(
+                src.contains(concat!("scrollbar::Look", "::resolve(")),
+                "{name}: 막대 모양을 설정에서 풀지 않는다"
+            );
+            assert!(
+                src.contains(concat!("scrollbar::draw", "_look(")),
+                "{name}: 막대를 draw_look으로 그리지 않는다"
+            );
+            assert!(
+                !src.contains(concat!("scrollbar::draw", "(\n")),
+                "{name}: 설정을 모르는 옛 draw를 부른다"
+            );
+        }
     }
 }

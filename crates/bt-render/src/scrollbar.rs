@@ -13,12 +13,17 @@ const MIN_THUMB: u32 = 20;
 /// `rows`는 보이는 줄 수, `history`는 스크롤백 줄 수, `offset`은 맨 아래에서 위로 올라간 줄 수.
 /// 스크롤백이 없거나 트랙이 없으면 없다
 pub fn thumb(track: u32, rows: usize, history: usize, offset: usize) -> Option<(u32, u32)> {
+    thumb_min(track, rows, history, offset, MIN_THUMB)
+}
+
+/// `thumb`에서 손잡이 최소 길이(픽셀)를 `min_thumb`로 정한 것(`scrollbar-min-handle-height`, #917)
+pub fn thumb_min(track: u32, rows: usize, history: usize, offset: usize, min_thumb: u32) -> Option<(u32, u32)> {
     if track == 0 || rows == 0 || history == 0 {
         return None;
     }
     let total = (rows + history) as u64;
     let len = ((track as u64 * rows as u64) / total)
-        .max(MIN_THUMB as u64)
+        .max(min_thumb as u64)
         .min(track as u64) as u32;
     // 화면 맨 위 줄이 전체의 몇 번째인가(0..=history)
     let top = (history - offset.min(history)) as u64;
@@ -39,7 +44,12 @@ pub enum Hit {
 /// 트랙 맨 위에서 `y`픽셀 아래를 눌렀을 때 맞은 곳. 막대가 없으면(스크롤백 없음) 없다.
 /// 트랙 밖(위·아래 패딩)은 가장자리로 본다
 pub fn hit(track: u32, rows: usize, history: usize, offset: usize, y: f64) -> Option<Hit> {
-    let (ty, len) = thumb(track, rows, history, offset)?;
+    hit_min(track, rows, history, offset, y, MIN_THUMB)
+}
+
+/// `hit`에서 손잡이 최소 길이를 정한 것
+pub fn hit_min(track: u32, rows: usize, history: usize, offset: usize, y: f64, min_thumb: u32) -> Option<Hit> {
+    let (ty, len) = thumb_min(track, rows, history, offset, min_thumb)?;
     let y = y.clamp(0.0, (track - 1) as f64);
     let (start, end) = (ty as f64, (ty + len) as f64);
     Some(if y < start {
@@ -56,8 +66,13 @@ pub fn hit(track: u32, rows: usize, history: usize, offset: usize, y: f64) -> Op
 /// 손잡이를 `grab`만큼 쥔 채 포인터가 트랙 맨 위에서 `y`픽셀에 있을 때, 화면 맨 위에 올 줄
 /// (스크롤백 맨 위를 0으로 센 절대 줄, `0..=history`). 막대를 그리는 `thumb`와 같은 기하의 거꾸로 계산이다
 pub fn drag_top(track: u32, rows: usize, history: usize, y: f64, grab: u32) -> Option<usize> {
+    drag_top_min(track, rows, history, y, grab, MIN_THUMB)
+}
+
+/// `drag_top`에서 손잡이 최소 길이를 정한 것
+pub fn drag_top_min(track: u32, rows: usize, history: usize, y: f64, grab: u32, min_thumb: u32) -> Option<usize> {
     // 손잡이 길이는 `thumb`와 같은 식(최소 길이 포함)으로 얻는다
-    let (_, len) = thumb(track, rows, history, 0)?;
+    let (_, len) = thumb_min(track, rows, history, 0, min_thumb)?;
     let room = (track - len) as u64;
     if room == 0 {
         return None;
@@ -70,9 +85,14 @@ pub fn drag_top(track: u32, rows: usize, history: usize, y: f64, grab: u32) -> O
 /// 시스템 설정 "스크롤 막대 클릭 시: 누른 자리로 이동"(#630): 트랙 맨 위에서 `y`픽셀 아래를 눌렀을 때 손잡이 가운데가
 /// 그 자리에 오게 하는 줄(`drag_top`과 같은 단위)과, 이어서 끌 때 쥔 곳(손잡이 가운데)
 pub fn jump_top(track: u32, rows: usize, history: usize, y: f64) -> Option<(usize, u32)> {
-    let (_, len) = thumb(track, rows, history, 0)?;
+    jump_top_min(track, rows, history, y, MIN_THUMB)
+}
+
+/// `jump_top`에서 손잡이 최소 길이를 정한 것
+pub fn jump_top_min(track: u32, rows: usize, history: usize, y: f64, min_thumb: u32) -> Option<(usize, u32)> {
+    let (_, len) = thumb_min(track, rows, history, 0, min_thumb)?;
     let grab = len / 2;
-    drag_top(track, rows, history, y, grab).map(|row| (row, grab))
+    drag_top_min(track, rows, history, y, grab, min_thumb).map(|row| (row, grab))
 }
 
 /// 빈 곳을 누르면 옮기는 줄 수: 한 쪽에서 겹치는 한 줄을 뺀 만큼(최소 1)
@@ -101,6 +121,149 @@ pub fn draw(
 ) {
     if let Some((dy, len)) = thumb(track, rows, history, offset) {
         canvas.blend_rect(x, y + dy as i32, width, len, color, alpha);
+    }
+}
+
+/// 막대를 그리는 모양을 픽셀로 푼 것(`scrollbar-*` 설정을 칸 크기·배율로 바꾼 결과, #917)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Look {
+    /// 손잡이 폭(픽셀)과 마우스를 올렸을 때의 폭
+    pub width: u32,
+    pub hover_width: u32,
+    /// 칸 오른쪽 가장자리와 막대 사이(픽셀)
+    pub gap: u32,
+    /// 손잡이 모서리 둥글기 반지름(픽셀). 0이면 직각
+    pub radius: u32,
+    /// 손잡이 최소 길이(픽셀)
+    pub min_thumb: u32,
+    pub handle: Rgb,
+    /// 손잡이 덮음(0~255): 평소·마우스를 올렸을 때
+    pub handle_alpha: u8,
+    pub handle_alpha_hover: u8,
+    pub track: Rgb,
+    /// 트랙 덮음(0~255): 평소·마우스를 올렸을 때. 0이면 트랙을 그리지 않는다
+    pub track_alpha: u8,
+    pub track_alpha_hover: u8,
+}
+
+fn alpha_of(opacity: f32) -> u8 {
+    (opacity.clamp(0.0, 1.0) * 255.0).round() as u8
+}
+
+impl Look {
+    /// 설정과 칸 크기에서 모양을 푼다. `scale`은 화면 배율, `cell`은 (칸 너비, 칸 높이) 픽셀.
+    /// 정하지 않은 값은 kitty 기본값이 아니라 처음부터 그리던 막대의 값을 쓴다: 폭 `6×scale`, 간격 `scale`(최소 1),
+    /// 최소 길이 20px, 직각, 덮음 110(마우스 올리면 170)/255, 트랙 없음.
+    /// kitty처럼 길이는 칸 크기에 배수를 곱해 버린다(`(int)`)
+    pub fn resolve(
+        style: &bt_core::config::ScrollbarStyle,
+        scale: f64,
+        cell: (u32, u32),
+        foreground: Rgb,
+        selection_background: Rgb,
+    ) -> Look {
+        let (cw, ch) = (cell.0 as f32, cell.1 as f32);
+        let px = |mult: f32, unit: f32| (mult * unit) as u32;
+        let width = style
+            .width
+            .map_or((BAR_WIDTH as f64 * scale).round() as u32, |m| px(m, cw));
+        let hover_width = style.hover_width.map_or(width, |m| px(m, cw));
+        let gap = style.gap.map_or(scale.round().max(1.0) as u32, |m| px(m, cw));
+        let radius = style.radius.map_or(0, |m| px(m, cw));
+        let min_thumb = style.min_handle_height.map_or(MIN_THUMB, |m| px(m, ch));
+        let (handle_alpha, handle_alpha_hover) = match style.handle_opacity {
+            Some(o) => (alpha_of(o), alpha_of(o)),
+            None => (HANDLE_ALPHA, HANDLE_ALPHA_HOVER),
+        };
+        let track_alpha = alpha_of(style.track_opacity);
+        Look {
+            width,
+            hover_width,
+            gap,
+            radius,
+            min_thumb,
+            handle: style.handle_color.resolve(foreground, selection_background),
+            handle_alpha,
+            handle_alpha_hover,
+            track: style.track_color.resolve(foreground, selection_background),
+            track_alpha,
+            track_alpha_hover: style.track_hover_opacity.map_or(track_alpha, alpha_of),
+        }
+    }
+
+    /// 마우스가 막대 띠 위에 있을 때의 폭
+    pub fn bar_width(&self, hovering: bool) -> u32 {
+        if hovering { self.hover_width } else { self.width }
+    }
+
+    /// 마우스를 받는 오른쪽 끝 띠의 폭(픽셀): 처음부터 있던 `BAR_WIDTH×2×scale`보다 좁아지지 않고,
+    /// 간격과 가장 넓은 폭이 더 넓으면 그것을 덮는다
+    pub fn gutter(&self, scale: f64) -> u32 {
+        let legacy = (BAR_WIDTH as f64 * scale * 2.0).round() as u32;
+        legacy.max(self.gap + self.width.max(self.hover_width))
+    }
+}
+
+/// 처음부터 그리던 손잡이 덮음(평소, 마우스를 올렸을 때)
+const HANDLE_ALPHA: u8 = 110;
+const HANDLE_ALPHA_HOVER: u8 = 170;
+
+fn smoothstep(e0: f32, e1: f32, x: f32) -> f32 {
+    let t = ((x - e0) / (e1 - e0)).clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
+}
+
+/// 막대 하나를 그린다(트랙과 손잡이). 칸 오른쪽 바깥 끝 `right`에서 `look.gap`과 폭만큼 왼쪽에 놓는다.
+/// 트랙은 위에서 `top`, 길이 `track`. 설정이 없으면 `draw`가 그리던 것과 같은 픽셀이다
+#[allow(clippy::too_many_arguments)]
+pub fn draw_look(
+    canvas: &mut Canvas,
+    right: i32,
+    top: i32,
+    track: u32,
+    look: &Look,
+    hovering: bool,
+    rows: usize,
+    history: usize,
+    offset: usize,
+) {
+    let width = look.bar_width(hovering);
+    let x = right - width as i32 - look.gap as i32;
+    let track_alpha = if hovering {
+        look.track_alpha_hover
+    } else {
+        look.track_alpha
+    };
+    if track_alpha > 0 && width > 0 {
+        canvas.blend_rect(x, top, width, track, look.track, track_alpha);
+    }
+    let alpha = if hovering {
+        look.handle_alpha_hover
+    } else {
+        look.handle_alpha
+    };
+    let Some((dy, len)) = thumb_min(track, rows, history, offset, look.min_thumb) else {
+        return;
+    };
+    let y = top + dy as i32;
+    if look.radius == 0 {
+        canvas.blend_rect(x, y, width, len, look.handle, alpha);
+        return;
+    }
+    // 둥근 손잡이: kitty `rounded_rect.slang`처럼 부호 있는 거리로 가장자리를 1픽셀 부드럽게
+    let r = (look.radius as f32).min(width as f32 / 2.0).min(len as f32 / 2.0);
+    let (hw, hh) = (width as f32 / 2.0, len as f32 / 2.0);
+    let (bx, by) = (hw - r, hh - r);
+    for row in 0..len {
+        for col in 0..width {
+            let (px, py) = ((col as f32 + 0.5 - hw).abs() - bx, (row as f32 + 0.5 - hh).abs() - by);
+            let dist = px.max(0.0).hypot(py.max(0.0)) + px.max(py).min(0.0) - r;
+            let cover = smoothstep(-1.0, 1.0, -dist);
+            let a = (alpha as f32 * cover).round() as u8;
+            if a > 0 {
+                canvas.blend_px(x + col as i32, y + row as i32, look.handle, a);
+            }
+        }
     }
 }
 

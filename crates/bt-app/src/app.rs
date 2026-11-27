@@ -1537,11 +1537,24 @@ impl App {
         if self.config.scrollbar == bt_core::config::Scrollbar::Never {
             return None;
         }
-        let gutter = (bt_render::scrollbar::BAR_WIDTH as f64 * self.scale * 2.0).round() as u32;
         let (x, y) = (self.w.cursor_pos.x, self.w.cursor_pos.y);
         self.group_layout(self.w.active).into_iter().find_map(|(id, r)| {
+            let gutter = self.scrollbar_look(id)?.gutter(self.scale);
             bt_render::scrollbar::in_gutter(x, y, r.x, r.y, r.right(), r.bottom(), gutter).then_some(id)
         })
+    }
+
+    /// 칸의 스크롤 막대 모양(칸 크기와 설정을 픽셀로 푼 것, #917). 칸 크기를 모르면 없다
+    fn scrollbar_look(&self, id: u64) -> Option<bt_render::scrollbar::Look> {
+        let m = self.pane_metrics(id)?;
+        let theme = &self.config.theme;
+        Some(bt_render::scrollbar::Look::resolve(
+            &self.config.scrollbar_style,
+            self.scale,
+            (m.width, m.height),
+            theme.foreground,
+            theme.selection_background,
+        ))
     }
 
     /// 칸의 스크롤 막대 트랙: (맨 위 픽셀 y, 길이 픽셀). 막대를 그리는 곳과 같다(칸 안쪽 맨 위에서 보이는 줄 수만큼)
@@ -1565,14 +1578,15 @@ impl App {
             return false;
         };
         let y = self.w.cursor_pos.y - top as f64;
-        let Some(hit) = bt_render::scrollbar::hit(track, rows, history, offset, y) else {
+        let min_thumb = self.scrollbar_look(id).map_or(20, |l| l.min_thumb);
+        let Some(hit) = bt_render::scrollbar::hit_min(track, rows, history, offset, y, min_thumb) else {
             return false;
         };
         let grab = match hit {
             bt_render::scrollbar::Hit::Thumb { grab } => Some(grab),
             // 시스템 설정 "누른 자리로 이동"이면 그 자리로 뛰고, 이어서 끌 수 있다(손잡이 가운데를 쥔 것으로 본다)
             bt_render::scrollbar::Hit::Page { .. } if self.system_scroller.jump => {
-                match bt_render::scrollbar::jump_top(track, rows, history, y) {
+                match bt_render::scrollbar::jump_top_min(track, rows, history, y, min_thumb) {
                     Some((row, grab)) => {
                         self.panes[idx].session.scroll_to_row(row);
                         Some(grab)
@@ -1601,7 +1615,8 @@ impl App {
             return;
         };
         let y = self.w.cursor_pos.y - top as f64;
-        if let Some(row) = bt_render::scrollbar::drag_top(track, rows, history, y, grab) {
+        let min_thumb = self.scrollbar_look(press.pane).map_or(20, |l| l.min_thumb);
+        if let Some(row) = bt_render::scrollbar::drag_top_min(track, rows, history, y, grab, min_thumb) {
             self.panes[idx].session.scroll_to_row(row);
         }
         self.panes[idx].scrollbar_until = Some(Instant::now() + SCROLLBAR_FOR);
@@ -7278,9 +7293,13 @@ impl App {
                 let hovering =
                     self.w.gutter_hot == Some(v.id) || self.w.scrollbar_press.is_some_and(|p| p.pane == v.id);
                 (
-                    self.config
-                        .scrollbar
-                        .shows(v.screen.history, scrolling, hovering, self.system_scroller.always),
+                    self.config.scrollbar.shows(
+                        v.screen.history,
+                        scrolling,
+                        hovering,
+                        self.system_scroller.always,
+                        v.screen.display_offset > 0,
+                    ),
                     hovering,
                 )
             })
@@ -7921,18 +7940,23 @@ impl App {
                     );
                 }
                 if bar.0 {
-                    let width = (bt_render::scrollbar::BAR_WIDTH as f64 * self.scale).round() as u32;
-                    bt_render::scrollbar::draw(
+                    let look = bt_render::scrollbar::Look::resolve(
+                        &self.config.scrollbar_style,
+                        self.scale,
+                        (vm.width, vm.height),
+                        theme.foreground,
+                        theme.selection_background,
+                    );
+                    bt_render::scrollbar::draw_look(
                         &mut canvas,
-                        v.outer.right() - width as i32 - self.scale.round().max(1.0) as i32,
+                        v.outer.right(),
                         v.inner.y,
                         screen.rows as u32 * vm.height,
-                        width,
+                        &look,
+                        bar.1,
                         screen.rows,
                         screen.history,
                         screen.display_offset,
-                        theme.foreground,
-                        if bar.1 { 170 } else { 110 },
                     );
                 }
                 // 탭 막대가 없으면 진행 막대를 칸 맨 위에 얇게(Ghostty와 같은 자리). 있으면 탭 줄에 보인다
