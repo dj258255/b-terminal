@@ -39,7 +39,7 @@ pub mod triggers;
 pub mod xt_checksum;
 
 pub use copy_format::{CopyFormat, Emit as CopyEmit};
-pub use copy_mode::{CopyOp, CopySelect};
+pub use copy_mode::{CopyOp, CopySelect, JumpKind};
 pub use input::{
     KeyModes, KeypadKey, KittyFlags, LARGE_PASTE_BYTES, Mods, NamedKey, TextKey, apply_paste_actions, ctrl_seq,
     encode_keypad, encode_modify_other_char, encode_named, encode_named_modify_other, encode_named_with, encode_paste,

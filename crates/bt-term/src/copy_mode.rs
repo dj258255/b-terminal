@@ -51,6 +51,31 @@ pub enum CopyOp {
     SelectLine,
     /// 사각 고르기(`Ctrl-v`)
     SelectBlock,
+    /// 다음 줄의 맨 앞 칸(`Enter`, WezTerm `MoveToStartOfNextLine`). 맨 아래 줄이면 그대로
+    NextLineStart,
+    /// 고르기의 반대쪽 끝으로(`o`): 커서와 시작점을 바꾼다. 고르기가 없으면 아무 일도 없다
+    OtherEnd,
+    /// 고르기의 반대쪽 끝으로, 칸만(`O`): 줄은 두고 커서와 시작점의 칸을 바꾼다
+    OtherEndHoriz,
+}
+
+/// 줄 안 글자 찾기(`f F t T`)의 종류
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct JumpKind {
+    /// 오른쪽으로(`f` `t`)인가, 왼쪽으로(`F` `T`)인가
+    pub forward: bool,
+    /// 글자 바로 앞(뒤)에 서는가(`t` `T`)
+    pub till: bool,
+}
+
+impl JumpKind {
+    /// 반대 방향(`,`)
+    pub fn reversed(self) -> Self {
+        Self {
+            forward: !self.forward,
+            ..self
+        }
+    }
 }
 
 /// 지금 하는 고르기의 종류
@@ -383,7 +408,16 @@ fn motion<T>(term: &Term<T>, line: Line, col: usize, goal: Goal, op: CopyOp, pag
                 _ => view_top + rows - 1,
             })
         }
-        CopyOp::SelectCell | CopyOp::SelectLine | CopyOp::SelectBlock => (line, col, goal),
+        CopyOp::NextLineStart => {
+            if line >= bottom {
+                (line, col, goal)
+            } else {
+                (Line(line.0 + 1), 0, Goal::Col(0))
+            }
+        }
+        CopyOp::SelectCell | CopyOp::SelectLine | CopyOp::SelectBlock | CopyOp::OtherEnd | CopyOp::OtherEndHoriz => {
+            (line, col, goal)
+        }
     }
 }
 
@@ -519,6 +553,21 @@ impl CopyMode {
                     None => Some(((stable_id(term, line), col), kind)),
                 };
             }
+            CopyOp::OtherEnd | CopyOp::OtherEndHoriz => {
+                // 고르기가 없으면 아무 일도 없다. 있으면 커서와 시작점을 바꾼다(`O`는 칸만)
+                if let Some((a, kind)) = self.anchor {
+                    let a_line = line_of(term, a.0);
+                    let a_col = snap(term, a_line, a.1);
+                    let (cur, anc) = if op == CopyOp::OtherEnd {
+                        ((stable_id(term, a_line), a_col), (stable_id(term, line), col))
+                    } else {
+                        ((stable_id(term, line), snap(term, line, a_col)), (a.0, col))
+                    };
+                    self.cursor = cur;
+                    self.goal = Goal::Col(cur.1);
+                    self.anchor = Some((anc, kind));
+                }
+            }
             _ => {
                 let page = term.screen_lines();
                 let (l, c, g) = motion(term, line, col, self.goal, op, page);
@@ -527,6 +576,68 @@ impl CopyMode {
             }
         }
         self.sync(term);
+    }
+
+    /// 커서를 칸 하나로 옮긴다(찾기 맞은 곳 따위). 고르기 중이면 고른 것이 따라온다
+    pub fn move_to<T: EventListener>(&mut self, term: &mut Term<T>, p: Point) {
+        let line = Line(p.line.0.clamp(term.topmost_line().0, term.bottommost_line().0));
+        let col = snap(term, line, p.column.0);
+        self.cursor = (stable_id(term, line), col);
+        self.goal = Goal::Col(col);
+        self.sync(term);
+    }
+
+    /// `/ ? n N`(#932): 찾기(`search`)의 앞(`forward`)·뒤 맞은 곳으로 커서를 옮긴다. 맞은 곳이 없으면 거짓
+    pub(crate) fn search_jump<T: EventListener>(
+        &mut self,
+        term: &mut Term<T>,
+        search: &mut crate::search::Search,
+        forward: bool,
+    ) -> bool {
+        let from = self.cursor_point(term);
+        let Some(m) = search.nearest(term, from, forward) else {
+            return false;
+        };
+        self.move_to(term, *m.start());
+        true
+    }
+
+    /// `f F t T`(`repeat`이면 `;` `,`): 커서가 있는 줄 안에서 글자 `c`를 찾아 커서를 옮긴다. 줄 밖은 찾지 않는다.
+    /// 못 찾으면 거짓이고 커서는 그대로. `t`·`T`를 되풀이할 때는 바로 옆 글자를 건너뛴다(그래야 제자리에 서지 않는다)
+    pub fn jump<T: EventListener>(&mut self, term: &mut Term<T>, kind: JumpKind, c: char, repeat: bool) -> bool {
+        let line = line_of(term, self.cursor.0);
+        let col = snap(term, line, self.cursor.1);
+        let cols = term.columns();
+        let is_target = |x: usize| {
+            let cell = &term.grid()[line][Column(x)];
+            cell.c == c
+                && !cell
+                    .flags
+                    .intersects(Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER)
+        };
+        let skip = usize::from(repeat && kind.till);
+        let found = if kind.forward {
+            let from = col + 1 + skip;
+            (from..cols).find(|&x| is_target(x))
+        } else {
+            let to = col.saturating_sub(skip);
+            (0..to).rev().find(|&x| is_target(x))
+        };
+        let Some(x) = found else { return false };
+        let dest = match (kind.till, kind.forward) {
+            (false, _) => x,
+            (true, true) => snap(term, line, x.saturating_sub(1)),
+            (true, false) => {
+                let width = if term.grid()[line][Column(x)].flags.contains(Flags::WIDE_CHAR) {
+                    2
+                } else {
+                    1
+                };
+                snap(term, line, x + width)
+            }
+        };
+        self.move_to(term, point(line, dest));
+        true
     }
 
     /// 커서가 보이게 하고 고른 것을 엔진에 반영한다. 고르기를 시작하지 않았으면 고른 칸은 없다(커서는 `paint_cursor`가 따로 그린다)
@@ -1143,5 +1254,169 @@ mod tests {
     fn text_of_line(t: &Term<Quiet>, cm: &CopyMode) -> String {
         let p = cm.cursor_point(t);
         t.grid()[p.line].into_iter().map(|c| c.c).collect()
+    }
+
+    // ---- #932: 찾기·줄 안 글자 찾기·고르기 반대쪽 끝·Enter ----
+
+    use crate::search::Search;
+
+    /// 20칸 x 4줄: "foo bar foo" / "xyz" / "foo" / "bar foo"
+    fn finds() -> Term<Quiet> {
+        term_with(20, 4, "foo bar foo\r\nxyz\r\nfoo\r\nbar foo")
+    }
+
+    #[test]
+    fn search_forward_goes_to_the_next_match_after_the_cursor_and_wraps() {
+        let mut t = finds();
+        let mut cm = CopyMode::enter(&t);
+        goto(&mut t, &mut cm, &[Top]);
+        let mut s = Search::new("foo").unwrap();
+        // 커서(0,0)가 맞은 곳 위에 있어도 그 자리는 건너뛰고 다음 것으로 간다
+        assert!(cm.search_jump(&mut t, &mut s, true));
+        assert_eq!(at(&t, &cm), (0, 8));
+        assert!(cm.search_jump(&mut t, &mut s, true));
+        assert_eq!(at(&t, &cm), (2, 0));
+        assert!(cm.search_jump(&mut t, &mut s, true));
+        assert_eq!(at(&t, &cm), (3, 4));
+        assert!(cm.search_jump(&mut t, &mut s, true), "끝에서 맨 위로 돈다");
+        assert_eq!(at(&t, &cm), (0, 0));
+    }
+
+    #[test]
+    fn search_backward_goes_to_the_previous_match_and_wraps() {
+        let mut t = finds();
+        let mut cm = CopyMode::enter(&t);
+        goto(&mut t, &mut cm, &[Top, Down, Down, Right]);
+        let mut s = Search::new("FOO").unwrap();
+        assert!(cm.search_jump(&mut t, &mut s, false));
+        assert_eq!(at(&t, &cm), (2, 0), "같은 줄 앞쪽 맞은 곳");
+        assert!(cm.search_jump(&mut t, &mut s, false));
+        assert_eq!(at(&t, &cm), (0, 8));
+        goto(&mut t, &mut cm, &[Top]);
+        assert!(cm.search_jump(&mut t, &mut s, false), "맨 위에서 맨 아래로 돈다");
+        assert_eq!(at(&t, &cm), (3, 4));
+    }
+
+    #[test]
+    fn search_without_a_match_leaves_the_cursor() {
+        let mut t = finds();
+        let mut cm = CopyMode::enter(&t);
+        goto(&mut t, &mut cm, &[Top, Right]);
+        let mut s = Search::new("zzz").unwrap();
+        assert!(!cm.search_jump(&mut t, &mut s, true));
+        assert_eq!(at(&t, &cm), (0, 1));
+    }
+
+    #[test]
+    fn search_jump_extends_a_running_selection_and_scrolls_to_the_match() {
+        let mut feed = String::new();
+        for i in 0..30 {
+            feed.push_str(&format!("row{i:02}\r\n"));
+        }
+        let mut t = term_with(10, 5, &feed);
+        let mut cm = CopyMode::enter(&t);
+        goto(&mut t, &mut cm, &[Bottom, SelectCell]);
+        let mut s = Search::new("row05").unwrap();
+        assert!(cm.search_jump(&mut t, &mut s, false));
+        assert!(t.grid().display_offset() > 0, "맞은 곳이 보이게 스크롤");
+        let sel = text(&t).unwrap();
+        assert!(sel.starts_with("row05"), "{sel:?}");
+        assert!(sel.contains("row29") || sel.contains("row28"), "{sel:?}");
+        // 현재 맞은 곳이 찾기 쪽에도 골라져 있다(강조가 같은 곳)
+        let cur = s.current(&t).unwrap();
+        assert_eq!(*cur.start(), cm.cursor_point(&t));
+    }
+
+    fn jump(t: &mut Term<Quiet>, cm: &mut CopyMode, forward: bool, till: bool, c: char) -> bool {
+        cm.jump(t, JumpKind { forward, till }, c, false)
+    }
+
+    #[test]
+    fn jump_f_t_find_a_char_on_the_same_line_only() {
+        let mut t = finds();
+        let mut cm = CopyMode::enter(&t);
+        goto(&mut t, &mut cm, &[Top]);
+        assert!(jump(&mut t, &mut cm, true, false, 'b'));
+        assert_eq!(at(&t, &cm), (0, 4), "f: 글자 위로");
+        goto(&mut t, &mut cm, &[LineStart]);
+        assert!(jump(&mut t, &mut cm, true, true, 'b'));
+        assert_eq!(at(&t, &cm), (0, 3), "t: 글자 바로 앞");
+        assert!(!jump(&mut t, &mut cm, true, false, 'z'), "다른 줄의 글자는 찾지 않는다");
+        assert_eq!(at(&t, &cm), (0, 3));
+        goto(&mut t, &mut cm, &[LineEnd]);
+        assert!(jump(&mut t, &mut cm, false, false, 'b'));
+        assert_eq!(at(&t, &cm), (0, 4), "F: 왼쪽으로");
+        goto(&mut t, &mut cm, &[LineEnd]);
+        assert!(jump(&mut t, &mut cm, false, true, 'b'));
+        assert_eq!(at(&t, &cm), (0, 5), "T: 글자 바로 뒤");
+    }
+
+    #[test]
+    fn jump_again_and_reverse_repeat_the_last_jump() {
+        let mut t = finds();
+        let mut cm = CopyMode::enter(&t);
+        goto(&mut t, &mut cm, &[Top]);
+        let k = JumpKind {
+            forward: true,
+            till: false,
+        };
+        assert!(cm.jump(&mut t, k, 'o', false));
+        assert_eq!(at(&t, &cm), (0, 1));
+        assert!(cm.jump(&mut t, k, 'o', true));
+        assert_eq!(at(&t, &cm), (0, 2));
+        assert!(cm.jump(&mut t, k, 'o', true));
+        assert_eq!(at(&t, &cm), (0, 9));
+        // `,`: 반대 방향
+        assert!(cm.jump(&mut t, k.reversed(), 'o', true));
+        assert_eq!(at(&t, &cm), (0, 2));
+        // t 뒤의 `;`는 바로 앞 칸에 멈춘 채 제자리에 서지 않고 다음 것으로 간다
+        goto(&mut t, &mut cm, &[LineStart]);
+        let till = JumpKind {
+            forward: true,
+            till: true,
+        };
+        assert!(cm.jump(&mut t, till, 'o', false));
+        assert_eq!(at(&t, &cm), (0, 0));
+        assert!(cm.jump(&mut t, till, 'o', true));
+        assert_eq!(at(&t, &cm), (0, 1), "다음 o(2)의 바로 앞");
+    }
+
+    #[test]
+    fn jump_matches_wide_chars_and_extends_the_selection() {
+        let mut t = term_with(12, 2, "a한글b한글");
+        let mut cm = CopyMode::enter(&t);
+        goto(&mut t, &mut cm, &[Top, SelectCell]);
+        assert!(jump(&mut t, &mut cm, true, false, '글'));
+        assert_eq!(at(&t, &cm), (0, 3));
+        assert_eq!(text(&t).as_deref(), Some("a한글"));
+    }
+
+    #[test]
+    fn enter_moves_to_the_start_of_the_next_line_and_stops_at_the_bottom() {
+        let mut t = small();
+        let mut cm = CopyMode::enter(&t);
+        goto(&mut t, &mut cm, &[Top, Right, Right, NextLineStart]);
+        assert_eq!(at(&t, &cm), (1, 0));
+        goto(&mut t, &mut cm, &[NextLineStart, Right, NextLineStart]);
+        assert_eq!(at(&t, &cm), (2, 1), "맨 아래 줄에서는 줄을 바꾸지 않는다");
+    }
+
+    #[test]
+    fn other_end_swaps_cursor_and_anchor_and_horizontal_only_swaps_the_column() {
+        let mut t = small();
+        let mut cm = CopyMode::enter(&t);
+        goto(&mut t, &mut cm, &[Top, Right, SelectCell, Down, Right, Right]);
+        assert_eq!(at(&t, &cm), (1, 3));
+        goto(&mut t, &mut cm, &[OtherEnd]);
+        assert_eq!(at(&t, &cm), (0, 1), "시작점으로");
+        goto(&mut t, &mut cm, &[OtherEnd]);
+        assert_eq!(at(&t, &cm), (1, 3), "다시 누르면 원래 끝으로");
+        goto(&mut t, &mut cm, &[OtherEndHoriz]);
+        assert_eq!(at(&t, &cm), (1, 1), "O: 줄은 두고 칸만 반대쪽으로");
+        goto(&mut t, &mut cm, &[OtherEndHoriz]);
+        assert_eq!(at(&t, &cm), (1, 3));
+        // 고르기가 없으면 아무 일도 없다
+        goto(&mut t, &mut cm, &[SelectCell, OtherEnd, OtherEndHoriz]);
+        assert_eq!(at(&t, &cm), (1, 3));
     }
 }

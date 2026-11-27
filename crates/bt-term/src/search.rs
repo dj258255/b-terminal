@@ -404,6 +404,20 @@ impl Search {
         true
     }
 
+    /// 복사 모드의 `/ ? n N`(#932): `from` 칸을 기준으로 앞(`forward`)이나 뒤의 가장 가까운 맞은 곳을 골라 돌려준다.
+    /// 기준 칸에서 시작하는 맞은 곳은 건너뛴다. 끝에 닿으면 반대 끝으로 돈다. 화면은 옮기지 않는다(복사 모드가 커서를 따라 옮긴다)
+    pub fn nearest<T>(&mut self, term: &Term<T>, from: Point, forward: bool) -> Option<Match> {
+        let all = self.all(term);
+        let m = if forward {
+            all.iter().find(|m| *m.start() > from).or_else(|| all.first())
+        } else {
+            all.iter().rev().find(|m| *m.start() < from).or_else(|| all.last())
+        }?
+        .clone();
+        self.pick(term, &m);
+        Some(m)
+    }
+
     /// 지금 보이는 줄들의 맞은 곳(위에서 아래로)
     /// `edge`이면 픽셀 스크롤(#902)로 화면 맨 아래에 걸쳐 보이는 다음 줄까지 찾는다
     pub fn visible_with_edge<T>(&self, term: &Term<T>, edge: bool) -> Vec<Match> {

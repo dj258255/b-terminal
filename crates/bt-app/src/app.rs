@@ -1065,6 +1065,14 @@ struct Win {
     kitty_down: std::collections::HashMap<winit::keyboard::PhysicalKey, u64>,
     /// 열린 찾기 막대(칸 하나에 붙는다)
     search: Option<SearchBar>,
+    /// 복사 모드의 `/`(true)·`?`(false)가 연 찾기 막대의 방향. 그 막대일 때만 있다(#932)
+    copy_search_open: Option<bool>,
+    /// 복사 모드에서 마지막으로 찾은 글과 방향(`n` `N`이 쓴다)
+    copy_search_last: Option<(String, bool)>,
+    /// `f F t T`를 누르고 글자를 기다리는 중
+    copy_jump_wait: Option<bt_term::JumpKind>,
+    /// 마지막 줄 안 글자 찾기(`;` `,`가 쓴다)
+    copy_jump_last: Option<(bt_term::JumpKind, char)>,
     /// 힌트 모드(#865): 고른 칸의 화면에 라벨을 붙이고 키로 고르는 중. 칸 하나에 붙는다
     hints: Option<crate::hints::HintsState>,
     /// 열린 명령 팔레트(#77): 친 글, 고른 줄
@@ -1174,6 +1182,10 @@ impl Win {
             focus_click: mouse::FocusClickGuard::default(),
             kitty_down: std::collections::HashMap::new(),
             search: None,
+            copy_search_open: None,
+            copy_search_last: None,
+            copy_jump_wait: None,
+            copy_jump_last: None,
             hints: None,
             palette: None,
             pointer_icon: CursorIcon::Default,
@@ -1833,6 +1845,16 @@ impl App {
         self.reset_blink();
         // 복사 모드 중에는 확정 글도 PTY(와 같은 묶음의 다른 칸)에 보내지 않는다(#930)
         if self.copy_mode_on() {
+            match crate::copy_mode::route_text(self.w.search.is_some(), self.w.copy_jump_wait.is_some()) {
+                // 찾기 막대가 열려 있으면 확정한 글만 막대로 간다(#932)
+                crate::copy_mode::TextRoute::Search => self.search_push(text),
+                crate::copy_mode::TextRoute::Jump => {
+                    if let (Some(kind), Some(c)) = (self.w.copy_jump_wait.take(), text.chars().next()) {
+                        self.copy_jump_char(kind, c);
+                    }
+                }
+                crate::copy_mode::TextRoute::Drop => {}
+            }
             self.request_redraw();
             return;
         }
@@ -3106,7 +3128,8 @@ impl App {
     /// `KeyboardInput`을 주지 않으므로, 끄면 그 키가 키로 와 `confirm_key`가 ⌘ 층 글자로 읽는다
     fn sync_confirm_ime(&mut self) {
         // 복사 모드(#930)에서도 끈다: 글자 키(h j k l…)가 조합으로 사라지지 않고 키로 와야 하고, 조합 글자가 PTY에 섞이지 않는다
-        let allowed = self.w.confirm.is_none() && !self.copy_mode_on();
+        // 복사 모드의 찾기 막대(`/ ?`)가 열려 있는 동안은 켠다: 한글 같은 글을 확정해 넣을 수 있게(확정한 글만 막대로 간다, #932)
+        let allowed = self.w.confirm.is_none() && (!self.copy_mode_on() || self.w.search.is_some());
         if let Some(g) = self.w.gfx.as_ref() {
             g.window.set_ime_allowed(allowed);
         }
@@ -4991,6 +5014,10 @@ impl App {
 
     /// 찾기 막대를 닫고 강조를 지운다. 화면 자리는 그대로 둔다
     fn end_search(&mut self) {
+        let copy_bar = self.w.copy_search_open.take().is_some();
+        if copy_bar {
+            self.sync_confirm_ime();
+        }
         if let Some(s) = self.w.search.take() {
             if let Some(i) = self.pane_index(s.pane) {
                 self.panes[i].session.search_clear();
@@ -5060,7 +5087,11 @@ impl App {
         match &event.logical_key {
             Key::Named(NamedKey::Escape) => self.end_search(),
             // Enter는 위(오래된 쪽)로, Shift-Enter는 아래로
-            Key::Named(NamedKey::Enter) => self.search_step(!self.mods.shift_key()),
+            // 복사 모드의 막대(`/ ?`)에서는 Enter가 커서를 옮기고 막대를 닫는다(#932)
+            Key::Named(NamedKey::Enter) => match self.w.copy_search_open {
+                Some(forward) => self.copy_search_confirm(forward),
+                None => self.search_step(!self.mods.shift_key()),
+            },
             Key::Named(NamedKey::Backspace) => {
                 if let Some(s) = self.w.search.as_mut() {
                     s.query.pop();
@@ -9188,7 +9219,7 @@ impl ApplicationHandler<UserEvent> for App {
                         return;
                     }
                     // 복사 모드 중에는 조합 글자를 그리지 않는다(#930)
-                    if self.copy_mode_on() {
+                    if self.copy_mode_on() && self.w.search.is_none() {
                         return;
                     }
                     // 조합을 시작하면 고른 영역을 지운다(Ghostty `selection-clear-on-typing`: preedit 시작도 입력으로 본다)
@@ -9242,6 +9273,7 @@ impl ApplicationHandler<UserEvent> for App {
                     || self.title_key(&event)
                     || self.palette_key(&event, event_loop)
                     || self.search_key(&event)
+                    || self.copy_jump_key(&event)
                 {
                     return;
                 }
