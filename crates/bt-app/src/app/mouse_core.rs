@@ -104,7 +104,11 @@ impl App {
             return;
         };
         let (cw, ch) = (cm.width as f64, cm.height as f64);
-        let inner = self.inner_rect(rect, self.panes[idx].font_size);
+        let font = self.panes[idx].font_size;
+        let inner = self.inner_rect(
+            self.without_title_bar(self.group_of(self.panes[idx].id).unwrap_or(self.w.active), rect, font),
+            font,
+        );
         let (grid_cols, grid_rows) = super::pane_cells(&self.panes[idx].session);
         // 좌표는 칸(창) 왼쪽 위에서 잰 실제 픽셀이다(배율을 곱한 픽셀. Ghostty도 표면 픽셀을 그대로 쓴다).
         // 1016은 거기서 격자 원점(여백을 뺀 자리)까지 뺀 값을 보낸다

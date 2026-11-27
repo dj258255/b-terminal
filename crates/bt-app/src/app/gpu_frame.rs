@@ -275,6 +275,9 @@ impl App {
                         None,
                     );
                 }
+                if let Some(bar) = &v.win_bar {
+                    crate::winbar::draw(&mut lower, fonts.chrome(), &theme, bar);
+                }
                 // kitty 그림 가운데 칸 바탕 아래 층(z < i32::MIN / 2): 격자 칸 바탕 아래라 이 층에 깐다. 기본 바탕 칸은 GPU가 그리지 않아 그림이 비친다(#547)
                 let images = super::kitty_images::PaneImages::new(
                     &screen.images,
