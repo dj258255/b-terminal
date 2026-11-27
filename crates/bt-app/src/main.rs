@@ -55,6 +55,9 @@ mod startup;
 mod state;
 mod status_note;
 mod tabbar;
+mod tabbundle;
+#[cfg(test)]
+mod tabbundle_tests;
 mod tabcolor;
 mod tabdetach;
 mod tabgeom;

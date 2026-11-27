@@ -21,6 +21,23 @@ pub struct TabLabel {
     pub progress: Option<(u8, u8)>,
     /// 사람이 고른 탭 색(#852). 있으면 제목 오른쪽에 작은 점
     pub color: crate::tabcolor::TabColor,
+    /// 탭 묶음(#933): 묶음 머리표이거나 묶음에 든 탭이면 그 묶음의 표시. 머리표는 `title`에 이름을 담는다
+    pub bundle: Option<BundleMark>,
+}
+
+/// 탭 묶음 표시(#933). `chip`이면 이 항목은 탭이 아니라 묶음 머리표다
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BundleMark {
+    pub color: crate::tabcolor::TabColor,
+    pub chip: bool,
+}
+
+/// 머리표 글의 최대 칸 수(넘는 이름은 `…`로 자른다)
+pub const CHIP_MAX_CELLS: usize = 20;
+
+/// 머리표의 가로 폭(px): 글 칸 수(상한 `CHIP_MAX_CELLS`)에 양옆 한 칸씩
+pub fn chip_px(title: &str, cell_w: u32) -> u32 {
+    (text_cells(title).min(CHIP_MAX_CELLS) as u32 + 2) * cell_w.max(1)
 }
 
 /// 틀로 그린 조각들을 탭 줄 제목으로 만든다: (이은 글, 꾸밈이 있으면 조각들).
@@ -275,6 +292,44 @@ fn slots(width: u32, count: usize, layout: Layout) -> Vec<(i32, u32)> {
     let last = width.saturating_sub(w * (count as u32 - 1)).max(1);
     (0..count)
         .map(|i| (i as i32 * w as i32, if i + 1 == count { last } else { w }))
+        .collect()
+}
+
+/// 항목마다 (x, 폭). `fixed[i]`가 `Some(w)`이면 그 항목(묶음 머리표, #933)은 폭이 `w`로 정해져 있고,
+/// 나머지 항목(탭)이 남은 폭을 `slots`처럼 나눈다. 머리표가 없으면 `slots`와 같다. 줄 전체를 `align`대로 놓는 것도 `slots`와 같다
+fn slots_for(width: u32, fixed: &[Option<u32>], layout: Layout) -> Vec<(i32, u32)> {
+    if fixed.iter().all(Option::is_none) {
+        return slots(width, fixed.len(), layout);
+    }
+    let chips: u32 = fixed.iter().flatten().sum();
+    let tabs = fixed.iter().filter(|f| f.is_none()).count();
+    let widths: Vec<u32> = slots(width.saturating_sub(chips).max(tabs as u32), tabs, layout)
+        .into_iter()
+        .map(|(_, w)| w)
+        .collect();
+    let total = chips + widths.iter().sum::<u32>();
+    // 상한이 있는 모양(kitty식)은 탭을 다 합쳐도 줄이 모자라 한쪽으로 모인다. 기본 모양은 줄을 가득 채워 0이다
+    let start = match layout.align {
+        TabBarAlign::Left => 0,
+        TabBarAlign::Center => (width.saturating_sub(total) / 2) as i32,
+        TabBarAlign::Right => width.saturating_sub(total) as i32,
+    };
+    let mut x = start;
+    let mut tab = 0;
+    fixed
+        .iter()
+        .map(|f| {
+            let w = match f {
+                Some(w) => *w,
+                None => {
+                    tab += 1;
+                    widths[tab - 1]
+                }
+            };
+            let at = (x, w);
+            x += w as i32;
+            at
+        })
         .collect()
 }
 
@@ -650,6 +705,11 @@ pub fn draw_placed(
     });
     let cw = m.width as i32;
     let layout = Layout::of(look, m.width);
+    let dark = crate::tabcolor::is_dark(theme.background);
+    let fixed: Vec<Option<u32>> = tabs
+        .iter()
+        .map(|t| t.bundle.filter(|b| b.chip).map(|_| chip_px(&t.title, m.width)))
+        .collect();
     let slot_list: Vec<(i32, i32, u32)> = match &vrows {
         Some((v, r)) => {
             canvas.fill_rect(v.x, v.top, v.w, (v.end - v.top).max(0) as u32, pal.bar);
@@ -668,7 +728,7 @@ pub fn draw_placed(
                 canvas.fill_rect(0, line_y, canvas.width, 1, border);
             }
             let (tabs_x0, tabs_w) = place.tabs_x.unwrap_or((0, canvas.width));
-            slots(tabs_w, tabs.len(), layout)
+            slots_for(tabs_w, &fixed, layout)
                 .into_iter()
                 .map(|(x, w)| (x + tabs_x0, top, w))
                 .collect()
@@ -676,6 +736,43 @@ pub fn draw_placed(
     };
     let vertical = vrows.is_some();
     for (i, (tab, &(x, top, w))) in tabs.iter().zip(&slot_list).enumerate() {
+        if let Some(BundleMark { color, chip: true }) = tab.bundle {
+            // 묶음 머리표(#933): 묶음 색으로 채운 알약에 이름. 색이 없으면 막대 바탕보다 조금 진한 회색
+            let bg = color
+                .rgb(dark)
+                .unwrap_or_else(|| theme.background.mix(theme.foreground, 0.35));
+            let fg = chip_text_color(bg);
+            let pad = (cw / 4).max(1);
+            let (py, ph) = (top + h as i32 / 8, h - h / 4);
+            canvas.fill_rect(x + pad, py, w.saturating_sub(2 * pad as u32), ph, bg);
+            let room = ((w as i32 / cw) - 2).max(1) as usize;
+            if let Some(tf) = title_fonts.as_deref_mut() {
+                let (title, _) = fit_title(&tab.title, ((w as i32 - 2 * cw).max(cw)) as f32, |c| tf.advance(c));
+                let ty = top + (h as i32 - tf.metrics().height as i32) / 2;
+                draw_text_proportional_styled(
+                    canvas,
+                    tf,
+                    x + cw,
+                    ty,
+                    &title,
+                    fg,
+                    bt_render::FontStyle::from_flags(true, false),
+                );
+            } else {
+                let title = truncate(&tab.title, room);
+                let ty = top + (h as i32 - m.height as i32) / 2;
+                draw_text_styled(
+                    canvas,
+                    fonts,
+                    x + cw,
+                    ty,
+                    &title,
+                    fg,
+                    bt_render::FontStyle::from_flags(true, false),
+                );
+            }
+            continue;
+        }
         if default_look {
             if tab.active {
                 canvas.fill_rect(x, top, w, h, pal.active_bg);
@@ -785,6 +882,18 @@ pub fn draw_placed(
                 }
             }
         }
+        if let Some(BundleMark { color, chip: false }) = tab.bundle {
+            // 묶음에 든 탭(#933): 묶음 색 줄. 가로 줄은 탭 아래, 세로 줄은 칸에서 먼 쪽 가장자리
+            let c = color
+                .rgb(dark)
+                .unwrap_or_else(|| theme.background.mix(theme.foreground, 0.35));
+            let t = (m.stroke * 2).max(2);
+            match &vrows {
+                Some((v, _)) if v.right => canvas.fill_rect(x + w as i32 - t as i32, top, t, h, c),
+                Some(_) => canvas.fill_rect(x, top, t, h, c),
+                None => canvas.fill_rect(x, top + h as i32 - t as i32, w, t, c),
+            }
+        }
         if let Some(p) = tab.progress {
             draw_progress(
                 canvas,
@@ -827,7 +936,33 @@ pub fn fit_title(title: &str, room_px: f32, mut advance: impl FnMut(char) -> f32
     (fitted, width)
 }
 
-/// 창 좌표가 몇 번째 탭인가
+/// 머리표 바탕 `bg` 위에 읽히는 글자색(밝은 바탕이면 검정 계열, 어두우면 흰색)
+fn chip_text_color(bg: Rgb) -> Rgb {
+    if bg.luminance() > 0.4 {
+        Rgb::new(20, 20, 24)
+    } else {
+        Rgb::new(250, 250, 252)
+    }
+}
+
+/// 창 좌표가 몇 번째 항목인가. `fixed`는 `slots_for`의 것(머리표의 폭). 항목 번호는 그려진 항목의 차례다(#933)
+pub fn hit_items(width: u32, x: f64, fixed: &[Option<u32>], layout: Layout) -> Option<usize> {
+    slots_for(width, fixed, layout)
+        .iter()
+        .position(|&(sx, w)| x >= sx as f64 && x < (sx + w as i32) as f64)
+}
+
+/// `hit_items`처럼 놓은 자리를 항목으로: 탭 줄 밖(왼쪽·오른쪽)이면 처음·끝 항목으로 자른다
+pub fn drop_item(width: u32, x: f64, fixed: &[Option<u32>], layout: Layout) -> Option<usize> {
+    if fixed.is_empty() {
+        return None;
+    }
+    let x = x.clamp(0.0, (width as f64 - 1.0).max(0.0));
+    hit_items(width, x, fixed, layout).or(Some(fixed.len() - 1))
+}
+
+/// 창 좌표가 몇 번째 탭인가(머리표 없는 줄. 앱은 `hit_items`를 쓰고 이 함수는 시험이 쓴다)
+#[cfg(test)]
 pub fn hit(width: u32, x: f64, count: usize, layout: Layout) -> Option<usize> {
     slots(width, count, layout)
         .iter()
@@ -909,7 +1044,8 @@ impl TabDrag {
     }
 }
 
-/// 끌어서 놓은 자리(`x`)의 탭 번호. 탭 줄 밖(왼쪽·오른쪽)이면 처음·끝 탭으로 자른다
+/// 끌어서 놓은 자리(`x`)의 탭 번호(머리표 없는 줄, 시험용). 탭 줄 밖(왼쪽·오른쪽)이면 처음·끝 탭으로 자른다
+#[cfg(test)]
 pub fn drop_index(width: u32, x: f64, count: usize, layout: Layout) -> Option<usize> {
     if count == 0 {
         return None;
@@ -1448,6 +1584,7 @@ mod tests {
             unread: false,
             progress: None,
             color: Default::default(),
+            bundle: None,
         };
         let tabs = [mk(&"안녕 W".repeat(30)), mk("")];
         draw_with_title_font(
@@ -1499,6 +1636,7 @@ mod tests {
             unread: false,
             progress: None,
             color: Default::default(),
+            bundle: None,
         };
         let tabs = [mk(&"Hgjpq안녕 Ég ".repeat(10)), mk("")];
         draw_with_title_font(
@@ -1705,6 +1843,7 @@ mod tests {
             unread: false,
             progress: None,
             color,
+            bundle: None,
         };
         let mut buf = vec![0u32; (w * h) as usize];
         let mut c = Canvas::new(&mut buf, w, h);
@@ -1755,6 +1894,7 @@ mod tests {
             unread: false,
             progress: None,
             color: Default::default(),
+            bundle: None,
         }];
         let top = 40;
         draw_with_title_font(&mut c, &mut fonts, None, &theme, &TabBarLook::default(), &tabs, top);
@@ -1863,6 +2003,7 @@ mod tests {
             unread: false,
             progress: None,
             color: Default::default(),
+            bundle: None,
         }
     }
 
@@ -2290,6 +2431,7 @@ mod tests {
             unread: false,
             progress: None,
             color: Default::default(),
+            bundle: None,
         }
     }
 
@@ -2307,6 +2449,7 @@ mod tests {
             unread: false,
             progress: None,
             color: Default::default(),
+            bundle: None,
         }
     }
 
@@ -2756,5 +2899,243 @@ mod tests {
             "제목이 왼쪽 두 칸 안쪽에서 시작해야 한다: {first} (칸 폭 {cell_w}, 탭 {bx}..{})",
             bx as u32 + bw
         );
+    }
+
+    // ---- 탭 묶음(#933) ----
+
+    fn chip_label(title: &str, color: crate::tabcolor::TabColor) -> TabLabel {
+        TabLabel {
+            bundle: Some(BundleMark { color, chip: true }),
+            ..plain_label(title, false)
+        }
+    }
+
+    fn member(title: &str, active: bool, color: crate::tabcolor::TabColor) -> TabLabel {
+        TabLabel {
+            bundle: Some(BundleMark { color, chip: false }),
+            ..plain_label(title, active)
+        }
+    }
+
+    #[test]
+    fn slots_for_without_chips_is_exactly_slots() {
+        for width in [0u32, 1, 7, 100, 403, 1000] {
+            for count in 0..7usize {
+                for layout in [
+                    Layout::default(),
+                    Layout {
+                        max_tab: Some(60),
+                        align: TabBarAlign::Center,
+                    },
+                    Layout {
+                        max_tab: Some(60),
+                        align: TabBarAlign::Right,
+                    },
+                ] {
+                    assert_eq!(
+                        slots_for(width, &vec![None; count], layout),
+                        slots(width, count, layout),
+                        "{width} {count} {layout:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn chips_keep_their_width_and_tabs_share_the_rest() {
+        let fixed = [Some(30), None, None, Some(50), None];
+        let s = slots_for(400, &fixed, Layout::default());
+        assert_eq!(s, vec![(0, 30), (30, 106), (136, 106), (242, 50), (292, 108)]);
+        // 줄 전체를 채운다: 마지막 항목이 끝까지 간다
+        assert_eq!(s.last().map(|&(x, w)| x + w as i32), Some(400));
+        // 끝이 머리표여도 앞의 탭들이 남는 폭을 다 쓴다
+        let s = slots_for(300, &[None, None, Some(40)], Layout::default());
+        assert_eq!(s, vec![(0, 130), (130, 130), (260, 40)]);
+        // 머리표만 있으면 앞에서부터 차례로
+        assert_eq!(
+            slots_for(300, &[Some(40), Some(60)], Layout::default()),
+            vec![(0, 40), (40, 60)]
+        );
+        // 폭이 모자라도 패닉이 없다
+        let _ = slots_for(10, &[Some(40), None, None], Layout::default());
+    }
+
+    #[test]
+    fn capped_layout_aligns_chips_and_tabs_as_one_row() {
+        let layout = Layout {
+            max_tab: Some(50),
+            align: TabBarAlign::Right,
+        };
+        // 탭 둘(50씩) + 머리표 30 = 130, 폭 400이면 오른쪽 끝에 붙는다
+        let s = slots_for(400, &[Some(30), None, None], layout);
+        assert_eq!(s, vec![(270, 30), (300, 50), (350, 50)]);
+        let center = Layout {
+            align: TabBarAlign::Center,
+            ..layout
+        };
+        assert_eq!(slots_for(400, &[Some(30), None, None], center)[0].0, 135);
+        // 줄이 모자라 한쪽에 모인 줄에서 빈 곳에 놓으면 끝 항목이다
+        let left = Layout {
+            align: TabBarAlign::Left,
+            ..layout
+        };
+        assert_eq!(hit_items(400, 390.0, &[Some(30), None, None], left), None);
+        assert_eq!(drop_item(400, 390.0, &[Some(30), None, None], left), Some(2));
+    }
+
+    #[test]
+    fn hit_items_finds_chips_and_tabs_and_clamps_drops() {
+        let fixed = [Some(30), None, None];
+        let l = Layout::default();
+        assert_eq!(hit_items(300, 5.0, &fixed, l), Some(0), "머리표");
+        assert_eq!(hit_items(300, 29.0, &fixed, l), Some(0));
+        assert_eq!(hit_items(300, 30.0, &fixed, l), Some(1));
+        assert_eq!(hit_items(300, 299.0, &fixed, l), Some(2));
+        assert_eq!(hit_items(300, 300.0, &fixed, l), None);
+        assert_eq!(drop_item(300, -50.0, &fixed, l), Some(0), "왼쪽 밖은 처음");
+        assert_eq!(drop_item(300, 900.0, &fixed, l), Some(2), "오른쪽 밖은 끝");
+        assert_eq!(drop_item(300, 5.0, &[], l), None);
+    }
+
+    #[test]
+    fn chip_width_is_text_plus_one_cell_each_side_and_capped() {
+        assert_eq!(chip_px("abc", 10), 50);
+        assert_eq!(chip_px("한글", 10), 60, "넓은 글자는 두 칸");
+        assert_eq!(chip_px(&"x".repeat(100), 10), (CHIP_MAX_CELLS as u32 + 2) * 10);
+        assert_eq!(chip_px("", 0), 2, "칸 폭 0은 1로 센다");
+    }
+
+    #[test]
+    fn horizontal_chip_and_member_stripes_are_drawn_in_the_bundle_color_inside_the_bar() {
+        use crate::tabcolor::TabColor;
+        let Ok(mut fonts) = Fonts::new(&bt_render::FontConfig::default()) else {
+            return;
+        };
+        let theme = Theme::ghostty_default();
+        let dark = crate::tabcolor::is_dark(theme.background);
+        let blue = TabColor::Blue.rgb(dark).unwrap();
+        let (w, h, inset) = (600u32, 200u32, 10u32);
+        let bh = bar_height(&fonts, None);
+        let look = TabBarLook::default();
+        let tabs = [
+            plain_label("낱개", false),
+            chip_label("서버", TabColor::Blue),
+            member("a", true, TabColor::Blue),
+            member("b", false, TabColor::Blue),
+            plain_label("끝", false),
+        ];
+        let g = crate::tabgeom::BarGeom::new(&look, 1.0, inset, bh);
+        let place = BarPlace::of(&g, (w, h));
+        let mut buf = vec![0u32; (w * h) as usize];
+        let mut c = Canvas::new(&mut buf, w, h);
+        c.clear(theme.background);
+        draw_placed(&mut c, &mut fonts, None, &theme, &look, &tabs, place);
+        let (bar_t, bar_b) = g.bar_y(h);
+        let cw = fonts.metrics().width;
+        let fixed: Vec<Option<u32>> = tabs
+            .iter()
+            .map(|t| t.bundle.filter(|b| b.chip).map(|_| chip_px(&t.title, cw)))
+            .collect();
+        let slot = slots_for(w, &fixed, Layout::of(&look, cw));
+        // 칠한 것은 모두 탭 줄 안
+        for y in 0..h {
+            for x in 0..w {
+                if (y as i32) < bar_t || (y as i32) >= bar_b {
+                    assert_eq!(c.pixel(x, y), theme.background, "탭 줄 밖 ({x},{y})");
+                }
+            }
+        }
+        // 머리표: 알약 안쪽 위 모서리 근처가 묶음 색, 폭은 정한 폭
+        let (cx, cwid) = slot[1];
+        assert_eq!(cwid, chip_px("서버", cw));
+        assert_eq!(
+            c.pixel(
+                (cx + (cw / 4).max(1) as i32 + 1) as u32,
+                (bar_t + bh as i32 / 8 + 1) as u32
+            ),
+            blue
+        );
+        // 묶음의 탭은 아래에 묶음 색 줄, 묶음 밖의 탭은 없다
+        let stripe_y = (bar_b - 2) as u32;
+        for i in [2, 3] {
+            let (sx, sw) = slot[i];
+            assert_eq!(c.pixel((sx + sw as i32 / 2) as u32, stripe_y), blue, "묶음의 탭 {i}");
+            assert_eq!(c.pixel(sx as u32 + 1, stripe_y), blue);
+        }
+        for i in [0, 4] {
+            let (sx, sw) = slot[i];
+            assert_ne!(c.pixel((sx + sw as i32 / 2) as u32, stripe_y), blue, "묶음 밖의 탭 {i}");
+        }
+        // 누르는 자리: 그린 자리를 누르면 같은 항목이다
+        for (i, &(sx, sw)) in slot.iter().enumerate() {
+            assert_eq!(hit_items(w, sx as f64 + 1.0, &fixed, Layout::of(&look, cw)), Some(i));
+            assert_eq!(
+                hit_items(w, (sx + sw as i32 - 1) as f64, &fixed, Layout::of(&look, cw)),
+                Some(i)
+            );
+        }
+    }
+
+    #[test]
+    fn vertical_chip_rows_and_member_stripes_sit_on_the_outer_edge() {
+        use crate::tabcolor::TabColor;
+        use bt_core::tabstyle::TabBarEdge;
+        let Ok(mut fonts) = Fonts::new(&bt_render::FontConfig::default()) else {
+            return;
+        };
+        let theme = Theme::ghostty_default();
+        let dark = crate::tabcolor::is_dark(theme.background);
+        let blue = TabColor::Blue.rgb(dark).unwrap();
+        let (w, h, inset) = (700u32, 500u32, 0u32);
+        let bh = bar_height(&fonts, None);
+        let cell_w = fonts.metrics().width;
+        let tabs = [
+            chip_label("서버", TabColor::Blue),
+            member("a", true, TabColor::Blue),
+            plain_label("낱개", false),
+        ];
+        for edge in [TabBarEdge::Left, TabBarEdge::Right] {
+            let look = vlook(edge, TabBarStyle::Default, 0.0, (0.0, 0.0));
+            let g = crate::tabgeom::BarGeom::new(&look, 1.0, inset, bh).sized(&look, w, cell_w, 0);
+            let place = BarPlace::of(&g, (w, h));
+            let mut buf = vec![0u32; (w * h) as usize];
+            let mut c = Canvas::new(&mut buf, w, h);
+            c.clear(theme.background);
+            draw_placed(&mut c, &mut fonts, None, &theme, &look, &tabs, place);
+            let (bx, bw) = g.bar_x(w);
+            let (ty, th) = g.tabs_y(h);
+            let rows = crate::vtabs::rows(tabs.len(), th, bh, crate::vtabs::gap_px(bh), look.align);
+            assert_eq!(rows.tabs.len(), 3, "머리표도 한 줄을 쓴다");
+            let edge_x = if edge == TabBarEdge::Left {
+                bx as u32
+            } else {
+                bx as u32 + bw - 1
+            };
+            let (my, mh) = rows.tabs[1];
+            assert_eq!(
+                c.pixel(edge_x, (ty + my) as u32 + mh / 2),
+                blue,
+                "{edge:?}: 묶음의 탭 바깥 가장자리"
+            );
+            let (oy, oh) = rows.tabs[2];
+            assert_ne!(
+                c.pixel(edge_x, (ty + oy) as u32 + oh / 2),
+                blue,
+                "{edge:?}: 묶음 밖의 탭"
+            );
+            // 머리표 줄 안쪽에 알약이 칠해졌다
+            let (cy, ch) = rows.tabs[0];
+            let probe_x = (bx + (cell_w / 4).max(1) as i32 + 1) as u32;
+            assert_eq!(
+                c.pixel(probe_x, (ty + cy) as u32 + ch / 8 + 1),
+                blue,
+                "{edge:?}: 머리표"
+            );
+            // 누르는 자리: 머리표 줄은 0번 항목, 탭은 1·2번
+            for (i, &(ry, rh)) in rows.tabs.iter().enumerate() {
+                assert_eq!(crate::vtabs::tab_at(&rows, (ry + rh as i32 / 2) as f64), Some(i));
+            }
+        }
     }
 }
