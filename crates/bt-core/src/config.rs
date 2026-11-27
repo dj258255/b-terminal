@@ -681,6 +681,8 @@ pub struct Config {
     pub background_opacity_cells: bool,
     /// `link-url`(기본 켬): 화면 글의 URL 자동 인식
     pub link_url: bool,
+    /// `link-url-regex`(kitty `detect_url_regex`, #929): 보통 URL이 없을 때 링크로 볼 정규식들(앞에서부터 시도). 이미 컴파일해 본 것만 담는다
+    pub link_url_regex: Vec<String>,
     /// `link-osc8`(Ghostty 1.4, 기본 켬): OSC 8 링크를 링크로 다룬다
     pub link_osc8: bool,
     /// `link-previews`(기본 true): Cmd를 누른 채 링크 위에 있을 때 주소 띠
@@ -1958,6 +1960,7 @@ impl Default for Config {
             broadcast_group_colors: BROADCAST_GROUP_COLORS,
             background_opacity_cells: false,
             link_url: true,
+            link_url_regex: Vec::new(),
             link_osc8: true,
             link_previews: LinkPreviews::True,
             command_marks: CommandMarks::True,
@@ -3286,6 +3289,19 @@ impl Config {
                     )),
                 }
             }
+            // kitty `mark1_foreground`~`mark3_background`(#929)
+            "mark1-foreground" | "mark2-foreground" | "mark3-foreground" | "mark1-background" | "mark2-background"
+            | "mark3-background" => match color() {
+                Some(c) => {
+                    let i = usize::from(e.key.as_bytes()[4] - b'1');
+                    if e.key.ends_with("foreground") {
+                        t.marks.foreground[i] = c;
+                    } else {
+                        t.marks.background[i] = c;
+                    }
+                }
+                None => bad_color(warnings),
+            },
             _ => return false,
         }
         true
@@ -3577,6 +3593,28 @@ impl Config {
                 Some(b) => self.link_url = b,
                 None => bad(warnings),
             },
+            // kitty `detect_url_regex`(#929): 여러 번 쓸 수 있다. 빈 값은 지금까지 쌓은 것을 비운다
+            "link-url-regex" => {
+                if v.is_empty() {
+                    self.link_url_regex.clear();
+                } else if self.link_url_regex.len() >= crate::user_regex::MAX_PATTERNS {
+                    warnings.push(format!(
+                        "{}:{}: link-url-regex는 {}개까지만 받습니다. 이 줄은 무시합니다",
+                        e.file.display(),
+                        e.line,
+                        crate::user_regex::MAX_PATTERNS
+                    ));
+                } else {
+                    match crate::user_regex::compile(v, false) {
+                        Ok(_) => self.link_url_regex.push(v.to_string()),
+                        Err(why) => warnings.push(format!(
+                            "{}:{}: link-url-regex를 무시합니다({why}): {v}",
+                            e.file.display(),
+                            e.line
+                        )),
+                    }
+                }
+            }
             "command-marks" => match v {
                 "true" => self.command_marks = CommandMarks::True,
                 "failed" => self.command_marks = CommandMarks::Failed,
@@ -4383,6 +4421,10 @@ impl Config {
         push("search-background", search(t.search.background));
         push("search-selected-foreground", search(t.search.selected_foreground));
         push("search-selected-background", search(t.search.selected_background));
+        for i in 0..3 {
+            push(&format!("mark{}-foreground", i + 1), hex(t.marks.foreground[i]));
+            push(&format!("mark{}-background", i + 1), hex(t.marks.background[i]));
+        }
         push("selection-clear-on-typing", self.selection_clear_on_typing.to_string());
         push("selection-clear-on-copy", self.selection_clear_on_copy.to_string());
         push(
@@ -4446,6 +4488,9 @@ impl Config {
             }
         });
         push("link-url", self.link_url.to_string());
+        for r in &self.link_url_regex {
+            push("link-url-regex", r.clone());
+        }
         push("link-osc8", self.link_osc8.to_string());
         push(
             "link-previews",

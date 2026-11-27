@@ -17,7 +17,9 @@ pub mod kitty_notify;
 pub mod kitty_unicode;
 pub mod latency;
 pub mod link_probe;
+pub mod link_regex;
 pub mod links;
+pub mod marks;
 pub mod mouse_shape;
 pub mod notify;
 #[doc(hidden)]
