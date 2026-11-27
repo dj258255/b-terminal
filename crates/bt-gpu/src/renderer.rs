@@ -105,6 +105,8 @@ pub struct GpuRenderer {
     shader_waker: Option<custom::ShaderWaker>,
     /// 글자를 섞을 색 공간(#405)
     alpha_blending: AlphaBlending,
+    /// 글자 덮음 곡선(#911). 기본은 곡선 없음
+    text_composition: bt_core::TextComposition,
     /// 선형 섞기 글리프 파이프라인(`linear`·`linear-corrected`를 처음 고를 때 만든다). 대상의 sRGB 꼴 뷰에 그린다
     glyph_linear: Option<LinearGlyphPipelines>,
     /// 글리프 파이프라인을 만드는 데 쓴 모듈과 레이아웃(선형 파이프라인을 나중에 만들려고 쥔다)
@@ -297,7 +299,7 @@ impl GpuRenderer {
             entries: &[
                 wgpu::BindGroupLayoutEntry {
                     binding: 0,
-                    visibility: wgpu::ShaderStages::VERTEX,
+                    visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
                     ty: wgpu::BindingType::Buffer {
                         ty: wgpu::BufferBindingType::Uniform,
                         has_dynamic_offset: false,
@@ -431,6 +433,7 @@ impl GpuRenderer {
             custom_job: None,
             shader_waker: None,
             alpha_blending: AlphaBlending::Native,
+            text_composition: bt_core::TextComposition::NONE,
             glyph_linear: None,
             shader: (module, pl),
         })
@@ -455,6 +458,22 @@ impl GpuRenderer {
         self.alpha_blending = mode;
         // 창 surface는 sRGB 꼴 뷰를 열 수 있게 다시 설정한다(`present`가 다음 프레임 앞에서 한다)
         self.sync_window_view_formats();
+    }
+
+    /// 글자 덮음 곡선을 정한다(`text-composition-strategy`, #911). 다음 프레임부터 바뀐다. 셰이더 유니폼 값만 바뀐다
+    pub fn set_text_composition(&mut self, c: bt_core::TextComposition) {
+        self.text_composition = c;
+    }
+
+    /// 전역 유니폼 16바이트: 그리는 크기와 글자 덮음 곡선(1/감마, 1 + 명암/100. 곡선 없음이면 둘 다 정확히 1)
+    pub(super) fn globals_bytes(&self, w: f32, h: f32) -> Vec<u8> {
+        let c = self.text_composition;
+        let text = if c.is_identity() {
+            [1.0, 1.0]
+        } else {
+            [1.0 / c.gamma, 1.0 + c.contrast * 0.01]
+        };
+        [w, h, text[0], text[1]].iter().flat_map(|v| v.to_le_bytes()).collect()
     }
 
     /// 지금 고른 섞기 공간으로 글리프를 그릴 파이프라인과, 그것이 sRGB 꼴 뷰에 그려야 하는가
@@ -543,14 +562,8 @@ impl GpuRenderer {
         self.scene.build(&mut self.cache, fonts, view, clear);
         self.sync_atlases();
 
-        self.queue.write_buffer(
-            &self.globals,
-            0,
-            &[w as f32, h as f32, 0.0, 0.0]
-                .iter()
-                .flat_map(|v| v.to_le_bytes())
-                .collect::<Vec<u8>>(),
-        );
+        self.queue
+            .write_buffer(&self.globals, 0, &self.globals_bytes(w as f32, h as f32));
         self.bytes.clear();
         for r in &self.scene.rects {
             r.write(&mut self.bytes);

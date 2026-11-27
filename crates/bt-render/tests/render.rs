@@ -2461,3 +2461,76 @@ fn faint_decoration_keeps_its_alpha_unless_min_contrast_replaced_the_color() {
         );
     }
 }
+
+/// 덮음 0~255가 한 줄에 다 있는 글리프(글꼴 없이): 곡선 시험용
+fn ramp_glyph() -> bt_render::font::Glyph {
+    bt_render::font::Glyph {
+        width: 256,
+        height: 1,
+        left: 0,
+        top: 1,
+        bitmap: (0..=255u8).collect(),
+        color: None,
+    }
+}
+
+fn ramp_row(bg: Rgb, fg: Rgb, c: Option<bt_core::TextComposition>) -> Vec<u32> {
+    let mut buf = vec![0u32; 256];
+    let mut canvas = Canvas::new(&mut buf, 256, 1);
+    canvas.clear(bg);
+    if let Some(c) = c {
+        canvas.set_text_composition(c);
+    }
+    canvas.draw_glyph(0, 1, &ramp_glyph(), fg);
+    buf
+}
+
+/// #911: 곡선을 정하지 않거나 `none`이면 글자 픽셀이 지금과 같다(덮음 그대로의 섞기)
+#[test]
+fn text_composition_default_keeps_glyph_pixels() {
+    let (bg, fg) = (Rgb::new(250, 250, 250), Rgb::new(10, 20, 30));
+    let plain = ramp_row(bg, fg, None);
+    assert_eq!(plain, ramp_row(bg, fg, Some(bt_core::TextComposition::NONE)));
+    // 덮음 a의 값으로 직접 섞은 기대값(곡선 도입 전 식)
+    for (a, px) in plain.iter().enumerate() {
+        let a = a as u32;
+        let want = |s: u32, d: u32| {
+            if a >= 255 {
+                s
+            } else {
+                (s * a + d * (255 - a) + 127) / 255
+            }
+        };
+        let got = Rgb::from_u32(*px);
+        assert_eq!(
+            (got.r as u32, got.g as u32, got.b as u32),
+            (want(10, 250), want(20, 250), want(30, 250)),
+            "a={a}"
+        );
+    }
+}
+
+/// #911: `1.7 30`이면 흰 바탕 검은 글자의 덮음이 kitty 식대로 바뀐다(몇 점을 따로 계산해 견줌)
+#[test]
+fn text_composition_platform_changes_dark_on_light_like_kitty() {
+    let (bg, fg) = (Rgb::new(255, 255, 255), Rgb::new(0, 0, 0));
+    let row = ramp_row(bg, fg, Some(bt_core::TextComposition::PLATFORM));
+    // (덮음 8비트, kitty 식으로 따로 계산한 새 덮음). 검은 글자라 결과 채널 = 255 - 새 덮음
+    for (a, want) in [(10usize, 49), (25, 85), (64, 147), (128, 221), (150, 243), (190, 255)] {
+        let got = 255 - Rgb::from_u32(row[a]).r as i32;
+        assert!((got - want).abs() <= 1, "a={a}: 덮음 {got} != {want}");
+    }
+    // 고정점: 0은 그대로, 맨 아래쪽은 1을 넘어 255로 닫힌다
+    assert_eq!(Rgb::from_u32(row[0]).r, 255);
+    assert_eq!(Rgb::from_u32(row[255]).r, 0);
+    // 굵어진다: 가운데 덮음 128이 크게 올라간다(곡선 없을 때 127)
+    assert!(255 - Rgb::from_u32(row[128]).r as i32 > 200);
+    // 밝은 글자 어두운 바탕은 명암(1.3배)만 곱해진다: 덮음 100 → 130
+    let row = ramp_row(
+        Rgb::new(0, 0, 0),
+        Rgb::new(255, 255, 255),
+        Some(bt_core::TextComposition::PLATFORM),
+    );
+    let got = Rgb::from_u32(row[100]).r as i32;
+    assert!((got - 130).abs() <= 1, "{got}");
+}

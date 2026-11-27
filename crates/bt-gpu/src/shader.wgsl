@@ -3,7 +3,8 @@
 
 struct Globals {
     viewport: vec2<f32>,
-    pad: vec2<f32>,
+    // 글자 덮음 곡선(`text-composition-strategy`, #911): x = 1 / 감마, y = 1 + 명암 / 100. 둘 다 1이면 곡선 없음
+    text: vec2<f32>,
 };
 
 @group(0) @binding(0) var<uniform> g: Globals;
@@ -91,11 +92,22 @@ fn glyph_vs(in: GlyphIn) -> GlyphOut {
     return out;
 }
 
+// 글자 덮음 곡선: kitty `cell.slang`의 `foreground_contrast_new`와 같은 식(`bt_core::TextComposition::coverage`).
+// 밝기는 sRGB 값에 곱한다(선형으로 바꾸지 않는다). 곡선이 없으면 덮음을 그대로 돌려줘 글자 픽셀이 바뀌지 않는다
+fn text_curve(a: f32, fg: vec3<f32>, bg: vec3<f32>) -> f32 {
+    if (g.text.x == 1.0 && g.text.y == 1.0) || a <= 0.0 {
+        return a;
+    }
+    let y = vec3<f32>(0.2126, 0.7152, 0.0722);
+    let w = (1.0 - dot(fg, y) + dot(bg, y)) * 0.5;
+    return clamp(mix(a, pow(a, g.text.x), w) * g.text.y, 0.0, 1.0);
+}
+
 @fragment
 fn glyph_fs(in: GlyphOut) -> @location(0) vec4<f32> {
     let texel = vec2<i32>(floor(in.atlas + in.local));
     if (in.kind & 255u) == 0u {
-        let a = textureLoad(gray_atlas, texel, 0).r;
+        let a = text_curve(textureLoad(gray_atlas, texel, 0).r, in.color.rgb, in.bg);
         return vec4<f32>(in.color.rgb, a * in.color.a);
     }
     let c = textureLoad(color_atlas, texel, 0);
@@ -125,7 +137,8 @@ fn luminance(c: vec3<f32>) -> f32 {
 fn glyph_linear(in: GlyphOut, corrected: bool) -> vec4<f32> {
     let texel = vec2<i32>(floor(in.atlas + in.local));
     if (in.kind & 255u) == 0u {
-        var a = textureLoad(gray_atlas, texel, 0).r;
+        // 덮음 곡선을 먼저 걸고(kitty는 곡선을 건 덮음으로 섞는다), 그 덮음을 `linear-corrected`의 보정에 넘긴다
+        var a = text_curve(textureLoad(gray_atlas, texel, 0).r, in.color.rgb, in.bg);
         let fg = srgb_to_linear(in.color.rgb);
         if corrected {
             // Ghostty(shaders.metal의 cell_text_fragment)와 같은 보정: 글자·바탕 밝기를 sRGB 값으로 섞은 밝기에서

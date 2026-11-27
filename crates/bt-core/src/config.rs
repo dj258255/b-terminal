@@ -771,6 +771,8 @@ pub struct Config {
     pub colorspace_srgb: bool,
     /// 글자·그림을 섞을 색 공간(`alpha-blending`, #405). GPU 길에서만 적용한다
     pub alpha_blending: AlphaBlending,
+    /// 글자 덮음 곡선(kitty `text_composition_strategy`, #911). 기본은 곡선 없음
+    pub text_composition: crate::TextComposition,
     /// 바탕 불투명도(0~1, Ghostty `background-opacity`). 1보다 작으면 기본 바탕색 칸으로 창 뒤가 비친다(#78)
     pub background_opacity: f32,
     /// 창 뒤를 흐리는 세기 0~255(Ghostty `background-blur`, #238). 0이면 끔. macOS는 이 값을 그대로 반지름으로 쓴다
@@ -1875,6 +1877,7 @@ impl Default for Config {
             split_divider_color: None,
             colorspace_srgb: false,
             alpha_blending: AlphaBlending::Native,
+            text_composition: crate::TextComposition::NONE,
             background_opacity: 1.0,
             background_blur: 0,
             window_save_state: true,
@@ -4018,6 +4021,10 @@ impl Config {
                 "linear-corrected" => self.alpha_blending = AlphaBlending::LinearCorrected,
                 _ => bad(warnings),
             },
+            "text-composition-strategy" => match crate::TextComposition::parse(v) {
+                Some(c) => self.text_composition = c,
+                None => bad(warnings),
+            },
             "window-colorspace" => match v {
                 "srgb" => self.colorspace_srgb = true,
                 "display-p3" => self.colorspace_srgb = false,
@@ -4214,6 +4221,14 @@ impl Config {
             }
             .to_string(),
         );
+        push("text-composition-strategy", {
+            let c = self.text_composition;
+            if c.is_identity() {
+                "none".to_string()
+            } else {
+                format!("{} {}", c.gamma, c.contrast)
+            }
+        });
         push("link-url", self.link_url.to_string());
         push("link-osc8", self.link_osc8.to_string());
         push(
@@ -7355,6 +7370,41 @@ mod tests {
             "1로 묶는다"
         );
         assert_eq!(Config::from_text("background-opacity = x\n", true).warnings.len(), 1);
+    }
+
+    #[test]
+    fn text_composition_strategy_key() {
+        use crate::TextComposition as T;
+        assert_eq!(Config::default().text_composition, T::NONE);
+        for (v, want) in [
+            ("none", T::NONE),
+            ("legacy", T::NONE),
+            ("platform", T::PLATFORM),
+            ("1.7 30", T::PLATFORM),
+            (
+                "2",
+                T {
+                    gamma: 2.0,
+                    contrast: 0.0,
+                },
+            ),
+        ] {
+            let c = Config::from_text(&format!("text-composition-strategy = {v}\n"), true);
+            assert_eq!(c.text_composition, want, "{v}");
+            assert!(c.warnings.is_empty(), "{v}: {:?}", c.warnings);
+        }
+        // 잘못된 값은 경고하고 앞의 값을 지킨다
+        let c = Config::from_text(
+            "text-composition-strategy = platform\ntext-composition-strategy = bogus\n",
+            true,
+        );
+        assert_eq!(c.warnings.len(), 1, "{:?}", c.warnings);
+        assert_eq!(c.text_composition, T::PLATFORM);
+        // 내보내기는 다시 읽을 수 있는 꼴이다
+        let shown = Config::from_text("text-composition-strategy = platform\n", true).render();
+        assert!(shown.contains("text-composition-strategy = 1.7 30"), "{shown}");
+        assert_eq!(Config::from_text(&shown, true).text_composition, T::PLATFORM);
+        assert!(Config::default().render().contains("text-composition-strategy = none"));
     }
 
     #[test]

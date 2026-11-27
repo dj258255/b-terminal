@@ -5592,6 +5592,7 @@ impl App {
             let Some(g) = w.gfx.as_mut() else { continue };
             if let Some(gpu) = g.gpu.as_mut() {
                 gpu.set_alpha_blending(self.config.alpha_blending);
+                gpu.set_text_composition(self.config.text_composition);
                 g.window.request_redraw();
             }
         }
@@ -5853,7 +5854,10 @@ impl App {
         // 글자를 섞을 색 공간(#405). GPU 길에서만 뜻이 있다: CPU 길은 늘 sRGB 값 그대로 섞는다
         let mut gpu = gpu;
         match gpu.as_mut() {
-            Some(g) => g.set_alpha_blending(self.config.alpha_blending),
+            Some(g) => {
+                g.set_alpha_blending(self.config.alpha_blending);
+                g.set_text_composition(self.config.text_composition);
+            }
             None if self.config.alpha_blending != bt_core::AlphaBlending::Native => {
                 log::warn!("alpha-blending: CPU 길은 native로만 섞습니다(GPU 길에서만 적용)");
             }
@@ -7638,6 +7642,8 @@ impl App {
             }
             // background-opacity-cells(#177): 색 바탕 칸도 같은 알파로
             canvas.set_cells_alpha(bt_render::cells_alpha(opacity, self.config.background_opacity_cells));
+            // 글자 덮음 곡선(#911): CPU 길의 글자에도 같은 곡선을 건다
+            canvas.set_text_composition(self.config.text_composition);
             if full {
                 let bg = views
                     .iter()
