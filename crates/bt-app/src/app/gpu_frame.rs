@@ -28,6 +28,8 @@ pub(super) struct GpuFrame<'a> {
     pub toast: &'a Option<(String, Instant)>,
     pub secure_badge: bool,
     pub badge_top: u32,
+    /// 오른쪽 세로 탭 줄이 있으면 그 띠의 폭(자물쇠가 탭 줄을 덮지 않게)
+    pub badge_right: u32,
     pub confirm: &'a Option<(String, &'static str, bool)>,
     pub title_prompt: &'a Option<(&'static str, String)>,
     pub hover: &'a Option<(u64, bt_term::links::LinkHit)>,
@@ -124,6 +126,7 @@ impl App {
             toast,
             secure_badge,
             badge_top,
+            badge_right,
             confirm,
             title_prompt,
             hover,
@@ -447,7 +450,7 @@ impl App {
                     tabbar::draw_toast(ui!(), fonts.chrome(), &theme, text);
                 }
                 if secure_badge {
-                    tabbar::draw_secure_badge(ui!(), fonts.chrome(), &theme, badge_top);
+                    tabbar::draw_secure_badge(ui!(), fonts.chrome(), &theme, badge_top, badge_right);
                 }
                 if let Some((label, text)) = title_prompt {
                     tabbar::draw_prompt(
